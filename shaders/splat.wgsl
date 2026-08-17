@@ -1,0 +1,47 @@
+// Brush deposition. Wets the paper along the stroke segment and injects pigment
+// into the suspended layer. Curtis §4 assumes a wet-area mask M is painted by
+// the user; this is that step.
+//#include "include/common.wgsl"
+
+@group(0) @binding(0) var<uniform> P : SimParams;
+@group(0) @binding(1) var waterSrc : texture_2d<f32>;
+@group(0) @binding(2) var pigCSrc  : texture_2d<f32>;
+@group(0) @binding(3) var pigRSrc  : texture_2d<f32>;
+@group(0) @binding(4) var waterDst : texture_storage_2d<rgba16float, write>;
+@group(0) @binding(5) var pigCDst  : texture_storage_2d<rgba32float, write>;
+@group(0) @binding(6) var pigRDst  : texture_storage_2d<rgba32float, write>;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let p = vec2<i32>(gid.xy);
+  if (!inBounds(p, P.resolution)) { return; }
+
+  var water = textureLoad(waterSrc, p, 0);
+  var pigC  = textureLoad(pigCSrc, p, 0);
+  var pigR  = textureLoad(pigRSrc, p, 0);
+
+  if (P.brushActive != 0u) {
+    let d = distToSegment(vec2<f32>(p), P.brushA, P.brushB);
+    // Soft edge; hardness 1 gives a crisp disc, 0 a wide falloff.
+    let edge = mix(P.brushRadius, P.brushRadius * 0.15, P.brushHardness);
+    let falloff = 1.0 - smoothstep(P.brushRadius - edge, P.brushRadius, d);
+
+    if (falloff > 0.0) {
+      // Wet-area mask M and standing water.
+      water.w = max(water.w, falloff);
+      // Capped: surface tension limits film depth. Letting this accumulate with
+      // dwell time is what made wet washes hollow out into their own rim.
+      water.z = min(water.z + P.brushWater * falloff * P.dt, P.maxFilm);
+
+      // Pigment is stored premultiplied by mass so linear transport mixes it
+      // correctly in latent space.
+      let m = P.brushPigment * falloff * P.dt;
+      pigC = vec4<f32>(pigC.xyz + P.brushLatentC.xyz * m, pigC.w + m);
+      pigR = vec4<f32>(pigR.xyz + P.brushLatentR.xyz * m, 0.0);
+    }
+  }
+
+  textureStore(waterDst, p, water);
+  textureStore(pigCDst, p, pigC);
+  textureStore(pigRDst, p, pigR);
+}

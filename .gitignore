@@ -1,0 +1,25 @@
+# Build output
+build/
+build-*/
+.cache/
+
+# Reference PDFs — kept on disk, deliberately untracked.
+# Publisher copies of Curtis '97, IMPaSTo, MoXi, Mixbox, Stam et al. The design
+# docs cite them by author and year; redistributing the PDFs is not ours to do.
+papers/
+
+# Diagnostic and selftest output
+np_diag.png
+out-*.png
+*.actual.png
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Recovery scratch (ADR-0008) and tile spill
+*.npscratch/
