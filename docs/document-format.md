@@ -1,0 +1,219 @@
+# Document format — `.npaint`
+
+A **multi-part, tiled, mip-mapped OpenEXR** file with a `.npaint` extension. One part per
+layer, `HALF` channels, pigment latents as first-class named channels, everything else as
+typed header attributes.
+
+Supersedes an earlier decision to use a PSD container. That reversal is explained in §7.
+
+---
+
+## 1. Why EXR
+
+Four of EXR's native features are exact matches for decisions already made elsewhere in
+this design, which is unusual enough to be the whole argument.
+
+| our decision | EXR feature |
+|---|---|
+| Working space is `rgba16float` | `HALF` channels — byte-identical, no conversion |
+| Linear light | EXR is linear by convention; `chromaticities` declares primaries |
+| 128² tiles + a display mip pyramid | native tiled, mip-mapped storage, per part |
+| Layers allocate only where content exists | per-part **data window** |
+| Latents are 7 channels alongside RGB | arbitrary **named channels** in the same part |
+
+And the decisive practical point:
+
+> **OIIO writes multi-part tiled EXR.** Native save needs *zero* bespoke writer code, so
+> it lands in phase 4 with the rest of I/O. Under the PSD plan the writer was ~2–3k
+> hand-written lines scheduled for phase 15 — meaning eleven phases of an application that
+> could not save its own documents. That was a defect, not a trade-off.
+
+A further consequence: because the on-disk layout is tiled and mip-mapped, **OIIO's
+`ImageCache` becomes the residency layer for our own documents**, not only for imported
+files. ADR-0001's lazy-residency model is then served by machinery already in the plan.
+
+---
+
+## 2. File layout
+
+```
+part 0   "composite"      R G B A                    ← any EXR reader shows this
+                          tiled, mip-mapped
+         attrs:  chromaticities
+                 np:version      1
+                 np:basis        "mixbox-v1"
+                 np:tileSize     128
+                 np:docOps       <blob>
+                 np:paths        <blob>
+                 np:comps        <blob>   layer comps: name + per-layer state
+
+part 1   "L0001"          R G B A                    ← baked projection
+                          pig.c0 pig.c1 pig.c2 pig.m
+                          res.R res.G res.B
+                          mask
+         attrs:  np:kind        "pigment"
+                 np:name        "Line pass"
+                 np:blend       "multiply"
+                 np:opacity     0.72
+                 np:visible     1
+                 np:locked      1
+                 np:parent      ""
+                 np:ops         <blob>
+
+part 2   "L0002"          R G B A + pig.* + res.*
+         attrs:  np:kind        "media"
+                 np:medium      "watercolour"
+                 np:simParams   <blob>
+
+part 3   "L0003"          (no image channels)
+         attrs:  np:kind        "strokes"
+                 np:dabs        <blob>
+
+part 4   "S0001"          coverage                   ← a saved selection
+         attrs:  np:kind        "selection"
+```
+
+**Part order is layer order**, bottom to top, after part 0.
+
+### Details that bite
+
+- **Part names must be unique**, and EXR requires a `name` on every part in a multi-part
+  file. Layer names are not unique — two layers may both be "Layer 1" — so the part name
+  is a stable synthetic id (`L0001`) and the user-facing name lives in `np:name`.
+- **Groups have no native concept.** A group is a part with no image channels and
+  `np:kind="group"`; members carry `np:parent` naming it.
+- **Some attributes must match across all parts** — `displayWindow`,
+  `pixelAspectRatio`, `chromaticities`. Document-level `np:*` attributes live in part 0.
+- **Use only OIIO-representable attribute types**: `string`, `int`, `float`, and
+  `UINT8[n]` for blobs. This avoids registering custom EXR attribute types, which OIIO
+  would otherwise skip on read.
+- **Compression must be lossless.** `ZIP` for general use, `PIZ` for grainy content.
+  **Never `DWAA`/`DWAB`/`B44`** in a working file — they are lossy, and a working file is
+  the one place that is unacceptable.
+
+---
+
+## 3. Guaranteeing no data loss
+
+Five mechanisms. The extension is the weakest of them.
+
+### 3.1 The extension is a contract
+
+| extension | contract |
+|---|---|
+| **`.npaint`** | Native. Full fidelity. |
+| `.exr` | The same bytes, renamed — pipeline-ready for 3D work. |
+| `.psd` | Deliberate export for Photoshop users. Simply-layered, lossy by design. |
+
+`.npaint` and `.exr` are the *same container*, so "give this to the 3D pipeline" is a
+rename. That is the property PSD was originally chosen for, and EXR has it for the
+audience that actually matters here.
+
+### 3.2 Preserve unknown attributes verbatim
+
+> **The important rule.** Any `np:*` attribute or part the reader does not recognise is
+> retained and written back unchanged.
+
+This is forward compatibility by preservation: an older build can open a newer document,
+edit what it understands, and save without destroying what it does not. Without it,
+"upgrade, then open in an older build" is a data-loss event.
+
+EXR makes this *easier* than PSD would have. OIIO surfaces every attribute in
+`ImageSpec::extra_attribs`, so retaining unknown ones is iteration over a list rather
+than a parser that has to know block layouts in advance.
+
+### 3.3 Never degrade silently on save
+
+If a save would lose something, the dialog names exactly what: a `.psd` export dropping
+latents and Media wet state, a 16-bit export clipping above-white, a basis mismatch.
+Silence is the failure mode.
+
+### 3.4 The composite part is never stale
+
+Part 0 is what every other tool renders. If it disagrees with the layer parts, other
+tools show something subtly wrong and nobody notices for months. Regenerate on every
+save, unconditionally.
+
+### 3.5 Degradation is graceful — and better than PSD's
+
+This was the strongest argument *for* PSD, and EXR wins it outright.
+
+- Any EXR reader shows part 0, the correct composite.
+- Nuke, Blender and Clarisse read every part as a layer, with all channels **named**.
+- If naturalPaint's own reader ever breaks, a recoverer sees `pig.c0`, `pig.m`, `res.R`
+  as **self-describing named channels** — not an opaque private blob whose layout exists
+  only in our source.
+
+A PSD-container file hid the latents in `nPlt` blobs. EXR leaves them legible. For a
+format expected to hold years of work, that is a materially better failure mode.
+
+---
+
+## 4. What EXR cannot do
+
+Stated plainly, because these are real.
+
+**Photoshop sees a flattened image.** Its EXR support is single-part and poor. Layer
+parts are invisible to it.
+
+**Layer semantics are ours alone.** `np:blend`, `np:opacity`, `np:parent` are custom
+attributes no other tool honours, so another application sees N images with no
+compositing recipe. PSD's blend modes *are* portable.
+
+That second point is softer than it looks, though: our blend set is linear-space and
+includes `Mix`, which **PSD cannot express anyway**. Layered-PSD fidelity was always going
+to be partial, so the portability being given up is less than it appears.
+
+---
+
+## 5. PSD export
+
+A separate, deliberate feature — not the save path.
+
+| target | effort | fidelity |
+|---|---|---|
+| Flattened PSD | small | the composite, correct |
+| Simply-layered PSD | ~800–1200 lines | one PSD layer per naturalPaint layer, blend modes mapped where they exist, latents dropped |
+| Full-fidelity layered PSD | ~2–3k lines | not planned — see §4 |
+
+Most PSD handoff wants the first two. That is why the sunk-cost argument for writing a
+full PSD writer collapsed: the hard version serves a case nobody asked for.
+
+> ⚠️ If layered PSD export is written, **do not emit native `curv` / `levl` adjustment
+> blocks.** Our curves are authored in the shaper log domain (ADR-0004); Photoshop's are in
+> the document's gamma space. A natively written block would be *silently wrong* rather
+> than approximately right. Rasterise the effect.
+
+---
+
+## 6. EXR quirks worth knowing
+
+- **`HALF` maxes out around 65504.** Fine for scene-linear values, but a saturating
+  operation could produce `inf`, which EXR stores happily and which then poisons any
+  downstream average. Clamp on write.
+- **Data window vs display window.** The display window is the canvas; a layer's data
+  window may be smaller *or larger*. Readers that ignore the distinction will crop or
+  mis-place layers.
+- **Tile size on disk need not equal `kTileSize`.** They should match, so a load is a
+  direct read of the tiles needed, but nothing enforces it — assert it.
+- **Multi-part is EXR 2.0+ (2013).** Any current reader handles it; some very old tools
+  do not.
+
+---
+
+## 7. Why this reverses the PSD decision
+
+PSD was chosen for distribution rather than technical merit: a PSD opens everywhere, and
+a file nobody else can open is a social dead end. Three things undid that reasoning.
+
+**The critical path.** PSD-native put a 2–3k line hand-written writer between the
+application and its ability to save. EXR-native removes it entirely.
+
+**The audience split the wrong way.** The primary user's job is texture and photo prep for
+3D, and that world is **EXR-native** — Substance, Blender, Houdini, Nuke and Unreal all
+prefer it. PSD is the visdev handoff format, which is an export concern either way.
+
+**The interop win was partly illusory.** Layered PSD cannot express our blend set, and
+Photoshop would drop our private blocks the moment it rewrote the file. What survived a
+Photoshop round-trip was the baked composite — which EXR also provides, in part 0, to
+every reader.
