@@ -401,6 +401,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (ImGui::MenuItem("Reset Rotation", "Shift+R")) st.view.rotation = 0.0f;
       ImGui::Separator();
       ImGui::MenuItem("Grayscale Preview", "Cmd+Y", &st.view.grayscale);
+      // PLAN.md Phase 3 step 6 debug scaffolding -- temporary, explicitly
+      // NOT step 8's real op-authoring UI. See main.cpp's AppState-
+      // construction comment for the full rationale: this is the only
+      // way to exercise the Apply pass in the running app before a real
+      // reorder/toggle/delete/curve widget exists. Flips both of the two
+      // fixed ops main.cpp seeds into st.opStack (indices 0 and 1)
+      // together, matching however this checkbox itself just toggled.
+      if (ImGui::MenuItem("Test Grade (debug)", nullptr, &st.view.grade)) {
+        st.opStack.setEnabled(0, st.view.grade);
+        st.opStack.setEnabled(1, st.view.grade);
+      }
       ImGui::Separator();
       // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD
       // Q5-Q7). Rulers is deliberately the one item here with no shortcut
@@ -796,9 +807,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // rect, which has no way to express a flipped or rotated quad. This is
     // the one drawing change mirror/rotation actually needed -- everything
     // else is the transform feeding it different corner points.
-    const bool grayscaleActive = st.view.grayscale && sim;
+    // Precedence chain, most-specific-preview-wins: grade, then
+    // grayscale, then the plain canvas -- a deliberate narrow-scope
+    // choice (PLAN.md Phase 3 step 6). Composing grade and grayscale
+    // together isn't a normal use case and isn't required by PLAN.md's
+    // Verify criterion for either step, so they stay mutually exclusive
+    // by this precedence rather than layered.
+    const bool gradeActive = st.view.grade && sim;
+    const bool grayscaleActive = !gradeActive && st.view.grayscale && sim;
     if (sim) {
-      const WGPUTextureView tv = grayscaleActive ? sim->grayscaleView() : sim->canvasView();
+      const WGPUTextureView tv = gradeActive     ? sim->gradedView()
+                                 : grayscaleActive ? sim->grayscaleView()
+                                                    : sim->canvasView();
       dl->AddImageQuad((ImTextureID)(intptr_t)tv, q00, q10, q11, q01);
     } else {
       // 1.4 / ADR-0001: no PaintSim exists yet (nothing painted this

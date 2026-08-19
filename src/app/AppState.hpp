@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "brush/StrokePath.hpp"
+#include "core/OpStack.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
 
@@ -71,6 +72,14 @@ struct CanvasView {
   // kept here anyway because it is still pure view state, never document
   // state.
   bool grayscale = false;
+  // PLAN.md Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch ->
+  // un-shape"): the grading preview toggle, the same "pure view state,
+  // never document state" shape as grayscale immediately above -- but
+  // unlike grayscale (a self-contained GPU blit with no other inputs),
+  // this one reaches into AppState::opStack and sim::PaintSim's bake/blit
+  // pipeline (PaintSim::updateGradePreview() + shaders/grade_blit.wgsl)
+  // rather than shaders/grayscale_blit.wgsl alone.
+  bool grade = false;
 };
 
 // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD Q5-Q7).
@@ -167,6 +176,23 @@ struct AppState {
   // Document bridge to exist. Until then, guides live here and vanish with
   // the session, like zoom/pan/mirror/rotation already do.
   std::vector<Guide> guides;
+
+  // PLAN.md Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch ->
+  // un-shape") / step 5 (`core/OpStack`). The ordered grading op stack
+  // itself -- conceptually document content (a real save path would
+  // persist it alongside the pixels, and ADR-0004's whole design is about
+  // *document* grading), the same way `guides` just above is conceptually
+  // document content in Photoshop's own convention -- but this codebase
+  // has no save path and no live-canvas-to-Document bridge: sim::PaintSim
+  // exposes a single dense texture with no core::Document/core::Layer
+  // awareness at all, the identical gap `guides`' own comment describes.
+  // Until that bridge exists, the op stack lives here and vanishes with
+  // the session, exactly like guides/zoom/pan/mirror/rotation already do.
+  // Read by sim::PaintSim::updateGradePreview() (via CanvasView::grade,
+  // see ui/MacPaintUI.cpp's canvas block) -- core::OpStack itself stays
+  // completely unaware AppState exists.
+  OpStack opStack;
+
   // Menu-toggleable, no keyboard shortcut (docs/shortcuts.md §3 assigns
   // rulers to Cmd+R, but keymaps/default.json already binds Cmd+R to
   // reload_shaders from earlier Phase-1 work -- see main.cpp's key-down

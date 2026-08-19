@@ -170,6 +170,14 @@ void PaintSim::releaseFields() {
   if (canvas_) { wgpuTextureDestroy(canvas_); wgpuTextureRelease(canvas_); canvas_ = nullptr; }
   if (grayscaleView_) { wgpuTextureViewRelease(grayscaleView_); grayscaleView_ = nullptr; }
   if (grayscale_) { wgpuTextureDestroy(grayscale_); wgpuTextureRelease(grayscale_); grayscale_ = nullptr; }
+  if (gradedView_) { wgpuTextureViewRelease(gradedView_); gradedView_ = nullptr; }
+  if (graded_) { wgpuTextureDestroy(graded_); wgpuTextureRelease(graded_); graded_ = nullptr; }
+  // The baked LUT is not sized off width_/height_ (it's always kLutSize^3),
+  // but this is the general "tear down this sim's owned GPU state" path
+  // (called by both resize and shutdown), so it is released here too,
+  // alongside graded_/gradedView_, rather than growing a second release
+  // path just for it.
+  if (hasBakedLut_) { releaseLut3D(lut_); hasBakedLut_ = false; }
   for (auto& kv : bindCache_) wgpuBindGroupRelease(kv.second);
   bindCache_.clear();
 }
@@ -209,6 +217,17 @@ void PaintSim::allocFields(GpuContext& gpu, uint32_t w, uint32_t h) {
   gd.label = sv("canvas-grayscale-preview");
   grayscale_ = wgpuDeviceCreateTexture(gpu.device, &gd);
   grayscaleView_ = wgpuTextureCreateView(grayscale_, nullptr);
+
+  // Grade preview target (PLAN.md Phase 3 step 6) -- same descriptor
+  // pattern as grayscale_ immediately above (down to CopySrc, for the
+  // same "a test could read this back" reason via readbackGraded()), its
+  // own texture, unconditionally created here so it exists whether or not
+  // the grade toggle is ever used this session -- updateGradePreview()
+  // writes here, never into canvas_.
+  WGPUTextureDescriptor grd = cd;
+  grd.label = sv("canvas-grade-preview");
+  graded_ = wgpuDeviceCreateTexture(gpu.device, &grd);
+  gradedView_ = wgpuTextureCreateView(graded_, nullptr);
 
   clearCanvas(gpu);
   generatePaper(gpu);
@@ -439,11 +458,49 @@ bool PaintSim::buildPipelines(GpuContext& gpu) {
     }
   }
 
+  // Apply-pass grading blit (PLAN.md Phase 3 step 6) -- built and hot-
+  // reloaded alongside every other pass here, same convention as the
+  // grayscale preview blit immediately above. Its bind group layout has
+  // three entries (srcTex, lutTex, lutSamp) instead of grayscale's one,
+  // but is otherwise the identical render-pipeline shape.
+  WGPURenderPipeline gradePipe = nullptr;
+  if (ok) {
+    WGPUShaderModule gradeMod = compileShader(gpu.device, gpu.instance, "grade_blit.wgsl");
+    if (!gradeMod) {
+      ok = false;
+    } else {
+      WGPUColorTargetState target = {};
+      target.format = WGPUTextureFormat_RGBA8Unorm;
+      target.writeMask = WGPUColorWriteMask_All;
+
+      WGPUFragmentState fs = {};
+      fs.module = gradeMod;
+      fs.entryPoint = sv("fs");
+      fs.targetCount = 1;
+      fs.targets = &target;
+
+      WGPURenderPipelineDescriptor rd = {};
+      rd.label = sv("grade_blit");
+      rd.vertex.module = gradeMod;
+      rd.vertex.entryPoint = sv("vs");
+      rd.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+      rd.primitive.frontFace = WGPUFrontFace_CCW;
+      rd.primitive.cullMode = WGPUCullMode_None;
+      rd.multisample.count = 1;
+      rd.multisample.mask = 0xFFFFFFFF;
+      rd.fragment = &fs;
+      gradePipe = wgpuDeviceCreateRenderPipeline(gpu.device, &rd);
+      wgpuShaderModuleRelease(gradeMod);
+      if (!gradePipe) ok = false;
+    }
+  }
+
   if (!ok) {
     for (int i = 0; i < kPassCount; ++i)
       if (built[i]) wgpuComputePipelineRelease(built[i]);
     if (compPipe) wgpuRenderPipelineRelease(compPipe);
     if (grayPipe) wgpuRenderPipelineRelease(grayPipe);
+    if (gradePipe) wgpuRenderPipelineRelease(gradePipe);
     std::fprintf(stderr, "[sim] pipeline build failed; keeping previous shaders\n");
     return false;
   }
@@ -456,6 +513,8 @@ bool PaintSim::buildPipelines(GpuContext& gpu) {
   composite_ = compPipe;
   if (grayscalePipeline_) wgpuRenderPipelineRelease(grayscalePipeline_);
   grayscalePipeline_ = grayPipe;
+  if (gradePipeline_) wgpuRenderPipelineRelease(gradePipeline_);
+  gradePipeline_ = gradePipe;
 
   for (auto& kv : bindCache_) wgpuBindGroupRelease(kv.second);
   bindCache_.clear();
@@ -817,6 +876,97 @@ void PaintSim::updateGrayscalePreview(GpuContext& gpu) {
   wgpuBindGroupLayoutRelease(layout);
 }
 
+// PLAN.md Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch ->
+// un-shape"). See this method's declaration in PaintSim.hpp for the full
+// design (deliberate live-canvas target, the domain contract, the
+// single-run narrow scope); this is the implementation of that contract.
+void PaintSim::updateGradePreview(GpuContext& gpu, const OpStack& opStack) {
+  if (!gradePipeline_ || !gradedView_ || !canvasView_) return;
+
+  // ---- rebake gate: only when the OpStack actually changed ----
+  if (!hasBakedLut_ || opStack.version() != lastBakedOpStackVersion_) {
+    if (hasBakedLut_) releaseLut3D(lut_);
+
+    // Narrow scope (see this method's header comment): only the first run
+    // is baked. `runs.empty()` -- no PointA content at all -- is treated
+    // as an empty ops list, which bakeLut() itself already handles as a
+    // valid seed-only identity LUT.
+    const auto runs = opStack.detectRuns();
+    std::vector<Op> ops;
+    if (!runs.empty()) {
+      const OpRun& run = runs.front();
+      // color/LutBake.hpp's own documented calling convention: an
+      // ordered std::vector<Op> slice built by looping the run's raw
+      // [startIndex, endIndex) range and calling OpStack::at(i) for each
+      // index -- NOT run.ops, which is already-composed std::function
+      // closures bakeLut() has no way to run on the GPU. bakeLut() itself
+      // skips any entry with !enabled or opClass != PointA, so copying
+      // the raw range verbatim (including any disabled entries within
+      // it) is correct and saves re-deriving OpRun::ops's own filtering
+      // logic here.
+      for (size_t i = run.startIndex; i < run.endIndex; ++i) ops.push_back(opStack.at(i));
+    }
+
+    lut_ = bakeLut(gpu, ops);
+    if (!lut_.texture) {
+      // bakeLut()'s own documented failure contract: a shader-compile or
+      // pipeline-build failure logs to stderr and returns a default
+      // (null) Lut3D. Leave hasBakedLut_ false so the next call retries
+      // the bake rather than believing a stale/nonexistent LUT is ready,
+      // and draw nothing this call rather than binding a null texture.
+      hasBakedLut_ = false;
+      return;
+    }
+    hasBakedLut_ = true;
+    lastBakedOpStackVersion_ = opStack.version();
+  }
+
+  // ---- blit: canvasView_ -> (shaper -> LUT sample -> un-shaper) -> gradedView_ ----
+  // linear_ (built in init(), ClampToEdge on all three axes including W)
+  // is reused as-is rather than creating a second sampler -- WGPUSampler
+  // objects are dimension-agnostic in WebGPU, and this one was already
+  // built with 3-D use anticipated.
+  WGPUBindGroupEntry entries[3] = {
+      texEntry(0, canvasView_),
+      texEntry(1, lut_.view),
+      samplerEntry(2, linear_),
+  };
+  WGPUBindGroupLayout layout = wgpuRenderPipelineGetBindGroupLayout(gradePipeline_, 0);
+  WGPUBindGroupDescriptor bgd = {};
+  bgd.layout = layout;
+  bgd.label = sv("grade-preview");
+  bgd.entryCount = 3;
+  bgd.entries = entries;
+  WGPUBindGroup bg = wgpuDeviceCreateBindGroup(gpu.device, &bgd);
+
+  WGPURenderPassColorAttachment att = {};
+  att.view = gradedView_;
+  att.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+  att.loadOp = WGPULoadOp_Clear;
+  att.storeOp = WGPUStoreOp_Store;
+  att.clearValue = {0.0, 0.0, 0.0, 1.0};
+
+  WGPURenderPassDescriptor rp = {};
+  rp.colorAttachmentCount = 1;
+  rp.colorAttachments = &att;
+
+  WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(gpu.device, nullptr);
+  WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(enc, &rp);
+  wgpuRenderPassEncoderSetPipeline(pass, gradePipeline_);
+  wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+  wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+  wgpuRenderPassEncoderEnd(pass);
+  wgpuRenderPassEncoderRelease(pass);
+
+  WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+  wgpuQueueSubmit(gpu.queue, 1, &cmd);
+  wgpuCommandBufferRelease(cmd);
+  wgpuCommandEncoderRelease(enc);
+
+  wgpuBindGroupRelease(bg);
+  wgpuBindGroupLayoutRelease(layout);
+}
+
 bool PaintSim::readbackCanvas(GpuContext& gpu, std::vector<uint8_t>& out) {
   const uint32_t bytesPerRow = width_ * 4;  // 256-aligned for any width we use
   if (bytesPerRow % 256 != 0) {
@@ -833,6 +983,67 @@ bool PaintSim::readbackCanvas(GpuContext& gpu, std::vector<uint8_t>& out) {
 
   WGPUTexelCopyTextureInfo srcTex = {};
   srcTex.texture = canvas_;
+  srcTex.aspect = WGPUTextureAspect_All;
+
+  WGPUTexelCopyBufferInfo dstBuf = {};
+  dstBuf.buffer = staging;
+  dstBuf.layout.bytesPerRow = bytesPerRow;
+  dstBuf.layout.rowsPerImage = height_;
+
+  WGPUExtent3D extent = {width_, height_, 1};
+
+  WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(gpu.device, nullptr);
+  wgpuCommandEncoderCopyTextureToBuffer(enc, &srcTex, &dstBuf, &extent);
+  WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+  wgpuQueueSubmit(gpu.queue, 1, &cmd);
+  wgpuCommandBufferRelease(cmd);
+  wgpuCommandEncoderRelease(enc);
+
+  struct MapState { bool done = false; bool ok = false; } state;
+  WGPUBufferMapCallbackInfo mci = {};
+  mci.mode = WGPUCallbackMode_AllowProcessEvents;
+  mci.userdata1 = &state;
+  mci.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void* ud1, void*) {
+    auto* s = static_cast<MapState*>(ud1);
+    s->ok = (status == WGPUMapAsyncStatus_Success);
+    s->done = true;
+  };
+  wgpuBufferMapAsync(staging, WGPUMapMode_Read, 0, total, mci);
+  while (!state.done) wgpuInstanceProcessEvents(gpu.instance);
+
+  bool ok = false;
+  if (state.ok) {
+    const void* src = wgpuBufferGetConstMappedRange(staging, 0, total);
+    if (src) {
+      out.resize(total);
+      std::memcpy(out.data(), src, total);
+      ok = true;
+    }
+    wgpuBufferUnmap(staging);
+  }
+  wgpuBufferDestroy(staging);
+  wgpuBufferRelease(staging);
+  return ok;
+}
+
+// Mirrors readbackCanvas() exactly (same RGBA8 format, same blocking-map
+// technique), reading graded_ instead of canvas_.
+bool PaintSim::readbackGraded(GpuContext& gpu, std::vector<uint8_t>& out) {
+  const uint32_t bytesPerRow = width_ * 4;  // 256-aligned for any width we use
+  if (bytesPerRow % 256 != 0) {
+    std::fprintf(stderr, "[sim] readback needs a width multiple of 64\n");
+    return false;
+  }
+  const uint64_t total = static_cast<uint64_t>(bytesPerRow) * height_;
+
+  WGPUBufferDescriptor bd = {};
+  bd.label = sv("graded readback");
+  bd.size = total;
+  bd.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+  WGPUBuffer staging = wgpuDeviceCreateBuffer(gpu.device, &bd);
+
+  WGPUTexelCopyTextureInfo srcTex = {};
+  srcTex.texture = graded_;
   srcTex.aspect = WGPUTextureAspect_All;
 
   WGPUTexelCopyBufferInfo dstBuf = {};
@@ -976,6 +1187,7 @@ void PaintSim::shutdown() {
   }
   if (composite_) { wgpuRenderPipelineRelease(composite_); composite_ = nullptr; }
   if (grayscalePipeline_) { wgpuRenderPipelineRelease(grayscalePipeline_); grayscalePipeline_ = nullptr; }
+  if (gradePipeline_) { wgpuRenderPipelineRelease(gradePipeline_); gradePipeline_ = nullptr; }
 }
 
 PaintSim* ensurePaintSim(std::unique_ptr<PaintSim>& sim, GpuContext& gpu,

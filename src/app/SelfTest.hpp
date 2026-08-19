@@ -455,4 +455,46 @@ bool runOpStackTest();
 //    kernel in isolation.
 bool runLutBakeTest(GpuContext& gpu);
 
+// Headless check on the Apply pass (PLAN.md Phase 3 step 6, "shaper ->
+// 3-D LUT fetch -> un-shape"): sim::PaintSim::updateGradePreview() +
+// shaders/grade_blit.wgsl, targeting the live simulation canvas (a
+// deliberate fork decision -- see PaintSim.hpp's own doc comment on
+// updateGradePreview()). Needs a real `gpu`/`sim` -- the same PaintSim
+// instance every other PaintSim-backed --selftest case in this file
+// already shares.
+//
+// See SelfTest.cpp for the full breakdown; in short:
+//  - Builds a one-op OpStack (Saturation, scale 0.3 -- the same value
+//    ui/MacPaintUI.cpp's "Test Grade (debug)" toggle uses), bakes and
+//    blits it via updateGradePreview() over a known, deterministic
+//    unpainted canvas (blank paper substrate only -- sim::PaintSim's
+//    procedurally generated paper_ field never changes after init()),
+//    and checks the graded readback at a handful of hand-picked canvas
+//    pixels against an independent CPU reference.
+//  - That CPU reference computes the *exact* trilinear interpolation of
+//    the LUT's 8 surrounding corner texels (each corner independently
+//    simulating the same half-precision ping-pong round trip
+//    runLutBakeTest()'s own simulateBakeCpu() does), rather than only
+//    comparing against an exact-grid-cell value -- see SelfTest.cpp for
+//    why: sim::PaintSim's canvas_ is only reachable through the real
+//    solver/composite pipeline, so unlike runLutBakeTest() (which can
+//    freely pick any LUT grid cell to check), there is no way to force
+//    an arbitrary, precisely grid-aligned byte value onto it. An exact
+//    interpolation reference is correct for any input coordinate, not
+//    an approximation that only holds near a grid line, so it still
+//    "eliminates the variable you're not testing" the same way
+//    runLutBakeTest()'s grid-cell picks do, just by a different route.
+//  - An empirically measured residual tolerance, following the same
+//    "measure, don't guess" discipline runLutBakeTest()'s own
+//    kResidualTol derivation used -- expected larger than LutBake's own
+//    2e-3, since this pass adds the graded_ texture's own RGBA8Unorm
+//    quantization on top of the LUT's rgba16float one.
+//  - Version-gating: two calls with an unchanged OpStack stay
+//    byte-identical; mutating the OpStack (setOp) changes the graded
+//    output, proving the version-bump-triggers-rebake path is exercised
+//    for real (not merely that the skip branch was taken, which isn't
+//    instrumented and isn't what this phase's Verify criterion needs at
+//    the --selftest level).
+bool runApplyPassTest(GpuContext& gpu, PaintSim& sim);
+
 }  // namespace np

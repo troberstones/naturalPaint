@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "color/LutBake.hpp"
+#include "core/OpStack.hpp"
 #include "core/SelectionMask.hpp"
 #include "gfx/Context.hpp"
 #include "gfx/Wgpu.hpp"
@@ -241,6 +243,69 @@ class PaintSim {
   void updateGrayscalePreview(GpuContext& gpu);
   WGPUTextureView grayscaleView() const { return grayscaleView_; }
 
+  // PLAN.md Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch ->
+  // un-shape"). Grades canvasView_ through a color/LutBake-baked
+  // color::Lut3D and shaders/grade_blit.wgsl's trilinear-filtered 3-D
+  // texture sample, into its own separate texture (gradedView_) --
+  // exactly the same "never touch canvas_" discipline
+  // updateGrayscalePreview() above already established, for the same
+  // reason: canvas_ is the document's actual rendering, and grading here
+  // is view state layered on top of it, not document state.
+  //
+  // *** Deliberate, narrow target: the live simulation canvas, not
+  // core::Document *** -- this fork (grade sim::PaintSim's canvas_ vs.
+  // grade a core::Document/TiledDocumentView) was presented explicitly
+  // and decided in favour of the live canvas; do not redirect this to
+  // core::Document without a fresh product decision. There is no live-
+  // canvas-to-Document bridge in this codebase yet (see
+  // AppState.hpp's CanvasView::grade / AppState::opStack comments, and
+  // every prior Phase-2 step's Findings entries that hit the identical
+  // gap) -- this method grades exactly what the painter sees, nothing
+  // more.
+  //
+  // *** Domain contract *** -- see shaders/grade_blit.wgsl's own header
+  // comment for the full reasoning, restated briefly here: composite.wgsl
+  // hands back an already-clamped-to-[0,1], stylized, display-ish RGB,
+  // not scene-linear HDR light the way color::Shaper/color::LutBake's
+  // design otherwise assumes. This method still follows step 6's literal
+  // "shaper -> 3-D LUT fetch -> un-shape" wording as a numerical
+  // contract: the clamped canvas RGB is treated as shaperEncode's
+  // "linear" input. Consequence, stated plainly: only the lower portion
+  // of the LUT's domain (up to shaperEncode(1.0) ~= 0.5547945) is ever
+  // actually sampled by this pass -- an accepted, documented result of
+  // grading the SDR live canvas rather than a linear scene-referred
+  // Document, not a bug.
+  //
+  // *** Narrow scope: only the OpStack's FIRST run is baked/blitted ***
+  // `opStack.detectRuns()` can in principle return more than one run
+  // (split at a non-PointA entry), but nothing in this codebase
+  // constructs a real non-PointA op with meaningful behaviour yet --
+  // core/OpStack.cpp's own header comment notes SpatialB/StrokeC/BakedD
+  // are selftest-only placeholders -- so in practice there is at most one
+  // run today. This method takes `runs.empty() ? <empty ops, identity> :
+  // runs.front()` and does not attempt to composite multiple runs/
+  // multiple LUT samples in one pass; a future step revisits this if a
+  // second op class ever gains real behaviour.
+  //
+  // Rebakes the LUT only when `opStack.version()` has changed since the
+  // last call (PLAN.md's "rebake on parameter change") -- the draw itself
+  // (an O(1) LUT sample per pixel) is what stays cheap regardless of run
+  // length; baking is what's allowed to cost more, and only pays that
+  // cost when parameters actually changed. A no-op if pipelines/textures
+  // aren't built yet, matching updateGrayscalePreview()'s own guard
+  // shape. Callers (main.cpp, after this frame's PaintSim::frame() has
+  // already run, exactly like updateGrayscalePreview()'s own ordering
+  // requirement) call this once per frame only while
+  // AppState::CanvasView::grade is on.
+  void updateGradePreview(GpuContext& gpu, const OpStack& opStack);
+  WGPUTextureView gradedView() const { return gradedView_; }
+
+  // Blocking copy of gradedView_'s backing texture to RGBA8 host memory --
+  // mirrors readbackCanvas() exactly (same format, same blocking-map
+  // technique), reading graded_ instead of canvas_. Used by --selftest;
+  // slow by design, keep it out of the frame loop.
+  bool readbackGraded(GpuContext& gpu, std::vector<uint8_t>& out);
+
   int jacobiIterations = 40;
   int substeps = 2;
   // Ink gets its own count. The LBE spreads diffusively at nu = (1/omega-1/2)/3,
@@ -303,9 +368,25 @@ class PaintSim {
   // an in-place mutation of canvas_.
   WGPUTexture grayscale_ = nullptr;
   WGPUTextureView grayscaleView_ = nullptr;
+  // Grade preview target (PLAN.md Phase 3 step 6) -- same size/format as
+  // canvas_/grayscale_, populated only by updateGradePreview(), never by
+  // frame()/composite. Same "separate texture, never mutate canvas_"
+  // discipline as grayscale_ immediately above, for the identical reason.
+  WGPUTexture graded_ = nullptr;
+  WGPUTextureView gradedView_ = nullptr;
 
   WGPUSampler linear_ = nullptr;
   WGPUBuffer uniform_ = nullptr;
+
+  // The Apply pass's baked LUT (PLAN.md Phase 3 step 6) -- rebaked only
+  // when core::OpStack::version() changes (see updateGradePreview()'s own
+  // doc comment above). Default-constructed (.texture == nullptr) until
+  // the first call actually bakes one; hasBakedLut_ is the authoritative
+  // flag for "is lut_ currently holding a real GPU resource," since a
+  // default Lut3D and a released one are bit-identical (both null).
+  Lut3D lut_;
+  bool hasBakedLut_ = false;
+  uint64_t lastBakedOpStackVersion_ = 0;
 
   // Indices into pipelines_, in the order buildPipelines() creates them.
   enum Pass { kPaper, kSplat, kUpdateVel, kDivergence, kJacobi, kProject,
@@ -316,6 +397,7 @@ class PaintSim {
   WGPUComputePipeline pipelines_[kPassCount] = {};
   WGPURenderPipeline composite_ = nullptr;
   WGPURenderPipeline grayscalePipeline_ = nullptr;
+  WGPURenderPipeline gradePipeline_ = nullptr;
 
   std::unordered_map<uint64_t, WGPUBindGroup> bindCache_;
 };

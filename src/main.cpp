@@ -279,6 +279,14 @@ int main(int argc, char** argv) {
     // Needs `gpu` for a real device/queue -- genuine compute-shader work,
     // no PaintSim involvement.
     const bool lutBakeOk = np::runLutBakeTest(gpu);
+    // Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch -> un-
+    // shape"): sim::PaintSim::updateGradePreview()'s bake-gate/blit
+    // pipeline against the live simulation canvas, checked against an
+    // independent CPU trilinear-interpolation reference at hand-picked
+    // canvas pixels, plus the version-gating rebake proof. Needs `*s` for
+    // a real PaintSim -- the same shared instance every other PaintSim-
+    // backed --selftest case in this chain already uses.
+    const bool applyPassOk = np::runApplyPassTest(gpu, *s);
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -288,8 +296,8 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && opStackOk && lutBakeOk && strokeSpeedOk &&
-                    idleMemOk && fieldAllocOk;
+                    histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
+                    strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -332,6 +340,30 @@ int main(int argc, char** argv) {
   }
 
   np::AppState st;
+  // PLAN.md Phase 3 step 6 debug scaffolding -- temporary, explicitly NOT
+  // step 8's real op-authoring UI (reorder/toggle/delete/curve widget).
+  // No op-authoring UI exists before step 8, so without this seed nothing
+  // in the interactive app could ever construct a non-empty OpStack, and
+  // the whole Apply pass would stay invisible in the running app --
+  // exactly the situation Phase 3 steps 1-5 and 7 are already in.
+  // ui/MacPaintUI.cpp's "Test Grade (debug)" checkbox flips both of these
+  // fixed ops on/off together via OpStack::setEnabled(), so the grading
+  // preview has one clearly visible combined effect (desaturate 70% +
+  // brighten half a stop) to toggle. Both start disabled; indices 0 and 1
+  // are load-bearing -- MacPaintUI.cpp's checkbox handler hardcodes them.
+  np::Op satOp;
+  satOp.opClass = np::OpClass::PointA;
+  satOp.enabled = false;
+  satOp.pointKind = np::PointOpKind::Saturation;
+  satOp.saturation.scale = 0.3f;
+  st.opStack.add(satOp);
+  np::Op expOp;
+  expOp.opClass = np::OpClass::PointA;
+  expOp.enabled = false;
+  expOp.pointKind = np::PointOpKind::Exposure;
+  expOp.exposure.stops = 0.5f;
+  st.opStack.add(expOp);
+
   st.sim.brushRadius = st.brush.radius;
   // Fixed timestep (PRD H7): the look of a wash should not depend on the
   // frame rate. `st.sim.dt` is set once, here, to the constant physics tick
@@ -526,6 +558,12 @@ int main(int argc, char** argv) {
       // than the previous frame's. Skipped whenever the toggle is off, so
       // it costs nothing then.
       if (st.view.grayscale) sim->updateGrayscalePreview(gpu);
+      // Apply pass (PLAN.md Phase 3 step 6): same ordering requirement as
+      // the grayscale preview immediately above -- must run after this
+      // frame's frame()/depositDab() submissions, not from inside drawUI
+      // (which ran earlier this same iteration). Skipped whenever the
+      // toggle is off, so it costs nothing then.
+      if (st.view.grade) sim->updateGradePreview(gpu, st.opStack);
     }
 
     // ---- present ----
