@@ -418,6 +418,19 @@ int main(int argc, char** argv) {
     // asserts the same answers, in BOTH NP_USE_OIIO configurations. Headless
     // and GPU-free; writes no files.
     const bool blendOk = np::runBlendTest();
+    // Phase 5 step 3 ("Pigment layers -- latent x mass tile storage at f16.
+    // Per-layer op stack applies *after* the latent->RGB projection, so
+    // grading never bakes the latents"; PRD C1, C3, C8, F10, L5): the
+    // 7-channel f16 pigment tile and its exact round trip, the LUT-free
+    // latent->RGB projection, PLAN.md's own Phase 5 verify sentence (blue over
+    // yellow: green under `Mix`, the naive RGB lerp under `Normal`), opacity
+    // proven to be transparency and never mass, a grade proven to leave the
+    // stored latents bit-identical, every other `Mix` combination warned by
+    // name, and a `.npaint` round trip carrying a Pigment layer and an RGB
+    // layer together. Runs, and asserts the correct answers, in BOTH
+    // NP_USE_OIIO configurations. Headless and GPU-free; writes and removes
+    // one selftest_pigment.npaint.
+    const bool pigmentLayerOk = np::runPigmentLayerTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -430,7 +443,7 @@ int main(int argc, char** argv) {
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
-                    blendOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    blendOk && pigmentLayerOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

@@ -130,10 +130,26 @@ struct LayerOpResult {
 std::string defaultNewLayerName(const Document& doc);
 
 // A new, empty RGB layer with `name` and this build's defaults -- the layer
-// `addLayer()` is usually called with. RGB rather than Pigment for exactly the
-// reason `Document::createBlank()` gives: a Pigment layer owns no storage yet,
-// so a new one could not hold a pixel.
+// `addLayer()` is usually called with.
+//
+// Still RGB rather than Pigment after PLAN.md Phase 5 step 3, and the reason
+// changed rather than went away. It used to be "a Pigment layer owns no
+// storage yet, so a new one could not hold a pixel"; a Pigment layer now owns
+// real latent-times-mass storage, projects, blends, mixes and saves. What it
+// still cannot do is receive a brush stroke -- `sim::PaintSim` owns one dense
+// texture and no stroke reaches a `Layer` of any kind -- so a new Pigment
+// layer would be a layer a user could add and then not paint on, while an RGB
+// one is at least what `Document::createBlank()`, image import and `.npaint`
+// load all put content into. PRD's principle 3 ("Pigment by default") lands
+// when the brush does; `Layer::kind`'s own default is already Pigment and was
+// deliberately left there for that day.
 Layer makeRgbLayer(std::string name);
+
+// A new, empty Pigment layer: `pigmentTiles` engaged with zero tiles
+// allocated, matching makeRgbLayer()'s shape and core/Layer.hpp's "populated
+// only for the matching kind" contract, and PRD C2's "tiles allocate only
+// where content exists".
+Layer makePigmentLayer(std::string name);
 
 // Inserts `layer` at `index`, shifting everything from `index` up. `index ==
 // layers.size()` appends (i.e. puts it on top); a larger index is refused by

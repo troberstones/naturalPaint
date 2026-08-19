@@ -4,19 +4,22 @@
 #include <string>
 #include <string_view>
 
+#include "core/OpStack.hpp"
+#include "core/Pigment.hpp"
 #include "core/TileStore.hpp"
 
 // core/Layer (PLAN.md "Phase 2 -- See a file", step 4; CONTEXT.md "Layer
 // kinds"). "Design for N, ship 1": all seven kinds CONTEXT.md names are
 // constructible today -- the enum below has a value for each -- but only
-// `RGB` actually owns pixel storage. The other six (Pigment, Media, Strokes,
-// Adjustment, Text, Flats) are inert placeholders nothing exercises yet:
-// Pigment/Media need the Kubelka-Munk solver's own tile shape (Phase 5+, see
-// Layer::rgbTiles below for why that isn't just "reuse core::Tile"), and
+// `RGB` and, as of PLAN.md Phase 5 step 3, `Pigment` actually own pixel
+// storage. The other five (Media, Strokes, Adjustment, Text, Flats) are inert
+// placeholders nothing exercises yet: Media needs the fluid solver's own
+// per-medium state on top of the pigment tiles this step added, and
 // Adjustment/Text/Strokes/Flats "hold no pixels of their own" per CONTEXT.md
 // and structurally never will -- they'll eventually gain their own
-// parameter-only members (an op stack, a string+font, a Dab list, ...), not
-// tile storage.
+// parameter-only members (a string+font, a Dab list, ...), not tile storage.
+// Adjustment is the closest: it wants exactly the `ops` member below and no
+// tiles, which is Phase 5 step 5's work.
 namespace np {
 
 // LayerKind lives here, not in app/Keymap.hpp where it was first sketched --
@@ -125,32 +128,104 @@ inline constexpr const char* kDefaultBlendName = "normal";
 //            means compositing a group's members offscreen first, which is
 //            Phase 5 step 9's machinery, and this build creates no groups.
 struct Layer {
-  // CONTEXT.md: Pigment is "the default kind for a new layer" -- the
-  // eventual domain default once Pigment layers are real, kept as the
-  // default here even though nothing makes a Pigment layer functional yet,
-  // so this field's meaning doesn't have to change when Phase 5 lands it.
+  // CONTEXT.md: Pigment is "the default kind for a new layer", and PRD's
+  // principle 3 ("Pigment by default. A new layer mixes as paint"). Kept as
+  // the default here since Phase 2, and as of Phase 5 step 3 a default-
+  // constructed Layer of this kind can genuinely hold, project, blend and
+  // save pigment -- it just cannot be painted on, because no brush reaches a
+  // Layer at all. `Document::createBlank()` and `core::makeRgbLayer()` still
+  // hand out RGB layers for that reason, and say so.
   LayerKind kind = LayerKind::Pigment;
 
-  // Pixel storage for the one kind that's real today (RGB: "pixels are
-  // Working space RGBA", CONTEXT.md). Populated only when `kind == RGB`;
-  // std::nullopt for every other kind, including Pigment/Media (not real
-  // yet) and Adjustment/Text/Strokes/Flats (never will hold pixels).
+  // Pixel storage for RGB layers ("pixels are Working space RGBA",
+  // CONTEXT.md). Populated only when `kind == RGB`; std::nullopt for every
+  // other kind, including Pigment (which has `pigmentTiles` below instead)
+  // and Adjustment/Text/Strokes/Flats (which never hold pixels).
   //
   // Deliberately std::optional<TileStore> rather than a mandatory, always-
   // present TileStore member. Two reasons: (1) most layer kinds hold no
   // pixels at all, so a mandatory member would carry TileStore's (currently
   // empty, but not necessarily forever) bookkeeping for kinds that never
   // populate it; (2) more importantly, DESIGN-imaging.md §2's own memory
-  // table gives a future Pigment/Media tile a *different* shape -- 7
-  // channels (c0/c1/c2/mass plus a 3-channel residual) against RGB's 4-
-  // channel rgba16float, i.e. not a core::TileStore<core::Tile> at all.
-  // Hard-wiring this field to today's core::Tile would make it awkward for
-  // whoever adds Pigment/Media layers for real (Phase 5) to give them their
-  // own, differently-shaped tile storage. The natural extension at that
-  // point is a second, similarly-optional member (or a variant) holding the
-  // pigment tile type, populated for Pigment/Media instead of rgbTiles --
-  // not a change to this field's type.
+  // table gives a Pigment/Media tile a *different* shape -- 7 channels
+  // (c0/c1/c2/mass plus a 3-channel residual) against RGB's 4-channel
+  // rgba16float, i.e. not a core::TileStore<core::Tile> at all.
+  //
+  // **Phase 5 step 3 took the extension this comment predicted, verbatim.**
+  // It said: "the natural extension at that point is a second, similarly-
+  // optional member (or a variant) holding the pigment tile type, populated
+  // for Pigment/Media instead of rgbTiles -- not a change to this field's
+  // type." That is exactly `pigmentTiles` below, and this field's type is
+  // unchanged. The second-member form beat a `std::variant` for the same
+  // reason core/OpStack.hpp gives for `Op` not being one: this codebase has
+  // no variant anywhere, `Layer` is already "kind tag plus fields only
+  // meaningful for that kind", and a variant would have made every existing
+  // `layer.rgbTiles.has_value()` site a `std::holds_alternative` rewrite for
+  // no reader benefit.
   std::optional<TileStore> rgbTiles;
+
+  // Pixel storage for Pigment layers: latent x mass at f16, seven channels
+  // per texel (core/Pigment.hpp). Populated only when `kind == Pigment`;
+  // std::nullopt otherwise, and it is an invariant of this struct that at
+  // most one of `rgbTiles` and `pigmentTiles` is engaged.
+  //
+  // **A Pigment layer holds latents, and nothing in this build can paint
+  // one.** `sim::PaintSim` owns one dense texture and a stroke reaches no
+  // `Layer` at all, so the only ways a Pigment layer gets content today are
+  // loading a `.npaint` that has some, or a test writing texels directly.
+  // That gap is Phase 10's ("Paint on it") and is stated here rather than
+  // implied away: the storage, the projection, the compositing, the blending
+  // and the file format are real; the brush is not connected to any of it.
+  //
+  // The Media kind will reuse this member unchanged -- DESIGN-imaging.md
+  // gives Media the same latent-plus-mass tile -- plus per-medium simulation
+  // state that has no home on `Layer` yet. Nothing here anticipates that.
+  std::optional<PigmentTileStore> pigmentTiles;
+
+  // The per-layer, non-destructive grading stack (DESIGN-imaging.md §3's own
+  // Layer diagram: "ops  OpStack -- per-layer, non-destructive").
+  //
+  // **Where an OpStack lives was the ownership decision Phase 4 refused to
+  // guess at, and PLAN.md Phase 5 step 3 is where it is made.**
+  // io/NpaintFile.hpp deferred `np:ops` in exactly those terms: "`core::OpStack`
+  // is real, but it lives on `app::AppState`, not on `core::Layer` or
+  // `core::Document` -- so there is no per-layer op stack to serialise, and
+  // hanging one off Layer here purely to have something to write would be
+  // inventing the very ownership decision Phase 5 step 3 has to make." The
+  // decision: **the layer owns it.** `app::AppState::opStack` stays where it
+  // is and keeps meaning what it meant (the global grade previewed on the GPU
+  // through sim::PaintSim); it is not the same stack and is not migrated here.
+  //
+  // **The ordering this member exists to pin down, which is the load-bearing
+  // sentence of PLAN.md's step 3: the stack applies *after* the latent -> RGB
+  // projection, so grading never bakes the latents.** core/Composite projects
+  // a Pigment layer's (latent, mass) to a premultiplied RGBA texel and *then*
+  // runs this stack over it; the stored latents are untouched by any grade,
+  // for good and for a reason DESIGN-imaging.md §3 states as the document
+  // invariant: "any op that is a linear combination of pixels stays valid in
+  // latent space, and any op that is not, is not" -- levels, curves and every
+  // LUT are in the second column. Applying them to `c0..c2` would not be a
+  // grade of the colour, it would be a different pigment. `--selftest`
+  // asserts the tile's raw half words are bit-identical across a grade.
+  //
+  // It applies to RGB layers too, at the same point in the walk (there the
+  // "projection" is just the tile read), because a per-layer op stack is a
+  // property of a Layer in the design's own diagram and not of Pigment. An
+  // empty stack -- every layer this build creates, and every layer any
+  // `.npaint` written to date carries -- is skipped outright rather than run
+  // as an identity, which is what keeps step 1's byte-identity regression
+  // boundary exact.
+  //
+  // **Not persisted, and that is a deferral with a named blocker rather than
+  // an oversight.** docs/document-format.md stores this as an `np:ops` blob,
+  // and this OpenImageIO drops every array-typed EXR header attribute on
+  // write (measured; io/NpaintFile.hpp's NpaintAttribute has the numbers), so
+  // there is no working blob carrier to put one in. `saveNpaint()` therefore
+  // **warns by name** when a layer's stack is non-empty rather than dropping
+  // it silently (PRD I11). Unblocked by a base64/hex `string` carrier plus a
+  // serialisation for `core::Op`, which is a format decision in its own right
+  // -- and not by this step, which only had to answer *who owns the stack*.
+  OpStack ops;
 
   // The user-facing name. Deliberately NOT unique and deliberately not used
   // to identify anything: docs/document-format.md is explicit that "layer

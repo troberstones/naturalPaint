@@ -9,10 +9,162 @@
 #include "core/Blend.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
+#include "core/Pigment.hpp"
+#include "ops/PointOps.hpp"
 
 // core/Composite (PLAN.md "Phase 5 -- Stack it", step 1: "Multiple layers in
 // `Document`, with reorder, visibility, lock, opacity"; step 2 moved the blend
-// arithmetic out to core/Blend and left the document walk here).
+// arithmetic out to core/Blend and left the document walk here; step 3 gave
+// the walk Pigment layers, the latent -> RGB projection, the per-layer op
+// stack and `Mix`).
+//
+// ==========================================================================
+// Phase 5 step 3 -- Pigment layers, in the order the walk does them
+// ==========================================================================
+//
+// --- 1. The projection, and where the op stack sits relative to it ---------
+//
+// A Pigment texel is a `Latent` plus a `mass` (core/Pigment.hpp). It becomes a
+// premultiplied RGBA texel by
+//
+//     rgb   = latentToRgb(latent)          // straight, [0,1], no LUT needed
+//     texel = (rgb * mass, mass)
+//
+// i.e. **mass is the Pigment layer's alpha**. That is not a convenience: PRD
+// F10 says an eraser "reduces ... Mass on Pigment layers leaving the Latent
+// untouched", so mass is already the coverage-like quantity, and giving it any
+// other role would leave the layer with two.
+//
+// **The op stack runs after that projection, and that is the load-bearing
+// sentence of PLAN.md's step 3.** `Layer::ops` is applied to the *projected*
+// premultiplied RGBA, never to `c0..c2` or to the residual, so no grade ever
+// reaches stored latents -- `--selftest` asserts the tile's raw half words are
+// bit-identical across a grade rather than arguing it. The reason is
+// DESIGN-imaging.md §3's own document invariant: "any op that is a linear
+// combination of pixels stays valid in latent space, and any op that is not,
+// is not", and its table puts levels, curves and every LUT in the second
+// column. A curve applied to a pigment weight is not a graded colour, it is a
+// different pigment -- and it would be irreversible, because the layer would
+// no longer hold what the brush deposited.
+//
+// The stack applies to RGB layers at the same point (there the "projection" is
+// just the tile read), because DESIGN-imaging.md §3's Layer diagram gives
+// *every* layer an `ops` member. An **empty** stack is skipped outright rather
+// than run as an identity: `applyPointOpsPremultiplied()` un-premultiplies and
+// re-premultiplies, which is a divide and a multiply and therefore not
+// bit-exact, and step 1's byte-identity regression boundary is asserted at
+// zero tolerance. Every layer this build creates has an empty stack, and so
+// does every layer in every `.npaint` written to date.
+//
+// Only `OpClass::PointA` entries are applied, because they are the only class
+// with an implementation anywhere in this codebase (core/OpStack.hpp says so);
+// a SpatialB/StrokeC/BakedD entry occupies its slot and contributes nothing.
+//
+// --- 2. `Mix`, and why it is a *pair* rather than an accumulator ----------
+//
+// PRD C3 (P0): "KM mixing between layers is the opt-in `Mix` blend mode". PRD
+// L5: "`Mix` appears in the blend dropdown only between two Pigment layers",
+// which docs/ui.md §3.4 states as "both the layer and the one beneath it".
+//
+// So `Mix` is defined on a **pair**: the layer, and the Pigment layer directly
+// beneath it. `core::mixPairing()` (core/Blend) computes which layers pair
+// with which, greedily from the bottom, and this walk composites a mixed pair
+// as one unit -- the lower layer is *not* composited separately, because the
+// mix replaces both of them rather than sitting over one.
+//
+// Concretely, per texel, with `low`/`up` the two Pigment texels:
+//
+//     t     = up.mass                        // the mixing weight is MASS
+//     Lmix  = mixLatents(low.latent, up.latent, t)
+//     mmix  = up.mass + low.mass*(1 - up.mass)   // coverage, union'd as `over`
+//
+// and the three projections that the coverages then combine (§3 below).
+//
+// **The weight is mass, not opacity**, and that is the whole of what makes
+// PLAN.md's verify sentence work: an opaque blue over yellow is blue, because
+// opaque paint covers; blue at mass 0.5 over yellow is green, because half a
+// mass of blue pigment mixed with a mass of yellow pigment *is* green. That is
+// DESIGN-imaging.md §3's own `latent_over·α + latent_under·(1−α)` with α the
+// upper layer's coverage, and its own worked example ("gives green for
+// blue-at-50%-over-yellow").
+//
+// **What is deliberately not built: chains.** Three Pigment layers, the top
+// two both `mix`, pairs (0,1) and leaves the top one unpaired -- it is warned
+// about by name and composited as `over`, the same contract this file has
+// applied to an unimplementable blend since step 1. Making chains associative
+// means carrying a *canvas-sized latent accumulator* through the walk (7
+// floats per pixel, 117 MiB for a 2048x2048 document) so that a mixed result
+// can itself be mixed into; and it means answering what a mid-chain layer's
+// opacity fade -- which happens in projected RGB, because opacity is
+// transparency -- does to a state that has to stay latent to be mixed again.
+// Neither is a small question, neither is asked by PRD C3 or L5, and the pair
+// costs **no extra memory at all**: both layers' tiles are read directly. A
+// stated limit that warns beats an approximation that does not.
+//
+// --- 3. Opacity is transparency, on a mixed pair too ----------------------
+//
+// PRD C3 again: "Layer opacity means transparency on **every** kind". The trap
+// this step had to avoid is that the obvious way to fade a `Mix` layer -- scale
+// the mixing weight `t` by the layer's opacity -- turns opacity into *mass*:
+// it would change the pigment mixture, so dragging opacity down would change
+// the mixed colour's hue rather than let the backdrop show through. `t` is
+// therefore untouched by opacity, and the fade happens on the projected RGBA.
+//
+// Writing `covLow`/`covUp` for the two layers' `layerCoverage()`, and
+// `Plow`/`Pup`/`Pmix` for the three graded projections (lower alone, upper
+// alone, and the mixed pair), the pair contributes
+//
+//   P =        covLow *      covUp  * Pmix
+//     +        covLow * (1 - covUp) * Plow
+//     + (1 -   covLow)*      covUp  * Pup
+//
+// -- each layer independently either participates or does not, weighted by its
+// own coverage, and the fourth combination (neither) contributes nothing. The
+// three corners are the three things PRD C3 requires and `--selftest` asserts
+// each of them:
+//
+//   covUp  = 0  ->  covLow*Plow   : the mixing layer is *absent*, bit-for-bit
+//                                   what the document composites to with that
+//                                   layer deleted.
+//   covLow = 0  ->  covUp*Pup     : hiding the lower layer leaves the upper
+//                                   one visible and unmixed, rather than
+//                                   blanking the pair.
+//   both   = 1  ->  Pmix          : the full Kubelka-Munk mix.
+//
+// That form is not invented for `Mix`; it is what opacity already does. For
+// `over`, `lerp(dst, over(src, dst), o)` is **algebraically identical** to
+// `over(o*src, dst)` -- both come to `o*src + dst*(1 - o*src.a)` -- so "fade
+// the layer's whole effect back toward the backdrop" and "scale the source's
+// coverage" are the same operation wherever both are defined. `--selftest`
+// asserts that identity numerically, because it is the argument for using the
+// fade where only the fade is available.
+//
+// Two consequences worth stating: the stored `pig.m` is **never** written by
+// opacity (asserted by `memcmp` of the tile's raw half words), and a Pigment
+// layer's opacity behaves exactly like an RGB layer's, because for a non-mixed
+// Pigment layer the walk multiplies the projected premultiplied texel by
+// `layerCoverage()` and nothing else -- the identical line RGB layers take.
+//
+// --- 4. Every other combination, stated rather than left to be found ------
+//
+//   Pigment under `over`/plus/multiply/screen/min/max: projected first, then
+//     handed to `blendPixel()` like any other premultiplied texel. A blend
+//     mode is defined on colour, and after the projection a Pigment layer *is*
+//     colour.
+//   Pigment against an RGB layer: the same. No latent ever crosses an RGB
+//     layer, which is DESIGN-imaging.md §3's "the stack is one-way" holding
+//     automatically rather than by a rule -- this walk carries no latent in
+//     its accumulator at all, only the pairwise read.
+//   `Mix` where L5 does not hold (on an RGB layer, on the bottom layer, over a
+//     non-Pigment layer, or as the upper half of a chain): composited as
+//     `over`, warned by name, never silently, never refused. It cannot be set
+//     through `core::setLayerBlend()` -- that refuses through the same
+//     predicate -- so it can only arrive from a file, where PRD I10 requires
+//     it be carried verbatim rather than coerced.
+//   A Pigment layer with `pigmentTiles == nullopt`, or an RGB layer with
+//     `rgbTiles == nullopt`: contributes nothing, exactly as an empty store
+//     would.
+//   Media/Strokes/Adjustment/Text/Flats: still skipped. None owns storage.
 //
 // --- Why this module exists at all ----------------------------------------
 //
@@ -48,16 +200,17 @@
 // this build cannot honour produces.
 //
 // Not here, on purpose:
-//   - The blend arithmetic (core/Blend).
+//   - The blend arithmetic (core/Blend), including `mixLatents()` itself --
+//     this file owns which two texels get mixed and what happens to the
+//     result, not the lerp.
+//   - The latent -> RGB projection (core/Pigment).
 //   - Layer masks (step 4), clipping masks (step 9), adjustment layers
 //     (step 5) and groups. `Layer::parent` is still carried and never acted
 //     on: this build creates no groups, and honouring a parent link means
 //     compositing a group's members into an offscreen buffer first, which is
 //     step 9's machinery, not this step's.
-//   - Pigment/Media layers. They own no tile storage yet (core/Layer.hpp), so
-//     they contribute nothing and are skipped exactly as before. That is also
-//     why a `Mix` layer never reaches the arithmetic: PRD L5 restricts `Mix`
-//     to a Pigment layer over a Pigment layer, and neither holds a texel.
+//   - Media layers. They will reuse the Pigment tile plus per-medium state
+//     that has no home on `Layer` yet, so they are still skipped.
 //
 // --- Linear light, premultiplied -----------------------------------------
 //
@@ -123,7 +276,44 @@ float layerCoverage(const Layer& layer) noexcept;
 //
 // Names the layer by index, by its user-facing name when it has one, and by
 // the blend it asked for -- the io/Export refusal style, applied to a warning.
-std::string unimplementedBlendWarning(size_t layerIndex, const Layer& layer);
+//
+// `mixReason`, when non-empty, is the specific reason a `mix` layer could not
+// be paired (it is not a Pigment layer, there is nothing beneath it, the layer
+// beneath is not Pigment, or the layer beneath is already the lower half of
+// another pair). It is computed by the walk, which knows the document, rather
+// than guessed at here from a Layer alone.
+std::string unimplementedBlendWarning(size_t layerIndex, const Layer& layer,
+                                      const std::string& mixReason = {});
+
+// The enabled `OpClass::PointA` entries of `ops`, in stack order, each already
+// bound to its own params -- `core::OpStack::detectRuns()`'s output flattened,
+// which is exactly what a per-texel grade needs and is resolved **once per
+// layer** rather than per texel (building a `PointOp` allocates a closure).
+//
+// Returns an empty vector for an empty stack, and callers must treat empty as
+// "do nothing at all" rather than "apply nothing": see this header's §1 on why
+// running `applyPointOpsPremultiplied()` with no ops is not the identity.
+std::vector<PointOp> layerPointOps(const OpStack& ops);
+
+// `premultiplied` graded by `ops`, or **bit-identically** `premultiplied` when
+// `ops` is empty. The one place this codebase decides that an empty op stack
+// costs nothing and changes nothing.
+std::array<float, 4> gradedPremultiplied(const std::array<float, 4>& premultiplied,
+                                         const std::vector<PointOp>& ops);
+
+// The latent -> RGB projection of one Pigment texel, as a **premultiplied**
+// linear-light RGBA texel: `(latentToRgb(latent) * mass, mass)`. See this
+// header's §1 on why mass is the alpha.
+std::array<float, 4> projectPigmentTexel(const PigmentTexel& texel) noexcept;
+
+// One texel of a mixed Pigment pair, premultiplied, with both layers' op
+// stacks and both layers' coverages already applied -- the `P` of this
+// header's §3, in one function so that the flattener and the eyedropper cannot
+// disagree about what a `Mix` layer looks like.
+std::array<float, 4> mixedPairTexel(const PigmentTexel& lower,
+                                    const std::vector<PointOp>& lowerOps, float lowerCoverage,
+                                    const PigmentTexel& upper,
+                                    const std::vector<PointOp>& upperOps, float upperCoverage);
 
 // Composites every RGB-kind layer of `doc` **bottom to top** into one
 // premultiplied, linear-light RGBA buffer of `doc.width * doc.height * 4`

@@ -1147,4 +1147,55 @@ bool runLayerStackTest();
 //    -- yellow mixed with blue giving green, measurably unlike the RGB lerp.
 bool runBlendTest();
 
+// PLAN.md Phase 5 step 3 -- "Pigment layers -- latent x mass tile storage at
+// f16. Per-layer op stack applies *after* the latent->RGB projection, so
+// grading never bakes the latents." PRD C1, C3 (P0), C8, F10, L5.
+//
+// Runs, and asserts the same answers, in BOTH NP_USE_OIIO configurations; the
+// `.npaint` block asserts io/NpaintFile's own named refusal in the OFF build
+// instead of a round trip. Headless and GPU-free. Writes and removes one
+// `selftest_pigment.npaint`. Loads the real Mixbox LUT (NP_MIXBOX_LUT) so
+// every colour claim is against measured pigment data.
+//
+// Sections:
+//  - **The tile**: 7 channels and 224 KiB against an RGBA tile's 128 KiB,
+//    allocate-on-write and query-without-allocating from the same
+//    `TileStoreOf` template, an untouched texel reading mass 0, a dyadic
+//    latent round-tripping through f16 storage EXACTLY, and a real Mixbox
+//    latent doing so within the derived 2^-11 relative bound (printed).
+//  - **The projection**: `latentToRgb(rgbToLatent(p)) == p` against the real
+//    LUT after the polynomial moved from paint/Palette into core/Pigment, and
+//    the projection proven to need no LUT at all.
+//  - **PLAN.md's own Phase 5 verify sentence, as a first-class assertion with
+//    printed values**: blue at mass 0.5 on a Pigment layer over yellow gives
+//    GREEN under `Mix`, and under `Normal` gives exactly the naive RGB lerp --
+//    the muddy answer PRD §2 says Photoshop gives. Plus the mixed colour
+//    checked against `latentToRgb(mixLatents(low, up, up.mass))`, which is
+//    what would catch a wrong mixing weight.
+//  - **Opacity is transparency, not mass**: the tiles' raw half words proven
+//    bit-identical across a composite at any opacity; opacity 0 byte-identical
+//    to the layer being deleted; hiding the *lower* layer leaving the mixing
+//    one visible and unmixed; half the opacity measurably different from half
+//    the mass; and the `lerp(dst, blend(src,dst), o) == blend(o*src, dst)`
+//    identity that justifies the coverage form used on a mixed pair.
+//  - **The op stack after the projection**: a grade leaving the stored latents
+//    bit-identical (memcmp), the composited colour proven to be the grade *of
+//    the projection*, a negative control showing the other order is a
+//    different colour, a disabled op proven byte-identical, and the same
+//    member working on an RGB layer.
+//  - **Every other `Mix` combination**: over an RGB layer, on the bottom
+//    layer, and chained three deep -- each composited as `over` and warned by
+//    name, with the greedy bottom-up pairing asserted directly.
+//  - **The probe and the flattener agreeing** on a mixed pair, and
+//    single-layer probing of a Pigment layer.
+//  - **The regression boundary**: a hidden Pigment layer contributing
+//    byte-identically nothing to an RGB document, with a negative control.
+//  - **The `.npaint` round trip** for a document holding both kinds: three
+//    parts, every pigment tile bit-identical, `res.R` coming back as `res.R`
+//    (OpenEXR sorts channel names, so the reader matches by name), metadata
+//    round-tripping, the reloaded document compositing byte-identically, the
+//    `np:basis` mismatch refusal docs/document-format.md §3.3 asks for, and
+//    the named warning for an op stack the format cannot yet carry.
+bool runPigmentLayerTest();
+
 }  // namespace np

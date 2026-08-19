@@ -100,18 +100,41 @@ class Tile {
 static_assert(sizeof(Tile) == 128 * 1024,
              "one 128x128 rgba16float tile must be exactly 128 KiB (DESIGN-imaging.md §2)");
 
-// Sparse hash map from TileCoord to Tile. Keyed with Tile.hpp's
+// Sparse hash map from TileCoord to a tile of type `T`. Keyed with Tile.hpp's
 // std::hash<TileCoord> specialization -- that's exactly what it exists for
 // (a bare packed() key would leave one 32-bit half zero for single-row/
 // column tile sets, which is common: a tall document, or a stroke that
 // only moves along one axis).
-class TileStore {
+//
+// **Why this became a template at PLAN.md Phase 5 step 3, and why the name
+// `TileStore` survived it.** That step needs a second, differently-shaped
+// tile: core/Pigment's 7-channel f16 `PigmentTile`, which core/Layer.hpp
+// predicted in advance ("Pigment/Media need a *different* shape -- 7 channels
+// ... i.e. not a `core::TileStore<core::Tile>` at all"). The map's own
+// behaviour -- allocate on write, query without allocating, iterate only what
+// exists -- is identical for both, and a copy-pasted sibling class would be
+// two implementations of the thing PLAN.md step 1 refused to have two of. So
+// the map is a template and `TileStore` is an alias of its `Tile`
+// instantiation: **every existing use site compiles unchanged**, which matters
+// because `TileStore` appears by name in io/TileResidency, io/NpaintFile,
+// io/ImageIO, core/Probe, core/Histogram, core/Layer and app/DocumentLifecycle
+// and none of those has any business knowing a template exists.
+//
+// Naming the template `TileStoreOf<T>` rather than `TileStore<T>` is what
+// makes that possible -- a class template *called* `TileStore` would force
+// every one of those sites to say `TileStore<Tile>`, which is churn with no
+// reader benefit. Step 4's single-channel mask store is the next instantiation
+// and needs nothing new here.
+template <class T>
+class TileStoreOf {
  public:
-  // Finds the tile at `coord`, allocating a zero-initialized one (128 KiB)
-  // if it doesn't exist yet. This is the "allocate on write" requirement:
-  // every write path (deposit, import-decode, ...) goes through here, and
-  // never through find() below.
-  Tile& getOrCreate(TileCoord coord) { return tiles_[coord]; }
+  using TileType = T;
+
+  // Finds the tile at `coord`, allocating a zero-initialized one if it
+  // doesn't exist yet (128 KiB for a `Tile`, 224 KiB for a `PigmentTile`).
+  // This is the "allocate on write" requirement: every write path (deposit,
+  // import-decode, ...) goes through here, and never through find() below.
+  T& getOrCreate(TileCoord coord) { return tiles_[coord]; }
 
   // Finds the tile at `coord` WITHOUT allocating one if it's absent --
   // returns nullptr rather than default-constructing a tile. This is the
@@ -119,11 +142,11 @@ class TileStore {
   // would silently allocate a fresh 128 KiB tile on every miss (that's
   // exactly what operator[] does), which is precisely the bug PLAN.md's
   // wording calls out.
-  const Tile* find(TileCoord coord) const noexcept {
+  const T* find(TileCoord coord) const noexcept {
     const auto it = tiles_.find(coord);
     return it == tiles_.end() ? nullptr : &it->second;
   }
-  Tile* find(TileCoord coord) noexcept {
+  T* find(TileCoord coord) noexcept {
     const auto it = tiles_.find(coord);
     return it == tiles_.end() ? nullptr : &it->second;
   }
@@ -135,14 +158,20 @@ class TileStore {
   // range-for works: `for (const auto& [coord, tile] : store) ...`.
   // Nothing here iterates a bounding rectangle or a canvas size; there is
   // no such thing at this layer, only the sparse set of tiles that exist.
-  using Map = std::unordered_map<TileCoord, Tile>;
-  Map::iterator begin() noexcept { return tiles_.begin(); }
-  Map::iterator end() noexcept { return tiles_.end(); }
-  Map::const_iterator begin() const noexcept { return tiles_.begin(); }
-  Map::const_iterator end() const noexcept { return tiles_.end(); }
+  using Map = std::unordered_map<TileCoord, T>;
+  typename Map::iterator begin() noexcept { return tiles_.begin(); }
+  typename Map::iterator end() noexcept { return tiles_.end(); }
+  typename Map::const_iterator begin() const noexcept { return tiles_.begin(); }
+  typename Map::const_iterator end() const noexcept { return tiles_.end(); }
 
  private:
   Map tiles_;
 };
+
+// The 4-channel rgba16float store every existing caller means by `TileStore`.
+// The `PigmentTile` instantiation is `PigmentTileStore`, declared in
+// core/Pigment.hpp beside the tile it stores rather than here, so this header
+// keeps knowing nothing about pigment.
+using TileStore = TileStoreOf<Tile>;
 
 }  // namespace np

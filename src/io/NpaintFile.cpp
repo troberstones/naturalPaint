@@ -6,8 +6,13 @@
 #include <cstdio>
 #include <cstring>
 
+#include <array>
+#include <optional>
+
+#include "core/Composite.hpp"
 #include "core/Half.hpp"
 #include "core/Layer.hpp"
+#include "core/Pigment.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 #include "io/Export.hpp"
@@ -42,6 +47,36 @@ constexpr const char* kAttrLocked = "np:locked";
 constexpr const char* kAttrParent = "np:parent";
 
 constexpr const char* kCompositePartName = "composite";
+
+// docs/document-format.md's channel names for a Pigment part, in its own
+// order: the baked RGBA projection any other tool renders, then the four
+// `pig.*` channels, then the three `res.*` ones. Seven latent channels, which
+// is core/Pigment's `PigmentTile::kChannels`, plus the four derived ones.
+//
+// The **reader matches by name, never by position.**
+//
+// > **Measured, 2026-08-19, while implementing this: the order does survive a
+// > round trip through this OpenImageIO, and it survives for a reason nobody
+// > should rely on.** A part written with the eleven names above reads back as
+// > exactly `R G B A pig.c0 pig.c1 pig.c2 pig.m res.R res.G res.B`. That is
+// > *not* what OpenEXR stores -- `Imf::ChannelList` is a name-sorted map, in
+// > which `res.B` precedes `res.G` precedes `res.R` -- so what comes back is
+// > OpenImageIO's own normalisation, which appears to apply its RGBA-ordering
+// > heuristic per EXR layer name (`res.R/G/B` gets sorted like an RGB triple,
+// > `pig.c0..m` alphabetically, which happens to match).
+//
+// So a positional read would work today, by luck, on this version of this
+// library, and would silently swap the residual's red and blue the moment any
+// of that changed -- with no crash and no warning, only wrong colour. Matching
+// by name costs one `std::find` per channel, once per part.
+constexpr const char* kPigmentChannelNames[] = {"R",       "G",       "B",     "A",
+                                                "pig.c0",  "pig.c1",  "pig.c2", "pig.m",
+                                                "res.R",   "res.G",   "res.B"};
+constexpr size_t kPigmentChannelCount = sizeof(kPigmentChannelNames) / sizeof(char*);
+static_assert(kPigmentChannelCount == 11,
+              "a Pigment part is R G B A plus core/Pigment's seven stored channels");
+// Where each of PigmentTile's seven stored channels sits in the list above.
+constexpr size_t kPigmentLatentFirst = 4;
 
 bool isDocumentAttributeRecognised(const std::string& name) {
   return name == kAttrVersion || name == kAttrBasis || name == kAttrTileSize;
@@ -172,7 +207,8 @@ struct TileBounds {
   int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;  // inclusive, in tile coords
 };
 
-TileBounds occupiedTileBounds(const TileStore& tiles) {
+template <class StoreT>
+TileBounds occupiedTileBounds(const StoreT& tiles) {
   TileBounds b;
   for (const auto& [coord, tile] : tiles) {
     (void)tile;
@@ -239,6 +275,74 @@ NpaintRawPart buildLayerPart(const Layer& layer, const std::string& partName) {
   return part;
 }
 
+// Packs a Pigment layer's tiles into one 11-channel part.
+//
+// **The fidelity claim splits in two here, and the split is the point.** The
+// seven `pig.*`/`res.*` channels are `core::PigmentTile`'s own `uint16_t` half
+// words, moved without a float ever appearing -- the same "HALF in, HALF out,
+// no conversion" property `buildLayerPart()` above has for RGBA, so
+// `--selftest` asserts a Pigment layer's latents round-trip with **zero**
+// tolerance. The four R/G/B/A channels are a *derived* baked projection
+// (docs/document-format.md's "R G B A <- baked projection"), computed in float
+// and clamped on write like part 0 is, and the reader **ignores them
+// completely** for exactly the reason it ignores part 0: a derived product
+// treated as a source makes someone else's stale bake into this
+// application's truth.
+//
+// The bake is the projection of the stored latents and deliberately does
+// **not** include the layer's op stack, even though part 0's composite does.
+// The op stack is not persisted (see the header's deferral list), so baking a
+// grade into a layer part would put a look in the file that the reloaded
+// document could not reproduce or undo.
+NpaintRawPart buildPigmentLayerPart(const Layer& layer, const std::string& partName) {
+  NpaintRawPart part;
+  part.name = partName;
+  part.channelNames.assign(kPigmentChannelNames, kPigmentChannelNames + kPigmentChannelCount);
+  part.sampleTypeName = "half";
+  part.tileWidth = kTileSize;
+  part.tileHeight = kTileSize;
+
+  const PigmentTileStore& tiles = *layer.pigmentTiles;
+  const TileBounds b = occupiedTileBounds(tiles);
+  const int32_t tileX0 = b.any ? b.minX : 0;
+  const int32_t tileY0 = b.any ? b.minY : 0;
+  const int32_t tilesW = b.any ? (b.maxX - b.minX + 1) : 1;
+  const int32_t tilesH = b.any ? (b.maxY - b.minY + 1) : 1;
+
+  part.x = tileX0 * kTileSize;
+  part.y = tileY0 * kTileSize;
+  part.width = tilesW * kTileSize;
+  part.height = tilesH * kTileSize;
+
+  const size_t rowWords = static_cast<size_t>(part.width) * kPigmentChannelCount;
+  part.rawPixels.assign(rowWords * static_cast<size_t>(part.height) * sizeof(uint16_t), 0);
+  auto* words = reinterpret_cast<uint16_t*>(part.rawPixels.data());
+
+  for (const auto& [coord, tile] : tiles) {
+    const size_t col0 = static_cast<size_t>(coord.x - tileX0) * kTileSize;
+    const size_t row0 = static_cast<size_t>(coord.y - tileY0) * kTileSize;
+    const uint16_t* src = tile.data();
+    for (int32_t ty = 0; ty < kTileSize; ++ty) {
+      uint16_t* row = words + (row0 + static_cast<size_t>(ty)) * rowWords;
+      for (int32_t tx = 0; tx < kTileSize; ++tx) {
+        uint16_t* out = row + (col0 + static_cast<size_t>(tx)) * kPigmentChannelCount;
+        const uint16_t* stored =
+            src + (static_cast<size_t>(ty) * kTileSize + static_cast<size_t>(tx)) *
+                      PigmentTile::kChannels;
+        // The seven stored channels: raw half words, in PigmentTile's own
+        // order, which is the format's own order.
+        for (size_t c = 0; c < static_cast<size_t>(PigmentTile::kChannels); ++c)
+          out[kPigmentLatentFirst + c] = stored[c];
+        // The four derived ones.
+        const std::array<float, 4> rgba =
+            projectPigmentTexel(tile.readTexel(PixelCoord{tx, ty}));
+        for (int c = 0; c < 4; ++c) out[c] = compositeFloatToHalf(rgba[c]);
+      }
+    }
+  }
+  return part;
+}
+
 // The exact inverse. `part` has already been checked to be R/G/B/A HALF with
 // a tile-aligned data window.
 void unpackLayerPart(const NpaintRawPart& part, TileStore* tiles) {
@@ -278,6 +382,75 @@ void unpackLayerPart(const NpaintRawPart& part, TileStore* tiles) {
       }
       if (!anyNonZero) continue;
       Tile& tile = tiles->getOrCreate(TileCoord{tileX0 + tx, tileY0 + ty});
+      std::memcpy(tile.data(), scratch.data(), kTileWords * sizeof(uint16_t));
+    }
+  }
+}
+
+// Where each of `kPigmentChannelNames` sits in `part.channelNames`, or an
+// empty optional when any of them is missing. This is the by-name lookup the
+// constant's own comment insists on: OpenEXR sorts a part's channels by name,
+// so the read-back order is `A B G R pig.c0 pig.c1 pig.c2 pig.m res.B res.G
+// res.R` before OpenImageIO's RGBA normalisation, and positional indexing
+// would swap the residual's red and blue without a symptom until someone
+// compared colours.
+std::optional<std::array<size_t, kPigmentChannelCount>> pigmentChannelIndices(
+    const NpaintRawPart& part) {
+  std::array<size_t, kPigmentChannelCount> idx{};
+  for (size_t c = 0; c < kPigmentChannelCount; ++c) {
+    const auto it = std::find(part.channelNames.begin(), part.channelNames.end(),
+                              std::string(kPigmentChannelNames[c]));
+    if (it == part.channelNames.end()) return std::nullopt;
+    idx[c] = static_cast<size_t>(it - part.channelNames.begin());
+  }
+  return idx;
+}
+
+// The inverse of buildPigmentLayerPart(). Reads only the seven stored
+// channels; R/G/B/A are a derived bake and are deliberately discarded, exactly
+// as part 0 is.
+void unpackPigmentLayerPart(const NpaintRawPart& part,
+                            const std::array<size_t, kPigmentChannelCount>& idx,
+                            PigmentTileStore* tiles) {
+  const int32_t tileX0 = part.x / kTileSize;
+  const int32_t tileY0 = part.y / kTileSize;
+  const int32_t tilesW = part.width / kTileSize;
+  const int32_t tilesH = part.height / kTileSize;
+  const size_t channels = part.channelNames.size();
+  const size_t rowWords = static_cast<size_t>(part.width) * channels;
+  const auto* words = reinterpret_cast<const uint16_t*>(part.rawPixels.data());
+  constexpr size_t kTileWords =
+      static_cast<size_t>(kTileSize) * kTileSize * PigmentTile::kChannels;
+
+  std::vector<uint16_t> scratch(kTileWords);
+  for (int32_t ty = 0; ty < tilesH; ++ty) {
+    for (int32_t tx = 0; tx < tilesW; ++tx) {
+      const size_t col0 = static_cast<size_t>(tx) * kTileSize;
+      const size_t row0 = static_cast<size_t>(ty) * kTileSize;
+      for (int32_t r = 0; r < kTileSize; ++r) {
+        const uint16_t* row = words + (row0 + static_cast<size_t>(r)) * rowWords;
+        for (int32_t x = 0; x < kTileSize; ++x) {
+          const uint16_t* in = row + (col0 + static_cast<size_t>(x)) * channels;
+          uint16_t* out = scratch.data() + (static_cast<size_t>(r) * kTileSize +
+                                            static_cast<size_t>(x)) *
+                                               PigmentTile::kChannels;
+          for (size_t c = 0; c < static_cast<size_t>(PigmentTile::kChannels); ++c)
+            out[c] = in[idx[kPigmentLatentFirst + c]];
+        }
+      }
+      // Same rule, same reason as the RGB unpacker: an all-zero pigment tile
+      // is mass 0 with no latent anywhere, which is exactly what an
+      // unallocated tile means, so keeping it would grow a sparse document's
+      // resident cost on every save-and-reopen.
+      bool anyNonZero = false;
+      for (uint16_t w : scratch) {
+        if (w != 0) {
+          anyNonZero = true;
+          break;
+        }
+      }
+      if (!anyNonZero) continue;
+      PigmentTile& tile = tiles->getOrCreate(TileCoord{tileX0 + tx, tileY0 + ty});
       std::memcpy(tile.data(), scratch.data(), kTileWords * sizeof(uint16_t));
     }
   }
@@ -476,24 +649,56 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
                 "all. Use one of: " + losslessCompressorList() + ".");
   }
 
+  bool anyPigmentLayer = false;
   for (size_t i = 0; i < doc.layers.size(); ++i) {
     const Layer& layer = doc.layers[i];
-    if (layer.kind != LayerKind::RGB) {
+    if (layer.kind != LayerKind::RGB && layer.kind != LayerKind::Pigment) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") is a " + layerKindName(layer.kind) +
                   " layer, and this build has no on-disk representation for that kind -- "
-                  "docs/document-format.md stores Pigment and Media layers as `pig.*`/`res.*` "
-                  "latent channels and Strokes layers as an `np:dabs` blob, and core::Layer "
-                  "has neither latent tiles nor a dab list yet (Phase 5 steps 3 and 4). "
-                  "Saving would drop the layer entirely, so nothing was written. Remove the "
-                  "layer, or convert it to an RGB layer, to save this document.");
+                  "docs/document-format.md stores Media layers as `pig.*`/`res.*` latent "
+                  "channels plus an `np:simParams` blob and Strokes layers as an `np:dabs` "
+                  "blob, and core::Layer has neither per-medium simulation state nor a dab "
+                  "list. Saving would drop the layer entirely, so nothing was written. Remove "
+                  "the layer, or convert it to an RGB or Pigment layer, to save this "
+                  "document.");
     }
-    if (!layer.rgbTiles.has_value()) {
+    if (layer.kind == LayerKind::RGB && !layer.rgbTiles.has_value()) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") is RGB-kind but has no tile storage at all (`rgbTiles` is absent), "
                   "which core/Layer.hpp's own contract says cannot happen for an RGB layer. "
                   "Nothing was written; this is a malformed document rather than an "
                   "unsupported one.");
+    }
+    if (layer.kind == LayerKind::Pigment) {
+      if (!layer.pigmentTiles.has_value()) {
+        return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
+                    "\") is Pigment-kind but has no tile storage at all (`pigmentTiles` is "
+                    "absent), which core/Layer.hpp's own contract says cannot happen for a "
+                    "Pigment layer. Nothing was written; this is a malformed document rather "
+                    "than an unsupported one.");
+      }
+      anyPigmentLayer = true;
+    }
+    // PRD I11's softer half. The per-layer op stack has no carrier in this
+    // format yet -- docs/document-format.md stores it as an `np:ops` blob, and
+    // this OpenImageIO drops every array-typed header attribute on write
+    // (measured; see NpaintAttribute) -- so a layer with a non-empty stack is
+    // saved with its pixels and its metadata intact and its grade absent. That
+    // is named here rather than discovered on reload. It is a warning and not
+    // a refusal for the same reason the unimplemented-blend case is: refusing
+    // would make a stack a user built in this session the thing that renders
+    // their document unsaveable.
+    if (layer.ops.size() > 0) {
+      result.warnings.push_back(
+          "layer " + std::to_string(i) + " (\"" + layer.name + "\") carries a " +
+          std::to_string(layer.ops.size()) +
+          "-entry op stack, and this format has no working carrier for one: "
+          "docs/document-format.md stores it as an `np:ops` blob, and this OpenImageIO's "
+          "OpenEXR writer silently drops array-typed header attributes (measured). The "
+          "layer's pixels and every other property are written exactly; the grade is not, "
+          "so reopening this file gives the layer back ungraded. Unblocked by a base64 or "
+          "hex `string` carrier plus a serialisation for core::Op.");
     }
     if (!(layer.opacity >= 0.0f) || layer.opacity > 1.0f) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
@@ -502,6 +707,32 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
                   "on literally, so writing an out-of-range value would put a number in the "
                   "file that no reader -- including this one -- can honour.");
     }
+  }
+
+  // docs/document-format.md §3.3: "a basis mismatch" is one of the things a
+  // save must name rather than degrade silently. Until Phase 5 step 3 this
+  // could not happen -- io/NpaintFile.hpp said so in as many words ("a file
+  // with no latent channels has nothing whose meaning depends on it") -- and
+  // now it can: a document loaded from a file written in another pigment basis
+  // carries latents whose `c0..c2` mean different pigments, and writing this
+  // build's own latents into a file still stamped with that basis would
+  // produce a document that is wrong and says it is right. Refused rather than
+  // warned, because unlike an unimplemented blend this is not an approximation
+  // of the pixels -- it is a mislabelling of what the numbers *are*.
+  //
+  // Only when the document actually has a Pigment layer. An RGB-only document
+  // loaded from a foreign-basis file still round-trips its `np:basis`
+  // untouched (PRD I10), exactly as it did before this step.
+  if (anyPigmentLayer && carry != nullptr && !carry->basis.empty() &&
+      carry->basis != kNpaintPigmentBasis) {
+    return fail(std::string("save refused: this document has Pigment layers whose latents this "
+                            "build produced in the \"") +
+                kNpaintPigmentBasis + "\" basis, but it was loaded from a file declaring "
+                "np:basis \"" + carry->basis +
+                "\", which is preserved verbatim on save (PRD I10). A latent is only "
+                "meaningful in the basis it was fitted in, and silently so -- writing both "
+                "into one file would produce a document no reader could interpret correctly. "
+                "Nothing was written. docs/document-format.md §3.3 lists exactly this case.");
   }
 
   // Attribute types and part layouts this OpenImageIO cannot actually write
@@ -640,7 +871,9 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
 
   auto appendLayerPart = [&](size_t i) {
     const Layer& layer = doc.layers[i];
-    NpaintRawPart part = buildLayerPart(layer, layerNames[i]);
+    NpaintRawPart part = layer.kind == LayerKind::Pigment
+                             ? buildPigmentLayerPart(layer, layerNames[i])
+                             : buildLayerPart(layer, layerNames[i]);
     part.attributes.push_back(stringAttr(kAttrKind, layerKindName(layer.kind)));
     part.attributes.push_back(stringAttr(kAttrName, layer.name));
     part.attributes.push_back(stringAttr(kAttrBlend, layer.blend));
@@ -786,11 +1019,11 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         result.warnings.push_back(
             "'" + path + "' declares np:basis \"" + a.stringValue + "\", not this build's \"" +
             kNpaintPigmentBasis +
-            "\". Nothing is lost today -- this build writes no pigment latents, so no channel "
-            "in the file depends on the basis -- and the value is preserved verbatim on save. "
-            "It becomes a real refusal once Phase 5 makes latents real "
-            "(docs/document-format.md §3.3 lists a basis mismatch among the things a save "
-            "must name).");
+            "\". Any pigment latents in this file were fitted in that basis, so their "
+            "pig.c0/c1/c2 name different pigments from the ones this build's Mixbox model "
+            "would; the value is preserved verbatim on save. Saving is refused outright if "
+            "the document ends up holding Pigment layers, because one file cannot honestly "
+            "carry latents in two bases (docs/document-format.md §3.3).");
       }
       continue;
     }
@@ -823,12 +1056,22 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     const bool tileAligned = part.width > 0 && part.height > 0 && part.width % kTileSize == 0 &&
                              part.height % kTileSize == 0 && part.x % kTileSize == 0 &&
                              part.y % kTileSize == 0;
-    const bool isRgbLayer = isLayerPartName(part.name) && kind != nullptr &&
-                            kind->type == NpaintAttribute::Type::String &&
+    // A Pigment part: `np:kind = "Pigment"` and, by *name*, every one of
+    // docs/document-format.md's eleven channels in half. Matched by name and
+    // not by position for the reason kPigmentChannelNames gives.
+    const std::optional<std::array<size_t, kPigmentChannelCount>> pigmentIdx =
+        (part.sampleTypeName == "half" && part.channelNames.size() == kPigmentChannelCount)
+            ? pigmentChannelIndices(part)
+            : std::nullopt;
+    const bool namedKind = kind != nullptr && kind->type == NpaintAttribute::Type::String;
+    const bool isRgbLayer = isLayerPartName(part.name) && namedKind &&
                             kind->stringValue == layerKindName(LayerKind::RGB) && rgbaHalf &&
                             tileAligned;
+    const bool isPigmentLayer = isLayerPartName(part.name) && namedKind &&
+                                kind->stringValue == layerKindName(LayerKind::Pigment) &&
+                                pigmentIdx.has_value() && tileAligned;
 
-    if (!isRgbLayer) {
+    if (!isRgbLayer && !isPigmentLayer) {
       std::string reason;
       if (!isLayerPartName(part.name)) {
         reason = "its name is not the L#### form this build gives layer parts";
@@ -836,10 +1079,15 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         reason = "it has no np:kind attribute";
       } else if (kind->type != NpaintAttribute::Type::String) {
         reason = "its np:kind attribute is not a string";
-      } else if (kind->stringValue != layerKindName(LayerKind::RGB)) {
+      } else if (kind->stringValue != layerKindName(LayerKind::RGB) &&
+                 kind->stringValue != layerKindName(LayerKind::Pigment)) {
         reason = "its np:kind is \"" + kind->stringValue +
-                 "\", and this build can only hold RGB layers (see io/NpaintFile.hpp's "
-                 "deferrals)";
+                 "\", and this build can only hold RGB and Pigment layers (see "
+                 "io/NpaintFile.hpp's deferrals)";
+      } else if (kind->stringValue == layerKindName(LayerKind::Pigment)) {
+        reason = "it declares np:kind \"Pigment\" but its channels are not exactly "
+                 "docs/document-format.md's eleven -- R, G, B, A, pig.c0, pig.c1, pig.c2, "
+                 "pig.m, res.R, res.G, res.B -- in half";
       } else if (!rgbaHalf) {
         reason = "its channels are not exactly R/G/B/A in half";
       } else {
@@ -876,9 +1124,15 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     }
 
     Layer layer;
-    layer.kind = LayerKind::RGB;
-    layer.rgbTiles.emplace();
-    unpackLayerPart(part, &*layer.rgbTiles);
+    if (isPigmentLayer) {
+      layer.kind = LayerKind::Pigment;
+      layer.pigmentTiles.emplace();
+      unpackPigmentLayerPart(part, *pigmentIdx, &*layer.pigmentTiles);
+    } else {
+      layer.kind = LayerKind::RGB;
+      layer.rgbTiles.emplace();
+      unpackLayerPart(part, &*layer.rgbTiles);
+    }
 
     if (const NpaintAttribute* a = findAttr(part.attributes, kAttrName);
         a && a->type == NpaintAttribute::Type::String)

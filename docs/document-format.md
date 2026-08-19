@@ -133,6 +133,28 @@ part 4   "S0001"          coverage                   ← a saved selection
   > too. Harmless where the reader's default for that attribute is the empty string
   > (`np:name`, `np:parent`), but it is luck, not design.
 
+> ✅ **Implemented, 2026-08-19, at PLAN.md Phase 5 step 3: a Pigment layer's part is
+> written and read with all eleven channels above.** The seven stored ones (`pig.c0
+> pig.c1 pig.c2 pig.m`, `res.R res.G res.B`) are `core::PigmentTile`'s own `HALF` words
+> moved with no float stage, so `--selftest` asserts them bit-identical at zero tolerance;
+> `R G B A` is the baked projection, written for other tools and **ignored on read**, for
+> the same reason part 0 is. Two notes from doing it:
+>
+> - **The seven channels are six latent floats plus mass, and the fourth pigment weight is
+>   *not* among them.** `np::Latent` holds `c0..c2` and `res.R/G/B`; Mixbox's fourth weight
+>   is `c3 = 1 - (c0+c1+c2)`, derived on every use. `pig.m` is the seventh, and it is not
+>   part of the latent at all — it is the Pigment analogue of alpha, the quantity PRD F10's
+>   eraser reduces. Nothing invents a seventh stored float.
+> - **Channel order on read is OpenImageIO's, not OpenEXR's, and neither is a contract.**
+>   Measured: a part written in the order above reads back in exactly that order — which is
+>   *not* what `Imf::ChannelList` stores (it is a name-sorted map, in which `res.B` precedes
+>   `res.R`), so it is OIIO normalising per EXR layer name. A positional read would work
+>   today by luck and would silently swap the residual's red and blue if that ever changed.
+>   `io/NpaintFile` matches by name.
+>
+> `np:basis` stops being inert here: a document holding Pigment layers whose carried
+> `np:basis` is not this build's is **refused** on save, which is §3.3's own listed case.
+
 - **Every part must agree about being tiled.** Also measured: OpenImageIO cannot write a
   multi-part EXR mixing tiled and scanline parts — it fails partway through with
   `Can't build a TiledOutputFile from a type-mismatched part`. Since part 0 is tiled,

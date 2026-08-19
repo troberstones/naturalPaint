@@ -48,10 +48,12 @@
 //                   ...plus every unrecognised np:* attribute carried
 //                      forward from the file this document was loaded from
 //
-//   part N  "L0001"...    R G B A, HALF, tiled 128x128
+//   part N  "L0001"...    R G B A, HALF, tiled 128x128            (np:kind RGB)
+//                         R G B A pig.c0 pig.c1 pig.c2 pig.m
+//                         res.R res.G res.B, HALF                (np:kind Pigment)
 //                         data window == the bounding box of the layer's
 //                         occupied tiles, tile-aligned
-//           attrs:  np:kind     "RGB"
+//           attrs:  np:kind     "RGB" or "Pigment"
 //                   np:name     the user-facing name (need not be unique)
 //                   np:blend    "normal"
 //                   np:opacity  1.0
@@ -91,15 +93,21 @@
 // each one *safe*: a future writer's `np:comps` blob, or a whole `pig.*`
 // part, survives a load/save through today's build untouched.
 //
-//  * **Pigment/residual latents as named channels** (`pig.c0 pig.c1 pig.c2
-//    pig.m`, `res.R res.G res.B`). Not written, because `core::Layer` has no
-//    latent storage of any kind: `rgbTiles` is a
-//    `std::optional<TileStore>` of 4-channel rgba16float tiles and
-//    core/Layer.hpp says outright that Pigment/Media need "a *different*
-//    shape -- 7 channels ... i.e. not a `core::TileStore<core::Tile>` at
-//    all", which is Phase 5 step 3's work. Writing seven latent channels
-//    today would mean synthesising numbers no part of this application
-//    computed. Unblocked by Phase 5 step 3 giving Layer real latent tiles.
+//  * ~~**Pigment/residual latents as named channels**~~ -- **delivered at
+//    PLAN.md Phase 5 step 3.** A Pigment layer's part carries all eleven
+//    channels docs/document-format.md names, and the seven stored ones
+//    (`pig.c0 pig.c1 pig.c2 pig.m`, `res.R res.G res.B`) are
+//    `core::PigmentTile`'s own half words moved with no float stage, so the
+//    zero-tolerance fidelity claim above covers them exactly as it covers
+//    RGBA. R/G/B/A on such a part is the baked projection the spec asks for,
+//    written for other tools and **ignored on read** for the same reason
+//    part 0 is. Media layers are still refused: they need per-medium
+//    simulation state `core::Layer` has no member for.
+//
+//  * **`np:basis` is now load-bearing, and a mismatch is a refusal.** It was
+//    metadata while this build wrote no latents. A document holding Pigment
+//    layers whose carry declares another basis is refused by name, which is
+//    docs/document-format.md §3.3's own listed case.
 //
 //  * **A `mask` channel per part / layer masks.** Same reason: Phase 5 step 4
 //    ("Layer masks -- single-channel tile store"). There is no mask storage
@@ -111,15 +119,25 @@
 //    anywhere in `core/`. brush/StrokePath emits dabs into the *solver*, not
 //    into a document. Unblocked by a Strokes layer that actually holds dabs.
 //
-//  * **`np:ops` (per layer) and `np:docOps` (document level).** `core::OpStack`
-//    is real, but it lives on `app::AppState`, not on `core::Layer` or
-//    `core::Document` -- so there is no per-layer or per-document op stack to
-//    serialise, and hanging one off Layer here purely to have something to
-//    write would be inventing the very ownership decision Phase 5 step 3
-//    ("Per-layer op stack applies *after* the latent->RGB projection") has to
-//    make. It would also need a blob encoding for `core::Op`, which is a
-//    format decision in its own right. Unblocked by Layer/Document owning an
-//    OpStack.
+//  * **`np:ops` (per layer) and `np:docOps` (document level).** **Half of this
+//    deferral's blocker is gone and half is not, so it is restated rather
+//    than repeated.** The ownership question -- "there is no per-layer op
+//    stack to serialise ... hanging one off Layer here would be inventing the
+//    very ownership decision Phase 5 step 3 has to make" -- is answered:
+//    `core::Layer::ops` exists, step 3 made it, and there is now a real
+//    per-layer stack sitting here unwritten. What still blocks it is the
+//    *carrier*: `np:ops` is a blob, and this OpenImageIO drops array-typed
+//    header attributes on write (measured, see NpaintAttribute), so there is
+//    nothing to put it in. Writing it needs two things this step did not do
+//    -- a base64/hex `string` carrier, and a serialisation for `core::Op`
+//    (six params structs, one of them a variable-length curve), which is a
+//    format decision in its own right and would want its own `np:version`
+//    story. **saveNpaint() therefore warns by name** for every layer with a
+//    non-empty stack rather than dropping it silently (PRD I11), which is the
+//    part of the gap that could be closed here. `np:docOps` is unblocked by
+//    the same carrier plus a document-level stack, which `core::Document`
+//    still does not have (`app::AppState::opStack` is the global grade and
+//    stays there).
 //
 //  * **`np:comps` (layer comps) and `np:paths`.** Phase 5 step 12 and the
 //    paths/vector work respectively. Neither has any in-memory
@@ -150,12 +168,15 @@
 // this -- name the thing, name the reason, name the alternative -- and every
 // refusal below follows it:
 //
-//  * A layer whose `kind` is not RGB. Its pixels (if it ever had any) have no
-//    representation here, per the deferrals above, so writing the file would
-//    drop the layer. The error names the layer's index, its name and its
-//    kind.
-//  * A layer whose `kind` is RGB but whose `rgbTiles` is absent -- malformed
-//    against core/Layer.hpp's own contract.
+//  * A layer whose `kind` is neither RGB nor Pigment. Its pixels (if it ever
+//    had any) have no representation here, per the deferrals above, so
+//    writing the file would drop the layer. The error names the layer's
+//    index, its name and its kind.
+//  * A layer whose `kind` is RGB but whose `rgbTiles` is absent, or Pigment
+//    but whose `pigmentTiles` is absent -- malformed against core/Layer.hpp's
+//    own contract.
+//  * A document with Pigment layers whose carried `np:basis` is not this
+//    build's (docs/document-format.md §3.3).
 //  * An `opacity` outside [0,1].
 //  * A lossy EXR compression, by name. See NpaintSaveOptions::compression.
 //  * A canvas with a non-positive width or height.
@@ -340,14 +361,16 @@ struct NpaintCarry {
   // The file's own `np:basis`, preserved verbatim. Empty means "this build's
   // own" (kNpaintPigmentBasis).
   //
-  // Preserving rather than overwriting is the right call *today* precisely
-  // because this build writes no latents: `np:basis` names the pigment basis
-  // the latent channels are expressed in, and a file with no latent channels
-  // has nothing whose meaning depends on it. When Phase 5 step 3 makes
-  // latents real, a basis mismatch stops being metadata and becomes a
-  // genuine "this save would lose data" case -- docs/document-format.md §3.3
-  // lists "a basis mismatch" alongside the other refusals for that reason --
-  // and this field is where that check will read from.
+  // Preserving rather than overwriting was the right call while this build
+  // wrote no latents. **Phase 5 step 3 made latents real, so this field is
+  // now load-bearing and the check it was reserved for exists**:
+  // `saveNpaint()` refuses a document that holds Pigment layers when this
+  // field names a basis other than `kNpaintPigmentBasis`, because a latent is
+  // only meaningful in the basis it was fitted in and a file cannot honestly
+  // carry two. An RGB-only document still carries a foreign basis through a
+  // load/save untouched, exactly as before -- nothing in such a file depends
+  // on it. docs/document-format.md §3.3 lists "a basis mismatch" alongside
+  // the other refusals for this reason.
   std::string basis;
 
   // The file's own `np:version`, as read. Reported, not written back:
@@ -479,10 +502,15 @@ struct NpaintLoadResult {
 
 // Reads `path` back into a Document plus its carry.
 //
-// A part becomes a `core::Layer` only when it is named `L####`, carries
-// `np:kind = "RGB"`, and its channel list is *exactly* R, G, B, A in HALF.
-// Anything else -- a Pigment part with `pig.*` channels, a group part with no
-// channels, a saved selection, an RGB part a newer build gave a fifth
+// A part becomes a `core::Layer` only when it is named `L####` and either
+// carries `np:kind = "RGB"` with a channel list of *exactly* R, G, B, A in
+// HALF, or carries `np:kind = "Pigment"` with exactly the eleven channels
+// docs/document-format.md names, in HALF, matched **by name** -- measured, the
+// written order does come back intact through this OpenImageIO, but that is
+// its normalisation and not OpenEXR's storage (whose `ChannelList` is a
+// name-sorted map putting `res.B` first), so a positional read would be luck.
+// Anything else -- a Media part, a group part with
+// no channels, a saved selection, an RGB part a newer build gave a fifth
 // channel -- is carried verbatim into `carry.rawParts` instead. That rule is
 // deliberately strict in the reader's own disfavour: turning a part this
 // build only half-understands into a Layer would drop the half it does not,

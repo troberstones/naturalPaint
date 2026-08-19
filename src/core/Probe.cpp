@@ -51,6 +51,31 @@ std::array<float, 4> sumPremultipliedBox(const TileStore& tiles, PixelCoord at,
   return sum;
 }
 
+// The same box sum over a Pigment layer, each texel projected to premultiplied
+// RGBA first (core/Composite's `projectPigmentTexel()`, called rather than
+// re-derived). A missing tile contributes mass 0, which projects to
+// {0,0,0,0} -- the same "no colour contributed" the RGB path relies on, so the
+// averaging argument above carries over unchanged.
+std::array<float, 4> sumPigmentBox(const PigmentTileStore& tiles, PixelCoord at,
+                                   int32_t sampleSize) {
+  std::array<float, 4> sum{0.0f, 0.0f, 0.0f, 0.0f};
+  const int32_t half = sampleSize / 2;
+  for (int32_t dy = 0; dy < sampleSize; ++dy) {
+    for (int32_t dx = 0; dx < sampleSize; ++dx) {
+      const PixelCoord doc{at.x - half + dx, at.y - half + dy};
+      const PigmentTile* tile = tiles.find(tileCoordAt(doc));
+      if (tile == nullptr) continue;
+      const std::array<float, 4> px =
+          projectPigmentTexel(tile->readTexel(tileLocalOffset(doc)));
+      sum[0] += px[0];
+      sum[1] += px[1];
+      sum[2] += px[2];
+      sum[3] += px[3];
+    }
+  }
+  return sum;
+}
+
 // straight[i] = premultiplied[i] / a for the RGB channels, guarding a == 0
 // (fully transparent -- RGB is arbitrary under premultiplied alpha, and 0
 // is the same convention core::Tile's own value-initialization already
@@ -103,17 +128,35 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
     // flattener, via `layerCoverage()`, because this mode's question is "what
     // colour does the document show at this point" -- the composite, not the
     // union of what the layers happen to hold.
+    // **Phase 5 step 3**: Pigment layers, and `Mix`, are read here too. They
+    // had to be: this function and io/Export's flattener are the two things
+    // that turn a Document into colour, and a build where the eyedropper knew
+    // nothing about Pigment layers would report a different colour from the
+    // one it exports at the same pixel -- a bug a user can see and nobody can
+    // explain. Every piece of arithmetic below is core/Composite's own
+    // (`layerCoverage`, `layerPointOps`, `projectPigmentTexel`,
+    // `mixedPairTexel`, `gradedPremultiplied`, `blendPixel`), called rather
+    // than re-derived; only the *loop* differs, because a probe walks a small
+    // box and the flattener walks occupied tiles.
     const int32_t half = sampleSize / 2;  // floor; see ProbeParams::sampleSize
     // Resolved once per layer, before the sample box, for the same reason
     // core/Composite hoists it: `blend` is a std::string, and parsing one per
     // texel per layer would put a string comparison in the innermost loop of
-    // an operation that runs on every pointer move.
+    // an operation that runs on every pointer move. Op stacks are hoisted for
+    // a stronger reason -- building a PointOp allocates.
+    const MixPairing pairing = mixPairing(doc);
     std::vector<BlendMode> modes(doc.layers.size(), BlendMode::Normal);
+    std::vector<std::vector<PointOp>> ops(doc.layers.size());
+    std::vector<float> coverages(doc.layers.size(), 0.0f);
     for (size_t i = 0; i < doc.layers.size(); ++i) {
       const Layer& layer = doc.layers[i];
-      if (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) any = true;
+      if ((layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) ||
+          (layer.kind == LayerKind::Pigment && layer.pigmentTiles.has_value()))
+        any = true;
       const std::optional<BlendMode> named = blendModeFromName(layer.blend);
       if (named.has_value() && blendModeInfo(*named).compositesPixels) modes[i] = *named;
+      ops[i] = layerPointOps(layer.ops);
+      coverages[i] = layerCoverage(layer);
     }
     if (any) {
       for (int32_t dy = 0; dy < sampleSize; ++dy) {
@@ -122,12 +165,44 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
           std::array<float, 4> acc{0.0f, 0.0f, 0.0f, 0.0f};
           for (size_t li = 0; li < doc.layers.size(); ++li) {
             const Layer& layer = doc.layers[li];
-            if (layer.kind != LayerKind::RGB || !layer.rgbTiles.has_value()) continue;
-            const float coverage = layerCoverage(layer);
+            // The lower half of a mixed pair is composited by the pair.
+            if (pairing.consumedByAbove[li]) continue;
+
+            if (pairing.mixedWithBelow[li]) {
+              const Layer& lower = doc.layers[li - 1];
+              const PigmentTile* up = layer.pigmentTiles.has_value()
+                                          ? layer.pigmentTiles->find(tileCoordAt(docPos))
+                                          : nullptr;
+              const PigmentTile* low =
+                  (lower.kind == LayerKind::Pigment && lower.pigmentTiles.has_value())
+                      ? lower.pigmentTiles->find(tileCoordAt(docPos))
+                      : nullptr;
+              if (up == nullptr && low == nullptr) continue;
+              const PixelCoord local = tileLocalOffset(docPos);
+              acc = blendPixel(BlendMode::Normal,
+                               mixedPairTexel(low ? low->readTexel(local) : PigmentTexel{},
+                                              ops[li - 1], coverages[li - 1],
+                                              up ? up->readTexel(local) : PigmentTexel{}, ops[li],
+                                              coverages[li]),
+                               acc);
+              continue;
+            }
+
+            const float coverage = coverages[li];
             if (coverage <= 0.0f) continue;
-            const Tile* tile = layer.rgbTiles->find(tileCoordAt(docPos));
-            if (tile == nullptr) continue;  // exactly equivalent to compositing {0,0,0,0}
-            std::array<float, 4> src = tile->readPixel(tileLocalOffset(docPos));
+            std::array<float, 4> src;
+            if (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) {
+              const Tile* tile = layer.rgbTiles->find(tileCoordAt(docPos));
+              if (tile == nullptr) continue;  // exactly equivalent to compositing {0,0,0,0}
+              src = tile->readPixel(tileLocalOffset(docPos));
+            } else if (layer.kind == LayerKind::Pigment && layer.pigmentTiles.has_value()) {
+              const PigmentTile* tile = layer.pigmentTiles->find(tileCoordAt(docPos));
+              if (tile == nullptr) continue;
+              src = projectPigmentTexel(tile->readTexel(tileLocalOffset(docPos)));
+            } else {
+              continue;
+            }
+            src = gradedPremultiplied(src, ops[li]);
             if (coverage != 1.0f) {
               src[0] *= coverage;
               src[1] *= coverage;
@@ -156,6 +231,17 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
     const Layer& layer = doc.layers[static_cast<size_t>(params.activeLayerIndex)];
     if (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) {
       sum = sumPremultipliedBox(*layer.rgbTiles, at, sampleSize);
+      any = true;
+    } else if (layer.kind == LayerKind::Pigment && layer.pigmentTiles.has_value()) {
+      // The same box sum over the layer's own projected colour. It deliberately
+      // ignores the layer's own op stack as well as its visible/opacity, for
+      // the reason this branch already gives: the question is "what is on this
+      // layer", and a Pigment layer holds latents, so the honest answer is the
+      // projection of what is stored -- not the graded, faded version of it the
+      // document happens to show. The latents themselves have no RGBA
+      // representation to return through `ProbeSample`; a pigment-aware probe
+      // that reported `c0..c2` is a UI feature nothing asks for yet.
+      sum = sumPigmentBox(*layer.pigmentTiles, at, sampleSize);
       any = true;
     }
   }

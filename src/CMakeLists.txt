@@ -20,6 +20,7 @@ add_executable(naturalPaint
   core/Histogram.cpp
   core/LayerOps.cpp
   core/OpStack.cpp
+  core/Pigment.cpp
   core/Probe.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp

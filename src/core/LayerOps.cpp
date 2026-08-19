@@ -91,6 +91,14 @@ Layer makeRgbLayer(std::string name) {
   return layer;
 }
 
+Layer makePigmentLayer(std::string name) {
+  Layer layer;
+  layer.kind = LayerKind::Pigment;
+  layer.pigmentTiles.emplace();
+  layer.name = std::move(name);
+  return layer;
+}
+
 LayerOpResult addLayer(Document& doc, size_t index, Layer layer) {
   if (index > doc.layers.size()) {
     return fail("add layer refused: index " + std::to_string(index) +

@@ -5,10 +5,11 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
-#include "paint/Palette.hpp"
+#include "core/Pigment.hpp"
 
 // core/Blend (PLAN.md "Phase 5 -- Stack it", step 2: "the linear-safe set
 // (over, plus, multiply, screen, min, max) and `Mix`, the KM latent lerp.
@@ -200,10 +201,24 @@ struct BlendModeInfo {
   const char* label;
   // PRD B7. See this header's criterion.
   BlendSpace space;
-  // Whether `blendPixel()` really implements this mode. False for exactly one
-  // mode today (`Mix`) and the reason is structural, not an omission -- see
-  // `mixLatents()` below.
+  // Whether `blendPixel()` -- the two-RGBA-texel function -- really implements
+  // this mode. False for exactly one mode (`Mix`), and that stays false after
+  // Phase 5 step 3 wired `Mix` up, because it is an honest statement about
+  // `blendPixel()`: an RGBA texel carries no latent, so `Mix` is not a pixel
+  // operation and never becomes one. See `compositesLatents` below.
   bool compositesPixels;
+  // Whether core/Composite implements this mode at the **layer** level, on
+  // pigment latents rather than on RGBA texels. True for exactly one mode
+  // (`Mix`), and it became true at PLAN.md Phase 5 step 3, when Pigment layers
+  // gained the latent tiles step 2 named as the single unblocking condition.
+  //
+  // The two flags are deliberately separate rather than one widened flag,
+  // because they answer different questions and both are asked: `blendPixel()`
+  // needs to know whether it can evaluate a mode from two texels (it cannot,
+  // for `Mix`, ever), while core/Composite needs to know whether the *document
+  // walk* can honour it (it can, for the layer pair PRD L5 restricts `Mix`
+  // to). Collapsing them would have made one of the two answers a lie.
+  bool compositesLatents;
   // PRD L5: "`Mix` appears in the blend dropdown only between two Pigment
   // layers". True for exactly one mode, and consumed by
   // `blendModeAvailableForLayer()` so the rule lives in one predicate rather
@@ -227,15 +242,60 @@ const char* blendModeName(BlendMode mode) noexcept;
 // what the single agreed answer is.
 std::optional<BlendMode> blendModeFromName(std::string_view name) noexcept;
 
-// Whether this build can composite `blend` faithfully. True for the six modes
-// whose `compositesPixels` is set; false for `mix` and for every unrecognised
-// name.
+// Whether this build implements `blend` **anywhere** -- at the texel level or
+// at the layer level. True for all seven named modes as of Phase 5 step 3
+// (`compositesPixels || compositesLatents`); false only for a name outside the
+// set, including the empty string.
 //
 // Moved here from core/Composite, where step 1 put it when "normal" was the
-// only answer. app/LayerPanel and core/Composite are its callers and both mean
-// the same question by it: **would compositing this layer produce the pixels
-// its blend actually asks for, or an approximation that has to be reported?**
+// only answer. It is the context-free question, and it is the right one for
+// app/LayerPanel's row text, which has a `Layer` and no `Document` to ask
+// about position. The **contextual** question -- would compositing *this*
+// layer, where it actually sits, produce what its blend asks for -- is
+// `blendIsImplementedForLayer()` below, and that is the one core/Composite
+// warns from.
 bool blendIsImplemented(std::string_view blend) noexcept;
+
+// The contextual form: would compositing `doc.layers[layerIndex]`, where it
+// sits, produce the pixels its blend asks for?
+//
+// It differs from `blendIsImplemented()` for exactly one mode, and the
+// difference is PRD L5 rather than an implementation gap. `Mix` is a
+// Kubelka-Munk lerp between two pigment latents; it is meaningful only for a
+// Pigment layer sitting on a Pigment layer, which is precisely what
+// `blendModeAvailableForLayer()` already encodes and what the dropdown already
+// enforces. A `mix` that arrives from a *file* need not satisfy it -- an
+// unrecognised or misplaced `np:blend` is carried verbatim, never coerced
+// (PRD I10) -- so the composite has to answer for one, and the answer is
+// core/Composite's long-standing one: composited as `over`, warned by name,
+// never silently, never refused.
+//
+// The second case it answers false for is a **chained** `Mix`: three Pigment
+// layers where the middle one has already been consumed as the lower half of a
+// mixed pair cannot also be the lower half of the next one. core/Composite.hpp
+// states that limit and why it is a limit rather than a bug.
+//
+// An out-of-range `layerIndex` is false, like `blendModeAvailableForLayer()`.
+// Not `noexcept`: it computes `mixPairing()`, which allocates.
+bool blendIsImplementedForLayer(const Document& doc, size_t layerIndex);
+
+// Which layer, if any, each layer is mixed *with* -- the pairing PRD L5's
+// `Mix` produces, computed once for a whole Document so that core/Composite,
+// core/Probe and `blendIsImplementedForLayer()` cannot disagree about it.
+//
+// `mixedWithBelow[i]` is true when layer `i` carries `mix`, L5 holds for it,
+// and layer `i-1` has not already been consumed as some other pair's lower
+// half. `consumedByAbove[i]` is true when layer `i` is that lower half.
+//
+// Pairing is greedy from the bottom, which makes it deterministic and makes
+// the bottom-most pair in a chain the one that forms: for Pigment layers
+// [P0, P1(mix), P2(mix)] it pairs (0,1) and leaves P2 unpaired, warned about,
+// and composited as `over`.
+struct MixPairing {
+  std::vector<bool> mixedWithBelow;
+  std::vector<bool> consumedByAbove;
+};
+MixPairing mixPairing(const Document& doc);
 
 // PRD L5, as one predicate rather than as dropdown code.
 //
@@ -292,48 +352,37 @@ std::array<float, 4> compositeOver(const std::array<float, 4>& src,
 // disagree.
 //
 // `BlendMode::Mix` returns `compositeOver()` and that is a fallback, not an
-// implementation -- `blendModeInfo(Mix).compositesPixels` is false and every
-// boundary that produces a durable artefact reports it. The reason it cannot
-// be implemented here is structural rather than a shortfall of effort: `Mix`
-// is a Kubelka-Munk lerp between two **latents**, and an RGB texel has none.
-// See `mixLatents()`.
+// implementation -- `blendModeInfo(Mix).compositesPixels` is false and stays
+// false. The reason it cannot be implemented *here* is structural rather than
+// a shortfall of effort, and it did not change when Phase 5 step 3 wired `Mix`
+// up: `Mix` is a Kubelka-Munk lerp between two **latents**, and an RGBA texel
+// has none. The place it is implemented is core/Composite's document walk,
+// which has the two layers' pigment tiles in hand; see `mixLatents()`.
 std::array<float, 4> blendPixel(BlendMode mode, const std::array<float, 4>& src,
                                 const std::array<float, 4>& dst) noexcept;
 
 // `Mix` (PRD C3, **P0**): the Kubelka-Munk latent lerp, as a pure function.
 //
-// --- Why this is a latent function and not a layer feature -----------------
+// --- Its layer wiring, which arrived at Phase 5 step 3 ---------------------
 //
-// PRD C3 makes `Mix` P0 and this step cannot make it a layer feature, so the
-// honest thing is to say exactly which half landed and what unblocks the
-// other.
+// Step 2 shipped this function with no caller in the document walk and stated
+// the unblocking condition as exactly one thing: "a tile that stores a
+// latent". Step 3 built that tile (core/Pigment's `PigmentTile`), and the
+// prediction held to the letter -- **nothing in this function changed**;
+// core/Composite's walk gained a Pigment-pair branch that calls it. The
+// alternative step 2 rejected, synthesising latents from a layer's RGB so
+// there would be something to blend, was never revisited: `rgbToLatent()`'s
+// decomposition is "plausible rather than true" (docs/ui.md §3.3), and a
+// `Mix` built on it would be confident, wrong colour that looked like the
+// feature working. Pigment layers carry real latents now, so nothing needs
+// inventing.
 //
-// `core::Layer` has **no latent storage at all**. `rgbTiles` is an
-// `optional<TileStore>` of 4-channel rgba16float tiles, and core/Layer.hpp is
-// explicit that Pigment/Media need a differently-shaped tile -- 7 channels
-// (c0/c1/c2/mass plus a 3-channel residual), DESIGN-imaging.md §2's own memory
-// table -- which is **PLAN.md Phase 5 step 3's** work ("Pigment layers --
-// latent x mass tile storage at f16"). io/NpaintFile.hpp's deferral list says
-// the same. So there are no latents in a document to lerp.
-//
-// The rejected alternative was to synthesise latents from a layer's RGB in
-// order to have something to blend. That is inventing data: `rgbToLatent()`'s
-// decomposition is "plausible rather than true" (docs/ui.md §3.3's own
-// caveat), two RGB layers carry no record of what pigments made them, and a
-// `Mix` built on that would produce confident, wrong colour that looked like
-// the feature working. Phase 4 step 4's deferral list refused exactly this
-// shape of thing.
-//
-// What *does* exist today, verified and shipping, is the latent
-// representation itself: `np::Latent` and the Mixbox LUT that produces it
-// (paint/Palette.hpp; PRD.md: "the hard half already exists and is verified
-// working: Mixbox latent pigment transport"). So `Mix`'s pure function is
-// implemented here against that real representation and tested against real
-// Mixbox data -- blue mixed with yellow gives green, which is the claim
-// PLAN.md's own Phase 5 verify line makes -- and the layer-level wiring waits
-// for step 3's tiles. **The unblocking condition is exactly one thing: a tile
-// that stores a latent.** When step 3 lands, `core/Composite`'s walk gains a
-// Pigment branch that calls this function; nothing here changes.
+// What core/Composite does with it, in one line, because the *weight* is the
+// part a reader will want to check: `t` is the **upper layer's mass**, not its
+// opacity. Opacity is transparency on every layer kind (PRD C3), and it is
+// applied afterwards, in projected RGB, as a fade of the whole mixed result
+// back toward the backdrop -- see core/Composite.hpp, which proves that fade
+// is the same operation `over` already performs with opacity.
 //
 // --- The arithmetic --------------------------------------------------------
 //

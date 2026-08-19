@@ -13,22 +13,24 @@ namespace {
 // classification is not a comment beside the mode, it is a field the mode
 // cannot exist without.
 constexpr BlendModeInfo kModes[] = {
-    // mode                 name         label       space                          composites  pigmentPair
-    {BlendMode::Normal,     "normal",    "Normal",   BlendSpace::LinearLight,      true,       false},
-    {BlendMode::Plus,       "plus",      "Plus",     BlendSpace::LinearLight,      true,       false},
-    {BlendMode::Multiply,   "multiply",  "Multiply", BlendSpace::LinearLight,      true,       false},
+    // mode                 name         label       space                         texels  latents  pigmentPair
+    {BlendMode::Normal,     "normal",    "Normal",   BlendSpace::LinearLight,      true,   false,   false},
+    {BlendMode::Plus,       "plus",      "Plus",     BlendSpace::LinearLight,      true,   false,   false},
+    {BlendMode::Multiply,   "multiply",  "Multiply", BlendSpace::LinearLight,      true,   false,   false},
     // The one display-referred member of the set. core/Blend.hpp derives why:
     // `cs + cb - cs*cb` stops being monotone above 1.0, so it only means
     // anything in an encoding where 1.0 is white. --selftest proves the
     // misbehaviour numerically.
-    {BlendMode::Screen,     "screen",    "Screen",   BlendSpace::DisplayReferred,  true,       false},
-    {BlendMode::Min,        "min",       "Min",      BlendSpace::LinearLight,      true,       false},
-    {BlendMode::Max,        "max",       "Max",      BlendSpace::LinearLight,      true,       false},
-    // Not composited at the layer level in this build -- there are no latent
-    // tiles to lerp yet (PLAN.md Phase 5 step 3). `mixLatents()` is the real
-    // operation and it is implemented and tested. Linear light: a
-    // Kubelka-Munk mix has no reference white in it at all.
-    {BlendMode::Mix,        "mix",       "Mix",      BlendSpace::LinearLight,      false,      true},
+    {BlendMode::Screen,     "screen",    "Screen",   BlendSpace::DisplayReferred,  true,   false,   false},
+    {BlendMode::Min,        "min",       "Min",      BlendSpace::LinearLight,      true,   false,   false},
+    {BlendMode::Max,        "max",       "Max",      BlendSpace::LinearLight,      true,   false,   false},
+    // Composited at the **layer** level and never at the texel level: `Mix` is
+    // a lerp of pigment latents, and an RGBA texel has none, so
+    // `compositesPixels` is false permanently rather than pending. The layer
+    // half landed at PLAN.md Phase 5 step 3, when Pigment layers gained latent
+    // tiles -- core/Composite's Pigment-pair branch calls `mixLatents()`.
+    // Linear light: a Kubelka-Munk mix has no reference white in it at all.
+    {BlendMode::Mix,        "mix",       "Mix",      BlendSpace::LinearLight,      false,  true,    true},
 };
 
 constexpr size_t kModeCount = sizeof(kModes) / sizeof(kModes[0]);
@@ -73,7 +75,47 @@ std::optional<BlendMode> blendModeFromName(std::string_view name) noexcept {
 
 bool blendIsImplemented(std::string_view blend) noexcept {
   const std::optional<BlendMode> mode = blendModeFromName(blend);
-  return mode.has_value() && blendModeInfo(*mode).compositesPixels;
+  if (!mode.has_value()) return false;
+  const BlendModeInfo& info = blendModeInfo(*mode);
+  return info.compositesPixels || info.compositesLatents;
+}
+
+MixPairing mixPairing(const Document& doc) {
+  MixPairing p;
+  p.mixedWithBelow.assign(doc.layers.size(), false);
+  p.consumedByAbove.assign(doc.layers.size(), false);
+  // Greedy from the bottom. `blendModeAvailableForLayer()` is the single
+  // implementation of PRD L5 and is asked here rather than re-derived, so the
+  // set of layers that may mix and the set the dropdown offers `Mix` to are
+  // the same set by construction.
+  for (size_t i = 1; i < doc.layers.size(); ++i) {
+    if (doc.layers[i].blend != blendModeName(BlendMode::Mix)) continue;
+    if (!blendModeAvailableForLayer(doc, i, BlendMode::Mix)) continue;
+    // A layer can belong to at most **one** pair, in one role. Both
+    // exclusions are needed and they are different situations: the layer
+    // beneath is already the *lower* half of a pair below it (so it has been
+    // consumed), or it is already the *upper* half of one (so mixing into it
+    // would be mixing into a mixed result, which is the chain this build does
+    // not associate). See core/Composite.hpp on why that is a stated limit
+    // rather than something to fix by re-associating.
+    if (p.consumedByAbove[i - 1] || p.mixedWithBelow[i - 1]) continue;
+    p.mixedWithBelow[i] = true;
+    p.consumedByAbove[i - 1] = true;
+  }
+  return p;
+}
+
+bool blendIsImplementedForLayer(const Document& doc, size_t layerIndex) {
+  if (layerIndex >= doc.layers.size()) return false;
+  const Layer& layer = doc.layers[layerIndex];
+  const std::optional<BlendMode> mode = blendModeFromName(layer.blend);
+  if (!mode.has_value()) return false;
+  const BlendModeInfo& info = blendModeInfo(*mode);
+  if (info.compositesPixels) return true;
+  if (!info.compositesLatents) return false;
+  // The only latent-level mode. Whether it can be honoured is a property of
+  // where the layer sits, not of the name.
+  return mixPairing(doc).mixedWithBelow[layerIndex];
 }
 
 bool blendModeAvailableForLayer(const Document& doc, size_t layerIndex,

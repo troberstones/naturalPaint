@@ -94,7 +94,19 @@ std::string blendMenuEntryText(BlendMode mode) {
   // PRD B7, read straight off the data. Two spaces rather than one so the
   // marker reads as an annotation on the label and not as part of it.
   if (info.space == BlendSpace::DisplayReferred) s += "  (display-referred)";
-  if (!info.compositesPixels) s += "  (not composited yet)";
+  // The "(not composited yet)" marker step 2 put here for `Mix` is gone,
+  // because as of PLAN.md Phase 5 step 3 `Mix` is composited -- and it is
+  // composited in exactly the situation this menu offers it in, since
+  // `blendMenuForLayer()` filters through the same PRD L5 predicate
+  // (`blendModeAvailableForLayer()`) that decides whether a mix can be
+  // formed. So a mode reachable from this menu is a mode that works; the
+  // marker would now be a warning about nothing.
+  //
+  // The mechanism it belonged to is not gone with it: `layerRowSubLine()`
+  // still marks a layer whose carried `np:blend` this build cannot honour
+  // with `(!)`, which is the case that genuinely still exists -- a newer
+  // build's name, arriving from a file, which the dropdown never offers.
+  if (!info.compositesPixels && !info.compositesLatents) s += "  (not composited yet)";
   return s;
 }
 
