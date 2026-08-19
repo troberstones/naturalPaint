@@ -264,6 +264,14 @@ int main(int argc, char** argv) {
     // plus the un-premultiply/re-premultiply wrapper bracketing them.
     // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool pointOpsOk = np::runPointOpsTest();
+    // Phase 3 step 5 ("core/OpStack -- ordered ops, dirty tracking, run
+    // detection for the collapse"): OpStack's add/remove/reorder/setEnabled/
+    // setOp mutators and version() bumping, plus detectRuns()'s maximal-run
+    // grouping over docs/operations.md's four op classes -- including the
+    // "a disabled PointA entry does not split a run" rule. Also headless and
+    // GPU-free -- pure CPU bookkeeping plus calls into the already-tested
+    // ops/PointOps functions, no PaintSim involvement.
+    const bool opStackOk = np::runOpStackTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -273,7 +281,8 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    histogramOk && pointOpsOk && opStackOk && strokeSpeedOk && idleMemOk &&
+                    fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

@@ -387,4 +387,41 @@ bool runHistogramTest();
 //    matches manual hand computation, not just each op individually.
 bool runPointOpsTest();
 
+// Headless, GPU-free check on core/OpStack (PLAN.md Phase 3 step 5:
+// "ordered ops, dirty tracking, run detection for the collapse"). Pure CPU
+// bookkeeping plus calls into the already-tested ops/PointOps functions --
+// no PaintSim or gpu involvement anywhere in this function.
+//
+// Covers:
+//  - An empty OpStack: detectRuns() returns no runs; version() starts at 0.
+//  - Every mutator (add, remove, reorder, setEnabled, setOp) increments
+//    version() by exactly one, including a setEnabled()/setOp() call that
+//    doesn't change anything observable (OpStack.hpp's documented
+//    over-bumping-is-fine policy); at()/size() -- read-only -- never do.
+//  - An all-PointA stack (Exposure then Saturation): detectRuns() returns
+//    exactly one run spanning the whole stack, and running a sample RGB
+//    value through the run's composed PointOp list by hand matches calling
+//    ops::applyExposure() then ops::applySaturation() directly, in that
+//    order.
+//  - A disabled PointA entry in the middle of an otherwise-PointA stack:
+//    the run still spans all three indices undivided (a disabled op does
+//    not split a run -- op class, not enabled state, is what defines a
+//    boundary), and its composed op list has only the two enabled entries'
+//    functions -- verified by running a value through and confirming it
+//    matches skipping the disabled op entirely.
+//  - A real class boundary (PointA, a non-PointA placeholder Op built only
+//    as a test fixture, PointA again): detectRuns() returns exactly two
+//    runs split at the placeholder, each containing only its own side's
+//    PointA op.
+//  - reorder(): Exposure and Levels (gamma != 1) are first checked to
+//    genuinely disagree depending on which runs first (unlike two purely
+//    linear ops, which always commute with a uniform Exposure multiply) --
+//    so the test cannot pass vacuously -- then reordered, with
+//    detectRuns()'s composed op list checked to reflect the new order by
+//    hand-running a value through it.
+//  - remove(): removing an entry shifts every later run's indices down by
+//    one, and the composed op list of the run that follows the removed
+//    entry no longer includes its effect.
+bool runOpStackTest();
+
 }  // namespace np

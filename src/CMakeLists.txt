@@ -11,6 +11,7 @@ add_executable(naturalPaint
   color/Space.cpp
   core/Half.cpp
   core/Histogram.cpp
+  core/OpStack.cpp
   core/Probe.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp
