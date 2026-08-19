@@ -300,6 +300,22 @@ tolerance (PRD B3). Twelve stacked grade ops cost the same as one at draw time.
 5. **Wire OIIO's `ImageCache`** as the residency layer for unmodified source tiles.
    This is the main reason the dependency earns its cost.
 6. **Lazy OIIO init** — on first file open, not at startup, so PRD A2 holds.
+
+   > ⚠️ **This step, as written, recovers nothing — measured 2026-08-19.** It assumes
+   > OpenImageIO does eager initialisation worth deferring. It does not: OIIO's own init
+   > is already lazy, and `io/Capabilities`' first probe call moves RSS by 0.02 MB. The
+   > entire cost of enabling `NP_USE_OIIO` is paid by **dyld**, before `main()` runs,
+   > mapping and relocating the OIIO/OpenEXR/Imath/OCIO/libtiff/libpng/libjpeg-turbo
+   > chain. Measured with a standalone program against this project's own OIIO build:
+   > **+29.4 MB resident** (1.03 → 30.45 MB) and **+9.4 ms of process startup**
+   > (6.37 → 15.72 ms, mean of 200 runs each, file cache warm). That 9.4 ms is ~9 % of
+   > PRD A2's entire 100 ms cold-start budget, spent before a line of this project's code
+   > executes. No amount of deferring *initialisation* touches either number — only
+   > `dlopen()`-ing OpenImageIO on first use would, which is a linkage-architecture
+   > change, not the tuning change this step describes. Re-scope this step to
+   > "`dlopen` OIIO on first use" or drop it; do not implement it as written. Note the
+   > cost is opt-in regardless: `NP_USE_OIIO` defaults **OFF**, and the OFF binary links
+   > no OIIO dylib at all (`otool -L` and `nm -u` both zero).
 7. **Export As** — format, space, depth **and resize**, with saveable presets (PRD I15).
    Downscale prefilters; see the phase 6 warning.
 8. **Document lifecycle** — revert, duplicate document, save a copy, save incremental,
