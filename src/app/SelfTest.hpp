@@ -424,4 +424,35 @@ bool runPointOpsTest();
 //    entry no longer includes its effect.
 bool runOpStackTest();
 
+// Headless check on color/LutBake (PLAN.md Phase 3 step 4, ADR-0004): bakes
+// a maximal run of adjacent point ops onto a 32^3 rgba16float 3-D LUT via a
+// seed compute dispatch plus one dispatch per op, entirely on the GPU, and
+// checks the baked result against the CPU ops/PointOps reference at a
+// handful of hand-picked grid cells. Needs `gpu` for a real device/queue --
+// genuine compute-shader work, no PaintSim involvement (this module never
+// touches the solver).
+//
+// See SelfTest.cpp for the full breakdown; in short:
+//  - Each of the six point-op kinds baked alone (a one-op run) and checked
+//    against shaperEncode(clamp01(op(shaperDecode(gridCoord)))), computed
+//    with the real ops/PointOps functions and the same params fed to the
+//    GPU -- but compared against a CPU reference that itself simulates the
+//    exact half-precision write/read the value undergoes at each ping-pong
+//    stage (core::floatToHalf/halfToFloat, once for the seed write and once
+//    per op-pass write), not the raw float math, since the real bake
+//    round-trips through rgba16float storage at every stage and a
+//    pure-float reference would be comparing against a value the GPU could
+//    never actually produce. See SelfTest.cpp for the exact residual
+//    tolerance chosen on top of that simulated reference and why.
+//  - Curves specifically (the highest-risk kernel) at three distinct curve
+//    shapes: a 2-point straight line, a 3-point interior case, and a point
+//    count at kMaxCurvePointsPerChannel.
+//  - A composed 3-op run (Exposure -> Saturation -> Channel mixer), baked
+//    in one call and checked against running the same sequence through
+//    ops::PointOps directly, in order, on the CPU -- the GPU analogue of
+//    runOpStackTest()'s own composition proof, and the one case that
+//    actually exercises the ping-pong sequencing rather than any single
+//    kernel in isolation.
+bool runLutBakeTest(GpuContext& gpu);
+
 }  // namespace np

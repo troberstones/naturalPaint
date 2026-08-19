@@ -272,6 +272,13 @@ int main(int argc, char** argv) {
     // GPU-free -- pure CPU bookkeeping plus calls into the already-tested
     // ops/PointOps functions, no PaintSim involvement.
     const bool opStackOk = np::runOpStackTest();
+    // Phase 3 step 4 (color/LutBake, ADR-0004): bakes a maximal run of
+    // adjacent point ops onto a 32^3 rgba16float 3-D LUT via a seed compute
+    // dispatch plus one dispatch per op, and checks the baked result
+    // against the CPU ops/PointOps reference at hand-picked grid cells.
+    // Needs `gpu` for a real device/queue -- genuine compute-shader work,
+    // no PaintSim involvement.
+    const bool lutBakeOk = np::runLutBakeTest(gpu);
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -281,8 +288,8 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && opStackOk && strokeSpeedOk && idleMemOk &&
-                    fieldAllocOk;
+                    histogramOk && pointOpsOk && opStackOk && lutBakeOk && strokeSpeedOk &&
+                    idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

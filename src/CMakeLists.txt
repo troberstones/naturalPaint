@@ -7,6 +7,7 @@ add_executable(naturalPaint
   app/Snapping.cpp
   app/ViewTransform.cpp
   brush/StrokePath.cpp
+  color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
   core/Half.cpp
