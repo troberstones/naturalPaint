@@ -3,6 +3,7 @@
 #include <optional>
 #include <vector>
 
+#include "app/DocumentLifecycle.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "paint/Palette.hpp"
@@ -199,6 +200,41 @@ struct AppState {
   // see ui/MacPaintUI.cpp's canvas block) -- core::OpStack itself stays
   // completely unaware AppState exists.
   OpStack opStack;
+
+  // PLAN.md Phase 4 step 8 ("Document lifecycle", PRD I18). **This is where
+  // the open document lives**, and it is the answer to the ownership question
+  // io/ExportAs.hpp, io/TileResidency.hpp and every prior UI-facing step's
+  // Findings row deferred to this step. `guides` and `opStack` above each
+  // explain that they are conceptually document content living here only
+  // because there was no Document to hang them on; that Document now exists,
+  // and moving them onto it is Phase 5's work (guides need a per-document
+  // home once tabs exist, and the op stack needs Phase 5 step 3's per-layer
+  // ownership decision) rather than a rename this step can do safely.
+  //
+  // The rule this step sets for what belongs here, so the next dialog does
+  // not have to re-decide it: **document and session state lives on AppState;
+  // transient widget state does not.** A list of open documents, and the
+  // recent-documents list below, are things main.cpp owns and a future
+  // document-aware draw loop reads. A text buffer being typed into, a combo's
+  // selected index, or which popup is currently open are none of those, and
+  // putting them here would grow this struct by one member per dialog -- so
+  // they stay function-local in ui/, exactly where ui/MacPaintUI.cpp's Add
+  // Guide popup and Export As dialog already keep theirs.
+  //
+  // **Not wired, and stated plainly rather than implied:** the live painting
+  // canvas is still not one of these documents. sim::PaintSim owns a single
+  // dense texture with no layer awareness, so a stroke writes that texture
+  // and touches no Layer::rgbTiles. See app/DocumentLifecycle.hpp's own
+  // section on the gap.
+  DocumentSession documents;
+
+  // PRD I18's "open recent", persisted (see app/DocumentLifecycle.hpp for the
+  // file and its location). Empty and untouched until the File menu is first
+  // opened -- `recentDocumentsLoaded` is what makes that lazy, for the same
+  // reason io/ExportAs' presets are: a file nobody asked for costs nothing
+  // (PRD A2, ADR-0001), and --selftest's idle-RSS measurement would notice.
+  RecentDocuments recentDocuments;
+  bool recentDocumentsLoaded = false;
 
   // Menu-toggleable, no keyboard shortcut (docs/shortcuts.md §3 assigns
   // rulers to Cmd+R, but keymaps/default.json already binds Cmd+R to

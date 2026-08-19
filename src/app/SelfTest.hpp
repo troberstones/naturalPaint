@@ -877,4 +877,75 @@ bool runTileResidencyTest();
 //    mean, and a refused request writes no bytes and leaves no file.
 bool runExportAsTest();
 
+// Headless check on app/DocumentLifecycle -- the open-document record, the
+// session that owns it, and the five operations PLAN.md Phase 4 step 8 names
+// ("Document lifecycle -- revert, duplicate document, save a copy, save
+// incremental, open recent"). PLAN.md cites PRD I17; the current PRD numbers
+// that requirement **I18** -- see DocumentLifecycle.hpp.
+//
+// **Not #ifdef'd out of the NP_USE_OIIO=OFF build** (PLAN.md §1.5). Roughly
+// two thirds of this section is build-independent by construction -- the
+// record, the session, duplication, the incremental *naming* rule and the
+// whole recent-documents list touch no file format at all -- and the
+// remaining third asserts that each file-backed entry point forwards
+// io/NpaintFile's own named refusal in the build that has no OpenImageIO,
+// rather than inventing a second vocabulary for it. One `kOiioBuild` constant
+// carries the configuration.
+//
+// Pure CPU, no GPU. All scratch state lives in a `selftest_lifecycle/`
+// directory in the working directory, which is removed unconditionally at the
+// end (including on failing paths) and asserted gone. A directory rather than
+// loose `selftest_*` files because `nextIncrementalPath()` *lists its
+// containing directory* to find the highest existing version, and run against
+// the working directory its answers would depend on whatever else was there.
+// `$NP_RECENT_DOCUMENTS` is overridden while the storage-location assertions
+// run, so this never touches the developer's own recent list.
+//
+// Covered, in order:
+//
+//  - The record: monotonic non-zero ids, a blank document starting clean and
+//    unbound, and `recordEdit()` producing a PRD I11 summary that names the
+//    edits rather than merely counting them -- including that the label list
+//    is capped while the count stays exact.
+//  - The session: pointer stability across 32 further opens (the reason it
+//    holds `unique_ptr`s), addressing by index and by id, and closing a dirty
+//    document refusing with the same "names what would be lost" message
+//    revert uses.
+//  - **Duplicate**: the path is NOT inherited (its own assertion -- this is
+//    the failure that would silently overwrite the original), a fresh id, a
+//    deep tile copy proven by painting on one and checking the other, the
+//    carry bag and the layer part ids coming across, dirty from birth, and
+//    Save on the result refusing by name rather than writing anywhere.
+//  - **Save incremental naming**: `_v001` for an unversioned name; a gap left
+//    unfilled; an old version still landing above the highest sibling; other
+//    extensions and other base names ignored; an existing version's own zero
+//    padding preserved (`_v7` -> `_v8`); padding growing at `_v999` ->
+//    `_v1000`; a trailing number with no `_v` marker treated as part of the
+//    name; and the two refusals.
+//  - **Open recent**: ordering, dedup by normalised path, capacity 10, the
+//    empty and control-character refusals, the file round trip, a duplicate
+//    line resolving to one entry at its most recent position, a corrupt line
+//    reported with its line number without failing the load, a missing file
+//    being an empty list rather than an error, `$NP_RECENT_DOCUMENTS`, and --
+//    the requirement with teeth -- an entry whose file is gone being refused
+//    **by name and kept in the list**, never silently dropped.
+//  - The file-backed half, in the build that has a writer: **Save a copy**
+//    leaving the document's path and dirty state unchanged and refusing to
+//    write onto the document's own file; **Revert** refusing a dirty document
+//    while naming the edits, restoring the file's pixels *and the file's
+//    carry* once confirmed, and leaving the in-memory document untouched when
+//    the file has gone; **Save incremental** writing `_v001` then `_v002` and
+//    never overwriting the earlier one; duplicate-then-save leaving the
+//    original file byte-intact; open and open-recent round trips; and the PRD
+//    I10 carry -- three unknown attributes and a whole foreign
+//    `np:kind="Pigment"` part -- asserted intact after **every** operation
+//    that writes.
+//  - That a cached `io/TileResidency` read after a lifecycle write returns the
+//    **new** pixels. OpenImageIO's cache does not notice a rewrite, and a
+//    residency opened afterwards passes its own size+mtime staleness check
+//    because the stamp is taken at open; without the invalidation these
+//    operations perform, the read returns the previous contents and reports
+//    success.
+bool runDocumentLifecycleTest();
+
 }  // namespace np

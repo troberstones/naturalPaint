@@ -4,7 +4,11 @@
 #include <cmath>
 #include <cstdio>
 
+#include <string>
+#include <vector>
+
 #include "app/CurveEdit.hpp"
+#include "app/DocumentLifecycle.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
@@ -680,14 +684,20 @@ void drawGradeSection(AppState& st) {
 //     controls is exportRefusalReason()'s string verbatim, not a reworded
 //     one, so there is no second vocabulary here to drift from the encoder's.
 //
-// And the one thing it deliberately does not do: the Export button is
-// disabled, because this codebase still has no bridge from the live painting
-// canvas to a core::Document, so there is nothing to export from. See
-// io/ExportAs.hpp's own "the gap this step does not close" section; the
-// dialog says it on screen rather than failing at the moment of use.
+// **Updated by PLAN.md Phase 4 step 8.** When step 7 landed, the Export
+// button was disabled and said so, because there was no `core::Document`
+// anywhere in the running application to export from. There is now:
+// `AppState::documents` holds them, and File > New Document / Open... puts
+// one there. So the button is live whenever a document is open, exporting the
+// *active document* -- and still disabled, with the accurate reason, when
+// none is. What has NOT changed is the honest half: the painting canvas is
+// still not a document (sim::PaintSim owns one dense texture with no layer
+// awareness), so this exports what was opened, never what is on screen. The
+// dialog says which of the two it is looking at rather than leaving it to be
+// inferred.
 bool g_exportAsRequested = false;
 
-void drawExportAsDialog(uint32_t canvasW, uint32_t canvasH) {
+void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   // Session state. Function-local statics, exactly like drawGradeSection()'s
   // newOpKindIdx and the Add Guide popup's fields -- this is UI state, not
   // app state, and app/AppState's ownership is PLAN.md Phase 4 step 8's
@@ -696,6 +706,7 @@ void drawExportAsDialog(uint32_t canvasW, uint32_t canvasH) {
   static ExportPresetStore presets;
   static bool presetsLoaded = false;
   static char presetNameBuf[96] = "";
+  static char exportPathBuf[512] = "";
   static std::string status;
 
   if (g_exportAsRequested) {
@@ -719,7 +730,18 @@ void drawExportAsDialog(uint32_t canvasW, uint32_t canvasH) {
   const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
   const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
 
-  ImGui::TextDisabled("Source: %ux%u (the live canvas)", canvasW, canvasH);
+  // What is being exported, named rather than assumed. These are two
+  // genuinely different things in this build and conflating them on screen
+  // would be the dishonest option.
+  const OpenDocument* activeDoc = st.documents.active();
+  const uint32_t srcW = activeDoc ? static_cast<uint32_t>(activeDoc->document.width) : canvasW;
+  const uint32_t srcH = activeDoc ? static_cast<uint32_t>(activeDoc->document.height) : canvasH;
+  if (activeDoc)
+    ImGui::TextDisabled("Source: %ux%u (document '%s')", srcW, srcH,
+                        documentDisplayName(*activeDoc).c_str());
+  else
+    ImGui::TextDisabled("Source: %ux%u (the live canvas -- not a document; nothing to export)",
+                        srcW, srcH);
   ImGui::Separator();
 
   // --- Format -------------------------------------------------------------
@@ -794,8 +816,8 @@ void drawExportAsDialog(uint32_t canvasW, uint32_t canvasH) {
   }
 
   // --- Validation, in io/Export's own words -------------------------------
-  const ExportValidation validation =
-      validateExportRequest(request, canvasW, canvasH, nullptr, nullptr);
+  const ExportValidation validation = validateExportRequest(
+      request, srcW, srcH, activeDoc ? &activeDoc->document.workingSpace : nullptr, nullptr);
   ImGui::Separator();
   if (validation.ok) {
     ImGui::Text("Output: %ux%u", validation.outWidth, validation.outHeight);
@@ -865,20 +887,262 @@ void drawExportAsDialog(uint32_t canvasW, uint32_t canvasH) {
   if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
   ImGui::TextDisabled("Presets file: %s", presetsPath.c_str());
 
-  // --- The honest part ----------------------------------------------------
+  // --- Export, and the honest part ----------------------------------------
   ImGui::Separator();
-  ImGui::BeginDisabled();
-  ImGui::Button("Export...");
-  ImGui::EndDisabled();
+  ImGui::SetNextItemWidth(360.0f);
+  ImGui::InputText("Output file", exportPathBuf, sizeof(exportPathBuf));
+  const bool canExport = activeDoc != nullptr && validation.ok && exportPathBuf[0] != '\0';
+  if (!canExport) ImGui::BeginDisabled();
+  if (ImGui::Button("Export...")) {
+    std::string err;
+    if (exportDocumentWithRequestToFile(activeDoc->document, exportPathBuf, request, &err))
+      status = std::string("Exported ") + exportPathBuf;
+    else
+      status = err;
+  }
+  if (!canExport) ImGui::EndDisabled();
   ImGui::SameLine();
-  ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-  ImGui::TextWrapped("Export is disabled: this build has no bridge from the painting canvas to "
-                     "a core::Document, so there is nothing to export from yet (PLAN.md Phase 4 "
-                     "step 8 owns that decision). Everything above -- the offerable formats and "
-                     "depths, the validation, the resize and the presets -- is live.");
-  ImGui::PopStyleColor();
+  if (!activeDoc) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+    ImGui::TextWrapped("No document is open, so there is nothing to export. Use File > New "
+                       "Document or File > Open... -- the painting canvas is a solver texture, "
+                       "not a document, and still has no bridge into one.");
+    ImGui::PopStyleColor();
+  } else {
+    ImGui::TextDisabled("Exports the open document, not the painting canvas.");
+  }
   if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
   ImGui::EndPopup();
+}
+
+// ------------------------------------------------------- Document lifecycle
+//
+// PLAN.md Phase 4 step 8 / PRD I18 ("Revert, duplicate document, save a copy,
+// save incremental, open recent"). Everything with a decision in it lives in
+// app/DocumentLifecycle.hpp and is exercised headlessly by --selftest; this is
+// the widgets, the same split step 7 and app/CurveEdit already use.
+//
+// **There is no native file picker in this codebase**, and adding one is a
+// platform-integration job (NSOpenPanel behind an interface) rather than part
+// of a lifecycle step. So Open, Save As and Save a Copy take a typed path in a
+// small modal. That is deliberately spartan rather than pretending: the
+// operations underneath are the real ones, and swapping the text field for a
+// panel later changes this function and nothing else.
+//
+// Which state lives where follows app/AppState.hpp's rule: the session and
+// the recent list are on AppState; the text buffer, the pending action and
+// the last status line are function-local, because they are widget state.
+enum class DocPathAction { None, Open, SaveAs, SaveCopy };
+
+bool g_docPathRequested = false;
+DocPathAction g_docPathAction = DocPathAction::None;
+bool g_revertConfirmRequested = false;
+std::string g_docStatus;
+
+void applyDocumentPathAction(AppState& st, DocPathAction action, const std::string& path) {
+  OpenDocument* doc = st.documents.active();
+  DocumentOpResult r;
+  switch (action) {
+    case DocPathAction::Open: {
+      OpenDocument opened;
+      r = openNpaintDocument(path, &opened, &st.recentDocuments);
+      if (r.ok) st.documents.add(std::move(opened));
+      break;
+    }
+    case DocPathAction::SaveAs:
+      if (!doc) return;
+      r = saveDocumentAs(*doc, path, {}, &st.recentDocuments);
+      break;
+    case DocPathAction::SaveCopy:
+      if (!doc) return;
+      // No RecentDocuments argument exists on this one -- see
+      // app/DocumentLifecycle.hpp on why a copy is not an open document.
+      r = saveDocumentCopy(*doc, path);
+      break;
+    case DocPathAction::None:
+      return;
+  }
+  if (r.ok) {
+    std::string saveErr;
+    st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+    g_docStatus = "OK: " + r.path;
+    for (const std::string& w : r.warnings) g_docStatus += "\n! " + w;
+  } else {
+    g_docStatus = r.error;
+  }
+}
+
+void drawDocumentDialogs(AppState& st) {
+  static char pathBuf[512] = "";
+
+  if (g_docPathRequested) {
+    g_docPathRequested = false;
+    g_docStatus.clear();
+    // Pre-fill with the active document's own path, so Save As on an already
+    // saved document starts from its name rather than from nothing.
+    if (const OpenDocument* d = st.documents.active())
+      std::snprintf(pathBuf, sizeof(pathBuf), "%s", d->path.c_str());
+    ImGui::OpenPopup("Document path");
+  }
+  if (ImGui::BeginPopupModal("Document path", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const char* verb = g_docPathAction == DocPathAction::Open      ? "Open"
+                       : g_docPathAction == DocPathAction::SaveAs  ? "Save As"
+                                                                   : "Save a Copy";
+    ImGui::Text("%s", verb);
+    if (g_docPathAction == DocPathAction::SaveCopy)
+      ImGui::TextDisabled("Writes elsewhere; this document stays bound to its own file.");
+    ImGui::SetNextItemWidth(480.0f);
+    ImGui::InputText("Path", pathBuf, sizeof(pathBuf));
+    if (ImGui::Button(verb)) {
+      applyDocumentPathAction(st, g_docPathAction, pathBuf);
+      if (g_docStatus.rfind("OK: ", 0) == 0) ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    if (!g_docStatus.empty()) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+      ImGui::TextWrapped("%s", g_docStatus.c_str());
+      ImGui::PopStyleColor();
+    }
+    ImGui::EndPopup();
+  }
+
+  // Revert's confirmation is the refusal itself: revertDocument() is called
+  // without the discard flag, and its own PRD I11 message -- which names the
+  // edits -- is what the dialog shows. There is no second sentence here to
+  // drift from it.
+  if (g_revertConfirmRequested) {
+    g_revertConfirmRequested = false;
+    g_docStatus.clear();
+    ImGui::OpenPopup("Revert");
+  }
+  if (ImGui::BeginPopupModal("Revert", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    OpenDocument* doc = st.documents.active();
+    if (!doc) {
+      ImGui::CloseCurrentPopup();
+    } else {
+      // Attempted, not probed: a clean document has nothing to confirm, so
+      // the unconfirmed call simply succeeds and the popup closes. A dirty
+      // one refuses *before* touching anything (see revertDocument()'s order
+      // of checks), so calling it every frame the popup is open is free.
+      const DocumentOpResult attempt = revertDocument(*doc, {});
+      if (attempt.ok) {
+        g_docStatus = "Reverted " + attempt.path;
+        ImGui::CloseCurrentPopup();
+      } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.78f, 0.35f, 1.0f));
+        ImGui::TextWrapped("%s", attempt.error.c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Discard and revert")) {
+          const DocumentOpResult done = revertDocument(*doc, {true});
+          g_docStatus = done.ok ? "Reverted " + done.path : done.error;
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+      }
+    }
+    ImGui::EndPopup();
+  }
+}
+
+// The File menu's document half. Split out of drawUI's menu bar block only
+// because it is long, not because it is separable.
+void drawDocumentMenuItems(AppState& st, uint32_t canvasW, uint32_t canvasH) {
+  // Lazy, first time the File menu is opened: PRD A2 and ADR-0001 both say a
+  // file nobody asked for costs nothing, and --selftest's idle-RSS assertion
+  // is sampled before this can run.
+  if (!st.recentDocumentsLoaded) {
+    st.recentDocumentsLoaded = true;
+    st.recentDocuments.loadFromFile(defaultRecentDocumentsPath());
+  }
+
+  OpenDocument* doc = st.documents.active();
+  const bool hasDoc = doc != nullptr;
+  const bool hasPath = hasDoc && doc->hasPath();
+
+  if (ImGui::MenuItem("New Document")) {
+    st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
+                                           static_cast<int32_t>(canvasH), WorkingSpace{}));
+    g_docStatus.clear();
+  }
+  if (ImGui::MenuItem("Open...")) {
+    g_docPathAction = DocPathAction::Open;
+    g_docPathRequested = true;
+  }
+  if (ImGui::BeginMenu("Open Recent", !st.recentDocuments.entries().empty())) {
+    const std::vector<RecentDocument>& entries = st.recentDocuments.entries();
+    for (size_t i = 0; i < entries.size(); ++i) {
+      // A missing entry is shown, greyed, with the reason -- never dropped
+      // behind the user's back. app/DocumentLifecycle.hpp argues why.
+      std::string why;
+      const bool missing = recentDocumentMissing(entries[i].path, &why);
+      if (missing) ImGui::BeginDisabled();
+      if (ImGui::MenuItem(entries[i].displayName.c_str()) && !missing) {
+        OpenDocument opened;
+        const DocumentOpResult r = openRecentDocument(st.recentDocuments, i, &opened);
+        if (r.ok) {
+          st.documents.add(std::move(opened));
+          std::string saveErr;
+          st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+        }
+        g_docStatus = r.ok ? "Opened " + r.path : r.error;
+      }
+      if (missing) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("%s", why.c_str());
+      } else if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", entries[i].path.c_str());
+      }
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Clear Menu")) {
+      st.recentDocuments.clear();
+      std::string saveErr;
+      st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+    }
+    ImGui::EndMenu();
+  }
+
+  ImGui::Separator();
+  if (ImGui::MenuItem("Save", nullptr, false, hasPath)) {
+    const DocumentOpResult r = saveDocument(*doc, {}, &st.recentDocuments);
+    if (r.ok) {
+      std::string saveErr;
+      st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+    }
+    g_docStatus = r.ok ? "Saved " + r.path : r.error;
+  }
+  if (ImGui::MenuItem("Save As...", nullptr, false, hasDoc)) {
+    g_docPathAction = DocPathAction::SaveAs;
+    g_docPathRequested = true;
+  }
+  if (ImGui::MenuItem("Save a Copy...", nullptr, false, hasDoc)) {
+    g_docPathAction = DocPathAction::SaveCopy;
+    g_docPathRequested = true;
+  }
+  if (ImGui::MenuItem("Save Incremental", nullptr, false, hasPath)) {
+    const DocumentOpResult r = saveDocumentIncremental(*doc, {}, &st.recentDocuments);
+    if (r.ok) {
+      std::string saveErr;
+      st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+    }
+    g_docStatus = r.ok ? "Saved " + r.path : r.error;
+  }
+
+  ImGui::Separator();
+  if (ImGui::MenuItem("Revert", nullptr, false, hasPath)) g_revertConfirmRequested = true;
+  if (ImGui::MenuItem("Duplicate Document", nullptr, false, hasDoc)) {
+    st.documents.add(duplicateDocument(*doc));
+    g_docStatus = "Duplicated (unbound -- Save As gives it a file of its own).";
+  }
+  if (ImGui::MenuItem("Close Document", nullptr, false, hasDoc)) {
+    std::string err;
+    // Refuses a dirty document by name. The menu is not the place to offer a
+    // discard, so the message says what to do instead.
+    if (!st.documents.close(st.documents.activeIndex(), false, &err)) g_docStatus = err;
+  }
 }
 
 }  // namespace
@@ -890,7 +1154,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // ------------------------------------------------------------ menu bar
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
-      if (ImGui::MenuItem("New", "Cmd+N")) st.requestClear = true;
+      // "New" is the *canvas* command it has always been -- it clears the
+      // solver texture. "New Document" below is a different thing entirely,
+      // and the two are deliberately not merged: the canvas is not a
+      // document in this build, and a menu that implied otherwise would be
+      // the first place the gap got papered over.
+      if (ImGui::MenuItem("New Canvas", "Cmd+N")) st.requestClear = true;
+      ImGui::Separator();
+      // PLAN.md Phase 4 step 8 / PRD I18.
+      drawDocumentMenuItems(st, canvasW, canvasH);
       ImGui::Separator();
       // PLAN.md Phase 4 step 7 / PRD I15. No shortcut string: docs/shortcuts.md
       // has not assigned one and keymaps/default.json binds no action for it,
@@ -966,7 +1238,40 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
     if (ImGui::BeginMenu("Window")) {
       ImGui::MenuItem("ImGui demo", nullptr, &st.showDemo);
+      ImGui::Separator();
+      // The open documents, and which one the lifecycle commands act on.
+      // Phase 5 step 14's tab strip is this list drawn differently, not a
+      // different list (app/DocumentLifecycle.hpp).
+      if (st.documents.empty()) {
+        ImGui::TextDisabled("(no documents open)");
+      } else {
+        for (size_t i = 0; i < st.documents.count(); ++i) {
+          const OpenDocument* d = st.documents.at(i);
+          const std::string label =
+              documentDisplayName(*d) + (d->isDirty() ? " *" : "") + "##doc" + std::to_string(i);
+          if (ImGui::MenuItem(label.c_str(), nullptr, i == st.documents.activeIndex()))
+            st.documents.setActive(i);
+          if (ImGui::IsItemHovered() && d->isDirty())
+            ImGui::SetTooltip("%s", d->unsavedWorkSummary().c_str());
+        }
+      }
       ImGui::EndMenu();
+    }
+
+    // The active document, always visible rather than only inside a dialog:
+    // every lifecycle command in the File menu acts on this one, and a
+    // "Save" whose target is not on screen is how the wrong file gets
+    // overwritten. The `*` is the dirty marker.
+    if (const OpenDocument* activeForBar = st.documents.active()) {
+      ImGui::TextDisabled("| %s%s", documentDisplayName(*activeForBar).c_str(),
+                          activeForBar->isDirty() ? " *" : "");
+    }
+    if (!g_docStatus.empty()) {
+      const size_t firstLine = g_docStatus.find('\n');
+      const std::string oneLine =
+          firstLine == std::string::npos ? g_docStatus : g_docStatus.substr(0, firstLine);
+      ImGui::TextDisabled("| %s", oneLine.c_str());
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", g_docStatus.c_str());
     }
 
     // Right-aligned status, the way the classic apps put the zoom box.
@@ -1022,7 +1327,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // PLAN.md Phase 4 step 7 ("Export As"), defined out here for the same
   // reason the Add Guide popup above is: a popup opened from a menu item has
   // to be begun outside the menu bar's ID stack.
-  drawExportAsDialog(canvasW, canvasH);
+  drawExportAsDialog(st, canvasW, canvasH);
+
+  // PLAN.md Phase 4 step 8 ("Document lifecycle"), out here for the same
+  // reason: a modal opened from a menu item must be begun outside the menu
+  // bar's ID stack.
+  drawDocumentDialogs(st);
 
   const ImVec2 work = vp->WorkPos;
   const ImVec2 size = vp->WorkSize;

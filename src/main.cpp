@@ -357,6 +357,23 @@ int main(int argc, char** argv) {
     // build. Headless and GPU-free; writes and removes selftest_exportas_*
     // scratch files.
     const bool exportAsOk = np::runExportAsTest();
+    // Phase 4 step 8 ("Document lifecycle -- revert, duplicate document, save
+    // a copy, save incremental, open recent"; PRD I18, and I10/I11/I12 which
+    // every save path here must keep honouring): app/DocumentLifecycle's
+    // open-document record, the session that owns it, and the five
+    // operations. The duplicate is proven not to inherit the original's path,
+    // save-a-copy is proven to leave the document's path alone, the
+    // incremental naming rule is checked across gaps, collisions and
+    // already-versioned names, the recent list keeps a missing entry and says
+    // why instead of dropping it, and the PRD I10 carry -- unknown attributes
+    // and a whole foreign part -- is asserted intact after every operation
+    // that writes. Runs -- and asserts the correct answers -- in BOTH
+    // NP_USE_OIIO configurations; the record, the session, duplication, the
+    // naming rule and the recent list are identical in each, and the
+    // file-backed operations forward io/NpaintFile's own named refusal in the
+    // build that has no writer. Headless and GPU-free; writes and removes a
+    // selftest_lifecycle/ scratch directory.
+    const bool documentLifecycleOk = np::runDocumentLifecycleTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -368,7 +385,7 @@ int main(int argc, char** argv) {
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
-                    exportAsOk && strokeSpeedOk &&
+                    exportAsOk && documentLifecycleOk && strokeSpeedOk &&
                     idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();

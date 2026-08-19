@@ -1,6 +1,7 @@
 add_executable(naturalPaint
   main.cpp
   app/CurveEdit.cpp
+  app/DocumentLifecycle.cpp
   app/Keymap.cpp
   app/Latency.cpp
   app/Memory.cpp
