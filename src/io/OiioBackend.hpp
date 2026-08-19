@@ -232,4 +232,85 @@ struct OiioExrReadResult {
 // left behind, per io/NpaintFile's carry-scope rule.
 OiioExrReadResult oiioReadMultiPartExr(const std::string& path);
 
+// --- ImageCache, the residency layer --------------------------------------
+//
+// PLAN.md Phase 4 step 5. Same split as the multi-part functions above: these
+// are deliberately dumb, and every policy decision -- which sources may be
+// cached at all, what a fetch failure means, when a tile stops being clean --
+// lives in io/TileResidency.cpp, which compiles in both build configurations.
+//
+// The cache is process-wide and **created lazily, on the first call to
+// oiioTileCacheOpen()**, not at load or at static-initialisation time.
+// Measured: creating it and setting its attributes costs 0.11 MB resident, so
+// deferring it keeps ADR-0001's idle budget untouched by a code path no idle
+// process runs. It is a private cache (`ImageCache::create(false)`), not
+// OpenImageIO's shared singleton, so this project's budget cannot be changed
+// out from under it by anything else that links the library.
+
+// What one cached source looks like, as reported by the cache's own
+// ImageSpec for that subimage.
+struct OiioTileCacheOpen {
+  bool ok = false;
+  std::string error;
+  // The subimage's data window, in the file's own pixel coordinates.
+  int32_t dataX = 0, dataY = 0, dataWidth = 0, dataHeight = 0;
+  // 0 for a scanline-stored (untiled) subimage. io/TileResidency refuses
+  // those, with the measurement behind the refusal in its own header.
+  int32_t tileWidth = 0, tileHeight = 0;
+  int32_t channels = 0;
+  // OpenImageIO's TypeDesc spelling of the on-disk sample type, so this
+  // struct needs no OpenImageIO type -- same convention NpaintRawPart uses.
+  std::string sampleTypeName;
+  int32_t subimageCount = 0;
+};
+
+// Opens (or re-opens) `path` in the cache and reports `subimage`'s geometry.
+// Applies `budgetBytes` to the cache before the query. Reads no pixels.
+OiioTileCacheOpen oiioTileCacheOpen(const std::string& path, int32_t subimage,
+                                    int32_t miplevel, std::size_t budgetBytes);
+
+// Fetches one kTileSize x kTileSize, 4-channel RGBA tile whose top-left
+// document pixel is (`x`, `y`), as raw half words, into `out` -- which must
+// have room for kTileSize * kTileSize * 4 uint16_t.
+//
+// TypeDesc::HALF in and TypeDesc::HALF out, so the words that reach `out` are
+// the words on disk with no conversion stage anywhere: that is what lets
+// io/TileResidency assert bit-identity against the eager path at zero
+// tolerance, and it is the same "byte-identical, no conversion" claim
+// docs/document-format.md §1 makes for HALF channels generally.
+//
+// Returns false with OpenImageIO's own message in `*errorOut` on any failure.
+// **`out` is not written on failure** -- verified against this build, whose
+// get_pixels() leaves the destination untouched rather than zeroing it, which
+// is what makes "never serve zeros for an error" implementable at all.
+//
+// The caller is responsible for having checked that (`x`, `y`) lies inside
+// the subimage's data window: measured, a request outside it returns
+// *success* with zeros, which is the one failure mode of this API that cannot
+// be detected after the fact.
+bool oiioTileCacheFetchHalfRgba(const std::string& path, int32_t subimage, int32_t miplevel,
+                                int32_t x, int32_t y, uint16_t* out, std::string* errorOut);
+
+// The cache's own `stat:*` attributes. Mirrors io/TileResidency's
+// TileCacheStats field for field; that header documents what each one is for.
+struct OiioTileCacheStats {
+  int64_t memoryUsedBytes = 0;
+  int64_t imageSizeBytes = 0;
+  int32_t tilesCreated = 0;
+  int32_t tilesCurrent = 0;
+  int32_t tilesPeak = 0;
+  int64_t budgetBytes = 0;
+};
+
+// False when no cache has been created yet -- i.e. nothing has been opened in
+// cached mode. Never creates one, because "report the statistics" must not be
+// the thing that allocates the cache.
+bool oiioTileCacheStatistics(OiioTileCacheStats* out);
+
+// Drops `path`'s tiles and its open file handle. No-op with no cache.
+void oiioTileCacheInvalidate(const std::string& path);
+
+// Changes the budget on the existing cache. False with no cache.
+bool oiioTileCacheSetBudget(std::size_t budgetBytes);
+
 }  // namespace np

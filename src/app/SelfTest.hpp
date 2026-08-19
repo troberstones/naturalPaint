@@ -738,4 +738,62 @@ bool runFormatSupportTest();
 //  - PRD I8: the same document saved under a `.exr` name loads identically.
 bool runNpaintFormatTest();
 
+// Headless check on io/TileResidency -- OpenImageIO's `ImageCache` as the
+// residency layer for unmodified source tiles (PLAN.md Phase 4 step 5,
+// "the main reason the dependency earns its cost"; ADR-0001's lazy-residency
+// model; docs/document-format.md §1's claim that the cache serves our own
+// documents and not only imported files).
+//
+// **Not #ifdef'd out of the NP_USE_OIIO=OFF build**, and for a stronger
+// reason than runFormatSupportTest()/runNpaintFormatTest() have. Those two
+// cover features that only exist with a backend, so the OFF build can only
+// assert a refusal. Residency is not a feature, it is a *strategy*: the OFF
+// build has a complete and correct one (Eager), so most of this section runs
+// in both configurations and asserts the **same** answers rather than merely
+// the right answer for each build. A single `kOiioBuild` constant carries the
+// configuration for the parts that genuinely differ.
+//
+// Writes real files, like runNpaintFormatTest() and for the same reason -- a
+// residency layer is a layer over a file. Everything goes to
+// `selftest_residency_*` in the working directory and is removed again,
+// including the paths whose assertions failed.
+//
+// Covered, in order:
+//
+//  - **Both builds**: the eager strategy through the same interface the
+//    cached one satisfies -- Owned vs Absent, promotion from transparent
+//    black, resident bytes, and copy-on-*first*-write promoting exactly once;
+//    and `npaintLayerTileSource()`'s layer-to-subimage mapping over a
+//    hand-built carry, including a foreign part between two layers shifting
+//    the second layer's subimage.
+//  - **OFF build**: the refusal, which unlike io/NpaintFile's names a
+//    *complete* alternative, because PRD I1/I3 require opening and painting a
+//    file to behave identically here; and that a refused open leaves nothing
+//    half-built and no cache statistics to report.
+//  - **ON build, the demonstration**: a 2048x2048 document (256 tiles, 32.00
+//    MiB) saved as `.npaint`, then served two ways at once -- eagerly, and
+//    from the cache -- with every one of the 256 tiles compared by `memcmp`
+//    of all 128 KiB at **zero tolerance**. Resident bytes are printed for
+//    both strategies, which is the measurement the step exists to produce.
+//  - Cold and warm fetch cost, timed in-process over many iterations, printed
+//    per tile *and* scaled to a 2560x1440 viewport against phase 1.1's
+//    measured 12.1 ms p50 frame. The warm cost is asserted inside the derived
+//    per-tile budget; the cold cost is reported honestly, because it does not
+//    fit.
+//  - The cache's own `stat:*` accounting, and **eviction proven rather than
+//    assumed**: under a budget smaller than the document, re-reading an
+//    already-swept tile increments `tiles_created`, which shows that exact
+//    tile was dropped.
+//  - Copy-on-first-write end to end: a promoted tile starts as the file's
+//    pixels bit for bit, a painted texel survives both eviction and a full
+//    cache invalidation, the rest of that tile is still the file's, and an
+//    untouched neighbour is still Clean.
+//  - Every failure path, each of which must refuse rather than serve
+//    something plausible: a missing file (including a promotion that returns
+//    nullptr instead of zero-filling, which would erase what a stroke was
+//    painted on), a truncated file, a file changed on disk under the open
+//    cache, a read outside the data window, and an untiled source refused at
+//    open with the measurement behind the refusal.
+bool runTileResidencyTest();
+
 }  // namespace np

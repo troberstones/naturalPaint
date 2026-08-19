@@ -327,6 +327,20 @@ int main(int argc, char** argv) {
     // section that writes real scratch files, since a document format is a
     // file format; it removes every one of them.
     const bool npaintOk = np::runNpaintFormatTest();
+    // Phase 4 step 5 ("Wire OIIO's `ImageCache` as the residency layer for
+    // unmodified source tiles. This is the main reason the dependency earns
+    // its cost"; ADR-0001; docs/document-format.md §1): io/TileResidency's
+    // two strategies behind one interface -- a 2048x2048 .npaint served both
+    // eagerly and from the cache with all 256 tiles compared bit for bit at
+    // zero tolerance, resident bytes and fetch cost printed for both,
+    // eviction proven by a re-read incrementing the cache's tiles_created,
+    // copy-on-first-write surviving that eviction, and every
+    // missing/truncated/changed-on-disk path refusing rather than serving
+    // plausible pixels. Runs -- and asserts the same answers, not merely the
+    // correct ones -- in BOTH NP_USE_OIIO configurations, because Eager is a
+    // complete residency strategy and not a degraded mode. Headless and
+    // GPU-free; writes and removes selftest_residency_* scratch files.
+    const bool tileResidencyOk = np::runTileResidencyTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -337,7 +351,8 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
-                    curveEditOk && exportOk && formatSupportOk && npaintOk && strokeSpeedOk &&
+                    curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    strokeSpeedOk &&
                     idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();

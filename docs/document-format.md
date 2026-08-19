@@ -32,6 +32,32 @@ A further consequence: because the on-disk layout is tiled and mip-mapped, **OII
 `ImageCache` becomes the residency layer for our own documents**, not only for imported
 files. ADR-0001's lazy-residency model is then served by machinery already in the plan.
 
+> ✅ **Measured, 2026-08-19, while implementing PLAN.md phase 4 step 5: this claim holds,
+> and it holds *better* for our own documents than for imported files.** `io/TileResidency`
+> opens a `.npaint` layer part as an OpenImageIO `ImageCache` subimage and serves its
+> 128² tiles on demand; all 256 tiles of a 2048×2048 document come back **bit-identical**
+> to the eager path (`memcmp` of all 128 KiB, zero tolerance — `HALF` in, `HALF` out, no
+> conversion stage), at **73 µs cold and 5.6 µs warm** per tile, with our own resident cost
+> falling from **32.00 MiB to 0.12 MiB** (one staging tile). Part 0, the composite, is
+> cache-addressable on the same terms. `--selftest`'s `tile residency` section is the proof.
+>
+> Two corrections to the wording, though, both measured:
+>
+> - **"and mip-mapped" is not doing any work here, because nothing writes a pyramid.**
+>   The residency runs entirely at miplevel 0. Tiling is the whole of what makes this
+>   possible; the pyramid would only matter for a zoomed-out fetch, and §1's table pairs
+>   it with a display pyramid that lives on the GPU side.
+> - **"not only for imported files" reads as if imports were the easy case. They are the
+>   case that does not work.** PNG/JPEG/TGA/BMP — every format `io/ImageDecode` handles —
+>   are scanline-stored, and OpenImageIO's cache gives them no partial residency: with
+>   `autotile` off, one 128×128 request against a 2048×2048 PNG pulls the **whole 16.00 MiB
+>   image** into the cache (15.9 ms); with `autotile=128` the memory is bounded but
+>   scattered cold tiles cost **1549 µs each** against 49 µs for a tiled EXR, because the
+>   decoder restarts to reach a scanline it has passed. `io/TileResidency` therefore
+>   refuses untiled sources by name and leaves them on the eager path. The tiled on-disk
+>   layout this section argues for is not merely *compatible* with the cache — it is the
+>   only reason the cache is usable at all.
+
 ---
 
 ## 2. File layout

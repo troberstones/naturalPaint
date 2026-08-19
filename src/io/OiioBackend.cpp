@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "color/Space.hpp"
+#include "core/Tile.hpp"
 
 // The one and only translation unit in this project that may include an
 // OpenImageIO header -- see io/OiioBackend.hpp's "no OpenImageIO header is
@@ -13,6 +14,7 @@
 // NP_USE_OIIO is ON, so with the option OFF neither these includes nor the
 // symbols they pull in exist anywhere in the binary.
 #include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/imagecache.h>
 #include <OpenImageIO/imageio.h>
 #include <OpenImageIO/typedesc.h>
 
@@ -596,6 +598,162 @@ OiioExrReadResult oiioReadMultiPartExr(const std::string& path) {
   }
   result.ok = true;
   return result;
+}
+
+// --- ImageCache -----------------------------------------------------------
+
+namespace {
+
+// The one cache, created on first use and never before.
+//
+// A function-local static rather than a namespace-scope object on purpose: a
+// namespace-scope `std::shared_ptr<ImageCache>` would be constructed during
+// static initialisation, i.e. before `main()`, which would put a cost on
+// every run of the binary including the ones that never open a file. That is
+// exactly the mistake PLAN.md Phase 4 step 6's correction block records
+// (OIIO's own init is already lazy; the cost that is real is dyld's) and
+// there is no reason to add a new one on top of it.
+//
+// `create(false)` gives a private cache rather than OpenImageIO's shared
+// singleton. The shared one is global to the process across every library
+// that links OIIO, so its budget -- the number this whole step turns on --
+// could be changed by code this project does not own.
+OIIO::ImageCache* tileCache(bool createIfAbsent) {
+  static std::shared_ptr<OIIO::ImageCache> cache;
+  if (!cache && createIfAbsent) {
+    cache = OIIO::ImageCache::create(false);
+    // autotile off: an untiled source is not cached tile-wise at all, it is
+    // cached whole. io/TileResidency refuses untiled sources for that reason
+    // (and for the measured per-tile cost of the alternative), so turning
+    // autotile on here would only make the refusal look unnecessary while
+    // changing nothing about the numbers behind it.
+    cache->attribute("autotile", 0);
+    // automip off: nothing this build writes carries a mip pyramid, and the
+    // only pyramid in this codebase is ui/NaturalPaintUI's display-side one.
+    // Synthesising levels here would spend budget on data no caller asks for.
+    cache->attribute("automip", 0);
+    // Errors belong to the caller that asked for the fetch, not to stderr.
+    cache->attribute("failure_retries", 0);
+  }
+  return cache.get();
+}
+
+void applyBudget(OIIO::ImageCache* cache, std::size_t budgetBytes) {
+  const float mb = static_cast<float>(static_cast<double>(budgetBytes) / (1024.0 * 1024.0));
+  cache->attribute("max_memory_MB", mb);
+}
+
+}  // namespace
+
+OiioTileCacheOpen oiioTileCacheOpen(const std::string& path, int32_t subimage,
+                                    int32_t miplevel, std::size_t budgetBytes) {
+  OiioTileCacheOpen out;
+  OIIO::ImageCache* cache = tileCache(true);
+  applyBudget(cache, budgetBytes);
+
+  const OIIO::ustring file(path);
+  const OIIO::ImageSpec* spec = cache->imagespec(file, subimage, miplevel);
+  if (!spec) {
+    out.error = cache->geterror();
+    if (out.error.empty()) {
+      out.error = "OpenImageIO's ImageCache could not describe subimage " +
+                  std::to_string(subimage) + " miplevel " + std::to_string(miplevel) +
+                  " of '" + path + "'.";
+    }
+    return out;
+  }
+
+  int subimages = 0;
+  if (!cache->get_image_info(file, subimage, miplevel, OIIO::ustring("subimages"),
+                             OIIO::TypeDesc::INT, &subimages)) {
+    (void)cache->geterror();
+    subimages = 0;
+  }
+
+  out.ok = true;
+  out.dataX = spec->x;
+  out.dataY = spec->y;
+  out.dataWidth = spec->width;
+  out.dataHeight = spec->height;
+  out.tileWidth = spec->tile_width;
+  out.tileHeight = spec->tile_height;
+  out.channels = spec->nchannels;
+  out.sampleTypeName = spec->format.c_str();
+  out.subimageCount = subimages;
+  return out;
+}
+
+bool oiioTileCacheFetchHalfRgba(const std::string& path, int32_t subimage, int32_t miplevel,
+                                int32_t x, int32_t y, uint16_t* out, std::string* errorOut) {
+  OIIO::ImageCache* cache = tileCache(false);
+  if (!cache) {
+    if (errorOut) {
+      *errorOut =
+          "tile fetch failed: no ImageCache exists -- oiioTileCacheOpen() must succeed "
+          "before a tile of '" + path + "' can be fetched.";
+    }
+    return false;
+  }
+  if (!out) {
+    if (errorOut) *errorOut = "tile fetch failed: null destination buffer.";
+    return false;
+  }
+
+  const OIIO::ustring file(path);
+  const bool got = cache->get_pixels(file, subimage, miplevel, x, x + kTileSize, y,
+                                     y + kTileSize, 0, 1, 0, Tile::kChannels,
+                                     OIIO::TypeDesc::HALF, out);
+  if (!got) {
+    if (errorOut) {
+      std::string message = cache->geterror();
+      if (message.empty()) message = "OpenImageIO reported no reason.";
+      *errorOut = "tile fetch failed at (" + std::to_string(x) + "," + std::to_string(y) +
+                  ") in subimage " + std::to_string(subimage) + " of '" + path + "': " +
+                  message;
+    }
+    return false;
+  }
+  return true;
+}
+
+bool oiioTileCacheStatistics(OiioTileCacheStats* out) {
+  OIIO::ImageCache* cache = tileCache(false);
+  if (!cache || !out) return false;
+
+  auto readInt64 = [cache](const char* name) {
+    int64_t value = 0;
+    if (!cache->getattribute(name, OIIO::TypeDesc::INT64, &value)) (void)cache->geterror();
+    return value;
+  };
+  auto readInt = [cache](const char* name) {
+    int value = 0;
+    if (!cache->getattribute(name, OIIO::TypeDesc::INT, &value)) (void)cache->geterror();
+    return value;
+  };
+
+  out->memoryUsedBytes = readInt64("stat:cache_memory_used");
+  out->imageSizeBytes = readInt64("stat:image_size");
+  out->tilesCreated = readInt("stat:tiles_created");
+  out->tilesCurrent = readInt("stat:tiles_current");
+  out->tilesPeak = readInt("stat:tiles_peak");
+
+  float budgetMb = 0.0f;
+  if (!cache->getattribute("max_memory_MB", budgetMb)) (void)cache->geterror();
+  out->budgetBytes = static_cast<int64_t>(static_cast<double>(budgetMb) * 1024.0 * 1024.0);
+  return true;
+}
+
+void oiioTileCacheInvalidate(const std::string& path) {
+  OIIO::ImageCache* cache = tileCache(false);
+  if (!cache) return;
+  cache->invalidate(OIIO::ustring(path), true);
+}
+
+bool oiioTileCacheSetBudget(std::size_t budgetBytes) {
+  OIIO::ImageCache* cache = tileCache(false);
+  if (!cache) return false;
+  applyBudget(cache, budgetBytes);
+  return true;
 }
 
 }  // namespace np

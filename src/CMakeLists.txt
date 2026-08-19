@@ -22,6 +22,7 @@ add_executable(naturalPaint
   io/ImageDecode.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp
+  io/TileResidency.cpp
   ops/PointOps.cpp
   paint/Palette.cpp
   sim/PaintSim.cpp
