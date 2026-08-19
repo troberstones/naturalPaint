@@ -72,13 +72,20 @@ struct CanvasView {
   // kept here anyway because it is still pure view state, never document
   // state.
   bool grayscale = false;
-  // PLAN.md Phase 3 step 6 ("Apply pass -- shaper -> 3-D LUT fetch ->
-  // un-shape"): the grading preview toggle, the same "pure view state,
-  // never document state" shape as grayscale immediately above -- but
-  // unlike grayscale (a self-contained GPU blit with no other inputs),
-  // this one reaches into AppState::opStack and sim::PaintSim's bake/blit
-  // pipeline (PaintSim::updateGradePreview() + shaders/grade_blit.wgsl)
-  // rather than shaders/grayscale_blit.wgsl alone.
+  // PLAN.md Phase 3 step 6 ("Apply pass") / step 8 ("Op-stack UI"): the
+  // grading preview toggle, the same "pure view state, never document
+  // state" shape as grayscale immediately above -- but unlike grayscale (a
+  // self-contained GPU blit with no other inputs), this one reaches into
+  // AppState::opStack and sim::PaintSim's bake/blit pipeline
+  // (PaintSim::updateGradePreview() + shaders/grade_blit.wgsl) rather than
+  // shaders/grayscale_blit.wgsl alone. User-visible and explicit, exactly
+  // like grayscale: grading does NOT silently switch on just because
+  // st.opStack becomes non-empty -- a user builds a stack via the GRADE
+  // section's real op-authoring UI (ui/MacPaintUI.cpp, step 8) and flips
+  // this on separately to preview it, via the "Preview Graded Output"
+  // checkbox at that section's top (the one and only way to toggle it --
+  // step 6's earlier "Test Grade (debug)" View-menu item, which hardcoded
+  // two fixed op indices main.cpp no longer seeds, is gone).
   bool grade = false;
 };
 

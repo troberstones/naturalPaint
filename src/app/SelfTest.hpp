@@ -497,4 +497,40 @@ bool runLutBakeTest(GpuContext& gpu);
 //    the --selftest level).
 bool runApplyPassTest(GpuContext& gpu, PaintSim& sim);
 
+// Headless, GPU-free check on app/CurveEdit.hpp (PLAN.md Phase 3 step 8's
+// curve widget, factored out for testability the same way app/Snapping.hpp
+// was for Phase 2 step 12 -- see that header's own doc comment and
+// runGuidesGridSnapTest() above for the precedent this mirrors). Pure CPU
+// list mutation and screen<->curve-space geometry, no ImGui/GPU/PaintSim
+// involvement -- the plot draw, click/drag/right-click handling and channel
+// tabs themselves are UI (ui/MacPaintUI.cpp) with no headless driver; what's
+// covered here is everything that UI calls into:
+//
+//  - curveToPlot()/plotToCurve(): a hand-computed round trip at a spread of
+//    curve-space points (including the y-flip -- curve-space (0,0), y-up,
+//    must land at plot-local (0, plotSize), the bottom-left corner in
+//    screen-space y-down) and the inverse recovering the original point;
+//    plotSize <= 0 returns (0,0) rather than dividing by zero.
+//  - hitTestPoint(): a point exactly on a control point hits it; a point
+//    just inside radiusPx hits, just outside misses; an empty curve always
+//    misses; two points equidistant from the query resolve to the earlier
+//    index (the documented tie-break).
+//  - insertPoint(): inserting several points in a deliberately scrambled
+//    order (not ascending, not descending) leaves `curve` sorted ascending
+//    by `.x` every time, checked after each insertion, not just at the end;
+//    out-of-[0,1] input is clamped before insertion.
+//  - movePoint(): moving a point's x past a neighbour re-sorts the curve
+//    (the point that was originally to that neighbour's other side is now
+//    found at the opposite relative position) while a move that doesn't
+//    cross anyone leaves relative order unchanged; the returned index
+//    matches where the moved point actually ended up; out-of-[0,1] targets
+//    are clamped.
+//  - removePoint(): removes exactly the intended point, shifting later
+//    indices down by one, leaving the rest of the curve's order untouched.
+//  - The 0/1-point degenerate cases evalCurve() itself relies on (ops/
+//    PointOps.hpp): insertPoint() into an empty curve and removePoint() back
+//    down to empty both leave `curve` in the exact state evalCurve()
+//    documents as identity.
+bool runCurveEditTest();
+
 }  // namespace np

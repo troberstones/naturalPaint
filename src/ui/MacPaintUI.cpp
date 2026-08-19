@@ -4,8 +4,10 @@
 #include <cmath>
 #include <cstdio>
 
+#include "app/CurveEdit.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
+#include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
 #include "imgui.h"
 
 namespace np {
@@ -344,6 +346,314 @@ float distancePointToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
   return std::sqrt(dx * dx + dy * dy);
 }
 
+// PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and a
+// curve widget operating in the shaper domain"). ---------------------------
+
+const char* pointOpKindName(PointOpKind k) {
+  switch (k) {
+    case PointOpKind::Levels:       return "Levels";
+    case PointOpKind::Curves:       return "Curves";
+    case PointOpKind::Exposure:     return "Exposure";
+    case PointOpKind::Saturation:   return "Saturation";
+    case PointOpKind::Grayscale:    return "Grayscale";
+    case PointOpKind::ChannelMixer: return "Channel Mixer";
+    default:                       return "?";
+  }
+}
+
+// The one PLAN.md step 8 names explicitly ("a curve widget operating in the
+// shaper domain"). ImGui glue around app/CurveEdit.hpp's pure geometry/
+// list-mutation helpers -- that header's own doc comment: "the plot, the
+// click/drag/right-click handling and the spline draw itself are UI...
+// everything here is what that UI calls into." Edits `curve` in place;
+// returns true on any frame it actually changed (a point added, moved or
+// removed), which the caller uses to decide whether to write the containing
+// Op back through OpStack::setOp() -- this function never touches OpStack
+// itself, matching every other per-kind editor in drawGradeSection() below.
+//
+// Axes are plain [0,1]x[0,1] shaper-domain space (ADR-0004) -- Curve control
+// points are already shaper-domain coordinates by contract, so nothing here
+// calls color::shaperEncode/Decode; see app/CurveEdit.hpp's own header
+// comment for why plotting needs no colour-domain conversion at all.
+bool drawCurveWidget(Curve& curve) {
+  constexpr float kPlotSize = 200.0f;
+  constexpr float kHitRadiusPx = 8.0f;
+  constexpr int kSamples = 64;
+
+  bool changed = false;
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  // Scoped by the caller's own PushID(opIndex) further up the ID stack, so
+  // each Curves op in the stack keeps its own drag state independently.
+  const ImGuiID dragKey = ImGui::GetID("curveDragIdx");
+  int dragIdx = storage->GetInt(dragKey, -1);
+
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 plotMax(origin.x + kPlotSize, origin.y + kPlotSize);
+  dl->AddRectFilled(origin, plotMax, IM_COL32(20, 20, 22, 255));
+
+  // The spline itself, sampled across shaper-domain x via the same
+  // evalCurve() the grading pipeline (ops/PointOps.cpp, color/LutBake) runs
+  // -- the plotted line is never a separate approximation of what grading
+  // will actually do.
+  ImVec2 prevPt{};
+  for (int s = 0; s <= kSamples; ++s) {
+    const float cx = static_cast<float>(s) / static_cast<float>(kSamples);
+    const float cy = evalCurve(curve, cx);
+    float px = 0.0f, py = 0.0f;
+    curveToPlot(cx, cy, kPlotSize, px, py);
+    const ImVec2 pt(origin.x + px, origin.y + py);
+    if (s > 0) dl->AddLine(prevPt, pt, IM_COL32(255, 200, 90, 255), 1.5f);
+    prevPt = pt;
+  }
+  for (size_t i = 0; i < curve.size(); ++i) {
+    float px = 0.0f, py = 0.0f;
+    curveToPlot(curve[i].x, curve[i].y, kPlotSize, px, py);
+    dl->AddCircleFilled(ImVec2(origin.x + px, origin.y + py), 4.0f,
+                        IM_COL32(240, 240, 235, 255));
+  }
+  dl->AddRect(origin, plotMax, ImGui::GetColorU32(ImGuiCol_Border));
+
+  ImGui::InvisibleButton("##curvePlot", ImVec2(kPlotSize, kPlotSize));
+  const bool hovered = ImGui::IsItemHovered();
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  const float mx = mouse.x - origin.x;
+  const float my = mouse.y - origin.y;
+
+  // Click-down: grab an existing point within radius, or plant a new one at
+  // the click location and grab that -- mirrors this file's own
+  // st.pendingGuide "click-down starts a drag, IsMouseDown continues it"
+  // idiom (see the canvas block's ruler drag-to-create above) rather than a
+  // from-scratch input pattern. Capped at kMaxCurvePointsPerChannel
+  // (color/LutBake.hpp) -- color::LutBake's GPU kernel truncates any longer
+  // curve to its first 16 points when baking (with a stderr warning), so
+  // letting the widget accept more here would let the plotted spline
+  // silently diverge from what grading actually bakes; existing points
+  // beyond the cap (none can exist, since insertion is capped) would still
+  // be movable/deletable if they somehow did.
+  if (ImGui::IsItemActivated()) {
+    const auto hit = hitTestPoint(curve, mx, my, kPlotSize, kHitRadiusPx);
+    if (hit) {
+      dragIdx = static_cast<int>(*hit);
+    } else if (curve.size() < static_cast<size_t>(kMaxCurvePointsPerChannel)) {
+      float cx = 0.0f, cy = 0.0f;
+      plotToCurve(mx, my, kPlotSize, cx, cy);
+      dragIdx = static_cast<int>(insertPoint(curve, cx, cy));
+      changed = true;
+    }
+    storage->SetInt(dragKey, dragIdx);
+  }
+  if (dragIdx >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    float cx = 0.0f, cy = 0.0f;
+    plotToCurve(mx, my, kPlotSize, cx, cy);
+    dragIdx = static_cast<int>(movePoint(curve, static_cast<size_t>(dragIdx), cx, cy));
+    storage->SetInt(dragKey, dragIdx);
+    changed = true;
+  } else if (dragIdx >= 0) {
+    dragIdx = -1;
+    storage->SetInt(dragKey, dragIdx);
+  }
+
+  // Right-click deletes the point under the cursor, if any -- PLAN.md step
+  // 8's own "double-click (or right-click, your call)" wording, decided in
+  // favour of right-click: a double-click's second click also fires as an
+  // ordinary left click one event earlier (Dear ImGui's own documented
+  // behaviour -- "note that a double-click will also report
+  // IsMouseClicked() == true"), which would insert-then-immediately-delete
+  // a point when double-clicking empty plot area under the click-to-add
+  // handler just above. Right-click has no such overlap with the left-click
+  // gestures, so it needs no special-casing around it.
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    const auto hit = hitTestPoint(curve, mx, my, kPlotSize, kHitRadiusPx);
+    if (hit) {
+      removePoint(curve, *hit);
+      changed = true;
+      // Indices may have shifted under the removal -- abandon any
+      // in-progress drag rather than risk moving the wrong point next frame.
+      dragIdx = -1;
+      storage->SetInt(dragKey, dragIdx);
+    }
+  }
+
+  if (hovered)
+    ImGui::SetTooltip("Click empty area: add point\nDrag a point: move it\n"
+                      "Right-click a point: delete it");
+
+  ImGui::TextDisabled("%d / %d points", static_cast<int>(curve.size()),
+                      kMaxCurvePointsPerChannel);
+  return changed;
+}
+
+// The rest of PLAN.md step 8: add/list/toggle/reorder/delete, plus the
+// per-kind inline editors -- deliberately minimal outside Curves (see this
+// step's own scope notes below at each kind). Called once from the
+// ##controls panel's GRADE section, mirroring that panel's existing
+// TextUnformatted/Separator/Dummy idiom for every other section (BRUSH,
+// PIGMENT, OIL/INK/WATER, GRID, SOLVER above it).
+void drawGradeSection(AppState& st) {
+  ImGui::Checkbox("Preview Graded Output", &st.view.grade);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Shows the canvas through the op stack below\n"
+                      "(PLAN.md Phase 3's grading pipeline). Off by\n"
+                      "default, the same as Grayscale Preview above --\n"
+                      "grading never turns on just because the stack\n"
+                      "below is non-empty.");
+
+  // 1. Add -- PLAN.md step 8 item 1. A new op always starts disabled: this
+  // codebase already has one established "build then reveal" pattern for
+  // brand-new content (a freshly dragged guide, a newly placed layer) never
+  // exists, so "add a not-yet-visible op, then opt it in" is the safer
+  // default over "adding an op instantly changes what you see" -- the same
+  // reasoning CanvasView::grade itself follows for the whole preview.
+  static int newOpKindIdx = 0;
+  const char* kKindNames[] = {"Levels", "Curves", "Exposure",
+                              "Saturation", "Grayscale", "Channel Mixer"};
+  ImGui::SetNextItemWidth(150.0f);
+  ImGui::Combo("##newOpKind", &newOpKindIdx, kKindNames, IM_ARRAYSIZE(kKindNames));
+  ImGui::SameLine();
+  if (ImGui::Button("+ Add")) {
+    Op op;
+    op.opClass = OpClass::PointA;
+    op.enabled = false;
+    op.pointKind = static_cast<PointOpKind>(newOpKindIdx);
+    st.opStack.add(op);
+  }
+
+  // 2/3. List, one row per op in stack order, each with an enable checkbox,
+  // a kind label, up/down/delete, and (for Curves) the widget above.
+  //
+  // `op` is a *copy* of st.opStack.at(i), not a reference -- reorder()/
+  // remove() erase-and-insert into OpStack's internal std::vector<Op>,
+  // which can invalidate references to later elements; holding a reference
+  // across one of those calls and then reading it again in the same
+  // iteration (e.g. the per-kind editor below) would be exactly that bug.
+  // `structureChanged` stops the loop the same frame a reorder/remove
+  // fires, rather than continuing to render rows against indices that no
+  // longer mean what they did a moment ago -- the list simply reflects the
+  // new state from the next frame on, standard immediate-mode practice.
+  bool structureChanged = false;
+  for (size_t i = 0; i < st.opStack.size() && !structureChanged; ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    Op op = st.opStack.at(i);
+
+    bool enabled = op.enabled;
+    // Must go through OpStack::setEnabled(), never `op.enabled = ...`
+    // directly: `op` here is a local copy, so a direct mutation wouldn't
+    // even reach the live stack, and OpStack doesn't expose a non-const
+    // reference to mutate in place either way -- setEnabled() is the only
+    // path that bumps version(), which updateGradePreview()'s rebake gate
+    // depends on entirely.
+    if (ImGui::Checkbox("##en", &enabled)) st.opStack.setEnabled(i, enabled);
+    ImGui::SameLine();
+    ImGui::TextUnformatted(pointOpKindName(op.pointKind));
+
+    ImGui::BeginDisabled(i == 0);
+    if (ImGui::SmallButton("Up")) {
+      st.opStack.reorder(i, i - 1);
+      structureChanged = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(i + 1 >= st.opStack.size());
+    if (ImGui::SmallButton("Down")) {
+      st.opStack.reorder(i, i + 1);
+      structureChanged = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Delete")) {
+      st.opStack.remove(i);
+      structureChanged = true;
+    }
+
+    // 3. Per-kind inline editor -- deliberately minimal, not exhaustive
+    // polish (see each case's own comment for the specific scope cut).
+    // Skipped once structureChanged is true: `op` may already be stale
+    // (see the comment above the loop), and the row is about to disappear
+    // from the very next frame regardless.
+    if (!structureChanged) {
+      ImGui::Indent();
+      bool changed = false;
+      switch (op.pointKind) {
+        case PointOpKind::Exposure:
+          // Linear-light stops (ops/PointOps.hpp's ExposureParams -- the
+          // one op deliberately NOT in the shaper domain). +-5 stops is a
+          // generously wide but ordinary editing range.
+          changed = ImGui::SliderFloat("Stops", &op.exposure.stops, -5.0f, 5.0f);
+          break;
+        case PointOpKind::Saturation:
+          // lumaWeights stays at kRec709LumaWeights -- not exposed in this
+          // narrow scope, matching Grayscale's own cut below for the same
+          // shared weight.
+          changed = ImGui::SliderFloat("Scale", &op.saturation.scale, 0.0f, 2.0f);
+          break;
+        case PointOpKind::Levels: {
+          // ONE shared LevelsParams editor applied identically to all
+          // three levels[0..2] entries on any change -- PLAN.md step 2's
+          // own wording: "a composite levels adjustment is just the caller
+          // passing the same LevelsParams for all three channels, not a
+          // separate code path." Per-channel authoring is out of this
+          // narrow scope.
+          LevelsParams p = op.levels[0];
+          bool ch = false;
+          ch |= ImGui::SliderFloat("Black in", &p.blackIn, 0.0f, 1.0f);
+          ch |= ImGui::SliderFloat("White in", &p.whiteIn, 0.0f, 1.0f);
+          ch |= ImGui::SliderFloat("Gamma", &p.gamma, 0.1f, 4.0f);
+          ch |= ImGui::SliderFloat("Black out", &p.blackOut, 0.0f, 1.0f);
+          ch |= ImGui::SliderFloat("White out", &p.whiteOut, 0.0f, 1.0f);
+          if (ch) {
+            op.levels[0] = op.levels[1] = op.levels[2] = p;
+            changed = true;
+          }
+          break;
+        }
+        case PointOpKind::Grayscale:
+          // No weight editor in this narrow scope -- default
+          // kRec709LumaWeights only. Fully functional either way: add/
+          // toggle/reorder/delete all work, and it bakes and grades
+          // correctly at the default weights. A per-channel weight editor
+          // is real, separate scope PLAN.md step 8's literal wording (it
+          // names only "a curve widget," singular) doesn't call for.
+          ImGui::TextDisabled("(default Rec.709 weights -- no editor in this scope)");
+          break;
+        case PointOpKind::ChannelMixer:
+          // Same treatment as Grayscale immediately above, for the same
+          // reason -- a 12-value 3x4 matrix editor is real, separate scope.
+          ImGui::TextDisabled("(identity matrix -- no matrix editor in this scope)");
+          break;
+        case PointOpKind::Curves: {
+          // The one PLAN.md step 8 explicitly calls out. Channel tabs
+          // (R/G/B) pick which of curves[0..2] the widget above shows/
+          // edits; selection persists per-op-row via ImGui's own ID-scoped
+          // state storage (GetStateStorage()), not a new AppState field --
+          // this is UI-only state, exactly like drawCurveWidget()'s own
+          // drag-index storage right above it.
+          ImGuiStorage* storage = ImGui::GetStateStorage();
+          const ImGuiID chKey = ImGui::GetID("curveChannel");
+          int channel = storage->GetInt(chKey, 0);
+          const char* chNames[3] = {"R", "G", "B"};
+          for (int c = 0; c < 3; ++c) {
+            if (c > 0) ImGui::SameLine();
+            const bool sel = channel == c;
+            if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetColorU32(ImGuiCol_ButtonActive));
+            if (ImGui::SmallButton(chNames[c])) {
+              channel = c;
+              storage->SetInt(chKey, c);
+            }
+            if (sel) ImGui::PopStyleColor();
+          }
+          if (drawCurveWidget(op.curves[static_cast<size_t>(channel)])) changed = true;
+          break;
+        }
+      }
+      if (changed) st.opStack.setOp(i, op);
+      ImGui::Unindent();
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::PopID();
+  }
+}
+
 }  // namespace
 
 void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
@@ -401,17 +711,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (ImGui::MenuItem("Reset Rotation", "Shift+R")) st.view.rotation = 0.0f;
       ImGui::Separator();
       ImGui::MenuItem("Grayscale Preview", "Cmd+Y", &st.view.grayscale);
-      // PLAN.md Phase 3 step 6 debug scaffolding -- temporary, explicitly
-      // NOT step 8's real op-authoring UI. See main.cpp's AppState-
-      // construction comment for the full rationale: this is the only
-      // way to exercise the Apply pass in the running app before a real
-      // reorder/toggle/delete/curve widget exists. Flips both of the two
-      // fixed ops main.cpp seeds into st.opStack (indices 0 and 1)
-      // together, matching however this checkbox itself just toggled.
-      if (ImGui::MenuItem("Test Grade (debug)", nullptr, &st.view.grade)) {
-        st.opStack.setEnabled(0, st.view.grade);
-        st.opStack.setEnabled(1, st.view.grade);
-      }
       ImGui::Separator();
       // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD
       // Q5-Q7). Rulers is deliberately the one item here with no shortcut
@@ -717,6 +1016,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     if (ImGui::Button("Clear canvas")) st.requestClear = true;
     ImGui::SameLine();
     if (ImGui::Button("Reload shaders")) st.requestReload = true;
+
+    // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and
+    // a curve widget operating in the shaper domain"), the last step of
+    // Phase 3. Same TextUnformatted/Separator/Dummy idiom as every section
+    // above -- see drawGradeSection()'s own doc comment for the full
+    // breakdown of what's here and what's deliberately left out.
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::TextUnformatted("GRADE");
+    ImGui::Separator();
+    drawGradeSection(st);
   }
   ImGui::End();
 

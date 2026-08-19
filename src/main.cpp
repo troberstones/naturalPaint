@@ -287,6 +287,12 @@ int main(int argc, char** argv) {
     // a real PaintSim -- the same shared instance every other PaintSim-
     // backed --selftest case in this chain already uses.
     const bool applyPassOk = np::runApplyPassTest(gpu, *s);
+    // Phase 3 step 8 ("Op-stack UI... and a curve widget operating in the
+    // shaper domain"): app/CurveEdit.hpp's pure screen<->curve-space
+    // geometry and list-mutation math -- everything the interactive curve
+    // widget (ui/MacPaintUI.cpp) calls into. Also headless and GPU-free --
+    // pure CPU, no PaintSim involvement.
+    const bool curveEditOk = np::runCurveEditTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -297,7 +303,7 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
-                    strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    curveEditOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -340,30 +346,12 @@ int main(int argc, char** argv) {
   }
 
   np::AppState st;
-  // PLAN.md Phase 3 step 6 debug scaffolding -- temporary, explicitly NOT
-  // step 8's real op-authoring UI (reorder/toggle/delete/curve widget).
-  // No op-authoring UI exists before step 8, so without this seed nothing
-  // in the interactive app could ever construct a non-empty OpStack, and
-  // the whole Apply pass would stay invisible in the running app --
-  // exactly the situation Phase 3 steps 1-5 and 7 are already in.
-  // ui/MacPaintUI.cpp's "Test Grade (debug)" checkbox flips both of these
-  // fixed ops on/off together via OpStack::setEnabled(), so the grading
-  // preview has one clearly visible combined effect (desaturate 70% +
-  // brighten half a stop) to toggle. Both start disabled; indices 0 and 1
-  // are load-bearing -- MacPaintUI.cpp's checkbox handler hardcodes them.
-  np::Op satOp;
-  satOp.opClass = np::OpClass::PointA;
-  satOp.enabled = false;
-  satOp.pointKind = np::PointOpKind::Saturation;
-  satOp.saturation.scale = 0.3f;
-  st.opStack.add(satOp);
-  np::Op expOp;
-  expOp.opClass = np::OpClass::PointA;
-  expOp.enabled = false;
-  expOp.pointKind = np::PointOpKind::Exposure;
-  expOp.exposure.stops = 0.5f;
-  st.opStack.add(expOp);
-
+  // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring
+  // UI (ui/MacPaintUI.cpp's GRADE section: add/reorder/toggle/delete, plus
+  // the curve widget) is how a user populates it now. Earlier, before this
+  // step existed, this constructor seeded two fixed debug ops here so the
+  // Apply pass (step 6) had something to show in the running app; that
+  // scaffolding is gone now that real UI exists.
   st.sim.brushRadius = st.brush.radius;
   // Fixed timestep (PRD H7): the look of a wash should not depend on the
   // frame rate. `st.sim.dt` is set once, here, to the constant physics tick
