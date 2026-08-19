@@ -1,14 +1,21 @@
 #include "io/Export.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 #include "color/Space.hpp"
 #include "core/Layer.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
+#include "io/Capabilities.hpp"
+
+#if defined(NP_USE_OIIO)
+#include "io/OiioBackend.hpp"
+#endif
 
 // NOTE on STB_IMAGE_WRITE_IMPLEMENTATION: this file is the one translation
 // unit that defines it, so this is where stb_image_write.h's function bodies
@@ -29,40 +36,28 @@
 namespace np {
 namespace {
 
-// --- Format capability table --------------------------------------------
+// --- Where "what can this format actually carry" now lives ---------------
 //
-// The single place "what can this format actually carry" is written down.
-// Every refusal below reads from here rather than re-deriving the answer,
-// so there is no way for one code path to believe TGA is 16-bit-capable
-// while another believes it isn't.
+// It used to be a `capsFor()` table right here, covering exactly PRD I1's
+// four stb formats and their two possible depths. That table is now
+// io/Capabilities' kStbCapabilities, moved verbatim -- because from step 2
+// on the answer is no longer knowable at compile time: whether EXR is
+// writable, and at which sample types, depends on which OpenImageIO this
+// binary linked against and which plugins that OpenImageIO was built with.
+// io/Capabilities discovers it at run time (PRD I3) and everything below
+// reads from that one query, so no code path here can believe something the
+// capability report does not.
 //
-//   maxBits -- bits per channel this build can actually write for the
-//     format. PNG is 16 because encodePng16() exists (PRD B6, and PRD I1's
-//     "no optional dependency" is why it had to be hand-rolled rather than
-//     delegated to a second library). JPEG is 8 by format definition
-//     (baseline JPEG is 8-bit-per-sample). TGA and BMP are 8 because
-//     stb_image_write writes 24/32-bit-per-*pixel* files for them -- i.e.
-//     8 bits per channel -- and there is no deeper writer here.
-//
-//   hasAlpha -- whether the written file has a place to put the alpha
-//     channel at all. stb_image_write's PNG (comp=4), TGA (comp=4 -> 32-bit
-//     with an 8-bit alpha field) and BMP (comp=4 -> a BITMAPV4HEADER
-//     BI_BITFIELDS 32bpp file with an 0xff000000 alpha mask) all do. Its
-//     JPEG encoder reads only offsets 0/1/2 of each pixel and discards the
-//     fourth outright -- see stbi_write_jpg_core's `ofsG`/`ofsB`.
-struct FormatCaps {
-  int maxBits;
-  bool hasAlpha;
-};
-
-FormatCaps capsFor(ExportFormat format) {
-  switch (format) {
-    case ExportFormat::Png: return {16, true};
-    case ExportFormat::Jpeg: return {8, false};
-    case ExportFormat::Tga: return {8, true};
-    case ExportFormat::Bmp: return {8, true};
-  }
-  return {8, false};
+// Whether a format wants *associated* (premultiplied) alpha. True for EXR
+// only, per the OpenEXR spec; see io/Export.hpp's Alpha section for the
+// measured reason this is our job rather than OpenImageIO's, and
+// io/OiioBackend.cpp for the un-association on the way back in.
+// [[maybe_unused]] rather than wrapped in `#if defined(NP_USE_OIIO)`: the
+// only caller is inside the OpenImageIO branch below, so an OFF build would
+// warn under -Wall, but the rule this states is about the codebase's alpha
+// conventions and is worth reading in either configuration.
+[[maybe_unused]] bool formatWantsAssociatedAlpha(ImageFormat format) {
+  return format == ImageFormat::Exr;
 }
 
 // JPEG quality passed to stb_image_write. Not an export parameter: PRD I5
@@ -233,7 +228,7 @@ DecodedImage flattenDocumentToLinear(const Document& doc) {
 }
 
 ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sourceSpace,
-                               ExportFormat format, ExportTargetSpace targetSpace,
+                               ImageFormat format, ExportTargetSpace targetSpace,
                                ExportBitDepth bitDepth) {
   if (!img.valid()) {
     return failure("export refused: there is nothing to encode (the image to export has zero "
@@ -279,19 +274,68 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
     return failure(buf);
   }
 
+  // --- Can this build write this format at all? (PRD I3) -----------------
+  //
+  // Asked, never assumed: the answer depends on NP_USE_OIIO *and* on which
+  // plugins the linked OpenImageIO actually has. The refusal quotes the
+  // capability query's own reason, so a caller learns whether the format is
+  // read-only here, or its backend absent, or its plugin missing -- rather
+  // than receiving a bare "unsupported".
+  const FormatCapability& caps = formatCapability(format);
+  if (!caps.canWrite) {
+    std::string message = "export refused: this build cannot write ";
+    message += imageFormatName(format);
+    message += ". ";
+    if (!caps.unavailableReason.empty()) {
+      message += caps.unavailableReason;
+    } else if (caps.canRead) {
+      message += imageFormatName(format);
+      message +=
+          " can be read by this build but not written -- there is no writer for it here. ";
+      if (format == ImageFormat::Psd) {
+        message +=
+            "PLAN.md Phase 4 step 2 asks for flattened PSD *read* only; PSD export is phase "
+            "15, and the OpenImageIO linked here has no PSD writer at all (its "
+            "output_format_list contains no 'psd' entry).";
+      }
+    }
+    return failure(std::move(message));
+  }
+
   // --- Bit depth: honoured exactly, or refused by name (PRD B6) ----------
-  const FormatCaps caps = capsFor(format);
-  const int requestedBits = exportBitDepthBits(bitDepth);
-  if (requestedBits > caps.maxBits) {
-    char buf[512];
-    std::snprintf(buf, sizeof(buf),
-                  "export refused: %d-bit-per-channel export was requested for %s, but %s "
-                  "carries at most %d bits per channel in this build. Nothing was written -- "
-                  "silently writing %d bits and reporting success would be exactly the "
-                  "truncation PRD B6 forbids. Request %d-bit, or export PNG, which is the only "
-                  "format here that writes 16 bits per channel.",
-                  requestedBits, exportFormatName(format), exportFormatName(format),
-                  caps.maxBits, caps.maxBits, caps.maxBits);
+  //
+  // "Can this format carry this depth" is now a runtime answer too, and one
+  // that catches a genuinely dangerous case: OpenImageIO accepts a request
+  // to write an 8-bit EXR, or a half TIFF, and silently writes half and
+  // float respectively. io/Capabilities probes for exactly that substitution
+  // and reports the depth unwritable, so the request is refused here rather
+  // than succeeding at the wrong depth.
+  if (!caps.canWriteDepth(bitDepth)) {
+    int maxBits = 0;
+    std::string writable;
+    for (size_t i = 0; i < kExportBitDepthCount; ++i) {
+      const ExportBitDepth d = static_cast<ExportBitDepth>(i);
+      if (!caps.canWriteDepth(d)) continue;
+      maxBits = std::max(maxBits, exportBitDepthBits(d));
+      if (!writable.empty()) writable += ", ";
+      writable += exportBitDepthName(d);
+    }
+    const std::string elsewhere = formatsThatCanWriteDepth(bitDepth);
+    char buf[1024];
+    std::snprintf(
+        buf, sizeof(buf),
+        "export refused: %s export was requested for %s, but %s writes at most %d bits per "
+        "channel in this build (writable depths here: %s). Nothing was written -- silently "
+        "writing %d bits and reporting success would be exactly the truncation PRD B6 "
+        "forbids. Formats this build can write at %s: %s.",
+        exportBitDepthName(bitDepth), imageFormatName(format), imageFormatName(format), maxBits,
+        writable.empty() ? "none" : writable.c_str(), maxBits, exportBitDepthName(bitDepth),
+        elsewhere.empty()
+            ? (oiioBackendCompiledIn()
+                   ? "none -- no format available in this build writes at that depth"
+                   : "none -- the EXR/TIFF/HDR/DPX writers that would are behind NP_USE_OIIO, "
+                     "which was OFF when this binary was configured")
+            : elsewhere.c_str());
     return failure(buf);
   }
 
@@ -307,7 +351,7 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
                     "alpha=%.4f). Exporting would silently discard transparency. Export PNG, "
                     "TGA or BMP, which carry alpha, or composite the document onto an opaque "
                     "background first.",
-                    exportFormatName(format), x, y, static_cast<double>(alpha));
+                    imageFormatName(format), x, y, static_cast<double>(alpha));
       return failure(buf);
     }
   }
@@ -317,11 +361,59 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
   // RGB through the target space's transfer function; alpha straight
   // through, never curved (alpha is opacity, not light). Then clamp and
   // quantize -- see io/Export.hpp on why the [0,1] clamp is an
-  // export-policy decision made here rather than in color/Space.
+  // export-policy decision made here rather than in color/Space, and why it
+  // applies to integer depths only.
   const size_t texelCount = static_cast<size_t>(img.width) * static_cast<size_t>(img.height);
   ExportResult result;
 
-  if (bitDepth == ExportBitDepth::Sixteen) {
+  // --- The OpenImageIO-backed path (PLAN.md step 2) -----------------------
+  //
+  // Kept as a wholly separate branch from the stb path below rather than
+  // merged into it. PRD I1's four formats therefore take byte-for-byte the
+  // same code in a NP_USE_OIIO=ON build as in an OFF one -- there is no
+  // shared "which encoder" branch that could regress them, which is what
+  // makes "I1 needs no optional dependency" checkable rather than asserted.
+  if (caps.backend == FormatBackend::Oiio) {
+#if defined(NP_USE_OIIO)
+    const int channels = caps.hasAlpha ? 4 : 3;
+    const bool isFloat = exportBitDepthIsFloat(bitDepth);
+    const bool associate = formatWantsAssociatedAlpha(format);
+    std::vector<float> samples(texelCount * static_cast<size_t>(channels));
+    for (size_t i = 0; i < texelCount; ++i) {
+      const float* src = &img.pixels[i * 4];
+      const float a = src[3];
+      float* dst = &samples[i * static_cast<size_t>(channels)];
+      for (int c = 0; c < 3; ++c) {
+        // Association happens here, in linear light, *before* the transfer
+        // function -- see io/Export.hpp's Alpha section.
+        const float linear = associate ? src[c] * a : src[c];
+        const float encoded = encodeRgbChannel(targetSpace, linear);
+        // A float file keeps values outside [0,1]; an integer one has
+        // nowhere to put them. Nothing is quantized here either way:
+        // OpenImageIO converts float -> the file's sample type, and for the
+        // integer types that conversion is the same round-to-nearest scale
+        // io/ImageDecode's `sample / max` reads back.
+        dst[c] = isFloat ? encoded : std::fmin(std::fmax(encoded, 0.0f), 1.0f);
+      }
+      if (channels >= 4) dst[3] = isFloat ? a : std::fmin(std::fmax(a, 0.0f), 1.0f);
+    }
+    std::string oiioError;
+    if (!oiioEncodeToMemory(samples, img.width, img.height, channels, format, bitDepth,
+                            &result.bytes, &oiioError)) {
+      return failure(std::move(oiioError));
+    }
+    result.ok = true;
+    return result;
+#else
+    // Unreachable: with NP_USE_OIIO off, io/Capabilities never reports an
+    // Oiio backend, so caps.canWrite above already refused. Present so this
+    // file compiles identically in both configurations rather than hiding
+    // the whole branch behind a preprocessor conditional.
+    return failure("export refused: the OpenImageIO backend is not present in this build.");
+#endif
+  }
+
+  if (bitDepth == ExportBitDepth::UInt16) {
     std::vector<uint16_t> samples(texelCount * 4);
     for (size_t i = 0; i < texelCount; ++i) {
       const float* src = &img.pixels[i * 4];
@@ -357,23 +449,37 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
   const int h = static_cast<int>(img.height);
   int wrote = 0;
   switch (format) {
-    case ExportFormat::Png:
+    case ImageFormat::Png:
       wrote = stbi_write_png_to_func(&appendToVector, &result.bytes, w, h, 4, samples.data(),
                                      w * 4);
       break;
-    case ExportFormat::Jpeg:
+    case ImageFormat::Jpeg:
       // comp = 4 is accepted by stb's JPEG encoder (it strides by 4 and
       // reads offsets 0/1/2); the alpha check above already guaranteed
       // every alpha here is 1, so nothing is being discarded.
       wrote = stbi_write_jpg_to_func(&appendToVector, &result.bytes, w, h, 4, samples.data(),
                                      kJpegQuality);
       break;
-    case ExportFormat::Tga:
+    case ImageFormat::Tga:
       wrote = stbi_write_tga_to_func(&appendToVector, &result.bytes, w, h, 4, samples.data());
       break;
-    case ExportFormat::Bmp:
+    case ImageFormat::Bmp:
       wrote = stbi_write_bmp_to_func(&appendToVector, &result.bytes, w, h, 4, samples.data());
       break;
+    // Unreachable: every other ImageFormat is either OIIO-backed (handled
+    // above) or not writable at all (refused by the capability check). Named
+    // individually rather than with a `default:` so that adding a format to
+    // the enum is a compiler error here until someone decides which encoder
+    // writes it.
+    case ImageFormat::Exr:
+    case ImageFormat::Tiff:
+    case ImageFormat::Hdr:
+    case ImageFormat::Dpx:
+    case ImageFormat::Psd:
+    case ImageFormat::CameraRaw:
+      return failure("export refused: no stb encoder exists for " +
+                     std::string(imageFormatName(format)) +
+                     " -- this is an internal dispatch error, not a rejected request.");
   }
 
   if (!wrote || result.bytes.empty()) {
@@ -381,14 +487,14 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
     std::snprintf(buf, sizeof(buf),
                   "export refused: the %s encoder (stb_image_write) failed on a %dx%d image -- "
                   "this is an internal encoder failure, not a rejected request.",
-                  exportFormatName(format), w, h);
+                  imageFormatName(format), w, h);
     return failure(buf);
   }
   result.ok = true;
   return result;
 }
 
-ExportResult exportDocument(const Document& doc, ExportFormat format,
+ExportResult exportDocument(const Document& doc, ImageFormat format,
                             ExportTargetSpace targetSpace, ExportBitDepth bitDepth) {
   const DecodedImage flat = flattenDocumentToLinear(doc);
   if (!flat.valid()) {
@@ -401,7 +507,7 @@ ExportResult exportDocument(const Document& doc, ExportFormat format,
   return encodeLinearImage(flat, doc.workingSpace, format, targetSpace, bitDepth);
 }
 
-bool exportDocumentToFile(const Document& doc, const std::string& path, ExportFormat format,
+bool exportDocumentToFile(const Document& doc, const std::string& path, ImageFormat format,
                           ExportTargetSpace targetSpace, ExportBitDepth bitDepth,
                           std::string* errorOut) {
   const ExportResult encoded = exportDocument(doc, format, targetSpace, bitDepth);

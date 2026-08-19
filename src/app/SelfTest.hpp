@@ -88,6 +88,13 @@ bool runStrokeSpeedTest(GpuContext& gpu, PaintSim& sim, const MixboxLut& lut);
 // a PaintSim already exists (--selftest needs one to exercise the solver at
 // all), so this function can't take its own measurement and call it "idle";
 // it has to be handed the one true idle sample instead.
+//
+// The ceiling is 80 MB for the dependency-free build, unchanged from phase
+// 1's revised number. A NP_USE_OIIO=ON build does not fit under it -- the
+// OpenImageIO dylib chain costs a measured 29.5 MB before main() starts --
+// so that configuration gets a separate, additive, separately-*printed*
+// 32 MB allowance rather than a raised single number. SelfTest.cpp carries
+// the full measurement and why PLAN.md step 6's lazy init cannot recover it.
 bool runIdleMemoryTest(size_t idleRssBytes);
 
 // 1.4 / ADR-0001 bullets 2 and 3. Two things, both about the same invariant:
@@ -605,5 +612,73 @@ bool runCurveEditTest();
 //    refused request forwarding the encode's own error while leaving no file
 //    behind.
 bool runExportTest();
+
+// Headless, GPU-free check on io/Capabilities and io/OiioBackend (PLAN.md
+// Phase 4 steps 2 and 3: "io/OiioBackend behind NP_USE_OIIO -- EXR, TIFF,
+// HDR, DPX, flattened PSD, camera raw" and "Capability query -- format
+// support is discovered at runtime; the core builds and runs without OIIO
+// (PRD I3)"). Pure CPU; every fixture and every produced file stays in
+// memory, and nothing here touches the filesystem at all.
+//
+// **This section is deliberately NOT #ifdef'd out of the NP_USE_OIIO=OFF
+// build.** PLAN.md §1.5's lesson -- "an unexercised build option is not a
+// seam", written after NP_USE_MIXBOX=OFF had rotted from never being built
+// -- applies directly, one level down: a capability query whose tests only
+// run in the configuration that has the capabilities is not testing the
+// query. So a single `kOiioBuild` constant carries which backend set was
+// compiled in, and every assertion states the *correct* answer for that
+// configuration. Both builds run the same assertions and both must pass.
+//
+// Covered, in order:
+//
+//  - PRD I1's four formats (PNG/JPEG/TGA/BMP) report identical capabilities
+//    in both configurations, and report `FormatBackend::Stb` in both -- so
+//    "no optional dependency" is a property of the dispatch, not a claim.
+//    Their depth and alpha answers are checked individually, including that
+//    none of them claims a float depth.
+//  - EXR/TIFF/HDR/DPX report readable+writable exactly when the OIIO backend
+//    is compiled in, with the per-format depth sets checked against what was
+//    measured from this OpenImageIO: EXR half and 32-bit float only, TIFF
+//    8-/16-bit integer and 32-bit float (not half), HDR 32-bit float only
+//    and *no alpha channel*, DPX 8-/16-bit integer and 32-bit float (not
+//    half). Every excluded depth is a case where OpenImageIO would have
+//    accepted the request and silently written a different sample type --
+//    and two of these rows caught a wrong hand-written expectation while
+//    this test was being landed, which is the concrete argument for the
+//    query existing at all.
+//  - PSD is readable but not writable in the OIIO build (PSD export is
+//    phase 15), and neither without it.
+//  - **Camera raw is reported unsupported in BOTH builds**, with the OIIO
+//    build's reason naming LibRaw's deliberate absence. This is the
+//    assertion that actually proves PRD I3: a hardcoded "NP_USE_OIIO implies
+//    step 2's format list" table would pass every other check here and fail
+//    this one, because the query genuinely asks the linked library.
+//  - PRD B6 for the float depths, in both builds: a 32-bit-float request
+//    into each of the four integer formats fails with an error naming the
+//    format, the refused depth and which formats could carry it; and in the
+//    OFF build an EXR request fails naming NP_USE_OIIO rather than failing
+//    bare.
+//  - A real EXR round trip (OIIO build): a 4x4 ramp exported to half and to
+//    32-bit float, read back through the existing decodeImageLinear() -- so
+//    the OpenImageIO decode fallback is exercised through the production
+//    entry point, not a test-only one -- and compared against the tile's own
+//    stored value. Both are asserted **exactly zero**, not merely within a
+//    tolerance, and SelfTest.cpp derives why that is the correct claim
+//    rather than an optimistic one.
+//  - 32-bit float proven distinguishable from half, with a value (0.1f) that
+//    half cannot represent: the float file returns it bit-exact, the half
+//    file does not, and the difference is measured and printed.
+//  - Values above 1.0 survive EXR and clip in PNG, proving the [0,1] export
+//    clamp is keyed to the depth rather than applied blindly.
+//  - TIFF and DPX 16-bit-integer round trips against step 1's own derived
+//    16-bit tolerance, and an HDR (Radiance RGBE) round trip against a
+//    separately derived, much looser one -- RGBE's shared exponent is a
+//    fundamentally coarser storage than half, and using one tolerance for
+//    both would hide that.
+//  - A hand-built 52-byte flattened PSD (the same "build the fixture by
+//    hand so the test cannot pass by construction" discipline
+//    encodePng16()'s 16-bit decode fixture already used) decoded through
+//    decodeImageLinear() to its exact hand-computed linear values.
+bool runFormatSupportTest();
 
 }  // namespace np

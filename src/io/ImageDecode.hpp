@@ -42,9 +42,19 @@ struct DecodedImage {
 // decode as fully opaque (alpha = 1.0), matching stb_image's own fill
 // behaviour when a 4th channel is requested from a 3-channel source.
 //
+// PLAN.md Phase 4 step 2 adds a *fallback*, not an interception: when
+// stb_image declines the bytes and this binary was built with NP_USE_OIIO,
+// io/OiioBackend gets a second attempt, which is what makes EXR, TIFF, HDR,
+// DPX and flattened PSD open through this same function (and therefore
+// through io/ImageIO's openImageAsDocument()/placeImageAsLayer(), unchanged).
+// The order matters and is deliberate: PNG/JPEG/TGA/BMP always take the stb
+// path first, in both build configurations, so PRD I1's four formats decode
+// identically whether or not OpenImageIO is linked in.
+//
 // Returns a DecodedImage with width == 0 (valid() == false) on failure. If
 // `errorOut` is non-null, it receives a short description of what went
-// wrong (from stb_image's stbi_failure_reason()).
+// wrong (from stb_image's stbi_failure_reason(), plus OpenImageIO's own
+// reason when that backend is present and also declined).
 DecodedImage decodeImageLinear(const uint8_t* fileData, size_t fileSize,
                                 std::string* errorOut = nullptr);
 

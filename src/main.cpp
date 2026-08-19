@@ -303,6 +303,18 @@ int main(int argc, char** argv) {
     // distinct, and the primaries-mismatch refusal. Also headless and
     // GPU-free -- pure CPU, no PaintSim involvement.
     const bool exportOk = np::runExportTest();
+    // Phase 4 steps 2+3 ("io/OiioBackend behind NP_USE_OIIO -- EXR, TIFF,
+    // HDR, DPX, flattened PSD, camera raw"; "Capability query -- format
+    // support is discovered at runtime; the core builds and runs without
+    // OIIO"; PRD I3, I1, B6): io/Capabilities' runtime query answered for
+    // every format, EXR/TIFF/DPX/HDR round trips and a hand-built flattened
+    // PSD read through the OpenImageIO backend, camera raw reported
+    // unsupported even in the OIIO build, and the loud named refusals in
+    // the build that has no backend at all. Runs -- and asserts the correct
+    // answers -- in BOTH NP_USE_OIIO configurations; see SelfTest.hpp on
+    // why compiling it out of the OFF build would defeat its purpose. Also
+    // headless and GPU-free -- pure CPU, no PaintSim involvement.
+    const bool formatSupportOk = np::runFormatSupportTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -313,7 +325,8 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
-                    curveEditOk && exportOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    curveEditOk && exportOk && formatSupportOk && strokeSpeedOk && idleMemOk &&
+                    fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

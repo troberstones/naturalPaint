@@ -7,11 +7,14 @@
 
 #include "color/Space.hpp"
 #include "core/Document.hpp"
+#include "io/Capabilities.hpp"
 #include "io/ImageDecode.hpp"
 
 // io/Export (PLAN.md "Phase 4 -- Write it out", step 1: "Export path --
 // encode from working space to a chosen target space and bit depth,
-// explicitly, never silently (PRD B6, I5)").
+// explicitly, never silently (PRD B6, I5)"; extended by step 2, "io/OiioBackend
+// behind NP_USE_OIIO -- EXR, TIFF, HDR, DPX, flattened PSD, camera raw", and
+// step 3, "Capability query").
 //
 // This is the first write path anywhere in io/. io/ImageDecode and
 // io/ImageIO between them cover the inbound direction only -- file bytes ->
@@ -42,9 +45,25 @@
 // -- 16-bit into JPEG, say, which is 8-bit-per-channel by format
 // definition -- returns `ExportResult{ok = false}` with an error string
 // that names the format, the depth, and what to do instead. It never
-// quietly writes 8 bits and reports success. Today PNG is the only format
-// here that carries 16 bits (see kSupported table in Export.cpp); the
-// remaining three refuse it loudly rather than degrading.
+// quietly writes 8 bits and reports success.
+//
+// Which (format, depth) pairs *are* honourable is not decided here and is
+// not a constant: it comes from io/Capabilities' runtime query (PLAN.md
+// step 3 / PRD I3). In a NP_USE_OIIO=OFF build that is PNG at 8 and 16-bit
+// integer and the other three stb formats at 8; with the OIIO backend it
+// additionally covers EXR (half and 32-bit float -- the only half-capable
+// format here), TIFF and DPX (8- and 16-bit integer, and 32-bit float) and
+// HDR (32-bit float only, and no alpha). This module never
+// assumes any of that -- it asks, and quotes the answer back in its
+// refusals, so an error can never describe a support matrix the binary does
+// not actually have.
+//
+// The half-float and 32-bit-float depths are step 2's addition and they
+// bring one behavioural difference worth stating up front: **the [0,1]
+// export clamp applies to integer depths only.** An integer file has no
+// representation for a value above full scale, so highlights clip; a float
+// file does, and clamping it would discard exactly the scene-referred
+// highlight data EXR exists to carry. See encodeLinearImage() below.
 //
 // --- Scope decision: transfer function only, primaries rejected ----------
 //
@@ -99,6 +118,27 @@
 // matte is a real feature with a real UI decision behind it (what colour?)
 // -- that belongs to PLAN.md step 7's "Export As", not here.
 //
+// Step 2 adds a second alpha-less format, and it is worth noting that
+// nothing here had to be told about it: HDR (Radiance RGBE) is three
+// channels by format definition, io/Capabilities discovers that by asking
+// OpenImageIO's writer to open a 4-channel image and being refused, and the
+// identical translucency check below then fires for HDR for the identical
+// reason.
+//
+// One further alpha convention arrives with step 2. EXR carries *associated*
+// (premultiplied) alpha per the OpenEXR spec, and OpenImageIO does not do
+// that conversion in either direction -- verified by round-tripping a
+// straight-alpha pixel through this exact build unchanged. So this module
+// performs the association itself, on the way out, **in linear light before
+// the transfer function** (association is a linear-light operation; doing it
+// after a curve would not survive a reader that un-associates in linear),
+// and io/OiioBackend un-associates on the way back in. Every other format
+// here is written straight, matching its own convention. This is also what
+// docs/document-format.md's step-4 native `.npaint` container needs: it
+// stores the working space's already-premultiplied `rgba16float` tiles as
+// EXR HALF channels "byte-identical, no conversion", which is only true if
+// EXR is the associated-alpha side of this boundary.
+//
 // --- Entry points, deliberately kept separate ---------------------------
 //
 // Same structuring philosophy io/ImageIO.hpp already documents: separate,
@@ -136,19 +176,27 @@
 // same way placeImageAsLayer() was for step 13's drag-and-drop.
 namespace np {
 
-// The four formats PRD I1 (P0) requires with no optional dependency:
-// "Read and write PNG, JPEG, TGA, BMP with no optional dependency." All
-// four are written through the already-vendored third_party/stb_image_write.h
-// (plus encodePng16() below for the one thing stb's public API cannot do).
-// EXR/TIFF/HDR/DPX are PLAN.md step 2's OIIO-backed territory and are
-// deliberately absent -- this enum is exactly I1's list, not a superset
-// that implies support this build does not have.
-enum class ExportFormat {
-  Png,
-  Jpeg,
-  Tga,
-  Bmp,
-};
+// `ImageFormat` and `ExportBitDepth` -- the "what" and the "how deep" of an
+// export -- live in io/Capabilities.hpp, included above.
+//
+// They moved there in step 2/3, and the move is the point rather than
+// tidying. When this module landed (step 1) the format list was exactly PRD
+// I1's four, every one of them stb-backed and unconditionally present, so
+// the enum and its capabilities could sit in the same header as the encoder
+// that consumed them. Step 2's formats are not unconditionally present: what
+// this binary can write depends on whether NP_USE_OIIO was on *and* on which
+// plugins the OpenImageIO it linked against actually has. Once "which
+// formats exist" is a runtime question, the type naming the formats belongs
+// with the query that answers it -- otherwise a caller reads the enum and
+// reasonably concludes that everything in it works.
+//
+// `ExportFormat` was this enum's name in step 1. It is `ImageFormat` now
+// because the same list has to name read-only formats too: flattened PSD
+// (readable here, and PSD *export* is phase 15) and camera raw (readable by
+// nature, and not by this build at all -- see io/Capabilities.hpp). Asking
+// this module to export either is a refusal by name, not a compile error,
+// precisely so the capability query has a way to say "I know what you mean,
+// and here is why not".
 
 // A target colour space, named as what a colour space actually is: a
 // primaries set *and* a transfer function. Both halves are in every name on
@@ -187,29 +235,11 @@ enum class ExportTargetSpace {
   Rec709Bt709,
 };
 
-// Bits per channel in the written file. Not an int, so "8" and "16" are the
-// only expressible requests and a caller cannot ask for something (10? 12?)
-// no format here writes and get a silent nearest-fit. 32-bit float export
-// is PLAN.md step 2's OIIO/EXR territory and is deliberately not an option
-// this build pretends to offer.
-enum class ExportBitDepth {
-  Eight,
-  Sixteen,
-};
-
-// Human-readable names, used to build the error strings below and available
+// Human-readable name, used to build the error strings below and available
 // to any future UI. Header-inline for the same reason core/Layer.hpp's
-// layerKindName() is -- nothing here is non-trivial.
-inline const char* exportFormatName(ExportFormat f) {
-  switch (f) {
-    case ExportFormat::Png: return "PNG";
-    case ExportFormat::Jpeg: return "JPEG";
-    case ExportFormat::Tga: return "TGA";
-    case ExportFormat::Bmp: return "BMP";
-  }
-  return "?";
-}
-
+// layerKindName() is -- nothing here is non-trivial. The format and bit
+// depth equivalents (imageFormatName(), exportBitDepthName()) are in
+// io/Capabilities.hpp alongside the enums they name.
 inline const char* exportTargetSpaceName(ExportTargetSpace s) {
   switch (s) {
     case ExportTargetSpace::Rec709Linear: return "Rec709Linear (Rec.709 primaries, linear)";
@@ -217,10 +247,6 @@ inline const char* exportTargetSpaceName(ExportTargetSpace s) {
     case ExportTargetSpace::Rec709Bt709: return "Rec709Bt709 (Rec.709 primaries, BT.709 OETF)";
   }
   return "?";
-}
-
-inline int exportBitDepthBits(ExportBitDepth d) {
-  return d == ExportBitDepth::Sixteen ? 16 : 8;
 }
 
 // The primaries each target space is defined against -- the value
@@ -298,41 +324,51 @@ DecodedImage flattenDocumentToLinear(const Document& doc);
 // the requirement and not a style preference.
 //
 // Per channel: RGB gets the target space's transfer function applied, alpha
-// does not (alpha is opacity, not light). Then every channel is clamped to
-// [0, 1] and quantized to `bitDepth` bits by round-half-away-from-zero
-// (`floor(v * max + 0.5)`), the same rounding io/ImageDecode's inverse
-// (`sample / max`) reads back.
+// does not (alpha is opacity, not light). Then, for an *integer* bit depth,
+// every channel is clamped to [0, 1] and quantized by round-half-away-from-
+// zero (`floor(v * max + 0.5)`), the same rounding io/ImageDecode's inverse
+// (`sample / max`) reads back. For a *float* bit depth (Half, Float32)
+// nothing is clamped and nothing is quantized: the values are converted to
+// the file's sample type and written.
 //
 // On the [0,1] clamp: linear working values can legitimately exceed 1.0
 // (color/Space.hpp's transfer functions deliberately do not clamp, since
 // "whether to clamp is a display/export policy decision"). This is that
-// policy decision, made here where it belongs: an integer file format has
-// no representation for a value above full scale, so highlights above 1.0
-// clip. That is a property of asking for an integer format, not a silent
-// bit-depth truncation -- PRD B6 is about 16- and 32-bit files being
-// written at their requested depth, which is exactly what the depth checks
-// below enforce. Exporting >1.0 values losslessly needs a float format
-// (EXR), which is PLAN.md step 2's OIIO territory.
+// policy decision, made here where it belongs, and it is decided by the
+// *depth*, not the format: an integer file has no representation for a value
+// above full scale, so highlights above 1.0 clip; a half or float file does,
+// so they survive. That is a property of asking for an integer depth, not a
+// silent bit-depth truncation -- PRD B6 is about files being written at
+// their requested depth, which is what the depth check below enforces.
 //
 // Fails, with a specific error naming what was refused, when:
 //  - `img` is not valid() (nothing to encode);
 //  - `sourceSpace`'s primaries differ from `targetSpace`'s (see this
 //    header's scope-decision section -- this build converts transfer
 //    functions, never primaries, and says so rather than ignoring it);
-//  - `bitDepth` is Sixteen and `format` is not PNG (JPEG/TGA/BMP are
-//    8-bit-per-channel as written here -- PRD B6);
-//  - `format` is JPEG and `img` contains any pixel with alpha < 1 (JPEG has
-//    no alpha channel; see this header's Alpha section);
-//  - the underlying stb_image_write encoder itself refuses the buffer.
+//  - this build cannot write `format` at all: either it is read-only here
+//    (PSD, camera raw) or its backend is absent (every OIIO format in a
+//    NP_USE_OIIO=OFF build). The error carries io/Capabilities'
+//    `unavailableReason` verbatim, which names the build option or the
+//    missing OpenImageIO plugin rather than failing bare;
+//  - this build cannot write `format` at `bitDepth` -- e.g. 16-bit into
+//    JPEG, or any float depth into any of PRD I1's four integer formats.
+//    The error names the format, the refused depth, the format's real
+//    limit, and which formats in *this* build could carry the request
+//    (PRD B6);
+//  - `format` has no alpha channel (JPEG, HDR) and `img` contains any pixel
+//    with alpha < 1 (see this header's Alpha section);
+//  - the underlying encoder -- stb_image_write, or OpenImageIO -- refuses
+//    the buffer.
 ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sourceSpace,
-                               ExportFormat format, ExportTargetSpace targetSpace,
+                               ImageFormat format, ExportTargetSpace targetSpace,
                                ExportBitDepth bitDepth);
 
 // The Document-level export PLAN.md Phase 4 step 1 asks for:
 // flattenDocumentToLinear() followed by encodeLinearImage(), with the
 // document's own `workingSpace` supplied as the source space. All three of
 // format, target space and bit depth are required.
-ExportResult exportDocument(const Document& doc, ExportFormat format,
+ExportResult exportDocument(const Document& doc, ImageFormat format,
                             ExportTargetSpace targetSpace, ExportBitDepth bitDepth);
 
 // exportDocument() plus writing the resulting bytes to `path`. Returns
@@ -344,7 +380,7 @@ ExportResult exportDocument(const Document& doc, ExportFormat format,
 // Nothing is written to `path` unless the encode succeeded in full: the
 // bytes are produced in memory first, so a refused request never leaves a
 // truncated or partially written file behind.
-bool exportDocumentToFile(const Document& doc, const std::string& path, ExportFormat format,
+bool exportDocumentToFile(const Document& doc, const std::string& path, ImageFormat format,
                           ExportTargetSpace targetSpace, ExportBitDepth bitDepth,
                           std::string* errorOut = nullptr);
 
