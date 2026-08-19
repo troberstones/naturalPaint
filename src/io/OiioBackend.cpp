@@ -1,6 +1,7 @@
 #include "io/OiioBackend.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include "color/Space.hpp"
@@ -309,6 +310,292 @@ DecodedImage oiioDecodeToLinear(const uint8_t* fileData, std::size_t fileSize,
     dst[3] = a;
   }
   return image;
+}
+
+// --- Multi-part tiled EXR ------------------------------------------------
+
+namespace {
+
+// The four attribute types docs/document-format.md permits, and nothing
+// else: "Use only OIIO-representable attribute types: `string`, `int`,
+// `float`, and `UINT8[n]` for blobs. This avoids registering custom EXR
+// attribute types, which OIIO would otherwise skip on read."
+//
+// Constructed from BASETYPE rather than spelled with OIIO's TypeString /
+// TypeInt / TypeFloat aliases so the aggregate, vector-semantics and array
+// length are all explicitly the scalar defaults -- a `float[2]` attribute
+// must NOT compare equal to the scalar float case below, because carrying it
+// through as a single float would silently lose its second element.
+const OIIO::TypeDesc kAttrString(OIIO::TypeDesc::STRING);
+const OIIO::TypeDesc kAttrInt(OIIO::TypeDesc::INT32);
+const OIIO::TypeDesc kAttrFloat(OIIO::TypeDesc::FLOAT);
+
+// Converts one OpenImageIO header attribute into an NpaintAttribute.
+// Returns false for any type outside the four above -- the caller turns that
+// into a warning naming the attribute and its type, rather than dropping it
+// without a word.
+bool attributeFromOiio(const OIIO::ParamValue& p, NpaintAttribute* out) {
+  const OIIO::TypeDesc t = p.type();
+  out->name = p.name().string();
+  if (t == kAttrString) {
+    out->type = NpaintAttribute::Type::String;
+    out->stringValue = p.get_string();
+    return true;
+  }
+  if (t == kAttrInt) {
+    out->type = NpaintAttribute::Type::Int;
+    out->intValue = static_cast<int32_t>(p.get_int());
+    return true;
+  }
+  if (t == kAttrFloat) {
+    out->type = NpaintAttribute::Type::Float;
+    out->floatValue = p.get_float();
+    return true;
+  }
+  if (t.basetype == OIIO::TypeDesc::UINT8 && t.aggregate == OIIO::TypeDesc::SCALAR &&
+      t.arraylen > 0) {
+    out->type = NpaintAttribute::Type::Blob;
+    const auto* bytes = static_cast<const uint8_t*>(p.data());
+    out->blobValue.assign(bytes, bytes + static_cast<size_t>(t.arraylen));
+    return true;
+  }
+  return false;
+}
+
+void attributeToOiio(const NpaintAttribute& a, OIIO::ImageSpec* spec) {
+  switch (a.type) {
+    case NpaintAttribute::Type::String: spec->attribute(a.name, a.stringValue); return;
+    case NpaintAttribute::Type::Int:
+      spec->attribute(a.name, static_cast<int>(a.intValue));
+      return;
+    case NpaintAttribute::Type::Float: spec->attribute(a.name, a.floatValue); return;
+    case NpaintAttribute::Type::Blob:
+      spec->attribute(a.name,
+                      OIIO::TypeDesc(OIIO::TypeDesc::UINT8, static_cast<int>(a.blobValue.size())),
+                      a.blobValue.data());
+      return;
+  }
+}
+
+}  // namespace
+
+bool oiioWriteMultiPartExr(const OiioExrWriteRequest& request, std::string* errorOut) {
+  auto fail = [&](std::string message) {
+    if (errorOut) *errorOut = std::move(message);
+    // Never leave a partial document behind. A failed save that also
+    // destroyed the previous file would be the worst outcome of the two.
+    std::remove(request.path.c_str());
+    return false;
+  };
+  if (request.parts.empty()) return fail("internal: multi-part EXR write with no parts.");
+
+  // Measured constraint: this OpenImageIO cannot write a multi-part EXR
+  // whose parts disagree about being tiled -- it opens the file and then
+  // throws "Can't build a TiledOutputFile from a type-mismatched part" on
+  // the first mismatch. io/NpaintFile refuses this case up front with a
+  // message that names the document's own part; this is the belt-and-braces
+  // check at the point the file is produced, so a caller that bypassed it
+  // gets a sentence rather than an OpenEXR exception string.
+  const bool firstIsTiled = request.parts[0].tileWidth > 0 && request.parts[0].tileHeight > 0;
+  for (const NpaintRawPart& part : request.parts) {
+    const bool tiled = part.tileWidth > 0 && part.tileHeight > 0;
+    if (tiled != firstIsTiled) {
+      return fail(std::string("save failed: part '") + part.name + "' is " +
+                  (tiled ? "tiled" : "scanline") + " while part '" + request.parts[0].name +
+                  "' is " + (firstIsTiled ? "tiled" : "scanline") +
+                  ", and OpenEXR multi-part output through this OpenImageIO requires every "
+                  "part to agree.");
+    }
+  }
+
+  std::vector<OIIO::ImageSpec> specs;
+  specs.reserve(request.parts.size());
+  for (const NpaintRawPart& part : request.parts) {
+    const OIIO::TypeDesc type(part.sampleTypeName);
+    if (type == OIIO::TypeDesc::UNKNOWN) {
+      return fail("save failed: part '" + part.name + "' names sample type '" +
+                  part.sampleTypeName + "', which OpenImageIO does not recognise.");
+    }
+    const size_t channels = part.channelNames.size();
+    const size_t expected = static_cast<size_t>(part.width) * static_cast<size_t>(part.height) *
+                            channels * type.size();
+    if (part.rawPixels.size() != expected) {
+      return fail("internal: part '" + part.name + "' carries " +
+                  std::to_string(part.rawPixels.size()) + " pixel bytes but its " +
+                  std::to_string(part.width) + "x" + std::to_string(part.height) + " " +
+                  std::to_string(channels) + "-channel " + part.sampleTypeName +
+                  " data window needs " + std::to_string(expected) + ".");
+    }
+
+    OIIO::ImageSpec spec(part.width, part.height, static_cast<int>(channels), type);
+    spec.x = part.x;
+    spec.y = part.y;
+    // The display window is one property of the whole file, not of a part --
+    // docs/document-format.md §2: "Some attributes must match across all
+    // parts -- displayWindow, pixelAspectRatio, chromaticities."
+    spec.full_x = 0;
+    spec.full_y = 0;
+    spec.full_width = request.displayWidth;
+    spec.full_height = request.displayHeight;
+    spec.tile_width = part.tileWidth;
+    spec.tile_height = part.tileHeight;
+    spec.channelnames.assign(part.channelNames.begin(), part.channelNames.end());
+    spec.alpha_channel = -1;
+    for (size_t c = 0; c < channels; ++c) {
+      if (part.channelNames[c] == "A") spec.alpha_channel = static_cast<int>(c);
+    }
+    // EXR requires a unique `name` on every part of a multi-part file;
+    // OpenImageIO takes it from this attribute.
+    spec.attribute("name", part.name);
+    spec.attribute("compression", request.compression);
+    if (request.hasChromaticities) {
+      spec.attribute("chromaticities", OIIO::TypeDesc(OIIO::TypeDesc::FLOAT, 8),
+                     request.chromaticities.data());
+    }
+    for (const NpaintAttribute& a : part.attributes) attributeToOiio(a, &spec);
+    specs.push_back(std::move(spec));
+  }
+
+  // The writer is selected by *format name*, not by the path's extension.
+  //
+  // This is load-bearing rather than stylistic, and it was measured: this
+  // OpenImageIO's `ImageOutput::create("/tmp/x.npaint")` returns null with
+  // "could not find a format writer ... Is it a file format that
+  // OpenImageIO doesn't know about?", because `.npaint` is (of course) not
+  // in its extension table. `ImageOutput::create("openexr")` takes the
+  // string as a format name instead, and the subsequent `open()` uses the
+  // real path.
+  //
+  // Doing it unconditionally -- rather than trying the path first and
+  // falling back -- is what makes PRD I8 ("`.npaint` and `.exr` are the same
+  // container, so pipeline handoff is a rename") true by construction: the
+  // same plugin, with the same settings, writes both, so the two files are
+  // byte-identical and a rename really is all it is.
+  auto out = OIIO::ImageOutput::create("openexr");
+  if (!out) {
+    return fail("save failed: this OpenImageIO build has no OpenEXR writer (" +
+                OIIO::geterror() +
+                "). The native document format is OpenEXR (PRD I4), so there is nothing to "
+                "fall back to.");
+  }
+  // Only "multiimage" is checked. This build's OpenEXR writer reports
+  // `supports("appendsubimage") == 0` -- measured -- yet the sequence below
+  // (declare all N specs up front, then AppendSubimage for parts 1..N-1)
+  // works and is the documented multi-part idiom. "appendsubimage" means
+  // "subimages can be appended one at a time without declaring the count in
+  // advance", which is a different capability and not one this writer needs.
+  // Gating on it would refuse a file format that demonstrably works.
+  if (!out->supports("multiimage")) {
+    return fail("save failed: this OpenImageIO's OpenEXR writer does not support multi-part "
+                "output, which the native `.npaint` format requires (one part per layer -- "
+                "PRD I4).");
+  }
+  if (!out->open(request.path, static_cast<int>(specs.size()), specs.data())) {
+    return fail("save failed: OpenImageIO refused to open '" + request.path + "' for " +
+                std::to_string(specs.size()) + "-part output (" + out->geterror() + ").");
+  }
+  for (size_t i = 0; i < specs.size(); ++i) {
+    if (i > 0 && !out->open(request.path, specs[i], OIIO::ImageOutput::AppendSubimage)) {
+      return fail("save failed: OpenImageIO refused to append part '" + request.parts[i].name +
+                  "' (" + out->geterror() + ").");
+    }
+    if (!out->write_image(OIIO::TypeDesc(request.parts[i].sampleTypeName),
+                          request.parts[i].rawPixels.data())) {
+      const std::string err = out->geterror();
+      out->close();
+      return fail("save failed: OpenImageIO failed writing part '" + request.parts[i].name +
+                  "' (" + err + ").");
+    }
+  }
+  if (!out->close()) {
+    return fail("save failed: OpenImageIO failed to finish '" + request.path + "' (" +
+                out->geterror() + ").");
+  }
+  return true;
+}
+
+OiioExrReadResult oiioReadMultiPartExr(const std::string& path) {
+  OiioExrReadResult result;
+  auto in = OIIO::ImageInput::open(path);
+  if (!in) {
+    result.error = "load failed: OpenImageIO could not open '" + path + "' (" +
+                   OIIO::geterror() + ").";
+    return result;
+  }
+
+  for (int sub = 0;; ++sub) {
+    if (!in->seek_subimage(sub, 0)) break;
+    const OIIO::ImageSpec& spec = in->spec();
+    if (spec.width <= 0 || spec.height <= 0 || spec.nchannels <= 0) {
+      result.error = "load failed: part " + std::to_string(sub) + " of '" + path +
+                     "' reports no pixels.";
+      in->close();
+      return result;
+    }
+    if (sub == 0) {
+      result.displayWidth = spec.full_width;
+      result.displayHeight = spec.full_height;
+      float chroma[8] = {};
+      if (spec.getattribute("chromaticities", OIIO::TypeDesc(OIIO::TypeDesc::FLOAT, 8), chroma)) {
+        result.hasChromaticities = true;
+        std::copy(chroma, chroma + 8, result.chromaticities.begin());
+      }
+    }
+
+    NpaintRawPart part;
+    part.name = spec.get_string_attribute("name");
+    part.x = spec.x;
+    part.y = spec.y;
+    part.width = spec.width;
+    part.height = spec.height;
+    part.tileWidth = spec.tile_width;
+    part.tileHeight = spec.tile_height;
+    part.channelNames.assign(spec.channelnames.begin(), spec.channelnames.end());
+    part.sampleTypeName = spec.format.c_str();
+
+    for (const OIIO::ParamValue& p : spec.extra_attribs) {
+      const std::string name = p.name().string();
+      // Only `np:*` crosses this boundary. Everything else in an EXR header
+      // is the container's own (`compression`, `chromaticities`, the
+      // windows) or OpenImageIO's bookkeeping (`oiio:*`), and io/NpaintFile
+      // regenerates all of it -- see NpaintCarry::documentAttributes on why
+      // writing those back verbatim would fight the writer rather than
+      // preserve the document.
+      if (name.rfind("np:", 0) != 0) continue;
+      NpaintAttribute attr;
+      if (attributeFromOiio(p, &attr)) {
+        part.attributes.push_back(std::move(attr));
+      } else {
+        result.warnings.push_back(
+            "attribute '" + name + "' on part '" + part.name + "' has EXR type '" +
+            std::string(p.type().c_str()) +
+            "', which is not one of the four the native format permits (string, int, float, "
+            "uint8[n]); it could not be carried through and will be absent from the next save.");
+      }
+    }
+
+    const size_t bytes = static_cast<size_t>(spec.width) * static_cast<size_t>(spec.height) *
+                         static_cast<size_t>(spec.nchannels) * spec.format.size();
+    part.rawPixels.resize(bytes);
+    // Read in the part's *own* sample type. A float intermediate would be
+    // exact for half but not for uint32, and this buffer's whole purpose is
+    // to be written back unchanged.
+    if (!in->read_image(sub, 0, 0, spec.nchannels, spec.format, part.rawPixels.data())) {
+      result.error = "load failed: OpenImageIO failed reading part '" + part.name + "' of '" +
+                     path + "' (" + in->geterror() + ").";
+      in->close();
+      return result;
+    }
+    result.parts.push_back(std::move(part));
+  }
+  in->close();
+
+  if (result.parts.empty()) {
+    result.error = "load failed: '" + path + "' contains no image parts.";
+    return result;
+  }
+  result.ok = true;
+  return result;
 }
 
 }  // namespace np

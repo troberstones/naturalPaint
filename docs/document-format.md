@@ -87,6 +87,30 @@ part 4   "S0001"          coverage                   ← a saved selection
 - **Use only OIIO-representable attribute types**: `string`, `int`, `float`, and
   `UINT8[n]` for blobs. This avoids registering custom EXR attribute types, which OIIO
   would otherwise skip on read.
+
+  > ⚠️ **Measured, 2026-08-19, while implementing this: `UINT8[n]` does not work.**
+  > Written through this project's OpenImageIO, a `TypeDesc(UINT8, 5)` header attribute
+  > is simply **absent** when the file is read back — no error, no warning. The same is
+  > true of `INT32[n]` and of every other array type tried; `string`, `int` and `float`
+  > all survive. (Re-measured independently: the one apparent exception is an *exactly
+  > three*-element int array, which survives only because OpenEXR coerces it to a `v3i`
+  > and it reads back as `vectori` -- a different type from the one written, not working
+  > array support. `INT32[5]` is absent like the rest.) So **there is no working blob
+  > carrier today**, and every blob this
+  > document names — `np:ops`, `np:dabs`, `np:comps`, `np:paths`, `np:docOps`,
+  > `np:simParams` — needs one before it can be written. The cheap fix is a base64 or
+  > hex **`string`** attribute; the expensive one is writing the header through OpenEXR
+  > directly instead of OpenImageIO. `io/NpaintFile` refuses a blob attribute by name
+  > rather than writing a file that quietly lacks it.
+  >
+  > A smaller one from the same measurement: an **empty** `string` attribute is dropped
+  > too. Harmless where the reader's default for that attribute is the empty string
+  > (`np:name`, `np:parent`), but it is luck, not design.
+
+- **Every part must agree about being tiled.** Also measured: OpenImageIO cannot write a
+  multi-part EXR mixing tiled and scanline parts — it fails partway through with
+  `Can't build a TiledOutputFile from a type-mismatched part`. Since part 0 is tiled,
+  every part is.
 - **Compression must be lossless.** `ZIP` for general use, `PIZ` for grainy content.
   **Never `DWAA`/`DWAB`/`B44`** in a working file — they are lossy, and a working file is
   the one place that is unacceptable.

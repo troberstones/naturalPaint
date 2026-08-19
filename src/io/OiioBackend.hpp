@@ -8,6 +8,7 @@
 
 #include "io/Capabilities.hpp"
 #include "io/ImageDecode.hpp"
+#include "io/NpaintFile.hpp"
 
 // io/OiioBackend (PLAN.md "Phase 4 -- Write it out", step 2: "`io/OiioBackend`
 // behind `NP_USE_OIIO` -- EXR, TIFF, HDR, DPX, flattened PSD, camera raw").
@@ -22,7 +23,8 @@
 // convention.
 //
 // **No OpenImageIO header is included here.** Every type crossing this
-// boundary is `std`, `np::DecodedImage` or `np::ImageFormat`. That is a hard
+// boundary is `std`, `np::DecodedImage`, `np::ImageFormat` or one of
+// io/NpaintFile's part/attribute structs. That is a hard
 // rule, not a style preference: OiioBackend.cpp is the only translation unit
 // in this project that may `#include <OpenImageIO/...>`, so an accidental
 // OIIO dependency cannot leak into a module that has to keep compiling with
@@ -159,5 +161,75 @@ bool oiioEncodeToMemory(const std::vector<float>& samples, uint32_t width, uint3
 // openImageAsDocument() path with no new entry point.
 DecodedImage oiioDecodeToLinear(const uint8_t* fileData, std::size_t fileSize,
                                 std::string* errorOut);
+
+// --- Multi-part tiled EXR, for the native `.npaint` container -------------
+//
+// PLAN.md Phase 4 step 4 / PRD I4. These two functions are deliberately
+// *dumb*: they move parts, channels, attributes and bytes between a file and
+// io/NpaintFile's structs, and they make no decision about what a part
+// means. Every format decision -- which parts are layers, which attributes
+// are recognised, what part 0 contains, which compressors are allowed --
+// lives in io/NpaintFile.cpp, which compiles in both build configurations.
+// The split is the same one the rest of this header already keeps: the OIIO
+// translation unit knows OpenImageIO, and nothing else does.
+//
+// docs/document-format.md's claim that native save "needs *zero* bespoke
+// writer code" is what these are: `ImageOutput::open(path, nsubimages,
+// specs)` plus one `write_image` per part.
+
+// Everything one multi-part write needs. The attributes that
+// docs/document-format.md says "must match across all parts" --
+// displayWindow, pixelAspectRatio, chromaticities -- are here, once, rather
+// than per part, so they cannot disagree.
+struct OiioExrWriteRequest {
+  std::string path;
+  // An OpenEXR compressor name, written to the `compression` attribute of
+  // every part. io/NpaintFile has already refused the lossy ones (PRD I7);
+  // this function does not re-litigate that, it just writes what it is
+  // given.
+  std::string compression = "zip";
+  // The display window (the canvas). Origin is always (0,0) here -- nothing
+  // in this codebase produces a document whose canvas starts elsewhere.
+  int32_t displayWidth = 0;
+  int32_t displayHeight = 0;
+  // The standard `chromaticities` attribute (PRD I6): eight floats, in
+  // OpenEXR's own order -- red x/y, green x/y, blue x/y, white x/y.
+  bool hasChromaticities = false;
+  std::array<float, 8> chromaticities{};
+  // Part 0 first. Each part's `sampleTypeName` is an OpenImageIO TypeDesc
+  // spelling ("half", "float", "uint8", ...) and its `rawPixels` must hold
+  // exactly width * height * channelNames.size() * sizeof(that type) bytes,
+  // row-major top-to-bottom.
+  std::vector<NpaintRawPart> parts;
+};
+
+// Writes the request as a multi-part EXR. Returns false with a specific
+// message in `*errorOut` -- naming the part, and OpenImageIO's own error
+// text -- if the writer cannot be created, refuses multi-part output, or
+// fails at any point. On failure the file is closed and removed, so a failed
+// save never leaves a half-written document where a good one used to be.
+bool oiioWriteMultiPartExr(const OiioExrWriteRequest& request, std::string* errorOut);
+
+struct OiioExrReadResult {
+  bool ok = false;
+  std::string error;
+  int32_t displayWidth = 0;
+  int32_t displayHeight = 0;
+  bool hasChromaticities = false;
+  std::array<float, 8> chromaticities{};
+  // Every part, in file order, pixels in the part's own sample type.
+  std::vector<NpaintRawPart> parts;
+  // One entry per attribute whose EXR type is not one of the four
+  // docs/document-format.md permits (string / int / float / UINT8[n]) and
+  // which therefore could not be carried. Reported rather than dropped in
+  // silence -- that is the difference between a documented limit and a bug.
+  std::vector<std::string> warnings;
+};
+
+// Reads every part of a multi-part (or single-part) EXR. `np:*` attributes
+// come back on the part that carried them; container attributes
+// (compression, chromaticities, the windows) are hoisted to the result or
+// left behind, per io/NpaintFile's carry-scope rule.
+OiioExrReadResult oiioReadMultiPartExr(const std::string& path);
 
 }  // namespace np

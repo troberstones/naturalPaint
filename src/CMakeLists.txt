@@ -21,6 +21,7 @@ add_executable(naturalPaint
   io/Export.cpp
   io/ImageDecode.cpp
   io/ImageIO.cpp
+  io/NpaintFile.cpp
   ops/PointOps.cpp
   paint/Palette.cpp
   sim/PaintSim.cpp

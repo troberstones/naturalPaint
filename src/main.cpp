@@ -315,6 +315,18 @@ int main(int argc, char** argv) {
     // why compiling it out of the OFF build would defeat its purpose. Also
     // headless and GPU-free -- pure CPU, no PaintSim involvement.
     const bool formatSupportOk = np::runFormatSupportTest();
+    // Phase 4 step 4 ("Native `.npaint` save and load -- multi-part tiled
+    // EXR via OIIO"; docs/document-format.md; PRD I4, I5b, I6, I7, I8, I10,
+    // I11, I12): io/NpaintFile's document round trip -- every layer's tiles
+    // bit-identical at zero tolerance, all seven per-layer np:* attributes
+    // at their exact values, part 0 proven regenerated rather than stale,
+    // unrecognised attributes and a whole foreign part surviving two
+    // generations verbatim, and the lossy-compression and lost-data
+    // refusals. Runs -- and asserts the correct answers -- in BOTH
+    // NP_USE_OIIO configurations. Headless and GPU-free, but the one
+    // section that writes real scratch files, since a document format is a
+    // file format; it removes every one of them.
+    const bool npaintOk = np::runNpaintFormatTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -325,8 +337,8 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
-                    curveEditOk && exportOk && formatSupportOk && strokeSpeedOk && idleMemOk &&
-                    fieldAllocOk;
+                    curveEditOk && exportOk && formatSupportOk && npaintOk && strokeSpeedOk &&
+                    idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

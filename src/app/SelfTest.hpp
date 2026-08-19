@@ -681,4 +681,61 @@ bool runExportTest();
 //    decodeImageLinear() to its exact hand-computed linear values.
 bool runFormatSupportTest();
 
+// Headless check on io/NpaintFile -- the native `.npaint` container (PLAN.md
+// Phase 4 step 4: "Native `.npaint` save and load -- multi-part tiled EXR via
+// OIIO"; docs/document-format.md; PRD I4, I5b, I6, I7, I8, I10, I11, I12).
+// The only --selftest section that writes real files, because a document
+// format is a file format: everything is written to `selftest_npaint_*` in
+// the working directory and removed again, including the paths whose
+// assertions failed.
+//
+// **Not #ifdef'd out of the NP_USE_OIIO=OFF build**, for the reason
+// runFormatSupportTest() above already documents at length: a single
+// `kOiioBuild` constant carries the configuration and every assertion states
+// the correct answer for it. In the OFF build that means all of the request
+// validation plus the refusal wording; in the ON build, that plus the real
+// round trips.
+//
+// Covered, in order:
+//
+//  - PRD I7, in both builds: `npaintCompressionIsLossy()` catches dwaa,
+//    dwab, b44, b44a and pxr24, case-insensitively and through the
+//    `name:level` form, and clears its reason string for the five lossless
+//    ones; `saveNpaint()` itself refuses `dwab:60` by name and writes
+//    nothing; and an *unrecognised* compressor name is refused too, because
+//    a name this build does not know cannot be assumed lossless.
+//  - PRD I11, in both builds: a zero-area canvas, a Pigment layer (refused
+//    by index, name and kind, naming the `pig.*` channels that have no
+//    storage yet), an out-of-range opacity, an RGB layer with no tile store,
+//    a UINT8[n] blob attribute and a carried scanline part -- each refused
+//    with its own message, each leaving no file behind.
+//  - The NP_USE_OIIO=OFF refusal itself: `.npaint`, the build option, the
+//    cmake line that enables it, and the alternative that does work in that
+//    build.
+//  - **Bit-exactness at zero tolerance.** A three-layer document with
+//    content in separated tiles, a hole inside one layer's data window, a
+//    translucent texel and an empty layer round-trips with every half word
+//    of every tile identical -- counted and printed, not sampled. The sparse
+//    tile set survives too: the hole is not filled in and the empty layer
+//    comes back with zero tiles, because a rectangular EXR data window
+//    cannot encode a hole and the reader drops all-zero tiles.
+//  - Every one of the seven per-layer `np:*` attributes, checked to its
+//    exact value, with `visible=false` and `opacity=0.0` chosen so that an
+//    absent attribute reading back as its default would fail rather than
+//    pass. Plus `np:version`, `np:basis`, the `L####` part ids, and PRD I6's
+//    `chromaticities`.
+//  - PRD I5b/I12: part 0 matches io/Export's flattener within a derived half
+//    tolerance and *exactly* at every alpha-1 pixel; then a layer is mutated
+//    and the document saved again, and the composite is proven to have
+//    changed **and** to match the new flatten -- a test that only checked
+//    part 0 existed would not catch a stale one.
+//  - PRD I10 with three unrecognised document attributes, one unrecognised
+//    layer attribute and a whole foreign `np:kind="Pigment"` part with
+//    `pig.*` channels, all of them things this build's code has no knowledge
+//    of: each survives byte for byte, the foreign part stays *between* the
+//    two layers rather than being appended, the layers keep their part ids,
+//    and a **second** generation is still identical.
+//  - PRD I8: the same document saved under a `.exr` name loads identically.
+bool runNpaintFormatTest();
+
 }  // namespace np
