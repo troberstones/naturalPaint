@@ -17,6 +17,7 @@ add_executable(naturalPaint
   core/Probe.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp
+  io/Export.cpp
   io/ImageDecode.cpp
   io/ImageIO.cpp
   ops/PointOps.cpp

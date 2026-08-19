@@ -293,6 +293,16 @@ int main(int argc, char** argv) {
     // widget (ui/MacPaintUI.cpp) calls into. Also headless and GPU-free --
     // pure CPU, no PaintSim involvement.
     const bool curveEditOk = np::runCurveEditTest();
+    // Phase 4 step 1 ("Export path -- encode from working space to a chosen
+    // target space and bit depth, explicitly, never silently"; PRD B6, I5,
+    // I1): io/Export's flatten -> un-premultiply -> encode -> quantize ->
+    // write pipeline -- a real 16-bit PNG round trip back through
+    // decodeImageLinear(), the 8-vs-16-bit precision difference demonstrated
+    // rather than assumed, unsatisfiable depth requests failing with their
+    // error strings actually inspected, the three target spaces proven
+    // distinct, and the primaries-mismatch refusal. Also headless and
+    // GPU-free -- pure CPU, no PaintSim involvement.
+    const bool exportOk = np::runExportTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -303,7 +313,7 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
-                    curveEditOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    curveEditOk && exportOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

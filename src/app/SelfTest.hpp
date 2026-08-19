@@ -127,8 +127,11 @@ bool runTileStoreTest();
 // Headless, GPU-free check on io/ImageDecode (PLAN.md Phase 2 step 6's
 // decode half). Generates small in-memory PNG (8-bit and 16-bit), BMP, TGA
 // and JPEG fixtures with known pixel values via stb_image_write (the 16-bit
-// PNG fixture is hand-built instead -- stb_image_write's PNG writer is
-// 8-bit-only, see the helper in SelfTest.cpp), decodes each through
+// PNG fixture goes through io/Export.hpp's encodePng16() instead --
+// stb_image_write's PNG writer is 8-bit-only, and that hand-rolled 16-bit
+// writer now lives in the production export module rather than in this
+// file, so the fixture and PRD B6's real 16-bit export share one writer),
+// decodes each through
 // decodeImageLinear(), and checks the decoded pixels land near their
 // expected linear-light value: known sRGB-encoded corners decode to the
 // srgbDecode() of their normalized byte/word value, alpha passes through
@@ -532,5 +535,75 @@ bool runApplyPassTest(GpuContext& gpu, PaintSim& sim);
 //    down to empty both leave `curve` in the exact state evalCurve()
 //    documents as identity.
 bool runCurveEditTest();
+
+// Headless, GPU-free check on io/Export (PLAN.md Phase 4 step 1: "Export
+// path -- encode from working space to a chosen target space and bit depth,
+// explicitly, never silently (PRD B6, I5)"). Pure CPU -- the export path
+// only ever reads a Document's tiles and produces bytes; no PaintSim or gpu
+// involvement, and every fixture and every produced file stays in memory
+// except the one deliberate exportDocumentToFile() case below, which
+// removes its own scratch file afterwards.
+//
+// Fixtures are built by writing *straight* linear RGBA through the same
+// `rgb *= a` premultiply io/ImageIO.cpp's writeDecodedImageIntoLayer() does,
+// so the documents under test hold what a real opened/painted document
+// holds. Every precision claim is checked against the tile's own stored
+// (post-half-rounding) value read back through Tile::readPixel, not against
+// the float literal that was written in -- half-precision storage is
+// io/ImageIO's boundary, already covered by runImageIOTest(), and leaving it
+// in the arithmetic would swamp the quantization term this test is about.
+// What that leaves is exactly one lossy stage per round trip, which is what
+// makes the tolerance derivable rather than guessed; see SelfTest.cpp for
+// the full derivation, and note that both the 8- and 16-bit worst-case
+// residuals are *measured and printed* at run time, so the derivation is
+// checkable rather than asserted.
+//
+// Covered, in order:
+//
+//  - A real 16-bit round trip: a 4x4 fully-opaque linear ramp exported to
+//    16-bit sRGB PNG and decoded back through the existing
+//    decodeImageLinear(), every channel of every pixel within the derived
+//    16-bit tolerance -- plus a direct read of the file's own IHDR bit-depth
+//    byte, so "16-bit" is a property of the bytes rather than of this
+//    module's bookkeeping.
+//  - PRD B6 proven, not assumed, in both directions. Precision: two pixels
+//    whose sRGB-encoded values (0.5010 / 0.5030) both fall inside 8-bit code
+//    128's bucket collapse to the *identical* sample at 8 bits and stay
+//    distinct -- at their own individually correct levels -- at 16. Loud
+//    failure: 16-bit into JPEG/TGA/BMP each fail with an error string that
+//    is actually inspected for the format name, the refused depth, the real
+//    limit and the format that could carry the request, with a PNG control
+//    proving the refusal is about the format rather than a blanket "16-bit
+//    never works".
+//  - PRD I5 proven: the same Document exported to all three target spaces
+//    produces three pairwise-different files, and each one's literal file
+//    sample (recovered as srgbEncode() of the decoded value, since
+//    decodeImageLinear() always sRGB-decodes) is checked against
+//    color/Space's own srgbEncode()/rec709Encode() -- including the explicit
+//    assertion that the linear/no-encode option writes 0.5 and emphatically
+//    not srgbEncode(0.5) ~ 0.735.
+//  - Premultiply: a translucent pixel's exported RGB checked against the
+//    tile's own raw premultiplied storage divided by its own stored alpha
+//    (runProbeTest()'s discipline, not "a plausible number"), plus the
+//    proof that it differs from the raw premultiplied value, the a <= 0
+//    guard on a never-painted texel, and an alpha=1 control.
+//  - The primaries scope decision enforced rather than merely documented: a
+//    working space carrying ACEScg's red primary is refused by name with the
+//    offending coordinate quoted, with a matching-primaries control proving
+//    it is a real comparison and not a blanket rejection.
+//  - JPEG's missing alpha channel refused by name (with the first offending
+//    pixel's coordinates), and a PNG/TGA/BMP control on the same document.
+//  - PRD I1's write half: all four formats encode and decode back, with the
+//    three lossless containers held to the derived 8-bit tolerance and JPEG
+//    to a deliberately looser, separately-labelled one.
+//  - flattenDocumentToLinear() on its own: canvas clipping of out-of-canvas
+//    tiles, the multi-layer plain sum, a blank document exporting as fully
+//    transparent rather than erroring, and a zero-sized document failing
+//    with a specific message.
+//  - exportDocumentToFile(): the file on disk byte-identical to
+//    exportDocument()'s in-memory bytes (one encode path, not two), and a
+//    refused request forwarding the encode's own error while leaving no file
+//    behind.
+bool runExportTest();
 
 }  // namespace np
