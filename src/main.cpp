@@ -10,9 +10,16 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 
 #include "app/AppState.hpp"
+#include "app/FixedStep.hpp"
+#include "app/Keymap.hpp"
+#include "app/Latency.hpp"
+#include "app/Memory.hpp"
 #include "app/SelfTest.hpp"
 #include "gfx/Context.hpp"
 #include "paint/Palette.hpp"
@@ -50,6 +57,22 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
   }
 }
 
+// Events that carry a new pointer sample worth judging for responsiveness.
+// Pen events cover tablets; mouse events make --latency measurable on the
+// mouse/trackpad hardware most dev machines actually have.
+bool isPointerSampleEvent(const SDL_Event& e) {
+  switch (e.type) {
+    case SDL_EVENT_PEN_MOTION:
+    case SDL_EVENT_PEN_DOWN:
+    case SDL_EVENT_PEN_AXIS:
+    case SDL_EVENT_MOUSE_MOTION:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -59,6 +82,7 @@ int main(int argc, char** argv) {
   bool selfTest = false;
   float diagSeconds = 0.0f;
   bool modeTest = false;
+  bool latencyVerbose = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
     if (a == "--selftest") {
@@ -71,6 +95,9 @@ int main(int argc, char** argv) {
       // pigment goes over time.
       diagSeconds = 20.0f;
       if (i + 1 < argc && argv[i + 1][0] != '-') diagSeconds = std::atof(argv[++i]);
+    } else if (a == "--latency") {
+      // Prints a line per recorded sample, not just the per-stroke summary.
+      latencyVerbose = true;
     }
   }
 
@@ -97,22 +124,37 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  np::PaintSim sim;
-  if (!sim.init(gpu, kCanvasW, kCanvasH, lut)) {
-    std::fprintf(stderr, "Simulation failed to initialise.\n");
-    return 1;
-  }
+  // 1.4 / ADR-0001: the true "idle" measurement -- SDL, the window and the
+  // WebGPU device/surface all exist, but nothing sim-shaped does yet.
+  // Captured here, once, before any of the branches below (including
+  // --selftest itself) construct a PaintSim, so --selftest's idle-RSS
+  // assertion checks a real "before any heavy subsystem exists" number
+  // rather than one taken after a sim it constructs eagerly for its own
+  // purposes.
+  const size_t idleRssBytes = np::currentResidentBytes();
+
+  // Null until something actually needs the solver. --selftest/--diag/
+  // --modes exist specifically to exercise it, so they construct it via
+  // ensurePaintSim() immediately below, same as before this change; the
+  // interactive path leaves it null and defers construction to MacPaintUI's
+  // canvas (see drawUI's doc comment) so idle RSS with nothing painted stays
+  // near zero rather than paying for the sim on every launch.
+  std::unique_ptr<np::PaintSim> sim;
 
   if (modeTest) {
-    np::runModeTest(gpu, sim, lut, "mode");
-    sim.shutdown(); gpu.shutdown();
+    np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
+    if (!s) return 1;
+    np::runModeTest(gpu, *s, lut, "mode");
+    s->shutdown(); gpu.shutdown();
     SDL_DestroyWindow(window); SDL_Quit();
     return 0;
   }
 
   if (diagSeconds > 0.0f) {
-    np::runDiagnostic(gpu, sim, lut, diagSeconds, "np");
-    sim.shutdown();
+    np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
+    if (!s) return 1;
+    np::runDiagnostic(gpu, *s, lut, diagSeconds, "np");
+    s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -120,9 +162,101 @@ int main(int argc, char** argv) {
   }
 
   if (selfTest) {
-    const bool ok = np::runSelfTest(gpu, sim, lut,
+    np::PaintSim* s = np::ensurePaintSim(sim, gpu, kCanvasW, kCanvasH, lut);
+    if (!s) return 1;
+    // 1.4 / ADR-0001 bullets 2 and 3: right after init(), still in the
+    // default Watercolour mode, confirms the ink lattice / oil brush grid
+    // are genuinely absent -- then cycles setMode() through all three media
+    // and confirms each outgoing medium's fields actually get freed, not
+    // just the incoming one's allocated.
+    const bool fieldAllocOk = np::runFieldAllocationTest(gpu, *s);
+    const bool pigmentOk = np::runSelfTest(gpu, *s, lut,
                                     selfTestOut ? selfTestOut : "selftest.png");
-    sim.shutdown();
+    // Headless, GPU-free — doesn't need sim/gpu at all, but runs from the
+    // same --selftest entry point since it's the same "does the solver
+    // still behave" gate a CI run would check.
+    const bool accumulatorOk = np::runAccumulatorTest();
+    // 2.3: color/Space's sRGB/Rec.709 transfer function round trip. Also
+    // headless and GPU-free -- pure CPU math, no PaintSim involvement.
+    const bool colorSpaceOk = np::runColorSpaceTest();
+    // Phase 2 step 15: app/Keymap load, conflict detection and resolve().
+    // Headless, GPU-free -- pure CPU/file-IO, no PaintSim involvement.
+    const bool keymapOk = np::runKeymapTest();
+    // Phase 2 step 2: core/Half's shared half<->float codec and
+    // core/TileStore's allocate-on-write / query-without-allocating /
+    // iterate-occupied sparse map. Also headless and GPU-free -- pure CPU,
+    // no PaintSim involvement.
+    const bool tileStoreOk = np::runTileStoreTest();
+    // Phase 2 step 6 (decode half): io/ImageDecode's PNG/JPEG/TGA/BMP -> linear
+    // float RGBA path. Also headless and GPU-free -- pure CPU decode, no
+    // PaintSim involvement.
+    const bool imageDecodeOk = np::runImageDecodeTest();
+    // Phase 2 step 4: core/Document + core/Layer -- one-entry layer list,
+    // LayerKind's seven CONTEXT.md values, and the RGB layer's tile storage
+    // round-trip. Also headless and GPU-free -- pure CPU, no PaintSim
+    // involvement.
+    const bool documentOk = np::runDocumentTest();
+    // Phase 2 step 14 (PRD C16): the base layer is an ordinary layer with
+    // alpha, no locked Background -- core/Layer.hpp has no such concept at
+    // all, so this proves the property rather than leaving it assumed. Also
+    // headless and GPU-free -- pure CPU, no PaintSim involvement.
+    const bool baseLayerAlphaOk = np::runBaseLayerAlphaTest();
+    // Phase 2 step 5: Document::createBlank() -- given size/working-space,
+    // exactly one RGB-kind layer, and zero tiles allocated even for a large
+    // canvas. Also headless and GPU-free -- pure CPU, no PaintSim
+    // involvement.
+    const bool createBlankOk = np::runCreateBlankTest();
+    // Phase 2 step 6 (the remaining half): io/ImageIO -- premultiply + pack
+    // a decoded image into a Document's tiles, on top of createBlank() and
+    // ImageDecode. Also headless and GPU-free -- pure CPU, no PaintSim
+    // involvement.
+    const bool imageIOOk = np::runImageIOTest();
+    // Phase 2 step 13 (narrow, Document-level slice; PRD I14): io/ImageIO's
+    // placeImageAsLayer() -- append an image as a new top layer onto an
+    // already-open Document, distinct from openImageAsDocument() creating a
+    // brand-new one. Also headless and GPU-free -- pure CPU, no PaintSim
+    // involvement.
+    const bool placeImageAsLayerOk = np::runPlaceImageAsLayerTest();
+    // Phase 2 step 8: ui/NaturalPaintUI -- Document -> per-tile GPU texture
+    // -> screen, a read-only proof of the tile pipeline independent of the
+    // interactive painting canvas. Needs `gpu` for a real device/queue, but
+    // no PaintSim -- this module never touches the solver.
+    const bool tiledViewportOk = np::runTiledViewportTest(gpu);
+    // Phase 2 step 9: ui/NaturalPaintUI's mip pyramid -- CPU-side box-filter
+    // downsample correctness, the zoom->level formula, and an end-to-end
+    // GPU proof that draw()'s level pick actually changes which texels
+    // render. Needs `gpu` for the end-to-end part only -- see SelfTest.hpp.
+    const bool mipPyramidOk = np::runMipPyramidTest(gpu);
+    // Phase 2 step 10 (narrow, Document-level slice; PRD Q10): core/Probe's
+    // probePixel() -- linear + display readout, NxN sample-size averaging,
+    // sample-all-layers as a parameter of the sample rather than a separate
+    // tool, and premultiply-aware un-premultiplication on read. Also
+    // headless and GPU-free -- pure CPU, no PaintSim involvement.
+    const bool probeOk = np::runProbeTest();
+    // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
+    // transform's round-trip identity, one hand-worked known-point check,
+    // and the view-only proof that mirror/rotation/grayscale never mutate
+    // PaintSim's own canvas texture. Needs `gpu`/`*s` only for that last
+    // part -- see SelfTest.hpp for the full breakdown.
+    const bool viewTransformOk = np::runViewTransformTest(gpu, *s);
+    // Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD Q5-Q7):
+    // app/Snapping.hpp's pure math -- grid spacing/subdivision line
+    // positions, the numeric/percentage guide-position parser, and the
+    // snapping resolution function against hand-computable cases. Also
+    // headless and GPU-free -- rulers/drag-to-create/the popup/the grid
+    // overlay itself are UI with no headless driver; see SelfTest.hpp.
+    const bool guidesGridSnapOk = np::runGuidesGridSnapTest();
+    // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
+    const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
+    // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
+    // any other) ever constructed a PaintSim.
+    const bool idleMemOk = np::runIdleMemoryTest(idleRssBytes);
+    const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && keymapOk &&
+                    tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
+                    createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
+                    tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
+                    strokeSpeedOk && idleMemOk && fieldAllocOk;
+    s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -144,19 +278,54 @@ int main(int argc, char** argv) {
   wgpuInit.DepthStencilFormat = WGPUTextureFormat_Undefined;
   ImGui_ImplWGPU_Init(&wgpuInit);
 
+  // app/Keymap (Phase 2 step 15, PRD R7/R8): bindings loaded from a data
+  // file rather than the `if (e.key.key == SDLK_...)` checks this used to
+  // be. Conflicts are detected at load time, not silently resolved by load
+  // order -- report them now, once, rather than only when a bad key is
+  // actually pressed.
+  np::Keymap keymap;
+  if (keymap.loadFromFile("default.json")) {
+    if (keymap.hasConflicts()) {
+      std::fprintf(stderr, "[keymap] %zu conflict(s) in the default keymap:\n",
+                   keymap.conflicts().size());
+      keymap.reportConflicts();
+    }
+  } else {
+    std::fprintf(stderr,
+                 "[keymap] failed to load %s/default.json -- keyboard shortcuts "
+                 "will not resolve to any action this session\n",
+                 NP_KEYMAP_DIR);
+  }
+
   np::AppState st;
   st.sim.brushRadius = st.brush.radius;
-  // Fixed timestep: the look of a wash should not depend on the frame rate.
-  st.sim.dt = 1.0f;
+  // Fixed timestep (PRD H7): the look of a wash should not depend on the
+  // frame rate. `st.sim.dt` is set once, here, to the constant physics tick
+  // — never recomputed per frame — so PaintSim::frame()'s existing
+  // `params.dt = paramsIn.dt / activeSubsteps` division is unchanged in
+  // form. What varies per frame is how many times frame() gets called; see
+  // the accumulator loop below.
+  st.sim.dt = np::kFixedDt;
 
   auto prev = std::chrono::steady_clock::now();
   uint32_t frame = 0;
+  // Leftover simulated time, in ms, banked between render frames.
+  float fixedStepAcc = 0.0f;
+
+  np::Latency latency;
+  latency.setVerbose(latencyVerbose);
+  bool strokeWasActive = false;
 
   while (!st.quit) {
+    st.lastInputEventNs = 0;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       ImGui_ImplSDL3_ProcessEvent(&e);
       handlePenEvent(st, e);
+      // e.common.timestamp is when SDL generated the event, not when we
+      // happened to drain the queue for it — using our own SDL_GetTicksNS()
+      // here would understate latency by however long the event sat queued.
+      if (isPointerSampleEvent(e)) st.lastInputEventNs = e.common.timestamp;
 
       if (e.type == SDL_EVENT_QUIT) st.quit = true;
       if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
@@ -170,12 +339,62 @@ int main(int argc, char** argv) {
         ImGui_ImplWGPU_CreateDeviceObjects();
       }
       if (e.type == SDL_EVENT_KEY_DOWN) {
-        const bool cmd = (e.key.mod & SDL_KMOD_GUI) != 0;
-        if (e.key.key == SDLK_SPACE) st.paused = !st.paused;
-        if (cmd && e.key.key == SDLK_K) st.requestClear = true;
-        if (cmd && e.key.key == SDLK_N) st.requestClear = true;
-        if (cmd && e.key.key == SDLK_R) st.requestReload = true;
-        if (cmd && e.key.key == SDLK_Q) st.quit = true;
+        // Resolve the raw key event through the keymap rather than testing
+        // SDL keycodes here. `activeScope` is std::nullopt because no
+        // document/layer model exists yet (core/Document + core/Layer are a
+        // later Phase 2 step) -- every binding that exists today is global,
+        // so this is "no active layer kind," not a stand-in for a real
+        // value being dropped.
+        const np::KeyChord chord{e.key.key, np::keyModsFromSDL(e.key.mod)};
+        const std::optional<std::string> action = keymap.resolve(chord, std::nullopt);
+        if (action == "toggle_pause") st.paused = !st.paused;
+        else if (action == "clear_canvas") st.requestClear = true;
+        else if (action == "reload_shaders") st.requestReload = true;
+        else if (action == "quit") st.quit = true;
+        // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4). Fit/100%/
+        // zoom-in/zoom-out are request flags because they need the canvas
+        // window's actual on-screen size, which only exists inside
+        // MacPaintUI's canvas Begin()/End() block -- consumed there, same
+        // as requestClear/requestReload are consumed in drawUI itself.
+        // Mirror/rotation-reset/grayscale are plain view-state flips with
+        // no layout dependency, so they're applied directly, right here,
+        // the same way toggle_pause is above. `R` (unmodified) itself is
+        // deliberately *not* a binding in keymaps/default.json -- it is a
+        // held-plus-drag gesture (rotate view), which app/Keymap's
+        // resolve() has no way to express (it only ever fires once per
+        // discrete key-down); MacPaintUI.cpp's canvas block reads that key's
+        // live held-state directly instead. See that file's comment at its
+        // `rotateHeld` local for the full reasoning. `⌘⌥0` "zoom to
+        // selection" (PRD Q1) is also deliberately absent -- there is no
+        // selection/mask concept anywhere in this codebase yet (that's
+        // phase 7, PRD E1); binding it now would mean inventing fake
+        // selection state just to give the key something to do.
+        else if (action == "fit_window") st.requestFitWindow = true;
+        else if (action == "zoom_100") st.requestZoom100 = true;
+        else if (action == "zoom_in") st.requestZoomIn = true;
+        else if (action == "zoom_out") st.requestZoomOut = true;
+        else if (action == "mirror_x") st.view.mirrorX = !st.view.mirrorX;
+        else if (action == "mirror_y") st.view.mirrorY = !st.view.mirrorY;
+        else if (action == "reset_rotation") st.view.rotation = 0.0f;
+        else if (action == "toggle_grayscale") st.view.grayscale = !st.view.grayscale;
+        // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping",
+        // PRD Q5-Q7): guides/snapping/grid toggles, matching
+        // docs/shortcuts.md section 3's Cmd+; / Cmd+Shift+; / Cmd+'.
+        // Rulers deliberately has NO entry here and no keymaps/default.json
+        // binding at all -- docs/shortcuts.md assigns rulers to Cmd+R, but
+        // that chord is already bound to reload_shaders above (Phase 1,
+        // predating both this step and step 11). Adding a second Cmd+R
+        // binding for rulers would either trip Keymap's own load-time
+        // conflict detector or silently make one of the two actions
+        // unreachable depending on resolution order -- neither acceptable.
+        // This is a known, pre-existing inconsistency between
+        // docs/shortcuts.md and the already-shipped keymap, not something
+        // to silently paper over by picking a different key; rulers are
+        // menu-only (View > Rulers in MacPaintUI.cpp) until a product
+        // decision resolves the conflict.
+        else if (action == "toggle_guides") st.showGuides = !st.showGuides;
+        else if (action == "toggle_snapping") st.snappingEnabled = !st.snappingEnabled;
+        else if (action == "toggle_grid") st.showGrid = !st.showGrid;
       }
     }
 
@@ -189,7 +408,7 @@ int main(int argc, char** argv) {
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    np::drawUI(st, sim, gpu);
+    np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
 
     ImGui::Render();
 
@@ -207,8 +426,73 @@ int main(int argc, char** argv) {
     st.sim.granulation = pig.granulation;
     st.sim.frame = frame++;
 
-    if (st.paused) st.sim.brushActive = 0;
-    if (!st.paused || st.sim.brushActive) sim.frame(gpu, st.sim);
+    // Arc-length dab emission (1.3, ADR-0003): deposit whatever dabs
+    // MacPaintUI's emitter produced this render frame *before* running
+    // physics below, so the freshly-laid pigment gets to participate in
+    // this frame's advection/diffusion immediately, same as everything
+    // already on the canvas. Each dab is its own small, self-contained
+    // dispatch (PaintSim::depositDab()) — a fast stroke emitting ten dabs
+    // this frame means ten cheap splat dispatches, not ten trips through
+    // frame()'s Jacobi solve. Oil doesn't deposit this way (see
+    // depositDab()'s doc comment and the loop below), and nothing here
+    // should run while paused. Guarded on `sim` existing at all (1.4 /
+    // ADR-0001): st.pendingDabs can only be non-empty once MacPaintUI has
+    // already constructed the sim (see drawUI's stroke-start block), so
+    // this check is defensive rather than load-bearing -- but frame()
+    // below genuinely has nothing to step before that first construction.
+    if (sim) {
+      if (!st.paused && sim->mode() != np::PaintMode::Oil) {
+        for (const auto& d : st.pendingDabs) sim->depositDab(gpu, st.sim, d.x, d.y);
+      }
+
+      if (st.paused) st.sim.brushActive = 0;
+      if (!st.paused || st.sim.brushActive) {
+        // Fixed timestep (PRD H7): run however many kFixedDt ticks the
+        // accumulator has banked, not exactly one. `steps` can be 0 (a very
+        // fast frame hasn't banked a full tick yet) up to kMaxStepsPerFrame
+        // (catching up after a stall) — see app/FixedStep.hpp for the two
+        // independent caps involved.
+        const int steps = np::consumeFixedSteps(fixedStepAcc, st.frameMs, np::kFixedDtMs,
+                                                 np::kMaxCatchUpMs, np::kMaxStepsPerFrame);
+
+        // Post-1.3, this guard exists purely for OIL. Watercolour and ink no
+        // longer read brushActive/brushA/B inside frame() at all — their
+        // deposition happens above, once per emitted dab, entirely outside
+        // this loop — so for those two modes the zeroing below is inert
+        // bookkeeping, not a gate. Oil's contact -> velocity -> transfer
+        // pipeline (kOilSplat/kOilTransfer/kOilBrush) is still driven
+        // through frame() itself, reading whatever (lastDab -> newestDab)
+        // segment MacPaintUI set in st.sim this render frame. Replaying
+        // that same segment on every one of `steps` substeps would
+        // multiply oil's contact-driven transfer by however many physics
+        // ticks this frame happened to run, so — same convention this loop
+        // has used since 1.2 — only the first substep carries the real
+        // flags; the rest run with both cleared, advancing oil's
+        // levelling/advection only.
+        const uint32_t brushActiveThisFrame = st.sim.brushActive;
+        const uint32_t brushReloadThisFrame = st.sim.brushReload;
+        for (int i = 0; i < steps; ++i) {
+          st.sim.brushActive = (i == 0) ? brushActiveThisFrame : 0;
+          st.sim.brushReload = (i == 0) ? brushReloadThisFrame : 0;
+          sim->frame(gpu, st.sim);
+        }
+        st.sim.brushActive = brushActiveThisFrame;
+        st.sim.brushReload = brushReloadThisFrame;
+      }
+
+      // Grayscale preview (PRD Q3): must run *after* the frame()/depositDab
+      // calls above, not from inside drawUI (which ran earlier this same
+      // iteration, before any of this frame's physics/composite work was
+      // even submitted). ImGui's AddImageQuad call in MacPaintUI.cpp only
+      // records a texture *view* handle into the draw list -- what it
+      // actually samples at present time is whatever the GPU last wrote
+      // into that view, which depends on GPU *submission* order, not CPU
+      // recording order. Submitting this blit here, after frame()'s own
+      // submission, guarantees it reads this frame's fresh composite rather
+      // than the previous frame's. Skipped whenever the toggle is off, so
+      // it costs nothing then.
+      if (st.view.grayscale) sim->updateGrayscalePreview(gpu);
+    }
 
     // ---- present ----
     WGPUSurfaceTexture surfaceTex = {};
@@ -240,6 +524,16 @@ int main(int argc, char** argv) {
     wgpuCommandEncoderRelease(enc);
 
     wgpuSurfacePresent(gpu.surface);
+    // st.paintingThisFrame (not st.sim.brushActive): post-1.3 brushActive
+    // means "oil has a fresh dab-sourced segment," true on only a fraction
+    // of painting frames — the wrong thing to correlate pen-to-photon
+    // latency against. paintingThisFrame is the direct "was the user
+    // painting, hovered, in bounds this frame" signal the old brushActive
+    // used to carry.
+    latency.recordFrame(st.paintingThisFrame, st.lastInputEventNs, SDL_GetTicksNS());
+    if (strokeWasActive && !st.strokeActive) latency.endStroke();
+    strokeWasActive = st.strokeActive;
+
     wgpuTextureViewRelease(backbuffer);
     wgpuTextureRelease(surfaceTex.texture);
   }
@@ -247,7 +541,7 @@ int main(int argc, char** argv) {
   ImGui_ImplWGPU_Shutdown();
   ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();
-  sim.shutdown();
+  if (sim) sim->shutdown();
   gpu.shutdown();
   SDL_DestroyWindow(window);
   SDL_Quit();

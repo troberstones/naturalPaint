@@ -34,7 +34,9 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     if (falloff > 0.0) {
       let rho = textureLoad(waterSrc, p, 0).z;
       let mask = max(1.0 - rho / max(P.receptivity, 1e-3), BASE_MASK);
-      let amount = falloff * mask * P.dt;
+      // A dab deposits a fixed quantity -- not scaled by dt (ADR-0003):
+      // deposition is a quantity per unit of brush travel, not a rate.
+      let amount = falloff * mask;
 
       lbmC.y = lbmC.y + P.brushWater * amount;   // surface water s
 

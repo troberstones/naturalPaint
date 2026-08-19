@@ -283,6 +283,12 @@ physical reading — paper that stays workable longer is absorbing more slowly t
 
 Measured against `--diag`, which reports when the canvas actually goes dry:
 
+> ⚠️ Measured pre-1.3. Water depth deposited per stroke also lost its `* P.dt`
+> scaling (ADR-0003, same change as pigment) and roughly doubled along with
+> it, which plausibly shifts how long a wash takes to fully evaporate at a
+> fixed rate. Not yet re-measured — flagging rather than leaving it silently
+> stale.
+
 | set | measured |
 |---|---|
 | 2 s | 2.75 s |
@@ -329,6 +335,10 @@ Two things that fell out of that, both worth knowing:
 
 Measured deflection of deposited pigment, 20 s working time over a 40 s run:
 
+> ⚠️ Also measured pre-1.3, same caveat as the working-time table above —
+> deposited water/pigment magnitude shifted, position/timing dynamics likely
+> did not, but this hasn't been re-verified.
+
 | tilt | y-offset |
 |---|---|
 | 0 | −0.9 px |
@@ -351,9 +361,18 @@ rounding across an extra donor gather rather than a leak.
 zero because paint drying is not implemented, and "activeCells" counts brush
 contact rather than coverage. The numbers are right; the column headings lie.
 
-**2. Oil strokes still show faint periodic ridges.** The levelling term hides
-most of the per-frame brush stamping, but the impasto lighting amplifies what is
-left. Rate-independent stamping would fix it properly.
+**2. ~~Oil strokes still show faint periodic ridges.~~ Closed by 1.3 / ADR-0003.**
+Deposition across all three media is now driven by an arc-length dab emitter
+(`src/brush/StrokePath.*`) instead of one swept capsule per rendered frame, and
+every deposition term had its `* P.dt` scaling removed — a dab now deposits a
+fixed quantity per unit of brush travel, never per unit of time. For oil
+specifically this replaces per-frame stamping (the actual cause of the ridges)
+with stamping at a fixed spatial cadence. Confirmed: pigment mass is now
+provably speed-independent (`--selftest`'s stroke-speed case matches fast vs.
+slow strokes over an identical path to within 0.0%, well inside its 5%
+tolerance). Not independently re-confirmed here: the *visual* ridge reduction
+under impasto lighting specifically — worth an eyeball check next time an oil
+stroke is painted interactively.
 
 **3. Ink bleed is present but tight.** Recognisably sumi, but short of the
 dramatic feathering of the paper's figures. More lattice steps widen it at a

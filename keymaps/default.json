@@ -1,0 +1,23 @@
+{
+  "name": "Default",
+  "bindings": [
+    { "key": "Space", "action": "toggle_pause" },
+    { "key": "K", "mods": ["Cmd"], "action": "clear_canvas" },
+    { "key": "N", "mods": ["Cmd"], "action": "clear_canvas" },
+    { "key": "R", "mods": ["Cmd"], "action": "reload_shaders" },
+    { "key": "Q", "mods": ["Cmd"], "action": "quit" },
+
+    { "key": "=", "mods": ["Cmd"], "action": "zoom_in" },
+    { "key": "-", "mods": ["Cmd"], "action": "zoom_out" },
+    { "key": "0", "mods": ["Cmd"], "action": "fit_window" },
+    { "key": "1", "mods": ["Cmd"], "action": "zoom_100" },
+    { "key": "F", "action": "mirror_x" },
+    { "key": "F", "mods": ["Shift"], "action": "mirror_y" },
+    { "key": "R", "mods": ["Shift"], "action": "reset_rotation" },
+    { "key": "Y", "mods": ["Cmd"], "action": "toggle_grayscale" },
+
+    { "key": ";", "mods": ["Cmd"], "action": "toggle_guides" },
+    { "key": ";", "mods": ["Cmd", "Shift"], "action": "toggle_snapping" },
+    { "key": "'", "mods": ["Cmd"], "action": "toggle_grid" }
+  ]
+}

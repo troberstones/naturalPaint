@@ -120,7 +120,7 @@ plugin ecosystem; attacking it head-on is how every competitor has lost.
 
 | ID | Requirement | P |
 |---|---|---|
-| A1 | With no document open, resident memory is under 40 MB and zero GPU field textures are allocated | **P0** |
+| A1 | With no document open, resident memory is under 80 MB and zero GPU field textures are allocated | **P0** |
 | A2 | Cold start to first frame under 100 ms, excluding the WebGPU device request | **P0** |
 | A3 | No heavy subsystem is constructed until first use; each releases on document deactivate | **P0** |
 | A4 | The simulation allocates only the *active* medium's fields, never all three | **P0** |
@@ -494,7 +494,7 @@ Assertions in `--selftest` unless noted. A phase does not ship until its criteri
 
 | criterion | target | source |
 |---|---|---|
-| idle resident memory | < 40 MB | A1 |
+| idle resident memory | < 80 MB | A1 |
 | GPU field textures when idle | 0 | A1 |
 | GPU textures held by hidden documents | 0 | A6 |
 | cold start to first frame | < 100 ms | A2 |
@@ -582,8 +582,12 @@ see the scope note in
 
 1. **The author stops opening Photoshop for texture work.** The single clearest
    signal, and testable at phase 9.
-2. **Idle memory stays under 40 MB** across every subsequent phase — the invariant
-   holds as features accumulate, which is the whole claim of principle 1.
+2. **Idle memory stays under 80 MB** across every subsequent phase — the invariant
+   holds as features accumulate, which is the whole claim of principle 1. (Revised
+   from an original, untested 40 MB after phase 1.4 measured SDL3's own video
+   subsystem — window server connection, display enumeration, keyboard/mouse/pen
+   init — at ~57 MB before a line of this project's code runs; WebGPU/Metal itself
+   adds only ~5 MB. See PLAN.md Findings, 2026-08-18.)
 3. **A concept painter completes a full painting** without hitting a missing
    capability. Testable at phase 10.
 4. **Blue over yellow gives green**, at interactive speed, on a layer a user created

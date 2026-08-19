@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cmath>
 
+#include "core/Half.hpp"
 #include "gfx/ShaderLoader.hpp"
 
 namespace np {
@@ -167,6 +168,8 @@ void PaintSim::releaseFields() {
   if (paper_) { wgpuTextureDestroy(paper_); wgpuTextureRelease(paper_); paper_ = nullptr; }
   if (canvasView_) { wgpuTextureViewRelease(canvasView_); canvasView_ = nullptr; }
   if (canvas_) { wgpuTextureDestroy(canvas_); wgpuTextureRelease(canvas_); canvas_ = nullptr; }
+  if (grayscaleView_) { wgpuTextureViewRelease(grayscaleView_); grayscaleView_ = nullptr; }
+  if (grayscale_) { wgpuTextureDestroy(grayscale_); wgpuTextureRelease(grayscale_); grayscale_ = nullptr; }
   for (auto& kv : bindCache_) wgpuBindGroupRelease(kv.second);
   bindCache_.clear();
 }
@@ -199,6 +202,14 @@ void PaintSim::allocFields(GpuContext& gpu, uint32_t w, uint32_t h) {
   canvas_ = wgpuDeviceCreateTexture(gpu.device, &cd);
   canvasView_ = wgpuTextureCreateView(canvas_, nullptr);
 
+  // Grayscale preview target (PRD Q3): same descriptor as canvas_ (down to
+  // CopySrc, for the same "a test could read this back" reason) but its own
+  // texture -- updateGrayscalePreview() writes here, never into canvas_.
+  WGPUTextureDescriptor gd = cd;
+  gd.label = sv("canvas-grayscale-preview");
+  grayscale_ = wgpuDeviceCreateTexture(gpu.device, &gd);
+  grayscaleView_ = wgpuTextureCreateView(grayscale_, nullptr);
+
   clearCanvas(gpu);
   generatePaper(gpu);
 }
@@ -226,6 +237,39 @@ void PaintSim::allocOilFields(GpuContext& gpu) {
 
 void PaintSim::setMode(GpuContext& gpu, PaintMode m) {
   if (m == mode_) return;
+
+  // 1.4 / ADR-0001 bullet 3: free the *outgoing* medium's optional field set,
+  // not just allocate the incoming one -- otherwise every medium a session
+  // ever visits stays resident for the rest of it, which contradicts
+  // ADR-0001's whole per-mode residency table (watercolour ~193 MB / ink
+  // ~210 MB / oil ~160 MB: numbers that only hold if the ink lattice and the
+  // oil brush grid are mutually exclusive, not cumulative).
+  //
+  // ⚠️ This is exactly the case ADR-0001's bindCache_ warning is about.
+  // bindGroup()'s cache key (below) is (passId, ping-pong parity) only, not
+  // texture identity -- PingPong::release() resets `cur` to 0, so a field
+  // freed here and later reallocated (revisiting a medium) comes back with
+  // the same parity it had before, and can collide with a stale cache entry
+  // that still points at the now-destroyed textures. releaseFields() already
+  // clears the whole cache for the same reason on init/resize/shutdown; this
+  // path needs the identical discipline, because it is the one place fields
+  // actually get freed-then-reallocated *within* a running session.
+  bool freedAnything = false;
+  if (mode_ == PaintMode::Ink && inkAllocated_) {
+    for (PingPong* f : {&lbmA_, &lbmB_, &lbmC_}) f->release();
+    inkAllocated_ = false;
+    freedAnything = true;
+  }
+  if (mode_ == PaintMode::Oil && oilAllocated_) {
+    for (PingPong* f : {&brushVol_, &brushC_, &brushR_}) f->release();
+    oilAllocated_ = false;
+    freedAnything = true;
+  }
+  if (freedAnything) {
+    for (auto& kv : bindCache_) wgpuBindGroupRelease(kv.second);
+    bindCache_.clear();
+  }
+
   mode_ = m;
   if (m == PaintMode::Ink) allocInkFields(gpu);
   if (m == PaintMode::Oil) allocOilFields(gpu);
@@ -358,10 +402,48 @@ bool PaintSim::buildPipelines(GpuContext& gpu) {
     }
   }
 
+  // Grayscale preview blit (PRD Q3) -- built and hot-reloaded alongside
+  // every other pass here, per shaders/'s "everything reloads on Cmd+R"
+  // convention. A single-texture-input blit, so it needs no uniform buffer
+  // at all (its WGSL reads the source texture's own size via
+  // textureDimensions()), unlike composite.wgsl above.
+  WGPURenderPipeline grayPipe = nullptr;
+  if (ok) {
+    WGPUShaderModule grayMod = compileShader(gpu.device, gpu.instance, "grayscale_blit.wgsl");
+    if (!grayMod) {
+      ok = false;
+    } else {
+      WGPUColorTargetState target = {};
+      target.format = WGPUTextureFormat_RGBA8Unorm;
+      target.writeMask = WGPUColorWriteMask_All;
+
+      WGPUFragmentState fs = {};
+      fs.module = grayMod;
+      fs.entryPoint = sv("fs");
+      fs.targetCount = 1;
+      fs.targets = &target;
+
+      WGPURenderPipelineDescriptor rd = {};
+      rd.label = sv("grayscale_blit");
+      rd.vertex.module = grayMod;
+      rd.vertex.entryPoint = sv("vs");
+      rd.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+      rd.primitive.frontFace = WGPUFrontFace_CCW;
+      rd.primitive.cullMode = WGPUCullMode_None;
+      rd.multisample.count = 1;
+      rd.multisample.mask = 0xFFFFFFFF;
+      rd.fragment = &fs;
+      grayPipe = wgpuDeviceCreateRenderPipeline(gpu.device, &rd);
+      wgpuShaderModuleRelease(grayMod);
+      if (!grayPipe) ok = false;
+    }
+  }
+
   if (!ok) {
     for (int i = 0; i < kPassCount; ++i)
       if (built[i]) wgpuComputePipelineRelease(built[i]);
     if (compPipe) wgpuRenderPipelineRelease(compPipe);
+    if (grayPipe) wgpuRenderPipelineRelease(grayPipe);
     std::fprintf(stderr, "[sim] pipeline build failed; keeping previous shaders\n");
     return false;
   }
@@ -372,6 +454,8 @@ bool PaintSim::buildPipelines(GpuContext& gpu) {
   }
   if (composite_) wgpuRenderPipelineRelease(composite_);
   composite_ = compPipe;
+  if (grayscalePipeline_) wgpuRenderPipelineRelease(grayscalePipeline_);
+  grayscalePipeline_ = grayPipe;
 
   for (auto& kv : bindCache_) wgpuBindGroupRelease(kv.second);
   bindCache_.clear();
@@ -413,7 +497,12 @@ WGPUBindGroup PaintSim::bindGroup(GpuContext& gpu, int passId,
   return bg;
 }
 
-void PaintSim::frame(GpuContext& gpu, const SimParams& paramsIn) {
+void PaintSim::frame(GpuContext& gpu, const SimParams& paramsIn,
+                     const SelectionMask* /*selectionMask*/) {
+  // `selectionMask` is the phase-2 seam reservation (see PaintSim.hpp) --
+  // deliberately unread. Nothing populates a SelectionMask before the
+  // "Select and paste" phase, and gating the physics substeps or Oil's
+  // in-frame deposit on it belongs there, not here.
   SimParams params = paramsIn;
   params.resolutionX = width_;
   params.resolutionY = height_;
@@ -451,11 +540,10 @@ void PaintSim::frame(GpuContext& gpu, const SimParams& paramsIn) {
 
   // =============================================================== WATERCOLOUR
   if (mode_ == PaintMode::Watercolor) {
-    run(kSplat, {ub, texEntry(1, water_.src()), texEntry(2, pigC_.src()),
-                 texEntry(3, pigR_.src()), texEntry(4, water_.dst()),
-                 texEntry(5, pigC_.dst()), texEntry(6, pigR_.dst())});
-    water_.flip(); pigC_.flip(); pigR_.flip();
-
+    // Deposition (kSplat) moved to depositDab() -- called once per emitted
+    // arc-length dab, entirely outside this function (ADR-0003, 1.3). This
+    // loop only ever advances the physics substeps now; nothing below reads
+    // brushActive/brushA/B.
     for (int s2 = 0; s2 < steps; ++s2) {
       // ---- MoveWater (Curtis §4.1) ----
       run(kUpdateVel, {ub, samplerEntry(1, linear_), texEntry(2, water_.src()),
@@ -548,12 +636,8 @@ void PaintSim::frame(GpuContext& gpu, const SimParams& paramsIn) {
   // ======================================================================= INK
   // MoXi: deposit -> stream (with bounce-back) -> collide -> move constituents.
   else {
-    run(kInkSplat, {ub, texEntry(1, water_.src()), texEntry(2, lbmC_.src()),
-                    texEntry(3, pigC_.src()), texEntry(4, pigR_.src()),
-                    texEntry(5, lbmC_.dst()), texEntry(6, pigC_.dst()),
-                    texEntry(7, pigR_.dst())});
-    lbmC_.flip(); pigC_.flip(); pigR_.flip();
-
+    // Same move as watercolour above: ink deposition (kInkSplat) now happens
+    // in depositDab(), not here.
     for (int s2 = 0; s2 < inkSteps; ++s2) {
       run(kInkStream, {ub, texEntry(1, lbmA_.src()), texEntry(2, lbmB_.src()),
                        texEntry(3, lbmC_.src()), texEntry(4, paperView_),
@@ -620,6 +704,119 @@ void PaintSim::frame(GpuContext& gpu, const SimParams& paramsIn) {
   wgpuCommandEncoderRelease(enc);
 }
 
+void PaintSim::depositDab(GpuContext& gpu, const SimParams& paramsIn, float x, float y,
+                          const SelectionMask* /*selectionMask*/) {
+  // Oil deposits through frame()'s own kOilSplat/kOilTransfer/kOilBrush
+  // instead (see PaintSim.hpp's comment on this method) -- nothing to do.
+  if (mode_ != PaintMode::Watercolor && mode_ != PaintMode::Ink) return;
+
+  // `selectionMask` is the phase-2 seam reservation (see PaintSim.hpp) --
+  // deliberately unread. Nothing populates a SelectionMask before the
+  // "Select and paste" phase; gating the splat itself belongs there.
+
+  SimParams params = paramsIn;
+  params.resolutionX = width_;
+  params.resolutionY = height_;
+  params.mode = static_cast<uint32_t>(mode_);
+  // A dab is a point, not a segment: distToSegment (shaders/include/
+  // common.wgsl) degenerates correctly when brushA == brushB.
+  params.brushAx = x; params.brushAy = y;
+  params.brushBx = x; params.brushBy = y;
+  params.brushActive = 1;
+  // dt plays no role here -- ADR-0003 strips the `* P.dt` scaling from both
+  // kSplat and kInkSplat, so a dab deposits the same fixed quantity whatever
+  // this value is. Carried through unchanged only because it is part of the
+  // shared uniform layout, not because anything downstream reads it.
+  wgpuQueueWriteBuffer(gpu.queue, uniform_, 0, &params, sizeof(params));
+
+  WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(gpu.device, nullptr);
+  WGPUComputePassEncoder cpass = wgpuCommandEncoderBeginComputePass(enc, nullptr);
+
+  const uint32_t gx = groups(width_);
+  const uint32_t gy = groups(height_);
+  const WGPUBindGroupEntry ub = bufEntry(0, uniform_, sizeof(SimParams));
+
+  auto run = [&](Pass id, std::vector<WGPUBindGroupEntry> entries) {
+    WGPUBindGroupLayout layout = wgpuComputePipelineGetBindGroupLayout(pipelines_[id], 0);
+    wgpuComputePassEncoderSetPipeline(cpass, pipelines_[id]);
+    wgpuComputePassEncoderSetBindGroup(cpass, 0, bindGroup(gpu, id, layout, entries), 0, nullptr);
+    wgpuComputePassEncoderDispatchWorkgroups(cpass, gx, gy, 1);
+    wgpuBindGroupLayoutRelease(layout);
+  };
+
+  if (mode_ == PaintMode::Watercolor) {
+    run(kSplat, {ub, texEntry(1, water_.src()), texEntry(2, pigC_.src()),
+                 texEntry(3, pigR_.src()), texEntry(4, water_.dst()),
+                 texEntry(5, pigC_.dst()), texEntry(6, pigR_.dst())});
+    water_.flip(); pigC_.flip(); pigR_.flip();
+  } else {  // Ink
+    run(kInkSplat, {ub, texEntry(1, water_.src()), texEntry(2, lbmC_.src()),
+                    texEntry(3, pigC_.src()), texEntry(4, pigR_.src()),
+                    texEntry(5, lbmC_.dst()), texEntry(6, pigC_.dst()),
+                    texEntry(7, pigR_.dst())});
+    lbmC_.flip(); pigC_.flip(); pigR_.flip();
+  }
+
+  wgpuComputePassEncoderEnd(cpass);
+  wgpuComputePassEncoderRelease(cpass);
+
+  WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+  wgpuQueueSubmit(gpu.queue, 1, &cmd);
+  wgpuCommandBufferRelease(cmd);
+  wgpuCommandEncoderRelease(enc);
+}
+
+// PRD Q3 / PLAN.md Phase 2 step 11: desaturate canvasView_ into
+// grayscaleView_, a small dedicated blit -- deliberately its own render pass
+// rather than a flag on the composite pass above, so canvas_ itself is
+// structurally unreachable from here (this function never binds canvas_ as
+// anything but a *read*-only texture_2d, and never opens a render pass whose
+// attachment is canvasView_). Called once per frame, only while the
+// grayscale toggle is on, from main.cpp *after* this frame's frame()/
+// depositDab() calls have already submitted their own work -- so the GPU
+// executes this blit after the composite it reads from, not before (see
+// main.cpp's call site for why that ordering, not merely "eventually",
+// matters).
+void PaintSim::updateGrayscalePreview(GpuContext& gpu) {
+  if (!grayscalePipeline_ || !grayscaleView_ || !canvasView_) return;
+
+  WGPUBindGroupEntry entry = texEntry(0, canvasView_);
+  WGPUBindGroupLayout layout = wgpuRenderPipelineGetBindGroupLayout(grayscalePipeline_, 0);
+  WGPUBindGroupDescriptor bgd = {};
+  bgd.layout = layout;
+  bgd.label = sv("grayscale-preview");
+  bgd.entryCount = 1;
+  bgd.entries = &entry;
+  WGPUBindGroup bg = wgpuDeviceCreateBindGroup(gpu.device, &bgd);
+
+  WGPURenderPassColorAttachment att = {};
+  att.view = grayscaleView_;
+  att.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+  att.loadOp = WGPULoadOp_Clear;
+  att.storeOp = WGPUStoreOp_Store;
+  att.clearValue = {0.0, 0.0, 0.0, 1.0};
+
+  WGPURenderPassDescriptor rp = {};
+  rp.colorAttachmentCount = 1;
+  rp.colorAttachments = &att;
+
+  WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(gpu.device, nullptr);
+  WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(enc, &rp);
+  wgpuRenderPassEncoderSetPipeline(pass, grayscalePipeline_);
+  wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 0, nullptr);
+  wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+  wgpuRenderPassEncoderEnd(pass);
+  wgpuRenderPassEncoderRelease(pass);
+
+  WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+  wgpuQueueSubmit(gpu.queue, 1, &cmd);
+  wgpuCommandBufferRelease(cmd);
+  wgpuCommandEncoderRelease(enc);
+
+  wgpuBindGroupRelease(bg);
+  wgpuBindGroupLayoutRelease(layout);
+}
+
 bool PaintSim::readbackCanvas(GpuContext& gpu, std::vector<uint8_t>& out) {
   const uint32_t bytesPerRow = width_ * 4;  // 256-aligned for any width we use
   if (bytesPerRow % 256 != 0) {
@@ -678,37 +875,6 @@ bool PaintSim::readbackCanvas(GpuContext& gpu, std::vector<uint8_t>& out) {
   wgpuBufferRelease(staging);
   return ok;
 }
-
-namespace {
-
-// IEEE half -> float. Written out rather than relying on _Float16 so the
-// diagnostics build the same way everywhere.
-float halfToFloat(uint16_t h) {
-  const uint32_t sign = (h & 0x8000u) << 16;
-  uint32_t exp = (h >> 10) & 0x1Fu;
-  uint32_t man = h & 0x3FFu;
-
-  if (exp == 0) {
-    if (man == 0) {
-      const uint32_t bits = sign;
-      float f; std::memcpy(&f, &bits, 4); return f;
-    }
-    // subnormal: renormalise
-    exp = 1;
-    while ((man & 0x400u) == 0) { man <<= 1; --exp; }
-    man &= 0x3FFu;
-    const uint32_t bits = sign | ((exp + 112u) << 23) | (man << 13);
-    float f; std::memcpy(&f, &bits, 4); return f;
-  }
-  if (exp == 31) {  // inf / nan
-    const uint32_t bits = sign | 0x7F800000u | (man << 13);
-    float f; std::memcpy(&f, &bits, 4); return f;
-  }
-  const uint32_t bits = sign | ((exp + 112u) << 23) | (man << 13);
-  float f; std::memcpy(&f, &bits, 4); return f;
-}
-
-}  // namespace
 
 bool PaintSim::readbackField(GpuContext& gpu, WGPUTexture tex,
                                   WGPUTextureFormat format,
@@ -809,6 +975,19 @@ void PaintSim::shutdown() {
     if (pipelines_[i]) { wgpuComputePipelineRelease(pipelines_[i]); pipelines_[i] = nullptr; }
   }
   if (composite_) { wgpuRenderPipelineRelease(composite_); composite_ = nullptr; }
+  if (grayscalePipeline_) { wgpuRenderPipelineRelease(grayscalePipeline_); grayscalePipeline_ = nullptr; }
+}
+
+PaintSim* ensurePaintSim(std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
+                         uint32_t width, uint32_t height, const MixboxLut& lut) {
+  if (sim) return sim.get();
+  auto candidate = std::make_unique<PaintSim>();
+  if (!candidate->init(gpu, width, height, lut)) {
+    std::fprintf(stderr, "[sim] Simulation failed to initialise.\n");
+    return nullptr;
+  }
+  sim = std::move(candidate);
+  return sim.get();
 }
 
 }  // namespace np

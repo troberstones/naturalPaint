@@ -1,9 +1,11 @@
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "core/SelectionMask.hpp"
 #include "gfx/Context.hpp"
 #include "gfx/Wgpu.hpp"
 #include "paint/Palette.hpp"
@@ -146,8 +148,57 @@ class PaintSim {
   void clearCanvas(GpuContext& gpu);
   void shutdown();
 
+  // 1.4 / ADR-0001 bullet 2: true once Ink/Oil mode has actually allocated
+  // its optional field set (the D2Q9 lattice / the brush paint grid). These
+  // already gate allocInkFields()/allocOilFields() internally; exposed read-
+  // only so --selftest can assert, rather than merely assume, that a sim
+  // freshly constructed in the default Watercolour mode holds neither --
+  // i.e. that "no Media content" really does mean zero field textures for
+  // the media that were never engaged.
+  bool inkFieldsAllocated() const { return inkAllocated_; }
+  bool oilFieldsAllocated() const { return oilAllocated_; }
+
   // Advance the solver and resolve to the canvas texture.
-  void frame(GpuContext& gpu, const SimParams& params);
+  //
+  // `selectionMask`: phase-2 seam reservation (PLAN.md Phase 2 step 7, PRD
+  // E1) -- unused today. For watercolour and ink, frame() only advances
+  // physics substeps (deposition happens in depositDab()), but for Oil the
+  // brush's contact -> velocity -> transfer pipeline (kOilSplat/kOilTransfer/
+  // kOilBrush, all gated on brushActive) runs inside this function -- see
+  // depositDab()'s comment -- so this is genuinely Oil's deposit path and
+  // must carry the same slot depositDab() does, or Oil would need its own
+  // retrofit later. Always nullptr until selection tools ship.
+  void frame(GpuContext& gpu, const SimParams& params,
+             const SelectionMask* selectionMask = nullptr);
+
+  // Deposits exactly one dab at (x, y), canvas texel space -- a single,
+  // self-contained dispatch of the medium's splat pass (kSplat / kInkSplat),
+  // entirely decoupled from frame()'s physics substep loop (ADR-0003, 1.3).
+  // `params` is reused wholesale for brushRadius/brushWater/brushPigment/
+  // brushHardness/brushLatentC/R exactly as the caller set them; brushAx/Ay
+  // and brushBx/By are both overwritten with (x, y) here (a dab is a point,
+  // not a segment) and brushActive is forced on. `params.dt` is written but
+  // unread: the WGSL deposition terms no longer scale by it (that scaling
+  // was the bug ADR-0003 fixes) -- a dab now deposits a fixed quantity
+  // regardless of dt.
+  //
+  // Oil does not deposit through this path. Its contact -> velocity ->
+  // transfer pipeline is a genuine continuous exchange (kOilTransfer has no
+  // per-dab "amount" to speak of), so it stays inside frame()'s existing
+  // substep loop, fed by the current brushA/B/brushActive the same way it
+  // always was -- see main.cpp and MacPaintUI.cpp for how those are now
+  // sourced from the dab emitter instead of the raw per-frame cursor
+  // segment. Calling this while mode() == PaintMode::Oil is a harmless
+  // no-op.
+  //
+  // `selectionMask`: phase-2 seam reservation, not a feature (PLAN.md Phase 2
+  // step 7; PRD E1: "every deposit and every op respects the active
+  // selection"; DESIGN-imaging.md "Selections"). Nothing populates a
+  // SelectionMask until the "Select and paste" phase, and this parameter is
+  // not read yet -- it exists purely so this signature does not need to
+  // change again, at every call site, once it is.
+  void depositDab(GpuContext& gpu, const SimParams& params, float x, float y,
+                  const SelectionMask* selectionMask = nullptr);
 
   // Blocking copy of the canvas to RGBA8 host memory. Used by --selftest; slow
   // by design (it stalls the queue), so keep it out of the frame loop.
@@ -175,6 +226,20 @@ class PaintSim {
   WGPUTextureView canvasView() const { return canvasView_; }
   uint32_t width() const { return width_; }
   uint32_t height() const { return height_; }
+
+  // PLAN.md Phase 2 step 11 / PRD Q3: grayscale preview. A dedicated
+  // per-pixel luminance blit (shaders/grayscale_blit.wgsl) over canvasView_,
+  // written into its own separate texture rather than mutating canvas_ in
+  // place -- canvas_ is the document's actual rendering (--selftest's
+  // readbackCanvas() reads it directly), and this toggle is view state, not
+  // document state, so it must never be able to touch canvas_ even
+  // accidentally. Callers (main.cpp, after this frame's PaintSim::frame()
+  // has already run -- see main.cpp's own comment on ordering) call this
+  // once per frame only while AppState::CanvasView::grayscale is on; it's a
+  // same-resolution blit, cheap next to the solver's own compute passes.
+  // A no-op if pipelines/fields aren't built yet.
+  void updateGrayscalePreview(GpuContext& gpu);
+  WGPUTextureView grayscaleView() const { return grayscaleView_; }
 
   int jacobiIterations = 40;
   int substeps = 2;
@@ -232,6 +297,12 @@ class PaintSim {
   WGPUTextureView paperView_ = nullptr;
   WGPUTexture canvas_ = nullptr;
   WGPUTextureView canvasView_ = nullptr;
+  // Grayscale preview target -- same size/format as canvas_, populated only
+  // by updateGrayscalePreview(), never by frame()/composite. See that
+  // method's declaration above for why it is a separate texture rather than
+  // an in-place mutation of canvas_.
+  WGPUTexture grayscale_ = nullptr;
+  WGPUTextureView grayscaleView_ = nullptr;
 
   WGPUSampler linear_ = nullptr;
   WGPUBuffer uniform_ = nullptr;
@@ -244,8 +315,24 @@ class PaintSim {
               kPassCount };
   WGPUComputePipeline pipelines_[kPassCount] = {};
   WGPURenderPipeline composite_ = nullptr;
+  WGPURenderPipeline grayscalePipeline_ = nullptr;
 
   std::unordered_map<uint64_t, WGPUBindGroup> bindCache_;
 };
+
+// Construct-on-demand entry point (1.4 / ADR-0001: "idle, no document: 0
+// MB" is a real state, so PaintSim -- ~193 MB minimum, before any Ink/Oil
+// switch -- must not exist until something actually needs it). Returns the
+// existing instance if `sim` is already non-null; otherwise constructs and
+// initialises a fresh one. Returns nullptr, leaving `sim` null, if
+// initialisation fails (missing Mixbox LUT, shader compile failure).
+//
+// Used identically by main.cpp's non-interactive flags (--selftest/--diag/
+// --modes still want the sim built immediately, since that's the entire
+// point of those flags) and by the interactive canvas (which calls this only
+// once a paint tool actually starts depositing) -- one function, so there is
+// exactly one place that knows how to build a PaintSim.
+PaintSim* ensurePaintSim(std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
+                         uint32_t width, uint32_t height, const MixboxLut& lut);
 
 }  // namespace np

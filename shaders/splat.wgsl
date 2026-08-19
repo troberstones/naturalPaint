@@ -29,13 +29,17 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     if (falloff > 0.0) {
       // Wet-area mask M and standing water.
       water.w = max(water.w, falloff);
-      // Capped: surface tension limits film depth. Letting this accumulate with
-      // dwell time is what made wet washes hollow out into their own rim.
-      water.z = min(water.z + P.brushWater * falloff * P.dt, P.maxFilm);
+      // Capped: surface tension limits film depth. Deposition is now per-dab
+      // (ADR-0003) rather than per-frame, so there is no dwell-time term left
+      // to hollow a wash into its own rim -- the cap just stops one dab from
+      // overfilling a cell outright.
+      water.z = min(water.z + P.brushWater * falloff, P.maxFilm);
 
       // Pigment is stored premultiplied by mass so linear transport mixes it
-      // correctly in latent space.
-      let m = P.brushPigment * falloff * P.dt;
+      // correctly in latent space. A dab deposits a fixed quantity -- not
+      // scaled by dt (ADR-0003): deposition is a quantity per unit of brush
+      // travel, not a rate.
+      let m = P.brushPigment * falloff;
       pigC = vec4<f32>(pigC.xyz + P.brushLatentC.xyz * m, pigC.w + m);
       pigR = vec4<f32>(pigR.xyz + P.brushLatentR.xyz * m, 0.0);
     }

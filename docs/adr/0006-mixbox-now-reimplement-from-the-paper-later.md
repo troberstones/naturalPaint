@@ -66,3 +66,12 @@ and the commercial licence remains the fallback.
   option is not a seam. Added to the phase 1 checklist.
 - The `Latent` abstraction in `CONTEXT.md` must stay basis-agnostic. Nothing outside the
   pigment module should assume three weights plus a residual.
+
+> ⚠️ **Correction, 2026-08-18.** Phase 1.5 set out to verify this seam and found it does
+> not exist yet, not merely that it had rotted. `NP_USE_MIXBOX` is defined by CMake
+> (`src/CMakeLists.txt`) but is never read by a single `#if`/`#ifdef` anywhere in `src/`
+> or `shaders/` — there is no `km2` two-constant Kubelka-Munk implementation to fall
+> back to. Turning the option `OFF` today changes nothing at runtime. Writing the real
+> fallback is a genuine pigment-mixing algorithm (spectral or two-constant KM, fit well
+> enough to pass `runSelfTest`'s green-crossing assertion) — color-science work, not a
+> phase-1 verification pass. Deferred; see PLAN.md §1.5 and §Findings.

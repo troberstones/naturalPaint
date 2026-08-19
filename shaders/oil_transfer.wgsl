@@ -47,7 +47,11 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
   let paintDiff = ab - ac;
   let equalCutoff = clamp(abs(paintDiff) / EQUAL_PAINT_CUTOFF, 0.0, 1.0);
-  let velocityCutoff = smoothstep(0.2, 0.3, length(P.brushB - P.brushA));
+  // velocityCutoff (a smoothstep on |brushB - brushA|) used to live here to
+  // stop the brush oozing paint while held still. It is gone: brushA/B now
+  // come from the arc-length dab emitter (ADR-0003), so a brush that isn't
+  // moving enough to cross a spacing threshold never emits a dab, this pass
+  // never runs with brushActive set, and there is nothing left to ooze.
 
   // Scale by how hard the brush is actually pressing here. Without this the
   // transfer is uniform across the footprint and stops dead at its rim, so each
@@ -56,7 +60,7 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let press = clamp(water.w / max(P.penetration, 1e-3), 0.0, 1.0);
 
   var amt = select(ac, ab, paintDiff > 0.0);
-  amt = amt * P.xferFraction * equalCutoff * velocityCutoff * press;
+  amt = amt * P.xferFraction * equalCutoff * press;
   amt = clamp(amt, 0.0, P.maxXfer);
 
   if (paintDiff > 0.0) {

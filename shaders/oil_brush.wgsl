@@ -68,12 +68,15 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
   let paintDiff = ab - ac;
   let equalCutoff = clamp(abs(paintDiff) / EQUAL_PAINT_CUTOFF, 0.0, 1.0);
-  let velocityCutoff = smoothstep(0.2, 0.3, length(P.brushB - P.brushA));
+  // velocityCutoff removed -- see oil_transfer.wgsl, which carries the same
+  // formula and the same reasoning (ADR-0003): brushA/B are now dab-sourced,
+  // so a held-still brush emits no dabs and this pass never sees
+  // brushActive set at all.
 
   let press = clamp(water.w / max(P.penetration, 1e-3), 0.0, 1.0);
 
   var amt = select(ac, ab, paintDiff > 0.0);
-  amt = amt * P.xferFraction * equalCutoff * velocityCutoff * press;
+  amt = amt * P.xferFraction * equalCutoff * press;
   amt = clamp(amt, 0.0, P.maxXfer);
 
   if (paintDiff > 0.0) {

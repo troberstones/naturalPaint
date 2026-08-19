@@ -4,8 +4,23 @@
 #include <cmath>
 #include <cstdio>
 
+// This is the one translation unit that compiles stb_image's actual function
+// bodies (STB_IMAGE_IMPLEMENTATION may only be defined once in the whole
+// binary) -- io/ImageDecode.cpp includes stb_image.h with no implementation
+// macro and links against the bodies compiled in here.
+//
+// Was STBI_ONLY_PNG alone, back when this LUT load was the only stb_image
+// caller. io/ImageDecode (PLAN.md Phase 2 step 6's decode half) needs
+// JPEG/BMP/TGA too, and STBI_ONLY_x compiles out every *other* format's
+// decoder within the one shared implementation -- so PNG-only here meant
+// JPEG/BMP/TGA support literally didn't exist anywhere in the binary,
+// regardless of what any other file included. Widened to the four formats
+// this project actually needs; GIF/PSD/PIC/PNM/HDR stay excluded.
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_BMP
+#define STBI_ONLY_TGA
 #include "stb_image.h"
 
 namespace np {
