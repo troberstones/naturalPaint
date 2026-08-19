@@ -403,6 +403,21 @@ int main(int argc, char** argv) {
     // configurations. Headless and GPU-free; writes and removes one
     // selftest_layerstack.npaint.
     const bool layerStackOk = np::runLayerStackTest();
+    // Phase 5 step 2 ("`core/Blend` -- the linear-safe set (over, plus,
+    // multiply, screen, min, max) and `Mix`, the KM latent lerp.
+    // Display-referred modes labelled as such"; PRD B7, C3, L5): every mode
+    // against hand-computed references at opaque and at partial alpha, alpha
+    // proven to be `over`'s under every mode, a transparent source proven a
+    // bit-exact identity under every mode, `over` proven bit-identical to the
+    // formula step 1 shipped, PRD B7's display-referred label proven to be a
+    // property of the data (and screen's non-monotonicity above 1.0 proven
+    // numerically, which is why it carries the label), PRD L5's Pigment-pair
+    // restriction enforced in the model as well as the dropdown, and `Mix`'s
+    // latent lerp checked against the real Mixbox LUT. It also re-makes step
+    // 1's regression boundary with a DIFFERENT blend on each layer. Runs, and
+    // asserts the same answers, in BOTH NP_USE_OIIO configurations. Headless
+    // and GPU-free; writes no files.
+    const bool blendOk = np::runBlendTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -415,7 +430,7 @@ int main(int argc, char** argv) {
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
-                    strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    blendOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <string>
 
+#include "core/Blend.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
 
@@ -69,10 +70,12 @@
 //             layer") is not a rule any editor implements and would make a
 //             locked bottom layer un-stackable-on.
 //
-// There is deliberately no `setLayerBlend()`. PLAN.md Phase 5 step 2
-// (`core/Blend`) owns the enumeration of blend modes, and a setter here would
-// have to decide today which names are offerable -- exactly the guess
-// core/Layer.hpp refuses to make by keeping the member a `std::string`.
+// `setLayerBlend()` arrived with PLAN.md Phase 5 step 2, which is where the
+// enumeration it needs came from. Step 1 left it out on the grounds that a
+// setter "would have to decide today which names are offerable"; core/Blend
+// now decides, so the setter takes a `BlendMode` rather than a string and the
+// guess is gone. See its declaration below for why the *member* is still a
+// string even though the *setter* is typed.
 //
 // --- Ordering ------------------------------------------------------------
 //
@@ -181,6 +184,27 @@ LayerOpResult setLayerOpacity(Document& doc, size_t index, float opacity);
 
 // Sets the lock. Allowed in both directions on a locked layer.
 LayerOpResult setLayerLocked(Document& doc, size_t index, bool locked);
+
+// Sets the blend mode (PRD C4's "blend mode"). Refused on a locked layer --
+// which blend a layer uses is part of how that layer looks, and a lock that
+// froze content but not blending would be a lock in name only.
+//
+// **Takes a `BlendMode`, writes a `std::string`.** That asymmetry is the whole
+// of this step's resolution of the enum question core/Layer.hpp posed, and
+// core/Blend.hpp argues it: the member stays a string so PRD I10's verbatim
+// carry of a name this build has never heard of is a structural property
+// rather than machinery, and the type safety an enum member would have bought
+// is bought here instead, at the only path a UI can take. There is no
+// string-taking overload, deliberately -- one would be the hole the typed
+// setter exists to close.
+//
+// Refuses a mode PRD L5 does not allow on this layer -- i.e. `Mix` on anything
+// but a Pigment layer sitting directly on another Pigment layer -- by name,
+// through the same `blendModeAvailableForLayer()` predicate the dropdown
+// filters with, so the panel and the model cannot drift. The refusal is real
+// rather than defensive: it is what stops "the dropdown never offers it" from
+// being the only thing that makes L5 true.
+LayerOpResult setLayerBlend(Document& doc, size_t index, BlendMode mode);
 
 // Sets the user-facing name. Any string is accepted, including an empty one
 // (which means "unnamed", core/Layer.hpp) and one that duplicates another

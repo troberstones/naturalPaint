@@ -1,16 +1,11 @@
 #include "core/Composite.hpp"
 
+#include <optional>
+
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 
 namespace np {
-
-std::array<float, 4> compositeOver(const std::array<float, 4>& src,
-                                   const std::array<float, 4>& dst) noexcept {
-  const float inv = 1.0f - src[3];
-  return {src[0] + dst[0] * inv, src[1] + dst[1] * inv, src[2] + dst[2] * inv,
-          src[3] + dst[3] * inv};
-}
 
 float layerCoverage(const Layer& layer) noexcept {
   if (!layer.visible) return 0.0f;
@@ -19,20 +14,36 @@ float layerCoverage(const Layer& layer) noexcept {
   return o < 1.0f ? o : 1.0f;
 }
 
-bool blendIsImplemented(std::string_view blend) noexcept {
-  return blend == kDefaultBlendName;
-}
-
 std::string unimplementedBlendWarning(size_t layerIndex, const Layer& layer) {
   std::string s = "layer " + std::to_string(layerIndex);
   if (!layer.name.empty()) s += " (\"" + layer.name + "\")";
-  s += " asks for blend mode \"" + layer.blend +
-       "\", which this build does not implement -- the only blend implemented here is \"" +
-       kDefaultBlendName +
-       "\" (source-over). It was composited as \"" + kDefaultBlendName +
-       "\" instead, so the composite is an approximation of what the layer stack means. The "
-       "value itself is preserved exactly and is written back unchanged (PRD I10); the linear-"
-       "safe blend set is PLAN.md Phase 5 step 2 (core/Blend).";
+  s += " asks for blend mode \"" + layer.blend + "\", which this build cannot composite. ";
+
+  // The two cases are worth distinguishing in the sentence, because what a
+  // user should do about them differs: an unknown name came from a newer
+  // build and means "this build is behind the document", while `mix` means
+  // "this build is behind PLAN.md" and has a named, dated unblocking
+  // condition.
+  if (blendModeFromName(layer.blend).has_value()) {
+    s += "It is a mode core/Blend knows by name, but `Mix` is a Kubelka-Munk lerp between two "
+         "pigment *latents* and no layer stores a latent yet -- Pigment layers own no tile "
+         "storage until PLAN.md Phase 5 step 3. ";
+  } else {
+    s += "It is not one of the modes core/Blend implements (";
+    bool first = true;
+    for (const BlendModeInfo& info : allBlendModes()) {
+      if (!info.compositesPixels) continue;
+      if (!first) s += ", ";
+      s += info.name;
+      first = false;
+    }
+    s += "), so it most likely comes from a newer build. ";
+  }
+
+  s += "It was composited as \"";
+  s += kDefaultBlendName;
+  s += "\" (source-over) instead, so the composite is an approximation of what the layer stack "
+       "means. The value itself is preserved exactly and is written back unchanged (PRD I10).";
   return s;
 }
 
@@ -45,8 +56,9 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
 
   // Zero-filled: an untouched pixel is transparent black, exactly what
   // core::Tile gives an unwritten texel, so nothing needs a separate "was
-  // anything here" flag -- and, per compositeOver()'s identity, an all-zero
-  // accumulator composites the first contributing layer through unchanged.
+  // anything here" flag -- and, per core/Blend.hpp's transparent-backdrop
+  // identity, an all-zero accumulator composites the first contributing layer
+  // through unchanged **under every mode**, not only under `over`.
   std::vector<float> out(w * h * 4, 0.0f);
 
   // Bottom to top: index 0 first, so each layer is `src` over everything
@@ -63,6 +75,16 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
     // approximation only then.
     if (!blendIsImplemented(layer.blend) && warningsOut != nullptr)
       warningsOut->push_back(unimplementedBlendWarning(i, layer));
+
+    // Resolved once per layer, never per texel: `blend` is a std::string and a
+    // string comparison in the inner loop would be the one plausible way to
+    // make this walk slow. A name this build does not implement -- unknown, or
+    // `mix` -- becomes `Normal`, which is precisely the approximation the
+    // warning above describes, made in one place rather than at each texel.
+    const std::optional<BlendMode> named = blendModeFromName(layer.blend);
+    const BlendMode mode = (named.has_value() && blendModeInfo(*named).compositesPixels)
+                               ? *named
+                               : BlendMode::Normal;
 
     const float coverage = layerCoverage(layer);
     // A hidden layer, or one at zero opacity, contributes **exactly** nothing:
@@ -94,7 +116,7 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
 
           float* dst = &out[(static_cast<size_t>(docY) * w + static_cast<size_t>(docX)) * 4];
           const std::array<float, 4> composited =
-              compositeOver(src, {dst[0], dst[1], dst[2], dst[3]});
+              blendPixel(mode, src, {dst[0], dst[1], dst[2], dst[3]});
           dst[0] = composited[0];
           dst[1] = composited[1];
           dst[2] = composited[2];

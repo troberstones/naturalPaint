@@ -2,8 +2,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <optional>
 
-#include "core/Composite.hpp"
+#include "core/Blend.hpp"
 
 namespace np {
 
@@ -49,6 +50,13 @@ std::string layerRowSubLine(const Layer& layer) {
     if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
   s += blend.empty() ? "?" : blend;
   if (!blendIsImplemented(layer.blend)) s += " (!)";
+  // PRD B7, on the row as well as in the dropdown, and from the same field
+  // (`BlendModeInfo::space`) rather than from a second list here. A row is
+  // where a user reads what a layer does, so a display-referred mode that was
+  // labelled only while the dropdown happened to be open would not be
+  // "labelled as such" in any useful sense.
+  if (const std::optional<BlendMode> mode = blendModeFromName(layer.blend))
+    if (blendModeInfo(*mode).space == BlendSpace::DisplayReferred) s += " (display-referred)";
 
   // Whole percent, rounded to nearest with ties going up. An opacity outside [0,1]
   // cannot be set through core/LayerOps and cannot be saved, but it can exist
@@ -70,6 +78,33 @@ std::string layerRowSubLine(const Layer& layer) {
     s += "LOCKED";
   }
   return s;
+}
+
+std::vector<BlendMode> blendMenuForLayer(const Document& doc, size_t layerIndex) {
+  std::vector<BlendMode> out;
+  if (layerIndex >= doc.layers.size()) return out;
+  for (const BlendModeInfo& info : allBlendModes())
+    if (blendModeAvailableForLayer(doc, layerIndex, info.mode)) out.push_back(info.mode);
+  return out;
+}
+
+std::string blendMenuEntryText(BlendMode mode) {
+  const BlendModeInfo& info = blendModeInfo(mode);
+  std::string s = info.label;
+  // PRD B7, read straight off the data. Two spaces rather than one so the
+  // marker reads as an annotation on the label and not as part of it.
+  if (info.space == BlendSpace::DisplayReferred) s += "  (display-referred)";
+  if (!info.compositesPixels) s += "  (not composited yet)";
+  return s;
+}
+
+size_t blendMenuSelection(const Document& doc, size_t layerIndex,
+                          const std::vector<BlendMode>& menu) {
+  if (layerIndex >= doc.layers.size()) return menu.size();
+  const std::string& carried = doc.layers[layerIndex].blend;
+  for (size_t i = 0; i < menu.size(); ++i)
+    if (carried == blendModeName(menu[i])) return i;
+  return menu.size();
 }
 
 }  // namespace np

@@ -702,12 +702,15 @@ void drawGradeSection(AppState& st) {
 // of a document whose pixels the canvas cannot reach would imply a connection
 // that does not exist.
 //
-// Also deliberately absent: a blend-mode dropdown. PLAN.md Phase 5 step 2
-// (`core/Blend`) owns which modes exist and how display-referred ones are
-// labelled; offering a list today would be inventing that enumeration in the
-// UI, which is exactly what core/Layer.hpp's `std::string blend` refuses to do
-// in the model. The row *displays* the blend it carries, marked `(!)` when this
-// build cannot composite it.
+// **The blend dropdown arrived with PLAN.md Phase 5 step 2** and it holds no
+// list of its own. Which modes exist, which of them may be offered on *this*
+// layer (PRD L5) and what each entry reads (PRD B7's display-referred label)
+// all come from app/LayerPanel's `blendMenuForLayer()` / `blendMenuEntryText()`
+// / `blendMenuSelection()`, which are pure and tested headlessly; this function
+// only draws them and hands the chosen mode to `core::setLayerBlend()`. There
+// is deliberately no string literal naming a blend mode anywhere in this file.
+// The row also *displays* the blend it carries, marked `(!)` when this build
+// cannot composite it.
 void drawLayersSection(AppState& st) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
@@ -812,6 +815,36 @@ void drawLayersSection(AppState& st) {
       // second, weaker coalescing rule in the panel would be in its way.
       if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f"))
         run(setLayerOpacity(doc, i, opacity));
+
+      // The blend dropdown. The preview string is the *selected entry's* text
+      // when the layer carries a mode in the menu, and the layer's raw stored
+      // string when it does not -- a value from a newer build (PRD I10), or
+      // `Mix` on a layer a reorder has just taken out of L5's reach. Showing
+      // the first entry instead would quietly claim the layer says "Normal"
+      // when it does not.
+      const std::vector<BlendMode> menu = blendMenuForLayer(doc, i);
+      const size_t sel = blendMenuSelection(doc, i, menu);
+      const std::string preview =
+          sel < menu.size() ? blendMenuEntryText(menu[sel]) : layer.blend + "  (this build "
+                                                                           "cannot set this)";
+      if (ImGui::BeginCombo("Blend", preview.c_str())) {
+        for (size_t m = 0; m < menu.size(); ++m) {
+          const bool isSelected = (m == sel);
+          if (ImGui::Selectable(blendMenuEntryText(menu[m]).c_str(), isSelected))
+            run(setLayerBlend(doc, i, menu[m]));
+          if (isSelected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Blend modes are chosen for the linear working space.\n"
+                          "One of them -- Screen -- only behaves above 1.0 if 1.0\n"
+                          "is white, so it is labelled display-referred (PRD B7).\n"
+                          "Mix is offered only on a Pigment layer sitting on\n"
+                          "another Pigment layer (PRD L5), and does not composite\n"
+                          "yet: no layer stores a pigment latent until Pigment\n"
+                          "tiles land.");
+
       std::snprintf(renameBuf, sizeof(renameBuf), "%s", layer.name.c_str());
       if (ImGui::InputText("Name", renameBuf, sizeof(renameBuf),
                            ImGuiInputTextFlags_EnterReturnsTrue))

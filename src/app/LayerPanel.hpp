@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
+#include "core/Blend.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
 
@@ -81,7 +83,54 @@ std::string layerRowTitle(const Layer& layer, size_t layerIndex);
 // (`LINEAR-BURN`), which is the value-level PRD I10 preservation core/Layer.hpp
 // keeps the member a string for. A blend this build cannot composite is marked
 // with a trailing `(!)` -- the panel's half of core/Composite's "never
-// silently" rule.
+// silently" rule -- and a display-referred one (PRD B7) additionally reads
+// `SCREEN (display-referred)`, from the same `BlendModeInfo::space` field
+// `blendMenuEntryText()` uses. A row is where a user reads what a layer does,
+// so a label that only appeared while the dropdown happened to be open would
+// not be "labelled as such" in any useful sense.
 std::string layerRowSubLine(const Layer& layer);
+
+// --- The blend dropdown (PLAN.md Phase 5 step 2; PRD B7, C3, L5) ----------
+
+// The modes the dropdown offers for `doc.layers[layerIndex]`, in
+// `allBlendModes()`' order, filtered by `blendModeAvailableForLayer()`.
+//
+// **PRD L5 lives in that predicate, not here.** This function does not know
+// what `Mix` is or that Pigment layers are special; it asks core/Blend about
+// each mode in turn. `core::setLayerBlend()` asks the same predicate before it
+// writes, so a mode the dropdown does not offer is also a mode the model
+// refuses -- L5 is not merely a thing the UI declines to draw.
+//
+// An out-of-range `layerIndex` yields an empty list rather than the whole set:
+// a panel row that no longer names a layer must offer nothing, not everything.
+std::vector<BlendMode> blendMenuForLayer(const Document& doc, size_t layerIndex);
+
+// What one dropdown entry reads. **The only function that turns a mode into
+// menu text, which is what makes PRD B7 enforceable rather than aspirational**
+// ("display-referred modes are labelled as such"): the marker is derived from
+// `BlendModeInfo::space` every time this is called, so there is no path from a
+// mode to a menu entry that skips the label. A mode added to core/Blend's
+// table cannot even be constructed without a `space` value.
+//
+// A display-referred mode reads `Screen  (display-referred)`. A linear-light
+// one reads its bare label -- the working space *is* linear (PRD B1), so
+// labelling the majority case would be noise that makes the minority case
+// harder to see, which is the opposite of what B7 asks for.
+//
+// A mode this build cannot composite additionally reads `(not composited
+// yet)`, from `BlendModeInfo::compositesPixels`. That is `Mix` and only `Mix`
+// today; offering it silently would put PRD C3's P0 feature in a menu where
+// choosing it appears to do nothing.
+std::string blendMenuEntryText(BlendMode mode);
+
+// The index into `blendMenuForLayer(doc, layerIndex)`'s result that matches
+// the layer's current `blend` string, or `menu.size()` when the layer carries
+// a name that is not in the menu at all -- an unrecognised one from a newer
+// build (PRD I10), or `Mix` on a layer L5 no longer permits it on after a
+// reorder. A combo has to render *something* for that layer, and rendering
+// the first entry instead would be a silent lie about what the layer carries;
+// ui/MacPaintUI shows the carried string itself in that case.
+size_t blendMenuSelection(const Document& doc, size_t layerIndex,
+                          const std::vector<BlendMode>& menu);
 
 }  // namespace np

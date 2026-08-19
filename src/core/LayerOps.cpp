@@ -193,6 +193,27 @@ LayerOpResult setLayerLocked(Document& doc, size_t index, bool locked) {
   return succeed(label, index);
 }
 
+LayerOpResult setLayerBlend(Document& doc, size_t index, BlendMode mode) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "set layer blend mode", &refusal)) return refusal;
+  if (!notLocked(doc, index, "set layer blend mode", &refusal)) return refusal;
+  if (!blendModeAvailableForLayer(doc, index, mode)) {
+    // Today this can only be `Mix` (it is the only mode with
+    // `pigmentPairOnly`), but the sentence is written from the metadata rather
+    // than hard-coding that, so a second restricted mode would not need a
+    // second message.
+    return fail("set layer blend mode refused: \"" + std::string(blendModeName(mode)) +
+                "\" is not available on " + describe(doc, index) +
+                ". PRD L5: `Mix` appears only between two Pigment layers -- the layer and the "
+                "one directly beneath it must both be Pigment layers, so the bottom layer can "
+                "never take it.");
+  }
+  const std::string label = "set " + describe(doc, index) + " to blend mode \"" +
+                            blendModeName(mode) + "\"";
+  doc.layers[index].blend = blendModeName(mode);
+  return succeed(label, index);
+}
+
 LayerOpResult setLayerName(Document& doc, size_t index, std::string name) {
   LayerOpResult refusal;
   if (!inRange(doc, index, "rename layer", &refusal)) return refusal;

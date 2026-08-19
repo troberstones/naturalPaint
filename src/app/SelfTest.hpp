@@ -1078,4 +1078,73 @@ bool runRecoveryJournalTest();
 //    compositing byte-identically to the saved one.
 bool runLayerStackTest();
 
+// PLAN.md Phase 5 step 2 ("`core/Blend` -- the linear-safe set (over, plus,
+// multiply, screen, min, max) and `Mix`, the KM latent lerp. Display-referred
+// modes labelled as such"); PRD B7, C3, L5.
+//
+// **Not #ifdef'd out of the NP_USE_OIIO=OFF build** (PLAN.md §1.5): every
+// assertion here is pure CPU and asserts the same answers in both
+// configurations. Headless and GPU-free; writes no files and touches no user
+// state. It does read the real Mixbox LUT from the source tree (NP_MIXBOX_LUT,
+// the same path main.cpp loads) because the `Mix` section asserts against
+// measured pigment data rather than a stand-in.
+//
+// Almost everything is at **exactly zero tolerance**, and that is a property
+// of the arithmetic rather than a shortcut: no formula in core/Blend contains
+// a division, and every fixture value is a short dyadic rational, so each
+// product and sum lands on the float grid exactly. Two tolerances are derived
+// at their own fixtures.
+//
+// Covered, in order:
+//
+//  - The vocabulary: seven modes, the table indexed by enumerator, names and
+//    labels unique, name -> mode -> name round-tripping, a case-SENSITIVE
+//    match, `kDefaultBlendName` resolving to `Normal`, and
+//    `blendIsImplemented()` agreeing with `BlendModeInfo::compositesPixels`
+//    for every row.
+//  - **PRD B7**: the display-referred marker derived from the data on every
+//    call (asserted for every mode, both ways), exactly one display-referred
+//    mode, and *why* -- `screen(2,2) == 0` and `screen(2,3) == -1` exactly,
+//    i.e. above 1.0 it is not monotone, while every other implemented mode is
+//    monotone at the same values. Plus the label appearing on the layer row,
+//    not only in the dropdown.
+//  - Every mode against a hand-computed reference, **opaque** and at
+//    **partial alpha**, with the partial-alpha references computed twice by
+//    different routes (the premultiplied algebra, and the three Porter-Duff
+//    regions) -- because the naive straight-colour transcription of multiply
+//    is wrong on premultiplied input and nothing but the arithmetic says so.
+//    Includes the explicit check that multiply is NOT `cs*cb`.
+//  - Alpha being exactly `over`'s for every mode across a 5x5 alpha grid.
+//  - A fully transparent source being a **bit-exact identity** on the backdrop
+//    for every mode over four backdrops including an HDR one, and the mirror
+//    (an empty backdrop passing the source through).
+//  - `over` bit-identical to a second transcription of step 1's formula across
+//    441 non-dyadic alpha pairs, and `blendPixel(Normal, ...)` being that same
+//    function rather than the general three-term form.
+//  - **Step 1's regression boundary, re-made for the whole set**: five
+//    non-overlapping layers each with a *different* blend mode composite
+//    byte-identically to a second implementation of the plain sum, with one
+//    overlapping texel proving the identity is about non-overlap.
+//  - The mode reaching the document walk: a `multiply` layer really
+//    multiplying through `flattenDocumentToLinear()` at zero tolerance, with
+//    no warning any more, `core/Probe` agreeing through the same dispatch, and
+//    switching a blend mode leaving alpha exactly where it was.
+//  - The unimplemented-blend contract still holding in substance, in both of
+//    its remaining forms: an unknown name (warned, listing the implemented set
+//    from the table, value untouched, pixels byte-identical to `over`) and
+//    `mix` (its own sentence, naming latents and step 3).
+//  - **PRD L5**, from four directions: RGB-over-RGB offered six modes and not
+//    `Mix`; Pigment-over-Pigment offered seven; the bottom Pigment layer not;
+//    Pigment-over-RGB not; and `core::setLayerBlend()` refusing the same cases
+//    through the same predicate, so L5 is not merely something the UI declines
+//    to draw. Plus a reorder taking a layer out of L5's reach while it still
+//    carries the value.
+//  - `core::setLayerBlend()`: canonical name written, edit label reported,
+//    locked layer and out-of-range index refused by name.
+//  - **`Mix` itself**: `mixLatents()` exact at both endpoints, the *implied*
+//    fourth pigment weight proven to lerp by the same t (so six floats really
+//    is Mixbox's seven), and -- against the real LUT and the shipped palette
+//    -- yellow mixed with blue giving green, measurably unlike the RGB lerp.
+bool runBlendTest();
+
 }  // namespace np

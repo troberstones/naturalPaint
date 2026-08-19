@@ -14,6 +14,7 @@ add_executable(naturalPaint
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
+  core/Blend.cpp
   core/Composite.cpp
   core/Half.cpp
   core/Histogram.cpp

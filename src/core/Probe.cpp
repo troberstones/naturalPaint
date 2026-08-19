@@ -1,5 +1,6 @@
 #include "core/Probe.hpp"
 
+#include <optional>
 #include <vector>
 
 #include "color/Space.hpp"
@@ -78,11 +79,19 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
     // function and io/Export's flattener carried the same note: "the moment a
     // second RGB layer can hold content, this loop is exactly where real
     // per-layer alpha-under compositing has to replace the plain sum". That
-    // moment is this step, and both places now call the *same*
-    // `compositeOver()` (core/Composite) rather than each growing an
-    // implementation that has to be kept agreeing -- an eyedropper and an
-    // export that disagreed about the colour of a pixel would be a bug the
-    // user could see and nobody could explain.
+    // moment is this step, and both places now call the *same* `blendPixel()`
+    // (core/Blend) rather than each growing an implementation that has to be
+    // kept agreeing -- an eyedropper and an export that disagreed about the
+    // colour of a pixel would be a bug the user could see and nobody could
+    // explain.
+    //
+    // **Phase 5 step 2**: that now includes the blend *mode*. Each layer's
+    // blend name is resolved to a `BlendMode` here exactly as
+    // core/Composite's walk resolves it -- once per layer, with a name this
+    // build cannot composite falling back to `Normal` -- so a document with a
+    // `multiply` layer reads the same under the eyedropper as it exports. A
+    // probe returns a colour and has nowhere to put the warning that
+    // fallback deserves; that asymmetry is stated in core/Probe.hpp.
     //
     // Compositing happens **per texel and the box is averaged afterwards**,
     // not the other way round. Averaging each layer first and compositing the
@@ -95,15 +104,24 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
     // colour does the document show at this point" -- the composite, not the
     // union of what the layers happen to hold.
     const int32_t half = sampleSize / 2;  // floor; see ProbeParams::sampleSize
-    for (const Layer& layer : doc.layers) {
+    // Resolved once per layer, before the sample box, for the same reason
+    // core/Composite hoists it: `blend` is a std::string, and parsing one per
+    // texel per layer would put a string comparison in the innermost loop of
+    // an operation that runs on every pointer move.
+    std::vector<BlendMode> modes(doc.layers.size(), BlendMode::Normal);
+    for (size_t i = 0; i < doc.layers.size(); ++i) {
+      const Layer& layer = doc.layers[i];
       if (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) any = true;
+      const std::optional<BlendMode> named = blendModeFromName(layer.blend);
+      if (named.has_value() && blendModeInfo(*named).compositesPixels) modes[i] = *named;
     }
     if (any) {
       for (int32_t dy = 0; dy < sampleSize; ++dy) {
         for (int32_t dx = 0; dx < sampleSize; ++dx) {
           const PixelCoord docPos{at.x - half + dx, at.y - half + dy};
           std::array<float, 4> acc{0.0f, 0.0f, 0.0f, 0.0f};
-          for (const Layer& layer : doc.layers) {
+          for (size_t li = 0; li < doc.layers.size(); ++li) {
+            const Layer& layer = doc.layers[li];
             if (layer.kind != LayerKind::RGB || !layer.rgbTiles.has_value()) continue;
             const float coverage = layerCoverage(layer);
             if (coverage <= 0.0f) continue;
@@ -116,7 +134,7 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
               src[2] *= coverage;
               src[3] *= coverage;
             }
-            acc = compositeOver(src, acc);
+            acc = blendPixel(modes[li], src, acc);
           }
           sum[0] += acc[0];
           sum[1] += acc[1];
