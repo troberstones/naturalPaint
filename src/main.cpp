@@ -374,6 +374,20 @@ int main(int argc, char** argv) {
     // build that has no writer. Headless and GPU-free; writes and removes a
     // selftest_lifecycle/ scratch directory.
     const bool documentLifecycleOk = np::runDocumentLifecycleTest();
+    // Phase 4 step 9 ("`core/Journal` -- the recovery journal from ADR-0008";
+    // PRD O5-O10): app/Journal's scratch directory, its timer, and the
+    // recovery path. The timer rule is asserted as a pure function so both
+    // builds check it; the round trip goes through the real writer, with the
+    // crash simulated in-process by letting the session's destructor run
+    // rather than by killing anything. A truncated journal is proven to be
+    // refused on its own integrity record *before* the format reader sees
+    // it -- provably so in the build that has no reader. Runs, and asserts the
+    // correct answers, in BOTH NP_USE_OIIO configurations; the answer in the
+    // OFF build is that there is no journal at all, because saveNpaint() is
+    // the only writer and PRD O7 forbids a second one. Headless and GPU-free;
+    // writes and removes a selftest_journal/ scratch directory, with
+    // $NP_JOURNAL_DIR pointed at it so no real user state is touched.
+    const bool recoveryJournalOk = np::runRecoveryJournalTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -385,7 +399,7 @@ int main(int argc, char** argv) {
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
-                    exportAsOk && documentLifecycleOk && strokeSpeedOk &&
+                    exportAsOk && documentLifecycleOk && recoveryJournalOk && strokeSpeedOk &&
                     idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
@@ -429,6 +443,31 @@ int main(int argc, char** argv) {
   }
 
   np::AppState st;
+
+  // PLAN.md Phase 4 step 9 (app/Journal, ADR-0008, PRD O5-O10).
+  //
+  // Discovery runs *before* begin(), so this session's own directory can
+  // never appear in its own recovery offer -- the flock probe would exclude
+  // it anyway, but ordering makes that unconditional rather than dependent on
+  // a lock succeeding.
+  st.recovery = np::discoverRecoverySessions();
+  st.recoveryOfferPending = !st.recovery.empty();
+  {
+    std::string journalError;
+    const bool journalling = st.journal.begin({}, &journalError);
+    if (journalling)
+      std::fprintf(stderr, "[journal] recovery scratch: %s (every %.0f s)\n",
+                   st.journal.directory().c_str(), np::kJournalIntervalSeconds);
+    // Printed on both paths, because begin() also reports a *non-fatal*
+    // problem this way (a scratch directory it could not lock, which costs
+    // nothing but is worth knowing). Named once, at the point the journal
+    // would otherwise have started -- including the whole NP_USE_OIIO=OFF
+    // refusal, which is the default build's answer. A painting application
+    // that refused to start without a journal would be worse than one that
+    // says it has none.
+    if (!journalError.empty()) std::fprintf(stderr, "[journal] %s\n", journalError.c_str());
+  }
+
   // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring
   // UI (ui/MacPaintUI.cpp's GRADE section: add/reorder/toggle/delete, plus
   // the curve widget) is how a user populates it now. Earlier, before this
@@ -677,8 +716,41 @@ int main(int argc, char** argv) {
     if (strokeWasActive && !st.strokeActive) latency.endStroke();
     strokeWasActive = st.strokeActive;
 
+    // The recovery journal's timer (PLAN.md Phase 4 step 9, PRD O5, O6, O10).
+    //
+    // Here, at the very end of the frame, rather than beside the simulation:
+    // a journal write is synchronous on this thread today (see
+    // app/Journal.hpp's interval arithmetic), so it must land *after*
+    // latency.recordFrame() has already judged this frame -- otherwise the
+    // one frame per minute that carries a journal write would be recorded as
+    // a pen-to-photon outlier that has nothing to do with the pen.
+    //
+    // st.strokeActive is PRD O10's deferral: a write that would collide with
+    // a stroke in progress is held back to the first frame after it ends.
+    // Almost every call returns having done nothing but compare two integers
+    // per open document.
+    {
+      const double nowSeconds =
+          std::chrono::duration<double>(now.time_since_epoch()).count();
+      const np::JournalTickResult journalled =
+          st.journal.tick(st.documents, {nowSeconds, st.strokeActive});
+      for (const std::string& e : journalled.errors)
+        std::fprintf(stderr, "[journal] %s\n", e.c_str());
+    }
+
     wgpuTextureViewRelease(backbuffer);
     wgpuTextureRelease(surfaceTex.texture);
+  }
+
+  // A clean shutdown removes the scratch directory, so this run leaves
+  // nothing to be offered for recovery next launch (PRD O8 -- the offer must
+  // mean something, which requires that a normal exit never produces one).
+  // Only this path removes it: JournalSession's destructor deliberately does
+  // not, so any exit that does not reach here still leaves the work.
+  {
+    std::string journalError;
+    if (!st.journal.finishClean(&journalError))
+      std::fprintf(stderr, "[journal] %s\n", journalError.c_str());
   }
 
   ImGui_ImplWGPU_Shutdown();

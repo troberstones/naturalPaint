@@ -117,8 +117,9 @@ DocumentId allocateDocumentId() {
 
 // --- OpenDocument ---------------------------------------------------------
 
-void OpenDocument::recordEdit(std::string label) {
+void OpenDocument::recordEdit(std::string label, EditKind kind) {
   ++revision;
+  if (kind == EditKind::Structural) ++structuralRevision;
   if (unsavedEdits.size() < kMaxTrackedUnsavedEdits)
     unsavedEdits.push_back(std::move(label));
   else

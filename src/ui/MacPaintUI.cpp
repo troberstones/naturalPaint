@@ -9,6 +9,7 @@
 
 #include "app/CurveEdit.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "app/Journal.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
@@ -1046,6 +1047,126 @@ void drawDocumentDialogs(AppState& st) {
   }
 }
 
+// ------------------------------------------------------------ Recovery offer
+//
+// PLAN.md Phase 4 step 9 / PRD O8: "Unclean scratch directories are offered
+// for recovery on launch, named and dated; never opened silently, never
+// auto-deleted." The list is discovered by main() before the journal's own
+// session begins and lives on AppState; this is the offer.
+//
+// Three things the widgets here must not get wrong, each of which is a
+// property of app/Journal rather than of this dialog, and none of which this
+// dialog is allowed to work around:
+//
+//  * **Nothing opens by itself.** The modal appears; a document arrives in
+//    the session only when its own Recover button is pressed.
+//  * **Declining deletes nothing.** "Later" closes the dialog and leaves
+//    every byte where it was, so the same offer is made next launch. Only
+//    the explicitly labelled Discard button removes anything, and it says
+//    what it is about to remove.
+//  * **A damaged entry is shown, not hidden.** An entry whose model file is
+//    truncated is listed with app/Journal's own sentence and no Recover
+//    button, because the alternative -- omitting it -- would look identical
+//    to work that was never journalled at all.
+bool g_recoveryRequested = false;
+std::string g_recoveryStatus;
+
+void drawRecoveryDialog(AppState& st) {
+  // Opened once, on the first frame after launch, when there is something to
+  // offer. `recoveryOfferPending` is cleared as the popup is opened rather
+  // than when it closes, so declining is not re-asked every frame.
+  if (st.recoveryOfferPending && !st.recovery.empty()) {
+    st.recoveryOfferPending = false;
+    g_recoveryRequested = true;
+  }
+  if (g_recoveryRequested) {
+    g_recoveryRequested = false;
+    g_recoveryStatus.clear();
+    ImGui::OpenPopup("Recover Documents");
+  }
+  if (!ImGui::BeginPopupModal("Recover Documents", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    return;
+
+  const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
+  if (st.recovery.empty()) {
+    ImGui::TextDisabled("No unfinished sessions were found.");
+  } else {
+    ImGui::TextWrapped("These sessions ended without shutting down. Nothing has been opened "
+                       "or deleted.");
+  }
+  if (!journalAvailable()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+    ImGui::TextWrapped("%s", journalUnavailableReason().c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::Separator();
+
+  for (size_t s = 0; s < st.recovery.size(); ++s) {
+    RecoverySession& session = st.recovery[s];
+    ImGui::PushID(static_cast<int>(s));
+    // PRD O8's "named and dated": the date the session *started*, and the
+    // documents' own names.
+    ImGui::Text("Session of %s  --  %zu document(s)", session.startedAtLocal.c_str(),
+                session.documents.size());
+    ImGui::TextDisabled("%s", session.directory.c_str());
+    for (const std::string& p : session.problems) {
+      ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+      ImGui::TextWrapped("%s", p.c_str());
+      ImGui::PopStyleColor();
+    }
+    for (size_t d = 0; d < session.documents.size(); ++d) {
+      const RecoveryDocument& entry = session.documents[d];
+      ImGui::PushID(static_cast<int>(d));
+      ImGui::Bullet();
+      ImGui::SameLine();
+      ImGui::Text("%s", entry.displayName.c_str());
+      if (!entry.unsavedSummary.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", entry.unsavedSummary.c_str());
+      }
+      if (entry.intact) {
+        ImGui::SameLine();
+        if (ImGui::Button("Recover")) {
+          OpenDocument recovered;
+          const DocumentOpResult r = recoverDocument(entry, &recovered);
+          if (r.ok) {
+            g_recoveryStatus = "Recovered " + documentDisplayName(recovered) +
+                               ". It is unsaved -- save it where you want it kept.";
+            st.documents.add(std::move(recovered));
+          } else {
+            g_recoveryStatus = r.error;
+          }
+        }
+      } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+        ImGui::TextWrapped("%s", entry.problem.c_str());
+        ImGui::PopStyleColor();
+      }
+      ImGui::PopID();
+    }
+    if (ImGui::Button("Discard this session")) {
+      std::string discardError;
+      if (discardRecoverySession(session, &discardError)) {
+        g_recoveryStatus = "Discarded " + session.directory;
+        st.recovery.erase(st.recovery.begin() + static_cast<std::ptrdiff_t>(s));
+        ImGui::PopID();
+        break;
+      }
+      g_recoveryStatus = discardError;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(deletes the files above; there is no undo)");
+    ImGui::Separator();
+    ImGui::PopID();
+  }
+
+  if (!g_recoveryStatus.empty()) ImGui::TextWrapped("%s", g_recoveryStatus.c_str());
+  if (ImGui::Button("Later")) ImGui::CloseCurrentPopup();
+  ImGui::SameLine();
+  ImGui::TextDisabled("Nothing is deleted; this is offered again next launch.");
+  ImGui::EndPopup();
+}
+
 // The File menu's document half. Split out of drawUI's menu bar block only
 // because it is long, not because it is separable.
 void drawDocumentMenuItems(AppState& st, uint32_t canvasW, uint32_t canvasH) {
@@ -1129,6 +1250,17 @@ void drawDocumentMenuItems(AppState& st, uint32_t canvasW, uint32_t canvasH) {
       st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
     }
     g_docStatus = r.ok ? "Saved " + r.path : r.error;
+  }
+
+  ImGui::Separator();
+  // PLAN.md Phase 4 step 9 / PRD O8. Always enabled, even with nothing to
+  // offer: "are there unfinished sessions?" is a question a user who has just
+  // had a crash will ask, and a greyed-out item answers it ambiguously. The
+  // list is re-scanned rather than reused, so a session another instance
+  // finished since launch is not offered from a stale snapshot.
+  if (ImGui::MenuItem("Recover Documents...")) {
+    st.recovery = discoverRecoverySessions();
+    g_recoveryRequested = true;
   }
 
   ImGui::Separator();
@@ -1333,6 +1465,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // reason: a modal opened from a menu item must be begun outside the menu
   // bar's ID stack.
   drawDocumentDialogs(st);
+
+  // PLAN.md Phase 4 step 9 ("the recovery journal"), same placement rule
+  // again -- and it must be begun here rather than only from the menu,
+  // because PRD O8's offer happens on launch, before any menu is touched.
+  drawRecoveryDialog(st);
 
   const ImVec2 work = vp->WorkPos;
   const ImVec2 size = vp->WorkSize;

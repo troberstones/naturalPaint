@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
+#include "app/Journal.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "paint/Palette.hpp"
@@ -235,6 +236,28 @@ struct AppState {
   // (PRD A2, ADR-0001), and --selftest's idle-RSS measurement would notice.
   RecentDocuments recentDocuments;
   bool recentDocumentsLoaded = false;
+
+  // PLAN.md Phase 4 step 9 (app/Journal, ADR-0008, PRD O5-O10). The recovery
+  // journal for this run: one scratch directory, its lock, and one journal
+  // entry per dirty open document. Session state by app/AppState.hpp's own
+  // rule above -- it belongs to the process, not to a widget -- and it holds
+  // no buffers at rest (ADR-0008's note about the idle-RSS assertion), only a
+  // path, a file descriptor and a small map keyed by DocumentId.
+  //
+  // Begun by main() after `recovery` below has been filled, and ended by
+  // main()'s clean shutdown, which removes the directory. Never begun on the
+  // --selftest path, which returns before this struct is constructed, so the
+  // idle-RSS measurement cannot see it.
+  JournalSession journal;
+
+  // Unclean scratch directories found at launch, newest first (PRD O8:
+  // "offered for recovery on launch, named and dated"). Filled once, before
+  // the journal's own session exists, so this list can never contain it. The
+  // UI offers them; nothing here opens or deletes anything on its own.
+  std::vector<RecoverySession> recovery;
+  // Cleared once the offer has been shown, so declining is not re-asked every
+  // frame. File > Recover Documents... sets it again.
+  bool recoveryOfferPending = false;
 
   // Menu-toggleable, no keyboard shortcut (docs/shortcuts.md §3 assigns
   // rulers to Cmd+R, but keymaps/default.json already binds Cmd+R to

@@ -948,4 +948,74 @@ bool runExportAsTest();
 //    success.
 bool runDocumentLifecycleTest();
 
+// Headless check on app/Journal -- the recovery journal PLAN.md Phase 4 step 9
+// names and ADR-0008 designs (PRD O5-O10). PLAN.md calls the module
+// `core/Journal`; it is `app/Journal`, because it serialises an
+// `app::OpenDocument` through `io/NpaintFile` and a `core/` module may do
+// neither (see Journal.hpp's opening section, and PLAN.md's Deviations).
+//
+// **Not #ifdef'd out of the NP_USE_OIIO=OFF build** (PLAN.md §1.5), and the
+// answer it asserts there is a genuinely uncomfortable one: `saveNpaint()` is
+// OpenImageIO-only, so **the recovery journal does not run in the default
+// build**, and this section asserts exactly that -- `journalAvailable()`
+// false, the reason being io/NpaintFile's own named refusal, and *no scratch
+// directory created*, since an empty one would be offered next launch and
+// hold nothing. Everything that is not the writer is asserted identically in
+// both builds: the scratch location and its override, the naming and dating,
+// the whole timer rule (which is a pure function precisely so that the build
+// with no session still checks it), the sidecar format, and every integrity
+// refusal.
+//
+// Pure CPU, no GPU. `$NP_JOURNAL_DIR` points the module at a
+// `selftest_journal/` directory in the working directory for the whole
+// section, removed unconditionally at the end and asserted gone, so this
+// never touches `~/Library/Application Support/naturalPaint`.
+//
+// Covered, in order:
+//
+//  - Availability: the correct answer per build, the refusal forwarded rather
+//    than reworded, and the fact that *asking* for the reason opens no file --
+//    the probe stops at io/NpaintFile's backend gate.
+//  - The scratch location: `$NP_JOURNAL_DIR`, the per-user default under
+//    `naturalPaint/recovery`, and that it is deliberately not under `Caches`,
+//    which the system may purge.
+//  - The timer, as `journalWriteDue()`: a clean document never due; a
+//    never-journalled dirty one due at once; a **content** edit waiting for
+//    the interval and firing to the second; a **structural** edit due
+//    immediately (PRD O5); a stroke-deferred write staying due rather than
+//    waiting another interval (PRD O10); and a saved document never due.
+//  - Beginning a session: the directory named and dated
+//    `session-YYYYMMDD-HHMMSS-<pid>`, its descriptor and lock, that a **live**
+//    session is not offered back to the process holding it (the `flock` probe,
+//    which is what makes a lock left by a machine that lost power impossible
+//    rather than merely unlikely), and that `finishClean()` leaves nothing.
+//  - A hand-built journal entry, in **both** builds, because the integrity
+//    record is checked before the file format reader is: a sound entry
+//    reaching the reader, a **truncated** model refused by name with both byte
+//    counts, a right-length wrong-contents model refused on the hash, a
+//    sidecar with no terminating `end` refused rather than half-read, and both
+//    journal files still present afterwards. In the build with no reader the
+//    ordering is provable, because the refusal is about truncation and not
+//    about the missing backend.
+//  - The round trip through the real writer: a structural edit journalled on
+//    the tick, the user's own file untouched (PRD O9), an unchanged document
+//    not rewritten, a tile changed in the **active** document reaching disk on
+//    the timer with no deactivation anywhere (PRD O6), a stroke deferring the
+//    write and the write happening on the first tick after it, an in-process
+//    crash (the session destructor -- no signals, no second process), the
+//    directory offered afterwards, and a recovery whose tiles are bit-identical
+//    at zero tolerance, whose every `np:*` layer attribute matches, whose PRD
+//    I10 carry is intact, and which comes back dirty and bound with its edit
+//    labels in order.
+//  - That a saved document's journal is dropped, and that neither discovery
+//    nor recovery ever deletes anything -- only the explicit discard does.
+//  - The measurements the interval is derived from: one journal write of a
+//    2048x2048, 256-tile document; a deep copy of the same document (what a
+//    background writer would still cost without copy-on-write tiles); the
+//    resulting duty cycle, with a 3% ceiling asserted so an order-of-magnitude
+//    regression fails rather than merely slows; `fsync` against `F_FULLFSYNC`,
+//    which is the measurement the durability choice rests on; and what
+//    launch-time discovery costs against PRD A2.
+bool runRecoveryJournalTest();
+
 }  // namespace np

@@ -179,6 +179,23 @@ DocumentId allocateDocumentId();
 // the whole session is a slow leak.
 inline constexpr size_t kMaxTrackedUnsavedEdits = 32;
 
+// What kind of change `recordEdit()` is recording.
+//
+// Added by PLAN.md Phase 4 step 9 (app/Journal), which needs the distinction
+// ADR-0008 draws between "on a timer" and "after any structural edit" and has
+// nowhere else to read it from. It is deliberately a property of the *edit*
+// rather than a second dirty flag on the record: an edit is structural or it
+// is not at the moment it happens, and only the caller performing it knows
+// which.
+//
+// `Structural` is the default because every caller that existed before the
+// journal did -- duplicate, place image as layer, the UI's document
+// operations -- really is structural, so the default is the correct answer
+// for all of them rather than a convenient one. `Content` is what the future
+// canvas-to-tiles bridge passes for a painted stroke: frequent, pixel-only,
+// and exactly the case ADR-0008 refuses to turn into a disk write each time.
+enum class EditKind { Structural, Content };
+
 struct OpenDocument {
   DocumentId id = 0;
 
@@ -216,6 +233,14 @@ struct OpenDocument {
   uint64_t revision = 0;
   uint64_t savedRevision = 0;
 
+  // Bumped only by a `EditKind::Structural` edit, and never reset by a save.
+  // app/Journal compares it against the value it last journalled to implement
+  // PRD O5's "after every structural edit"; nothing else reads it. Kept
+  // separate from `revision` rather than derived from the edit labels because
+  // the labels are capped (kMaxTrackedUnsavedEdits) and a counter must not
+  // be.
+  uint64_t structuralRevision = 0;
+
   // Labels for the edits since the last save, oldest first, capped at
   // kMaxTrackedUnsavedEdits. Exists so PRD I11's "names exactly what" can be
   // honoured by the one operation that discards work.
@@ -230,7 +255,11 @@ struct OpenDocument {
   // Records one document-mutating edit. `label` is what the user would
   // recognise, in the imperative-free noun form the eventual History panel
   // (PRD O2) will want: "place image as layer", "duplicate", not "Edited".
-  void recordEdit(std::string label);
+  //
+  // `kind` decides whether app/Journal writes within the next frame or waits
+  // for its timer; see EditKind above. It changes nothing else about the
+  // record -- both kinds are equally dirty and equally unsaved.
+  void recordEdit(std::string label, EditKind kind = EditKind::Structural);
 
   // One sentence naming exactly what is unsaved, for PRD I11 refusals and for
   // the UI. Empty when the document is clean.
