@@ -1018,4 +1018,64 @@ bool runDocumentLifecycleTest();
 //    launch-time discovery costs against PRD A2.
 bool runRecoveryJournalTest();
 
+// PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
+// visibility, lock, opacity"; PRD C4, C16): core/Composite's `over`,
+// core/LayerOps' operations, app/LayerPanel's row logic, and the round trip
+// that proves the stack's order survives a save.
+//
+// **Not #ifdef'd out of the NP_USE_OIIO=OFF build** (PLAN.md §1.5). Everything
+// except the `.npaint` round trip is pure CPU and asserts the same answers in
+// both configurations; the round trip asserts the correct answer for the build
+// it is in through the same single `kOiioBuild` constant every other section
+// uses -- the file is written and reloaded in the ON build, and in the OFF
+// build the save is asserted to be refused by io/NpaintFile's own named
+// message. Headless and GPU-free; writes and removes one
+// `selftest_layerstack.npaint` and touches no user state.
+//
+// Covered, in order:
+//
+//  - `over` against a hand-computed reference: two 50%-alpha layers giving
+//    straight (1/3, 0, 2/3, 0.75), with the full arithmetic written out at the
+//    fixture, plus the explicit check that this is NOT the plain sum's opaque
+//    purple -- so the fixture could not pass against the code it replaced.
+//  - Reorder changing the result in the direction the ordering convention
+//    predicts: moving index 0 to index 1 mirrors which colour dominates, and
+//    leaves coverage alone.
+//  - Opacity proven to be a coverage multiplier and **not** an alpha
+//    replacement: 50% opacity on an opaque layer is bit-identical to alpha
+//    0.5, while alpha 0.5 *at* 50% opacity composites to exactly 0.25. The
+//    tile and the Layer are both proven unmutated afterwards, and
+//    `layerCoverage()`'s clamps and NaN guard are checked directly.
+//  - A hidden layer contributing **exactly nothing**, at zero tolerance,
+//    against the same document with that layer deleted -- with a negative
+//    control proving the visible version really does differ.
+//  - **The regression boundary this step's semantics change makes necessary**:
+//    against a second, independent implementation of the plain sum (written in
+//    the test, not called), a single-layer document and a three-layer document
+//    with no overlap composite **byte-identically**, and one overlapping texel
+//    is enough to break that -- so the identity is a property of non-overlap
+//    rather than of the implementation.
+//  - Every layer operation's effect on the dirty state: `revision` and
+//    `structuralRevision` both bumped by exactly one per operation (every
+//    layer change is structural, PRD O5), the edit label naming the layer, a
+//    refused operation recording nothing at all, and the deep copy
+//    duplicateLayer really makes.
+//  - `locked` refusing what it should, by name: remove, move-itself, opacity
+//    and rename refused; hide, unlock, duplicate (with the copy inheriting the
+//    lock) and moving a *different* layer past it allowed. Each refusal names
+//    the layer.
+//  - An unimplemented blend composited as `over` and reported by name at every
+//    boundary that produces a file -- including for a hidden layer, and
+//    including alongside a refusal -- with the composited pixels proven
+//    byte-identical to `over` and the blend string proven untouched.
+//  - core/Probe agreeing with the flattener through the same `compositeOver()`,
+//    and the deliberate split where single-layer mode ignores visible/opacity.
+//  - app/LayerPanel's single bottom-first/top-first reversal and its inverse,
+//    the out-of-range guard, and the exact `RGB · NORMAL · 100%` sub-line text.
+//  - The save -> load round trip of a **reordered** three-layer document:
+//    order preserved bottom-first, all six metadata fields on the right
+//    layers, each layer's tiles travelling with it, and the reloaded document
+//    compositing byte-identically to the saved one.
+bool runLayerStackTest();
+
 }  // namespace np

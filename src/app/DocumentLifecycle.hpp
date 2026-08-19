@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/Document.hpp"
+#include "core/LayerOps.hpp"
 #include "io/NpaintFile.hpp"
 #include "io/TileResidency.hpp"
 
@@ -490,6 +491,31 @@ DocumentOpResult saveDocumentIncremental(OpenDocument& doc,
 // path or a directory that cannot be listed.
 bool nextIncrementalPath(const std::string& currentPath, std::string* outPath,
                          std::string* errorOut);
+
+// --- Layer operations, and how they become dirty ---------------------------
+
+// Turns a `core::LayerOpResult` into a `DocumentOpResult` and, on success,
+// records it on `doc` as a **structural** edit.
+//
+// Called as `recordLayerEdit(od, addLayer(od.document, i, layer))` -- the
+// argument is evaluated first, so the operation runs against the document and
+// this function records what it did. One function rather than one wrapper per
+// operation, which is possible only because every `core::LayerOpResult` already
+// carries the label a caller should record (core/LayerOps.hpp's own reason for
+// putting `editLabel` on the result).
+//
+// **Always `EditKind::Structural`, and that is the point of routing through
+// here at all.** Every operation in core/LayerOps changes the shape or the
+// metadata of the layer stack, which is exactly what ADR-0008 wants journalled
+// *at once* rather than on the next timer tick (PRD O5, "after every structural
+// edit"). A layer added and then lost to a crash before the interval elapsed
+// would be the failure the journal exists to prevent. `EditKind::Content`
+// remains reserved for the pixel-level bridge that does not exist yet.
+//
+// A refused operation records nothing: no revision bump, no label, no journal
+// write. A document is not dirty because someone tried to delete a locked
+// layer.
+DocumentOpResult recordLayerEdit(OpenDocument& doc, LayerOpResult result);
 
 // --- Open recent (the MRU) -------------------------------------------------
 

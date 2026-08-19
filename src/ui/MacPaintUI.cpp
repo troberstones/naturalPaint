@@ -10,6 +10,7 @@
 #include "app/CurveEdit.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
+#include "app/LayerPanel.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
@@ -657,6 +658,179 @@ void drawGradeSection(AppState& st) {
     }
     ImGui::Dummy(ImVec2(0, 4));
     ImGui::PopID();
+  }
+}
+
+// ------------------------------------------------------------------ Layers
+//
+// PLAN.md Phase 5 step 1's panel, following docs/ui.md §3.2's layer row: a
+// kind glyph, the name, and a monospace sub-line reading `RGB · NORMAL · 100%`.
+//
+// Same split as drawCurveWidget()/app/CurveEdit and drawExportAsDialog()/
+// io/ExportAs: everything that can be wrong here without a screenshot showing
+// it lives outside this function and is exercised headlessly by `--selftest`.
+// Specifically:
+//
+//  * **Which layer a row is** -- app/LayerPanel's `layerIndexForPanelRow()`.
+//    The panel lists top-first while `Document::layers` is bottom-first, and
+//    that reversal happens in exactly one place, in a pure function with a
+//    test, because a second reversal in this draw loop is precisely how "Up"
+//    ends up moving a layer down.
+//  * **What a row says** -- app/LayerPanel's `layerRowTitle()` /
+//    `layerRowSubLine()` / `layerKindGlyph()`.
+//  * **What a button does** -- core/LayerOps' add/remove/move/duplicate and
+//    the property setters, which are also where `locked` is enforced. This
+//    function never touches `doc.layers` directly, so the lock cannot be
+//    bypassed by a widget; a refusal comes back as the operation's own
+//    sentence and is shown verbatim rather than reworded.
+//  * **Dirty and journal tracking** -- app/DocumentLifecycle's
+//    `recordLayerEdit()`, which is what makes every change here a structural
+//    edit (PRD O5) rather than something the journal finds out about on its
+//    next timer tick.
+//
+// --- What this panel does NOT show, stated plainly ------------------------
+//
+// **The painting canvas is not one of these layers.** `sim::PaintSim` owns a
+// single dense GPU texture with no layer or document awareness; a stroke writes
+// that texture and touches no `Layer::rgbTiles` anywhere. So this panel lists
+// the layers of the *open document* -- what File > New Document, File > Open...
+// and a `.npaint` load put there -- and a document that has been painted on
+// does not show the paint, because the paint never reached it. That is the same
+// gap every prior UI-facing step's Findings row records, it is not closed here,
+// and the panel says so on screen rather than leaving a user to infer it from
+// an empty thumbnail. There are no thumbnails, for the same reason: a thumbnail
+// of a document whose pixels the canvas cannot reach would imply a connection
+// that does not exist.
+//
+// Also deliberately absent: a blend-mode dropdown. PLAN.md Phase 5 step 2
+// (`core/Blend`) owns which modes exist and how display-referred ones are
+// labelled; offering a list today would be inventing that enumeration in the
+// UI, which is exactly what core/Layer.hpp's `std::string blend` refuses to do
+// in the model. The row *displays* the blend it carries, marked `(!)` when this
+// build cannot composite it.
+void drawLayersSection(AppState& st) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    ImGui::TextDisabled("No document open.");
+    ImGui::TextWrapped("File > New Document or File > Open... makes one. The painting canvas "
+                       "is not a document -- a stroke writes sim::PaintSim's texture, not a "
+                       "layer -- so this panel never shows what is on screen.");
+    return;
+  }
+
+  Document& doc = od->document;
+  ImGui::TextDisabled("%s -- %d x %d, %zu layer(s)", documentDisplayName(*od).c_str(), doc.width,
+                      doc.height, doc.layers.size());
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("The layers of the open document.\n"
+                      "NOT the painting canvas: sim::PaintSim owns one dense\n"
+                      "texture with no layer awareness, so a stroke reaches no\n"
+                      "layer and nothing painted appears here.");
+
+  // Session-local, exactly like drawGradeSection()'s newOpKindIdx and the
+  // Export As dialog's fields -- app/AppState.hpp's own rule is that transient
+  // widget state stays in ui/. The selection is a *model* index (bottom-first),
+  // not a panel row, so it survives a reorder meaning the same layer.
+  static size_t selected = 0;
+  static std::string lastError;
+  static char renameBuf[128] = "";
+
+  if (selected >= doc.layers.size()) selected = doc.layers.empty() ? 0 : doc.layers.size() - 1;
+
+  auto run = [&](LayerOpResult r) {
+    const DocumentOpResult out = recordLayerEdit(*od, std::move(r));
+    lastError = out.ok ? std::string() : out.error;
+    return out.ok;
+  };
+
+  if (ImGui::SmallButton("+ Add")) {
+    // Above the selection, which is where every editor puts a new layer.
+    const size_t at = doc.layers.empty() ? 0 : selected + 1;
+    if (run(addLayer(doc, at, makeRgbLayer(defaultNewLayerName(doc))))) selected = at;
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(doc.layers.empty());
+  if (ImGui::SmallButton("Duplicate")) {
+    if (run(duplicateLayer(doc, selected))) selected += 1;
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Delete")) {
+    if (run(removeLayer(doc, selected)) && selected > 0) selected -= 1;
+  }
+  ImGui::EndDisabled();
+
+  // Rows, top of the stack first. `structureChanged` stops the loop the same
+  // frame a reorder/add/remove fires rather than continuing to render rows
+  // against indices that no longer mean what they did -- the identical
+  // precaution drawGradeSection() takes over core::OpStack, and for the
+  // identical reason (core/LayerOps' move/remove shift the vector).
+  bool structureChanged = false;
+  const size_t count = doc.layers.size();
+  for (size_t row = 0; row < count && !structureChanged; ++row) {
+    const size_t i = layerIndexForPanelRow(row, count);
+    const Layer& layer = doc.layers[i];
+    ImGui::PushID(static_cast<int>(i));
+
+    bool visible = layer.visible;
+    if (ImGui::Checkbox("##vis", &visible)) {
+      run(setLayerVisible(doc, i, visible));
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Visibility. Allowed even on a locked layer --\n"
+                        "hiding a layer changes nothing about it.");
+    ImGui::SameLine();
+    ImGui::TextUnformatted(layerKindGlyph(layer.kind));
+    ImGui::SameLine();
+    if (ImGui::Selectable(layerRowTitle(layer, i).c_str(), selected == i)) selected = i;
+    ImGui::Indent();
+    ImGui::TextDisabled("%s", layerRowSubLine(layer).c_str());
+
+    ImGui::BeginDisabled(i + 1 >= count);
+    if (ImGui::SmallButton("Up")) {  // up the panel == up the stack == +1
+      if (run(moveLayer(doc, i, i + 1))) selected = i + 1;
+      structureChanged = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(i == 0);
+    if (ImGui::SmallButton("Down")) {
+      if (run(moveLayer(doc, i, i - 1))) selected = i - 1;
+      structureChanged = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    bool locked = layer.locked;
+    if (ImGui::Checkbox("Lock", &locked)) run(setLayerLocked(doc, i, locked));
+
+    if (selected == i && !structureChanged) {
+      float opacity = layer.opacity;
+      // SliderFloat reports a change every frame of a drag; each one goes
+      // through setLayerOpacity() so a locked layer refuses every one of them
+      // rather than the first only. The revision counter therefore rises once
+      // per frame of a drag -- accepted here because history (Phase 5 step 7)
+      // is what owns coalescing an interaction into one entry, and inventing a
+      // second, weaker coalescing rule in the panel would be in its way.
+      if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f"))
+        run(setLayerOpacity(doc, i, opacity));
+      std::snprintf(renameBuf, sizeof(renameBuf), "%s", layer.name.c_str());
+      if (ImGui::InputText("Name", renameBuf, sizeof(renameBuf),
+                           ImGuiInputTextFlags_EnterReturnsTrue))
+        run(setLayerName(doc, i, renameBuf));
+    }
+    ImGui::Unindent();
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::PopID();
+  }
+
+  // The refusal, verbatim. core/LayerOps' sentences already name the layer and
+  // say what to do about it, so there is no second vocabulary here to drift
+  // from the model's -- the same rule drawExportAsDialog() follows for
+  // io/Export's messages.
+  if (!lastError.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+    ImGui::TextWrapped("%s", lastError.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::SmallButton("Dismiss")) lastError.clear();
   }
 }
 
@@ -1710,6 +1884,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // Phase 3. Same TextUnformatted/Separator/Dummy idiom as every section
     // above -- see drawGradeSection()'s own doc comment for the full
     // breakdown of what's here and what's deliberately left out.
+    // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
+    // visibility, lock, opacity"; PRD C4). docs/ui.md's layout puts LAYERS in
+    // this right-hand stack, above CHANNELS -- same section idiom as every
+    // block above. See drawLayersSection()'s own doc comment for what it does
+    // not show, which is the painting canvas.
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::TextUnformatted("LAYERS");
+    ImGui::Separator();
+    drawLayersSection(st);
+
     ImGui::Dummy(ImVec2(0, 8));
     ImGui::TextUnformatted("GRADE");
     ImGui::Separator();

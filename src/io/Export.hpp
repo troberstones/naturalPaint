@@ -266,6 +266,18 @@ struct ExportResult {
   std::vector<uint8_t> bytes;
   // Non-empty exactly when !ok.
   std::string error;
+  // Non-fatal: the export went ahead and this names what about it is
+  // approximate. Same field, same meaning and same wording discipline as
+  // io/NpaintFile's `NpaintSaveResult::warnings`, deliberately rather than a
+  // second vocabulary for the same idea.
+  //
+  // Added by PLAN.md Phase 5 step 1, which introduced the first thing that can
+  // be approximate: a layer asking for a blend mode this build does not
+  // implement is composited as `over` and named here (core/Composite.hpp
+  // argues why that is better than refusing the export outright). Only
+  // `exportDocument()` fills it -- `encodeLinearImage()` is handed an image
+  // that has already been composited and has no layers left to warn about.
+  std::vector<std::string> warnings;
 };
 
 // Flattens `doc` to one straight-alpha, linear-light float RGBA image the
@@ -281,21 +293,29 @@ struct ExportResult {
 //
 // Two things this does, in this order:
 //
-//  1. Sums every RGB-kind layer's premultiplied tile contents into the
-//     canvas. This is a plain sum, NOT Porter-Duff "over" compositing:
-//     there is no blend-mode/compositing implementation anywhere in this
-//     codebase yet (Phase 5 step 2, core/Blend), so there is nothing
-//     correct to fake here. It is the right sum for *today's* invariant of
-//     at most one layer with actually-painted content at a given point --
-//     summing zero or one contribution needs no blending math at all. This
-//     is the identical decision core/Probe.cpp's sampleAllLayers path
-//     already made and documented, deliberately mirrored rather than
-//     re-litigated; the moment a second layer can hold content at the same
-//     pixel, both places need real per-layer alpha-under compositing, and
-//     both say so.
+//  1. Composites every RGB-kind layer, bottom to top, through
+//     core/Composite's `compositeDocumentPremultiplied()` -- real
+//     Porter-Duff `over` in linear light on premultiplied values, honouring
+//     `Layer::visible` and `Layer::opacity`.
 //
-//  2. Un-premultiplies the summed result, with the same `a <= 0 ->
-//     {0,0,0,0}` guard core/Probe.cpp's unpremultiply() uses. Summing in
+//     **This used to be a plain sum, and replacing it is PLAN.md Phase 5
+//     step 1.** The sum was correct only under the invariant "at most one
+//     layer holds painted content at a given point", which is exactly what
+//     multiple layers destroy. The comment that stood here (and core/Probe's
+//     matching one) said that the moment a second layer could hold content
+//     at the same pixel, both places would need real per-layer compositing;
+//     both now have it, and they share one implementation rather than two
+//     that have to be kept agreeing.
+//
+//     Only `over` exists in this build. A layer whose `np:blend` names
+//     anything else is composited as `over` and reported through the
+//     warnings overload below -- never silently. core/Composite.hpp argues
+//     why an approximation that says so beats a refusal, which would make a
+//     PRD I10-preserved blend name the thing that stops a document being
+//     saved at all (part 0 is regenerated on every save, PRD I12).
+//
+//  2. Un-premultiplies the composited result, with the same `a <= 0 ->
+//     {0,0,0,0}` guard core/Probe.cpp's unpremultiply() uses. Working in
 //     premultiplied space and un-premultiplying once at the end is the
 //     correct order for the same reason core/Probe.cpp gives at length: an
 //     alpha-0 texel must contribute "no colour", not "black at full
@@ -314,6 +334,15 @@ struct ExportResult {
 // no RGB-kind layer, is NOT an error -- it flattens to a fully transparent
 // canvas, which is a legitimate thing to export.
 DecodedImage flattenDocumentToLinear(const Document& doc);
+
+// The same operation with core/Composite's blend warnings routed out.
+// **Appends** to `*warningsOut`, never clears it, so a caller that already
+// collects warnings across several stages -- io/NpaintFile's `saveNpaint()`,
+// which has its own list -- passes that list straight in. The one-argument
+// overload above is exactly this with `nullptr`; it is kept because most
+// callers have nowhere to put a warning and should not be forced to invent
+// somewhere.
+DecodedImage flattenDocumentToLinear(const Document& doc, std::vector<std::string>* warningsOut);
 
 // Encodes straight-alpha, linear-light `img` -- defined against
 // `sourceSpace`'s primaries -- into `format` file bytes, applying

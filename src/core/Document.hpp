@@ -18,12 +18,20 @@ struct Document {
   int32_t height = 0;
   WorkingSpace workingSpace;
 
-  // Ordered, bottom-to-top (DESIGN-imaging.md §3's `Layer[]` diagram). In
-  // practice holds exactly one entry today -- multi-layer is Phase 5
-  // ("Stack it") -- but nothing here enforces that: it's an ordinary
-  // vector, so growing to N layers later is "push more," not a redesign.
-  // Starts empty; only createBlank() below (or, later, opening a file)
-  // populates it.
+  // Ordered, **bottom to top**: index 0 is the bottom of the stack
+  // (DESIGN-imaging.md §3's `Layer[]` diagram, and docs/document-format.md's
+  // "Part order is layer order, bottom to top, after part 0" -- io/NpaintFile
+  // writes `layers[0]` as the first layer part, so this is the file format's
+  // order, not a local convention). core/Composite walks it front to back for
+  // that reason; app/LayerPanel is the single place that reverses it for
+  // presentation, because a layers panel shows the top layer first.
+  //
+  // Multi-layer is real as of Phase 5 step 1: `core/LayerOps` adds, removes,
+  // reorders and duplicates entries here, and `core/Composite` composites
+  // them with `over`. Starts empty; `createBlank()` below, `placeImageAsLayer()`
+  // and opening a file populate it. Still an ordinary vector with no
+  // invariants of its own -- see core/LayerOps.hpp on why the operations are
+  // free functions rather than methods that would only half-encapsulate it.
   std::vector<Layer> layers;
 
   // Blank-document factory (PLAN.md Phase 2 step 5; PRD C7 (P0): "A document

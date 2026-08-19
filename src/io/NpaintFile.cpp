@@ -303,7 +303,18 @@ void unpackLayerPart(const NpaintRawPart& part, TileStore* tiles) {
 // io/ImageDecode), and EXR is the associated-alpha side of this codebase's
 // boundary (io/Export.hpp's Alpha section, and the OpenEXR spec), so the
 // re-association happens here, in linear light, before the half conversion.
-NpaintRawPart buildCompositePart(const Document& doc) {
+//
+// **Phase 5 step 1**: the flattener now really composites (`over`, honouring
+// `visible` and `opacity`) instead of summing, so part 0 is a composite in the
+// full sense for the first time. It can also, for the first time, be an
+// *approximation*: a layer whose `np:blend` this build does not implement is
+// composited as `over`. That is not silent -- `warningsOut` carries
+// core/Composite's sentence into `NpaintSaveResult::warnings`, which is the
+// field whose own doc comment is exactly this case ("the save went ahead, and
+// the caller is told precisely what about it is approximate"). The layer
+// part's `np:blend` string still goes to disk untouched (PRD I10), so nothing
+// is lost -- only part 0's preview of it is provisional.
+NpaintRawPart buildCompositePart(const Document& doc, std::vector<std::string>* warningsOut) {
   NpaintRawPart part;
   part.name = kCompositePartName;
   part.channelNames = {"R", "G", "B", "A"};
@@ -315,7 +326,7 @@ NpaintRawPart buildCompositePart(const Document& doc) {
   part.width = doc.width;
   part.height = doc.height;
 
-  const DecodedImage flat = flattenDocumentToLinear(doc);
+  const DecodedImage flat = flattenDocumentToLinear(doc, warningsOut);
   const size_t sampleCount = static_cast<size_t>(doc.width) * static_cast<size_t>(doc.height) * 4;
   part.rawPixels.assign(sampleCount * sizeof(uint16_t), 0);
   auto* words = reinterpret_cast<uint16_t*>(part.rawPixels.data());
@@ -578,7 +589,7 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
                             doc.workingSpace.primaries.blueX,  doc.workingSpace.primaries.blueY,
                             doc.workingSpace.primaries.whiteX, doc.workingSpace.primaries.whiteY};
 
-  NpaintRawPart composite = buildCompositePart(doc);
+  NpaintRawPart composite = buildCompositePart(doc, &result.warnings);
   composite.attributes.push_back(intAttr(kAttrVersion, kNpaintFormatVersion));
   composite.attributes.push_back(stringAttr(
       kAttrBasis, (carry && !carry->basis.empty()) ? carry->basis : kNpaintPigmentBasis));

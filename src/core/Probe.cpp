@@ -1,6 +1,9 @@
 #include "core/Probe.hpp"
 
+#include <vector>
+
 #include "color/Space.hpp"
+#include "core/Composite.hpp"
 
 namespace np {
 namespace {
@@ -69,31 +72,74 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
   std::array<float, 4> sum{0.0f, 0.0f, 0.0f, 0.0f};
   bool any = false;
 
-  auto accumulate = [&](const Layer& layer) {
-    if (layer.kind != LayerKind::RGB || !layer.rgbTiles.has_value()) return;
-    const std::array<float, 4> layerSum = sumPremultipliedBox(*layer.rgbTiles, at, sampleSize);
-    sum[0] += layerSum[0];
-    sum[1] += layerSum[1];
-    sum[2] += layerSum[2];
-    sum[3] += layerSum[3];
-    any = true;
-  };
-
   if (params.sampleAllLayers) {
-    // Gathers every RGB-kind, populated-tile-storage layer. This is a
-    // plain sum, not Porter-Duff "over" compositing -- there is no blend-
-    // mode/compositing implementation anywhere in this codebase yet (a
-    // later phase), so there is nothing correct to fake here. It is the
-    // right sum for *today's* invariant of at most one such layer (summing
-    // zero or one contribution needs no blending math at all); the moment
-    // a second RGB/Pigment/Media layer can hold content, this loop is
-    // exactly where real per-layer alpha-under compositing has to replace
-    // the plain sum -- ProbeParams::sampleAllLayers's own doc comment
-    // flags the same thing.
-    for (const Layer& layer : doc.layers) accumulate(layer);
+    // **Real `over` compositing, per texel, then averaged** (PLAN.md Phase 5
+    // step 1). This used to be a plain sum across layers, and both this
+    // function and io/Export's flattener carried the same note: "the moment a
+    // second RGB layer can hold content, this loop is exactly where real
+    // per-layer alpha-under compositing has to replace the plain sum". That
+    // moment is this step, and both places now call the *same*
+    // `compositeOver()` (core/Composite) rather than each growing an
+    // implementation that has to be kept agreeing -- an eyedropper and an
+    // export that disagreed about the colour of a pixel would be a bug the
+    // user could see and nobody could explain.
+    //
+    // Compositing happens **per texel and the box is averaged afterwards**,
+    // not the other way round. Averaging each layer first and compositing the
+    // averages is a different (and wrong) operation as soon as coverage varies
+    // across the box: `over` is not linear in its operands, so the composite
+    // of the averages is not the average of the composites.
+    //
+    // `visible` and `opacity` are honoured here exactly as they are in the
+    // flattener, via `layerCoverage()`, because this mode's question is "what
+    // colour does the document show at this point" -- the composite, not the
+    // union of what the layers happen to hold.
+    const int32_t half = sampleSize / 2;  // floor; see ProbeParams::sampleSize
+    for (const Layer& layer : doc.layers) {
+      if (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) any = true;
+    }
+    if (any) {
+      for (int32_t dy = 0; dy < sampleSize; ++dy) {
+        for (int32_t dx = 0; dx < sampleSize; ++dx) {
+          const PixelCoord docPos{at.x - half + dx, at.y - half + dy};
+          std::array<float, 4> acc{0.0f, 0.0f, 0.0f, 0.0f};
+          for (const Layer& layer : doc.layers) {
+            if (layer.kind != LayerKind::RGB || !layer.rgbTiles.has_value()) continue;
+            const float coverage = layerCoverage(layer);
+            if (coverage <= 0.0f) continue;
+            const Tile* tile = layer.rgbTiles->find(tileCoordAt(docPos));
+            if (tile == nullptr) continue;  // exactly equivalent to compositing {0,0,0,0}
+            std::array<float, 4> src = tile->readPixel(tileLocalOffset(docPos));
+            if (coverage != 1.0f) {
+              src[0] *= coverage;
+              src[1] *= coverage;
+              src[2] *= coverage;
+              src[3] *= coverage;
+            }
+            acc = compositeOver(src, acc);
+          }
+          sum[0] += acc[0];
+          sum[1] += acc[1];
+          sum[2] += acc[2];
+          sum[3] += acc[3];
+        }
+      }
+    }
   } else if (params.activeLayerIndex >= 0 &&
              static_cast<size_t>(params.activeLayerIndex) < doc.layers.size()) {
-    accumulate(doc.layers[static_cast<size_t>(params.activeLayerIndex)]);
+    // Single-layer mode reads that layer's **own** stored colour, deliberately
+    // ignoring its `visible` and `opacity`. The question this mode asks is
+    // "what is on this layer", not "what does the document show" -- so a
+    // half-opacity layer still probes at its authored colour, and a hidden
+    // layer can still be probed at all. That is Photoshop's own split between
+    // "Sample: Current Layer" and "All Layers", and the alternative (returning
+    // transparent black for a hidden layer) would make the eyedropper useless
+    // for exactly the workflow that has a layer hidden while working on it.
+    const Layer& layer = doc.layers[static_cast<size_t>(params.activeLayerIndex)];
+    if (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) {
+      sum = sumPremultipliedBox(*layer.rgbTiles, at, sampleSize);
+      any = true;
+    }
   }
 
   ProbeSample result;

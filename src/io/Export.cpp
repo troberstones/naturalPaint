@@ -8,6 +8,7 @@
 #include <string>
 
 #include "color/Space.hpp"
+#include "core/Composite.hpp"
 #include "core/Layer.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
@@ -169,6 +170,10 @@ ExportResult failure(std::string message) {
 }  // namespace
 
 DecodedImage flattenDocumentToLinear(const Document& doc) {
+  return flattenDocumentToLinear(doc, nullptr);
+}
+
+DecodedImage flattenDocumentToLinear(const Document& doc, std::vector<std::string>* warningsOut) {
   DecodedImage out;
   if (doc.width <= 0 || doc.height <= 0) return out;  // valid() == false
 
@@ -176,42 +181,22 @@ DecodedImage flattenDocumentToLinear(const Document& doc) {
   const uint32_t h = static_cast<uint32_t>(doc.height);
   const size_t sampleCount = static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
 
-  // Accumulates in premultiplied space -- see the header comment for why
-  // that has to happen before un-premultiplying, not after. Zero-filled: an
-  // untouched pixel is transparent black, exactly what core::Tile gives an
-  // unwritten texel, so nothing needs a separate "was anything here" flag.
-  std::vector<float> premultiplied(sampleCount, 0.0f);
-
-  for (const Layer& layer : doc.layers) {
-    if (layer.kind != LayerKind::RGB || !layer.rgbTiles.has_value()) continue;
-
-    // Iterates the tiles that exist, never a grid across the canvas
-    // (TileStore's own begin()/end()), so an empty or sparsely painted
-    // document costs nothing per unpainted tile.
-    for (const auto& [coord, tile] : *layer.rgbTiles) {
-      const PixelCoord origin = tileOrigin(coord);
-      for (int32_t ty = 0; ty < kTileSize; ++ty) {
-        const int32_t docY = origin.y + ty;
-        if (docY < 0 || docY >= doc.height) continue;  // clipped to the canvas
-        for (int32_t tx = 0; tx < kTileSize; ++tx) {
-          const int32_t docX = origin.x + tx;
-          if (docX < 0 || docX >= doc.width) continue;
-
-          const std::array<float, 4> px = tile.readPixel(PixelCoord{tx, ty});
-          float* dst = &premultiplied[(static_cast<size_t>(docY) * w +
-                                        static_cast<size_t>(docX)) * 4];
-          // Plain sum, not Porter-Duff "over" -- core/Probe.cpp's
-          // sampleAllLayers path made and documented this same decision for
-          // the same reason (no compositing implementation exists yet, and
-          // at most one layer holds content at a given point today).
-          dst[0] += px[0];
-          dst[1] += px[1];
-          dst[2] += px[2];
-          dst[3] += px[3];
-        }
-      }
-    }
-  }
+  // The whole layer walk now lives in core/Composite -- real `over`
+  // compositing in linear light, on premultiplied values, honouring
+  // `visible` and `opacity` (PLAN.md Phase 5 step 1). It used to be a plain
+  // sum written out inline here, correct only while "at most one layer holds
+  // painted content at a given point" held; multi-layer documents are exactly
+  // what breaks that, so the sum went with it.
+  //
+  // The walk is in `core/` rather than here for the same reason the flattener
+  // itself is not reimplemented in io/NpaintFile: compositing a Document is a
+  // domain operation, not a file-format one, and core/Probe needs the same
+  // arithmetic to answer "what colour is at this pixel". There must be exactly
+  // one `over` in this binary.
+  //
+  // This function keeps what is genuinely io/Export's: the un-premultiply that
+  // turns the composite into DecodedImage's straight-alpha contract.
+  const std::vector<float> premultiplied = compositeDocumentPremultiplied(doc, warningsOut);
 
   out.width = w;
   out.height = h;
@@ -515,7 +500,8 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
 
 ExportResult exportDocument(const Document& doc, ImageFormat format,
                             ExportTargetSpace targetSpace, ExportBitDepth bitDepth) {
-  const DecodedImage flat = flattenDocumentToLinear(doc);
+  std::vector<std::string> warnings;
+  const DecodedImage flat = flattenDocumentToLinear(doc, &warnings);
   if (!flat.valid()) {
     char buf[256];
     std::snprintf(buf, sizeof(buf),
@@ -523,7 +509,12 @@ ExportResult exportDocument(const Document& doc, ImageFormat format,
                   doc.width, doc.height);
     return failure(buf);
   }
-  return encodeLinearImage(flat, doc.workingSpace, format, targetSpace, bitDepth);
+  ExportResult result = encodeLinearImage(flat, doc.workingSpace, format, targetSpace, bitDepth);
+  // Carried on a refusal too. A user whose EXR export was refused for a depth
+  // reason still needs to know the composite it would have written is an
+  // approximation, or they will fix the depth and be none the wiser.
+  result.warnings = std::move(warnings);
+  return result;
 }
 
 bool exportDocumentToFile(const Document& doc, const std::string& path, ImageFormat format,

@@ -388,6 +388,21 @@ int main(int argc, char** argv) {
     // writes and removes a selftest_journal/ scratch directory, with
     // $NP_JOURNAL_DIR pointed at it so no real user state is touched.
     const bool recoveryJournalOk = np::runRecoveryJournalTest();
+    // Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
+    // visibility, lock, opacity"; PRD C4, C16): core/Composite's `over`
+    // against a hand-computed reference, opacity proven distinct from alpha,
+    // a hidden layer contributing exactly nothing at zero tolerance,
+    // core/LayerOps' operations and what each does to the dirty/structural
+    // revision, `locked` refusing by name, app/LayerPanel's single top-first
+    // reversal, and the round trip of a reordered stack. It also asserts the
+    // regression boundary this step's semantics change makes necessary: a
+    // single-layer document and a non-overlapping multi-layer one still
+    // composite BYTE-identically to the plain sum `over` replaced, checked
+    // against a second implementation of that sum written inside the test.
+    // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
+    // configurations. Headless and GPU-free; writes and removes one
+    // selftest_layerstack.npaint.
+    const bool layerStackOk = np::runLayerStackTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -399,8 +414,8 @@ int main(int argc, char** argv) {
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
-                    exportAsOk && documentLifecycleOk && recoveryJournalOk && strokeSpeedOk &&
-                    idleMemOk && fieldAllocOk;
+                    exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

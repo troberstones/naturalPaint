@@ -94,16 +94,36 @@ inline constexpr const char* kDefaultBlendName = "normal";
 // One entry in a Document's layer list (CONTEXT.md Relationships: "A Layer
 // holds Tiles; tiles are allocated only where content exists").
 //
-// The metadata members below (name/blend/opacity/visible/locked/parent) are
-// plain data with no behaviour attached to them anywhere in this build:
-// nothing composites, nothing honours `visible`, nothing enforces `locked`,
-// and no UI shows `name`. They exist because they are what the native
-// document format persists -- docs/document-format.md gives every layer part
-// an `np:name`, `np:blend`, `np:opacity`, `np:visible`, `np:locked` and
-// `np:parent` -- and a format that round-trips a struct with nothing in it
-// proves nothing. Phase 5 ("Stack it", step 1: "Multiple layers in
-// `Document`, with reorder, visibility, lock, opacity") is where they start
-// having effects; this is where they start having *values*.
+// The metadata members below (name/blend/opacity/visible/locked/parent)
+// arrived with Phase 4 step 4 as plain data with no behaviour attached
+// anywhere -- "nothing composites, nothing honours `visible`, nothing
+// enforces `locked`, and no UI shows `name`" -- because they are what the
+// native document format persists (docs/document-format.md gives every layer
+// part an `np:name`, `np:blend`, `np:opacity`, `np:visible`, `np:locked` and
+// `np:parent`) and a format that round-trips a struct with nothing in it
+// proves nothing. That step said Phase 5 step 1 was where they would start
+// having *effects*.
+//
+// **Phase 5 step 1 has landed, and this is where each of them now stands:**
+//
+//   name     shown by the layers panel (ui/MacPaintUI.cpp, via
+//            app/LayerPanel's row text) and settable through
+//            `core::setLayerName()`.
+//   blend    still carried, still never parsed here. `core/Composite`
+//            implements exactly one blend (`over`, i.e. the
+//            `kDefaultBlendName` below) and reports any other name by name
+//            rather than acting on it; the enumeration is still Phase 5
+//            step 2's to own, so this member is still a `std::string` for
+//            all the reasons argued above it.
+//   opacity  a real coverage multiplier in `core/Composite`.
+//   visible  a hidden layer contributes exactly nothing to the composite.
+//   locked   enforced -- but only by `core/LayerOps`' operations, which is
+//            all there is to enforce it on: there is still no pixel-edit
+//            path to a layer at all. core/LayerOps.hpp states the exact
+//            scope of the lock and is blunt about what it cannot mean yet.
+//   parent   still carried, still never acted on. Honouring a group link
+//            means compositing a group's members offscreen first, which is
+//            Phase 5 step 9's machinery, and this build creates no groups.
 struct Layer {
   // CONTEXT.md: Pigment is "the default kind for a new layer" -- the
   // eventual domain default once Pigment layers are real, kept as the
@@ -156,10 +176,12 @@ struct Layer {
 
   bool visible = true;
 
-  // Locked layers reject edits. Nothing edits layers through a checked path
-  // yet, so nothing consults this; it is persisted so that turning the lock
-  // on, saving, and reopening does not silently unlock the layer once
-  // Phase 5 gives it teeth.
+  // Locked layers reject edits, to the exact extent core/LayerOps.hpp spells
+  // out: its operations refuse to remove, move, rename or re-opacity a locked
+  // layer, and deliberately still allow it to be hidden, unlocked and
+  // duplicated. There is still no pixel-edit path to any layer -- a stroke
+  // reaches sim::PaintSim's dense texture, never a Layer -- so "rejects edits"
+  // cannot yet mean "the brush refuses"; that is stated rather than faked.
   bool locked = false;
 
   // The EXR *part* name (`L0002`) of the group this layer belongs to, or

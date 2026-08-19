@@ -334,6 +334,22 @@ OpenDocument duplicateDocument(const OpenDocument& source) {
   return copy;
 }
 
+// --- Layer operations ------------------------------------------------------
+
+DocumentOpResult recordLayerEdit(OpenDocument& doc, LayerOpResult result) {
+  DocumentOpResult out;
+  out.ok = result.ok;
+  if (!result.ok) {
+    out.error = std::move(result.error);
+    return out;
+  }
+  // Structural, always -- see the header. The label comes from core/LayerOps
+  // rather than being re-invented here, so the History panel (PRD O2) and the
+  // revert refusal (PRD I11) name the operation the same way.
+  doc.recordEdit(std::move(result.editLabel), EditKind::Structural);
+  return out;
+}
+
 // --- Save / Save As / Save a Copy ------------------------------------------
 
 DocumentOpResult saveDocument(OpenDocument& doc, const NpaintSaveOptions& options,

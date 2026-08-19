@@ -48,11 +48,34 @@ struct HistogramParams {
   PixelCoord regionMin{0, 0};
   PixelCoord regionMax{0, 0};
 
-  // Same semantics as ProbeParams::sampleAllLayers / ::activeLayerIndex
-  // (core/Probe.hpp) -- see that struct's own doc comments for the full
-  // reasoning, including why summing every RGB-kind layer and single-layer
-  // selection reduce to the same sum under today's Document invariant of at
-  // most one populated RGB layer.
+  // Layer selection, in the same two-field shape as
+  // ProbeParams::sampleAllLayers / ::activeLayerIndex (core/Probe.hpp).
+  //
+  // **This is now the one place in `core/` that has NOT been converted to real
+  // compositing, and that is a deliberate, named deferral rather than an
+  // oversight.** PLAN.md Phase 5 step 1 replaced the plain layer sum with
+  // core/Composite's `over` in io/Export's flattener and in core/Probe;
+  // `sampleAllLayers` here still bins each layer's texels independently, so a
+  // pixel covered by two layers contributes **two** samples to the histogram
+  // rather than one sample of the composited colour, and neither `visible` nor
+  // `opacity` is honoured.
+  //
+  // Why it was left: this module's whole shape is "walk the allocated tiles of
+  // each layer and bin their overlap with the region", which is what makes a
+  // large mostly-empty region cost nothing (see Histogram.cpp's
+  // binTileRegion()). Compositing means binning a *composited region* instead,
+  // which is a different algorithm with a different memory profile -- it has to
+  // materialise the region, not stream tiles -- and it also raises a question
+  // this step has no answer for: whether a histogram of a stack should count
+  // pixels no layer covers as transparent-black samples or omit them. That is
+  // a real design decision for the histogram panel, which does not exist yet
+  // (this module has no UI caller at all). Converting it blind would be
+  // guessing at both the algorithm and the semantics.
+  //
+  // The practical exposure today is nil: nothing in the running application
+  // calls computeHistogram() at all -- its only caller is `--selftest`, whose
+  // fixtures are single-layer, where every mode still agrees. It is recorded
+  // here so the divergence is discoverable rather than surprising.
   bool sampleAllLayers = false;
   int32_t activeLayerIndex = 0;
 

@@ -48,15 +48,26 @@ struct ProbeParams {
   // Sample every RGB-kind layer with populated tile storage and composite
   // them, vs. sample only `activeLayerIndex`.
   //
-  // As of this writing core::Document (core/Document.hpp) only ever holds
-  // one populated RGB layer -- "design for N, ship 1" -- and no layer
-  // compositing/blend-mode implementation exists anywhere in this codebase
-  // yet (that's a later phase). So today, with at most one candidate layer
-  // in play, both modes reduce to the same sum -- see Probe.cpp's
-  // probePixel() for exactly what "reduces to" means and why that's the
-  // honest behaviour rather than a stubbed-in compositing model. The field
-  // still exists as a real, meaningful parameter for once multi-layer
-  // stacks and blending land.
+  // **Real compositing as of PLAN.md Phase 5 step 1.** This used to be a
+  // plain sum, and this comment used to say that both modes reduced to the
+  // same answer because a Document only ever held one populated RGB layer.
+  // Multiple layers are the point of Phase 5, so the two modes now genuinely
+  // differ, and they differ in two ways worth stating apart:
+  //
+  //  * `true` composites the stack with core/Composite's `over`, bottom to
+  //    top, **honouring `visible` and `opacity`** -- it answers "what colour
+  //    does the document show here", the same question io/Export's flattener
+  //    answers, through the same `compositeOver()`.
+  //  * `false` reads `activeLayerIndex`'s own stored colour, **ignoring its
+  //    `visible` and `opacity`** -- it answers "what is on this layer".
+  //    Photoshop's own split, and see Probe.cpp for why a hidden layer must
+  //    stay probeable in this mode.
+  //
+  // Only `over` exists; a layer whose blend names something else is
+  // composited as `over` here, silently, because a probe returns a colour and
+  // has nowhere to put a warning. The boundaries that produce a *file* --
+  // io/Export's `exportDocument()` and io/NpaintFile's `saveNpaint()` -- do
+  // carry core/Composite's warning by name.
   bool sampleAllLayers = false;
 
   // Which layer to sample when sampleAllLayers is false. core::Document has

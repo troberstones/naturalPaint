@@ -4,6 +4,7 @@ add_executable(naturalPaint
   app/DocumentLifecycle.cpp
   app/Journal.cpp
   app/Keymap.cpp
+  app/LayerPanel.cpp
   app/Latency.cpp
   app/Memory.cpp
   app/SelfTest.cpp
@@ -13,8 +14,10 @@ add_executable(naturalPaint
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
+  core/Composite.cpp
   core/Half.cpp
   core/Histogram.cpp
+  core/LayerOps.cpp
   core/OpStack.cpp
   core/Probe.cpp
   gfx/Context.cpp
