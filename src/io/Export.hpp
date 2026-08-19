@@ -364,6 +364,38 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
                                ImageFormat format, ExportTargetSpace targetSpace,
                                ExportBitDepth bitDepth);
 
+// Every reason encodeLinearImage() would refuse this combination, asked
+// *without* encoding anything. Returns the empty string when it would not
+// refuse; otherwise the exact message it would have failed with.
+//
+// This is not a second implementation of those checks -- it is the only one.
+// encodeLinearImage() calls this function and returns its result verbatim, so
+// there is precisely one copy of every refusal string in the binary. That
+// matters because PLAN.md Phase 4 step 7's Export As dialog has to decide, at
+// UI-build time, which combinations it may offer and what to say about the
+// ones it may not, and a dialog carrying its own parallel set of "PNG can't
+// do that" messages is a set that drifts from the encoder's the first time
+// either side changes. It cannot drift from itself.
+//
+// Both pointers are optional, and each one omitted simply skips the checks
+// that need it:
+//
+//   sourceSpace == nullptr -- skips the primaries comparison. What a saved
+//     Export As preset (io/ExportAs.hpp) can be checked for with no document
+//     open at all: a preset names a format, a space and a depth, and whether
+//     *this build* can write that trio is answerable on its own.
+//   img == nullptr -- skips the "this format has no alpha channel and the
+//     image is not opaque" check, which by nature needs pixels to look at.
+//
+// The checks are performed in exactly the order encodeLinearImage() performs
+// them -- primaries, then format-writable, then depth, then alpha -- so the
+// message a caller previews is the message it would actually receive. A
+// caller passing both pointers gets the identical string, byte for byte;
+// --selftest asserts that equality directly rather than trusting it.
+std::string exportRefusalReason(ImageFormat format, ExportTargetSpace targetSpace,
+                                ExportBitDepth bitDepth, const WorkingSpace* sourceSpace,
+                                const DecodedImage* img);
+
 // The Document-level export PLAN.md Phase 4 step 1 asks for:
 // flattenDocumentToLinear() followed by encodeLinearImage(), with the
 // document's own `workingSpace` supplied as the source space. All three of

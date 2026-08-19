@@ -796,4 +796,85 @@ bool runNpaintFormatTest();
 //    open with the measurement behind the refusal.
 bool runTileResidencyTest();
 
+// Headless check on io/ExportAs and ops/Resample -- the Export As operation
+// (PLAN.md Phase 4 step 7: "Export As -- format, space, depth *and resize*,
+// with saveable presets (PRD I15). Downscale prefilters; see the phase 6
+// warning"; PRD I5, I11, B6).
+//
+// This is the whole of that step except the widgets: the request model, what
+// this build may offer, the validation and its refusals, the prefiltered
+// downscale, and the preset file. ui/MacPaintUI.cpp's File > Export As...
+// dialog calls into exactly these functions and adds nothing but ImGui, which
+// is app/CurveEdit's split restated -- and the reason the interesting half of
+// a dialog can be tested at all.
+//
+// **Not #ifdef'd out of the NP_USE_OIIO=OFF build**, and this section has the
+// strongest version of that argument in the file: the behaviour under test
+// *is* the cross-configuration one. A preset naming EXR half is a preset an
+// OFF build cannot honour, and the requirement is that it survives the round
+// trip unchanged and is refused by name rather than silently becoming a PNG.
+// A single `kOiioBuild` constant carries the configuration and both builds
+// run every assertion.
+//
+// Pure CPU, no GPU. Writes two scratch files in the working directory
+// (`selftest_exportas_presets.json`, `selftest_exportas_out.png`) and removes
+// both, including on the paths whose assertions failed.
+//
+// Covered, in order:
+//
+//  - What the dialog may offer, in both builds: PRD I1's four formats always,
+//    EXR/TIFF/HDR/DPX exactly when the backend is compiled in, the read-only
+//    formats never, and per-format depth lists that come from io/Capabilities'
+//    probe -- so EXR offers half and float but *not* 8-bit, the case
+//    OpenImageIO would have silently substituted.
+//  - `resolveExportSize()` for all three modes against hand-computed answers,
+//    including a percentage that rounds each axis independently (33% of
+//    1024x768 = 338x253), the clamp that stops an axis rounding to zero,
+//    fit-within picking the binding axis, and fit-within refusing to enlarge.
+//  - `resampleAreaAverage()` against hand-computed references: 2x2 block means
+//    for an integer factor, and the fractional edge weights of a 3->2
+//    reduction. A constant image survives a lopsided 500x30 -> 61x7 reduction
+//    **bit-identically at zero tolerance**, which is the statement that the
+//    weight normalisation is exact -- and the reason it is done in double, as
+//    float weights would leave an opaque image at alpha 0.999996 and make it
+//    un-exportable to JPEG.
+//  - **The phase 6 warning, measured rather than asserted.** A 1-px
+//    checkerboard reduced 8x: prefiltered lands on the true mean everywhere,
+//    while naive point sampling collapses a 50%-grey pattern to a *flat*
+//    image at full amplitude. Then a period-3 pattern that does not divide
+//    the scale factor, where the box kernel's own residual ripple is
+//    measured and reported rather than claimed away.
+//  - Linear light, proven by the number in the file: a black/white checker
+//    halved exports as 8-bit code 188 = round(255 * srgbEncode(0.5)), and the
+//    encoded-domain average this ordering prevents is shown landing at linear
+//    0.214.
+//  - Alpha filtered premultiplied: a fully transparent green texel next to an
+//    opaque red one contributes **exactly** zero green, against the 0.5 a
+//    straight-alpha average gives.
+//  - **One set of refusal strings, not two**: the dialog's message, the
+//    shared `exportRefusalReason()` and a real `encodeLinearImage()` failure
+//    are asserted equal by string comparison, so a second UI vocabulary
+//    cannot exist to drift.
+//  - Every refusal path by its message: read-only formats, camera raw, EXR in
+//    the OFF build naming NP_USE_OIIO, 8-bit EXR in the ON build, upscales,
+//    a primaries mismatch, and a translucent document into JPEG -- plus that
+//    the two optional checks are *skipped*, not silently passed, when the
+//    dialog has no document to check against.
+//  - PRD I11's warnings, each carrying a number: 75.0% of the pixels
+//    discarded, 256 levels at 8 bits, the 12.9x shadow-step penalty of 8-bit
+//    linear (derived from color/Space's curve at run time), the specific
+//    highlight value an integer depth will clip and where it is, and JPEG's
+//    lossiness -- with a control that a clean request warns about nothing.
+//  - The preset round trip, save -> serialize -> load, every field including
+//    the numbers the active resize mode does not read; replace-by-name and
+//    delete, both case-insensitive; the three name refusals; a broken file, a
+//    file that is not a preset file, an unknown *token* skipping one preset
+//    while the rest load, an unknown *field* being harmless, duplicate names
+//    failing the load, and a missing file being an empty store rather than an
+//    error.
+//  - `exportDocumentWithRequest()` end to end: a 64x64 1-px stripe document
+//    exported at 25% comes back 16x16 with every texel at the true linear
+//    mean, and a refused request writes no bytes and leaves no file.
+bool runExportAsTest();
+
 }  // namespace np

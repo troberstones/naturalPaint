@@ -9,6 +9,7 @@
 #include "app/ViewTransform.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
 #include "imgui.h"
+#include "io/ExportAs.hpp"
 
 namespace np {
 namespace {
@@ -654,6 +655,232 @@ void drawGradeSection(AppState& st) {
   }
 }
 
+// ---------------------------------------------------------------- Export As
+//
+// PLAN.md Phase 4 step 7 / PRD I15 ("Export As: target format, colour space,
+// bit depth **and resize**, with saveable presets"). Everything that can be
+// wrong here without a screenshot showing it -- what may be offered, what a
+// combination costs, how a preset is stored and what happens to one this
+// build cannot honour -- lives in io/ExportAs.hpp and is exercised headlessly
+// by --selftest. This function is the widgets and nothing else, the same
+// split app/CurveEdit + drawCurveWidget() already has.
+//
+// Two properties are structural rather than careful:
+//
+//  1. **It cannot offer a combination io/Export would refuse.** The format
+//     list is offerableExportFormats() and the depth list is
+//     offerableExportDepths(format), both computed from io/Capabilities'
+//     runtime query -- so in an NP_USE_OIIO=OFF build EXR is not in the menu
+//     at all, and in an ON build EXR offers half and 32-bit float but not
+//     8-bit, because that is what this OpenImageIO actually writes. The
+//     formats this build cannot write are still *shown*, greyed, with the
+//     capability query's own reason as their tooltip: a menu that silently
+//     omits EXR cannot answer "why can't I export EXR?".
+//  2. **Every message it shows is io/Export's own.** The red line under the
+//     controls is exportRefusalReason()'s string verbatim, not a reworded
+//     one, so there is no second vocabulary here to drift from the encoder's.
+//
+// And the one thing it deliberately does not do: the Export button is
+// disabled, because this codebase still has no bridge from the live painting
+// canvas to a core::Document, so there is nothing to export from. See
+// io/ExportAs.hpp's own "the gap this step does not close" section; the
+// dialog says it on screen rather than failing at the moment of use.
+bool g_exportAsRequested = false;
+
+void drawExportAsDialog(uint32_t canvasW, uint32_t canvasH) {
+  // Session state. Function-local statics, exactly like drawGradeSection()'s
+  // newOpKindIdx and the Add Guide popup's fields -- this is UI state, not
+  // app state, and app/AppState's ownership is PLAN.md Phase 4 step 8's
+  // decision to make rather than this step's to pre-empt.
+  static ExportRequest request;
+  static ExportPresetStore presets;
+  static bool presetsLoaded = false;
+  static char presetNameBuf[96] = "";
+  static std::string status;
+
+  if (g_exportAsRequested) {
+    g_exportAsRequested = false;
+    ImGui::OpenPopup("Export As");
+  }
+  if (!ImGui::BeginPopupModal("Export As", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  // Loaded on first open, never at startup: a preset file nobody asked for
+  // costs nothing (PRD A2, ADR-0001), and --selftest's idle-RSS measurement
+  // would notice if that stopped being true.
+  if (!presetsLoaded) {
+    presetsLoaded = true;
+    if (!presets.loadFromFile(defaultExportPresetsPath()))
+      status = presets.error();
+    else if (!presets.problems().empty())
+      status = presets.problems().front();
+  }
+
+  const std::string presetsPath = defaultExportPresetsPath();
+  const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
+  const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
+
+  ImGui::TextDisabled("Source: %ux%u (the live canvas)", canvasW, canvasH);
+  ImGui::Separator();
+
+  // --- Format -------------------------------------------------------------
+  if (ImGui::BeginCombo("Format", imageFormatName(request.format))) {
+    for (const FormatCapability& caps : allFormatCapabilities()) {
+      const bool writable = caps.canWrite;
+      if (!writable) ImGui::BeginDisabled();
+      if (ImGui::Selectable(imageFormatName(caps.format), caps.format == request.format) &&
+          writable) {
+        request.format = caps.format;
+        // Keep the depth legal for the new format rather than leaving an
+        // impossible pair on screen and refusing it a line later.
+        const std::vector<ExportBitDepth> depths = offerableExportDepths(request.format);
+        if (!depths.empty() &&
+            std::find(depths.begin(), depths.end(), request.bitDepth) == depths.end())
+          request.bitDepth = depths.front();
+      }
+      if (!writable) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+          const std::string why =
+              exportRefusalReason(caps.format, request.targetSpace, request.bitDepth, nullptr,
+                                  nullptr);
+          ImGui::SetTooltip("%s", why.c_str());
+        }
+      }
+    }
+    ImGui::EndCombo();
+  }
+
+  // --- Target colour space (PRD I5) ---------------------------------------
+  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.targetSpace))) {
+    for (int i = 0; i < 3; ++i) {
+      const auto s = static_cast<ExportTargetSpace>(i);
+      if (ImGui::Selectable(exportTargetSpaceName(s), s == request.targetSpace))
+        request.targetSpace = s;
+    }
+    ImGui::EndCombo();
+  }
+
+  // --- Bit depth (PRD B6, I5) ---------------------------------------------
+  const std::vector<ExportBitDepth> depths = offerableExportDepths(request.format);
+  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.bitDepth))) {
+    for (ExportBitDepth d : depths) {
+      if (ImGui::Selectable(exportBitDepthName(d), d == request.bitDepth)) request.bitDepth = d;
+    }
+    ImGui::EndCombo();
+  }
+
+  // --- Resize (PRD I15's "and resize") ------------------------------------
+  ImGui::Separator();
+  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.resize.mode))) {
+    for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
+      const auto m = static_cast<ExportResizeMode>(i);
+      if (ImGui::Selectable(exportResizeModeName(m), m == request.resize.mode))
+        request.resize.mode = m;
+    }
+    ImGui::EndCombo();
+  }
+  if (request.resize.mode == ExportResizeMode::Percent) {
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::SliderFloat("Percent", &request.resize.percent, 1.0f, 100.0f, "%.1f%%");
+  } else if (request.resize.mode == ExportResizeMode::FitWithin) {
+    int box[2] = {static_cast<int>(request.resize.maxWidth),
+                  static_cast<int>(request.resize.maxHeight)};
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::InputInt2("Fit within (px)", box)) {
+      request.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
+      request.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
+    }
+    ImGui::TextDisabled("Aspect preserved; a smaller document is never enlarged.");
+  }
+
+  // --- Validation, in io/Export's own words -------------------------------
+  const ExportValidation validation =
+      validateExportRequest(request, canvasW, canvasH, nullptr, nullptr);
+  ImGui::Separator();
+  if (validation.ok) {
+    ImGui::Text("Output: %ux%u", validation.outWidth, validation.outHeight);
+    for (const std::string& w : validation.warnings) {
+      ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+      ImGui::TextWrapped("! %s", w.c_str());
+      ImGui::PopStyleColor();
+    }
+  } else {
+    ImGui::PushStyleColor(ImGuiCol_Text, kError);
+    ImGui::TextWrapped("%s", validation.error.c_str());
+    ImGui::PopStyleColor();
+  }
+
+  // --- Presets (PRD I15's "with saveable presets") ------------------------
+  ImGui::Separator();
+  ImGui::TextUnformatted("Presets");
+  if (ImGui::BeginCombo("##presets", "Load a preset...")) {
+    if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
+    for (const ExportPreset& p : presets.presets()) {
+      // A preset this build cannot honour is shown, greyed, with the reason
+      // -- never silently dropped and never silently substituted. See
+      // io/ExportAs.hpp: this is exactly what an NP_USE_OIIO=ON preset looks
+      // like in an OFF build.
+      const std::string why = exportRequestAvailability(p.request);
+      if (!why.empty()) ImGui::BeginDisabled();
+      if (ImGui::Selectable(p.name.c_str()) && why.empty()) {
+        request = p.request;
+        std::snprintf(presetNameBuf, sizeof(presetNameBuf), "%s", p.name.c_str());
+        status = "Loaded preset '" + p.name + "'.";
+      }
+      if (!why.empty()) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("%s", why.c_str());
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::InputText("##presetName", presetNameBuf, sizeof(presetNameBuf));
+  ImGui::SameLine();
+  if (ImGui::Button("Save preset")) {
+    ExportPreset p;
+    p.name = presetNameBuf;
+    p.request = request;
+    std::string err;
+    if (!presets.savePreset(p, &err)) {
+      status = err;
+    } else if (!presets.saveToFile(presetsPath, &err)) {
+      status = err;
+    } else {
+      status = "Saved preset '" + p.name + "' to " + presetsPath;
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Delete preset")) {
+    std::string err;
+    if (!presets.removePreset(presetNameBuf)) {
+      status = std::string("No preset named '") + presetNameBuf + "' to delete.";
+    } else if (!presets.saveToFile(presetsPath, &err)) {
+      status = err;
+    } else {
+      status = std::string("Deleted preset '") + presetNameBuf + "'.";
+    }
+  }
+  if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
+  ImGui::TextDisabled("Presets file: %s", presetsPath.c_str());
+
+  // --- The honest part ----------------------------------------------------
+  ImGui::Separator();
+  ImGui::BeginDisabled();
+  ImGui::Button("Export...");
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+  ImGui::TextWrapped("Export is disabled: this build has no bridge from the painting canvas to "
+                     "a core::Document, so there is nothing to export from yet (PLAN.md Phase 4 "
+                     "step 8 owns that decision). Everything above -- the offerable formats and "
+                     "depths, the validation, the resize and the presets -- is live.");
+  ImGui::PopStyleColor();
+  if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+  ImGui::EndPopup();
+}
+
 }  // namespace
 
 void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
@@ -664,6 +891,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
       if (ImGui::MenuItem("New", "Cmd+N")) st.requestClear = true;
+      ImGui::Separator();
+      // PLAN.md Phase 4 step 7 / PRD I15. No shortcut string: docs/shortcuts.md
+      // has not assigned one and keymaps/default.json binds no action for it,
+      // so advertising a chord that resolves to nothing would be worse than
+      // menu-only -- the same call the Rulers item below already makes.
+      // Sets a flag rather than calling ImGui::OpenPopup() here: a modal
+      // opened from inside BeginMenu() would be opened against the menu's own
+      // ID stack, and drawExportAsDialog() below runs outside it.
+      if (ImGui::MenuItem("Export As...")) g_exportAsRequested = true;
       ImGui::Separator();
       if (ImGui::MenuItem("Quit", "Cmd+Q")) st.quit = true;
       ImGui::EndMenu();
@@ -782,6 +1018,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
+
+  // PLAN.md Phase 4 step 7 ("Export As"), defined out here for the same
+  // reason the Add Guide popup above is: a popup opened from a menu item has
+  // to be begun outside the menu bar's ID stack.
+  drawExportAsDialog(canvasW, canvasH);
 
   const ImVec2 work = vp->WorkPos;
   const ImVec2 size = vp->WorkSize;

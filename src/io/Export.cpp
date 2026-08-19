@@ -227,14 +227,12 @@ DecodedImage flattenDocumentToLinear(const Document& doc) {
   return out;
 }
 
-ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sourceSpace,
-                               ImageFormat format, ExportTargetSpace targetSpace,
-                               ExportBitDepth bitDepth) {
-  if (!img.valid()) {
-    return failure("export refused: there is nothing to encode (the image to export has zero "
-                   "width or height, or a pixel buffer whose size does not match it).");
-  }
-
+// Every refusal check encodeLinearImage() applies, in its exact order, with
+// the two that need data made optional -- see io/Export.hpp for why this is
+// the *only* copy of these strings rather than a preview of them.
+std::string exportRefusalReason(ImageFormat format, ExportTargetSpace targetSpace,
+                                ExportBitDepth bitDepth, const WorkingSpace* sourceSpace,
+                                const DecodedImage* img) {
   // --- Primaries: converted by nobody, so a mismatch is refused ----------
   //
   // See io/Export.hpp's scope-decision section. Silently ignoring this is
@@ -242,7 +240,7 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
   // (and read) as the target space while carrying values that were never
   // converted to it.
   const Primaries targetPrimaries = exportTargetPrimaries(targetSpace);
-  if (!primariesMatch(sourceSpace.primaries, targetPrimaries)) {
+  if (sourceSpace != nullptr && !primariesMatch(sourceSpace->primaries, targetPrimaries)) {
     // 1024, not 512: this message interpolates sixteen chromaticity
     // coordinates plus the target space's full name, and the compiler's
     // -Wformat-truncation can prove 512 is too small for the format string
@@ -259,19 +257,19 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
         "matrix exists yet (color/Space.hpp) -- and writing the pixels out unconverted under "
         "the target's name would misreport their colour. Pick a target space with matching "
         "primaries, or convert the document's working space first.",
-        static_cast<double>(sourceSpace.primaries.redX),
-        static_cast<double>(sourceSpace.primaries.redY),
-        static_cast<double>(sourceSpace.primaries.greenX),
-        static_cast<double>(sourceSpace.primaries.greenY),
-        static_cast<double>(sourceSpace.primaries.blueX),
-        static_cast<double>(sourceSpace.primaries.blueY),
-        static_cast<double>(sourceSpace.primaries.whiteX),
-        static_cast<double>(sourceSpace.primaries.whiteY), exportTargetSpaceName(targetSpace),
+        static_cast<double>(sourceSpace->primaries.redX),
+        static_cast<double>(sourceSpace->primaries.redY),
+        static_cast<double>(sourceSpace->primaries.greenX),
+        static_cast<double>(sourceSpace->primaries.greenY),
+        static_cast<double>(sourceSpace->primaries.blueX),
+        static_cast<double>(sourceSpace->primaries.blueY),
+        static_cast<double>(sourceSpace->primaries.whiteX),
+        static_cast<double>(sourceSpace->primaries.whiteY), exportTargetSpaceName(targetSpace),
         static_cast<double>(targetPrimaries.redX), static_cast<double>(targetPrimaries.redY),
         static_cast<double>(targetPrimaries.greenX), static_cast<double>(targetPrimaries.greenY),
         static_cast<double>(targetPrimaries.blueX), static_cast<double>(targetPrimaries.blueY),
         static_cast<double>(targetPrimaries.whiteX), static_cast<double>(targetPrimaries.whiteY));
-    return failure(buf);
+    return buf;
   }
 
   // --- Can this build write this format at all? (PRD I3) -----------------
@@ -299,7 +297,7 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
             "output_format_list contains no 'psd' entry).";
       }
     }
-    return failure(std::move(message));
+    return message;
   }
 
   // --- Bit depth: honoured exactly, or refused by name (PRD B6) ----------
@@ -336,14 +334,14 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
                    : "none -- the EXR/TIFF/HDR/DPX writers that would are behind NP_USE_OIIO, "
                      "which was OFF when this binary was configured")
             : elsewhere.c_str());
-    return failure(buf);
+    return buf;
   }
 
   // --- Alpha: a format with no alpha channel refuses a translucent image -
-  if (!caps.hasAlpha) {
+  if (!caps.hasAlpha && img != nullptr) {
     uint32_t x = 0, y = 0;
     float alpha = 1.0f;
-    if (findFirstTranslucentPixel(img, &x, &y, &alpha)) {
+    if (findFirstTranslucentPixel(*img, &x, &y, &alpha)) {
       char buf[512];
       std::snprintf(buf, sizeof(buf),
                     "export refused: %s has no alpha channel, but the flattened document is "
@@ -352,9 +350,30 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
                     "TGA or BMP, which carry alpha, or composite the document onto an opaque "
                     "background first.",
                     imageFormatName(format), x, y, static_cast<double>(alpha));
-      return failure(buf);
+      return buf;
     }
   }
+
+  return std::string();
+}
+
+ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sourceSpace,
+                               ImageFormat format, ExportTargetSpace targetSpace,
+                               ExportBitDepth bitDepth) {
+  if (!img.valid()) {
+    return failure("export refused: there is nothing to encode (the image to export has zero "
+                   "width or height, or a pixel buffer whose size does not match it).");
+  }
+
+  // Every "would this be refused" check, in one call, with both optional
+  // arguments supplied -- so nothing about a real encode is checked more
+  // loosely than what the Export As dialog previews, and nothing is checked
+  // twice in two places that could disagree. See io/Export.hpp.
+  const std::string refusal =
+      exportRefusalReason(format, targetSpace, bitDepth, &sourceSpace, &img);
+  if (!refusal.empty()) return failure(refusal);
+
+  const FormatCapability& caps = formatCapability(format);
 
   // --- Encode + quantize -------------------------------------------------
   //

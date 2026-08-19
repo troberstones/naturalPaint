@@ -19,11 +19,13 @@ add_executable(naturalPaint
   gfx/ShaderLoader.cpp
   io/Capabilities.cpp
   io/Export.cpp
+  io/ExportAs.cpp
   io/ImageDecode.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp
   io/TileResidency.cpp
   ops/PointOps.cpp
+  ops/Resample.cpp
   paint/Palette.cpp
   sim/PaintSim.cpp
   ui/MacPaintUI.cpp

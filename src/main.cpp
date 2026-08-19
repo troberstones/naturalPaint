@@ -341,6 +341,22 @@ int main(int argc, char** argv) {
     // complete residency strategy and not a degraded mode. Headless and
     // GPU-free; writes and removes selftest_residency_* scratch files.
     const bool tileResidencyOk = np::runTileResidencyTest();
+    // Phase 4 step 7 ("Export As -- format, space, depth *and resize*, with
+    // saveable presets (PRD I15). Downscale prefilters; see the phase 6
+    // warning"; PRD I5, I11, B6): io/ExportAs' request model, offerable-set
+    // resolution, validation and preset file, plus ops/Resample's
+    // prefiltered area-average downscale -- everything the File > Export
+    // As... dialog calls into, with the dialog itself holding only widgets.
+    // The prefilter's benefit is measured against a naive point-sampled
+    // downscale rather than asserted, the resize is proven to run in linear
+    // light by the 8-bit code the file actually carries, and the dialog's
+    // refusal strings are asserted *equal* to io/Export's own so a second
+    // set cannot drift into existence. Runs -- and asserts the correct
+    // answers -- in BOTH NP_USE_OIIO configurations, because the behaviour
+    // that matters most here is what an ON-build preset does in an OFF
+    // build. Headless and GPU-free; writes and removes selftest_exportas_*
+    // scratch files.
+    const bool exportAsOk = np::runExportAsTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -352,7 +368,7 @@ int main(int argc, char** argv) {
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
-                    strokeSpeedOk &&
+                    exportAsOk && strokeSpeedOk &&
                     idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
