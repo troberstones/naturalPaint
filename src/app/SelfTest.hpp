@@ -52,6 +52,28 @@ bool runAccumulatorTest();
 // encode(decode(x)) == x within float tolerance.
 bool runColorSpaceTest();
 
+// Headless, GPU-free check on color/Shaper (Phase 3 step 1, ADR-0004). This
+// is the *grading* transfer function -- the shaper's log domain curves are
+// authored in, per ADR-0004's "format-level commitment" callout -- as
+// opposed to runColorSpaceTest() above, which covers the *display* transfer
+// functions. Three things, at the rigor ADR-0004 demands for its own
+// self-declared hardest-to-reverse decision:
+//  - Continuity at the breakpoint: the linear-segment and log2-segment
+//    formulas are evaluated directly here (re-typed from the published
+//    ACEScct spec, independent of Shaper.cpp's own copy of the constants),
+//    checked to agree with each other and with the real shaperEncode() --
+//    proving the constants are genuinely self-consistent, not merely
+//    plausible-looking.
+//  - Round trip: decode(encode(x)) == x and encode(decode(y)) == y across
+//    negative, zero, either side of the breakpoint, 0.18 (18% grey),
+//    1.0 exactly, and 2.0/4.0/16.0 (the HDR-headroom property -- values
+//    well above 1.0 still land inside [0,1] once shaped).
+//  - A known-value sanity check independent of the code's own internal
+//    consistency (shaperEncode(1.0) == 9.72/17.52 ~ 0.5547945), and
+//    monotonicity over a sorted sampled spread -- a non-monotonic
+//    log-domain shaper would silently corrupt curve editing.
+bool runShaperTest();
+
 // Pins ADR-0003 (1.3): paints the same straight-line path twice at very
 // different simulated stroke speeds and checks the deposited pigment mass
 // matches within tolerance. See SelfTest.cpp for why this, and not
@@ -311,5 +333,58 @@ bool runViewTransformTest(GpuContext& gpu, PaintSim& sim);
 //    global snapping toggle's "off" state -- snaps nothing at all, even a
 //    point exactly on a guide.
 bool runGuidesGridSnapTest();
+
+// Headless, GPU-free check on core/Histogram (PLAN.md Phase 3 step 7:
+// "Histogram over the visible region"). Pure CPU -- computeHistogram() only
+// ever reads a Document's tiles, no PaintSim or gpu involvement.
+//
+// Confirms: an empty/all-transparent Document produces all-zero bins and
+// sampleCount == 0; a small synthetic Document built directly via
+// Document::createBlank() + TileStore::getOrCreate()/Tile::writePixel()
+// (matching runProbeTest()/runMipPyramidTest()'s own fixture-construction
+// pattern) with a handful of hand-picked opaque pixels lands in exactly the
+// expected R/G/B/Luma bins with every other bin at zero, and a mixed-in
+// alpha == 0 texel contributes to none of them; a region narrower than one
+// allocated tile excludes pixels inside that same tile but outside the
+// region; HistogramParams::wholeDocument() spans exactly {0,0} to
+// {width,height}; and a translucent (partial-alpha) pixel bins at its
+// un-premultiplied straight colour, not its stored premultiplied value --
+// checked against a specific hand-computed case (premultiplied
+// (0.25, 0, 0, 0.5) un-premultiplies to linear (0.5, 0, 0), then
+// srgbEncode()d to find the expected bin).
+bool runHistogramTest();
+
+// Headless, GPU-free check on ops/PointOps (PLAN.md Phase 3 steps 2+3;
+// docs/operations.md §1.1; PRD B4). Pure CPU math, no PaintSim or gpu
+// involvement -- every op under test is a plain `rgb -> rgb` function by
+// ADR-0004's own design (see ops/PointOps.hpp's header comment).
+//
+// Covers all six point ops plus the premultiply wrapper:
+//  - Levels: the neutral-params case is a true no-op; a hand-computed
+//    non-trivial case; an input below blackIn does not produce NaN
+//    (the internal `t` clamp works).
+//  - Curves: 0/1 control points is identity with no shaper round-trip; 2
+//    points reduces the Hermite formula exactly to the straight line
+//    between them (checked at several interior x, not just the
+//    endpoints); a hand-computed 3-point interior case; flat
+//    extrapolation on both sides of the authored x-range; the (0,0)-(1,1)
+//    shaper-domain-identity line leaves a spread of linear inputs
+//    unchanged end to end (shaperEncode -> evalCurve -> shaperDecode
+//    round-trips).
+//  - Exposure: +1 stop doubles, -1 stop halves, 0 stops is identity.
+//  - Saturation: scale=1 is identity; scale=0 collapses every channel to
+//    the same value (the Rec.709 luma); a hand-computed non-trivial case.
+//  - Grayscale: pure red (1,0,0) -> (0.2126, 0.2126, 0.2126), hand-
+//    computable from kRec709LumaWeights directly; a general RGB case.
+//  - Channel mixer: the identity matrix is a no-op; a hand-computed
+//    channel-swap case and an offset case.
+//  - applyPointOpsPremultiplied(): alpha == 0 maps to {0,0,0,0} untouched
+//    regardless of what ops would otherwise do; a hand-computed partially
+//    transparent example (premultiplied (0.5,0,0,0.5) -> unpremultiply ->
+//    (1,0,0) -> +1 stop exposure -> (2,0,0) -> re-premultiply by the
+//    unchanged alpha 0.5 -> (1,0,0,0.5)); alpha is never altered by any
+//    op run through the wrapper; composing two or more ops in sequence
+//    matches manual hand computation, not just each op individually.
+bool runPointOpsTest();
 
 }  // namespace np

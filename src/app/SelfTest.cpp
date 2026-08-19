@@ -17,14 +17,17 @@
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
 #include "brush/StrokePath.hpp"
+#include "color/Shaper.hpp"
 #include "color/Space.hpp"
 #include "core/Document.hpp"
 #include "core/Half.hpp"
+#include "core/Histogram.hpp"
 #include "core/Layer.hpp"
 #include "core/Probe.hpp"
 #include "core/TileStore.hpp"
 #include "io/ImageDecode.hpp"
 #include "io/ImageIO.hpp"
+#include "ops/PointOps.hpp"
 #include "ui/NaturalPaintUI.hpp"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -610,6 +613,101 @@ bool runColorSpaceTest() {
         "Rec.709 encode does not clamp above 1.0");
 
   std::printf("[selftest] color space %s\n", ok ? "PASS" : "FAIL");
+  return ok;
+}
+
+// color/Shaper (Phase 3 step 1, ADR-0004). See SelfTest.hpp for the full
+// breakdown; ADR-0004 flags this as the single hardest-to-reverse decision
+// in the whole colour pipeline ("saved curve control points are coordinates
+// in that domain, so changing the shaper later silently shifts every grade
+// in every saved document"), so this gets the same rigor as
+// runColorSpaceTest() above, plus an explicit breakpoint-continuity check
+// that re-derives both formula branches independently of Shaper.cpp's own
+// copy of the constants.
+bool runShaperTest() {
+  bool ok = true;
+  auto check = [&](bool cond, const char* what) {
+    std::printf("  %-58s %s\n", what, cond ? "pass" : "FAIL");
+    if (!cond) ok = false;
+  };
+
+  constexpr float kTol = 1e-4f;
+  auto near = [](float a, float b, float tol) { return std::fabs(a - b) <= tol; };
+
+  // Re-typed directly from the published ACEScct spec (S-2016-005) -- the
+  // same values color/Shaper.cpp uses, kept independent here (not included
+  // from that file's anonymous namespace) so this test cannot pass by
+  // construction just because it shares Shaper.cpp's own copy of them.
+  constexpr float kBreakLin = 0.0078125f;  // 2^-7
+  constexpr float kSlopeA = 10.5402377416545f;
+  constexpr float kOffsetB = 0.0729055341958355f;
+  constexpr float kLogA = 9.72f;
+  constexpr float kLogB = 17.52f;
+
+  // --- Continuity at the breakpoint: evaluate BOTH branch formulas
+  // directly at lin = kBreakLin, not just calling shaperEncode() once. This
+  // is the property that proves the published constants are genuinely
+  // self-consistent (a smooth curve, not two segments that merely happen
+  // to touch) -- see Shaper.cpp's header comment for the hand-worked
+  // derivation this pins. ---
+  const float linBranch = kSlopeA * kBreakLin + kOffsetB;
+  const float logBranch = (std::log2(kBreakLin) + kLogA) / kLogB;
+  std::printf("[selftest] shaper breakpoint: linear branch=%.10f  log branch=%.10f  "
+              "shaperEncode(breakLin)=%.10f\n",
+              linBranch, logBranch, shaperEncode(kBreakLin));
+  check(near(linBranch, logBranch, 1e-6f),
+        "shaper breakpoint: hand-evaluated linear and log branches agree in value");
+  check(near(shaperEncode(kBreakLin), linBranch, 1e-6f),
+        "shaperEncode(breakLin) matches the hand-evaluated linear branch");
+  check(near(shaperEncode(kBreakLin), logBranch, 1e-6f),
+        "shaperEncode(breakLin) matches the hand-evaluated log branch");
+
+  // --- Round trip, both directions. Negative, zero, either side of the
+  // breakpoint, 0.18 (18% grey), 1.0 exactly, and above 1.0 (2.0, 4.0,
+  // 16.0) to prove the HDR-headroom property ADR-0004 asks for. ---
+  const float linearValues[] = {-0.5f,  0.0f,        0.001f,           kBreakLin * 0.5f,
+                                kBreakLin, kBreakLin * 2.0f, 0.18f,           1.0f,
+                                2.0f,    4.0f,        16.0f};
+  for (float x : linearValues) {
+    char label[96];
+    const float rt = shaperDecode(shaperEncode(x));
+    std::snprintf(label, sizeof label, "shaper decode(encode(%.6f)) round-trips", x);
+    check(near(rt, x, kTol), label);
+  }
+  // Encoded-domain spread for the inverse direction, including the
+  // breakpoint itself (0.1552511415525113) and shaperEncode(1.0)
+  // (0.5547945205479452) as landmark points.
+  const float shapedValues[] = {-0.2f,  0.0f,       0.05f, 0.1552511415525113f,
+                                0.3f,   0.5547945205479452f, 0.7f, 0.9f, 1.5f};
+  for (float y : shapedValues) {
+    char label[96];
+    const float rt = shaperEncode(shaperDecode(y));
+    std::snprintf(label, sizeof label, "shaper encode(decode(%.6f)) round-trips", y);
+    check(near(rt, y, kTol), label);
+  }
+
+  // --- Known-value sanity check against a hand-computable reference point,
+  // independent of the code's own internal consistency: at lin = 1.0 (above
+  // the breakpoint), shaperEncode(1.0) = (log2(1)+9.72)/17.52 = 9.72/17.52. ---
+  const float enc1 = shaperEncode(1.0f);
+  std::printf("[selftest] shaperEncode(1.0) = %.10f (expected 9.72/17.52 = %.10f)\n", enc1,
+              9.72f / 17.52f);
+  check(near(enc1, 9.72f / 17.52f, kTol),
+        "shaperEncode(1.0) lands near the hand-computed 9.72/17.52 (~0.5547945)");
+
+  // --- Monotonicity: a sorted spread of linear inputs must produce a
+  // sorted spread of shaped outputs, across and away from the breakpoint. A
+  // non-monotonic log-domain shaper would silently break curve editing. ---
+  const float sortedSpread[] = {-1.0f, -0.1f, 0.0f,      0.001f, kBreakLin, 0.05f,
+                                0.18f, 0.5f,  1.0f,      2.0f,   8.0f,      16.0f,
+                                64.0f};
+  bool monotonic = true;
+  for (size_t i = 1; i < sizeof(sortedSpread) / sizeof(sortedSpread[0]); ++i) {
+    if (!(shaperEncode(sortedSpread[i]) > shaperEncode(sortedSpread[i - 1]))) monotonic = false;
+  }
+  check(monotonic, "shaperEncode is strictly increasing over a sorted sampled spread");
+
+  std::printf("[selftest] shaper %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 
@@ -2907,6 +3005,430 @@ bool runGuidesGridSnapTest() {
   }
 
   std::printf("[selftest] guides/grid/snap %s\n", ok ? "PASS" : "FAIL");
+  return ok;
+}
+
+// PLAN.md Phase 3 step 7 ("Histogram over the visible region"). See
+// SelfTest.hpp for the full breakdown; in short: empty/all-transparent,
+// hand-computed per-channel bin placement (with a mixed-in alpha=0 texel
+// that must contribute nothing), region clipping within one tile,
+// HistogramParams::wholeDocument()'s exact span, and an un-premultiply
+// proof on a translucent pixel -- mirroring runProbeTest()'s translucent-
+// pixel discipline of checking against a specific hand-computed value, not
+// just a plausible-looking one. Pure CPU -- computeHistogram() only ever
+// reads a Document's tiles, no PaintSim or gpu involvement.
+bool runHistogramTest() {
+  bool ok = true;
+  auto check = [&](bool cond, const char* what) {
+    std::printf("  %-58s %s\n", what, cond ? "pass" : "FAIL");
+    if (!cond) ok = false;
+  };
+
+  // --- empty/all-transparent Document: createBlank() allocates zero tiles,
+  // so every bin across all four channels stays zero and sampleCount is 0 --
+  {
+    const Document blank = Document::createBlank(64, 64, WorkingSpace{});
+    const HistogramResult h = computeHistogram(blank, HistogramParams::wholeDocument(blank));
+    check(h.sampleCount == 0,
+          "computeHistogram: an all-transparent/unpainted Document reports sampleCount 0");
+    bool allZero = true;
+    for (uint64_t c : h.r) allZero = allZero && (c == 0);
+    for (uint64_t c : h.g) allZero = allZero && (c == 0);
+    for (uint64_t c : h.b) allZero = allZero && (c == 0);
+    for (uint64_t c : h.luma) allZero = allZero && (c == 0);
+    check(allZero, "computeHistogram: ...and every bin in all four channels is zero");
+  }
+
+  // --- hand-computed per-channel bin placement, plus a mixed-in alpha=0
+  // texel that must contribute to nothing: pure red/green/blue opaque
+  // texels at three distinct coordinates in one tile, plus a fourth,
+  // alpha=0 texel carrying an otherwise-distinct colour that would be
+  // trivially detectable if it leaked into any bin ------------------------
+  {
+    Document doc = Document::createBlank(32, 32, WorkingSpace{});
+    Tile& tile = doc.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+    tile.writePixel(PixelCoord{0, 0}, {1.0f, 0.0f, 0.0f, 1.0f});  // opaque red
+    tile.writePixel(PixelCoord{1, 0}, {0.0f, 1.0f, 0.0f, 1.0f});  // opaque green
+    tile.writePixel(PixelCoord{2, 0}, {0.0f, 0.0f, 1.0f, 1.0f});  // opaque blue
+    tile.writePixel(PixelCoord{3, 0}, {0.5f, 0.5f, 0.5f, 0.0f});  // alpha 0 -- must not count
+
+    const HistogramResult h = computeHistogram(doc, HistogramParams::wholeDocument(doc));
+
+    check(h.sampleCount == 3,
+          "computeHistogram: three opaque texels count, the alpha=0 texel does not");
+
+    // srgbEncode(1.0) == 1.0 and srgbEncode(0.0) == 0.0 exactly (pow(x, *)
+    // with x in {0,1} is exact in IEEE float), so every one of these lands
+    // in bin 0 or bin (binCount-1) with no rounding ambiguity -- these are
+    // exact integer equality checks, not tolerance-based.
+    const size_t last = h.r.size() - 1;  // 255 at the default binCount == 256
+    check(h.r[last] == 1 && h.r[0] == 2,
+          "computeHistogram: R bin 255 holds the red texel; R bin 0 holds green+blue's R=0");
+    check(h.g[last] == 1 && h.g[0] == 2,
+          "computeHistogram: G bin 255 holds the green texel; G bin 0 holds red+blue's G=0");
+    check(h.b[last] == 1 && h.b[0] == 2,
+          "computeHistogram: B bin 255 holds the blue texel; B bin 0 holds red+green's B=0");
+
+    // Luma: 0.2126 (red), 0.7152 (green), 0.0722 (blue) at binCount=256 ->
+    // floor(x*256) = 54, 183, 18 -- each with a comfortable (>0.4-bin)
+    // margin from the nearest integer boundary, so this is exact too.
+    check(h.luma[54] == 1 && h.luma[183] == 1 && h.luma[18] == 1,
+          "computeHistogram: Luma bins hold exactly the hand-computed Rec.709 luma bin for each "
+          "of red/green/blue");
+    uint64_t lumaTotal = 0;
+    for (uint64_t c : h.luma) lumaTotal += c;
+    check(lumaTotal == 3,
+          "computeHistogram: no other Luma bin picked up a stray count -- exactly three "
+          "qualifying texels total, matching sampleCount");
+  }
+
+  // --- region clipping: a region narrower than one allocated tile excludes
+  // pixels inside that same tile but outside the region -------------------
+  {
+    Document doc = Document::createBlank(128, 128, WorkingSpace{});
+    Tile& tile = doc.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+    tile.writePixel(PixelCoord{5, 5}, {1.0f, 0.0f, 0.0f, 1.0f});    // inside the region below
+    tile.writePixel(PixelCoord{50, 50}, {0.0f, 1.0f, 0.0f, 1.0f});  // same tile, outside it
+
+    HistogramParams params;
+    params.regionMin = PixelCoord{0, 0};
+    params.regionMax = PixelCoord{10, 10};
+    const HistogramResult h = computeHistogram(doc, params);
+
+    check(h.sampleCount == 1,
+          "computeHistogram: a region narrower than one tile counts only the texel inside it");
+    const size_t last = h.r.size() - 1;
+    check(h.r[last] == 1 && h.g[last] == 0,
+          "computeHistogram: the in-region red texel is counted; the out-of-region green texel "
+          "(same tile) is not");
+  }
+
+  // --- HistogramParams::wholeDocument(): spans exactly {0,0} to
+  // {width,height}, and using it actually reaches a pixel at the document's
+  // far corner (regionMax is exclusive, so this also proves the span is
+  // {width,height}, not {width-1,height-1}) -------------------------------
+  {
+    Document doc = Document::createBlank(20, 15, WorkingSpace{});
+    const HistogramParams params = HistogramParams::wholeDocument(doc);
+    check(params.regionMin.x == 0 && params.regionMin.y == 0 && params.regionMax.x == 20 &&
+              params.regionMax.y == 15,
+          "HistogramParams::wholeDocument: spans exactly {0,0} to {width,height}");
+
+    Tile& tile = doc.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+    tile.writePixel(PixelCoord{19, 14}, {1.0f, 1.0f, 1.0f, 1.0f});  // the document's far corner
+    const HistogramResult h = computeHistogram(doc, params);
+    check(h.sampleCount == 1,
+          "computeHistogram: wholeDocument()'s region reaches the document's far corner pixel "
+          "(19,14) -- proves regionMax is genuinely {width,height}, not {width-1,height-1}");
+  }
+
+  // --- translucent (partial-alpha) pixel bins at its un-premultiplied
+  // straight colour, not its stored premultiplied value: premultiplied
+  // (0.25, 0, 0, 0.5) un-premultiplies to linear (0.5, 0, 0) ---------------
+  {
+    Document doc = Document::createBlank(16, 16, WorkingSpace{});
+    Tile& tile = doc.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+    tile.writePixel(PixelCoord{0, 0}, {0.25f, 0.0f, 0.0f, 0.5f});
+
+    const HistogramResult h = computeHistogram(doc, HistogramParams::wholeDocument(doc));
+    check(h.sampleCount == 1, "computeHistogram: the translucent texel counts exactly once");
+
+    const float straightDisplay = srgbEncode(0.5f);         // expected: un-premultiplied
+    const float premultipliedDisplay = srgbEncode(0.25f);   // what a premultiply bug would bin at
+    const int32_t straightBin =
+        std::clamp(static_cast<int32_t>(std::floor(straightDisplay * 256.0f)), 0, 255);
+    const int32_t premultipliedBin =
+        std::clamp(static_cast<int32_t>(std::floor(premultipliedDisplay * 256.0f)), 0, 255);
+    check(straightBin != premultipliedBin,
+          "runHistogramTest: sanity check -- srgbEncode(0.5) and srgbEncode(0.25) land in "
+          "different bins, so this fixture can actually distinguish un-premultiplied from "
+          "premultiplied binning");
+
+    check(h.r[static_cast<size_t>(straightBin)] == 1,
+          "computeHistogram: a translucent texel bins at srgbEncode() of its un-premultiplied "
+          "straight colour -- the hand-computed premultiplied (0.25,0,0,0.5) -> straight "
+          "(0.5,0,0) case");
+    check(h.r[static_cast<size_t>(premultipliedBin)] == 0,
+          "computeHistogram: ...and NOT at srgbEncode() of its raw stored premultiplied value "
+          "(0.25) -- proves un-premultiplication actually ran, not just alpha passthrough");
+    check(h.g[0] == 1 && h.b[0] == 1,
+          "computeHistogram: the translucent texel's G/B channels (0 both pre- and "
+          "post-un-premultiply) land in bin 0 either way");
+  }
+
+  std::printf("[selftest] histogram %s\n", ok ? "PASS" : "FAIL");
+  return ok;
+}
+
+// ops/PointOps (Phase 3 steps 2+3; docs/operations.md §1.1; PRD B4). See
+// SelfTest.hpp for the full breakdown. Pure CPU math throughout, matching
+// runShaperTest()/runColorSpaceTest()'s own headless-first-class status --
+// no PaintSim or gpu involvement anywhere in this function.
+bool runPointOpsTest() {
+  bool ok = true;
+  auto check = [&](bool cond, const char* what) {
+    std::printf("  %-58s %s\n", what, cond ? "pass" : "FAIL");
+    if (!cond) ok = false;
+  };
+
+  constexpr float kTol = 1e-4f;
+  auto near = [](float a, float b, float tol) { return std::fabs(a - b) <= tol; };
+  auto nearRgb = [&](const std::array<float, 3>& a, const std::array<float, 3>& b, float tol) {
+    return near(a[0], b[0], tol) && near(a[1], b[1], tol) && near(a[2], b[2], tol);
+  };
+
+  // --- Levels ---
+  {
+    // Neutral params (blackIn=0, whiteIn=1) is a true no-op for any input
+    // *within* that [0,1] range -- deliberately not testing an HDR value
+    // above 1.0 here: with whiteIn=1 the internal t-clamp legitimately
+    // saturates such an input to whiteOut, which is correct Levels
+    // black/white-point behaviour (every real levels tool clips outside
+    // its own range), not a bug in "neutral is identity."
+    const LevelsParams neutral{};
+    const std::array<float, 3> rgb{0.05f, 0.5f, 0.95f};
+    const std::array<float, 3> out = applyLevels(rgb, {neutral, neutral, neutral});
+    check(nearRgb(out, rgb, kTol), "levels: neutral params is a true no-op within [blackIn, whiteIn]");
+  }
+  {
+    // The flip side of the case above, made explicit rather than left
+    // implicit: with default whiteIn=1/blackIn=0, an input outside that
+    // range legitimately saturates to whiteOut/blackOut -- this IS the
+    // internal t-clamp's documented consequence (PointOps.hpp's Levels
+    // doc comment), not the general "ops don't clamp output" policy being
+    // violated. A caller who needs Levels to pass HDR headroom through
+    // untouched sets whiteIn above their expected max linear value.
+    const LevelsParams neutral{};
+    check(near(applyLevelsChannel(1.7f, neutral), 1.0f, kTol),
+          "levels: neutral params saturates an above-whiteIn (HDR) input to whiteOut, by design");
+    check(near(applyLevelsChannel(-0.3f, neutral), 0.0f, kTol),
+          "levels: neutral params saturates a below-blackIn input to blackOut, by design");
+  }
+  {
+    // Hand-computed: blackIn=0.1, whiteIn=0.9, gamma=2.0, blackOut=0.05,
+    // whiteOut=0.95, input=0.5.
+    //   t = (0.5-0.1)/(0.9-0.1) = 0.5
+    //   t = pow(0.5, 1/2.0) = sqrt(0.5) = 0.7071067811865476
+    //   out = 0.7071067811865476*(0.95-0.05)+0.05 = 0.6863961030678928
+    LevelsParams p;
+    p.blackIn = 0.1f;
+    p.whiteIn = 0.9f;
+    p.gamma = 2.0f;
+    p.blackOut = 0.05f;
+    p.whiteOut = 0.95f;
+    const float out = applyLevelsChannel(0.5f, p);
+    check(near(out, 0.6863961f, kTol), "levels: hand-computed non-trivial case matches");
+  }
+  {
+    // Input below blackIn must not produce NaN -- the internal
+    // clamp-t-to-[0,1]-before-pow() guard. blackIn=0.2, whiteIn=0.8,
+    // gamma=0.5 (a fractional exponent -- exactly the case that would hit
+    // pow() on a negative base without the clamp), blackOut/whiteOut left
+    // at their neutral 0/1 default.
+    //   t = (-1.0-0.2)/(0.8-0.2) = -2.0, clamped to 0
+    //   pow(0, 1/0.5) = pow(0, 2.0) = 0
+    //   out = 0*(1-0)+0 = 0
+    LevelsParams p;
+    p.blackIn = 0.2f;
+    p.whiteIn = 0.8f;
+    p.gamma = 0.5f;
+    const float out = applyLevelsChannel(-1.0f, p);
+    check(!std::isnan(out), "levels: input below blackIn does not produce NaN");
+    check(near(out, 0.0f, kTol), "levels: below-blackIn input clamps to blackOut as hand-computed");
+  }
+
+  // --- Curves ---
+  {
+    Curve empty;
+    check(near(evalCurve(empty, 0.37f), 0.37f, kTol), "evalCurve: 0 control points is identity");
+    // 1 point is identity too -- NOT the single point's own y.
+    Curve one = {{0.5f, 0.9f}};
+    check(near(evalCurve(one, 0.37f), 0.37f, kTol),
+          "evalCurve: 1 control point is identity, not the point's own y");
+  }
+  {
+    // 2 points must reduce the Hermite formula exactly to the straight
+    // line between them -- checked at several interior x, not just the
+    // endpoints. Algebraically: with both endpoint tangents equal to the
+    // shared secant slope m=(y1-y0)/dx, y(t) collapses to
+    // y0*(1-t) + y1*t (h00-h10-h11 == 1-t and h10+h01+h11 == t identically).
+    const Curve two = {{0.0f, 0.2f}, {1.0f, 0.8f}};
+    for (float x : {0.0f, 0.25f, 0.5f, 0.75f, 1.0f}) {
+      const float expected = 0.2f + (0.8f - 0.2f) * x;
+      const float actual = evalCurve(two, x);
+      char label[112];
+      std::snprintf(label, sizeof label,
+                    "evalCurve: 2-point curve reduces to a straight line at x=%.2f", x);
+      check(near(actual, expected, 1e-4f), label);
+    }
+  }
+  {
+    // Hand-computed 3-point interior case: points (0,0), (0.5,1.0),
+    // (1.0,0.0), evaluated at x=0.25 (segment [0, 0.5]).
+    //   tangent at (0,0)   [endpoint]: secant((0,0),(0.5,1.0)) = 2.0
+    //   tangent at (0.5,1) [interior]: avg(secant((0,0),(0.5,1))=2.0,
+    //                                      secant((0.5,1),(1,0))=-2.0) = 0.0
+    //   t = (0.25-0)/0.5 = 0.5
+    //   h00=0.5, h10=0.125, h01=0.5, h11=-0.125 (standard values at t=0.5)
+    //   y = 0.5*0 + 0.125*0.5*2.0 + 0.5*1.0 + (-0.125)*0.5*0.0
+    //     = 0 + 0.125 + 0.5 + 0 = 0.625
+    const Curve three = {{0.0f, 0.0f}, {0.5f, 1.0f}, {1.0f, 0.0f}};
+    check(near(evalCurve(three, 0.25f), 0.625f, kTol),
+          "evalCurve: hand-computed 3-point interior case matches");
+  }
+  {
+    // Flat extrapolation outside the authored x-range.
+    const Curve c = {{0.2f, 0.3f}, {0.8f, 0.6f}};
+    check(near(evalCurve(c, -5.0f), 0.3f, kTol),
+          "evalCurve: extrapolates flat below the first control point");
+    check(near(evalCurve(c, 5.0f), 0.6f, kTol),
+          "evalCurve: extrapolates flat above the last control point");
+  }
+  {
+    // (0,0)-(1,1) is the shaper-domain identity line (a 2-point curve, so
+    // it reduces to y=x exactly per the property above). Composed end to
+    // end -- shaperEncode -> evalCurve -> shaperDecode -- a spread of
+    // linear inputs whose shaperEncode() lands inside [0,1] (true of all
+    // five chosen here) must come back unchanged.
+    std::array<Curve, 3> identityLine;
+    identityLine[0] = identityLine[1] = identityLine[2] = Curve{{0.0f, 0.0f}, {1.0f, 1.0f}};
+    for (float v : {0.0f, 0.02f, 0.18f, 0.5f, 1.0f}) {
+      const std::array<float, 3> rgb{v, v, v};
+      const std::array<float, 3> out = applyCurves(rgb, identityLine);
+      char label[112];
+      std::snprintf(label, sizeof label,
+                    "applyCurves: shaper-domain identity line round-trips linear=%.3f", v);
+      check(nearRgb(out, rgb, kTol), label);
+    }
+  }
+  {
+    // 0-point-per-channel curves through applyCurves(): exact passthrough,
+    // no shaper round-trip at all (unlike the identity-line case above,
+    // which does round-trip through the shaper and only approximately
+    // preserves the input to float tolerance).
+    const std::array<Curve, 3> empty{};
+    const std::array<float, 3> rgb{0.37f, -0.4f, 12.0f};
+    const std::array<float, 3> out = applyCurves(rgb, empty);
+    check(nearRgb(out, rgb, kTol), "applyCurves: 0-point channels are an exact passthrough");
+  }
+
+  // --- Exposure ---
+  {
+    const std::array<float, 3> rgb{0.3f, 0.6f, 0.9f};
+    check(nearRgb(applyExposure(rgb, ExposureParams{1.0f}), {0.6f, 1.2f, 1.8f}, kTol),
+          "exposure: +1 stop doubles");
+    check(nearRgb(applyExposure(rgb, ExposureParams{-1.0f}), {0.15f, 0.3f, 0.45f}, kTol),
+          "exposure: -1 stop halves");
+    check(nearRgb(applyExposure(rgb, ExposureParams{0.0f}), rgb, kTol),
+          "exposure: 0 stops is identity");
+  }
+
+  // --- Saturation ---
+  {
+    const std::array<float, 3> rgb{0.2f, 0.6f, 0.9f};
+    check(nearRgb(applySaturation(rgb, SaturationParams{1.0f}), rgb, kTol),
+          "saturation: scale=1 is identity");
+
+    // Rec.709 luma computed by hand, directly from the literal weights --
+    // independent of computeLuma()'s own copy of them.
+    const float luma = 0.2126f * 0.2f + 0.7152f * 0.6f + 0.0722f * 0.9f;
+    check(nearRgb(applySaturation(rgb, SaturationParams{0.0f}), {luma, luma, luma}, kTol),
+          "saturation: scale=0 collapses every channel to the same value (the luma)");
+
+    SaturationParams p;
+    p.scale = 2.0f;
+    const std::array<float, 3> expected{luma + (rgb[0] - luma) * 2.0f,
+                                        luma + (rgb[1] - luma) * 2.0f,
+                                        luma + (rgb[2] - luma) * 2.0f};
+    check(nearRgb(applySaturation(rgb, p), expected, kTol),
+          "saturation: hand-computed scale=2.0 (Rec.709 weights) case matches");
+  }
+
+  // --- Grayscale ---
+  {
+    const std::array<float, 3> red{1.0f, 0.0f, 0.0f};
+    check(nearRgb(applyGrayscale(red, GrayscaleParams{}), {0.2126f, 0.2126f, 0.2126f}, kTol),
+          "grayscale: pure red -> (0.2126, 0.2126, 0.2126)");
+
+    const std::array<float, 3> rgb{0.3f, 0.5f, 0.7f};
+    const float expectedLuma = 0.2126f * 0.3f + 0.7152f * 0.5f + 0.0722f * 0.7f;
+    check(nearRgb(applyGrayscale(rgb, GrayscaleParams{}),
+                  {expectedLuma, expectedLuma, expectedLuma}, kTol),
+          "grayscale: general RGB case matches hand-computed Rec.709 luma");
+  }
+
+  // --- Channel mixer ---
+  {
+    const std::array<float, 3> rgb{0.2f, 0.5f, 0.8f};
+    check(nearRgb(applyChannelMixer(rgb, ChannelMixerParams{}), rgb, kTol),
+          "channel mixer: identity matrix is a no-op");
+
+    ChannelMixerParams swapRB;
+    swapRB.matrix = {{{0.0f, 0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f}}};
+    check(nearRgb(applyChannelMixer(rgb, swapRB), {0.8f, 0.5f, 0.2f}, kTol),
+          "channel mixer: hand-computed R/B swap matches");
+
+    ChannelMixerParams offset;
+    offset.matrix = {
+        {{1.0f, 0.0f, 0.0f, 0.1f}, {0.0f, 1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f}}};
+    check(nearRgb(applyChannelMixer(rgb, offset), {0.3f, 0.5f, 0.8f}, kTol),
+          "channel mixer: hand-computed +0.1 R-offset case matches");
+  }
+
+  // --- Premultiply wrapper (PRD B4) ---
+  {
+    const std::array<float, 4> transparent{0.3f, 0.4f, 0.5f, 0.0f};
+    const std::vector<PointOp> anyOp{
+        [](const std::array<float, 3>& rgb) { return applyExposure(rgb, ExposureParams{5.0f}); }};
+    const std::array<float, 4> out = applyPointOpsPremultiplied(transparent, anyOp);
+    check(out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f && out[3] == 0.0f,
+          "premultiply wrapper: alpha<=0 maps to {0,0,0,0} untouched, regardless of the op");
+  }
+  {
+    // Hand-computed: premultiplied (0.5,0,0,0.5) -> unpremultiply ->
+    // (1,0,0) -> +1 stop exposure -> (2,0,0) -> re-premultiply by the
+    // unchanged alpha 0.5 -> (1,0,0,0.5).
+    const std::array<float, 4> premultiplied{0.5f, 0.0f, 0.0f, 0.5f};
+    const std::vector<PointOp> ops{
+        [](const std::array<float, 3>& rgb) { return applyExposure(rgb, ExposureParams{1.0f}); }};
+    const std::array<float, 4> out = applyPointOpsPremultiplied(premultiplied, ops);
+    check(near(out[0], 1.0f, kTol) && near(out[1], 0.0f, kTol) && near(out[2], 0.0f, kTol) &&
+              near(out[3], 0.5f, kTol),
+          "premultiply wrapper: hand-computed partially-transparent +1-stop example matches");
+  }
+  {
+    // Alpha is never altered, regardless of which op runs -- even one
+    // that collapses RGB entirely (saturation scale=0).
+    const std::array<float, 4> premultiplied{0.2f, 0.4f, 0.1f, 0.37f};
+    const std::vector<PointOp> ops{[](const std::array<float, 3>& rgb) {
+      return applySaturation(rgb, SaturationParams{0.0f});
+    }};
+    const std::array<float, 4> out = applyPointOpsPremultiplied(premultiplied, ops);
+    check(near(out[3], 0.37f, kTol), "premultiply wrapper: alpha is never altered by any op");
+  }
+  {
+    // Composing two ops in sequence: premultiplied (0.4,0.2,0.0,0.4) ->
+    // unpremultiply -> (1.0,0.5,0.0) -> exposure -1 stop -> (0.5,0.25,0.0)
+    // -> saturation scale=0 (collapse to the Rec.709 luma of that
+    // intermediate result) -> luma = 0.2126*0.5+0.7152*0.25+0.0722*0.0
+    // = 0.2851 -> (0.2851,0.2851,0.2851) -> re-premultiply by the
+    // unchanged alpha 0.4.
+    const std::array<float, 4> premultiplied{0.4f, 0.2f, 0.0f, 0.4f};
+    const std::vector<PointOp> ops{
+        [](const std::array<float, 3>& rgb) { return applyExposure(rgb, ExposureParams{-1.0f}); },
+        [](const std::array<float, 3>& rgb) {
+          return applySaturation(rgb, SaturationParams{0.0f});
+        },
+    };
+    const std::array<float, 4> out = applyPointOpsPremultiplied(premultiplied, ops);
+    const float luma = 0.2126f * 0.5f + 0.7152f * 0.25f + 0.0722f * 0.0f;
+    const float expected = luma * 0.4f;
+    check(near(out[0], expected, kTol) && near(out[1], expected, kTol) &&
+              near(out[2], expected, kTol) && near(out[3], 0.4f, kTol),
+          "premultiply wrapper: composing two ops in sequence matches manual hand computation");
+  }
+
+  std::printf("[selftest] point ops %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 

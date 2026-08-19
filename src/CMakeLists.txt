@@ -7,13 +7,16 @@ add_executable(naturalPaint
   app/Snapping.cpp
   app/ViewTransform.cpp
   brush/StrokePath.cpp
+  color/Shaper.cpp
   color/Space.cpp
   core/Half.cpp
+  core/Histogram.cpp
   core/Probe.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp
   io/ImageDecode.cpp
   io/ImageIO.cpp
+  ops/PointOps.cpp
   paint/Palette.cpp
   sim/PaintSim.cpp
   ui/MacPaintUI.cpp

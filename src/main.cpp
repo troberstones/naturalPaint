@@ -179,6 +179,11 @@ int main(int argc, char** argv) {
     // 2.3: color/Space's sRGB/Rec.709 transfer function round trip. Also
     // headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool colorSpaceOk = np::runColorSpaceTest();
+    // Phase 3 step 1 (ADR-0004): color/Shaper's ACEScct log encode/decode --
+    // breakpoint continuity, round trip, a hand-computed known-value check,
+    // and monotonicity. Also headless and GPU-free -- pure CPU math, no
+    // PaintSim involvement.
+    const bool shaperOk = np::runShaperTest();
     // Phase 2 step 15: app/Keymap load, conflict detection and resolve().
     // Headless, GPU-free -- pure CPU/file-IO, no PaintSim involvement.
     const bool keymapOk = np::runKeymapTest();
@@ -246,16 +251,29 @@ int main(int argc, char** argv) {
     // headless and GPU-free -- rulers/drag-to-create/the popup/the grid
     // overlay itself are UI with no headless driver; see SelfTest.hpp.
     const bool guidesGridSnapOk = np::runGuidesGridSnapTest();
+    // Phase 3 step 7 ("Histogram over the visible region"): core/Histogram's
+    // computeHistogram() -- display-domain R/G/B/Luma bin placement,
+    // alpha<=0 texels excluded, region clipping against the tile store's
+    // own allocated-tile iteration, and un-premultiply-before-bin on a
+    // translucent pixel. Also headless and GPU-free -- pure CPU, no
+    // PaintSim involvement.
+    const bool histogramOk = np::runHistogramTest();
+    // Phase 3 steps 2+3 (ops/PointOps; docs/operations.md §1.1; PRD B4):
+    // Levels, Curves (through color/Shaper), Exposure, Saturation,
+    // RGB->grayscale, channel mixer -- each a plain rgb->rgb function --
+    // plus the un-premultiply/re-premultiply wrapper bracketing them.
+    // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
+    const bool pointOpsOk = np::runPointOpsTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
     // any other) ever constructed a PaintSim.
     const bool idleMemOk = np::runIdleMemoryTest(idleRssBytes);
-    const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && keymapOk &&
+    const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    histogramOk && pointOpsOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
