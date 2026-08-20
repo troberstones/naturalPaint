@@ -146,7 +146,14 @@ TileFetch LayerResidency::readTile(TileCoord coord) {
 }
 
 Tile* LayerResidency::tileForWrite(TileCoord coord, std::string* errorOut) {
-  if (Tile* owned = owned_.find(coord)) return owned;
+  // `findForWrite()` rather than `find()` since PLAN.md Phase 5 step 6 made
+  // `find()` const-only: an already-promoted tile whose store has been copied
+  // (a document duplicate, a history entry) must be un-shared before this
+  // returns a writable pointer to it. That is the copy-on-write barrier
+  // core/TileStore.hpp owns; this module's own copy-on-first-write is the
+  // *file* half of the same idea and the two compose -- see that header's
+  // "How this relates to io/TileResidency".
+  if (Tile* owned = owned_.findForWrite(coord)) return owned;
 
   // Not owned yet. In cached mode with the source covering this coordinate,
   // the promotion must start from the file's pixels -- and must fail rather

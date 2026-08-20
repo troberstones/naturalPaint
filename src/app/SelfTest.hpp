@@ -1314,4 +1314,48 @@ bool runLayerMaskTest();
 //    to the one written before stacks were persisted.
 bool runAdjustmentLayerTest();
 
+// PLAN.md Phase 5 step 6 ("COW tiles -- copy-on-write with reference-counted
+// history"; PRD A9, O1, O4, C2). The tile-sharing primitive Phase 5 step 7's
+// byte-bounded, cursor-based history is built on: a `TileStoreOf<T>` slot is a
+// `std::shared_ptr<T>`, copying a store shares every tile, and the two
+// barriers -- `getOrCreate()` and `findForWrite()` -- copy a shared tile
+// before handing out anything writable. core/TileStore.hpp carries the design
+// argument; core/TileShare.hpp carries the two byte numbers step 7 needs.
+//
+// Covers, and the first three are the properties the step lives or dies on:
+//  - **Sharing proven by identity, not by equality**: after `Document copy =
+//    src;` both documents' `find()` return the SAME ADDRESS, and both agree
+//    the use count is 2.
+//  - **A write to one copy is not visible in the other**, at exactly zero
+//    tolerance, with the untouched tile still shared afterwards and the
+//    second write to the same tile proven to be in place (copy-on-FIRST-write).
+//  - **The refcount reaching zero frees exactly once**, proven with an
+//    instrumented tile type instantiated through the same template: 2 fresh
+//    tiles + 3 copy-on-write clones = 5 constructions and 5 destructions,
+//    nothing leaked, nothing freed twice.
+//  - **The barrier is the only door**, two thirds of it as compile-time facts:
+//    `find()` is const-only on all three stores and iterating a non-const
+//    store still yields `const T&`.
+//  - **All three tile types** -- RGB (128 KiB), Pigment (224 KiB) and Mask
+//    (32 KiB) -- with the mask's REVEAL default given its own assertions,
+//    because a clone wrongly implemented as a fresh default would look
+//    plausible for a mask and only for a mask.
+//  - **io/TileResidency composing rather than competing**: its
+//    copy-on-first-write is against a *file*, this one is against another
+//    in-memory holder, and `tileForWrite()` on a shared owned tile copies.
+//  - **The composite unchanged**: shared and deep copies of one document
+//    composite bit-identically, which is steps 1-5's regression boundary.
+//  - **The measurements this step is justified by**, all `[measured]` and all
+//    against io/TileResidency's realistic 2048x2048 / 256-tile / 32.0 MiB
+//    fixture: a document copy deep vs shared, the first write to a shared tile
+//    vs a write to a unique one, RSS for 16 shared copies vs 16 deep ones, the
+//    per-lookup delta against a plain `unordered_map<TileCoord, Tile>` (the
+//    exact shape the store had before this step), and ten history entries
+//    costed the way step 7 will have to cost them.
+//  - **`.npaint`**: sharing is invisible to the format (a shared document and
+//    its deep copy save to files differing only in OpenImageIO's `capDate`),
+//    and -- stated rather than implied away -- sharing does NOT survive a
+//    load, because the format stores each part's pixels in full.
+bool runCowTileTest();
+
 }  // namespace np
