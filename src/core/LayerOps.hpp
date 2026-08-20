@@ -152,6 +152,20 @@ Layer makeRgbLayer(std::string name);
 // where content exists".
 Layer makePigmentLayer(std::string name);
 
+// A new Adjustment layer (PLAN.md Phase 5 step 5, PRD C1, C5): **no tile
+// storage of any kind, and an empty op stack**. That is not an incomplete
+// version of the other two factories -- an Adjustment layer holds no pixels by
+// definition (CONTEXT.md), and core/Composite treats one whose stack is empty
+// as an exact no-op, so a freshly added adjustment layer is invisible until
+// its stack has something in it. That is the same choice Phase 3 step 8 made
+// for a newly added op ("adding an op should never itself change what's on
+// screen, only enabling it should"), one level up.
+//
+// It is the one kind whose whole content is `Layer::ops`, which is why PLAN.md
+// step 5 had to give `np:ops` a working carrier (io/OpSerial) before this
+// factory could exist without handing a user a layer that a save would empty.
+Layer makeAdjustmentLayer(std::string name);
+
 // Inserts `layer` at `index`, shifting everything from `index` up. `index ==
 // layers.size()` appends (i.e. puts it on top); a larger index is refused by
 // name rather than clamped, because a clamped out-of-range insert is

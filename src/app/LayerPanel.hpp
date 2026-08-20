@@ -79,6 +79,13 @@ std::string layerRowTitle(const Layer& layer, size_t layerIndex);
 // `· LOCKED`, because the row's own eye and lock controls are the only other
 // place that state appears and a text sub-line is what `--selftest` can read.
 //
+// A layer with a non-empty op stack reads `· 2 OPS` (`· 1 OP` for one), before
+// the mask marker. It is present for every kind, because `Layer::ops` is, but
+// it matters most on an Adjustment layer: that kind holds no pixels, so its op
+// stack is the only content it has and a row that said nothing about it would
+// be describing an empty layer. An empty stack -- every layer any `.npaint`
+// written before PLAN.md Phase 5 step 5 carries -- prints nothing at all.
+//
 // `MASK` is present exactly when `Layer::mask` is engaged and says nothing
 // about the mask's contents -- a mask that reveals everything composites
 // byte-identically to no mask at all (core/Mask.hpp), so this marker is the

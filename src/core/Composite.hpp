@@ -164,7 +164,10 @@
 //   A Pigment layer with `pigmentTiles == nullopt`, or an RGB layer with
 //     `rgbTiles == nullopt`: contributes nothing, exactly as an empty store
 //     would.
-//   Media/Strokes/Adjustment/Text/Flats: still skipped. None owns storage.
+//   Adjustment: **no longer skipped** -- see §8 below (PLAN.md Phase 5 step
+//     5). It is the one kind that transforms the accumulator instead of
+//     contributing to it.
+//   Media/Strokes/Text/Flats: still skipped. None owns storage.
 //
 // ==========================================================================
 // Phase 5 step 4 -- Layer masks
@@ -249,6 +252,120 @@
 //   clipping masks **A different feature** (PRD C9, PLAN.md Phase 5 step 9): a
 //                  layer clipped by the *alpha of the layer below*, storing
 //                  nothing of its own. Not built here, and not conflated.
+//
+// ==========================================================================
+// Phase 5 step 5 -- Adjustment layers
+// ==========================================================================
+//
+// PRD C5: "An Adjustment layer applies its op stack to the composite below
+// it." PRD C1 lists Adjustment among the layer kinds (P0); PRD D18 makes every
+// §D op re-editable in place, which is what a *layer* holding a stack is for.
+//
+// --- 8. It inverts the walk, and that is the whole of the feature ---------
+//
+// Every other layer kind is a *source*: it is projected, graded, scaled by its
+// coverage and blended **onto** the accumulator. An Adjustment layer has no
+// source. It holds no tiles of any kind -- no `rgbTiles`, no `pigmentTiles`,
+// nothing to project -- and its entire content is `Layer::ops`. So it does not
+// contribute; it **transforms what is already there**.
+//
+// **"The composite below" is the accumulator exactly as the walk finds it**
+// when it reaches this layer's index: every layer at a lower index, already
+// blended, in premultiplied linear light. That is the only reading the
+// bottom-to-top walk makes available and it is also the right one -- PRD C5
+// says "the composite below it", not "the layer below it", and an adjustment
+// layer that saw only its immediate neighbour would be a *clipped* adjustment,
+// which is PRD C9 and PLAN.md step 9 (see §11).
+//
+// --- 9. Straight vs premultiplied, and the guard that was not copied ------
+//
+// The op stack grades *colour*, and every op in ops/PointOps is contracted to
+// operate on straight (non-premultiplied) scene-linear RGB. The accumulator is
+// premultiplied. So the bracket is the familiar un-premultiply, grade,
+// re-premultiply -- and it is **not written again here**:
+// `applyPointOpsPremultiplied()` (PRD B4, ops/PointOps.hpp) is exactly that
+// bracket and already owns it, so this walk hands it the accumulator's texel
+// through `gradedPremultiplied()`, the same function every other layer kind's
+// grade goes through. There is one un-premultiply-for-grading in this binary,
+// not two.
+//
+// Its `a <= 0 -> {0,0,0,0}` guard is therefore inherited rather than
+// duplicated, and this walk **never reaches it**: a texel whose accumulated
+// alpha is <= 0 is skipped outright before the call. That is not an
+// optimisation, it is the meaning of the operation. Where the composite below
+// is empty there is no colour to grade -- an exposure of +2 stops on nothing
+// is nothing -- and skipping says so exactly, where multiplying would depend
+// on what a premultiplied texel with zero alpha and non-zero colour (which
+// `plus` can produce) is taken to mean. **An adjustment layer over nothing is
+// a bit-exact no-op**, and `--selftest` asserts it as a byte-identity claim.
+//
+// --- 10. Opacity and a mask mean "how much of the adjustment applies" ------
+//
+// A source layer's coverage says how much of *it* covers the backdrop. An
+// adjustment layer has nothing to cover with, so the same scalar means how far
+// the graded result is taken toward from the ungraded one:
+//
+//     effective = layerCoverage(layer) * mask(x,y)          // §5's product
+//     out       = below + effective * (graded(below) - below)
+//
+// i.e. a lerp, per texel, in premultiplied space. That is the *same* identity
+// §3 and §5 already rest on -- `lerp(dst, f(dst), o)` is how opacity is
+// defined wherever both forms exist -- applied to a transform rather than to a
+// source. The two ends are exact rather than nearly exact, and both matter:
+//
+//   effective == 0   the layer is **skipped**, so the accumulator is not
+//                    written at all. Opacity 0, a hidden layer and an
+//                    all-0.0 mask are each bit-for-bit the layer being
+//                    deleted -- not "a lerp by zero", which is a multiply and
+//                    an add and therefore not the identity on every float.
+//   effective == 1   the graded value is **assigned**, not lerped to. `below +
+//                    1.0f*(g - below)` is two correctly-rounded operations and
+//                    is not `g`; a full-strength adjustment must be exactly
+//                    what the op stack computed.
+//
+// An **empty** op stack is skipped outright as well, for the reason §1 already
+// gives for every other kind: `gradedPremultiplied()` is the identity on an
+// empty stack, but an adjustment layer with no ops must cost exactly nothing,
+// and a `.npaint` written before this step carries no stack at all.
+//
+// --- 11. What it does to alpha, its blend, and its scope ------------------
+//
+//   alpha        **Unchanged, by construction.** This walk writes R, G and B
+//                and never touches the accumulator's alpha at all. A grade is
+//                a colour operation -- ops/PointOps' whole contract is that no
+//                op in the committed P0 set sees alpha, let alone modifies it
+//                -- and coverage is not colour. `--selftest` asserts the
+//                accumulated alpha is bit-identical across an adjustment
+//                layer at every opacity and under a mask.
+//   blend mode   **Not honoured, and warned about by name.** A blend mode
+//                combines a *source* with a backdrop, and an adjustment layer
+//                has no source: the operand that would play `src` is the
+//                backdrop itself. Photoshop defines the combination (a Curves
+//                layer set to Multiply multiplies its own result against the
+//                unadjusted composite); this build does not, because that is a
+//                second semantic for `np:blend` and PLAN.md step 5 does not
+//                ask for one. So the result is lerped in, `over`-style, and a
+//                layer carrying anything but `normal` gets
+//                `adjustmentLayerBlendWarning()` -- the same "approximate,
+//                never silent" contract §7's unimplemented blend already has.
+//   scope        **Everything below it in the stack**, and therefore the whole
+//                canvas: an adjustment layer has no tiles, so there is no
+//                sparse set to walk and no data window to clip to. That is
+//                what PRD C5 asks for. Restricting it to just the layer
+//                beneath is a **clipping mask** (PRD C9, PLAN.md step 9), a
+//                different feature with a different UI and its own row marker
+//                (`ADJUSTMENT · CLIPPED` in docs/ui.md §3.2) -- not built
+//                here and not conflated, exactly as step 4 did not conflate a
+//                layer mask with one.
+//   groups       Unchanged: `Layer::parent` is still carried and never acted
+//                on, so an adjustment layer inside a group would still affect
+//                everything below it rather than the group. This build creates
+//                no groups.
+//   cost         O(canvas) per adjustment layer, unconditionally. A document
+//                with no adjustment layer pays nothing -- the branch is not
+//                taken -- but there is no ROI narrowing here; that is PLAN.md
+//                phase 6's "`roi(rect) -> rect` per op, walked backwards" and
+//                the hash-keyed tile cache that goes with it.
 //
 // --- Why this module exists at all ----------------------------------------
 //
@@ -416,6 +533,41 @@ std::array<float, 4> mixedPairTexel(const PigmentTexel& lower,
                                     const std::vector<PointOp>& lowerOps, float lowerCoverage,
                                     const PigmentTexel& upper,
                                     const std::vector<PointOp>& upperOps, float upperCoverage);
+
+// One texel of an **Adjustment** layer's effect: `below` -- the composite
+// accumulated beneath it, premultiplied -- with `ops` applied and the result
+// taken `effectiveCoverage` of the way there. This header's §§8-11 derive it;
+// the summary is
+//
+//     out.rgb = below.rgb + effectiveCoverage * (graded(below).rgb - below.rgb)
+//     out.a   = below.a                                        // never touched
+//
+// In one function so that the flattener and the eyedropper cannot disagree
+// about what an adjustment layer looks like, exactly as `mixedPairTexel()` is.
+//
+// Returns `below` **bit-identically** -- the same four floats, not an
+// arithmetically equal four -- in each of the three cases that mean "this
+// layer does nothing here": an empty `ops`, an `effectiveCoverage` <= 0, and a
+// `below` whose alpha is <= 0 (there is no colour under an adjustment layer to
+// grade). At `effectiveCoverage >= 1` the graded value is assigned rather than
+// lerped to, so a full-strength adjustment is exactly what the op stack
+// computed. See §10 on why both ends have to be exact rather than merely
+// close.
+std::array<float, 4> adjustedPremultiplied(const std::array<float, 4>& below,
+                                           const std::vector<PointOp>& ops,
+                                           float effectiveCoverage);
+
+// **An Adjustment layer carrying a blend mode other than `normal` has that
+// mode ignored, and is warned about by name -- never silently.** See this
+// header's §11: a blend combines a source with a backdrop and an adjustment
+// layer has no source, so there is nothing for the mode to act on that would
+// not be a second, invented meaning for `np:blend`.
+//
+// Named by index, by user-facing name when it has one, and by the blend it
+// asked for -- the same sentence shape `unimplementedBlendWarning()` uses,
+// because it is the same contract: the pixels are an approximation of what the
+// document says, and every boundary that makes them durable reports it.
+std::string adjustmentLayerBlendWarning(size_t layerIndex, const Layer& layer);
 
 // Composites every RGB-kind layer of `doc` **bottom to top** into one
 // premultiplied, linear-light RGBA buffer of `doc.width * doc.height * 4`

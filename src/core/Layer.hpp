@@ -19,8 +19,17 @@
 // Adjustment/Text/Strokes/Flats "hold no pixels of their own" per CONTEXT.md
 // and structurally never will -- they'll eventually gain their own
 // parameter-only members (a string+font, a Dab list, ...), not tile storage.
-// Adjustment is the closest: it wants exactly the `ops` member below and no
-// tiles, which is Phase 5 step 5's work.
+//
+// **`Adjustment` stopped being inert at PLAN.md Phase 5 step 5.** It owns no
+// tiles and never will; what it owns is the `ops` member below, which was
+// already there, plus the mask every kind already had. So the kind needed no
+// new storage at all -- it needed core/Composite to stop skipping it (an
+// Adjustment layer transforms the composite accumulated *beneath* it rather
+// than contributing to it, PRD C5) and io/NpaintFile to gain a carrier for an
+// op stack, without which the layer's whole content would vanish on save.
+// Media, Strokes, Text and Flats are still inert placeholders: Media needs the
+// fluid solver's own per-medium state on top of the pigment tiles step 3
+// added, and the other three still have no parameter member to hold.
 namespace np {
 
 // LayerKind lives here, not in app/Keymap.hpp where it was first sketched --
@@ -141,7 +150,9 @@ struct Layer {
   // Pixel storage for RGB layers ("pixels are Working space RGBA",
   // CONTEXT.md). Populated only when `kind == RGB`; std::nullopt for every
   // other kind, including Pigment (which has `pigmentTiles` below instead)
-  // and Adjustment/Text/Strokes/Flats (which never hold pixels).
+  // and Adjustment/Text/Strokes/Flats (which never hold pixels -- an
+  // Adjustment layer with either tile store engaged is malformed, and
+  // io/NpaintFile refuses to save one by name).
   //
   // Deliberately std::optional<TileStore> rather than a mandatory, always-
   // present TileStore member. Two reasons: (1) most layer kinds hold no
@@ -191,11 +202,12 @@ struct Layer {
   //
   // **A third optional store rather than a member of the other two**, because
   // a mask is orthogonal to what the layer holds: the same mask applies to an
-  // RGB layer's tiles, a Pigment layer's latents, and -- when Phase 5 step 5
-  // brings them -- an Adjustment layer that holds no pixels at all (PRD D13's
-  // dodge and burn is exactly that: "a brush painting into an adjustment
-  // layer's mask"). Hanging it off `rgbTiles`/`pigmentTiles` would have made
-  // it unavailable to precisely the kind that needs it most. It is therefore
+  // RGB layer's tiles, a Pigment layer's latents, and -- as of Phase 5 step 5,
+  // which brought them -- an Adjustment layer that holds no pixels at all
+  // (PRD D13's dodge and burn is exactly that: "a brush painting into an
+  // adjustment layer's mask"). Hanging it off `rgbTiles`/`pigmentTiles` would
+  // have made it unavailable to precisely the kind that needs it most; step 5
+  // is where that prediction was cashed, and it needed no change here. It is therefore
   // the one storage member here that is **not** mutually exclusive with the
   // others; the "at most one of rgbTiles and pigmentTiles" invariant above is
   // unaffected.
@@ -248,15 +260,18 @@ struct Layer {
   // as an identity, which is what keeps step 1's byte-identity regression
   // boundary exact.
   //
-  // **Not persisted, and that is a deferral with a named blocker rather than
-  // an oversight.** docs/document-format.md stores this as an `np:ops` blob,
-  // and this OpenImageIO drops every array-typed EXR header attribute on
-  // write (measured; io/NpaintFile.hpp's NpaintAttribute has the numbers), so
-  // there is no working blob carrier to put one in. `saveNpaint()` therefore
-  // **warns by name** when a layer's stack is non-empty rather than dropping
-  // it silently (PRD I11). Unblocked by a base64/hex `string` carrier plus a
-  // serialisation for `core::Op`, which is a format decision in its own right
-  // -- and not by this step, which only had to answer *who owns the stack*.
+  // **Persisted as of PLAN.md Phase 5 step 5, and the reason that step had to
+  // do it is this member.** An **Adjustment** layer holds no pixels at all --
+  // no `rgbTiles`, no `pigmentTiles` -- so this stack is its entire content,
+  // and a format that could not carry one would lose the whole layer on every
+  // save (PRD I11, and docs/document-format.md's stated purpose). Step 3 could
+  // afford to warn and drop, because a Pigment layer still had latents worth
+  // writing; step 5 could not. io/OpSerial serialises a stack into the hex
+  // `string` carrier docs/document-format.md itself names as the fix for its
+  // dropped-blob problem, io/NpaintFile writes it as `np:ops` for **every**
+  // kind that has one, and an entry a newer build wrote that this build cannot
+  // interpret survives the round trip as an `OpClass::Unknown` op holding its
+  // own bytes (PRD I10).
   OpStack ops;
 
   // The user-facing name. Deliberately NOT unique and deliberately not used

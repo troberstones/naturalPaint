@@ -84,6 +84,53 @@ std::array<float, 4> mixedPairTexel(const PigmentTexel& lower,
   return out;
 }
 
+std::array<float, 4> adjustedPremultiplied(const std::array<float, 4>& below,
+                                           const std::vector<PointOp>& ops,
+                                           float effectiveCoverage) {
+  // Three ways an adjustment layer does nothing at this texel, each returning
+  // `below` unchanged rather than computing something that happens to equal
+  // it. See core/Composite.hpp §§9-10 for why each has to be bit-exact:
+  //   * no ops -- the same rule §1 applies to every other kind's stack;
+  //   * no coverage -- a hidden layer, opacity 0, or a mask sample of 0;
+  //   * nothing beneath -- there is no colour to grade, and this is also what
+  //     keeps applyPointOpsPremultiplied()'s `a <= 0` guard out of this path
+  //     rather than making a copy of it here.
+  if (ops.empty() || !(effectiveCoverage > 0.0f) || !(below[3] > 0.0f)) return below;
+
+  const std::array<float, 4> graded = gradedPremultiplied(below, ops);
+
+  // Alpha is never written: a grade is a colour operation and coverage is not
+  // colour (core/Composite.hpp §11). Assigning `below[3]` rather than
+  // `graded[3]` makes that true by construction rather than by trusting
+  // ops/PointOps' contract from a distance -- the two are equal, and only one
+  // of them stays equal if a future op ever breaks that contract.
+  std::array<float, 4> out{below[0], below[1], below[2], below[3]};
+  if (effectiveCoverage >= 1.0f) {
+    // Assigned, not lerped: `below + 1.0f*(graded - below)` is two rounded
+    // operations and is not `graded`.
+    out[0] = graded[0];
+    out[1] = graded[1];
+    out[2] = graded[2];
+    return out;
+  }
+  for (int i = 0; i < 3; ++i) out[i] = below[i] + effectiveCoverage * (graded[i] - below[i]);
+  return out;
+}
+
+std::string adjustmentLayerBlendWarning(size_t layerIndex, const Layer& layer) {
+  std::string s = "layer " + std::to_string(layerIndex);
+  if (!layer.name.empty()) s += " (\"" + layer.name + "\")";
+  s += " is an Adjustment layer carrying blend mode \"" + layer.blend +
+       "\", which this build does not apply. A blend mode combines a source texel with the "
+       "backdrop, and an Adjustment layer has no source of its own -- its op stack transforms "
+       "the composite below it (PRD C5), so the operand that would play the source is the "
+       "backdrop itself. Its result was taken over the composite below at the layer's own "
+       "opacity and mask instead, as \"";
+  s += kDefaultBlendName;
+  s += "\" does. The value itself is preserved exactly and is written back unchanged (PRD I10).";
+  return s;
+}
+
 std::string unimplementedBlendWarning(size_t layerIndex, const Layer& layer,
                                       const std::string& mixReason) {
   std::string s = "layer " + std::to_string(layerIndex);
@@ -159,6 +206,59 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
     // iteration later, and never on its own -- the mix replaces both layers
     // rather than sitting over one of them.
     if (pairing.consumedByAbove[i]) continue;
+
+    // **An Adjustment layer inverts the walk**: it contributes nothing and
+    // instead transforms what is already accumulated beneath it. See this
+    // file's header, §§8-11. It is handled before the storage test below
+    // because it is the one kind that is *supposed* to have no storage.
+    if (layer.kind == LayerKind::Adjustment) {
+      // Warned about before the coverage test, for the same reason §7's
+      // unimplemented blend is: whether the composite is an approximation of
+      // what the document says is a property of the document, not of whether
+      // this particular hidden layer happened to matter today.
+      const std::optional<BlendMode> adjBlend = blendModeFromName(layer.blend);
+      if ((!adjBlend.has_value() || *adjBlend != BlendMode::Normal) && warningsOut != nullptr)
+        warningsOut->push_back(adjustmentLayerBlendWarning(i, layer));
+
+      const float coverage = layerCoverage(layer);
+      const std::vector<PointOp> ops = layerPointOps(layer.ops);
+      // Both skips are exact no-ops rather than identity arithmetic: opacity 0
+      // and an empty stack must leave the accumulator byte-for-byte untouched.
+      if (coverage <= 0.0f || ops.empty()) continue;
+
+      const MaskTileStore* adjMask = layer.mask.has_value() ? &*layer.mask : nullptr;
+      // Walked a tile at a time so the mask lookup is hoisted exactly as it is
+      // for every other kind -- one hash lookup per canvas tile, not one per
+      // texel. The canvas starts at (0,0), so its tile coordinates run from 0.
+      for (int32_t tileY = 0; tileY * kTileSize < doc.height; ++tileY) {
+        for (int32_t tileX = 0; tileX * kTileSize < doc.width; ++tileX) {
+          const MaskTile* maskTile = adjMask ? adjMask->find(TileCoord{tileX, tileY}) : nullptr;
+          const PixelCoord origin = tileOrigin(TileCoord{tileX, tileY});
+          for (int32_t ty = 0; ty < kTileSize; ++ty) {
+            const int32_t docY = origin.y + ty;
+            if (docY >= doc.height) break;
+            for (int32_t tx = 0; tx < kTileSize; ++tx) {
+              const int32_t docX = origin.x + tx;
+              if (docX >= doc.width) break;
+              float* dst = &out[(static_cast<size_t>(docY) * w + static_cast<size_t>(docX)) * 4];
+              const float effective =
+                  adjMask ? coverage * maskCoverage(maskTile, PixelCoord{tx, ty}) : coverage;
+              const std::array<float, 4> adjusted = adjustedPremultiplied(
+                  {dst[0], dst[1], dst[2], dst[3]}, ops, effective);
+              // Three channels, deliberately: `adjusted[3]` is `dst[3]` by
+              // construction (core/Composite.hpp §11), and not writing it at
+              // all is what makes "an adjustment layer cannot change coverage"
+              // a property of this loop rather than a property of a contract
+              // two files away.
+              dst[0] = adjusted[0];
+              dst[1] = adjusted[1];
+              dst[2] = adjusted[2];
+            }
+          }
+        }
+      }
+      continue;
+    }
 
     const bool hasRgb = layer.kind == LayerKind::RGB && layer.rgbTiles.has_value();
     const bool hasPigment = layer.kind == LayerKind::Pigment && layer.pigmentTiles.has_value();

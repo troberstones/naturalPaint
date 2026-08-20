@@ -17,6 +17,7 @@
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 #include "io/Export.hpp"
+#include "io/OpSerial.hpp"
 
 // io/OiioBackend is the only translation unit that may include an
 // OpenImageIO header, so this file reaches it the same guarded way
@@ -46,6 +47,14 @@ constexpr const char* kAttrOpacity = "np:opacity";
 constexpr const char* kAttrVisible = "np:visible";
 constexpr const char* kAttrLocked = "np:locked";
 constexpr const char* kAttrParent = "np:parent";
+// The per-layer op stack (PLAN.md Phase 5 step 5). A `string` -- the base64/
+// hex carrier docs/document-format.md names as the cheap fix for its blob
+// problem -- produced and consumed by io/OpSerial, which owns the encoding.
+constexpr const char* kAttrOps = "np:ops";
+// Adjustment parts only: whether `Layer::mask` is engaged. Every other kind
+// answers that question with the *presence* of the `mask` channel, which an
+// Adjustment part cannot do -- see buildAdjustmentLayerPart().
+constexpr const char* kAttrMask = "np:mask";
 
 constexpr const char* kCompositePartName = "composite";
 
@@ -155,7 +164,7 @@ bool isDocumentAttributeRecognised(const std::string& name) {
 bool isLayerAttributeRecognised(const std::string& name) {
   return name == kAttrKind || name == kAttrName || name == kAttrBlend ||
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
-         name == kAttrParent;
+         name == kAttrParent || name == kAttrOps || name == kAttrMask;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -497,6 +506,63 @@ NpaintRawPart buildPigmentLayerPart(const Layer& layer, const std::string& partN
   // the composite, and part 0 *is* masked because it comes from the flattener.
   if (mask) writeMaskChannel(*mask, tileX0, tileY0, part.width, part.height, channels,
                              kPigmentChannelCount, words);
+  return part;
+}
+
+// An **Adjustment** layer's part (PLAN.md Phase 5 step 5, PRD C5).
+//
+// This kind holds no pixels at all -- its entire content is `Layer::ops`,
+// which travels in the `np:ops` string attribute -- so docs/document-format.md
+// draws its analogue (a `strokes` part) with "(no image channels)". **That is
+// not writable, measured 2026-08-20**: an `ImageSpec` with zero channels makes
+// this OpenImageIO's OpenEXR plugin refuse the whole file at `open()` with
+// "Missing or empty channel list in header", before a byte is written. So an
+// Adjustment part carries **exactly one** channel, and `mask` is the only one
+// that means anything on a layer with no colour of its own.
+//
+// **The consequence, stated because it is a rule this format has nowhere
+// else**: for an RGB or Pigment part, the *presence* of the `mask` channel is
+// what says whether `Layer::mask` is engaged (core/Mask.hpp separates absent
+// from all-1.0, and step 4 made "add a mask, save, reopen" keep the mask). An
+// Adjustment part's `mask` channel is always present, so it cannot carry that
+// distinction, and an explicit `np:mask` int attribute does instead. It is
+// written on Adjustment parts and nowhere else -- making it universal would
+// have changed the bytes of every mask-free file this build already writes,
+// and that byte-identity is a measured property step 4 established.
+//
+// The unmasked case fills the channel with `kRevealWord`, which is what the
+// reader would read for an absent tile anyway, so the two agree whatever
+// `np:mask` says.
+NpaintRawPart buildAdjustmentLayerPart(const Layer& layer, const std::string& partName) {
+  const MaskTileStore* mask = layer.mask.has_value() ? &*layer.mask : nullptr;
+
+  NpaintRawPart part;
+  part.name = partName;
+  part.channelNames = {kMaskChannelName};
+  part.sampleTypeName = "half";
+  part.tileWidth = kTileSize;
+  part.tileHeight = kTileSize;
+
+  const TileBounds b = mask ? occupiedTileBounds(*mask) : TileBounds{};
+  const int32_t tileX0 = b.any ? b.minX : 0;
+  const int32_t tileY0 = b.any ? b.minY : 0;
+  const int32_t tilesW = b.any ? (b.maxX - b.minX + 1) : 1;
+  const int32_t tilesH = b.any ? (b.maxY - b.minY + 1) : 1;
+
+  part.x = tileX0 * kTileSize;
+  part.y = tileY0 * kTileSize;
+  part.width = tilesW * kTileSize;
+  part.height = tilesH * kTileSize;
+
+  const size_t rowWords = static_cast<size_t>(part.width);
+  part.rawPixels.assign(rowWords * static_cast<size_t>(part.height) * sizeof(uint16_t), 0);
+  auto* words = reinterpret_cast<uint16_t*>(part.rawPixels.data());
+  if (mask) {
+    writeMaskChannel(*mask, tileX0, tileY0, part.width, part.height, 1, 0, words);
+  } else {
+    for (size_t i = 0; i < rowWords * static_cast<size_t>(part.height); ++i)
+      words[i] = MaskTile::kRevealWord;
+  }
   return part;
 }
 
@@ -896,7 +962,8 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
   bool anyPigmentLayer = false;
   for (size_t i = 0; i < doc.layers.size(); ++i) {
     const Layer& layer = doc.layers[i];
-    if (layer.kind != LayerKind::RGB && layer.kind != LayerKind::Pigment) {
+    if (layer.kind != LayerKind::RGB && layer.kind != LayerKind::Pigment &&
+        layer.kind != LayerKind::Adjustment) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") is a " + layerKindName(layer.kind) +
                   " layer, and this build has no on-disk representation for that kind -- "
@@ -914,6 +981,15 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
                   "Nothing was written; this is a malformed document rather than an "
                   "unsupported one.");
     }
+    if (layer.kind == LayerKind::Adjustment &&
+        (layer.rgbTiles.has_value() || layer.pigmentTiles.has_value())) {
+      return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
+                  "\") is Adjustment-kind but carries pixel tile storage, which "
+                  "core/Layer.hpp's own contract says cannot happen -- an Adjustment layer "
+                  "holds no pixels of its own, only an op stack. Its part in the file has no "
+                  "channel to put them in, so writing it would drop them. Nothing was "
+                  "written; this is a malformed document rather than an unsupported one.");
+    }
     if (layer.kind == LayerKind::Pigment) {
       if (!layer.pigmentTiles.has_value()) {
         return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
@@ -924,26 +1000,15 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
       }
       anyPigmentLayer = true;
     }
-    // PRD I11's softer half. The per-layer op stack has no carrier in this
-    // format yet -- docs/document-format.md stores it as an `np:ops` blob, and
-    // this OpenImageIO drops every array-typed header attribute on write
-    // (measured; see NpaintAttribute) -- so a layer with a non-empty stack is
-    // saved with its pixels and its metadata intact and its grade absent. That
-    // is named here rather than discovered on reload. It is a warning and not
-    // a refusal for the same reason the unimplemented-blend case is: refusing
-    // would make a stack a user built in this session the thing that renders
-    // their document unsaveable.
-    if (layer.ops.size() > 0) {
-      result.warnings.push_back(
-          "layer " + std::to_string(i) + " (\"" + layer.name + "\") carries a " +
-          std::to_string(layer.ops.size()) +
-          "-entry op stack, and this format has no working carrier for one: "
-          "docs/document-format.md stores it as an `np:ops` blob, and this OpenImageIO's "
-          "OpenEXR writer silently drops array-typed header attributes (measured). The "
-          "layer's pixels and every other property are written exactly; the grade is not, "
-          "so reopening this file gives the layer back ungraded. Unblocked by a base64 or "
-          "hex `string` carrier plus a serialisation for core::Op.");
-    }
+    // **The op stack is written now, so there is nothing left to warn about
+    // here.** Until PLAN.md Phase 5 step 5 this block pushed a warning naming
+    // the layer, because `np:ops` is a blob in docs/document-format.md and
+    // this OpenImageIO drops array-typed header attributes on write. That step
+    // took the fix the spec itself names -- a hex `string` carrier, io/OpSerial
+    // -- because an Adjustment layer's entire content *is* its stack, so
+    // warning-and-dropping would have meant losing the whole layer on every
+    // save. The carrier is not Adjustment-specific: every kind's `Layer::ops`
+    // now round-trips.
     if (!(layer.opacity >= 0.0f) || layer.opacity > 1.0f) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") has opacity " + std::to_string(layer.opacity) +
@@ -1115,9 +1180,12 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
 
   auto appendLayerPart = [&](size_t i) {
     const Layer& layer = doc.layers[i];
-    NpaintRawPart part = layer.kind == LayerKind::Pigment
-                             ? buildPigmentLayerPart(layer, layerNames[i])
-                             : buildLayerPart(layer, layerNames[i]);
+    NpaintRawPart part;
+    switch (layer.kind) {
+      case LayerKind::Pigment: part = buildPigmentLayerPart(layer, layerNames[i]); break;
+      case LayerKind::Adjustment: part = buildAdjustmentLayerPart(layer, layerNames[i]); break;
+      default: part = buildLayerPart(layer, layerNames[i]); break;
+    }
     part.attributes.push_back(stringAttr(kAttrKind, layerKindName(layer.kind)));
     part.attributes.push_back(stringAttr(kAttrName, layer.name));
     part.attributes.push_back(stringAttr(kAttrBlend, layer.blend));
@@ -1125,9 +1193,29 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     part.attributes.push_back(intAttr(kAttrVisible, layer.visible ? 1 : 0));
     part.attributes.push_back(intAttr(kAttrLocked, layer.locked ? 1 : 0));
     part.attributes.push_back(stringAttr(kAttrParent, layer.parent));
+    // Written only when there is a stack. An empty one produces no attribute
+    // at all rather than a well-formed zero-count payload, for two reasons:
+    // an empty `string` attribute is dropped by this OpenImageIO anyway
+    // (measured; see NpaintAttribute), and every `.npaint` this build wrote
+    // before PLAN.md Phase 5 step 5 has to keep producing the same bytes --
+    // which `--selftest` asserts against HEAD rather than assuming.
+    if (layer.ops.size() > 0)
+      part.attributes.push_back(stringAttr(kAttrOps, serializeOpStack(layer.ops)));
+    // Adjustment parts only: the `mask` channel is always present on one, so
+    // its presence cannot say whether the layer has a mask. See
+    // buildAdjustmentLayerPart().
+    if (layer.kind == LayerKind::Adjustment)
+      part.attributes.push_back(intAttr(kAttrMask, layer.mask.has_value() ? 1 : 0));
     if (carry && i < carry->layerAttributes.size()) {
       for (const NpaintAttribute& a : carry->layerAttributes[i]) {
-        if (isLayerAttributeRecognised(a.name)) continue;
+        // The one exception to "a recognised name is this build's to write":
+        // an `np:ops` this build could not *parse* was carried verbatim by the
+        // loader (PRD I10), and this layer has no stack of its own to write in
+        // its place, so it goes back out unchanged. The `layer.ops` test makes
+        // the two mutually exclusive, so a part can never end up with two.
+        if (isLayerAttributeRecognised(a.name) &&
+            !(a.name == kAttrOps && layer.ops.size() == 0))
+          continue;
         part.attributes.push_back(a);
       }
     }
@@ -1320,6 +1408,12 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         (isHalf && part.channelNames.size() == kPigmentChannelCount + 1)
             ? channelIndicesByName(part, pigmentChannelNames(true))
             : std::nullopt;
+    // An Adjustment part: exactly one channel, named `mask`, in half. See
+    // buildAdjustmentLayerPart() on why the channel is unconditional and why
+    // `np:mask` -- not the channel's presence -- says whether the layer has a
+    // mask.
+    const bool adjustmentChannels =
+        isHalf && part.channelNames.size() == 1 && part.channelNames[0] == kMaskChannelName;
     const bool namedKind = kind != nullptr && kind->type == NpaintAttribute::Type::String;
     const bool isRgbLayer = isLayerPartName(part.name) && namedKind &&
                             kind->stringValue == layerKindName(LayerKind::RGB) &&
@@ -1328,8 +1422,11 @@ NpaintLoadResult loadNpaint(const std::string& path) {
                                 kind->stringValue == layerKindName(LayerKind::Pigment) &&
                                 (pigmentIdx.has_value() || pigmentMaskIdx.has_value()) &&
                                 tileAligned;
+    const bool isAdjustmentLayer = isLayerPartName(part.name) && namedKind &&
+                                   kind->stringValue == layerKindName(LayerKind::Adjustment) &&
+                                   adjustmentChannels && tileAligned;
 
-    if (!isRgbLayer && !isPigmentLayer) {
+    if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer) {
       std::string reason;
       if (!isLayerPartName(part.name)) {
         reason = "its name is not the L#### form this build gives layer parts";
@@ -1338,10 +1435,15 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       } else if (kind->type != NpaintAttribute::Type::String) {
         reason = "its np:kind attribute is not a string";
       } else if (kind->stringValue != layerKindName(LayerKind::RGB) &&
-                 kind->stringValue != layerKindName(LayerKind::Pigment)) {
+                 kind->stringValue != layerKindName(LayerKind::Pigment) &&
+                 kind->stringValue != layerKindName(LayerKind::Adjustment)) {
         reason = "its np:kind is \"" + kind->stringValue +
-                 "\", and this build can only hold RGB and Pigment layers (see "
+                 "\", and this build can only hold RGB, Pigment and Adjustment layers (see "
                  "io/NpaintFile.hpp's deferrals)";
+      } else if (kind->stringValue == layerKindName(LayerKind::Adjustment)) {
+        reason = "it declares np:kind \"Adjustment\" but its channels are not exactly one "
+                 "named mask, in half -- an Adjustment layer holds no pixels, so its part "
+                 "carries only the one channel EXR requires it to have";
       } else if (kind->stringValue == layerKindName(LayerKind::Pigment)) {
         reason = "it declares np:kind \"Pigment\" but its channels are not exactly "
                  "docs/document-format.md's eleven -- R, G, B, A, pig.c0, pig.c1, pig.c2, "
@@ -1393,7 +1495,18 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     // separates absent from all-1.0 for exactly this reason).
     size_t maskIdx = 0;
     bool hasMaskChannel = false;
-    if (isPigmentLayer) {
+    if (isAdjustmentLayer) {
+      layer.kind = LayerKind::Adjustment;
+      // No tile storage of any kind is engaged: that is the kind's definition,
+      // not an omission. The one channel is the mask, and `np:mask` -- not its
+      // presence -- decides whether this layer has one.
+      const NpaintAttribute* hasMask = findAttr(part.attributes, kAttrMask);
+      if (hasMask != nullptr && hasMask->type == NpaintAttribute::Type::Int &&
+          hasMask->intValue != 0) {
+        maskIdx = 0;
+        hasMaskChannel = true;
+      }
+    } else if (isPigmentLayer) {
       layer.kind = LayerKind::Pigment;
       layer.pigmentTiles.emplace();
       const std::vector<size_t>& idx = pigmentIdx.has_value() ? *pigmentIdx : *pigmentMaskIdx;
@@ -1450,9 +1563,30 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         a && a->type == NpaintAttribute::Type::String)
       layer.parent = a->stringValue;
 
+    // The per-layer op stack (PLAN.md Phase 5 step 5). io/OpSerial owns the
+    // encoding; this is the one place a `.npaint` reaches it.
+    bool opsCarried = false;
+    if (const NpaintAttribute* a = findAttr(part.attributes, kAttrOps)) {
+      std::string why;
+      if (a->type != NpaintAttribute::Type::String) {
+        opsCarried = true;
+        result.warnings.push_back(
+            "part '" + part.name +
+            "' has an np:ops attribute that is not a string; this build's op-stack carrier is "
+            "a hex `string` (io/OpSerial), so the value could not be decoded. The layer opened "
+            "with no op stack and the attribute is written back unchanged (PRD I10).");
+      } else if (!deserializeOpStack(a->stringValue, &layer.ops, &why)) {
+        opsCarried = true;
+        // Carried, not discarded: an op stack this build cannot read is
+        // exactly the case PRD I10's verbatim preservation exists for, and it
+        // is the whole content of an Adjustment layer.
+        result.warnings.push_back("part '" + part.name + "': " + why);
+      }
+    }
+
     std::vector<NpaintAttribute> unknown;
     for (const NpaintAttribute& a : part.attributes) {
-      if (isLayerAttributeRecognised(a.name)) continue;
+      if (isLayerAttributeRecognised(a.name) && !(opsCarried && a.name == kAttrOps)) continue;
       unknown.push_back(a);
     }
 

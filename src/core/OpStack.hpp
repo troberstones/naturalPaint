@@ -50,6 +50,30 @@ enum class OpClass {
   SpatialB,
   StrokeC,
   BakedD,
+
+  // **Not one of docs/operations.md's four classes -- the absence of one.**
+  // Added by PLAN.md Phase 5 step 5, which gave an op stack a serialised form
+  // (io/OpSerial) and therefore, for the first time, the possibility of
+  // reading an entry a *newer build* wrote. PRD I10 requires such an entry be
+  // preserved rather than dropped, and preserving it means it has to occupy a
+  // slot in this stack, in its original position, with its bytes intact
+  // (Op::unrecognised below).
+  //
+  // It is a class rather than, say, a seventh PointOpKind because the thing
+  // that is unknown may be the *class*: a newer build's class-B blur is not a
+  // point op and must not be treated as one. Giving it its own class makes
+  // detectRuns() do the right thing with no new code at all -- a run boundary
+  // occurs at every non-PointA entry, so an unrecognised op splits runs and
+  // contributes nothing to any of them, which is exactly the behaviour a
+  // parameterised operation this build cannot evaluate should have. It is
+  // inert everywhere for the same reason SpatialB/StrokeC/BakedD are: nothing
+  // outside core/OpStack and color/LutBake looks at the class at all, and both
+  // of those test for `== PointA`.
+  //
+  // **Its wire code is not this enumerator's ordinal.** io/OpSerial maps
+  // classes to explicit numbers, so appending a value here cannot move the
+  // format under a file that already exists.
+  Unknown,
 };
 
 // Which of ops/PointOps.hpp's six functions a PointA-classed Op wraps.
@@ -96,6 +120,24 @@ struct Op {
   SaturationParams saturation{};
   GrayscaleParams grayscale{};
   ChannelMixerParams channelMixer{};
+
+  // The verbatim bytes of one serialised op record this build could not
+  // interpret (io/OpSerial's record body, without its length prefix, which is
+  // recomputed on write).
+  //
+  // **Non-empty exactly when `opClass == OpClass::Unknown`, and empty for
+  // every Op this build constructs.** It is the entry-level form of the same
+  // rule `Layer::blend` obeys at the value level and `NpaintCarry` obeys at
+  // the attribute level: PRD I10 says a thing the reader does not understand
+  // is retained and written back unchanged, and an op stack read from a newer
+  // build is exactly that case. Every other field above is meaningless while
+  // this one is populated; nothing reads them, because `Unknown` is not
+  // `PointA` and `PointA` is the only class anything evaluates.
+  //
+  // A `std::vector<uint8_t>` rather than a string because a record is binary
+  // (io/OpSerial packs IEEE-754 float bit patterns, which is what makes the
+  // round trip exact rather than nearly exact).
+  std::vector<uint8_t> unrecognised;
 };
 
 // One maximal contiguous run of OpClass::PointA entries, as detected by

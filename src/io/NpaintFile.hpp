@@ -51,15 +51,21 @@
 //   part N  "L0001"...    R G B A, HALF, tiled 128x128            (np:kind RGB)
 //                         R G B A pig.c0 pig.c1 pig.c2 pig.m
 //                         res.R res.G res.B, HALF                (np:kind Pigment)
+//                         mask, HALF                        (np:kind Adjustment)
+//                         plus a trailing `mask` channel on RGB/Pigment parts
+//                         when the layer has a mask
 //                         data window == the bounding box of the layer's
 //                         occupied tiles, tile-aligned
-//           attrs:  np:kind     "RGB" or "Pigment"
+//           attrs:  np:kind     "RGB", "Pigment" or "Adjustment"
 //                   np:name     the user-facing name (need not be unique)
 //                   np:blend    "normal"
 //                   np:opacity  1.0
 //                   np:visible  1
 //                   np:locked   0
 //                   np:parent   ""
+//                   np:ops      "npops1:<hex>"   only when the stack is
+//                               non-empty; io/OpSerial owns the encoding
+//                   np:mask     0/1              Adjustment parts only
 //
 // Part names are the stable synthetic ids docs/document-format.md requires
 // (`L0001`, one-based, in layer order): "layer names are not unique -- two
@@ -109,9 +115,21 @@
 //    layers whose carry declares another basis is refused by name, which is
 //    docs/document-format.md §3.3's own listed case.
 //
-//  * **A `mask` channel per part / layer masks.** Same reason: Phase 5 step 4
-//    ("Layer masks -- single-channel tile store"). There is no mask storage
-//    to persist.
+//  * ~~**A `mask` channel per part / layer masks**~~ -- **delivered at
+//    PLAN.md Phase 5 step 4.** An RGB layer part is `R G B A mask` and a
+//    Pigment one the eleven plus `mask`, written only when the layer has one.
+//
+//  * ~~**Adjustment layers**~~ -- **delivered at PLAN.md Phase 5 step 5**,
+//    with one rule this format has nowhere else. An Adjustment layer holds no
+//    pixels, and docs/document-format.md draws such a part as "(no image
+//    channels)" -- which is **not writable**, measured 2026-08-20: a
+//    zero-channel `ImageSpec` makes this OpenImageIO refuse the file at
+//    `open()` with "Missing or empty channel list in header". So an Adjustment
+//    part carries exactly one channel, `mask`, unconditionally, and an
+//    `np:mask` int attribute says whether `Layer::mask` is actually engaged --
+//    the job the channel's *presence* does on every other kind. `np:mask` is
+//    written on Adjustment parts and nowhere else, so no other part's bytes
+//    change.
 //
 //  * **A `strokes` part and its `np:dabs` blob.** `LayerKind::Strokes`
 //    exists as an enum value and core/Layer.hpp calls it an "inert
@@ -119,25 +137,25 @@
 //    anywhere in `core/`. brush/StrokePath emits dabs into the *solver*, not
 //    into a document. Unblocked by a Strokes layer that actually holds dabs.
 //
-//  * **`np:ops` (per layer) and `np:docOps` (document level).** **Half of this
-//    deferral's blocker is gone and half is not, so it is restated rather
-//    than repeated.** The ownership question -- "there is no per-layer op
-//    stack to serialise ... hanging one off Layer here would be inventing the
-//    very ownership decision Phase 5 step 3 has to make" -- is answered:
-//    `core::Layer::ops` exists, step 3 made it, and there is now a real
-//    per-layer stack sitting here unwritten. What still blocks it is the
-//    *carrier*: `np:ops` is a blob, and this OpenImageIO drops array-typed
-//    header attributes on write (measured, see NpaintAttribute), so there is
-//    nothing to put it in. Writing it needs two things this step did not do
-//    -- a base64/hex `string` carrier, and a serialisation for `core::Op`
-//    (six params structs, one of them a variable-length curve), which is a
-//    format decision in its own right and would want its own `np:version`
-//    story. **saveNpaint() therefore warns by name** for every layer with a
-//    non-empty stack rather than dropping it silently (PRD I11), which is the
-//    part of the gap that could be closed here. `np:docOps` is unblocked by
-//    the same carrier plus a document-level stack, which `core::Document`
-//    still does not have (`app::AppState::opStack` is the global grade and
-//    stays there).
+//  * ~~**`np:ops` (per layer)**~~ -- **delivered at PLAN.md Phase 5 step 5.**
+//    The blocker was the *carrier*, not the ownership: `np:ops` is a blob in
+//    docs/document-format.md and this OpenImageIO drops array-typed header
+//    attributes on write. Step 5 took the fix that document itself names --
+//    a hex `string` attribute -- because an **Adjustment** layer's entire
+//    content is its op stack, so the step could not repeat step 3's
+//    warn-and-drop without losing a whole layer on every save (PRD I11).
+//    io/OpSerial owns the encoding and its versioning; this module writes the
+//    attribute for every kind that carries a non-empty stack, and only for a
+//    non-empty one, so a document with no grades still produces exactly the
+//    bytes it produced before the step. An `np:ops` this build cannot decode
+//    -- a newer version tag, most likely -- is warned about by name and
+//    carried verbatim rather than dropped (PRD I10).
+//
+//  * **`np:docOps` (document level)** is still deferred, and now for the
+//    *other* half of the reason: the carrier exists, but `core::Document` has
+//    no document-level op stack to put in one (`app::AppState::opStack` is the
+//    global GPU-previewed grade and stays there). Unblocked by a `Document`
+//    that owns a stack.
 //
 //  * **`np:comps` (layer comps) and `np:paths`.** Phase 5 step 12 and the
 //    paths/vector work respectively. Neither has any in-memory
@@ -168,13 +186,14 @@
 // this -- name the thing, name the reason, name the alternative -- and every
 // refusal below follows it:
 //
-//  * A layer whose `kind` is neither RGB nor Pigment. Its pixels (if it ever
-//    had any) have no representation here, per the deferrals above, so
-//    writing the file would drop the layer. The error names the layer's
-//    index, its name and its kind.
+//  * A layer whose `kind` is none of RGB, Pigment and Adjustment. Its pixels
+//    (if it ever had any) have no representation here, per the deferrals
+//    above, so writing the file would drop the layer. The error names the
+//    layer's index, its name and its kind.
 //  * A layer whose `kind` is RGB but whose `rgbTiles` is absent, or Pigment
-//    but whose `pigmentTiles` is absent -- malformed against core/Layer.hpp's
-//    own contract.
+//    but whose `pigmentTiles` is absent, or Adjustment but which carries
+//    pixel tiles anyway -- each malformed against core/Layer.hpp's own
+//    contract.
 //  * A document with Pigment layers whose carried `np:basis` is not this
 //    build's (docs/document-format.md §3.3).
 //  * An `opacity` outside [0,1].
@@ -503,7 +522,9 @@ struct NpaintLoadResult {
 // Reads `path` back into a Document plus its carry.
 //
 // A part becomes a `core::Layer` only when it is named `L####` and either
-// carries `np:kind = "RGB"` with a channel list of *exactly* R, G, B, A in
+// carries `np:kind = "Adjustment"` with exactly one HALF channel named
+// `mask`, or carries `np:kind = "RGB"` with a channel list of *exactly*
+// R, G, B, A in
 // HALF, or carries `np:kind = "Pigment"` with exactly the eleven channels
 // docs/document-format.md names, in HALF, matched **by name** -- measured, the
 // written order does come back intact through this OpenImageIO, but that is

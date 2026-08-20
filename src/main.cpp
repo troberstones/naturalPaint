@@ -444,6 +444,22 @@ int main(int argc, char** argv) {
     // asserts the correct answers, in BOTH NP_USE_OIIO configurations.
     // Headless and GPU-free; writes and removes three `.npaint` files.
     const bool layerMaskOk = np::runLayerMaskTest();
+    // Phase 5 step 5 ("Adjustment layers -- op stack against the composite
+    // below"; PRD C5, C1, C3, C4, D13, D18, I10, I11): the one layer kind that
+    // transforms what is accumulated beneath it instead of contributing to it,
+    // against exact references; alpha proven bit-identical across it; opacity
+    // 0, a hidden layer and an empty stack each byte-identically the layer not
+    // existing; a mask restricting the adjustment per texel; two adjustment
+    // layers proven to compose in stack order with a deliberately
+    // non-commuting pair; the scope proven to be everything below and not just
+    // the layer beneath (which is PRD C9's clipping mask, a different
+    // feature); and io/OpSerial -- the `np:ops` carrier this step had to build,
+    // because an adjustment layer's whole content is its op stack -- proven
+    // against a hand-built payload and proven to carry a newer build's op
+    // through a `.npaint` verbatim. Runs, and asserts the correct answers, in
+    // BOTH NP_USE_OIIO configurations. Headless and GPU-free; writes and
+    // removes three `.npaint` files.
+    const bool adjustmentLayerOk = np::runAdjustmentLayerTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -456,8 +472,8 @@ int main(int argc, char** argv) {
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
-                    blendOk && pigmentLayerOk && layerMaskOk && strokeSpeedOk && idleMemOk &&
-                    fieldAllocOk;
+                    blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
+                    strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

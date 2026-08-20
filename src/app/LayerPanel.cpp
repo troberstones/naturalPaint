@@ -76,6 +76,23 @@ std::string layerRowSubLine(const Layer& layer) {
   // byte-identically (core/Mask.hpp), so if the row did not say it, nothing a
   // user can see would. It says nothing about what the mask *contains*: a
   // thumbnail is the panel's job and there is no way to paint one yet.
+  // A non-empty op stack (PLAN.md Phase 5 step 5). Present for every kind that
+  // can carry one, not only Adjustment -- `Layer::ops` is a property of a
+  // Layer in DESIGN-imaging.md's own diagram -- but it is on an Adjustment
+  // layer that it is the *only* thing the row could say about the layer's
+  // content, since that kind holds no pixels at all. Absent for an empty
+  // stack, which is every layer any `.npaint` written before that step
+  // carries, so no existing row changes.
+  //
+  // The count and not the op names: docs/ui.md §3.2's rows are one short
+  // monospace line, and a stack of five would not fit. The names belong in the
+  // op-stack UI Phase 3 step 8 built for `app::AppState::opStack`, which
+  // nothing yet points at a Layer.
+  if (layer.ops.size() > 0) {
+    s += kSep;
+    s += std::to_string(layer.ops.size());
+    s += layer.ops.size() == 1 ? " OP" : " OPS";
+  }
   if (layer.mask.has_value()) {
     s += kSep;
     s += "MASK";

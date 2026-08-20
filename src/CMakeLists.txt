@@ -30,6 +30,7 @@ add_executable(naturalPaint
   io/ImageDecode.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp
+  io/OpSerial.cpp
   io/TileResidency.cpp
   ops/PointOps.cpp
   ops/Resample.cpp

@@ -168,6 +168,18 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
             // The lower half of a mixed pair is composited by the pair.
             if (pairing.consumedByAbove[li]) continue;
 
+            // **Phase 5 step 5**: an Adjustment layer transforms `acc` -- the
+            // composite accumulated beneath it -- instead of contributing to
+            // it, through core/Composite's own `adjustedPremultiplied()`
+            // rather than a second copy of the lerp. It deliberately does not
+            // set `any`: an adjustment layer holds no colour, so a document of
+            // nothing but adjustment layers still probes as transparent black.
+            if (layer.kind == LayerKind::Adjustment) {
+              acc = adjustedPremultiplied(
+                  acc, ops[li], coverages[li] * layerMaskCoverageAt(layer, docPos));
+              continue;
+            }
+
             if (pairing.mixedWithBelow[li]) {
               const Layer& lower = doc.layers[li - 1];
               // **Phase 5 step 4**: each half of the pair modulates its own

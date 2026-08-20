@@ -132,6 +132,42 @@ part 4   "S0001"          coverage                   ← a saved selection
   > A smaller one from the same measurement: an **empty** `string` attribute is dropped
   > too. Harmless where the reader's default for that attribute is the empty string
   > (`np:name`, `np:parent`), but it is luck, not design.
+  >
+  > ✅ **Resolved for `np:ops`, 2026-08-20, at PLAN.md Phase 5 step 5: the cheap fix is
+  > implemented.** `np:ops` is now a **hex `string`** attribute, `"npops1:<hex>"`, produced
+  > and consumed by `io/OpSerial`, whose header owns the byte layout, the version rule and
+  > the unknown-entry rule. Two things made it non-optional rather than nice-to-have: an
+  > **Adjustment** layer holds no pixels, so its op stack is its *entire* content and a
+  > format that could not carry one would lose the whole layer on every save (PRD I11); and
+  > `io/NpaintFile` had been warning-and-dropping since step 3, which was affordable only
+  > while every layer with a stack also had latents worth writing.
+  >
+  > The carrier is **not Adjustment-specific** — every layer kind's `Layer::ops` now
+  > round-trips — and it is written **only for a non-empty stack**, so a document with no
+  > grades produces exactly the bytes it produced before (measured against HEAD, not
+  > assumed). Three properties are worth stating because they are what make it a format
+  > decision rather than a serialisation helper:
+  >
+  > - **The version is the prefix**, not a field inside the payload, so a build decides
+  >   whether it understands the encoding before decoding a byte. A `npops2:` value is
+  >   refused by name, warned about on load, and carried verbatim to the next save.
+  > - **An op this build cannot interpret survives.** Every record is length-prefixed, so an
+  >   unknown op class, an unknown point-op kind, a used reserved byte, or a body whose
+  >   length does not match this build's parse all become one `OpClass::Unknown` entry
+  >   holding its own bytes, in its original position, re-emitted unchanged. That is PRD
+  >   I10's rule applied one level below the attribute.
+  > - **Floats travel as IEEE-754 bit patterns**, so a grade reopens as the grade that was
+  >   authored rather than as one that is nearly it.
+  >
+  > Hex rather than base64 because a `--selftest` fixture has to be writable **by hand** —
+  > the same discipline `io/NpaintFile`'s hand-built 52-byte PSD fixture follows, so the
+  > decoder is checked against the spec and not only against this project's own encoder.
+  > Size is not a constraint: a 200 000-character `string` attribute survives a write/read
+  > cycle through this OpenImageIO intact (measured, same session).
+  >
+  > `np:dabs`, `np:comps`, `np:paths`, `np:docOps` and `np:simParams` are still unwritten,
+  > but the *carrier* problem is no longer what blocks them — each needs an in-memory
+  > representation this codebase does not have yet.
 
 > ✅ **Implemented, 2026-08-19, at PLAN.md Phase 5 step 3: a Pigment layer's part is
 > written and read with all eleven channels above.** The seven stored ones (`pig.c0
@@ -183,6 +219,32 @@ part 4   "S0001"          coverage                   ← a saved selection
 > projection of what the layer stores, and the mask sits beside it in its own named channel.
 > Part 0 is where another tool gets the masked composite, because part 0 comes from the
 > flattener.
+
+> ✅ **Implemented, 2026-08-20, at PLAN.md Phase 5 step 5: an Adjustment layer's part — and
+> the one rule this format has nowhere else.** An Adjustment layer holds no pixels at all
+> (PRD C1, C5; its content is `np:ops`), which is why §2's sketch above draws the analogous
+> `strokes` part as "(no image channels)".
+>
+> ⚠️ **That is not writable. Measured, 2026-08-20:** an `ImageSpec` with zero channels makes
+> this OpenImageIO's OpenEXR plugin refuse the entire file at `open()` — *"Cannot open image
+> stream ...: Missing or empty channel list in header"* — before a byte is written. A part
+> must have at least one channel, so the "(no image channels)" line above is aspirational
+> for any part this build actually writes, and a Strokes part will hit the same wall.
+>
+> So an **Adjustment part carries exactly one channel, `mask`**, unconditionally, plus:
+>
+> - `np:kind` `"Adjustment"`, `np:ops`, and the usual name/blend/opacity/visible/locked/parent;
+> - **`np:mask`** (int, 0 or 1) — new, and written on Adjustment parts only. On an RGB or
+>   Pigment part the *presence* of the `mask` channel is what says whether the layer has a
+>   mask, and `core/Mask.hpp` keeps "absent", "all 1.0" and "all 0.0" as three different
+>   things. An Adjustment part's `mask` channel is always present, so presence cannot carry
+>   that distinction and an explicit attribute does. It is deliberately **not** universal:
+>   adding it to every part would have changed the bytes of every file this build already
+>   writes, and that byte-identity is a measured property step 4 established.
+>
+> The unmasked case fills the channel with binary16 1.0 — "reveal", which is what the reader
+> reads for an absent tile anyway — so the channel and `np:mask` agree whichever the reader
+> trusts.
 
 - **Every part must agree about being tiled.** Also measured: OpenImageIO cannot write a
   multi-part EXR mixing tiled and scanline parts — it fails partway through with

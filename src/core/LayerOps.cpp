@@ -99,6 +99,16 @@ Layer makePigmentLayer(std::string name) {
   return layer;
 }
 
+Layer makeAdjustmentLayer(std::string name) {
+  Layer layer;
+  layer.kind = LayerKind::Adjustment;
+  // No `rgbTiles`, no `pigmentTiles`, no `mask` and an empty `ops` -- see
+  // core/LayerOps.hpp. Every one of those absences is the kind's definition
+  // rather than an omission.
+  layer.name = std::move(name);
+  return layer;
+}
+
 LayerOpResult addLayer(Document& doc, size_t index, Layer layer) {
   if (index > doc.layers.size()) {
     return fail("add layer refused: index " + std::to_string(index) +

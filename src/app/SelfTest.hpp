@@ -1252,4 +1252,66 @@ bool runPigmentLayerTest();
 //    timestamp masked out.
 bool runLayerMaskTest();
 
+// PLAN.md Phase 5 step 5 -- "Adjustment layers -- op stack against the
+// composite below." PRD C5, C1 (P0), C3 (P0), C4 (P0), D13, D18, I10, I11.
+//
+// Runs, and asserts the same answers, in BOTH NP_USE_OIIO configurations; the
+// `.npaint` block asserts io/NpaintFile's own named refusals in the OFF build
+// instead of a round trip. Headless and GPU-free. Writes and removes
+// `selftest_adjust.npaint`, `selftest_adjust_bare.npaint` and
+// `selftest_adjust_again.npaint`. Loads no LUT -- nothing here is pigment.
+//
+// **Nearly every claim below is at exactly zero tolerance**, which is possible
+// here in a way it was not for steps 3 and 4: an adjustment layer stores
+// nothing, so the only rounding in the chain is the arithmetic, and the
+// fixtures are chosen to make that exact -- every alpha is a power of two (so
+// the un-premultiply bracket is exact), the two ops used for numeric claims
+// are a multiply by 2 and a `+ 0.25` (exact on dyadic inputs), and every
+// coverage is dyadic. One tolerance is used, for the probe-versus-flattener
+// comparison, and it is the same 1.0e-7 the four preceding sections each
+// derive for the flattener's own final un-premultiply.
+//
+// Sections:
+//  - **The kind**: `makeAdjustmentLayer()` engaging no tile store at all, the
+//    docs/ui.md §3.2 glyph and sub-line, and the row's new `· 2 OPS` marker
+//    (absent for an empty stack, so no row written before this step changes).
+//  - **io/OpSerial**, the carrier `np:ops` never had: all six PointOpKinds
+//    plus a class-B entry round-tripping bit-identically, a **hand-built
+//    60-character payload** decoded byte by byte from the spec rather than
+//    from this module's own writer, an unknown op class surviving a round trip
+//    verbatim and proven inert (no `PointOp`, and it splits a run), the six
+//    container-level refusals each naming what they saw, and the two
+//    forward-compatibility rules -- a longer-than-expected body and a used
+//    reserved byte both becoming `Unknown` rather than being half-read.
+//  - **The grade itself**, against exact references with printed values: an
+//    opaque texel doubled, a half-covered one doubled in *straight* colour
+//    with its coverage intact, and every accumulated alpha proven
+//    **bit-identical** with and without the layer.
+//  - **Opacity and a mask as "how much of the adjustment applies"**: opacity 0,
+//    a hidden layer and an empty stack each byte-identical to the layer not
+//    existing; opacity 1 exactly the graded value; three texels of one colour
+//    under mask 1.0/0.5/0.0 printed side by side; and mask x opacity proven
+//    byte-identical to their product with a negative control.
+//  - **Scope**: both layers *below* graded and the one above untouched --
+//    PRD C5's "the composite below it", which is not PRD C9's clipping mask --
+//    and an adjustment layer over nothing composing to transparent black.
+//  - **Stacking order**: two adjustment layers whose ops deliberately do not
+//    commute, both orders printed and both exact, plus the proof that two ops
+//    in one layer's stack equal the same two ops in two stacked layers.
+//  - **The blend an adjustment layer cannot honour**, warned by name and
+//    composited byte-identically to `normal`.
+//  - **The probe and the flattener agreeing** on a masked, faded adjustment
+//    layer, and a document of nothing but adjustment layers still probing as
+//    transparent black.
+//  - **The regression boundary**: a document with no adjustment layer still
+//    compositing byte-identically to the plain sum.
+//  - **The `.npaint` round trip**, which is the decision this step turned on:
+//    an op stack surviving on an RGB layer *and* on an Adjustment layer, an
+//    unknown op surviving through OpenEXR, the Adjustment part's single `mask`
+//    channel and its `np:mask` attribute, an unparseable `np:ops` warned about
+//    and carried verbatim through a second save, and -- the property the whole
+//    change rests on -- emptying every stack giving back a file byte-identical
+//    to the one written before stacks were persisted.
+bool runAdjustmentLayerTest();
+
 }  // namespace np
