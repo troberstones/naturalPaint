@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 
+#include "core/Mask.hpp"
 #include "core/OpStack.hpp"
 #include "core/Pigment.hpp"
 #include "core/TileStore.hpp"
@@ -181,6 +182,37 @@ struct Layer {
   // gives Media the same latent-plus-mass tile -- plus per-medium simulation
   // state that has no home on `Layer` yet. Nothing here anticipates that.
   std::optional<PigmentTileStore> pigmentTiles;
+
+  // The per-layer mask (PRD C4's "per-layer mask", PLAN.md Phase 5 step 4):
+  // per-texel coverage at f16, one channel, 32 KiB per occupied tile
+  // (core/Mask.hpp). `std::nullopt` means the layer has no mask -- which is
+  // not the same thing as a mask that reveals everything, and core/Mask.hpp
+  // separates the three states (absent, all 1.0, all 0.0) at length.
+  //
+  // **A third optional store rather than a member of the other two**, because
+  // a mask is orthogonal to what the layer holds: the same mask applies to an
+  // RGB layer's tiles, a Pigment layer's latents, and -- when Phase 5 step 5
+  // brings them -- an Adjustment layer that holds no pixels at all (PRD D13's
+  // dodge and burn is exactly that: "a brush painting into an adjustment
+  // layer's mask"). Hanging it off `rgbTiles`/`pigmentTiles` would have made
+  // it unavailable to precisely the kind that needs it most. It is therefore
+  // the one storage member here that is **not** mutually exclusive with the
+  // others; the "at most one of rgbTiles and pigmentTiles" invariant above is
+  // unaffected.
+  //
+  // **What it multiplies, in one line, because it is the whole of PRD C3 for
+  // this member: coverage, after the projection and after the op stack, never
+  // mass and never a mixing weight.** core/Composite.hpp §5 derives it and
+  // `--selftest` prints the values that separate the two. A mask on a Pigment
+  // layer that scaled `pig.m` would be an eraser (PRD F10), not a mask -- it
+  // would change the pigment mixture rather than let the backdrop through.
+  //
+  // **Nothing in this build can paint one**, exactly as for `pigmentTiles`:
+  // the content of a mask can only come from a `.npaint` or from a test
+  // writing texels. `core::addLayerMask()` creates an empty (reveal-all) one
+  // and `core::removeLayerMask()` takes it away, which is the whole of the
+  // lifecycle a user can reach.
+  std::optional<MaskTileStore> mask;
 
   // The per-layer, non-destructive grading stack (DESIGN-imaging.md §3's own
   // Layer diagram: "ops  OpStack -- per-layer, non-destructive").

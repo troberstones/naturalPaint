@@ -170,6 +170,12 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
 
             if (pairing.mixedWithBelow[li]) {
               const Layer& lower = doc.layers[li - 1];
+              // **Phase 5 step 4**: each half of the pair modulates its own
+              // coverage by its own mask, exactly as core/Composite's walk
+              // does, through the same `layerMaskCoverageAt()`. The mixing
+              // weight is still the upper texel's mass and is untouched.
+              const float covLow = coverages[li - 1] * layerMaskCoverageAt(lower, docPos);
+              const float covUp = coverages[li] * layerMaskCoverageAt(layer, docPos);
               const PigmentTile* up = layer.pigmentTiles.has_value()
                                           ? layer.pigmentTiles->find(tileCoordAt(docPos))
                                           : nullptr;
@@ -181,14 +187,20 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
               const PixelCoord local = tileLocalOffset(docPos);
               acc = blendPixel(BlendMode::Normal,
                                mixedPairTexel(low ? low->readTexel(local) : PigmentTexel{},
-                                              ops[li - 1], coverages[li - 1],
+                                              ops[li - 1], covLow,
                                               up ? up->readTexel(local) : PigmentTexel{}, ops[li],
-                                              coverages[li]),
+                                              covUp),
                                acc);
               continue;
             }
 
-            const float coverage = coverages[li];
+            // A mask is per-texel opacity, so it multiplies the layer's
+            // coverage here for the same reason `layerCoverage()` does -- and
+            // the `<= 0` skip below is the flattener's own, so a texel a mask
+            // hides outright contributes exactly nothing rather than a
+            // multiply by zero. At an unmasked layer this is a multiplication
+            // by literal 1.0f, exact for every finite float.
+            const float coverage = coverages[li] * layerMaskCoverageAt(layer, docPos);
             if (coverage <= 0.0f) continue;
             std::array<float, 4> src;
             if (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) {
@@ -221,7 +233,13 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
   } else if (params.activeLayerIndex >= 0 &&
              static_cast<size_t>(params.activeLayerIndex) < doc.layers.size()) {
     // Single-layer mode reads that layer's **own** stored colour, deliberately
-    // ignoring its `visible` and `opacity`. The question this mode asks is
+    // ignoring its `visible`, its `opacity` **and its mask** -- the mask joins
+    // that list rather than being an exception to it, because a mask is
+    // per-texel opacity (core/Composite.hpp §5) and this mode's question is
+    // what the layer holds, not what the document shows. Probing a masked-out
+    // texel therefore reports the colour under the mask, which is exactly what
+    // makes an eyedropper usable for checking what a mask is hiding. The
+    // question this mode asks is
     // "what is on this layer", not "what does the document show" -- so a
     // half-opacity layer still probes at its authored colour, and a hidden
     // layer can still be probed at all. That is Photoshop's own split between

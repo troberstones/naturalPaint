@@ -155,6 +155,35 @@ part 4   "S0001"          coverage                   ← a saved selection
 > `np:basis` stops being inert here: a document holding Pigment layers whose carried
 > `np:basis` is not this build's is **refused** on save, which is §3.3's own listed case.
 
+> ✅ **Implemented, 2026-08-20, at PLAN.md Phase 5 step 4: the `mask` channel above carries a
+> real layer mask.** One `HALF` channel of per-texel coverage, so an RGB layer part is
+> `R G B A mask` and a Pigment one is the eleven above plus `mask`. Four notes from doing it:
+>
+> - **It is written only when the layer actually has a mask**, and that is a compatibility
+>   property rather than a saving. A document whose layers carry no mask produces the part
+>   this build produced before masks existed — measured, not assumed: every `.npaint`
+>   `--selftest` writes is byte-identical between HEAD's binary and this one once
+>   OpenImageIO's `capDate` header string is masked out, which is the only place HEAD's own
+>   two consecutive runs differ as well.
+> - **1.0 means reveal, and an absent mask tile means 1.0.** So the drop-on-read rule for
+>   this channel is "every sample is exactly 1.0", the mirror of the "every word is zero"
+>   rule the RGB and Pigment channels use — same rule, the identity element the channel
+>   actually has. Had it been 0, a mask painted on one tile of a four-tile layer would blank
+>   the other three on reload.
+> - **A mask is per-texel *opacity*, never pigment mass.** On a Pigment part, `mask` and
+>   `pig.m` are different quantities in different channels: `pig.m` is what PRD F10's eraser
+>   reduces, `mask` is what PRD C3's transparency scales. A reader that multiplied one into
+>   the other would change the pigment mixture rather than the coverage.
+> - **A mask sample outside [0,1], or NaN, is clamped on load and named in a warning with a
+>   count** (PRD I11). The clamped values are what the document then holds and what the next
+>   save writes; a mask is the one channel where a bad sample makes a whole layer disappear,
+>   so it must not be absorbed silently.
+>
+> The layer part's baked `R G B A` is deliberately **unmasked** as well as ungraded — it is a
+> projection of what the layer stores, and the mask sits beside it in its own named channel.
+> Part 0 is where another tool gets the masked composite, because part 0 comes from the
+> flattener.
+
 - **Every part must agree about being tiled.** Also measured: OpenImageIO cannot write a
   multi-part EXR mixing tiled and scanline parts — it fails partway through with
   `Can't build a TiledOutputFile from a type-mismatched part`. Since part 0 is tiled,

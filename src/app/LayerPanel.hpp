@@ -74,9 +74,15 @@ std::string layerRowTitle(const Layer& layer, size_t layerIndex);
 //
 // Kind first (§3.2's resolution: "the kind leads the existing monospace
 // sub-line"), then the blend name upper-cased, then opacity as a whole
-// percent. A hidden layer additionally reads `· HIDDEN`, and a locked one
+// percent. A masked layer additionally reads `· MASK` (§3.2's own example row
+// is `STROKES · NORMAL · MASK`), a hidden layer `· HIDDEN`, and a locked one
 // `· LOCKED`, because the row's own eye and lock controls are the only other
 // place that state appears and a text sub-line is what `--selftest` can read.
+//
+// `MASK` is present exactly when `Layer::mask` is engaged and says nothing
+// about the mask's contents -- a mask that reveals everything composites
+// byte-identically to no mask at all (core/Mask.hpp), so this marker is the
+// only thing a user can see that tells the two apart.
 //
 // The blend name is upper-cased **as carried**, never mapped through a table:
 // an unrecognised `np:blend` from a newer build shows as itself

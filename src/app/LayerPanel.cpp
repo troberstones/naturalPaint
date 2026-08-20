@@ -69,6 +69,17 @@ std::string layerRowSubLine(const Layer& layer) {
   s += kSep;
   s += pct;
 
+  // docs/ui.md §3.2's own example row is `STROKES · NORMAL · MASK`, so the
+  // vocabulary is the document's rather than invented here. Present exactly
+  // when `Layer::mask` is engaged, which is the one thing that distinguishes a
+  // layer with a reveal-all mask from a layer with none -- they composite
+  // byte-identically (core/Mask.hpp), so if the row did not say it, nothing a
+  // user can see would. It says nothing about what the mask *contains*: a
+  // thumbnail is the panel's job and there is no way to paint one yet.
+  if (layer.mask.has_value()) {
+    s += kSep;
+    s += "MASK";
+  }
   if (!layer.visible) {
     s += kSep;
     s += "HIDDEN";

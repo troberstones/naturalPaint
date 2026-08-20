@@ -12,6 +12,7 @@
 #include "core/Composite.hpp"
 #include "core/Half.hpp"
 #include "core/Layer.hpp"
+#include "core/Mask.hpp"
 #include "core/Pigment.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
@@ -77,6 +78,75 @@ static_assert(kPigmentChannelCount == 11,
               "a Pigment part is R G B A plus core/Pigment's seven stored channels");
 // Where each of PigmentTile's seven stored channels sits in the list above.
 constexpr size_t kPigmentLatentFirst = 4;
+
+// --- The `mask` channel (PLAN.md Phase 5 step 4) --------------------------
+//
+// docs/document-format.md's layer part already listed it, one line under
+// `res.R res.G res.B`, and this step gives it data. Three decisions live in
+// this constant and are worth having in one place:
+//
+//  1. **It is written only when the layer actually has a mask.** A layer with
+//     `Layer::mask == nullopt` produces exactly the part this module produced
+//     before masks existed -- same channel list, same data window, same
+//     `sampleTypeName`, same bytes. That is not an optimisation, it is the
+//     property that makes this step's format change safe to ship: measured, an
+//     RGB-only document written by HEAD's binary and by this one differ only
+//     inside OpenImageIO's `capDate` header string, which HEAD's own two
+//     consecutive runs differ inside as well.
+//  2. **It goes last, and the reader matches it by name** like every other
+//     channel here -- `R G B A mask` for an RGB layer, the eleven plus `mask`
+//     for a Pigment one. Appending keeps the existing prefix identical, and
+//     matching by name is `kPigmentChannelNames`' own argument (OpenEXR stores
+//     a name-sorted channel map; position is OpenImageIO's normalisation and
+//     not a contract).
+//  3. **`HALF`, like every other channel of the part.** `NpaintRawPart` carries
+//     one `sampleTypeName` for the whole part, so a mask stored as `uint8` in
+//     memory would be quantised on every load and the "HALF in, HALF out, no
+//     conversion" claim would stop holding for one channel of a layer part.
+//     core/Mask.hpp derives the quality half of the same decision.
+//
+// The **drop rule for a mask tile is "every sample is exactly 1.0"**, the
+// mirror of the "every word is zero" rule the content unpackers apply, because
+// 1.0 is what an unallocated mask tile means (core/Mask.hpp). Same rule, same
+// reason -- a tile indistinguishable from an unallocated one must not be
+// allocated, or a document's resident cost would grow on every save-and-reopen
+// -- with the identity element the channel actually has.
+constexpr const char* kMaskChannelName = "mask";
+
+// Where each of `names` sits in `part.channelNames`, or an empty optional when
+// any of them is missing.
+//
+// This is the by-name lookup `kPigmentChannelNames`' comment insists on,
+// generalised so the three layouts that need one -- `R G B A mask`, the eleven,
+// and the eleven plus `mask` -- share an implementation rather than growing
+// three. The bare four-channel `R G B A` layout deliberately keeps its own
+// positional check below, because its unpacker is a memcpy per tile row that
+// depends on exactly that order and byte-identity with what this module wrote
+// before masks existed is measured rather than argued.
+std::optional<std::vector<size_t>> channelIndicesByName(const NpaintRawPart& part,
+                                                        const std::vector<std::string>& names) {
+  std::vector<size_t> idx;
+  idx.reserve(names.size());
+  for (const std::string& want : names) {
+    const auto it = std::find(part.channelNames.begin(), part.channelNames.end(), want);
+    if (it == part.channelNames.end()) return std::nullopt;
+    idx.push_back(static_cast<size_t>(it - part.channelNames.begin()));
+  }
+  return idx;
+}
+
+std::vector<std::string> rgbaChannelNames(bool withMask) {
+  std::vector<std::string> names{"R", "G", "B", "A"};
+  if (withMask) names.emplace_back(kMaskChannelName);
+  return names;
+}
+
+std::vector<std::string> pigmentChannelNames(bool withMask) {
+  std::vector<std::string> names(kPigmentChannelNames,
+                                 kPigmentChannelNames + kPigmentChannelCount);
+  if (withMask) names.emplace_back(kMaskChannelName);
+  return names;
+}
 
 bool isDocumentAttributeRecognised(const std::string& name) {
   return name == kAttrVersion || name == kAttrBasis || name == kAttrTileSize;
@@ -226,6 +296,48 @@ TileBounds occupiedTileBounds(const StoreT& tiles) {
   return b;
 }
 
+// The tile-aligned bounding box that covers **both** stores. A mask may hold
+// tiles where the layer holds no content (a mask painted over a region that was
+// later erased is the obvious way to get one), and those tiles are the user's
+// data: dropping them because the *content* bounds do not reach them would be
+// silent loss. Where the content is absent inside the widened window the part
+// simply carries an all-zero content tile, which the reader drops again.
+TileBounds unionTileBounds(TileBounds a, const TileBounds& b) {
+  if (!b.any) return a;
+  if (!a.any) return b;
+  a.minX = std::min(a.minX, b.minX);
+  a.maxX = std::max(a.maxX, b.maxX);
+  a.minY = std::min(a.minY, b.minY);
+  a.maxY = std::max(a.maxY, b.maxY);
+  return a;
+}
+
+// Writes the part's `mask` channel: `MaskTile::kRevealWord` everywhere the
+// layer has no mask tile, and the tile's own raw half words where it does.
+//
+// The reveal fill is what makes an *absent* mask tile round-trip as an absent
+// one: a rectangular EXR data window has no way to encode a hole, so the hole
+// is spelled with the value the hole means, and the reader drops any tile that
+// comes back saying only that.
+void writeMaskChannel(const MaskTileStore& mask, int32_t tileX0, int32_t tileY0, int32_t width,
+                      int32_t height, size_t channels, size_t maskChannel, uint16_t* words) {
+  const size_t texels = static_cast<size_t>(width) * static_cast<size_t>(height);
+  for (size_t i = 0; i < texels; ++i) words[i * channels + maskChannel] = MaskTile::kRevealWord;
+  const size_t rowWords = static_cast<size_t>(width) * channels;
+  for (const auto& [coord, tile] : mask) {
+    const size_t col0 = static_cast<size_t>(coord.x - tileX0) * kTileSize;
+    const size_t row0 = static_cast<size_t>(coord.y - tileY0) * kTileSize;
+    const uint16_t* src = tile.data();
+    for (int32_t ty = 0; ty < kTileSize; ++ty) {
+      uint16_t* row = words + (row0 + static_cast<size_t>(ty)) * rowWords;
+      for (int32_t tx = 0; tx < kTileSize; ++tx) {
+        row[(col0 + static_cast<size_t>(tx)) * channels + maskChannel] =
+            src[static_cast<size_t>(ty) * kTileSize + static_cast<size_t>(tx)];
+      }
+    }
+  }
+}
+
 // Packs a layer's tiles into one part's pixel buffer.
 //
 // **This is the function the "byte-identical, no conversion" claim lives
@@ -234,16 +346,30 @@ TileBounds occupiedTileBounds(const StoreT& tiles) {
 // float appears anywhere in it. A tile-aligned data window means each tile
 // row is a contiguous run of 128*4 half words landing at a contiguous
 // offset, so this is a memcpy per tile row.
+//
+// **Phase 5 step 4 added the `mask` channel, and left this function's
+// mask-free path untouched on purpose.** When `layer.mask` is absent the part
+// is four channels and the copy is still a memcpy per tile row, byte for byte
+// what it was; when a mask is present the RGBA words are no longer contiguous
+// within a row (the stride is five) so the copy becomes four words per texel,
+// and the mask channel is filled separately. Two loops rather than one general
+// one, because the general one would have cost the mask-free case its memcpy
+// and this module's byte-identity claim for mask-free documents is measured
+// against HEAD rather than argued.
 NpaintRawPart buildLayerPart(const Layer& layer, const std::string& partName) {
+  const MaskTileStore* mask = layer.mask.has_value() ? &*layer.mask : nullptr;
+
   NpaintRawPart part;
   part.name = partName;
-  part.channelNames = {"R", "G", "B", "A"};
+  part.channelNames = rgbaChannelNames(mask != nullptr);
   part.sampleTypeName = "half";
   part.tileWidth = kTileSize;
   part.tileHeight = kTileSize;
 
   const TileStore& tiles = *layer.rgbTiles;
-  const TileBounds b = occupiedTileBounds(tiles);
+  const TileBounds b =
+      mask ? unionTileBounds(occupiedTileBounds(tiles), occupiedTileBounds(*mask))
+           : occupiedTileBounds(tiles);
   // A layer with no painted tiles still needs a non-empty data window --
   // EXR has no representation for a zero-area part. One all-zero tile at the
   // origin is the minimal legal answer, and it round-trips back to zero
@@ -259,19 +385,38 @@ NpaintRawPart buildLayerPart(const Layer& layer, const std::string& partName) {
   part.width = tilesW * kTileSize;
   part.height = tilesH * kTileSize;
 
-  const size_t rowWords = static_cast<size_t>(part.width) * 4;
+  const size_t channels = part.channelNames.size();
+  const size_t rowWords = static_cast<size_t>(part.width) * channels;
   part.rawPixels.assign(rowWords * static_cast<size_t>(part.height) * sizeof(uint16_t), 0);
   auto* words = reinterpret_cast<uint16_t*>(part.rawPixels.data());
 
+  if (mask == nullptr) {
+    for (const auto& [coord, tile] : tiles) {
+      const size_t colWord = static_cast<size_t>(coord.x - tileX0) * kTileSize * 4;
+      const size_t row0 = static_cast<size_t>(coord.y - tileY0) * kTileSize;
+      for (int32_t ty = 0; ty < kTileSize; ++ty) {
+        std::memcpy(words + (row0 + static_cast<size_t>(ty)) * rowWords + colWord,
+                    tile.data() + static_cast<size_t>(ty) * kTileSize * 4,
+                    static_cast<size_t>(kTileSize) * 4 * sizeof(uint16_t));
+      }
+    }
+    return part;
+  }
+
   for (const auto& [coord, tile] : tiles) {
-    const size_t colWord = static_cast<size_t>(coord.x - tileX0) * kTileSize * 4;
+    const size_t col0 = static_cast<size_t>(coord.x - tileX0) * kTileSize;
     const size_t row0 = static_cast<size_t>(coord.y - tileY0) * kTileSize;
+    const uint16_t* src = tile.data();
     for (int32_t ty = 0; ty < kTileSize; ++ty) {
-      std::memcpy(words + (row0 + static_cast<size_t>(ty)) * rowWords + colWord,
-                  tile.data() + static_cast<size_t>(ty) * kTileSize * 4,
-                  static_cast<size_t>(kTileSize) * 4 * sizeof(uint16_t));
+      uint16_t* row = words + (row0 + static_cast<size_t>(ty)) * rowWords;
+      for (int32_t tx = 0; tx < kTileSize; ++tx) {
+        std::memcpy(row + (col0 + static_cast<size_t>(tx)) * channels,
+                    src + (static_cast<size_t>(ty) * kTileSize + static_cast<size_t>(tx)) * 4,
+                    4 * sizeof(uint16_t));
+      }
     }
   }
+  writeMaskChannel(*mask, tileX0, tileY0, part.width, part.height, channels, 4, words);
   return part;
 }
 
@@ -295,15 +440,19 @@ NpaintRawPart buildLayerPart(const Layer& layer, const std::string& partName) {
 // grade into a layer part would put a look in the file that the reloaded
 // document could not reproduce or undo.
 NpaintRawPart buildPigmentLayerPart(const Layer& layer, const std::string& partName) {
+  const MaskTileStore* mask = layer.mask.has_value() ? &*layer.mask : nullptr;
+
   NpaintRawPart part;
   part.name = partName;
-  part.channelNames.assign(kPigmentChannelNames, kPigmentChannelNames + kPigmentChannelCount);
+  part.channelNames = pigmentChannelNames(mask != nullptr);
   part.sampleTypeName = "half";
   part.tileWidth = kTileSize;
   part.tileHeight = kTileSize;
 
   const PigmentTileStore& tiles = *layer.pigmentTiles;
-  const TileBounds b = occupiedTileBounds(tiles);
+  const TileBounds b =
+      mask ? unionTileBounds(occupiedTileBounds(tiles), occupiedTileBounds(*mask))
+           : occupiedTileBounds(tiles);
   const int32_t tileX0 = b.any ? b.minX : 0;
   const int32_t tileY0 = b.any ? b.minY : 0;
   const int32_t tilesW = b.any ? (b.maxX - b.minX + 1) : 1;
@@ -314,7 +463,8 @@ NpaintRawPart buildPigmentLayerPart(const Layer& layer, const std::string& partN
   part.width = tilesW * kTileSize;
   part.height = tilesH * kTileSize;
 
-  const size_t rowWords = static_cast<size_t>(part.width) * kPigmentChannelCount;
+  const size_t channels = part.channelNames.size();
+  const size_t rowWords = static_cast<size_t>(part.width) * channels;
   part.rawPixels.assign(rowWords * static_cast<size_t>(part.height) * sizeof(uint16_t), 0);
   auto* words = reinterpret_cast<uint16_t*>(part.rawPixels.data());
 
@@ -325,7 +475,7 @@ NpaintRawPart buildPigmentLayerPart(const Layer& layer, const std::string& partN
     for (int32_t ty = 0; ty < kTileSize; ++ty) {
       uint16_t* row = words + (row0 + static_cast<size_t>(ty)) * rowWords;
       for (int32_t tx = 0; tx < kTileSize; ++tx) {
-        uint16_t* out = row + (col0 + static_cast<size_t>(tx)) * kPigmentChannelCount;
+        uint16_t* out = row + (col0 + static_cast<size_t>(tx)) * channels;
         const uint16_t* stored =
             src + (static_cast<size_t>(ty) * kTileSize + static_cast<size_t>(tx)) *
                       PigmentTile::kChannels;
@@ -340,6 +490,13 @@ NpaintRawPart buildPigmentLayerPart(const Layer& layer, const std::string& partN
       }
     }
   }
+  // The baked `R G B A` above is deliberately **unmasked**, for the same
+  // reason it is ungraded: it is a projection of what the layer stores, and
+  // the mask is stored beside it in its own channel. Another tool reading the
+  // four RGBA channels of a layer part gets the layer; part 0 is where it gets
+  // the composite, and part 0 *is* masked because it comes from the flattener.
+  if (mask) writeMaskChannel(*mask, tileX0, tileY0, part.width, part.height, channels,
+                             kPigmentChannelCount, words);
   return part;
 }
 
@@ -387,30 +544,117 @@ void unpackLayerPart(const NpaintRawPart& part, TileStore* tiles) {
   }
 }
 
-// Where each of `kPigmentChannelNames` sits in `part.channelNames`, or an
-// empty optional when any of them is missing. This is the by-name lookup the
-// constant's own comment insists on: OpenEXR sorts a part's channels by name,
-// so the read-back order is `A B G R pig.c0 pig.c1 pig.c2 pig.m res.B res.G
-// res.R` before OpenImageIO's RGBA normalisation, and positional indexing
-// would swap the residual's red and blue without a symptom until someone
-// compared colours.
-std::optional<std::array<size_t, kPigmentChannelCount>> pigmentChannelIndices(
-    const NpaintRawPart& part) {
-  std::array<size_t, kPigmentChannelCount> idx{};
-  for (size_t c = 0; c < kPigmentChannelCount; ++c) {
-    const auto it = std::find(part.channelNames.begin(), part.channelNames.end(),
-                              std::string(kPigmentChannelNames[c]));
-    if (it == part.channelNames.end()) return std::nullopt;
-    idx[c] = static_cast<size_t>(it - part.channelNames.begin());
+// The same inverse for a part whose channels are **not** exactly four -- an
+// `R G B A mask` part, where the four content channels are strided rather than
+// contiguous. Split from unpackLayerPart() above rather than folded into it so
+// that the mask-free path keeps its memcpy per tile row and its byte-for-byte
+// equivalence with what this module wrote before masks existed.
+//
+// `idx` is where R, G, B and A sit, by name.
+void unpackLayerPartStrided(const NpaintRawPart& part, const std::vector<size_t>& idx,
+                            TileStore* tiles) {
+  const int32_t tileX0 = part.x / kTileSize;
+  const int32_t tileY0 = part.y / kTileSize;
+  const int32_t tilesW = part.width / kTileSize;
+  const int32_t tilesH = part.height / kTileSize;
+  const size_t channels = part.channelNames.size();
+  const size_t rowWords = static_cast<size_t>(part.width) * channels;
+  const auto* words = reinterpret_cast<const uint16_t*>(part.rawPixels.data());
+  constexpr size_t kTileWords = static_cast<size_t>(kTileSize) * kTileSize * 4;
+
+  std::vector<uint16_t> scratch(kTileWords);
+  for (int32_t ty = 0; ty < tilesH; ++ty) {
+    for (int32_t tx = 0; tx < tilesW; ++tx) {
+      const size_t col0 = static_cast<size_t>(tx) * kTileSize;
+      const size_t row0 = static_cast<size_t>(ty) * kTileSize;
+      for (int32_t r = 0; r < kTileSize; ++r) {
+        const uint16_t* row = words + (row0 + static_cast<size_t>(r)) * rowWords;
+        for (int32_t x = 0; x < kTileSize; ++x) {
+          const uint16_t* in = row + (col0 + static_cast<size_t>(x)) * channels;
+          uint16_t* out = scratch.data() +
+                          (static_cast<size_t>(r) * kTileSize + static_cast<size_t>(x)) * 4;
+          for (size_t c = 0; c < 4; ++c) out[c] = in[idx[c]];
+        }
+      }
+      bool anyNonZero = false;
+      for (uint16_t w : scratch) {
+        if (w != 0) {
+          anyNonZero = true;
+          break;
+        }
+      }
+      if (!anyNonZero) continue;  // same drop rule, same reason as above
+      Tile& tile = tiles->getOrCreate(TileCoord{tileX0 + tx, tileY0 + ty});
+      std::memcpy(tile.data(), scratch.data(), kTileWords * sizeof(uint16_t));
+    }
   }
-  return idx;
+}
+
+// Reads a part's `mask` channel into a mask store, and returns **how many
+// samples had to be clamped** -- i.e. how many stored half words were NaN or
+// outside [0,1].
+//
+// Three things happen here that do not happen in the content unpackers, and
+// each is deliberate:
+//
+//  1. **The drop rule is "all reveal", not "all zero"** (see kMaskChannelName).
+//     An all-1.0 mask tile is what an *absent* mask tile means, so allocating
+//     one would grow a document's resident cost on every save-and-reopen.
+//  2. **Out-of-range words are rewritten to their clamped value**, not merely
+//     clamped on the way out. `MaskTile::readCoverage()` clamps anyway, so the
+//     composite is safe either way; rewriting means the value stored, the
+//     value rendered and the value the next save writes are the same number.
+//     The alternative -- carry the NaN verbatim for PRD I10's sake -- would
+//     preserve a value no reader can act on, in a channel this build owns and
+//     defines, and would keep re-warning about it forever.
+//  3. **The count comes back so the caller can warn by name.** A silent clamp
+//     of data the user did not author is exactly what PRD I11 forbids, and a
+//     mask is the one channel where a bad value can make a whole layer vanish.
+size_t unpackMaskChannel(const NpaintRawPart& part, size_t maskIdx, MaskTileStore* tiles) {
+  const int32_t tileX0 = part.x / kTileSize;
+  const int32_t tileY0 = part.y / kTileSize;
+  const int32_t tilesW = part.width / kTileSize;
+  const int32_t tilesH = part.height / kTileSize;
+  const size_t channels = part.channelNames.size();
+  const size_t rowWords = static_cast<size_t>(part.width) * channels;
+  const auto* words = reinterpret_cast<const uint16_t*>(part.rawPixels.data());
+
+  size_t clamped = 0;
+  std::vector<uint16_t> scratch(MaskTile::kTexelCount);
+  for (int32_t ty = 0; ty < tilesH; ++ty) {
+    for (int32_t tx = 0; tx < tilesW; ++tx) {
+      const size_t col0 = static_cast<size_t>(tx) * kTileSize;
+      const size_t row0 = static_cast<size_t>(ty) * kTileSize;
+      bool allReveal = true;
+      for (int32_t r = 0; r < kTileSize; ++r) {
+        const uint16_t* row = words + (row0 + static_cast<size_t>(r)) * rowWords;
+        for (int32_t x = 0; x < kTileSize; ++x) {
+          uint16_t w = row[(col0 + static_cast<size_t>(x)) * channels + maskIdx];
+          const float v = halfToFloat(w);
+          if (!(v >= 0.0f && v <= 1.0f)) {  // false for NaN, for < 0 and for > 1
+            w = floatToHalf(maskCoverageClamp(v));
+            ++clamped;
+          }
+          if (w != MaskTile::kRevealWord) allReveal = false;
+          scratch[static_cast<size_t>(r) * kTileSize + static_cast<size_t>(x)] = w;
+        }
+      }
+      if (allReveal) continue;
+      MaskTile& tile = tiles->getOrCreate(TileCoord{tileX0 + tx, tileY0 + ty});
+      std::memcpy(tile.data(), scratch.data(), MaskTile::kTexelCount * sizeof(uint16_t));
+    }
+  }
+  return clamped;
 }
 
 // The inverse of buildPigmentLayerPart(). Reads only the seven stored
 // channels; R/G/B/A are a derived bake and are deliberately discarded, exactly
-// as part 0 is.
-void unpackPigmentLayerPart(const NpaintRawPart& part,
-                            const std::array<size_t, kPigmentChannelCount>& idx,
+// as part 0 is. `idx` comes from `channelIndicesByName()` -- OpenEXR sorts a
+// part's channels by name, so the read-back order before OpenImageIO's RGBA
+// normalisation is `A B G R pig.c0 ... res.B res.G res.R`, and positional
+// indexing would swap the residual's red and blue with no symptom until
+// someone compared colours.
+void unpackPigmentLayerPart(const NpaintRawPart& part, const std::vector<size_t>& idx,
                             PigmentTileStore* tiles) {
   const int32_t tileX0 = part.x / kTileSize;
   const int32_t tileY0 = part.y / kTileSize;
@@ -1056,20 +1300,34 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     const bool tileAligned = part.width > 0 && part.height > 0 && part.width % kTileSize == 0 &&
                              part.height % kTileSize == 0 && part.x % kTileSize == 0 &&
                              part.y % kTileSize == 0;
+    const bool isHalf = part.sampleTypeName == "half";
     // A Pigment part: `np:kind = "Pigment"` and, by *name*, every one of
-    // docs/document-format.md's eleven channels in half. Matched by name and
-    // not by position for the reason kPigmentChannelNames gives.
-    const std::optional<std::array<size_t, kPigmentChannelCount>> pigmentIdx =
-        (part.sampleTypeName == "half" && part.channelNames.size() == kPigmentChannelCount)
-            ? pigmentChannelIndices(part)
+    // docs/document-format.md's eleven channels in half -- twelve when the
+    // layer carries a mask. Matched by name and not by position for the reason
+    // kPigmentChannelNames gives.
+    const std::optional<std::vector<size_t>> pigmentIdx =
+        (isHalf && part.channelNames.size() == kPigmentChannelCount)
+            ? channelIndicesByName(part, pigmentChannelNames(false))
+            : std::nullopt;
+    // The masked variants. One extra channel, matched by name like the rest;
+    // an unmasked layer's part is unchanged, which is what keeps a mask-free
+    // document's bytes identical to what this module wrote before this step.
+    const std::optional<std::vector<size_t>> rgbaMaskIdx =
+        (isHalf && part.channelNames.size() == 5)
+            ? channelIndicesByName(part, rgbaChannelNames(true))
+            : std::nullopt;
+    const std::optional<std::vector<size_t>> pigmentMaskIdx =
+        (isHalf && part.channelNames.size() == kPigmentChannelCount + 1)
+            ? channelIndicesByName(part, pigmentChannelNames(true))
             : std::nullopt;
     const bool namedKind = kind != nullptr && kind->type == NpaintAttribute::Type::String;
     const bool isRgbLayer = isLayerPartName(part.name) && namedKind &&
-                            kind->stringValue == layerKindName(LayerKind::RGB) && rgbaHalf &&
-                            tileAligned;
+                            kind->stringValue == layerKindName(LayerKind::RGB) &&
+                            (rgbaHalf || rgbaMaskIdx.has_value()) && tileAligned;
     const bool isPigmentLayer = isLayerPartName(part.name) && namedKind &&
                                 kind->stringValue == layerKindName(LayerKind::Pigment) &&
-                                pigmentIdx.has_value() && tileAligned;
+                                (pigmentIdx.has_value() || pigmentMaskIdx.has_value()) &&
+                                tileAligned;
 
     if (!isRgbLayer && !isPigmentLayer) {
       std::string reason;
@@ -1087,9 +1345,11 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       } else if (kind->stringValue == layerKindName(LayerKind::Pigment)) {
         reason = "it declares np:kind \"Pigment\" but its channels are not exactly "
                  "docs/document-format.md's eleven -- R, G, B, A, pig.c0, pig.c1, pig.c2, "
-                 "pig.m, res.R, res.G, res.B -- in half";
-      } else if (!rgbaHalf) {
-        reason = "its channels are not exactly R/G/B/A in half";
+                 "pig.m, res.R, res.G, res.B -- in half, with an optional twelfth named "
+                 "mask";
+      } else if (!rgbaHalf && !rgbaMaskIdx.has_value()) {
+        reason = "its channels are not exactly R/G/B/A in half, with an optional fifth named "
+                 "mask";
       } else {
         reason = "its data window (" + std::to_string(part.width) + "x" +
                  std::to_string(part.height) + " at " + std::to_string(part.x) + "," +
@@ -1124,14 +1384,51 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     }
 
     Layer layer;
+    // The `mask` channel's index in this part, when it has one. Engaging
+    // `layer.mask` is decided by the **channel's presence**, not by whether it
+    // holds anything: a mask that reveals everything is a mask the user added,
+    // it is what `core::addLayerMask()` creates, and the layers panel says
+    // `MASK` for it. Dropping it on load because it happens to be all-1.0
+    // would make "add a mask, save, reopen" lose the mask (core/Mask.hpp
+    // separates absent from all-1.0 for exactly this reason).
+    size_t maskIdx = 0;
+    bool hasMaskChannel = false;
     if (isPigmentLayer) {
       layer.kind = LayerKind::Pigment;
       layer.pigmentTiles.emplace();
-      unpackPigmentLayerPart(part, *pigmentIdx, &*layer.pigmentTiles);
+      const std::vector<size_t>& idx = pigmentIdx.has_value() ? *pigmentIdx : *pigmentMaskIdx;
+      unpackPigmentLayerPart(part, idx, &*layer.pigmentTiles);
+      if (pigmentMaskIdx.has_value()) {
+        maskIdx = (*pigmentMaskIdx)[kPigmentChannelCount];
+        hasMaskChannel = true;
+      }
     } else {
       layer.kind = LayerKind::RGB;
       layer.rgbTiles.emplace();
-      unpackLayerPart(part, &*layer.rgbTiles);
+      if (rgbaHalf) {
+        unpackLayerPart(part, &*layer.rgbTiles);
+      } else {
+        unpackLayerPartStrided(part, *rgbaMaskIdx, &*layer.rgbTiles);
+        maskIdx = (*rgbaMaskIdx)[4];
+        hasMaskChannel = true;
+      }
+    }
+    if (hasMaskChannel) {
+      layer.mask.emplace();
+      const size_t clamped = unpackMaskChannel(part, maskIdx, &*layer.mask);
+      if (clamped > 0) {
+        // PRD I11's discipline applied to the read side: a value this build
+        // had to change is named with a count, never absorbed silently. A mask
+        // is the one channel where a bad sample makes a layer disappear, so the
+        // failure mode this warning prevents is "the layer went black and
+        // nothing said why".
+        result.warnings.push_back(
+            "part '" + part.name + "' has " + std::to_string(clamped) +
+            " mask sample(s) that are NaN or outside [0, 1]; a layer mask is a coverage, so "
+            "each was clamped into [0, 1] (NaN to 0) exactly as core::layerCoverage() clamps "
+            "an out-of-range np:opacity. The clamped values are what this document now holds "
+            "and what the next save will write.");
+      }
     }
 
     if (const NpaintAttribute* a = findAttr(part.attributes, kAttrName);

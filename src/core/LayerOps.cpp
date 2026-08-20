@@ -222,6 +222,42 @@ LayerOpResult setLayerBlend(Document& doc, size_t index, BlendMode mode) {
   return succeed(label, index);
 }
 
+LayerOpResult addLayerMask(Document& doc, size_t index) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "add layer mask", &refusal)) return refusal;
+  if (!notLocked(doc, index, "add layer mask", &refusal)) return refusal;
+  if (doc.layers[index].mask.has_value()) {
+    return fail("add layer mask refused: " + describe(doc, index) +
+                " already has a mask. There is exactly one mask slot per layer (PRD C4's "
+                "\"per-layer mask\"), and silently replacing the existing one would discard "
+                "every texel in it. Remove the mask first if that is what was meant.");
+  }
+  // Engaged with zero tiles: an unallocated mask tile means 1.0 (core/Mask.hpp),
+  // so "reveal all" is genuinely free -- no allocation at all, which is PRD C2
+  // applied to a mask. It is `mask.emplace()` and not a canvas-sized fill for
+  // exactly that reason.
+  doc.layers[index].mask.emplace();
+  return succeed("add mask to " + describe(doc, index), index);
+}
+
+LayerOpResult removeLayerMask(Document& doc, size_t index) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "remove layer mask", &refusal)) return refusal;
+  if (!notLocked(doc, index, "remove layer mask", &refusal)) return refusal;
+  if (!doc.layers[index].mask.has_value()) {
+    return fail("remove layer mask refused: " + describe(doc, index) +
+                " has no mask. Nothing was changed; a no-op that reported success would put a "
+                "\"remove mask\" entry in the journal for an edit that did not happen.");
+  }
+  // The mask's tiles go with it. This is **discard**, never "apply": applying a
+  // mask means baking its coverage into the layer's own alpha or mass, which is
+  // a destructive edit with a different name, a different undo entry and (on a
+  // Pigment layer) a different meaning -- PRD F10's mass reduction. Neither is
+  // built here; see core/LayerOps.hpp.
+  doc.layers[index].mask.reset();
+  return succeed("remove mask from " + describe(doc, index), index);
+}
+
 LayerOpResult setLayerName(Document& doc, size_t index, std::string name) {
   LayerOpResult refusal;
   if (!inRange(doc, index, "rename layer", &refusal)) return refusal;

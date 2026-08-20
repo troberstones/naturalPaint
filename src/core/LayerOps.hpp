@@ -52,7 +52,8 @@
 //
 //   Refused:  removeLayer, moveLayer (of the locked layer), duplicateLayer's
 //             *effect on the source* is nil so it is allowed -- see below --,
-//             setLayerOpacity, setLayerName.
+//             setLayerOpacity, setLayerName, setLayerBlend, addLayerMask,
+//             removeLayerMask.
 //   Allowed:  setLayerVisible. Hiding a locked layer changes nothing about the
 //             layer, and a lock that also freezes the eye icon is the one
 //             behaviour every editor with a lock agrees is wrong (Photoshop,
@@ -181,8 +182,10 @@ LayerOpResult moveLayer(Document& doc, size_t from, size_t to);
 //
 // The copy is a real copy: `TileStore` is an `unordered_map` of uniquely-owned
 // 128 KiB tiles today (copy-on-write is Phase 5 step 6), so duplicating an
-// N-tile layer allocates N x 128 KiB. Stated rather than hidden, the same way
-// `duplicateDocument()` states its own cost.
+// N-tile layer allocates N x 128 KiB -- N x 224 KiB for a Pigment layer, plus
+// M x 32 KiB for a mask with M occupied tiles, since the mask is duplicated
+// with the layer like every other member. Stated rather than hidden, the same
+// way `duplicateDocument()` states its own cost.
 //
 // The copy's name gets a " copy" suffix when the source had a name, and is left
 // empty when it did not -- inventing "Layer 3 copy" for an unnamed layer would
@@ -221,6 +224,44 @@ LayerOpResult setLayerLocked(Document& doc, size_t index, bool locked);
 // rather than defensive: it is what stops "the dropdown never offers it" from
 // being the only thing that makes L5 true.
 LayerOpResult setLayerBlend(Document& doc, size_t index, BlendMode mode);
+
+// --- The mask's lifecycle (PLAN.md Phase 5 step 4; PRD C4) ----------------
+//
+// These two are the whole of what a user can do to a mask in this build, and
+// the honest reason is the one core/Layer.hpp and core/Mask.hpp both give:
+// **nothing can paint one**. A stroke reaches `sim::PaintSim`'s dense texture
+// and no `Layer` of any kind, so a mask's *content* can only come from a
+// `.npaint` or from a test. Add and remove are the parts that do not need a
+// brush, and they are real rather than placeholders -- `addLayerMask()`
+// followed by a save writes a `mask` channel, and a load brings it back.
+//
+// Both are refused on a locked layer, for `setLayerBlend()`'s reason: which
+// parts of a layer show is part of how that layer looks, and a lock that froze
+// content but not masking would be a lock in name only.
+
+// Gives the layer a mask that **reveals everything**: an engaged store with
+// zero tiles, which costs no allocation at all because an unallocated mask
+// tile means 1.0 (core/Mask.hpp). Photoshop's "Add Layer Mask -> Reveal All".
+//
+// Refused when the layer already has one, rather than replacing it: there is
+// one mask slot per layer and a silent replacement would discard every texel
+// in the old mask.
+//
+// **"Hide All" is deliberately absent.** Its mask is all-0.0, which is real
+// content -- it would have to allocate one 32 KiB tile per canvas tile (8 MiB
+// for a 2048x2048 document) holding nothing but the same number, which is
+// precisely what PRD C2 ("memory tracks content, not canvas dimensions") is
+// about. It becomes cheap either with a per-store default value or with the
+// selection store phase 7 brings, and neither is this step's to invent.
+LayerOpResult addLayerMask(Document& doc, size_t index);
+
+// Removes the layer's mask, **discarding** it. Refused when there is none.
+//
+// Discard, never "apply": applying a mask bakes its coverage into the layer's
+// own alpha (or, on a Pigment layer, its mass -- PRD F10's quantity), which is
+// a destructive edit with a different name and a different undo entry. It is
+// not built here and is not what this function does.
+LayerOpResult removeLayerMask(Document& doc, size_t index);
 
 // Sets the user-facing name. Any string is accepted, including an empty one
 // (which means "unnamed", core/Layer.hpp) and one that duplicates another

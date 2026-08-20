@@ -1198,4 +1198,58 @@ bool runBlendTest();
 //    the named warning for an op stack the format cannot yet carry.
 bool runPigmentLayerTest();
 
+// PLAN.md Phase 5 step 4 -- "Layer masks -- single-channel tile store, the
+// same machinery." PRD C4 (P0), C3 (P0), C2, I4, I11.
+//
+// Runs, and asserts the same answers, in BOTH NP_USE_OIIO configurations; the
+// `.npaint` block asserts io/NpaintFile's own named refusal in the OFF build
+// instead of a round trip. Headless and GPU-free. Writes and removes
+// `selftest_mask.npaint`, `selftest_mask_bare.npaint` and
+// `selftest_mask_again.npaint`. Loads the real Mixbox LUT (NP_MIXBOX_LUT) so
+// the Pigment claims are against measured pigment data.
+//
+// Sections:
+//  - **The tile**: one f16 channel and 32 KiB against an RGBA tile's 128 KiB
+//    and a pigment tile's 224 KiB (printed), `kRevealWord` checked against
+//    `floatToHalf(1.0f)`, a MISSING tile and a FRESHLY ALLOCATED one both
+//    reading 1.0 -- the decision that stops a mask on one tile from blanking
+//    a layer's other tiles -- dyadic values round-tripping exactly, and the
+//    derived 2^-12 bound measured over a 1025-point ramp against uint8's
+//    1/510.
+//  - **Out of range and NaN**: clamped on write, clamped on read for raw half
+//    words only a *file* could produce, and a document holding a NaN mask
+//    proven to composite to finite values everywhere.
+//  - **A mask multiplies coverage**, against hand-computed references with
+//    printed values: alpha changes and colour does not; over a backdrop the
+//    exact `over(m*src, dst)` at zero tolerance; opacity 0.25, mask 0.25 and
+//    opacity 0.5 x mask 0.5 all BYTE-IDENTICAL (with a negative control); and
+//    the `lerp(dst, over(src,dst), m*o) == over(m*o*src, dst)` identity at
+//    exactly 0 residual over the whole grid.
+//  - **Absent vs all-1.0 vs all-0.0**: reveal-all allocating nothing and
+//    compositing byte-identically to absent, all-0.0 compositing
+//    byte-identically to the layer being *deleted*, the panel row's `MASK`
+//    being the only visible difference between absent and reveal-all, and
+//    core/LayerOps' add/remove with their refusals.
+//  - **The PRD C3 trap on a Pigment layer**: the stored `pig.m` proven
+//    bit-identical by memcmp across four mask values; on a mixed pair, half
+//    the MASK printed beside half the MASS and proven a different colour --
+//    the mask giving exactly the 50/50 blend of the two projections while the
+//    mass gives the Kubelka-Munk green; and both per-texel corners of
+//    core/Composite.hpp §3 as byte-identity claims.
+//  - **The op stack**: a mask applying after it, with opacity.
+//  - **The probe and the flattener agreeing** on a masked RGB layer and on a
+//    mixed pair masked on both halves -- the case where the probe's per-texel
+//    lookup and the walk's per-tile hoist could most easily diverge.
+//  - **The regression boundary**: a non-overlapping multi-layer document with
+//    no masks still compositing byte-identically to the plain sum.
+//  - **The `.npaint` round trip**: four parts, mask tiles bit-identical, a
+//    reveal-all mask surviving as engaged-with-zero-tiles, a mask tile outside
+//    the layer's content bounds surviving, a mask-free file loading back with
+//    `Layer::mask` disengaged, a file carrying NaN/2.0/-1.0 mask samples
+//    warning with a count and loading the clamped values -- and the property
+//    the whole format change rests on: removing every mask gives back a file
+//    byte-identical to the mask-free one, with OpenImageIO's `capDate`
+//    timestamp masked out.
+bool runLayerMaskTest();
+
 }  // namespace np

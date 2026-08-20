@@ -58,7 +58,11 @@ struct HistogramParams {
   // `sampleAllLayers` here still bins each layer's texels independently, so a
   // pixel covered by two layers contributes **two** samples to the histogram
   // rather than one sample of the composited colour, and neither `visible` nor
-  // `opacity` is honoured.
+  // `opacity` is honoured. Phase 5 step 3 added Pigment layers, which this
+  // module ignores outright (it bins `rgbTiles` only), and step 4 added
+  // per-layer masks, which it does not apply either -- both are the same
+  // divergence widening rather than new ones, and both close the same way, by
+  // binning a composited region.
   //
   // Why it was left: this module's whole shape is "walk the allocated tiles of
   // each layer and bin their overlap with the region", which is what makes a

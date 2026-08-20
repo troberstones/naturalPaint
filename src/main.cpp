@@ -431,6 +431,19 @@ int main(int argc, char** argv) {
     // NP_USE_OIIO configurations. Headless and GPU-free; writes and removes
     // one selftest_pigment.npaint.
     const bool pigmentLayerOk = np::runPigmentLayerTest();
+    // Phase 5 step 4 ("Layer masks -- single-channel tile store, the same
+    // machinery"; PRD C4 (P0), C3 (P0), C2, I4, I11): the 32 KiB
+    // single-channel f16 mask tile whose default is REVEAL, its derived 2^-12
+    // bound, out-of-range and NaN samples clamped at every boundary, a mask
+    // proven to multiply coverage against hand-computed references, mask x
+    // opacity proven byte-identical to their product, absent vs all-1.0 vs
+    // all-0.0 proven three different things, the PRD C3 trap (a mask on a
+    // Pigment layer is not mass -- printed side by side on a mixed pair),
+    // core/LayerOps' add/remove and their refusals, and a `.npaint` round trip
+    // that also proves a mask-free document's bytes are unchanged. Runs, and
+    // asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+    // Headless and GPU-free; writes and removes three `.npaint` files.
+    const bool layerMaskOk = np::runLayerMaskTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -443,7 +456,8 @@ int main(int argc, char** argv) {
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
-                    blendOk && pigmentLayerOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    blendOk && pigmentLayerOk && layerMaskOk && strokeSpeedOk && idleMemOk &&
+                    fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

@@ -3,11 +3,17 @@
 #include <optional>
 #include <unordered_set>
 
+#include "core/Mask.hpp"
 #include "core/Pigment.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 
 namespace np {
+
+float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept {
+  if (!layer.mask.has_value()) return 1.0f;
+  return maskCoverage(layer.mask->find(tileCoordAt(at)), tileLocalOffset(at));
+}
 
 float layerCoverage(const Layer& layer) noexcept {
   if (!layer.visible) return 0.0f;
@@ -206,6 +212,16 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
 
     const float coverage = layerCoverage(layer);
 
+    // Resolved once per layer for the same reason as everything above it: the
+    // per-*tile* lookup is hoisted out of the texel loops below, so a masked
+    // layer costs one hash lookup per tile rather than one per texel, and an
+    // unmasked one costs a null check. `nullptr` here means "this layer has no
+    // mask", which `maskCoverage()` and the branches below both read as a
+    // uniform 1.0 -- the identical arithmetic path an unmasked layer took
+    // before this step, which is what keeps step 1's byte-identity boundary
+    // exact (see this file's header, §5).
+    const MaskTileStore* maskTiles = layer.mask.has_value() ? &*layer.mask : nullptr;
+
     if (pairing.mixedWithBelow[i]) {
       // A mixed pair. Deliberately *not* skipped when this layer's coverage is
       // zero: the lower layer is this branch's responsibility now, so an
@@ -216,6 +232,11 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
       const Layer& lower = doc.layers[i - 1];
       const float lowerCoverage = layerCoverage(lower);
       const std::vector<PointOp> lowerOps = layerPointOps(lower.ops);
+      // Both halves of the pair carry their own mask, and each one modulates
+      // only its own coverage -- `covLow` and `covUp` in this file's header
+      // §3, now per texel. The mixing weight `t` is `upper.mass` and is
+      // untouched by either, which is the whole of §5's argument.
+      const MaskTileStore* lowerMaskTiles = lower.mask.has_value() ? &*lower.mask : nullptr;
       const PigmentTileStore* upTiles =
           layer.pigmentTiles.has_value() ? &*layer.pigmentTiles : nullptr;
       const PigmentTileStore* lowTiles =
@@ -243,6 +264,8 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
       for (const TileCoord& coord : coords) {
         const PigmentTile* up = upTiles ? upTiles->find(coord) : nullptr;
         const PigmentTile* low = lowTiles ? lowTiles->find(coord) : nullptr;
+        const MaskTile* upMask = maskTiles ? maskTiles->find(coord) : nullptr;
+        const MaskTile* lowMask = lowerMaskTiles ? lowerMaskTiles->find(coord) : nullptr;
         const PixelCoord origin = tileOrigin(coord);
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
@@ -253,10 +276,18 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
             const PixelCoord local{tx, ty};
             const PigmentTexel upTexel = up ? up->readTexel(local) : PigmentTexel{};
             const PigmentTexel lowTexel = low ? low->readTexel(local) : PigmentTexel{};
+            // A mask multiplies its own layer's coverage and nothing else. At
+            // an unmasked texel both products are by a uniform 1.0f -- exact
+            // for every finite float -- so a mixed pair with no masks reaches
+            // `mixedPairTexel()` with bit-identical arguments to the ones it
+            // received before this step.
+            const float covUp = maskTiles ? coverage * maskCoverage(upMask, local) : coverage;
+            const float covLow =
+                lowerMaskTiles ? lowerCoverage * maskCoverage(lowMask, local) : lowerCoverage;
             // `over` always: the pair's own arithmetic *is* the mix, and what
             // it produces meets everything beneath it as ordinary coverage.
             blendInto(docX, docY, BlendMode::Normal,
-                      mixedPairTexel(lowTexel, lowerOps, lowerCoverage, upTexel, ops, coverage));
+                      mixedPairTexel(lowTexel, lowerOps, covLow, upTexel, ops, covUp));
           }
         }
       }
@@ -270,18 +301,21 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
     if (coverage <= 0.0f) continue;
 
     // One scale-and-blend, shared by both storage shapes so the two branches
-    // differ only in how a texel is obtained.
-    auto contribute = [&](int32_t docX, int32_t docY, std::array<float, 4> src) {
+    // differ only in how a texel is obtained. `effective` is the layer's
+    // coverage already multiplied by its mask sample at this texel -- one
+    // scalar, because a mask and an opacity are the same quantity and compose
+    // as a plain product (this file's header, §5).
+    auto contribute = [&](int32_t docX, int32_t docY, std::array<float, 4> src, float effective) {
       src = gradedPremultiplied(src, ops);
       // The one place opacity enters. At the default 1.0 this is a
       // multiplication by literal 1.0f -- exact for every finite float --
       // which is half of why an unchanged document composites bit-identically
       // to the plain sum this replaced.
-      if (coverage != 1.0f) {
-        src[0] *= coverage;
-        src[1] *= coverage;
-        src[2] *= coverage;
-        src[3] *= coverage;
+      if (effective != 1.0f) {
+        src[0] *= effective;
+        src[1] *= effective;
+        src[2] *= effective;
+        src[3] *= effective;
       }
       blendInto(docX, docY, mode, src);
     };
@@ -289,26 +323,45 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
     if (hasRgb) {
       for (const auto& [coord, tile] : *layer.rgbTiles) {
         const PixelCoord origin = tileOrigin(coord);
+        const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
           if (docY < 0 || docY >= doc.height) continue;  // clipped to the canvas
           for (int32_t tx = 0; tx < kTileSize; ++tx) {
             const int32_t docX = origin.x + tx;
             if (docX < 0 || docX >= doc.width) continue;
-            contribute(docX, docY, tile.readPixel(PixelCoord{tx, ty}));
+            const PixelCoord local{tx, ty};
+            // A texel the mask has hidden outright is **skipped**, exactly as
+            // a hidden layer is, and for the identical reason: multiplying by
+            // zero is not the same as not contributing if the stored texel is
+            // a NaN or a signed zero. That also makes an all-0.0 mask
+            // byte-identical to the layer being deleted.
+            const float effective =
+                maskTiles ? coverage * maskCoverage(maskTile, local) : coverage;
+            if (effective <= 0.0f) continue;
+            contribute(docX, docY, tile.readPixel(local), effective);
           }
         }
       }
     } else {
       for (const auto& [coord, tile] : *layer.pigmentTiles) {
         const PixelCoord origin = tileOrigin(coord);
+        const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
           if (docY < 0 || docY >= doc.height) continue;
           for (int32_t tx = 0; tx < kTileSize; ++tx) {
             const int32_t docX = origin.x + tx;
             if (docX < 0 || docX >= doc.width) continue;
-            contribute(docX, docY, projectPigmentTexel(tile.readTexel(PixelCoord{tx, ty})));
+            const PixelCoord local{tx, ty};
+            const float effective =
+                maskTiles ? coverage * maskCoverage(maskTile, local) : coverage;
+            if (effective <= 0.0f) continue;
+            // The mask multiplies the **projection**, never the mass that goes
+            // into it: `projectPigmentTexel()` is handed the stored texel
+            // unchanged. §5 says why that is the difference between a mask and
+            // an eraser.
+            contribute(docX, docY, projectPigmentTexel(tile.readTexel(local)), effective);
           }
         }
       }

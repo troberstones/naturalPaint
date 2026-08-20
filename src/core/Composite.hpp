@@ -16,7 +16,7 @@
 // `Document`, with reorder, visibility, lock, opacity"; step 2 moved the blend
 // arithmetic out to core/Blend and left the document walk here; step 3 gave
 // the walk Pigment layers, the latent -> RGB projection, the per-layer op
-// stack and `Mix`).
+// stack and `Mix`; step 4 gave every kind a per-layer mask).
 //
 // ==========================================================================
 // Phase 5 step 3 -- Pigment layers, in the order the walk does them
@@ -166,6 +166,90 @@
 //     would.
 //   Media/Strokes/Adjustment/Text/Flats: still skipped. None owns storage.
 //
+// ==========================================================================
+// Phase 5 step 4 -- Layer masks
+// ==========================================================================
+//
+// --- 5. A mask is per-texel opacity, and composes as a plain product ------
+//
+// PRD C4 (P0) lists "per-layer mask" among the things layers do; PRD C3 (P0)
+// says what one *means*: "Layer opacity means transparency on **every** kind".
+// A mask is that sentence made per texel, so the walk's rule is one line:
+//
+//     effective coverage at (x,y) = layerCoverage(layer) * mask(x,y)
+//
+// with `mask(x,y) == 1.0` wherever the layer has no mask, no mask tile, or a
+// tile whose sample says 1.0 -- three different things in storage
+// (core/Mask.hpp separates them) and the same thing here.
+//
+// **They compose as a plain product, and that is a claim rather than an
+// assumption.** Opacity multiplies a premultiplied texel; so does a mask; and
+// float multiplication is associative enough for the only property that
+// matters -- `--selftest` asserts that a layer at opacity 0.5 under a 0.5 mask
+// composites **byte-identically** to the same layer at opacity 0.25 with no
+// mask, because both reach `contribute()` with the single scalar 0.25. The
+// alternative form, "fade the layer's whole effect toward the backdrop by the
+// mask", is the same value for the same reason §3 already gives for opacity:
+// `lerp(dst, blend(src,dst), o)` and `blend(o*src, dst)` are algebraically
+// identical, and `--selftest` measures the residual at exactly 0 across a
+// range of mask values as well as opacities.
+//
+// A texel whose effective coverage is <= 0 is **skipped**, not multiplied by
+// zero -- the same distinction the hidden-layer case makes above, and for the
+// same reason (a stored NaN or signed zero would still perturb the
+// accumulator). It is what makes an all-0.0 mask bit-for-bit identical to the
+// layer being deleted.
+//
+// --- 6. The trap: a mask on a Pigment layer is not pigment mass -----------
+//
+// This is the same trap PRD C3 set for opacity in step 3, moved from
+// per-layer to per-texel, and it has to be answered again because the obvious
+// implementation is different here. A Pigment texel is `(latent, mass)` and
+// `mass` is the coverage-like quantity, so "make this texel less visible"
+// looks like "scale its mass". It is not:
+//
+//   * **On a lone Pigment layer the two are numerically indistinguishable**,
+//     and that is why the distinction has to be argued rather than measured
+//     here: `projectPigmentTexel()` returns `(latentToRgb(latent)*m, m)` and
+//     `latentToRgb()` does not depend on `m` at all, so scaling `m` scales the
+//     whole premultiplied vector exactly as scaling coverage does.
+//   * **On a mixed pair they are wildly different**, because `Mix`'s weight
+//     `t` *is* the upper layer's mass (§2). Halving the mass changes what
+//     pigment mixture is being computed -- half a mass of blue into a mass of
+//     yellow is **green** -- while halving the mask leaves the mixture alone
+//     and fades the pair's whole contribution back toward the layer beneath,
+//     which is a 50/50 *colour* blend of the mix and the backdrop, i.e. muddy.
+//     `--selftest` prints both triples side by side.
+//   * **PRD F10 already owns mass.** "Erase reduces alpha on RGB layers,
+//     **Mass** on Pigment layers leaving the Latent untouched". A mask that
+//     scaled mass would be a non-destructive eraser wearing a mask's name, and
+//     the two are different features with different UI and different undo.
+//
+// So the walk hands `projectPigmentTexel()` the **stored** texel and applies
+// the mask to what comes out, and on a mixed pair the mask modulates `covUp`
+// and `covLow` while `t` is untouched. `--selftest` asserts the stored `pig.m`
+// half words are bit-identical across a composite at any mask value, by
+// memcmp, rather than arguing it.
+//
+// --- 7. Where the mask sits relative to everything else -------------------
+//
+//   the op stack   The mask applies **after** it, with opacity, because it is
+//                  coverage and the stack grades colour. An empty stack is
+//                  still skipped outright, so a masked layer with no ops takes
+//                  the same bit-exact path an unmasked one does.
+//   `visible`      Unchanged and independent: a hidden layer is skipped before
+//                  any mask is read. A mask is not a way to hide a layer and
+//                  the eye icon is not a mask.
+//   blend mode     Unchanged. The mask scales the source texel; the mode then
+//                  meets the backdrop with it. Alpha is still `over`'s under
+//                  every mode, because scaling a premultiplied source scales
+//                  its alpha with it.
+//   `Mix`          §2's pairing is unaffected -- masks do not decide who pairs
+//                  with whom, only how much each half covers.
+//   clipping masks **A different feature** (PRD C9, PLAN.md Phase 5 step 9): a
+//                  layer clipped by the *alpha of the layer below*, storing
+//                  nothing of its own. Not built here, and not conflated.
+//
 // --- Why this module exists at all ----------------------------------------
 //
 // Visibility and opacity are not properties a layer can *have* in isolation;
@@ -204,11 +288,15 @@
 //     this file owns which two texels get mixed and what happens to the
 //     result, not the lerp.
 //   - The latent -> RGB projection (core/Pigment).
-//   - Layer masks (step 4), clipping masks (step 9), adjustment layers
-//     (step 5) and groups. `Layer::parent` is still carried and never acted
-//     on: this build creates no groups, and honouring a parent link means
-//     compositing a group's members into an offscreen buffer first, which is
-//     step 9's machinery, not this step's.
+//   - The mask *storage* and its value rules (core/Mask), which this file
+//     reads and does not own.
+//   - Clipping masks (step 9), adjustment layers (step 5) and groups.
+//     `Layer::parent` is still carried and never acted on: this build creates
+//     no groups, and honouring a parent link means compositing a group's
+//     members into an offscreen buffer first, which is step 9's machinery,
+//     not this step's. A **clipping** mask -- a layer clipped by the alpha of
+//     the layer below (PRD C9) -- is a different feature from the per-layer
+//     mask §5 describes, shares no code with it, and is not conflated here.
 //   - Media layers. They will reuse the Pigment tile plus per-medium state
 //     that has no home on `Layer` yet, so they are still skipped.
 //
@@ -245,6 +333,20 @@ namespace np {
 // `std::max` so a NaN lands on 0 instead of propagating through the whole
 // canvas.
 float layerCoverage(const Layer& layer) noexcept;
+
+// The layer's **mask** sample at one document pixel, or exactly 1.0f when the
+// layer has no mask, no mask tile there, or a sample that says 1.0 -- three
+// different things in storage (core/Mask.hpp) and one thing here.
+//
+// Always in [0,1]: `MaskTile::readCoverage()` clamps, so a file's NaN or 1.5
+// cannot reach the composite. §5 above is the whole of what this multiplies.
+//
+// Multiply it by `layerCoverage()` to get the layer's effective coverage at
+// that pixel. That is exactly what core/Composite's walk and core/Probe both
+// do; the walk hoists the tile lookup out of its texel loop and calls
+// `core::maskCoverage()` -- this function's own leaf -- so the two cannot
+// produce different answers.
+float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept;
 
 // **A layer whose blend this build cannot composite is composited as `over`
 // and warned about by name -- never silently.** Two cases reach here and the
