@@ -71,7 +71,10 @@ part 0   "composite"      R G B A                    ← any EXR reader shows th
                  np:tileSize     128
                  np:docOps       <blob>
                  np:paths        <blob>
-                 np:comps        <blob>   layer comps: name + per-layer state
+                 np:comps        "npcomps1:<hex>"   layer comps: name +
+                                 per-layer state, and the part-name → layer-id
+                                 join they are matched through.
+                                 **A `string`, not a `<blob>`** — see below.
 
 part 1   "L0001"          R G B A                    ← baked projection
                           pig.c0 pig.c1 pig.c2 pig.m
@@ -124,7 +127,8 @@ part 4   "S0001"          coverage                   ← a saved selection
   > and it reads back as `vectori` -- a different type from the one written, not working
   > array support. `INT32[5]` is absent like the rest.) So **there is no working blob
   > carrier today**, and every blob this
-  > document names — `np:ops`, `np:dabs`, `np:comps`, `np:paths`, `np:docOps`,
+  > document names — `np:ops` and `np:comps` (both since resolved, see below),
+  > `np:dabs`, `np:paths`, `np:docOps`,
   > `np:simParams` — needs one before it can be written. The cheap fix is a base64 or
   > hex **`string`** attribute; the expensive one is writing the header through OpenEXR
   > directly instead of OpenImageIO. `io/NpaintFile` refuses a blob attribute by name
@@ -166,7 +170,33 @@ part 4   "S0001"          coverage                   ← a saved selection
   > Size is not a constraint: a 200 000-character `string` attribute survives a write/read
   > cycle through this OpenImageIO intact (measured, same session).
   >
-  > `np:dabs`, `np:comps`, `np:paths`, `np:docOps` and `np:simParams` are still unwritten,
+  > ✅ **Resolved for `np:comps` too, 2026-08-21, at PLAN.md Phase 5 step 12 (PRD C14).**
+  > `np:comps` is now a **hex `string`** attribute, `"npcomps1:<hex>"`, produced and
+  > consumed by `io/CompSerial`, which inherits all three properties above verbatim: the
+  > version is the prefix, a `npcomps2:` value is refused by name and carried to the next
+  > save, an unrecognised comp *record* survives whole and in position, and floats travel as
+  > bit patterns. **§2's table above is corrected rather than left alone**: it said
+  > `np:comps <blob>`, which this section's own measurement had already shown to be
+  > unwritable — `io/NpaintFile` *refuses* a blob attribute by name, so a comp list written
+  > as one would have made every save of a document that has comps fail outright. A table
+  > that describes an unwritable attribute is worse than one with a gap in it, because a
+  > reader believes it.
+  >
+  > Two things about the payload are format decisions rather than encoding details:
+  >
+  > - **It carries the layer-id join itself.** A comp names a layer by an in-memory id
+  >   (`core::Layer::id`), which means nothing to another tool; the *file's* stable layer id
+  >   is the part name this document already fixes (`L0001`). The mapping between the two
+  >   lives inside this one attribute, so **no layer part changes at all** when a document
+  >   has comps — which is what makes "a document with no comps saves byte-identically to
+  >   before the feature existed" structural rather than careful. The alternative, an
+  >   `np:id` on every layer part, would have changed every part's bytes.
+  > - **Written only when the document has comps**, like `np:ops` for a non-empty stack and
+  >   `np:clipped` for a clipped layer. Measured, not assumed: `--selftest` writes the same
+  >   document with and without comps and compares the two files byte for byte with
+  >   OpenImageIO's `capDate` masked.
+  >
+  > `np:dabs`, `np:paths`, `np:docOps` and `np:simParams` are still unwritten,
   > but the *carrier* problem is no longer what blocks them — each needs an in-memory
   > representation this codebase does not have yet.
 

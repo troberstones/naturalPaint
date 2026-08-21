@@ -85,6 +85,13 @@ namespace np {
 enum class ControlsSection {
   Layers,
   History,
+  // PLAN.md Phase 5 step 12 / PRD C14. A `Document` section like the two above
+  // it and for the same reason: a comp is part of the open document (it is
+  // persisted in the file, core/Document.hpp), it changes while working, and
+  // every one of its controls acts on what is on the canvas right now. Third
+  // rather than second because a comp is a saved state *of* the layer stack and
+  // a history row is an edit *to* it, so LAYERS reads before either.
+  Comps,
   Grade,
   Brush,
   Pigment,

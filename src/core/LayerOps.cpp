@@ -210,6 +210,13 @@ LayerOpResult duplicateLayer(Document& doc, size_t index) {
   // nothing about it. See core/LayerOps.hpp's lock section.
   const std::string label = "duplicate " + describe(doc, index);
   Layer copy = doc.layers[index];  // deep copy: TileStore is a plain map of owned tiles
+  // The one member a copy must NOT inherit: `Layer::id` is an identity, and two
+  // layers sharing one would make every layer comp that names it ambiguous
+  // (core/Layer.hpp). 0 means unassigned, so the copy gets a fresh id from
+  // `normalizeLayerIds()` the next time one is needed -- and the *source* keeps
+  // the id every existing comp already refers to, which is what makes
+  // duplicating a layer invisible to the comps that mention it.
+  copy.id = 0;
   if (!copy.name.empty()) copy.name += " copy";
   doc.layers.insert(doc.layers.begin() + static_cast<std::ptrdiff_t>(index) + 1,
                     std::move(copy));

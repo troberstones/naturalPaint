@@ -28,6 +28,7 @@
 #include "app/LayerPanel.hpp"
 #include "core/LayerOps.hpp"
 #include "core/Tile.hpp"
+#include "core/LayerCompOps.hpp"
 #include "gfx/Context.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
@@ -320,6 +321,67 @@ bool isPointerSampleEvent(const SDL_Event& e) {
   }
 }
 
+// --comps-demo [index] (PLAN.md Phase 5 step 12): capture two layer comps of
+// whatever the document currently holds, then restore comp `index`.
+//
+// Here rather than in a production module for `buildDemoDocument()`'s reason:
+// nothing in the application builds a document from literals, and this exists
+// only to make "two comps, switched between, visibly changing the canvas" a
+// photographable claim. Like `runUiLayerDemo()` it presses the application's
+// own buttons -- `captureLayerComp()` and `restoreLayerComp()` through
+// `recordLayerEdit()`, which is exactly what the COMPS panel's + Capture and
+// Restore do -- so the picture and the log can be checked against each other.
+//
+// The two comps, over `--demo-document`'s three layers:
+//
+//   0  "Everything"   every layer showing, as the fixture built it
+//   1  "Cyan only"    the magenta and the masked yellow hidden, the cyan block
+//                     dropped to 45% -- three of the four captured properties
+//                     differing at once
+//
+// `drop` deletes the top layer between the second capture and the restore, so
+// the restore is **partial** and the panel shows the sentence it says about
+// that. That is the case worth photographing: a comp outliving a layer is the
+// ordinary state of a comp, and what the panel does about it is the whole
+// design of the step.
+void runCompsDemo(np::OpenDocument& od, size_t restoreIndex, bool dropALayer) {
+  np::Document& doc = od.document;
+  auto report = [&](const char* gesture, const np::DocumentOpResult& r) {
+    std::printf("[comps-demo] %-22s %s%s  (revision %llu, %zu comp(s))\n", gesture,
+                r.ok ? "ok" : "REFUSED -- ", r.ok ? "" : r.error.c_str(),
+                static_cast<unsigned long long>(od.revision), doc.comps.size());
+  };
+
+  report("capture \"Everything\"", np::recordLayerEdit(od, np::captureLayerComp(doc, "Everything")));
+  for (size_t i = 1; i < doc.layers.size(); ++i)
+    np::recordLayerEdit(od, np::setLayerVisible(doc, i, false));
+  if (!doc.layers.empty()) np::recordLayerEdit(od, np::setLayerOpacity(doc, 0, 0.45f));
+  report("capture \"Cyan only\"", np::recordLayerEdit(od, np::captureLayerComp(doc, "Cyan only")));
+  if (dropALayer && !doc.layers.empty())
+    report("delete the top layer",
+           np::recordLayerEdit(od, np::removeLayer(doc, doc.layers.size() - 1)));
+
+  np::LayerCompRestoreReport restore;
+  const np::DocumentOpResult r =
+      np::recordLayerEdit(od, np::restoreLayerComp(doc, restoreIndex, &restore));
+  report("restore", r);
+  const std::string summary = np::layerCompRestoreSummary(restore);
+  // Put it where the panel would have put it had a user pressed Restore, so a
+  // `--screenshot` photographs what the application really says about a partial
+  // restore rather than only what this log says.
+  np::setCompsPanelRestoreSummary(summary);
+  std::printf("[comps-demo] restored comp %zu (\"%s\"): %zu of %zu layer state(s) applied, %zu "
+              "changed. %s\n",
+              restoreIndex,
+              restoreIndex < doc.comps.size() ? doc.comps[restoreIndex].name.c_str() : "?",
+              restore.entriesApplied, doc.comps.empty() ? 0 : doc.comps[0].layers.size(),
+              restore.layersChanged, summary.empty() ? "Applied in full." : summary.c_str());
+  for (size_t i = 0; i < doc.layers.size(); ++i)
+    std::printf("[comps-demo]   layer %zu %-24s %s\n", i,
+                np::layerRowTitle(doc.layers[i], i).c_str(),
+                np::layerRowSubLine(doc.layers[i]).c_str());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -333,6 +395,9 @@ int main(int argc, char** argv) {
   const char* screenshotPath = nullptr;
   int screenshotFrames = 30;
   bool demoDocument = false;
+  bool compsDemo = false;
+  size_t compsDemoRestore = 0;
+  bool compsDemoDrop = false;
   bool uiLayerDemo = false;
   bool uiLayerDemoClip = true;
   const char* uiMergeDemo = nullptr;
@@ -372,6 +437,19 @@ int main(int argc, char** argv) {
       // --screenshot photographs the composite rather than photographing the
       // fact that a transparent one is invisible. See buildDemoDocument().
       demoDocument = true;
+    } else if (a == "--comps-demo") {
+      // PLAN.md Phase 5 step 12: capture two comps of the current document and
+      // restore the one named, so --screenshot can photograph the same
+      // document in two comp states. See runCompsDemo().
+      compsDemo = true;
+      if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
+        compsDemoRestore = static_cast<size_t>(std::atoi(argv[++i]));
+      // `drop` deletes a layer between the capture and the restore, so the
+      // restore is partial and the panel's report is on screen.
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "drop") {
+        compsDemoDrop = true;
+        ++i;
+      }
     } else if (a == "--ui-layer-demo") {
       // UI detour step 3: build a stack through the layer editor's own
       // commands. See runUiLayerDemo(). `noclip` runs the same script without
@@ -863,6 +941,15 @@ int main(int argc, char** argv) {
     // Phase 5 step 10 / PRD C10, C11: core/Merge's five operations, checked
     // against the composite they must preserve at a bound derived from f16.
     const bool mergeFamilyOk = np::runMergeFamilyTest();
+    // Phase 5 step 12 ("Layer comps -- named sets of visibility, position and
+    // properties, restorable in one click and persisted in the document"; PRD
+    // C14): the comp model, the id-keyed restore and its refusals, io/CompSerial's
+    // `np:comps` carrier (a hex string, because the format table's `<blob>` is
+    // unwritable), and the `.npaint` round trip -- with position reported as
+    // not applicable, because core::Layer has none. Runs, and asserts the
+    // correct answers, in BOTH NP_USE_OIIO configurations. Headless and
+    // GPU-free; writes and removes five `.npaint` files.
+    const bool layerCompOk = np::runLayerCompTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -877,7 +964,7 @@ int main(int argc, char** argv) {
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
-                    documentTextureOk && layerEditorOk && controlsLayoutOk && incrementalCompositeOk && mergeFamilyOk &&
+                    documentTextureOk && layerEditorOk && controlsLayoutOk && incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();

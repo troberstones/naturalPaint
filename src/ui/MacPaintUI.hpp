@@ -60,5 +60,14 @@ void setLayersPanelSelection(size_t layerIndex);
 // exactly what a button press would have set, so the screenshot is of the
 // state a click produces and not of a second one invented for it.
 void setLayersPanelMessages(std::string error, std::vector<std::string> warnings);
+// The sentence the COMPS panel shows under its list after a restore --
+// `core::layerCompRestoreSummary()`'s, naming what the restore could not do.
+//
+// Set by the panel itself whenever its own Restore button is pressed. This
+// setter exists for the same one caller `setLayersPanelSelection()` does,
+// main.cpp's `--comps-demo`, which restores through the same recorded funnel
+// before the first frame is drawn and would otherwise leave the panel with
+// nothing to say about a restore that has already happened. Empty clears it.
+void setCompsPanelRestoreSummary(std::string summary);
 
 }  // namespace np

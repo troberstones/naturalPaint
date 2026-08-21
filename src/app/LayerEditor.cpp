@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
 #include "core/Merge.hpp"
 
@@ -68,6 +69,7 @@ const std::vector<LayerCommand>& allLayerCommands() {
       LayerCommand::MergeDown,      LayerCommand::MergeVisible,
       LayerCommand::StampVisible,   LayerCommand::FlattenImage,
       LayerCommand::RasteriseLayer,
+      LayerCommand::CaptureComp,
   };
   return kAll;
 }
@@ -91,6 +93,7 @@ const char* layerCommandLabel(LayerCommand command) noexcept {
     case LayerCommand::StampVisible:       return "Stamp Visible";
     case LayerCommand::FlattenImage:       return "Flatten Image";
     case LayerCommand::RasteriseLayer:     return "Rasterise Layer";
+    case LayerCommand::CaptureComp:        return "Capture Layer Comp";
   }
   return "?";
 }
@@ -148,6 +151,13 @@ bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t sel
     // core/Merge's sentence learns which three kinds are still unbuilt and why.
     case LayerCommand::RasteriseLayer:
       return haveSelection;
+    // Independent of the selection -- a comp captures the whole stack, not the
+    // selected row -- but unavailable on a document with no layers at all,
+    // which is the one case `core::captureLayerComp()` refuses. Offering a
+    // control whose only possible outcome is that refusal would be availability
+    // used as decoration.
+    case LayerCommand::CaptureComp:
+      return count > 0;
   }
   return false;
 }
@@ -247,6 +257,12 @@ LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t
       LayerOpResult r = rasteriseLayer(doc, selected, &warnings);
       return recordMerge(od, std::move(r), selected, std::move(warnings));
     }
+    // The selection does not move: a comp is a record of the whole stack, and
+    // capturing one is not a gesture about any particular layer. Recorded like
+    // every other command, so undo takes the comp back (PLAN.md Phase 5 step
+    // 12; `Document::comps` lives inside every history entry, core/Document.hpp).
+    case LayerCommand::CaptureComp:
+      return record(od, captureLayerComp(doc, defaultNewCompName(doc)), selected, selected);
   }
   return refused("unknown layer command.", selected);
 }

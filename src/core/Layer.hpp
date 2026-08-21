@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -359,6 +360,45 @@ struct Layer {
   // this build authored -- but a document authored by a build that *does*
   // have groups round-trips its parent links through here untouched.
   std::string parent;
+
+  // **A stable identity for this layer within its document** (PLAN.md Phase 5
+  // step 12, layer comps; PRD C14). Monotonic within one `Document`, never
+  // reused, and **not** an index.
+  //
+  // It exists for one reason: a layer comp is a set of per-layer states that
+  // has to survive the stack changing underneath it. app/HistoryPanel.hpp
+  // section (b) states the identical hazard for history rows -- "eviction
+  // shifts every index down by one, which would silently repoint a panel row
+  // ... at a different state" -- and a comp keyed by index has it three times
+  // over, because a delete, an add *and* a reorder each move every index above
+  // them. A comp restored through indices onto a stack one layer shorter would
+  // apply every state to the wrong layer, silently, and produce a picture that
+  // is wrong without looking wrong. So a comp entry stores this number, and
+  // `core::restoreLayerComp()` reports or refuses rather than guessing when it
+  // cannot find it.
+  //
+  // **0 means "not yet assigned", and it is what every layer this build
+  // creates starts with.** Ids are handed out lazily by
+  // `core::normalizeLayerIds()`, which `captureLayerComp()` calls and nothing
+  // else in the running application does -- so a document that never uses a
+  // comp carries zeros here for its whole life and nothing about it changes.
+  // That is deliberate: it keeps the id off every code path that predates
+  // comps, and it is what makes "a document with no comps saves byte-identically
+  // to before this feature existed" structural rather than careful --
+  // io/NpaintFile writes ids only inside `np:comps`, and only when there are
+  // comps to write.
+  //
+  // **Not the EXR part name** (`L0003`), which is the *format's* stable id. The
+  // two are different: a part name exists only once a layer has been through a
+  // save, and `NpaintCarry::layerPartNames` is where it lives because `core/`
+  // knows nothing about EXR. `np:comps` carries the mapping between the two so
+  // the identity survives a round trip; core/LayerComp.hpp gives the argument.
+  //
+  // `core::duplicateLayer()` resets the copy's to 0. Two layers sharing one
+  // nonzero id is the single state that would make a restore ambiguous, and
+  // `restoreLayerComp()` refuses it by name with the numbers rather than
+  // picking one of them.
+  uint64_t id = 0;
 };
 
 }  // namespace np

@@ -45,6 +45,10 @@
 //                   np:version      1
 //                   np:basis        "mixbox-v1"
 //                   np:tileSize     128
+//                   np:comps        "npcomps1:<hex>"  only when the document
+//                                   has layer comps; io/CompSerial owns the
+//                                   encoding, and it carries the part-name to
+//                                   Layer::id join as well as the comps
 //                   ...plus every unrecognised np:* attribute carried
 //                      forward from the file this document was loaded from
 //
@@ -171,9 +175,23 @@
 //    global GPU-previewed grade and stays there). Unblocked by a `Document`
 //    that owns a stack.
 //
-//  * **`np:comps` (layer comps) and `np:paths`.** Phase 5 step 12 and the
-//    paths/vector work respectively. Neither has any in-memory
-//    representation in this codebase to write out.
+//  * ~~**`np:comps` (layer comps)**~~ -- **delivered at PLAN.md Phase 5 step
+//    12** (PRD C14). The blocker was the same one `np:ops` had and had the same
+//    fix: the format table calls it a `<blob>`, this OpenImageIO drops
+//    array-typed header attributes on write, and this module *refuses* such a
+//    save by name -- so a comp list written as a blob would have made every
+//    save of a document that has comps fail. io/CompSerial encodes it as the
+//    hex `string` docs/document-format.md itself prescribes, and **that table
+//    is corrected as part of the step** rather than left contradicting its own
+//    warning. Written on part 0 and **only when the document has comps**, so a
+//    document with none produces exactly the bytes it produced before -- and
+//    no layer part changes in either case, because the payload carries the
+//    part-name-to-`Layer::id` join itself instead of putting an `np:id` on
+//    every layer. An `np:comps` this build cannot decode -- a newer version
+//    tag -- is warned about by name and carried verbatim (PRD I10).
+//
+//  * **`np:paths`.** The paths/vector work. No in-memory representation in
+//    this codebase to write out.
 //
 //  * **`np:medium` / `np:simParams` on a Media part.** The simulation's
 //    parameters live in `sim::PaintSim`/`app::AppState`, and no Media-kind
@@ -249,7 +267,11 @@ namespace np {
 // > spec's claim that `UINT8[n]` is the blob type is therefore wrong for
 // > this build, and every blob attribute it lists -- `np:ops`, `np:dabs`,
 // > `np:comps`, `np:paths`, `np:docOps`, `np:simParams` -- has no working
-// > carrier today. `Type::Blob` is kept in this enum because it is what the
+// > carrier today. **Two of them have since been given one**: `np:ops` at
+// > Phase 5 step 5 (io/OpSerial) and `np:comps` at step 12 (io/CompSerial),
+// > both as the hex `string` this note prescribes below and both with the
+// > version in the prefix. The remaining four are still uncarried.
+// > `Type::Blob` is kept in this enum because it is what the
 // > spec asks for and because the fix belongs to whoever first needs a blob,
 // > but **saveNpaint() refuses a Blob attribute by name rather than writing
 // > a file that quietly lacks it** (PRD I11). When a blob is genuinely

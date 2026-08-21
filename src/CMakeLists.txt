@@ -1,5 +1,6 @@
 add_executable(naturalPaint
   main.cpp
+  app/CompPanel.cpp
   app/ControlsLayout.cpp
   app/CurveEdit.cpp
   app/DocumentLifecycle.cpp
@@ -24,6 +25,7 @@ add_executable(naturalPaint
   core/Half.cpp
   core/Histogram.cpp
   core/History.cpp
+  core/LayerCompOps.cpp
   core/LayerOps.cpp
   core/Merge.cpp
   core/OpStack.cpp
@@ -32,6 +34,7 @@ add_executable(naturalPaint
   gfx/Context.cpp
   gfx/ShaderLoader.cpp
   io/Capabilities.cpp
+  io/CompSerial.cpp
   io/Export.cpp
   io/ExportAs.cpp
   io/ImageDecode.cpp
