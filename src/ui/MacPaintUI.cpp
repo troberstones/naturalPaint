@@ -31,6 +31,7 @@
 #include "imgui.h"
 #include "io/ExportAs.hpp"
 #include "io/ExportStates.hpp"
+#include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
 
 namespace np {
@@ -3570,7 +3571,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const WGPUTextureView tv = gradeActive     ? sim->gradedView()
                                  : grayscaleActive ? sim->grayscaleView()
                                                     : sim->canvasView();
-      dl->AddImageQuad((ImTextureID)(intptr_t)tv, q00, q10, q11, q01);
+      // Not AddImageQuad: sim/PaintSim's canvas is linear light in an
+      // RGBA8Unorm texture, and ImGui's pipeline would present it with the
+      // wrong transfer function. ui/CanvasQuad owns that conversion.
+      addCanvasQuad(dl, tv, q00, q10, q11, q01);
     } else {
       // 1.4 / ADR-0001: no PaintSim exists yet (nothing painted this
       // session), so there is no composite to show. A flat blank-paper
@@ -3610,7 +3614,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     WGPUTextureView documentView = nullptr;
     if (activeDocument != nullptr) {
       documentView = g_documentTextures.viewFor(gpu, *activeDocument);
-      if (documentView) dl->AddImageQuad((ImTextureID)(intptr_t)documentView, q00, q10, q11, q01);
+      addCanvasQuad(dl, documentView, q00, q10, q11, q01);
     }
     dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
 
@@ -3647,7 +3651,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // deep would show black where the canvas shows white -- a thumbnail that
       // does not match the picture it is a thumbnail of.
       dl->AddRectFilled(navMin, navMax, atelierToken(kCanvasPaper));
-      dl->AddImage((ImTextureID)(intptr_t)documentView, navMin, navMax);
+      addCanvasImage(dl, documentView, navMin, navMax);
 
       const float visX0 = (paintOrigin.x - origin.x) / st.view.zoom;
       const float visY0 = (paintOrigin.y - origin.y) / st.view.zoom;
@@ -4062,7 +4066,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // sense, and it is the second and last slot the pool will ever give
         // out.
         const WGPUTextureView v = g_documentTextures.viewFor(gpu, *other);
-        if (v) pdl->AddImage((ImTextureID)(intptr_t)v, p0, p1);
+        addCanvasImage(pdl, v, p0, p1);
         pdl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
       }
       pdl->AddText(ImVec2(r.x + 10.0f, r.y + 8.0f), atelierToken(kTextSecondary),

@@ -36,6 +36,7 @@
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/CanvasQuad.hpp"
 #include "ui/MacPaintUI.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
@@ -1307,6 +1308,7 @@ int main(int argc, char** argv) {
   wgpuInit.RenderTargetFormat = gpu.surfaceFormat;
   wgpuInit.DepthStencilFormat = WGPUTextureFormat_Undefined;
   ImGui_ImplWGPU_Init(&wgpuInit);
+  np::initCanvasQuad(gpu);
 
   // app/Keymap (Phase 2 step 15, PRD R7/R8): bindings loaded from a data
   // file rather than the `if (e.key.key == SDLK_...)` checks this used to
@@ -1699,6 +1701,11 @@ int main(int argc, char** argv) {
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &att;
 
+    // The document quads' vertices and bind groups, after the UI has been built
+    // (so every quad is queued) and before it is rendered (so the callbacks
+    // have something to bind). See ui/CanvasQuad.hpp on ordering.
+    np::flushCanvasQuads(gpu);
+
     WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(gpu.device, nullptr);
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(enc, &rp);
     ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
@@ -1709,6 +1716,9 @@ int main(int argc, char** argv) {
     wgpuQueueSubmit(gpu.queue, 1, &cmd);
     wgpuCommandBufferRelease(cmd);
     wgpuCommandEncoderRelease(enc);
+    // The submit holds its own reference to everything it consumed, so the
+    // per-frame bind groups can go now rather than being cached.
+    np::endCanvasQuadFrame();
 
     // --screenshot / F12: between the UI's submission and the present, which
     // is the only window where the backbuffer both holds this frame's UI and
@@ -1789,8 +1799,14 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(served),
                 static_cast<unsigned long long>(docTex.uploads()), docTex.totalUploadMs(),
                 static_cast<unsigned long long>(docTex.cacheHits()));
-  }
 
+    // The canvas pipeline's own tally beside it (ui/CanvasQuad): a dropped
+    // quad is a document that silently did not draw, so it is reported even
+    // when it is zero rather than only when something has already gone wrong.
+    std::printf("[canvas-quad] %zu document quad(s) drawn, %zu dropped\n", np::canvasQuadsDrawn(),
+                np::canvasQuadsDropped());  }
+
+  np::shutdownCanvasQuad();
   ImGui_ImplWGPU_Shutdown();
   ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();

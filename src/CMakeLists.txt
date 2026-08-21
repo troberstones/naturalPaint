@@ -120,6 +120,7 @@ add_executable(naturalPaint
   ui/NaturalPaintUI.cpp
   ui/Fonts.cpp
   ui/AtelierTheme.cpp
+  ui/CanvasQuad.cpp
   ui/AtelierLayout.cpp
   ui/AtelierChrome.cpp
 )

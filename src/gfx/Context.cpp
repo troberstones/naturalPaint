@@ -14,6 +14,31 @@ struct DeviceResult { WGPUDevice device = nullptr; bool done = false; };
 
 }  // namespace
 
+namespace {
+
+// Non-sRGB if the adapter offers one, because ImGui's gamma branch keys off it
+// (see the call site). The adapter's own preference wins among the candidates
+// that qualify, so this is "the adapter's choice, minus the sRGB trap" rather
+// than a format imposed on it.
+//
+// If an adapter ever offers *only* sRGB formats this returns one, and the
+// application still presents a correct document -- ui/CanvasQuad compiles the
+// encode out when its attachment does it in hardware -- but the chrome carries
+// the sag described above. Said out loud rather than silently tolerated.
+WGPUTextureFormat pickPresentFormat(const WGPUTextureFormat* formats, size_t count) {
+  if (count == 0) return WGPUTextureFormat_BGRA8Unorm;
+  for (size_t i = 0; i < count; ++i) {
+    if (!presentFormatIsSrgb(formats[i])) return formats[i];
+  }
+  std::printf("[gpu] WARNING: this adapter offers no non-sRGB surface format, so Dear ImGui "
+              "will decode its already-encoded chrome colours and the hardware will re-encode "
+              "them. Dark UI tokens will read up to 9 code values low. The document is "
+              "unaffected.\n");
+  return formats[0];
+}
+
+}  // namespace
+
 bool GpuContext::init(SDL_Window* window) {
   WGPUInstanceDescriptor instDesc = {};
   instance = wgpuCreateInstance(&instDesc);
@@ -136,13 +161,26 @@ bool GpuContext::init(SDL_Window* window) {
 
   WGPUSurfaceCapabilities caps = {};
   wgpuSurfaceGetCapabilities(surface, adapter, &caps);
-  if (caps.formatCount > 0) surfaceFormat = caps.formats[0];
-  // Whether this is an `...UnormSrgb` format is not a detail: Dear ImGui's WGPU
-  // backend keys its fragment-shader gamma off exactly this value, applying
-  // `pow(rgb, 2.2)` for any sRGB format and `pow(rgb, 1.0)` otherwise. Every
-  // pixel the application presents -- chrome *and* the document quad -- goes
-  // through that one branch, so the format the adapter happened to prefer is
-  // load-bearing for colour correctness and belongs in the log.
+  // A **non-sRGB** surface, chosen deliberately rather than taken from
+  // `caps.formats[0]`, which on this adapter is `BGRA8UnormSrgb`.
+  //
+  // Dear ImGui's WGPU backend keys its fragment-shader gamma off exactly this
+  // value: `pow(rgb, 2.2)` for any `...UnormSrgb` format, `pow(rgb, 1.0)`
+  // otherwise. ImGui's vertex colours are already sRGB-encoded bytes, so on an
+  // sRGB surface they were decoded (approximately, by that `pow`) and then
+  // re-encoded (exactly, by the hardware) -- two curves that are not inverses,
+  // which pulled every dark token down by up to 9 code values and was the
+  // whole of the unexplained "tokens land 4/255 dark" measurement.
+  //
+  // On a non-sRGB surface that branch selects 1.0, ImGui's bytes reach the
+  // swapchain untouched, and the chrome -- and the pigment swatches, which are
+  // *content* and were sagging too -- is exactly right with no colour in this
+  // application pre-compensated for a backend quirk.
+  //
+  // The document is linear light and does need encoding; ui/CanvasQuad does it
+  // in its own shader, at the one place a linear value becomes a screen value.
+  // See src/app/selftest/PresentTransfer.cpp, which asserts both halves.
+  surfaceFormat = pickPresentFormat(caps.formats, caps.formatCount);
   std::printf("[gpu] surface format: %d (%s), %zu offered\n",
               static_cast<int>(surfaceFormat),
               surfaceFormat == WGPUTextureFormat_BGRA8UnormSrgb   ? "BGRA8UnormSrgb"
