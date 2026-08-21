@@ -8,6 +8,7 @@
 
 #include <array>
 #include <optional>
+#include <utility>
 
 #include "core/Composite.hpp"
 #include "core/Half.hpp"
@@ -16,6 +17,7 @@
 #include "core/Pigment.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
+#include "io/CompSerial.hpp"
 #include "io/Export.hpp"
 #include "io/OpSerial.hpp"
 
@@ -39,6 +41,13 @@ namespace {
 constexpr const char* kAttrVersion = "np:version";
 constexpr const char* kAttrBasis = "np:basis";
 constexpr const char* kAttrTileSize = "np:tileSize";
+// The document's layer comps (PLAN.md Phase 5 step 12, PRD C14). A `string`,
+// not the `<blob>` docs/document-format.md's table used to claim -- io/CompSerial
+// owns the encoding and that header carries the correction. Written on part 0,
+// where document-level attributes live, and **only when the document has
+// comps**, so a document with none produces exactly the bytes it produced
+// before this attribute existed.
+constexpr const char* kAttrComps = "np:comps";
 
 constexpr const char* kAttrKind = "np:kind";
 constexpr const char* kAttrName = "np:name";
@@ -163,7 +172,8 @@ std::vector<std::string> pigmentChannelNames(bool withMask) {
 }
 
 bool isDocumentAttributeRecognised(const std::string& name) {
-  return name == kAttrVersion || name == kAttrBasis || name == kAttrTileSize;
+  return name == kAttrVersion || name == kAttrBasis || name == kAttrTileSize ||
+         name == kAttrComps;
 }
 
 bool isLayerAttributeRecognised(const std::string& name) {
@@ -1148,7 +1158,15 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // last-write-wins would silently drop the one this build wrote, which is
     // why the split happens on the read side rather than here.
     for (const NpaintAttribute& a : carry->documentAttributes) {
-      if (isDocumentAttributeRecognised(a.name)) continue;
+      // The one exception to "a recognised name is this build's to write", and
+      // it is `np:ops`' own exception one level up: an `np:comps` this build
+      // could not *parse* was carried verbatim by the loader (PRD I10), and
+      // this document has no comps of its own to write in its place, so it goes
+      // back out unchanged. The `doc.comps` test makes the two mutually
+      // exclusive, so part 0 can never end up with two.
+      if (isDocumentAttributeRecognised(a.name) &&
+          !(a.name == kAttrComps && doc.comps.empty()))
+        continue;
       composite.attributes.push_back(a);
     }
   }
@@ -1182,6 +1200,37 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
       layerNames[i] = std::move(candidate);
       break;
     }
+  }
+
+  // --- `np:comps` (PLAN.md Phase 5 step 12, PRD C14) ----------------------
+  //
+  // Assembled here, after the part names exist, because the payload's whole
+  // job is to join the *format's* stable layer id (the part name) to the
+  // in-memory one (`Layer::id`) that a comp entry names -- io/CompSerial.hpp
+  // argues why the join lives in this one attribute rather than as an
+  // `np:id` on every layer part. `request.parts[0]` is part 0, already
+  // pushed above; appending to it here rather than reordering the block keeps
+  // every other attribute exactly where it was.
+  //
+  // **Written only when the document has comps.** An empty list produces no
+  // attribute at all rather than a well-formed zero-count payload, for the two
+  // reasons `np:ops` gives: an empty `string` attribute is dropped by this
+  // OpenImageIO anyway (measured; see NpaintAttribute), and a document with no
+  // comps has to keep producing exactly the bytes this build produced before
+  // the attribute existed -- which `--selftest` asserts against a file rather
+  // than assuming.
+  //
+  // No layer part is touched by any of this, in either direction, which is
+  // what makes that regression boundary structural rather than careful.
+  if (!doc.comps.empty()) {
+    LayerCompCarrier comps;
+    comps.nextLayerId = doc.nextLayerId;
+    comps.layerIds.reserve(doc.layers.size());
+    for (size_t i = 0; i < doc.layers.size(); ++i)
+      comps.layerIds.emplace_back(layerNames[i], doc.layers[i].id);
+    comps.comps = doc.comps;
+    request.parts[0].attributes.push_back(
+        stringAttr(kAttrComps, serializeLayerComps(comps)));
   }
 
   auto appendLayerPart = [&](size_t i) {
@@ -1346,6 +1395,12 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         "is reconstructed from the layer parts, never from part 0.");
   }
 
+  // Filled by the `np:comps` branch below and applied after the layer loop;
+  // see there for why it cannot be applied in place.
+  LayerCompCarrier comps;
+  bool compsDecoded = false;
+  bool compsCarried = false;
+
   for (const NpaintAttribute& a : part0.attributes) {
     if (a.name == kAttrVersion && a.type == NpaintAttribute::Type::Int) {
       result.carry.sourceVersion = a.intValue;
@@ -1385,7 +1440,33 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       }
       continue;
     }
-    if (isDocumentAttributeRecognised(a.name)) continue;  // recognised name, unexpected type
+    // The document's layer comps (PLAN.md Phase 5 step 12). io/CompSerial owns
+    // the encoding; this is the one place a `.npaint` reaches it. Decoded here
+    // but **applied after the layer loop below**, because the payload names
+    // layers by EXR part name and the part names are not known until the layer
+    // parts have been read.
+    if (a.name == kAttrComps) {
+      std::string why;
+      if (a.type != NpaintAttribute::Type::String) {
+        compsCarried = true;
+        result.warnings.push_back(
+            "'" + path +
+            "' has an np:comps attribute that is not a string; this build's layer-comp carrier "
+            "is a hex `string` (io/CompSerial), so the value could not be decoded. The document "
+            "opened with no comps and the attribute is written back unchanged (PRD I10).");
+      } else if (deserializeLayerComps(a.stringValue, &comps, &why)) {
+        compsDecoded = true;
+      } else {
+        compsCarried = true;
+        // Carried, not discarded: a comp list this build cannot read -- a newer
+        // `npcomps2:`, most likely -- is exactly the case PRD I10's verbatim
+        // preservation exists for.
+        result.warnings.push_back("'" + path + "': " + why);
+      }
+      if (!compsCarried) continue;
+    }
+    if (isDocumentAttributeRecognised(a.name) && !(compsCarried && a.name == kAttrComps))
+      continue;  // recognised name, unexpected type
     result.carry.documentAttributes.push_back(a);
   }
 
@@ -1620,6 +1701,42 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     result.carry.layerPartNames.push_back(part.name);
     result.carry.layerAttributes.push_back(std::move(unknown));
     result.document.layers.push_back(std::move(layer));
+  }
+
+  // --- Layer comps, now that the part names are known --------------------
+  //
+  // The payload joins the format's stable layer id (the part name) to the
+  // in-memory one a comp entry carries, so this cannot run until
+  // `carry.layerPartNames` is populated. **The join is by name and never by
+  // position**, for io/CompSerial.hpp's stated reason: a part this build
+  // carries verbatim rather than turning into a `Layer` makes position N in
+  // the file and position N in `Document::layers` different layers.
+  //
+  // A part name in the table with no layer here is not an error and not even a
+  // warning -- it is what a carried foreign part looks like from this side, and
+  // the comp entries that name its id simply do not match, which
+  // `core::restoreLayerComp()` already reports with numbers when the comp is
+  // used. A layer whose part name is *absent* from the table keeps id 0 and is
+  // therefore in no comp, which is the correct answer for a layer written
+  // before the comps were captured.
+  if (compsDecoded) {
+    result.document.comps = std::move(comps.comps);
+    result.document.nextLayerId = comps.nextLayerId;
+    for (size_t i = 0; i < result.document.layers.size(); ++i) {
+      const std::string& partName = result.carry.layerPartNames[i];
+      for (const std::pair<std::string, uint64_t>& entry : comps.layerIds) {
+        if (entry.first != partName) continue;
+        result.document.layers[i].id = entry.second;
+        break;
+      }
+    }
+    // The counter is raised past anything the table actually assigned, so a
+    // file whose `nextLayerId` disagrees with its own ids -- written by hand,
+    // or by a tool that edited one and not the other -- still cannot re-issue a
+    // live layer's id. `core::normalizeLayerIds()` holds the same invariant
+    // from the other end.
+    for (const Layer& layer : result.document.layers)
+      if (layer.id >= result.document.nextLayerId) result.document.nextLayerId = layer.id + 1;
   }
 
   if (result.document.layers.empty()) {

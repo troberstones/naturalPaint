@@ -83,6 +83,22 @@ enum class LayerCommand {
   ToggleLocked,
   // PLAN.md Phase 5 step 9 / PRD C9.
   ToggleClipped,
+  // PLAN.md Phase 5 step 12 / PRD C14: capture the whole stack's current
+  // visibility and properties as a named comp.
+  //
+  // **The only comp gesture that belongs in this list, and the boundary is this
+  // file's own rule.** A `LayerCommand` is "a gesture with no value attached";
+  // capture is exactly that -- it takes the state that is already on screen and
+  // names it `core::defaultNewCompName()`, the way `NewRgbLayer` takes
+  // `core::defaultNewLayerName()`. Restore, rename, delete and reorder all
+  // carry a *comp index*, which this signature has no room for and should not
+  // grow one for: `applyLayerCommand()`'s `selected` is an index into
+  // `Document::layers`, and overloading it to sometimes mean an index into
+  // `Document::comps` is precisely the kind of double meaning that produces an
+  // operation on the wrong list. They live in the COMPS panel and call
+  // core/LayerCompOps through the same `recordLayerEdit()` funnel, which is
+  // where the opacity slider and the blend dropdown already are.
+  CaptureComp,
 };
 
 // Every command, in menu order. Used by the menu, by the panel and by the

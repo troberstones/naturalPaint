@@ -6,6 +6,7 @@
 
 #include "color/Space.hpp"
 #include "core/Layer.hpp"
+#include "core/LayerComp.hpp"
 
 // core/Document (PLAN.md "Phase 2 -- See a file", step 4; CONTEXT.md
 // Relationships: "A Document holds an ordered list of Layers and a Working
@@ -33,6 +34,48 @@ struct Document {
   // invariants of its own -- see core/LayerOps.hpp on why the operations are
   // free functions rather than methods that would only half-encapsulate it.
   std::vector<Layer> layers;
+
+  // **Layer comps** (PLAN.md Phase 5 step 12; PRD C14), in the order the panel
+  // lists them. Named sets of per-layer state, restorable in one click.
+  //
+  // On `Document` and not on `app::OpenDocument`, which is the one placement
+  // decision here and follows from C14's own wording -- "persisted in the
+  // document". Two consequences make it the right one rather than the
+  // convenient one:
+  //
+  //  * `core::History` entries hold a whole `Document` (core/History.hpp), so
+  //    capturing, renaming, deleting and reordering a comp are undoable for
+  //    free and **restoring one is itself an undoable edit**, which is what
+  //    `History::restoreSnapshot()` already does one level up. A comp list on
+  //    the session record would be outside every history entry, and undo would
+  //    silently not cover it.
+  //  * io/NpaintFile writes it as `np:comps` on part 0, and part 0 is where
+  //    docs/document-format.md puts document-level attributes. A list that
+  //    lived on the open-document record would have to be threaded through
+  //    `saveNpaint()` as a fifth argument for no gain.
+  //
+  // Empty for every document this build has ever produced until a user
+  // captures one, and io/NpaintFile writes no attribute at all for an empty
+  // list -- so a document with no comps produces exactly the bytes it produced
+  // before this member existed. `--selftest` asserts that against a file rather
+  // than assuming it.
+  std::vector<LayerComp> comps;
+
+  // The next value `core::normalizeLayerIds()` will hand out for `Layer::id`.
+  //
+  // A counter rather than "one above the highest id present", and that
+  // difference is the whole point: the highest id present *falls* when the
+  // topmost-numbered layer is deleted, so max-plus-one would re-issue a dead
+  // layer's id to the next layer created -- and a comp captured before the
+  // delete would then restore that layer's state onto an unrelated new layer.
+  // Exactly `HistoryEntry::serial`'s rule ("monotonic within one History, never
+  // reused") for exactly the same reason.
+  //
+  // Persisted inside `np:comps` and only there, so it costs nothing in a
+  // document that has no comps. `normalizeLayerIds()` also raises it past any
+  // id it finds, so a document whose counter was lost (loaded from a file whose
+  // comps were stripped by another tool, say) still cannot re-issue a live id.
+  uint64_t nextLayerId = 1;
 
   // Blank-document factory (PLAN.md Phase 2 step 5; PRD C7 (P0): "A document
   // can be created blank, not only opened from a file"). Builds a Document

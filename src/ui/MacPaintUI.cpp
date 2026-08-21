@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "app/CompPanel.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
 #include "app/DocumentLifecycle.hpp"
@@ -20,6 +21,7 @@
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
+#include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
 #include "imgui.h"
 #include "io/ExportAs.hpp"
@@ -1522,6 +1524,174 @@ void drawHistorySection(AppState& st) {
   }
 }
 
+// ------------------------------------------------------------------- comps
+//
+// PLAN.md Phase 5 step 12 ("**Layer comps** -- named sets of visibility,
+// position and properties, restorable in one click and **persisted in the
+// document** as an `np:comps` blob on part 0"; PRD C14).
+//
+// Same split as the two sections above: everything that can be wrong here
+// without a screenshot showing it is in app/CompPanel.hpp and core/LayerCompOps.hpp
+// and is exercised headlessly by `--selftest` -- what a row says, how many of a
+// comp's layers are still in the document, what a restore could not do and the
+// sentence it says about it. What is here is the chrome.
+//
+// Three choices in this function itself:
+//
+//  1. **Capture goes through `layerCommandButton()`**, i.e. through
+//     `app::applyLayerCommand()`, which is the same surface the `Layer` menu's
+//     "Capture Layer Comp" item uses. The other four operations carry a comp
+//     index and so call core/LayerCompOps directly through `recordLayerEdit()`,
+//     exactly as the opacity slider and the blend dropdown in the LAYERS panel
+//     already do -- app/LayerEditor.hpp's own boundary between a gesture and a
+//     control that carries a value.
+//  2. **An action is applied after the row loop, never inside it.** A delete or
+//     a reorder changes every index above it, and acting mid-loop would render
+//     the rest of the list against indices that no longer mean what they did.
+//     The identical precaution `drawLayersSection()` takes with
+//     `structureChanged` and `drawHistorySection()` with its deferred click;
+//     app/CompPanel.hpp section (b) is why that, rather than a stable comp id,
+//     is the right level for this list.
+//  3. **A partial restore is offered rather than greyed out**, and answered
+//     with `core::layerCompRestoreSummary()`'s sentence. A comp captured over
+//     five layers, one since deleted, is still worth restoring; a disabled
+//     button would explain nothing. app/LayerEditor.hpp's availability-versus-
+//     refusal rule.
+// Panel-local, like `drawHistorySection()`'s `lastError`: a selection and the
+// two sentences a restore can leave behind. Nothing here is a second copy of
+// model state -- the rows are rebuilt from the document every frame. At file
+// scope rather than function-local because `setCompsPanelRestoreSummary()`
+// reaches `g_compsSummary`, for the reason ui/MacPaintUI.hpp gives.
+size_t g_compsSelected = 0;
+std::string g_compsError;
+std::string g_compsSummary;
+
+void drawCompsSection(AppState& st) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    ImGui::TextDisabled("No document open.");
+    return;
+  }
+  Document& doc = od->document;
+
+  size_t& selected = g_compsSelected;
+  std::string& lastError = g_compsError;
+  std::string& lastSummary = g_compsSummary;
+  static char renameBuf[128] = "";
+
+  const std::vector<CompPanelRow> rows = compPanelRows(doc);
+  if (selected >= rows.size()) selected = rows.empty() ? 0 : rows.size() - 1;
+
+  textDisabledWrapped("%zu comp(s) -- named sets of layer visibility, opacity, blend and clip",
+                      rows.size());
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("A comp captures every layer's visibility, opacity, blend\n"
+                      "and clip, and restores them in one click (PRD C14).\n"
+                      "It is saved in the document, as np:comps on part 0.\n"
+                      "\n"
+                      "PRD C14 also says \"position\". Layers in this build have\n"
+                      "no position: tiles are stored in absolute document\n"
+                      "coordinates and core::Layer has no offset field, so there\n"
+                      "is nothing to capture or restore. That third of C14 is\n"
+                      "not delivered, and this says so rather than capturing a\n"
+                      "zero and calling it done.\n"
+                      "\n"
+                      "Not captured either: the mask (removing one discards its\n"
+                      "pixels), the lock (a working state, not an appearance),\n"
+                      "the name, and the per-layer op stack. core/LayerComp.hpp\n"
+                      "argues each exclusion.");
+
+  layerCommandButton(st, LayerCommand::CaptureComp, "+ Capture");
+
+  auto run = [&](LayerOpResult r) {
+    const DocumentOpResult out = recordLayerEdit(*od, std::move(r));
+    lastError = out.ok ? std::string() : out.error;
+    return out.ok;
+  };
+
+  // The deferred actions, applied after the loop (choice 2 above).
+  size_t restore = rows.size(), remove = rows.size(), moveUp = rows.size(),
+         moveDown = rows.size();
+
+  for (const CompPanelRow& row : rows) {
+    ImGui::PushID(static_cast<int>(row.index));
+    if (ImGui::Selectable(compRowText(row).c_str(), selected == row.index))
+      selected = row.index;
+    if (ImGui::IsItemHovered() && compRowIsPartial(row))
+      ImGui::SetTooltip("%zu of this comp's %zu layers are still in the document.\n"
+                        "Restoring applies those and reports the rest -- a comp is\n"
+                        "matched by layer id, never by position, so nothing lands\n"
+                        "on a layer it was not captured from.",
+                        row.stillHere, row.captured);
+    ImGui::Indent();
+    ImGui::BeginDisabled(!row.known);
+    if (ImGui::SmallButton("Restore")) restore = row.index;
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !row.known)
+      ImGui::SetTooltip("This comp was written by a build whose comp format this\n"
+                        "one does not read. It is kept and written back unchanged\n"
+                        "(PRD I10), but its contents cannot be applied.");
+    ImGui::SameLine();
+    // **Up the panel is DOWN the index here**, the opposite of the LAYERS
+    // panel, because this list is not reversed. The arithmetic is
+    // app/CompPanel's rather than this loop's, for app/LayerPanel.hpp's stated
+    // reason -- a second place that knows a direction is how "up" ends up
+    // moving a thing down, and this loop had that bug before the two functions
+    // existed.
+    const size_t upTo = compRowMoveUpTarget(row.index, rows.size());
+    const size_t downTo = compRowMoveDownTarget(row.index, rows.size());
+    ImGui::BeginDisabled(upTo == kNoCompRow);
+    if (ImGui::SmallButton("Up")) moveUp = row.index;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(downTo == kNoCompRow);
+    if (ImGui::SmallButton("Down")) moveDown = row.index;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Delete")) remove = row.index;
+
+    if (selected == row.index && row.known) {
+      std::snprintf(renameBuf, sizeof(renameBuf), "%s", row.name.c_str());
+      if (ctlInputText("Comp name", renameBuf, sizeof(renameBuf),
+                       ImGuiInputTextFlags_EnterReturnsTrue))
+        run(renameLayerComp(doc, row.index, renameBuf));
+    }
+    ImGui::Unindent();
+    ImGui::PopID();
+  }
+
+  if (restore < rows.size()) {
+    LayerCompRestoreReport report;
+    if (run(restoreLayerComp(doc, restore, &report)))
+      lastSummary = layerCompRestoreSummary(report);
+    else
+      lastSummary.clear();
+  } else if (remove < rows.size()) {
+    if (run(deleteLayerComp(doc, remove))) lastSummary.clear();
+  } else if (moveUp < rows.size()) {
+    const size_t to = compRowMoveUpTarget(moveUp, rows.size());
+    if (to != kNoCompRow && run(moveLayerComp(doc, moveUp, to))) selected = to;
+  } else if (moveDown < rows.size()) {
+    const size_t to = compRowMoveDownTarget(moveDown, rows.size());
+    if (to != kNoCompRow && run(moveLayerComp(doc, moveDown, to))) selected = to;
+  }
+
+  // The restore's own sentence: what it could not do, with the numbers.
+  // core/LayerCompOps writes it, so the panel has no second vocabulary to drift
+  // from the model's -- the rule drawLayersSection() and drawHistorySection()
+  // both already follow for their refusals.
+  if (!lastSummary.empty()) {
+    ImGui::TextWrapped("%s", lastSummary.c_str());
+    if (ImGui::SmallButton("Dismiss##compsummary")) lastSummary.clear();
+  }
+  if (!lastError.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+    ImGui::TextWrapped("%s", lastError.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::SmallButton("Dismiss##compserror")) lastError.clear();
+  }
+}
+
 // ---------------------------------------------------------------- Export As
 //
 // PLAN.md Phase 4 step 7 / PRD I15 ("Export As: target format, colour space,
@@ -2495,6 +2665,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // Below LAYERS, because a history row names an edit made to the stack
         // above it.
         case ControlsSection::History:   drawHistorySection(st); break;
+        // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14). Below HISTORY,
+        // because a comp is a saved state *of* the layer stack and a history
+        // row is an edit *to* it. See drawCompsSection()'s own doc comment.
+        case ControlsSection::Comps:     drawCompsSection(st); break;
         // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and
         // a curve widget operating in the shaper domain").
         case ControlsSection::Grade:     drawGradeSection(st); break;
@@ -2966,5 +3140,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 const DocumentTexture& canvasDocumentTexture() { return g_documentTexture; }
 
 void setLayersPanelSelection(size_t layerIndex) { g_layers.selected = layerIndex; }
+
+void setCompsPanelRestoreSummary(std::string summary) { g_compsSummary = std::move(summary); }
 
 }  // namespace np

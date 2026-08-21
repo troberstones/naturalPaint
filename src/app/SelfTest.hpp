@@ -1640,4 +1640,56 @@ bool runLayerEditorTest();
 // Headless, GPU-free and ImGui-free; writes no files.
 bool runControlsLayoutTest();
 
+// PLAN.md Phase 5 step 12 ("**Layer comps** -- named sets of visibility,
+// position and properties, restorable in one click and **persisted in the
+// document** as an `np:comps` blob on part 0"; PRD C14).
+//
+// Two corrections this section prints on every run rather than burying:
+// **`np:comps` cannot be a blob** (docs/document-format.md's own measured
+// warning -- array attributes are silently absent through this OpenImageIO,
+// and io/NpaintFile refuses such a save by name, so a blob comp list would
+// have made every save of a document with comps fail), and **position cannot
+// be captured**, because `core::Layer` has no offset, origin or transform
+// field of any kind and tiles are keyed by absolute document coordinates.
+//
+// What is asserted:
+//  - **The four captured properties in pixels**: two comps of one document
+//    proven to be two different composites, and each restore proven to give
+//    its picture back byte-identically.
+//  - **The four excluded properties proven excluded** -- mask, op stack, name
+//    and lock each changed and then proven untouched by a restore, because an
+//    exclusion is a promise that a click will not silently overwrite something.
+//  - **The layer-set mismatch, with the rejected alternative run beside the
+//    built one.** A comp captured over five layers, restored after a delete
+//    and an add: keyed by `Layer::id` not one layer holds another layer's
+//    state; the index-keyed restore an implementation with no identity would
+//    have to use is implemented inside the test and its misapplication count
+//    printed beside zero.
+//  - **Every refusal with its numbers**: an out-of-range comp, two layers
+//    sharing an id (the whole restore refused, nothing changed), a comp whose
+//    layers are all gone, a comp of a document with no layers, and an
+//    unreadable carried record.
+//  - **The lock honoured rather than bypassed**: visibility restored on a
+//    locked layer and opacity/blend/clip not, through core/LayerOps' own
+//    setters so there is no second copy of the rule.
+//  - **Restoring is an edit**: one revision, one history entry, and undo
+//    proven to give back the pre-restore picture byte-identically; a refusal
+//    proven to record nothing.
+//  - **io/CompSerial**: a round trip, a payload typed out **by hand** and
+//    decoded field by field, `npcomps2:` refused by name, and an unrecognised
+//    comp record proven to survive whole and in position between two readable
+//    ones.
+//  - **Persistence**: comps, layer ids and the id counter round-trip through
+//    `.npaint`; a restore after a reload applies in full and composites
+//    identically to the same restore in memory; and a document whose comps are
+//    cleared writes a file **byte-identical** to one written before any comp
+//    existed, with the comparator proven non-vacuous.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// the model, the panel and the carrier are pure, and the OFF build's answer for
+// the file half is that `saveNpaint()` refuses by name, which is asserted
+// rather than skipped (PLAN.md §1.5). Headless and GPU-free; writes and removes
+// five `.npaint` files.
+bool runLayerCompTest();
+
 }  // namespace np

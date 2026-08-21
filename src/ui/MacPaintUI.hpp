@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "app/AppState.hpp"
 #include "gfx/Context.hpp"
@@ -46,5 +47,15 @@ const DocumentTexture& canvasDocumentTexture();
 // whichever layer the selection happened to start on. Clamped by the panel
 // itself on the next frame, so an index past the end is not an error here.
 void setLayersPanelSelection(size_t layerIndex);
+
+// The sentence the COMPS panel shows under its list after a restore --
+// `core::layerCompRestoreSummary()`'s, naming what the restore could not do.
+//
+// Set by the panel itself whenever its own Restore button is pressed. This
+// setter exists for the same one caller `setLayersPanelSelection()` does,
+// main.cpp's `--comps-demo`, which restores through the same recorded funnel
+// before the first frame is drawn and would otherwise leave the panel with
+// nothing to say about a restore that has already happened. Empty clears it.
+void setCompsPanelRestoreSummary(std::string summary);
 
 }  // namespace np

@@ -11,6 +11,7 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
   static const std::vector<ControlsSectionSpec> kSections = {
       {ControlsSection::Layers, R::Document, "LAYERS", true},
       {ControlsSection::History, R::Document, "HISTORY", true},
+      {ControlsSection::Comps, R::Document, "COMPS", true},
       {ControlsSection::Grade, R::View, "GRADE", false},
       {ControlsSection::Brush, R::Simulation, "BRUSH", false},
       {ControlsSection::Pigment, R::Simulation, "PIGMENT", false},

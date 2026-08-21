@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
 
 namespace np {
@@ -46,6 +47,7 @@ const std::vector<LayerCommand>& allLayerCommands() {
       LayerCommand::MoveLayerDown,  LayerCommand::AddMask,
       LayerCommand::RemoveMask,     LayerCommand::ToggleVisible,
       LayerCommand::ToggleLocked,   LayerCommand::ToggleClipped,
+      LayerCommand::CaptureComp,
   };
   return kAll;
 }
@@ -64,6 +66,7 @@ const char* layerCommandLabel(LayerCommand command) noexcept {
     case LayerCommand::ToggleVisible:      return "Toggle Visibility";
     case LayerCommand::ToggleLocked:       return "Toggle Lock";
     case LayerCommand::ToggleClipped:      return "Clip to Layer Below";
+    case LayerCommand::CaptureComp:        return "Capture Layer Comp";
   }
   return "?";
 }
@@ -101,6 +104,13 @@ bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t sel
     // arrived at index 0 from a file.
     case LayerCommand::ToggleClipped:
       return haveSelection && (selected > 0 || doc.layers[selected].clipped);
+    // Independent of the selection -- a comp captures the whole stack, not the
+    // selected row -- but unavailable on a document with no layers at all,
+    // which is the one case `core::captureLayerComp()` refuses. Offering a
+    // control whose only possible outcome is that refusal would be availability
+    // used as decoration.
+    case LayerCommand::CaptureComp:
+      return count > 0;
   }
   return false;
 }
@@ -171,6 +181,12 @@ LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t
                     setLayerClipped(doc, selected,
                                     selected < count ? !doc.layers[selected].clipped : true),
                     selected, selected);
+    // The selection does not move: a comp is a record of the whole stack, and
+    // capturing one is not a gesture about any particular layer. Recorded like
+    // every other command, so undo takes the comp back (PLAN.md Phase 5 step
+    // 12; `Document::comps` lives inside every history entry, core/Document.hpp).
+    case LayerCommand::CaptureComp:
+      return record(od, captureLayerComp(doc, defaultNewCompName(doc)), selected, selected);
   }
   return refused("unknown layer command.", selected);
 }
