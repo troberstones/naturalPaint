@@ -490,6 +490,25 @@ int main(int argc, char** argv) {
     // configurations. Headless and GPU-free; writes and removes two `.npaint`
     // files.
     const bool historyOk = np::runHistoryTest();
+    // Phase 5 step 8 ("History panel listing entries by originating tool or
+    // op; clicking one moves the cursor there in a single replay, not N"; PRD
+    // O2, O3, with O1's redo and O4's snapshots made visible): app/HistoryPanel
+    // is the pure half -- rows, row text, the serial mapping and the click --
+    // with the chrome in ui/MacPaintUI.cpp, the same split app/LayerPanel has.
+    // The panel reads oldest-at-top and reverses nothing, which is the
+    // OPPOSITE of the layers panel, and both orders are asserted in one place
+    // so "fixing" either to match the other fails. A row is keyed by
+    // HistoryEntry::serial and never by its index, with the trap demonstrated:
+    // a budget that drops six states leaves row index 3 holding a different
+    // picture, and a click carrying the pre-eviction serial is refused with
+    // the numbers rather than redirected to it. PRD O3 is counted and timed --
+    // one cursor move at distance 1 and at distance 40, against the per-step
+    // walk run beside it on the same history and shown to take forty calls for
+    // the same bytes. Every row carries PAST/CURRENT/REDOABLE in its text, so
+    // the branch the next edit destroys is legible without a screenshot. Runs,
+    // and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+    // Headless and GPU-free; writes no files.
+    const bool historyPanelOk = np::runHistoryPanelTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -503,7 +522,8 @@ int main(int argc, char** argv) {
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
-                    cowTileOk && historyOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    cowTileOk && historyOk && historyPanelOk && strokeSpeedOk && idleMemOk &&
+                    fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

@@ -1403,4 +1403,52 @@ bool runCowTileTest();
 // Headless and GPU-free; writes and removes two `.npaint` files.
 bool runHistoryTest();
 
+// PLAN.md Phase 5 step 8 ("History panel listing entries by originating tool
+// or op; clicking one moves the cursor there in a single replay, not N"; PRD
+// O2 (P1), O3 (P1), with O1's redo and O4's snapshots made visible). Exercises
+// app/HistoryPanel, which is the pure half of the panel -- rows, row text, the
+// serial mapping and the click -- with the ImGui chrome in ui/MacPaintUI.cpp,
+// the same split app/LayerPanel already has.
+//
+// Covers, and the first three are the decisions this step turns on:
+//  - **Row order, asserted beside app/LayerPanel's**: the history panel reads
+//    oldest-at-top and reverses nothing, where the layers panel reverses;
+//    `layerIndexForPanelRow(0, 3) == 2` and `historyRowForSerial(row 0) == 0`
+//    are checked in the same assertion, so "fixing" either to match the other
+//    fails here.
+//  - **A row is keyed by `HistoryEntry::serial`, never by its index**, with
+//    the trap demonstrated rather than described: a 0.50 MiB budget drops six
+//    states, row index 3 is shown to hold a *different picture* afterwards
+//    (compared over raw half words), and a click carrying the pre-eviction
+//    serial is **refused with the numbers rather than redirected** to whatever
+//    now sits at that position. The list's strictly-ascending-serial invariant
+//    -- which the click's binary search rests on -- is asserted across begin,
+//    record, truncate, evict and restore.
+//  - **PRD O3, counted and timed**: a panel click reports exactly one cursor
+//    move at distance 1 and at distance 40, and the per-step walk an
+//    implementer would otherwise write is run beside it on the same history,
+//    shown to take forty calls for the same bytes, and timed. The timing's
+//    bound is *derived* (a click's work does not read the distance, so the
+//    ratio must be 1.00) and the measurement's own noise floor is measured
+//    beside it rather than assumed.
+//  - **The redo tail is visibly distinct**: every row carries PAST / CURRENT /
+//    REDOABLE in its *text*, the note names how many states the next edit
+//    would discard, and after that edit a click still holding one of those
+//    rows is refused with the truncation count.
+//  - **Eviction and snapshots are legible**: the dropped-states note names the
+//    count and the budget; snapshots are their own row group, survive the
+//    eviction that emptied the linear list (PRD O4), and the two clicks refuse
+//    each other's rows by name -- a cursor move and an edit are different
+//    actions and a single handler would have conflated them.
+//  - **The wiring**: rows are named by core/LayerOps' own `editLabel`, an
+//    empty history draws nothing and refuses a click into it by number, and
+//    revert's un-undoability -- the decision core/History.hpp defers to this
+//    step -- is answered by the panel showing one 'revert to saved' row with
+//    nothing above it.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations;
+// there is no `#ifdef` in the section and nothing for one to guard, which it
+// prints. Headless and GPU-free; writes no files.
+bool runHistoryPanelTest();
+
 }  // namespace np

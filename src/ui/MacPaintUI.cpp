@@ -9,6 +9,7 @@
 
 #include "app/CurveEdit.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "app/HistoryPanel.hpp"
 #include "app/Journal.hpp"
 #include "app/LayerPanel.hpp"
 #include "app/Snapping.hpp"
@@ -864,6 +865,155 @@ void drawLayersSection(AppState& st) {
     ImGui::TextWrapped("%s", lastError.c_str());
     ImGui::PopStyleColor();
     if (ImGui::SmallButton("Dismiss")) lastError.clear();
+  }
+}
+
+// ----------------------------------------------------------------- History
+//
+// PLAN.md Phase 5 step 8 ("History panel listing entries by originating tool
+// or op; clicking one moves the cursor there in a single replay, not N"; PRD
+// O2, O3, with O1's redo and O4's snapshots made visible). docs/ui.md §5 puts
+// it in this right-hand docked column.
+//
+// Same split as drawLayersSection()/app/LayerPanel: everything that can be
+// wrong here without a screenshot showing it lives in app/HistoryPanel.hpp and
+// is exercised headlessly by `--selftest`. Specifically:
+//
+//  * **Which state a row is** -- `HistoryPanelRow::serial`, and NOT its index.
+//    Eviction shifts every index down by one, so an index-keyed row would
+//    silently repoint at a different state; this loop never passes a row
+//    number to anything.
+//  * **What a row says** -- `historyRowText()`, including the PAST / CURRENT /
+//    REDOABLE word, so the redo tail a new edit would destroy is legible in
+//    text and not only in a colour.
+//  * **What a click does** -- `historyPanelClick()`, which performs exactly one
+//    `History::jumpTo()` at any distance (PRD O3) and refuses, with numbers,
+//    rather than redirecting when the row's state is gone.
+//  * **What the notes say** -- `historyDroppedNote()` and
+//    `historyRedoTailNote()`.
+//
+// Two deliberate choices in this function itself:
+//
+//  1. **The click is applied after the row loop, never inside it.** A jump
+//     changes the cursor, which changes every row's state; acting mid-loop
+//     would render the rest of the list against a cursor that has already
+//     moved. The identical precaution drawLayersSection() takes with
+//     `structureChanged`, for the identical reason.
+//  2. **`History::budgetPressure()` and `overBudget()` are not called here.**
+//     Both run `bytes()`, an O(slots) scan over every tile of every entry, and
+//     this function runs every frame. The part of that a user can act on --
+//     that undo has stopped going back, and why -- is in
+//     `historyDroppedNote()`, which reads two O(1) counters.
+//
+// **What this panel does NOT show, stated plainly**: a painted stroke. It
+// lists the open document's history, and `sim::PaintSim` owns a dense GPU
+// texture no stroke escapes -- core/History.hpp says so at length. So the rows
+// are layer operations, placing an image, duplicating and reverting, and a
+// session spent painting produces exactly one row.
+void drawHistorySection(AppState& st) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    ImGui::TextDisabled("No document open.");
+    return;
+  }
+
+  History& h = od->history;
+  static std::string lastError;
+
+  // A cursor move is not an edit: it must NOT go through recordEdit(), which
+  // would append a history entry for the act of moving through history. It
+  // does change the document on screen, so the dirty flag and the journal's
+  // structural revision both move -- an undone "add layer" changes the layer
+  // stack, and a journal that kept the pre-jump structural state would be
+  // holding a document that is no longer open.
+  auto install = [&](const HistoryPanelClick& r) {
+    lastError = r.ok ? std::string() : r.refusal;
+    if (!r.ok || r.document == nullptr) return;
+    od->document = *r.document;
+    ++od->revision;
+    ++od->structuralRevision;
+  };
+
+  const std::vector<HistoryPanelRow> rows = historyPanelRows(h);
+  ImGui::TextDisabled("%zu state(s), cursor on %zu", rows.size(),
+                      rows.empty() ? 0 : h.cursor() + 1);
+
+  // Undo and Redo go through the panel's own click rather than
+  // `History::undo()` / `redo()`, so there is exactly one path from a widget to
+  // a cursor move and exactly one place a refusal can come from. The two guards
+  // are `canUndo()` / `canRedo()`, so the neighbouring row always exists and
+  // `cursor() - 1` cannot wrap.
+  ImGui::BeginDisabled(!h.canUndo());
+  if (ImGui::SmallButton("Undo"))
+    install(historyPanelClick(h, historySerialForRow(h, h.cursor() - 1)));
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!h.canRedo());
+  if (ImGui::SmallButton("Redo"))
+    install(historyPanelClick(h, historySerialForRow(h, h.cursor() + 1)));
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Snapshot"))
+    h.takeSnapshot("snapshot " + std::to_string(h.snapshots().size() + 1), od->document);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("A named state exempt from the byte budget's eviction\n"
+                      "until you dismiss it (PRD O4). Kept in its own list, not\n"
+                      "in the undo chain, so undoing past it cannot lose it.");
+
+  const std::string dropped = historyDroppedNote(h);
+  if (!dropped.empty()) ImGui::TextWrapped("%s", dropped.c_str());
+
+  // Rows, oldest at the top -- the OPPOSITE of drawLayersSection()'s order,
+  // and app/HistoryPanel.hpp says why the two panels differ. There is no
+  // reversal in this loop and there must not be one.
+  uint64_t clickedEntry = 0;
+  for (const HistoryPanelRow& row : rows) {
+    ImGui::PushID(static_cast<int>(row.serial));
+    const bool redoable = row.state == HistoryRowState::Redoable;
+    if (redoable) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(150, 150, 150, 255));
+    if (ImGui::Selectable(historyRowText(row).c_str(), row.state == HistoryRowState::Current))
+      clickedEntry = row.serial;
+    if (redoable) ImGui::PopStyleColor();
+    ImGui::PopID();
+  }
+
+  const std::string tail = historyRedoTailNote(h);
+  if (!tail.empty()) ImGui::TextWrapped("%s", tail.c_str());
+
+  // Snapshots, as their own group below the list and never interleaved into
+  // it: they are not on the linear chain and have no cursor position, which is
+  // core/History.hpp's reason for their being a second list in the first
+  // place.
+  const std::vector<HistorySnapshotRow> snaps = historySnapshotRows(h);
+  if (!snaps.empty()) {
+    ImGui::Dummy(ImVec2(0, 4));
+    ImGui::TextDisabled("SNAPSHOTS (exempt from eviction)");
+    uint64_t restore = 0;
+    size_t dismiss = kNoHistoryRow;
+    for (const HistorySnapshotRow& row : snaps) {
+      ImGui::PushID(static_cast<int>(row.serial));
+      ImGui::TextUnformatted(historySnapshotRowText(row).c_str());
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Restore")) restore = row.serial;
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Dismiss")) dismiss = row.index;
+      ImGui::PopID();
+    }
+    if (restore != 0) install(historyPanelRestoreSnapshot(h, restore));
+    if (dismiss != kNoHistoryRow) h.dismissSnapshot(dismiss);
+  }
+
+  if (clickedEntry != 0) install(historyPanelClick(h, clickedEntry));
+
+  // The refusal, verbatim, for the same reason drawLayersSection() shows
+  // core/LayerOps' sentence verbatim: app/HistoryPanel's refusals already name
+  // the counts and say what did not happen, so there is no second vocabulary
+  // here to drift from theirs.
+  if (!lastError.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
+    ImGui::TextWrapped("%s", lastError.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::SmallButton("Dismiss##historyerror")) lastError.clear();
   }
 }
 
@@ -1926,6 +2076,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     ImGui::TextUnformatted("LAYERS");
     ImGui::Separator();
     drawLayersSection(st);
+
+    // PLAN.md Phase 5 step 8 ("History panel ...", PRD O2/O3). docs/ui.md §5:
+    // "The History panel (PRD O2) joins the right-hand docked column." Below
+    // LAYERS, because a history row names an edit made to the stack above it.
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::TextUnformatted("HISTORY");
+    ImGui::Separator();
+    drawHistorySection(st);
 
     ImGui::Dummy(ImVec2(0, 8));
     ImGui::TextUnformatted("GRADE");

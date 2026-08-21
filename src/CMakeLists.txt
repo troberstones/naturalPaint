@@ -3,6 +3,7 @@ add_executable(naturalPaint
   app/CurveEdit.cpp
   app/DocumentLifecycle.cpp
   app/Journal.cpp
+  app/HistoryPanel.cpp
   app/Keymap.cpp
   app/LayerPanel.cpp
   app/Latency.cpp
