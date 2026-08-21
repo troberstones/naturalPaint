@@ -18,6 +18,7 @@ add_executable(naturalPaint
   core/Composite.cpp
   core/Half.cpp
   core/Histogram.cpp
+  core/History.cpp
   core/LayerOps.cpp
   core/OpStack.cpp
   core/Pigment.cpp

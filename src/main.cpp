@@ -473,6 +473,23 @@ int main(int argc, char** argv) {
     // and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
     // Headless and GPU-free; writes and removes two `.npaint` files.
     const bool cowTileOk = np::runCowTileTest();
+    // Phase 5 step 7 ("`core/History` -- a linear list with a cursor, not a
+    // stack: undo moves it back, redo moves it forward, and a new edit at a
+    // non-end cursor truncates the tail. Undo bounded in bytes"; PRD O1, A9,
+    // O4): every entry is a whole `core::Document`, which step 6's
+    // copy-on-write made nearly free, so undo and redo are one traversal
+    // primitive over states rather than two mechanisms over deltas. PLAN.md's
+    // own verify sentence is run in the only form that exists today -- ten
+    // tile writes through the real `recordEdit()` funnel, said so in the
+    // output -- with the redo proven bit-identical to before the undos; the
+    // truncated tail's memory is proven released by accounting and by RSS;
+    // and eviction is proven correct against step 6's NON-additive sharing by
+    // running the naive per-entry-sum policy beside it and showing it
+    // over-evicts. A snapshot is proven to survive both an eviction and a
+    // truncation. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
+    // configurations. Headless and GPU-free; writes and removes two `.npaint`
+    // files.
+    const bool historyOk = np::runHistoryTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -486,7 +503,7 @@ int main(int argc, char** argv) {
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
-                    cowTileOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    cowTileOk && historyOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

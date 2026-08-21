@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/Document.hpp"
+#include "core/History.hpp"
 #include "core/LayerOps.hpp"
 #include "io/NpaintFile.hpp"
 #include "io/TileResidency.hpp"
@@ -250,6 +251,29 @@ struct OpenDocument {
   // even though the labels stop.
   size_t unsavedEditsDropped = 0;
 
+  // Undo/redo for this document (PLAN.md Phase 5 step 7, PRD O1/A9/O4).
+  //
+  // **Per document, not per session**, which is the question this header's
+  // `DocumentId` comment posed in advance and answered: "a duplicate is a
+  // different document, so it gets a fresh id, and a future history keyed by
+  // id cannot leak one document's undo stack into its copy". Holding it here,
+  // by value, makes that structural rather than a rule someone has to obey --
+  // there is no shared history object for two documents to reach.
+  //
+  // Seeded with a baseline entry wherever a document acquires one:
+  // `makeBlankOpenDocument()`, `openNpaintDocument()`, `duplicateDocument()`
+  // and `revertDocument()`. Every subsequent entry comes from `recordEdit()`
+  // below and from nowhere else.
+  //
+  // **What it can and cannot cover today.** Everything that mutates
+  // `document` goes through `recordEdit()`, so the core/LayerOps operations,
+  // placing an image as a layer and duplication are all undoable. A brush
+  // stroke is not -- `sim::PaintSim` owns a dense GPU texture and no stroke
+  // reaches a `Layer` (this header's own "the painting canvas is not one of
+  // those documents" section). core/History.hpp states this at length; it is
+  // repeated here because this is the member a reader will find first.
+  History history;
+
   bool isDirty() const noexcept { return revision != savedRevision; }
   bool hasPath() const noexcept { return !path.empty(); }
 
@@ -260,6 +284,19 @@ struct OpenDocument {
   // `kind` decides whether app/Journal writes within the next frame or waits
   // for its timer; see EditKind above. It changes nothing else about the
   // record -- both kinds are equally dirty and equally unsaved.
+  //
+  // **Also appends a history entry** (PLAN.md Phase 5 step 7). Call it
+  // *after* the mutation, which every existing caller already does: the entry
+  // holds the post-edit state, and the pre-edit state is the entry already
+  // sitting at the cursor. `EditKind` is deliberately NOT consulted -- a
+  // painted stroke is exactly as undoable as a layer reorder, and ADR-0005's
+  // undo is stroke-granular, so a `Content` edit that skipped history would be
+  // the one edit a user could not take back.
+  //
+  // The entry is a `core::Document` copy, which Phase 5 step 6 measured at
+  // 0.000011 s and +0.0 MiB for a 32.0 MiB / 256-tile document; before that
+  // step this line would have cost 32.0 MiB per edit and could not have been
+  // written.
   void recordEdit(std::string label, EditKind kind = EditKind::Structural);
 
   // One sentence naming exactly what is unsaved, for PRD I11 refusals and for

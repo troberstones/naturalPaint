@@ -120,6 +120,11 @@ DocumentId allocateDocumentId() {
 void OpenDocument::recordEdit(std::string label, EditKind kind) {
   ++revision;
   if (kind == EditKind::Structural) ++structuralRevision;
+  // History gets the label whether or not the capped `unsavedEdits` list keeps
+  // it: the cap exists so a refusal message stays readable (PRD I11), and a
+  // history entry is not a message. This is also why the copy happens before
+  // the `std::move` below.
+  history.record(label, document);
   if (unsavedEdits.size() < kMaxTrackedUnsavedEdits)
     unsavedEdits.push_back(std::move(label));
   else
@@ -160,6 +165,10 @@ OpenDocument makeBlankOpenDocument(int32_t width, int32_t height, WorkingSpace s
   doc.id = allocateDocumentId();
   doc.document = Document::createBlank(width, height, space);
   doc.title = title.empty() ? "Untitled" : std::move(title);
+  // The baseline entry: undo from the first edit lands on the blank document,
+  // not on nothing. Costs one empty TileStore share -- createBlank() allocates
+  // no tiles (PRD C2).
+  doc.history.begin("new document", doc.document);
   return doc;
 }
 
@@ -247,6 +256,9 @@ DocumentOpResult openNpaintDocument(const std::string& path, OpenDocument* out,
   // Freshly read from the file: clean, with nothing unsaved.
   doc.revision = 0;
   doc.savedRevision = 0;
+  // The baseline entry is the file as it was opened, so the oldest undo lands
+  // on exactly what is on disk.
+  doc.history.begin("opened", doc.document);
   *out = std::move(doc);
 
   DocumentOpResult r;
@@ -298,6 +310,13 @@ DocumentOpResult revertDocument(OpenDocument& doc, const RevertOptions& options)
   doc.residencyMode = TileResidencyMode::Eager;
   doc.unsavedEdits.clear();
   doc.unsavedEditsDropped = 0;
+  // A new baseline, and the whole prior history released with it. This
+  // deliberately makes the revert itself *not* undoable, which is what the
+  // refusal above already promises in so many words ("there is no undo for
+  // it") -- a shipped, user-facing promise this step does not get to change
+  // silently. Snapshots survive: ADR-0005 says exempt "until dismissed", and a
+  // revert is not a dismissal. See core/History.hpp on `begin()`.
+  doc.history.begin("revert to saved", doc.document);
   // The document changed (back), so anything caching a derived product must
   // re-read -- but there is now nothing unsaved.
   ++doc.revision;
@@ -330,6 +349,15 @@ OpenDocument duplicateDocument(const OpenDocument& source) {
   copy.residencyMode = TileResidencyMode::Eager;
   copy.revision = 0;
   copy.savedRevision = 0;
+  // **The source's history is deliberately not copied** -- `copy` is
+  // default-constructed and every member is set by name, so `copy.history` is
+  // empty here. That is this header's own `DocumentId` rule made real: a
+  // duplicate is a different document, and inheriting the original's undo
+  // stack would let an undo in the copy reinstate a state the copy never had.
+  // `recordEdit()` on an empty history seeds it (core/History::record), so the
+  // duplicate's baseline is the duplicated content and there is nothing before
+  // it -- which is correct, because there was no earlier state of *this*
+  // document.
   copy.recordEdit("duplicate of " + documentDisplayName(source));
   return copy;
 }

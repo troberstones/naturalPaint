@@ -1358,4 +1358,49 @@ bool runAdjustmentLayerTest();
 //    load, because the format stores each part's pixels in full.
 bool runCowTileTest();
 
+// PLAN.md Phase 5 step 7 ("`core/History` -- a linear list with a cursor, not
+// a stack"; PRD O1 (P0), A9, O4, and O2/O3 made possible without building the
+// panel). Undo moves the cursor back, redo moves it forward, a new edit at a
+// non-end cursor truncates the tail, and the whole list is bounded in bytes
+// against step 6's copy-on-write sharing.
+//
+// Covers, and the first three are what the step lives or dies on:
+//  - **PLAN.md's own Phase 5 verify sentence**, adapted honestly and said so
+//    in the output: "undo ten strokes, redo ten, pixel-identical to before the
+//    undos" run as ten *tile writes through `getOrCreate()` funnelled through
+//    `OpenDocument::recordEdit(..., EditKind::Content)`* -- the exact pair of
+//    calls app/DocumentLifecycle.hpp says the canvas bridge will make -- because
+//    no stroke reaches a `Layer` and there are therefore no strokes to undo.
+//  - **Redo is not an inverse**: every intermediate undo state is proven
+//    bit-identical to a direct `jumpTo()` of the same index, and `jumpTo()` is
+//    timed at one and at forty steps to show PRD O3 ("one replay, not N") is
+//    already a property of the code rather than a promise.
+//  - **Truncation**, with the tail's memory proven released -- by the exact
+//    distinct-tile accounting AND by process RSS, not by asserting that a
+//    destructor exists.
+//  - **Eviction under a deliberately small byte budget, proven against step
+//    6's non-additive sharing**: the naive "evict until the sum of per-entry
+//    `documentExclusiveTileBytes()` covers the overrun" policy is run side by
+//    side on the same history and shown to over-evict every evictable entry
+//    where the drop-one-then-re-measure policy takes strictly fewer and still
+//    meets the budget.
+//  - **A snapshot surviving an eviction that removed the same state from the
+//    entry list**, and surviving a truncation -- which is the case that
+//    decides snapshots are a second list rather than a flag on an entry.
+//  - **The byte accounting checked against reality**: `History::bytes()`
+//    against an independent count of distinct tile addresses, and against
+//    process RSS across dropping a history of a known size.
+//  - **The measurements the step's own correction rests on**: how much of the
+//    process's tile bytes a history is actually attributable for, in both the
+//    favourable and the unfavourable regime -- the numbers that say what
+//    compression and an `mmap` spill could at most have bought.
+//  - **app/DocumentLifecycle wiring**: every `recordEdit()` appends, the
+//    labels are core/LayerOps' own, a duplicate does not inherit its source's
+//    undo stack, and a `.npaint` written by a document with a history is
+//    byte-identical to one written by a document without.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+// Headless and GPU-free; writes and removes two `.npaint` files.
+bool runHistoryTest();
+
 }  // namespace np
