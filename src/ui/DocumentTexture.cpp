@@ -74,7 +74,8 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
   if (freshTexture) {
     // Retire, do not release -- see DocumentTexture::retired_ on ImGui's
     // bind-group cache being keyed by the view pointer's address.
-    if (texture_ != nullptr) retired_.push_back(Retired{texture_, view_});
+    if (texture_ != nullptr)
+      retired_.push_back(Retired{texture_, view_, texWidth_, texHeight_});
 
     WGPUTextureDescriptor td = {};
     td.label = sv("document composite");
@@ -328,6 +329,123 @@ void DocumentTexture::release() {
   scratch_.shrink_to_fit();
   snapshot_ = Document{};
   haveSnapshot_ = false;
+}
+
+// --------------------------------------------------------------- the pool
+//
+// Deliberately arithmetic-free: every decision here is "which slot", and the
+// slot does the work. See the header's decision 5 for why there is a fixed
+// array rather than a map, and why a slot is re-pointed rather than released.
+WGPUTextureView DocumentTexturePool::viewFor(GpuContext& gpu, const OpenDocument& doc,
+                                             std::vector<std::string>* warningsOut) {
+  // A document with no canvas gets no slot at all -- `DocumentTexture::viewFor()`
+  // would return null without touching anything, and claiming a slot for it
+  // would evict a document that does have pixels in favour of one that never
+  // will.
+  if (doc.document.width <= 0 || doc.document.height <= 0) return nullptr;
+
+  size_t chosen = 0;
+  bool found = false;
+  for (size_t i = 0; i < kVisibleDocumentCap; ++i) {
+    if (slots_[i].id == doc.id) {
+      chosen = i;
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    // An empty slot first, then the least recently asked for. `lastUsed == 0`
+    // is "never used", which sorts below every real serial, so the two cases
+    // are one comparison rather than two passes.
+    for (size_t i = 1; i < kVisibleDocumentCap; ++i)
+      if (slots_[i].lastUsed < slots_[chosen].lastUsed) chosen = i;
+    // Only a slot that was holding *something else* is an eviction. Filling an
+    // empty slot is not, and counting it as one would make a session that
+    // never opened the split report evictions.
+    if (slots_[chosen].id != 0) ++evictions_;
+    slots_[chosen].id = doc.id;
+  }
+
+  slots_[chosen].lastUsed = ++serial_;
+  WGPUTextureView view = slots_[chosen].texture.viewFor(gpu, doc, warningsOut);
+  lastUploadMs_ = slots_[chosen].texture.lastUploadMs();
+  return view;
+}
+
+bool DocumentTexturePool::holds(DocumentId id) const noexcept {
+  if (id == 0) return false;
+  for (const Slot& s : slots_)
+    if (s.id == id && s.texture.texture() != nullptr) return true;
+  return false;
+}
+
+size_t DocumentTexturePool::residentDocuments() const noexcept {
+  size_t n = 0;
+  for (const Slot& s : slots_)
+    if (s.texture.texture() != nullptr) ++n;
+  return n;
+}
+
+size_t DocumentTexturePool::gpuTextureBytes() const noexcept {
+  size_t total = 0;
+  for (const Slot& s : slots_) total += s.texture.gpuTextureBytes();
+  return total;
+}
+
+size_t DocumentTexturePool::residentBytes() const noexcept {
+  size_t total = 0;
+  for (const Slot& s : slots_) total += s.texture.residentBytes();
+  return total;
+}
+
+size_t DocumentTexturePool::retiredTextureBytes() const noexcept {
+  size_t total = 0;
+  for (const Slot& s : slots_) total += s.texture.retiredTextureBytes();
+  return total;
+}
+
+size_t DocumentTexturePool::retiredTextures() const noexcept {
+  size_t total = 0;
+  for (const Slot& s : slots_) total += s.texture.retiredTextures();
+  return total;
+}
+
+uint64_t DocumentTexturePool::uploads() const noexcept {
+  uint64_t total = 0;
+  for (const Slot& s : slots_) total += s.texture.uploads();
+  return total;
+}
+
+uint64_t DocumentTexturePool::cacheHits() const noexcept {
+  uint64_t total = 0;
+  for (const Slot& s : slots_) total += s.texture.cacheHits();
+  return total;
+}
+
+uint64_t DocumentTexturePool::totalUploadedTexels() const noexcept {
+  uint64_t total = 0;
+  for (const Slot& s : slots_) total += s.texture.totalUploadedTexels();
+  return total;
+}
+
+double DocumentTexturePool::totalUploadMs() const noexcept {
+  double total = 0.0;
+  for (const Slot& s : slots_) total += s.texture.totalUploadMs();
+  return total;
+}
+
+DocumentId DocumentTexturePool::slotDocument(size_t index) const noexcept {
+  return index < kVisibleDocumentCap ? slots_[index].id : 0;
+}
+
+void DocumentTexturePool::release() {
+  for (Slot& s : slots_) {
+    s.texture.release();
+    s.id = 0;
+    s.lastUsed = 0;
+  }
+  serial_ = 0;
 }
 
 }  // namespace np

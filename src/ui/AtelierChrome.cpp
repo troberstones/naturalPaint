@@ -140,7 +140,49 @@ void drawAtelierRules(const AtelierBands& bands) {
   }
 }
 
-bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* statusOut) {
+AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
+                                          AtelierSplitState& state) {
+  AtelierPaneDocuments out;
+  if (state.focusedPane != 0 && state.focusedPane != 1) state.focusedPane = 0;
+
+  OpenDocument* active = session.active();
+  if (active == nullptr) {
+    state.companion = 0;
+    state.focusedPane = 0;
+    return out;  // one empty pane: the canvas still draws paper with no document
+  }
+
+  out.pane[0] = active;
+  if (state.mode == AtelierSplit::Single || session.count() < 2) {
+    // Nothing to put in a second pane. The companion is dropped rather than
+    // remembered: re-opening the split re-derives it from the tab order, which
+    // is one rule instead of a remembered one that can go stale.
+    state.companion = 0;
+    state.focusedPane = 0;
+    return out;
+  }
+
+  OpenDocument* companion = state.companion != 0 ? session.find(state.companion) : nullptr;
+  if (companion == nullptr || companion->id == active->id) {
+    const size_t activeIndex = session.activeIndex();
+    companion = session.at(activeIndex > 0 ? activeIndex - 1 : activeIndex + 1);
+  }
+  if (companion == nullptr || companion->id == active->id) {
+    state.companion = 0;
+    state.focusedPane = 0;
+    return out;
+  }
+
+  state.companion = companion->id;
+  out.count = 2;
+  out.focusedPane = state.focusedPane;
+  out.pane[state.focusedPane] = active;
+  out.pane[1 - state.focusedPane] = companion;
+  return out;
+}
+
+bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
+                         AtelierSplitState& split, std::string* statusOut) {
   if (bands.tabStrip.empty()) return false;
   beginBand("##atelierTabs", bands.tabStrip, kChromeMid);
 
@@ -149,6 +191,11 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* s
   const float h = bands.tabStrip.h;
   float x = bands.tabStrip.x;
   const float top = bands.tabStrip.y;
+
+  // The two split icons sit hard against the right edge, so the tabs and the
+  // `+` stop short of them. Reserved *before* the loop rather than checked
+  // inside it: a tab that had already been drawn could not be un-drawn.
+  const float splitIconsX = bands.tabStrip.right() - 2.0f * h;
 
   // Hand-drawn rather than ImGui's own tab bar. Three reasons, in the order
   // they bite: ImGui tabs size themselves to their labels and reorder on drag,
@@ -164,7 +211,7 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* s
 
     const float labelW = ImGui::CalcTextSize(name.c_str()).x;
     const float tabW = labelW + 54.0f;  // dirty dot, close box, padding
-    if (x + tabW > bands.tabStrip.right()) break;  // no scroll yet; see below
+    if (x + tabW > splitIconsX) break;  // no scroll yet; see below
 
     ImGui::SetCursorScreenPos(ImVec2(x, top));
     ImGui::PushID(static_cast<int>(i));
@@ -228,9 +275,62 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* s
   // short strip: with no scroll and no overflow menu, a document past the
   // right edge is reachable only from the Window menu. Wiring a scroll here
   // before the split exists would be building the wrong half of step 14.
-  if (x + h > bands.tabStrip.right()) {
-    ImGui::SetCursorScreenPos(ImVec2(bands.tabStrip.right() - 30.0f, top));
+  if (x + h > splitIconsX) {
+    ImGui::SetCursorScreenPos(ImVec2(splitIconsX - 30.0f, top));
     capsLabel("...");
+  }
+
+  // --- the two split icons (docs/ui.md section 5) ------------------------
+  //
+  // Hand-drawn from two rectangles each, for drawAtelierTabStrip()'s own
+  // reason: this build loads one 13 px text face and no icon font, so a
+  // `columns-2` glyph does not exist to draw. Two panes of a rounded outline
+  // is unambiguous at 34 px and needs no atlas.
+  //
+  // Disabled -- drawn in the divider grey and inert -- with fewer than two
+  // documents open. A split control that produces one pane is a control that
+  // appears broken, and the tooltip says which of the two it is.
+  const bool canSplit = st.documents.count() >= 2;
+  const AtelierSplit modes[2] = {AtelierSplit::Columns, AtelierSplit::Rows};
+  const char* tips[2] = {"Split side by side", "Split top and bottom"};
+  for (int i = 0; i < 2; ++i) {
+    const float ix = splitIconsX + static_cast<float>(i) * h;
+    ImGui::SetCursorScreenPos(ImVec2(ix, top));
+    ImGui::PushID(1000 + i);
+    const bool pressed = ImGui::InvisibleButton("##split", ImVec2(h, h));
+    const bool hovered = ImGui::IsItemHovered();
+    ImGui::PopID();
+    const bool on = canSplit && split.mode == modes[i];
+    if (pressed && canSplit)
+      // The way out is the way in: pressing the arrangement that is already on
+      // returns to a single pane, so two icons cover three states.
+      split.mode = on ? AtelierSplit::Single : modes[i];
+    if (hovered)
+      ImGui::SetTooltip("%s", canSplit ? tips[i]
+                                       : "Split needs a second open document");
+
+    if (on)
+      dl->AddRectFilled(ImVec2(ix, top), ImVec2(ix + h, top + h), atelierToken(kChromeDeep));
+    // Disabled is `kChromeBase`, and **not** `kDivider`: ui/AtelierTheme.hpp
+    // asserts `kDivider == kChromeMid`, which is this band's own background,
+    // so a disabled icon in the divider grey is an icon nobody can see. That
+    // is not a hypothetical -- it is what the first screenshot of this control
+    // showed, an empty right-hand end of a strip the design puts two icons in.
+    // Chrome base is the palette's one value darker than the band that is not
+    // the near-black, so it reads as present and recessive rather than absent.
+    const ImU32 col = !canSplit  ? atelierToken(kChromeBase)
+                      : on       ? atelierToken(kAccent)
+                      : hovered  ? atelierToken(kTextPrimary)
+                                 : atelierToken(kTextSecondary);
+    // A 16x14 outline with one internal rule, cut the way the pane it stands
+    // for is cut.
+    const float bx = ix + (h - 16.0f) * 0.5f;
+    const float by = top + (h - 14.0f) * 0.5f;
+    dl->AddRect(ImVec2(bx, by), ImVec2(bx + 16.0f, by + 14.0f), col, 2.0f, 0, 1.5f);
+    if (modes[i] == AtelierSplit::Columns)
+      dl->AddLine(ImVec2(bx + 8.0f, by), ImVec2(bx + 8.0f, by + 14.0f), col, 1.5f);
+    else
+      dl->AddLine(ImVec2(bx, by + 7.0f), ImVec2(bx + 16.0f, by + 7.0f), col, 1.5f);
   }
 
   endBand();

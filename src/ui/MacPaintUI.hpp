@@ -27,8 +27,9 @@ namespace np {
 void drawUI(AppState& state, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
            const MixboxLut& lut, uint32_t canvasW, uint32_t canvasH);
 
-// The canvas's document-composite texture (UI detour step 2), for reading its
-// counters. It is file-scope inside ui/MacPaintUI.cpp because two places in
+// The canvas's document-composite textures (UI detour step 2; a pool of at
+// most `kVisibleDocumentCap` of them since PLAN.md Phase 5 step 14), for
+// reading their counters. It is file-scope inside ui/MacPaintUI.cpp because two places in
 // that file need the same instance; this accessor exists so that main.cpp can
 // report what the revision cache actually saved over a real session's frames,
 // which is a different measurement from `--selftest`'s benchmark of the same
@@ -38,7 +39,7 @@ void drawUI(AppState& state, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 // The layers panel shows the same numbers on screen, but the controls column
 // scrolls and that section can sit below the fold at small window sizes, so
 // the shutdown line is the one that is always observable.
-const DocumentTexture& canvasDocumentTexture();
+const DocumentTexturePool& canvasDocumentTexture();
 
 // Which layer the LAYERS panel, the `Layer` menu and **the brush** act on.
 //

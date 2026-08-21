@@ -1,6 +1,7 @@
 #include "ui/AtelierLayout.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 #include "ui/AtelierTheme.hpp"  // kRuleThickness
 
@@ -72,6 +73,37 @@ AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip
   addRule(statusRule);
 
   return b;
+}
+
+AtelierPanes atelierSplitPanes(const AtelierRect& canvas, AtelierSplit split) {
+  AtelierPanes panes;
+  panes.pane[0] = canvas;
+  panes.count = 1;
+  if (split == AtelierSplit::Single || canvas.empty()) return panes;
+
+  // The halves are computed from the *remainder* after the rule, and the
+  // second pane is placed from the far edge, so a canvas of odd width still
+  // tiles exactly: every rounding error lands in the first pane rather than
+  // in a one-pixel seam between them.
+  if (split == AtelierSplit::Columns) {
+    const float usable = canvas.w - kRuleThickness;
+    if (usable < kMinPaneW * 2.0f) return panes;
+    const float firstW = std::floor(usable * 0.5f);
+    panes.pane[0] = AtelierRect{canvas.x, canvas.y, firstW, canvas.h};
+    panes.divider = AtelierRect{canvas.x + firstW, canvas.y, kRuleThickness, canvas.h};
+    const float secondX = panes.divider.right();
+    panes.pane[1] = AtelierRect{secondX, canvas.y, canvas.right() - secondX, canvas.h};
+  } else {
+    const float usable = canvas.h - kRuleThickness;
+    if (usable < kMinPaneH * 2.0f) return panes;
+    const float firstH = std::floor(usable * 0.5f);
+    panes.pane[0] = AtelierRect{canvas.x, canvas.y, canvas.w, firstH};
+    panes.divider = AtelierRect{canvas.x, canvas.y + firstH, canvas.w, kRuleThickness};
+    const float secondY = panes.divider.bottom();
+    panes.pane[1] = AtelierRect{canvas.x, secondY, canvas.w, canvas.bottom() - secondY};
+  }
+  panes.count = 2;
+  return panes;
 }
 
 AtelierRect atelierNavigatorRect(const AtelierRect& canvas, float docW, float docH) {

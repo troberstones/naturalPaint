@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -175,6 +176,67 @@
 // dirty set already covers the canvas. It is always *safe* to take it -- a
 // full recomposite is what this module did before this step -- so the constant
 // is a performance choice and never a correctness one.
+//
+// --- 5. Two slots, re-pointed -- never three, and never released ---------
+//
+// PRD **A6** (P0): "Only *visible* documents hold GPU textures, at most two."
+// ADR-0001's amendment is where the number comes from -- documents present as
+// tabs with an optional two-tab split, so the predicate is *visible*, not
+// *active*.
+//
+// Until PLAN.md Phase 5 step 14 there was exactly one `DocumentTexture` in the
+// process, file-scope in ui/MacPaintUI.cpp, and decision 3's key is
+// `(id, revision, width, height)`. **That is why the cap is not a nicety
+// bolted onto the split -- it is what makes the split possible at all.** Two
+// visible documents driven through one instance miss the key *alternately*:
+// every frame, each of them finds the other's id in `key_`, and each pays a
+// full recomposite and a full re-upload. `--selftest`'s residency section runs
+// exactly that -- the rejected alternative, beside the built one -- and prints
+// both upload counts, which is the difference between two uploads per frame
+// and zero.
+//
+// So `DocumentTexturePool` holds **`kVisibleDocumentCap` slots and no way to
+// make a third**: a fixed array, not a map that is trimmed afterwards. The cap
+// is therefore structural. A hidden document holds zero bytes because no slot
+// is keyed to it -- not because something remembered to free it.
+//
+// **Eviction is a re-point, not a release, and that is the load-bearing
+// choice.** A slot handed a document it does not hold takes decision 3's key
+// miss: the whole canvas is recomposited into `halves_` and re-uploaded into
+// the texture the slot already owns. Nothing is created and nothing is freed
+// unless the two documents differ in *size*, which is `freshTexture` and is
+// the pre-existing retire path.
+//
+// The reason it has to be a re-point is ImGui, and it is worth being exact
+// about, because `retired_`'s own comment below states the hazard slightly
+// wrong and this is the correction:
+//
+//   `ImGui_ImplWGPU_RenderDrawData()` caches one bind group per image, keyed
+//   by `ImHashData(&tex_id, ...)` -- the texture *view pointer* -- and clears
+//   the map only in `ImGui_ImplWGPU_InvalidateDeviceObjects()`. The cached
+//   entry is a `WGPUBindGroup` **created with that view as an entry**, and a
+//   wgpu bind group holds a strong reference to its resources. So the view
+//   cannot be freed while the bind group lives, the allocator cannot hand its
+//   address back, and the use-after-free `retired_` defends against cannot
+//   happen. What *does* happen is the other failure:
+//   `wgpuTextureViewRelease()` on a view ImGui has drawn frees **nothing**,
+//   because the bind group is still holding it. Releasing a slot would
+//   therefore not give the bytes back; it would only make this object stop
+//   counting them.
+//
+// A pool that released on eviction would thus pin one texture per (document,
+// size) ever displayed -- twenty tabs cycled through the split would pin
+// twenty textures while reporting two. Re-pointing pins two, because two views
+// are all that are ever created. That is the whole argument, and it is why
+// `release()` stays the thing nothing calls.
+//
+// **What the cap does not fix**, stated rather than discovered: two documents
+// of *different sizes* alternating through one slot retire a texture each
+// time, and `retired_` is never freed. The bound is unchanged in kind -- the
+// number of distinct document sizes displayed -- but the split makes reaching
+// it easy where a single document made it rare. `retiredTextureBytes()` is
+// public so the figure is observable rather than argued about, and
+// `--selftest` measures it.
 namespace np {
 
 struct GpuContext;
@@ -283,10 +345,47 @@ class DocumentTexture {
   // re-upload retires nothing, and only a change of document *size* does.
   size_t retiredTextures() const noexcept { return retired_.size(); }
 
+  // --- What this instance costs on the GPU, in bytes ---------------------
+  //
+  // PRD **A6** (P0) is a statement about bytes ("only *visible* documents hold
+  // GPU textures, at most two"), so it needs a number and not an inference
+  // from a pointer being non-null. `bytesPerTexel` is 8 and is derived here
+  // rather than written as a literal at the call site, because it is a
+  // property of the format decision at the top of this file: RGBA16Float is
+  // four channels of two bytes, and changing that decision has to change this
+  // figure with it.
+  static constexpr size_t kBytesPerTexel = 4u * sizeof(uint16_t);
+
+  // The live texture, or 0 before the first upload and after `release()`.
+  size_t gpuTextureBytes() const noexcept {
+    if (texture_ == nullptr) return 0;
+    return static_cast<size_t>(texWidth_) * static_cast<size_t>(texHeight_) * kBytesPerTexel;
+  }
+
+  // The parked ones. **Not zero after a size change**, and reported separately
+  // rather than folded into the line above, because they are two different
+  // claims: the first is what a visible document costs and the second is what
+  // this module has not been able to give back. See `retired_`.
+  size_t retiredTextureBytes() const noexcept {
+    size_t total = 0;
+    for (const Retired& r : retired_)
+      total += static_cast<size_t>(r.width) * static_cast<size_t>(r.height) * kBytesPerTexel;
+    return total;
+  }
+
+  // The document whose pixels this instance currently holds, or 0 for one that
+  // has never uploaded. What makes a pool slot's occupancy checkable.
+  DocumentId documentId() const noexcept { return haveKey_ ? key_.id : 0; }
+
  private:
   struct Retired {
     WGPUTexture texture = nullptr;
     WGPUTextureView view = nullptr;
+    // Carried so `retiredTextureBytes()` can report what parking costs. A
+    // retired texture is unreachable from this object's view, so its size is
+    // otherwise unrecoverable.
+    int32_t width = 0;
+    int32_t height = 0;
   };
 
   WGPUTexture texture_ = nullptr;
@@ -347,6 +446,89 @@ class DocumentTexture {
   FullRecompositeReason lastFullReason_ = FullRecompositeReason::None;
   double lastUploadMs_ = 0.0;
   double totalUploadMs_ = 0.0;
+};
+
+// PRD A6's "at most two", as a number one place can change it.
+inline constexpr size_t kVisibleDocumentCap = 2;
+
+// The visible documents' textures -- at most `kVisibleDocumentCap` of them.
+//
+// See decision 5 above for why this is a fixed array of slots that are
+// re-pointed rather than a cache that is trimmed. Every counter below is a sum
+// over the slots and therefore **monotonic across an eviction**: a re-pointed
+// slot keeps counting from where it was, so the layers panel's live
+// upload/cache numbers never fall when the user changes which documents are on
+// screen.
+class DocumentTexturePool {
+ public:
+  // The view for `doc`, bringing its slot up to date. Identical in meaning to
+  // `DocumentTexture::viewFor()` -- this only decides *which* instance answers.
+  //
+  // The slot chosen for a document that has none is the least recently asked
+  // for, which is least-recently-visible given that a visible document is
+  // asked for every frame and a hidden one never is.
+  WGPUTextureView viewFor(GpuContext& gpu, const OpenDocument& doc,
+                          std::vector<std::string>* warningsOut = nullptr);
+
+  // Whether `id`'s pixels are resident. False for every hidden document, which
+  // is PRD A6 as a predicate.
+  bool holds(DocumentId id) const noexcept;
+
+  // Slots currently holding a texture: 0, 1 or `kVisibleDocumentCap`.
+  size_t residentDocuments() const noexcept;
+
+  // PRD A6 in bytes: the live textures, summed. Two visible 2048x2048
+  // documents are 2 x 32 MiB; a third open tab adds nothing to this figure.
+  size_t gpuTextureBytes() const noexcept;
+
+  // The CPU side of the same question -- each slot's f16 mirror and region
+  // scratch (decision 4). Also bounded by the cap, and also zero for a hidden
+  // document.
+  size_t residentBytes() const noexcept;
+
+  // Textures parked by a size change across every slot. Decision 5's stated
+  // cost; not given back.
+  size_t retiredTextureBytes() const noexcept;
+  size_t retiredTextures() const noexcept;
+
+  // Slots re-pointed at a different document. The cap doing its job, counted:
+  // a session that never opens the split leaves this at zero.
+  uint64_t evictions() const noexcept { return evictions_; }
+
+  // Decision 3's counters, summed over the slots. `lastUploadMs()` is the most
+  // recent slot's, not a sum -- it is "what the last composite cost", which is
+  // what the layers panel says it is.
+  uint64_t uploads() const noexcept;
+  uint64_t cacheHits() const noexcept;
+  // Texels written to a texture across every slot. What a thrashing pair
+  // costs, in the only unit that does not vary with the machine.
+  uint64_t totalUploadedTexels() const noexcept;
+  double lastUploadMs() const noexcept { return lastUploadMs_; }
+  double totalUploadMs() const noexcept;
+
+  // Slot inspection, for `--selftest`: which document a slot holds and what it
+  // uploaded. `index` must be under `kVisibleDocumentCap`.
+  DocumentId slotDocument(size_t index) const noexcept;
+  const DocumentTexture& slot(size_t index) const noexcept { return slots_[index].texture; }
+
+  // Frees every slot. Nothing calls this, for `DocumentTexture::release()`'s
+  // reason and for decision 5's: on a view ImGui has drawn it would not give
+  // the bytes back anyway.
+  void release();
+
+ private:
+  struct Slot {
+    DocumentTexture texture;
+    DocumentId id = 0;
+    // Monotonic, so "least recently visible" is a comparison and not a scan of
+    // frame numbers this object would otherwise have to be told.
+    uint64_t lastUsed = 0;
+  };
+
+  std::array<Slot, kVisibleDocumentCap> slots_{};
+  uint64_t serial_ = 0;
+  uint64_t evictions_ = 0;
+  double lastUploadMs_ = 0.0;
 };
 
 }  // namespace np

@@ -60,18 +60,34 @@ constexpr float kMaxTilt = 0.50f;
 constexpr float kRulerThickness = 20.0f;
 constexpr float kSnapThresholdPx = 8.0f;
 
-// ui/DocumentTexture: the active document, composited and uploaded once per
-// revision, drawn over the paper by the canvas block and reported on by the
-// layers panel. File-scope for exactly that reason -- two places in this file
-// need the same instance, and it is neither app state (app/AppState.hpp's own
-// rule: transient UI-owned state stays in ui/) nor something a caller of
-// drawUI() has any use for.
+// ui/DocumentTexture: the **visible** documents, composited and uploaded once
+// per revision each, drawn over the paper by the canvas block and reported on
+// by the layers panel. File-scope for exactly that reason -- two places in
+// this file need the same instance, and it is neither app state
+// (app/AppState.hpp's own rule: transient UI-owned state stays in ui/) nor
+// something a caller of drawUI() has any use for.
+//
+// A pool of `kVisibleDocumentCap` slots rather than the single texture this
+// was before PLAN.md Phase 5 step 14, and that is PRD **A6** (P0) rather than
+// a generalisation for its own sake -- ui/DocumentTexture.hpp's decision 5
+// carries the argument, including why two visible documents through one
+// instance would recomposite the whole canvas twice a frame.
 //
 // It owns GPU objects and is deliberately never released: gfx/Wgpu.hpp's
 // convention is that every GPU object here lives for the process, and a
 // destructor running after the device is gone would be worse than the leak it
 // prevents. See DocumentTexture::release().
-DocumentTexture g_documentTexture;
+DocumentTexturePool g_documentTextures;
+
+// Which arrangement the canvas band is in and which document is in the
+// unfocused pane (PRD **A5**). ui/AtelierChrome.hpp owns the shape and the
+// rule; this is where the session's copy lives.
+//
+// In ui/ rather than on `AppState` for that header's own rule -- it is view
+// state, not document state: it survives no save, it is not a property of any
+// document, and the focused pane is by construction the session's own active
+// document, so nothing outside this file has to ask.
+AtelierSplitState g_split;
 
 // The in-flight CPU stroke (app/StrokeSession), file-scope for the same reason
 // `g_documentTexture` is: it has to outlive one call of `drawUI()`, because a
@@ -1081,9 +1097,18 @@ void drawLayersSection(AppState& st) {
   // that cost two integer comparisons. In a still window the second number
   // climbs at the frame rate and the first does not move at all.
   textDisabledWrapped("composite: %llu upload(s), %llu cached, last %.2f ms",
-                      static_cast<unsigned long long>(g_documentTexture.uploads()),
-                      static_cast<unsigned long long>(g_documentTexture.cacheHits()),
-                      g_documentTexture.lastUploadMs());
+                      static_cast<unsigned long long>(g_documentTextures.uploads()),
+                      static_cast<unsigned long long>(g_documentTextures.cacheHits()),
+                      g_documentTextures.lastUploadMs());
+  // PRD **A6** (P0) on screen, in bytes, for the same reason the line above is:
+  // "only visible documents hold GPU textures, at most two" is a claim about
+  // memory, and a claim about memory that only `--selftest` can see is one a
+  // running session can drift away from unnoticed. With twenty tabs open this
+  // reads `2 / 2 documents resident` and the megabytes do not move.
+  textDisabledWrapped("GPU: %zu / %zu document(s) resident, %.1f MB",
+                      g_documentTextures.residentDocuments(), kVisibleDocumentCap,
+                      static_cast<double>(g_documentTextures.gpuTextureBytes()) /
+                          (1024.0 * 1024.0));
 
   static char renameBuf[128] = "";
   // A reference to the document's own active layer, so every mutation below
@@ -3419,8 +3444,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   ImGui::End();
 
   // ------------------------------------------------------------ canvas
-  const ImVec2 canvasPos(bands.canvas.x, bands.canvas.y);
-  const ImVec2 canvasSize(bands.canvas.w, bands.canvas.h);
+  //
+  // PRD **A5**: the band divides into at most two panes. Both halves have to
+  // agree before it does -- `atelierSplitPanes()` refuses a canvas too small
+  // to hold two usable panes, and `atelierPaneDocuments()` refuses a session
+  // with nothing to put in the second one -- so `splitActive` is the two
+  // answers together and everything below reads that rather than the mode.
+  //
+  // **The focused pane is this window**, at a smaller rect. That is the whole
+  // change to the block below: rulers, guides, the navigator, pan, zoom,
+  // rotate and painting are unmoved, and they are unmoved because the
+  // unfocused pane deliberately has none of them (see where it is drawn,
+  // after this window's End()).
+  const AtelierPaneDocuments paneDocs = atelierPaneDocuments(st.documents, g_split);
+  const AtelierPanes panes = atelierSplitPanes(bands.canvas, g_split.mode);
+  const bool splitActive = panes.count == 2 && paneDocs.count == 2;
+  const AtelierRect focusedRect = splitActive ? panes.pane[paneDocs.focusedPane] : bands.canvas;
+  const ImVec2 canvasPos(focusedRect.x, focusedRect.y);
+  const ImVec2 canvasSize(focusedRect.w, focusedRect.h);
   ImGui::SetNextWindowPos(canvasPos);
   ImGui::SetNextWindowSize(canvasSize);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -3568,7 +3609,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const OpenDocument* activeDocument = st.documents.active();
     WGPUTextureView documentView = nullptr;
     if (activeDocument != nullptr) {
-      documentView = g_documentTexture.viewFor(gpu, *activeDocument);
+      documentView = g_documentTextures.viewFor(gpu, *activeDocument);
       if (documentView) dl->AddImageQuad((ImTextureID)(intptr_t)documentView, q00, q10, q11, q01);
     }
     dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
@@ -3593,7 +3634,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // reason.
     const AtelierRect navBox =
         st.showNavigator && documentView != nullptr
-            ? atelierNavigatorRect(bands.canvas, texW, texH)
+            ? atelierNavigatorRect(focusedRect, texW, texH)
             : AtelierRect{};
     if (!navBox.empty()) {
       const ImVec2 navMin(navBox.x, navBox.y);
@@ -3964,6 +4005,102 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   ImGui::PopStyleColor();
   ImGui::PopStyleVar();
 
+  // ------------------------------------------------- the unfocused pane
+  //
+  // PRD **A5**'s second document, and it is deliberately **a view, not a
+  // second editor**. No rulers, no guides, no navigator, no pan/zoom/rotate
+  // and no painting: the whole document, fitted and centred, and a click that
+  // focuses it.
+  //
+  // That is a scope decision rather than an omission, and the reason is
+  // ownership. `CanvasView` -- zoom, pan, rotation, the two mirrors -- lives
+  // once on `AppState`, not per document, and `sim::PaintSim` is one shared
+  // canvas with no document binding at all. A second pane with its own
+  // transform would need the first of those moved onto `OpenDocument`, which
+  // is a change to a shared header this step does not own, and a second
+  // *paintable* pane would need the second, which is the stroke bridge and is
+  // not built. Fitting the whole document is the one honest thing a pane with
+  // no view state of its own can show.
+  //
+  // **Focus is a swap, not a pointer.** Clicking here makes this document the
+  // session's active one and hands the old active document to this pane, so
+  // the panes stay where they are and the documents move between them. See
+  // ui/AtelierChrome.hpp: every other surface in the application acts on
+  // `DocumentSession::active()`, and a focus that did not move it would leave
+  // the LAYERS panel describing a document the user was not looking at.
+  if (splitActive) {
+    const int otherPane = 1 - paneDocs.focusedPane;
+    const AtelierRect r = panes.pane[otherPane];
+    OpenDocument* other = paneDocs.pane[otherPane];
+    ImGui::SetNextWindowPos(ImVec2(r.x, r.y));
+    ImGui::SetNextWindowSize(ImVec2(r.w, r.h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                          ImGui::ColorConvertU32ToFloat4(atelierToken(atelierSurround())));
+    if (ImGui::Begin("##canvasPane2", nullptr, fixedFlags) && other != nullptr) {
+      ImDrawList* pdl = ImGui::GetWindowDrawList();
+      const float dw = static_cast<float>(other->document.width);
+      const float dh = static_cast<float>(other->document.height);
+      // 24 px of surround on every side, so the sheet reads as lying on the
+      // desk rather than as a panel background that happens to be the paper.
+      const float inset = 24.0f;
+      const float fit = (dw > 0.0f && dh > 0.0f)
+                            ? std::min((r.w - inset * 2.0f) / dw, (r.h - inset * 2.0f) / dh)
+                            : 0.0f;
+      if (fit > 0.0f) {
+        const float sw = dw * fit, sh = dh * fit;
+        const ImVec2 p0(r.x + (r.w - sw) * 0.5f, r.y + (r.h - sh) * 0.5f);
+        const ImVec2 p1(p0.x + sw, p0.y + sh);
+        pdl->AddRectFilled(ImVec2(p0.x + 6, p0.y + 6), ImVec2(p1.x + 6, p1.y + 6),
+                           IM_COL32(0, 0, 0, 110));
+        // Blank paper, not PaintSim's canvas: that texture is the *focused*
+        // session's single shared surface and drawing it here would show one
+        // document's strokes under another document's layers.
+        pdl->AddRectFilled(p0, p1, atelierToken(kCanvasPaper));
+        // The residency rule doing its job in the one place a user can see it:
+        // this call is what makes the second document *visible* in PRD A6's
+        // sense, and it is the second and last slot the pool will ever give
+        // out.
+        const WGPUTextureView v = g_documentTextures.viewFor(gpu, *other);
+        if (v) pdl->AddImage((ImTextureID)(intptr_t)v, p0, p1);
+        pdl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
+      }
+      pdl->AddText(ImVec2(r.x + 10.0f, r.y + 8.0f), atelierToken(kTextSecondary),
+                   documentDisplayName(*other).c_str());
+
+      ImGui::SetCursorScreenPos(ImVec2(r.x, r.y));
+      if (ImGui::InvisibleButton("##focusPane2", ImVec2(r.w, r.h))) {
+        const OpenDocument* wasActive = st.documents.active();
+        const DocumentId incoming = other->id;
+        g_split.companion = wasActive != nullptr ? wasActive->id : 0;
+        g_split.focusedPane = otherPane;
+        for (size_t i = 0; i < st.documents.count(); ++i) {
+          const OpenDocument* d = st.documents.at(i);
+          if (d != nullptr && d->id == incoming) {
+            st.documents.setActive(i);
+            break;
+          }
+        }
+      }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+
+    // Which pane is focused, marked the way the active tab is marked: a 2 px
+    // accent rule along its leading edge. On the foreground list so neither
+    // pane's window can overdraw it -- the same reason drawAtelierRules() is
+    // there.
+    const AtelierRect f = panes.pane[paneDocs.focusedPane];
+    ImGui::GetForegroundDrawList()->AddRectFilled(
+        ImVec2(f.x, f.y), ImVec2(f.right(), f.y + kRuleThickness), atelierToken(kAccent));
+    // The rule between the panes, in the same grey every other region rule
+    // uses.
+    ImGui::GetForegroundDrawList()->AddRectFilled(
+        ImVec2(panes.divider.x, panes.divider.y),
+        ImVec2(panes.divider.right(), panes.divider.bottom()), atelierToken(kRule));
+  }
+
   // ------------------------------------------------------- the other bands
   //
   // After the canvas rather than before it, for one reason that is not
@@ -3971,7 +4108,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // would show the values as they were before this frame's canvas input
   // changed them -- a zoom readout one frame stale, which is exactly the
   // juddering docs/ui.md section 5 asks the monospace numerics to prevent.
-  if (drawAtelierTabStrip(st, bands, &g_docStatus)) {
+  if (drawAtelierTabStrip(st, bands, g_split, &g_docStatus)) {
     st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
                                            static_cast<int32_t>(canvasH), WorkingSpace{}));
     g_docStatus.clear();
@@ -4002,7 +4139,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   }
 }
 
-const DocumentTexture& canvasDocumentTexture() { return g_documentTexture; }
+const DocumentTexturePool& canvasDocumentTexture() { return g_documentTextures; }
 
 void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex) {
   setActiveLayer(doc, layerIndex);

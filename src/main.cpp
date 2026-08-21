@@ -1187,6 +1187,9 @@ int main(int argc, char** argv) {
     // staging buffer. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
     // configurations. Writes no files.
     const bool documentTextureOk = np::runDocumentTextureTest(gpu);
+    // Phase 5 step 14 / PRD A5 + A6: the two-tab split's geometry and pane
+    // rule, and the residency cap -- twenty tabs, two textures, measured.
+    const bool documentResidencyOk = np::runDocumentResidencyTest(gpu);
     // UI detour step 3 ("the layer editor, and making it reachable"):
     // app/LayerEditor is the one surface the `Layer` menu and the LAYERS panel
     // buttons share, so this covers what every one of those controls does --
@@ -1252,7 +1255,8 @@ int main(int argc, char** argv) {
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
-                    documentTextureOk && layerEditorOk && controlsLayoutOk &&
+                    documentTextureOk && documentResidencyOk && layerEditorOk &&
+                    controlsLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
                     exportStatesOk && pigmentDepositOk && layerMultiSelectOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
@@ -1778,7 +1782,7 @@ int main(int argc, char** argv) {
   // interactive exit, including the one --screenshot takes, so the picture and
   // the number come out of the same command.
   {
-    const np::DocumentTexture& docTex = np::canvasDocumentTexture();
+    const np::DocumentTexturePool& docTex = np::canvasDocumentTexture();
     const uint64_t served = docTex.uploads() + docTex.cacheHits();
     std::printf("[document-texture] %llu frame(s) served: %llu composite+upload totalling "
                 "%.1f ms, %llu from cache\n",

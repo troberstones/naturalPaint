@@ -104,24 +104,76 @@ void popAtelierMono();
 // never covered by the window it borders.
 void drawAtelierRules(const AtelierBands& bands);
 
-// docs/ui.md section 2's 34px band: the open documents as tabs (PRD **A5**,
-// "Documents present as tabs, with an optional split showing two").
+// ------------------------------------------------------------- the split
 //
-// **The strip, not the split.** A5's second half and PRD A6's "only *visible*
-// documents hold GPU textures, at most two" are the substantial part of
-// PLAN.md Phase 5 step 14 -- a second viewport, a second `DocumentTexture` and
-// the residency rule that keeps the pair honest. So the design's two
-// split icons in the right of the strip are not drawn here: they would be two
-// buttons that do nothing, which is the same objection this module already
-// makes to the `PRESET` dropdown and the `BG` swatch.
+// PRD **A5** (P1): "Documents present as tabs, with an optional split showing
+// two." ui/AtelierLayout.hpp owns the geometry and the reading of docs/ui.md's
+// two icons; what lives here is the state and the rule that turns a session of
+// open documents into *which document each pane shows*.
+//
+// **One focused pane, and the focused pane always shows the session's active
+// document.** That is the decision the rest of the application depends on and
+// it is not a detail: every menu, the LAYERS panel, the HISTORY panel and the
+// brush act on `DocumentSession::active()`, so a focus that could point
+// somewhere else would mean the panels described one document while a pane the
+// user had just clicked showed another. Focusing the companion pane therefore
+// *makes its document active* and the two swap roles -- the panes do not move
+// on screen, the documents in them do.
+//
+// So the state is small: the arrangement, the companion's id, and which of the
+// two panes currently holds the active document.
+struct AtelierSplitState {
+  AtelierSplit mode = AtelierSplit::Single;
+  // The document in the unfocused pane. 0 when there is none, which is every
+  // state except an open split with two documents to put in it.
+  DocumentId companion = 0;
+  // 0 or 1, indexing `AtelierPanes::pane`. Which one holds the active
+  // document.
+  int focusedPane = 0;
+};
+
+// What each pane shows, after `state` has been normalised against the session.
+//
+// `count` is 1 whenever there is nothing to put in a second pane -- the split
+// is off, only one document is open, or none is. `pane[i]` is null only in the
+// no-document case.
+struct AtelierPaneDocuments {
+  OpenDocument* pane[2] = {nullptr, nullptr};
+  size_t count = 1;
+  int focusedPane = 0;
+};
+
+// Resolve `state` against `session`, repairing it in place, and say what each
+// pane shows.
+//
+// The repairs are the cases a session can produce that a click never does:
+// a companion that has been closed, a companion that has become the active
+// document, a split with one document left in it. **A closed companion is
+// replaced rather than emptied** -- with the document before the active one in
+// tab order, or the one after it when the active document is first -- because
+// the alternative is a split that silently becomes a single pane the moment a
+// tab is closed, which reads as a bug rather than as a rule.
+//
+// The mode is *not* reset when a document is closed. A user who asked for a
+// split gets it back when a second document exists again, rather than having
+// to ask twice.
+AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session, AtelierSplitState& state);
+
+// docs/ui.md section 2's 34px band: the open documents as tabs (PRD **A5**),
+// and at its right edge the two split icons that section 5 asks for.
 //
 // `statusOut`, when non-null, receives the refusal from a close the session
 // declined -- a dirty document names what would be lost (PRD I11), exactly as
 // the File menu's own Close Document does, because it is the same call.
 //
+// `split` is read for the icons' pressed state and written when one is
+// clicked. Clicking the *active* arrangement's icon returns to a single pane,
+// so the pair are three states between them and the way out is the way in.
+//
 // Returns true when a new document was asked for (the `+`), which the caller
 // makes, since only it knows the canvas dimensions a blank one gets.
-bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* statusOut);
+bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, AtelierSplitState& split,
+                         std::string* statusOut);
 
 // docs/ui.md section 2's 46px band: the active tool and its options.
 //

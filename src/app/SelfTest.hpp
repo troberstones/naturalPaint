@@ -1640,6 +1640,45 @@ bool runClippingMaskTest();
 // Needs the GPU (it uploads and reads back real textures); writes no files.
 bool runDocumentTextureTest(GpuContext& gpu);
 
+// PLAN.md Phase 5 step 14 ("Tabs + optional two-tab split, with the
+// visible-documents GPU rule from ADR-0001's amendment"): PRD **A5** (P1) and
+// PRD **A6** (P0).
+//
+// What is asserted:
+//  - **The split as arithmetic.** Two panes and the 2 px rule between them
+//    tile the canvas region exactly, at an even and an odd size, in both
+//    arrangements; and a canvas too small for two usable panes collapses to
+//    one rather than producing slivers.
+//  - **Which document each pane shows.** The focused pane is the session's
+//    active document -- the rule every menu and panel in the application
+//    depends on -- and the repairs a session can force that a click cannot: a
+//    closed companion, a companion that has become active, a split with one
+//    document left in it.
+//  - **PRD A6 in bytes.** Twenty open tabs, two visible: exactly two slots,
+//    exactly two documents' worth of texture, and eighteen tabs holding
+//    nothing. A third visible document re-points a slot and adds no bytes.
+//  - **The rejected alternative, run beside the built one.** One
+//    `DocumentTexture` -- what this module held before this step -- driven by
+//    the same alternating pair, missing its key every frame; both upload
+//    counts and both texel totals are printed.
+//  - **That eviction is correct, not merely bounded**: a slot that has carried
+//    three documents holds the third one's composite bit for bit, and a
+//    document that comes back is recomposited whole rather than resumed from a
+//    stale CPU mirror.
+//  - **PLAN.md Phase 5's Verify sentence**, in measured bytes: what twenty
+//    blank tabs cost in real resident memory, and that hidden documents hold
+//    no texture at all.
+//
+// PRD **A8** ("a visible-but-unfocused document continues stepping its
+// solver") is **not reachable in this build** and the section says so rather
+// than asserting a proxy: `sim::PaintSim` is one process-wide canvas with no
+// per-document instance to step. The reachable half -- that an unfocused
+// document keeps its composite up to date -- is asserted.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+// Needs the GPU (PRD A6 is a claim about texture bytes); writes no files.
+bool runDocumentResidencyTest(GpuContext& gpu);
+
 // UI detour step 3, problem 2 ("five built features have no entry point"):
 // app/LayerEditor, the one surface the `Layer` menu and the LAYERS panel
 // buttons both go through, plus core/LayerOps' five new op-stack operations.

@@ -32,6 +32,7 @@ add_executable(naturalPaint
   app/selftest/CurveEdit.cpp
   app/selftest/Document.cpp
   app/selftest/DocumentLifecycle.cpp
+  app/selftest/DocumentResidency.cpp
   app/selftest/DocumentTexture.cpp
   app/selftest/Driver.cpp
   app/selftest/Export.cpp

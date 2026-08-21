@@ -110,4 +110,57 @@ AtelierRect atelierNavigatorRect(const AtelierRect& canvas, float docW, float do
 AtelierRect atelierNavigatorMap(const AtelierRect& nav, float docW, float docH, float x0,
                                 float y0, float x1, float y1);
 
+// ------------------------------------------------------------ split panes
+//
+// PRD **A5** (P1): "Documents present as tabs, with an optional split showing
+// two." docs/ui.md section 5 says where the control is: "The `columns-2` and
+// `layout-grid` icons in the tab strip are the two-tab split from ADR-0001's
+// amendment. Wire them to that, not to a floating-window manager."
+//
+// **Two icons, one feature, and the design does not say which is which.**
+// `layout-grid` is a 2x2 icon, but ADR-0001's amendment caps visible documents
+// at two, so a four-pane grid is not a state this build is allowed to reach.
+// Read as a pair the two icons are the two ways to cut a rectangle in half, so
+// `columns-2` is the side-by-side split and `layout-grid` is the stacked one.
+// That is an interpretation, and it is recorded here rather than left implicit
+// in a click handler.
+//
+// The split is in the *layout* rather than in the canvas code for this file's
+// standing reason: dividing a rectangle in two is arithmetic, and arithmetic
+// checked by looking at a screenshot is arithmetic nobody has checked.
+enum class AtelierSplit { Single, Columns, Rows };
+
+// The panes the canvas region divides into, and the rule between them.
+//
+// `count` is 1 or 2. It is 1 for `Single` **and** for a canvas too small to
+// divide -- see `atelierSplitPanes()`.
+struct AtelierPanes {
+  AtelierRect pane[2];
+  AtelierRect divider;
+  size_t count = 1;
+};
+
+// The smallest pane this will produce. Below it the split collapses back to a
+// single pane rather than handing the caller two slivers.
+//
+// The number is the navigator's own box plus its inset on each side
+// (`kNavigatorMaxW + 2 * kNavigatorInset`), which is not a coincidence and not
+// a guess: it is the width at which the canvas region already stops being able
+// to show its own overlay, so a pane narrower than this is one the rest of the
+// chrome has already given up on.
+constexpr float kMinPaneW = kNavigatorMaxW + 2.0f * kNavigatorInset;
+constexpr float kMinPaneH = kNavigatorMaxH + 2.0f * kNavigatorInset;
+
+// Divide `canvas` per `split`, with a 2 px rule between the panes.
+//
+// The rule is *between* the panes and belongs to neither, exactly as
+// `atelierLayout()`'s rules are between bands -- so the two panes plus the
+// divider tile `canvas` exactly, with no overlap and nothing left over.
+// `--selftest` asserts that at several window sizes rather than trusting it.
+//
+// Pane 0 is the left one under `Columns` and the top one under `Rows`. Which
+// pane is *focused* is not decided here: it is session state, it lives with
+// the tab strip, and the geometry is the same either way.
+AtelierPanes atelierSplitPanes(const AtelierRect& canvas, AtelierSplit split);
+
 }  // namespace np
