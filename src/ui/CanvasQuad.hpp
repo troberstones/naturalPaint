@@ -76,11 +76,6 @@ void endCanvasQuadFrame();
 size_t canvasQuadsDrawn();
 size_t canvasQuadsDropped();
 
-// The fragment shader's encode, on the CPU, for the assertions: the byte this
-// module puts on screen for a linear value, given whether the attachment
-// encodes in hardware. Exposed so PresentTransfer can compare against
-// color/Space's `srgbEncode()` rather than against a copy of this file's
-// arithmetic.
 // Draws `view` filling `target` with THIS MODULE'S pipeline, built for
 // `targetFormat`. The seam --selftest uses to measure the transfer function at
 // both target formats, so neither shader variant is dead code: on an sRGB
@@ -91,6 +86,11 @@ size_t canvasQuadsDropped();
 bool renderCanvasQuadForTest(GpuContext& gpu, WGPUTextureView view, WGPUTexture target,
                              WGPUTextureFormat targetFormat, uint32_t w, uint32_t h);
 
+// The fragment shader's encode, on the CPU, for the assertions: the byte this
+// module puts on screen for a linear value, given whether the attachment
+// encodes in hardware. Exposed so PresentTransfer can compare against
+// color/Space's `srgbEncode()` rather than against a copy of this file's
+// arithmetic.
 int canvasPresentedByte(float linear, bool attachmentIsSrgb);
 
 }  // namespace np

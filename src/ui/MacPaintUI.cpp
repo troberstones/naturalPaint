@@ -4165,4 +4165,10 @@ void setLayersPanelMessages(std::string error, std::vector<std::string> warnings
 }
 void setCompsPanelRestoreSummary(std::string summary) { g_compsSummary = std::move(summary); }
 
+// Exactly the assignment the icon's click handler makes (see
+// `drawAtelierTabStrip()`'s split-icon loop), and deliberately not one line
+// more -- the declaration says why the companion and the focused pane are not
+// written here.
+void setSplitArrangement(AtelierSplit mode) { g_split.mode = mode; }
+
 }  // namespace np

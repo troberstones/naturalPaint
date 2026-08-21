@@ -9,6 +9,7 @@
 #include "core/LayerSetOps.hpp"
 #include "gfx/Context.hpp"
 #include "sim/PaintSim.hpp"
+#include "ui/AtelierLayout.hpp"
 #include "ui/DocumentTexture.hpp"
 
 namespace np {
@@ -81,5 +82,25 @@ void setLayersPanelMessages(std::string error, std::vector<std::string> warnings
 // before the first frame is drawn and would otherwise leave the panel with
 // nothing to say about a restore that has already happened. Empty clears it.
 void setCompsPanelRestoreSummary(std::string summary);
+
+// The tab strip's split arrangement, as if one of its two icons (docs/ui.md
+// section 5's `columns-2` and `layout-grid`) had been clicked.
+//
+// `AtelierSplitState` is file-scope inside ui/MacPaintUI.cpp for the same
+// reason the texture pool above is -- two places in that file need the same
+// instance -- and this is the same one-caller wrapper the four setters above
+// are. The caller is main.cpp's `--split-demo`, which needs the split already
+// on before the first frame, because `--screenshot` photographs a frame
+// nobody clicked in and there is no other route into `splitActive`: PLAN.md
+// Phase 5 step 14 shipped the two-pane drawing compile-verified only, for
+// exactly this reason.
+//
+// **It sets the arrangement and nothing else, because that is all the click
+// handler sets.** The companion document and which pane holds the focus are
+// re-derived from the session by `atelierPaneDocuments()` on every frame (see
+// ui/AtelierChrome.hpp for the rule), so a setter that also wrote them would
+// be photographing a state no click can produce -- which is precisely what
+// `setLayersPanelSelection()`'s comment exists to prevent.
+void setSplitArrangement(AtelierSplit mode);
 
 }  // namespace np

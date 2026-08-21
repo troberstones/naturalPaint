@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <array>
@@ -15,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "app/AppState.hpp"
 #include "app/FixedStep.hpp"
@@ -25,6 +28,7 @@
 #include "app/SelfTest.hpp"
 #include "app/StrokeSession.hpp"
 #include "brush/Deposit.hpp"
+#include "color/Space.hpp"
 #include "core/Composite.hpp"
 #include "core/Blend.hpp"
 #include "app/LayerEditor.hpp"
@@ -33,6 +37,7 @@
 #include "core/Tile.hpp"
 #include "core/LayerCompOps.hpp"
 #include "gfx/Context.hpp"
+#include "io/ImageDecode.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
 #include "ui/Fonts.hpp"
@@ -598,6 +603,349 @@ void runCompsDemo(np::OpenDocument& od, size_t restoreIndex, bool dropALayer) {
                 np::layerRowSubLine(doc.layers[i]).c_str());
 }
 
+// --split-demo [rows] (PLAN.md Phase 5 step 14): **open two documents and turn
+// the split on**, which is the one thing no other flag can do.
+//
+// Step 14's own commit message stated the gap: "no CLI flag opens two
+// documents, so the two-pane ImGui drawing is compile-verified only". Its pure
+// halves -- the pane geometry, the pane-to-document rule and the two-slot
+// residency pool -- are asserted headlessly in
+// src/app/selftest/DocumentResidency.cpp, but `splitActive` in
+// ui/MacPaintUI.cpp stayed unreachable from outside the GUI because
+// `--screenshot` opened exactly one document. This flag is the missing route,
+// and `verifySplitDemoScreenshot()` below is what makes it a *check* rather
+// than a second picture to look at.
+//
+// Here in main.cpp's anonymous namespace for `buildDemoDocument()`'s reason,
+// which applies unchanged: nothing in the application builds a document from
+// literals, this exists to make a verification claim photographable, and a
+// `ui/` or `core/` module carrying demo fixtures would be carrying test data
+// in production code.
+//
+// **The two documents differ in every way the screenshot can be asked about.**
+//
+//   * Colour. A is green and B is blue-violet, far apart in every channel --
+//     so "which document is in this pane" is answerable from one pixel, and a
+//     *swap* is answerable from a bounding box.
+//   * Size. A is the session's own canvas-sized 1024 x 1024 square; B is
+//     768 x 432, a 16:9 landscape. The unfocused pane fits the whole document
+//     it shows, so the two panes photograph a square and a letterbox.
+//   * Extent. Each field leaves its top-left eighth unpainted, so the paper
+//     shows through one corner. That keeps `buildDemoDocument()`'s "the
+//     transparent remainder proves the paper is still visible" boundary, and
+//     because it is a corner rather than a centred mark it would make a
+//     mirrored or rotated draw visible instead of plausible.
+//
+// The colours are linear light, as everything in a `Layer` is. What they reach
+// the screen as is `srgbEncode()` of them -- ui/CanvasQuad's fragment shader
+// performs that encode, because gfx/Context deliberately takes a non-sRGB
+// surface -- and the verifier expects exactly that function rather than a
+// hand-rolled gamma.
+constexpr int32_t kSplitDemoBW = 768;
+constexpr int32_t kSplitDemoBH = 432;
+constexpr std::array<float, 4> kSplitFieldA{0.05f, 0.40f, 0.10f, 1.0f};
+constexpr std::array<float, 4> kSplitFieldB{0.10f, 0.06f, 0.55f, 1.0f};
+
+// Neither field is any chrome token, and that is a requirement rather than an
+// aesthetic: the verifier counts matching pixels over the *whole* framebuffer,
+// so a field that collided with (say) the accent would count the focused
+// pane's own focus rule and the active tab's underline as document pixels. The
+// nearest token to either is `kAccent` #ff563c, strongly red where A is
+// strongly green and B strongly blue.
+static_assert(kSplitFieldA[1] > 3.0f * kSplitFieldA[0] && kSplitFieldA[1] > 3.0f * kSplitFieldA[2],
+              "--split-demo: document A has to be unambiguously green");
+static_assert(kSplitFieldB[2] > 3.0f * kSplitFieldB[0] && kSplitFieldB[2] > 3.0f * kSplitFieldB[1],
+              "--split-demo: document B has to be unambiguously blue");
+
+// A flat opaque field over the whole document except its top-left eighth.
+void fillSplitDemoField(np::OpenDocument& od, const std::array<float, 4>& straight) {
+  np::Document& doc = od.document;
+  if (doc.layers.empty()) return;
+  // Stored premultiplied (DESIGN-imaging.md §2), exactly as buildDemoDocument()
+  // does and for its reason: it is what makes ui/DocumentTexture's
+  // un-premultiply on the way out a real operation rather than a copy.
+  const std::array<float, 4> premultiplied{straight[0] * straight[3], straight[1] * straight[3],
+                                           straight[2] * straight[3], straight[3]};
+  const int32_t notchW = doc.width / 8, notchH = doc.height / 8;
+  for (int32_t y = 0; y < doc.height; ++y) {
+    for (int32_t x = 0; x < doc.width; ++x) {
+      if (x < notchW && y < notchH) continue;  // the unpainted corner
+      const np::PixelCoord at{x, y};
+      doc.layers[0].rgbTiles->getOrCreate(np::tileCoordAt(at))
+          .writePixel(np::tileLocalOffset(at), premultiplied);
+    }
+  }
+  // One recordEdit for the whole fill, not one per write: tile writes go
+  // straight to the store and bump nothing, so the revision
+  // ui/DocumentTexture's cache keys on has to be moved deliberately here.
+  od.recordEdit("split demo field", np::EditKind::Content);
+}
+
+// Paint the session's document, add a second one, and put the active document
+// back on the first.
+//
+// That last part is the one that needs saying. `DocumentSession::add()` makes
+// what it adds active and `atelierPaneDocuments()` puts the active document in
+// the focused pane, whose index starts at 0 -- so without the `setActive(0)`
+// the picture would still be right and the *contract this demo asserts*, "pane
+// 0 shows A", would be inverted. Clicking back onto the first tab is what a
+// user does to reach the same state, so nothing here is a state a click cannot
+// produce.
+void buildSplitDemo(np::AppState& st, np::AtelierSplit mode) {
+  np::OpenDocument* a = st.documents.active();
+  if (a == nullptr) return;
+  a->title = "Split A (green)";
+  fillSplitDemoField(*a, kSplitFieldA);
+
+  np::OpenDocument* b = st.documents.add(np::makeBlankOpenDocument(
+      kSplitDemoBW, kSplitDemoBH, np::WorkingSpace{}, "Split B (blue)"));
+  if (b != nullptr) fillSplitDemoField(*b, kSplitFieldB);
+  st.documents.setActive(0);
+
+  np::setSplitArrangement(mode);
+
+  // Zoom out so the whole of A fits either arrangement's pane at the default
+  // window size. The focused pane is the *real* canvas, with the session's one
+  // shared `CanvasView`, and at 100% a 1024 px document overflows a half-sized
+  // pane and shows only its top-left corner -- which is precisely the eighth
+  // the fixture leaves unpainted.
+  //
+  // Cosmetic only, and deliberately so: every assertion below is a bounding
+  // box over matched pixels, which holds whether the document fits its pane or
+  // is clipped by it. A verification that needed a particular zoom would be a
+  // verification that broke when the window was resized.
+  st.view.zoom = 0.25f;
+
+  std::printf("[split-demo] %s: A \"%s\" %d x %d, B \"%s\" %d x %d\n",
+              mode == np::AtelierSplit::Columns ? "columns-2 (side by side)"
+                                                : "layout-grid (top and bottom)",
+              np::documentDisplayName(*a).c_str(), a->document.width, a->document.height,
+              b != nullptr ? np::documentDisplayName(*b).c_str() : "?",
+              b != nullptr ? b->document.width : 0, b != nullptr ? b->document.height : 0);
+}
+
+// --- reading the screenshot back -------------------------------------------
+//
+// What `--split-demo --screenshot` is *for*. Without this the flag would be a
+// second picture to eyeball, and PLAN.md section 1.5 ("an unexercised build
+// option is not a seam") applies just as much to a flag whose effect nothing
+// checks.
+//
+// **The strategy, and why it is this one.** The tempting assertion -- sample
+// the middle of pane 0, compare it to A -- needs the pane rectangle, and pane
+// rectangles are in *logical* pixels while the screenshot is framebuffer
+// pixels at 2x on this machine. Getting that backwards samples the wrong pixel
+// and is the likeliest way to write an assertion that passes on the wrong
+// picture. So the assertions that decide the result use **no geometry at
+// all**: they find every pixel matching each field colour and compare the two
+// bounding boxes.
+//
+//   * `columns-2`: every A pixel is left of every B pixel, and the two boxes
+//     overlap vertically. That is what "side by side, A on the left" means,
+//     stated without one layout constant.
+//   * `layout-grid`: every A pixel is above every B pixel, and the two boxes
+//     overlap horizontally.
+//
+// The two runs are each other's control. A build that ignored the arrangement
+// and always drew columns passes the first and fails the second's vertical
+// separation; a build that drew the panes *swapped* fails the ordering in
+// both. Colour is what identifies a document and the box is what places it, so
+// "the companion pane drew the focused document" cannot pass either.
+//
+// The icon check is the one thing that does need geometry, because a colour on
+// its own cannot say *where* in the tab strip it was found. It calls the same
+// pure `atelierLayout()` the chrome calls, at the same logical size, and
+// scales by the ratio the decoded image itself reports -- so the logical-to-
+// framebuffer conversion happens once, explicitly, in the one place needing it.
+struct SplitDemoBox {
+  size_t count = 0;
+  float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
+
+  void add(float x, float y) {
+    if (count == 0) {
+      minX = maxX = x;
+      minY = maxY = y;
+    } else {
+      minX = std::min(minX, x);
+      maxX = std::max(maxX, x);
+      minY = std::min(minY, y);
+      maxY = std::max(maxY, y);
+    }
+    ++count;
+  }
+};
+
+// io/ImageDecode hands back linear light -- it applies `srgbDecode()` to an
+// 8-bit PNG's channels -- so the byte that was really in the file is
+// `srgbEncode()` of what comes out. Comparing bytes rather than linear values
+// keeps the tolerance in the unit it is really in: the screenshot is 8-bit, and
+// one byte of rounding is one byte everywhere, where the same error expressed
+// in linear light is some thirty times wider at the top of the range than at
+// the bottom.
+int splitDemoByte(float linear) {
+  return static_cast<int>(std::lround(std::clamp(np::srgbEncode(linear), 0.0f, 1.0f) * 255.0f));
+}
+
+// Whether a decoded pixel is this field colour, within `tol` bytes on every
+// channel. Tight on purpose: the fields are flat and opaque, so an exact match
+// is the expected case and the tolerance pays only for the shader's
+// float-to-unorm rounding.
+bool splitDemoMatches(const float* px, const std::array<float, 4>& field, int tol) {
+  for (int c = 0; c < 3; ++c)
+    if (std::abs(splitDemoByte(px[c]) - splitDemoByte(field[c])) > tol) return false;
+  return true;
+}
+
+// The brightest grey and the reddest pixel in a framebuffer-space rect. Both
+// are how the split icons are read; see the icon check for what each says.
+void splitDemoIconStats(const np::DecodedImage& img, const np::AtelierRect& r, int* maxGrey,
+                        int* maxRedness) {
+  *maxGrey = 0;
+  *maxRedness = -255;
+  const int x0 = std::max(0, static_cast<int>(r.x));
+  const int y0 = std::max(0, static_cast<int>(r.y));
+  const int x1 = std::min(static_cast<int>(img.width), static_cast<int>(r.right()));
+  const int y1 = std::min(static_cast<int>(img.height), static_cast<int>(r.bottom()));
+  for (int y = y0; y < y1; ++y) {
+    for (int x = x0; x < x1; ++x) {
+      const float* px = &img.pixels[(static_cast<size_t>(y) * img.width + x) * 4];
+      const int rr = splitDemoByte(px[0]), gg = splitDemoByte(px[1]), bb = splitDemoByte(px[2]);
+      // The *darkest* channel of the pixel, so that a saturated colour cannot
+      // pass a brightness threshold on one channel alone.
+      *maxGrey = std::max(*maxGrey, std::min(rr, std::min(gg, bb)));
+      *maxRedness = std::max(*maxRedness, rr - std::max(gg, bb));
+    }
+  }
+}
+
+// Reads back the PNG `--screenshot` just wrote and says whether the split
+// really drew. Every claim prints its own line in `--selftest`'s shape, so a
+// failure names which one broke rather than only that one did.
+bool verifySplitDemoScreenshot(const std::string& path, np::AtelierSplit mode, float logicalW,
+                               float logicalH) {
+  std::vector<uint8_t> bytes;
+  {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (f == nullptr) {
+      std::fprintf(stderr, "[split-demo] cannot read back %s\n", path.c_str());
+      return false;
+    }
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    bytes.resize(size > 0 ? static_cast<size_t>(size) : 0u);
+    const size_t got = bytes.empty() ? 0u : std::fread(bytes.data(), 1, bytes.size(), f);
+    std::fclose(f);
+    bytes.resize(got);
+  }
+  std::string decodeError;
+  const np::DecodedImage img = np::decodeImageLinear(bytes.data(), bytes.size(), &decodeError);
+  if (!img.valid()) {
+    std::fprintf(stderr, "[split-demo] %s: %s\n", path.c_str(), decodeError.c_str());
+    return false;
+  }
+
+  bool ok = true;
+  const auto check = [&ok](bool condition, const char* what) {
+    std::printf("  %-76s %s\n", what, condition ? "pass" : "FAIL");
+    if (!condition) ok = false;
+  };
+
+  SplitDemoBox a, b;
+  for (uint32_t y = 0; y < img.height; ++y) {
+    for (uint32_t x = 0; x < img.width; ++x) {
+      const float* px = &img.pixels[(static_cast<size_t>(y) * img.width + x) * 4];
+      if (splitDemoMatches(px, kSplitFieldA, 2))
+        a.add(static_cast<float>(x), static_cast<float>(y));
+      else if (splitDemoMatches(px, kSplitFieldB, 2))
+        b.add(static_cast<float>(x), static_cast<float>(y));
+    }
+  }
+
+  std::printf("[split-demo] %u x %u framebuffer -- A #%02x%02x%02x, %zu px, box "
+              "(%.0f,%.0f)-(%.0f,%.0f); B #%02x%02x%02x, %zu px, box (%.0f,%.0f)-(%.0f,%.0f)\n",
+              img.width, img.height, splitDemoByte(kSplitFieldA[0]),
+              splitDemoByte(kSplitFieldA[1]), splitDemoByte(kSplitFieldA[2]), a.count, a.minX,
+              a.minY, a.maxX, a.maxY, splitDemoByte(kSplitFieldB[0]),
+              splitDemoByte(kSplitFieldB[1]), splitDemoByte(kSplitFieldB[2]), b.count, b.minX,
+              b.minY, b.maxX, b.maxY);
+
+  // A pane that drew nothing and a pane that drew the *other* document are
+  // indistinguishable from one colour's count, so both counts are required
+  // before anything is claimed about where they are. The floor is 10000
+  // framebuffer pixels -- 100 x 100 -- which no anti-aliased chrome edge can
+  // reach by accident and which the smaller pane clears by two orders of
+  // magnitude at the default window size.
+  constexpr size_t kFloor = 10000;
+  check(a.count >= kFloor, "document A's field is on screen: the focused pane drew it");
+  check(b.count >= kFloor, "document B's field is on screen: the companion pane drew it");
+
+  if (a.count >= kFloor && b.count >= kFloor) {
+    if (mode == np::AtelierSplit::Columns) {
+      check(a.maxX < b.minX,
+            "columns-2: every A pixel is left of every B pixel -- side by side, not swapped");
+      check(a.minY < b.maxY && b.minY < a.maxY,
+            "columns-2: the fields overlap vertically -- side by side, not stacked");
+    } else {
+      check(a.maxY < b.minY,
+            "layout-grid: every A pixel is above every B pixel -- stacked, not swapped");
+      check(a.minX < b.maxX && b.minX < a.maxX,
+            "layout-grid: the fields overlap horizontally -- stacked, not side by side");
+    }
+  }
+
+  // --- and the two icons are no longer drawn disabled ---------------------
+  //
+  // The one check that needs geometry. `drawAtelierTabStrip()` puts the icons
+  // in the last two cells of the tab strip, each as wide as the band is tall;
+  // the rectangles below are that same arithmetic, over the bands
+  // `atelierLayout()` produces at the viewport ui/MacPaintUI hands it -- origin
+  // (0,0) and the *full* logical size, not the ImGui work area, for the reason
+  // that call site gives.
+  //
+  // What the pixels say, measured rather than reasoned from the tokens alone.
+  // Disabled draws the outline in `kChromeBase` #2d2b2b over the band's own
+  // `kChromeMid` #444141, and the icon cells of a *one-document* screenshot
+  // read 65 with a redness of 3. Enabled and idle draws it in `kTextSecondary`
+  // #9b9797 and a two-document one reads 151; the arrangement that is *on*
+  // draws in `kAccent` #ff563c and reads a redness of 169, which is 255 - 86
+  // exactly. Enabled-and-hovered is `kTextPrimary`, brighter still, so a mouse
+  // that happens to rest on an icon cannot turn a pass into a failure. The
+  // thresholds are 120 and 80, each in the middle of its own gap.
+  const np::AtelierBands bands =
+      np::atelierLayout(0.0f, 0.0f, logicalW, logicalH, /*showTabStrip=*/true);
+  // No width means no scale factor, and no honest answer to give: say so
+  // rather than dividing by zero and sampling wherever that lands.
+  if (logicalW <= 0.0f) {
+    std::fprintf(stderr, "[split-demo] the window reports %.0f logical pixels of width\n",
+                 logicalW);
+    return false;
+  }
+  const float scale = static_cast<float>(img.width) / logicalW;
+  const float iconH = bands.tabStrip.h;
+  const int onCell = mode == np::AtelierSplit::Columns ? 0 : 1;
+  for (int i = 0; i < 2; ++i) {
+    const float ix = bands.tabStrip.right() - 2.0f * iconH + static_cast<float>(i) * iconH;
+    const np::AtelierRect cell{ix * scale, bands.tabStrip.y * scale, iconH * scale, iconH * scale};
+    int maxGrey = 0, maxRedness = 0;
+    splitDemoIconStats(img, cell, &maxGrey, &maxRedness);
+    const char* name = i == 0 ? "columns-2" : "layout-grid";
+    char what[128];
+    if (i == onCell) {
+      std::snprintf(what, sizeof(what), "%s is drawn pressed, in the accent (redness %d)", name,
+                    maxRedness);
+      check(maxRedness >= 80, what);
+    } else {
+      std::snprintf(what, sizeof(what),
+                    "%s is enabled, not the disabled grey (brightest channel %d)", name, maxGrey);
+      check(maxGrey >= 120, what);
+    }
+  }
+
+  std::printf("[split-demo] %s\n", ok ? "PASS" : "FAIL");
+  return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -624,6 +972,8 @@ int main(int argc, char** argv) {
   bool compsDemoDrop = false;
   bool uiLayerDemo = false;
   bool uiLayerDemoClip = true;
+  bool splitDemo = false;
+  np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
   const char* uiMergeDemo = nullptr;
   const char* uiMultiSelectDemo = nullptr;
   bool controlsAllOpen = false;
@@ -700,6 +1050,22 @@ int main(int argc, char** argv) {
       uiLayerDemo = true;
       if (i + 1 < argc && std::string_view(argv[i + 1]) == "noclip") {
         uiLayerDemoClip = false;
+        ++i;
+      }
+    } else if (a == "--split-demo") {
+      // PLAN.md Phase 5 step 14 / PRD A5: open a second document and press one
+      // of the tab strip's two split icons, so --screenshot can photograph the
+      // two-pane canvas -- the half of step 14 that shipped compile-verified
+      // only. See buildSplitDemo(), and verifySplitDemoScreenshot() for what is
+      // then asserted about the picture.
+      //
+      // `rows` selects `layout-grid` (stacked) instead of `columns-2` (side by
+      // side). Spelled `rows` rather than `layout-grid` because that is what
+      // ui/AtelierLayout's enumerator is called and the design's own two icon
+      // names are, by that header's admission, an interpretation.
+      splitDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "rows") {
+        splitDemoMode = np::AtelierSplit::Rows;
         ++i;
       }
     } else if (a == "--ui-merge-demo") {
@@ -1437,6 +1803,14 @@ int main(int argc, char** argv) {
       runUiMultiSelectDemo(*od, uiMultiSelectDemo);
   }
 
+  // After all of them, and the only fixture that is not meant to be combined
+  // with the others: it paints a flat field over layer 0 and adds a second
+  // document, so `--demo-document --split-demo` would photograph this field
+  // under that fixture's upper two layers. Said here rather than enforced --
+  // the flags are a developer's tool and a refusal would be a rule to
+  // remember where a sentence is enough.
+  if (splitDemo) buildSplitDemo(st, splitDemoMode);
+
   // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring
   // UI (ui/MacPaintUI.cpp's GRADE section: add/reorder/toggle/delete, plus
   // the curve widget) is how a user populates it now. Earlier, before this
@@ -1812,7 +2186,40 @@ int main(int argc, char** argv) {
     // quad is a document that silently did not draw, so it is reported even
     // when it is zero rather than only when something has already gone wrong.
     std::printf("[canvas-quad] %zu document quad(s) drawn, %zu dropped\n", np::canvasQuadsDrawn(),
-                np::canvasQuadsDropped());  }
+                np::canvasQuadsDropped());
+  }
+
+  // --- what `--split-demo` is worth ---------------------------------------
+  //
+  // Here, after the loop, rather than beside the capture inside it: the file
+  // has to be closed before it can be read back, `--screenshot` sets `st.quit`
+  // on the frame it captures, and the frame loop is no place for a full image
+  // decode. The window is still alive, which is what makes its *logical* size
+  // available -- ImGui's `DisplaySize` is exactly `SDL_GetWindowSize()`, and
+  // the layout constants the verifier reconstructs are logical (the decoded
+  // PNG is 2x that on this display; ui/AtelierLayout's rects are not).
+  //
+  // The exit code is the point. `--selftest` is the project's assertion
+  // harness and this is not one of its sections -- it cannot be, because it
+  // needs a window, a swapchain, thirty rendered frames and a file on disk,
+  // which is the opposite of what every section in src/app/selftest is. So the
+  // flag carries its own verdict out through the process's status instead, and
+  // `--split-demo --screenshot out.png` is a command a script can fail on.
+  int exitCode = 0;
+  if (splitDemo) {
+    if (screenshotPath != nullptr) {
+      int logicalW = 0, logicalH = 0;
+      SDL_GetWindowSize(window, &logicalW, &logicalH);
+      if (!verifySplitDemoScreenshot(screenshotPath, splitDemoMode,
+                                     static_cast<float>(logicalW), static_cast<float>(logicalH)))
+        exitCode = 1;
+    } else {
+      // Not silent: a --split-demo run with no --screenshot has photographed
+      // nothing and therefore asserted nothing, and a flag that reported
+      // nothing would read exactly like one that had passed.
+      std::printf("[split-demo] no --screenshot, so nothing was verified\n");
+    }
+  }
 
   np::shutdownCanvasQuad();
   ImGui_ImplWGPU_Shutdown();
@@ -1822,5 +2229,7 @@ int main(int argc, char** argv) {
   gpu.shutdown();
   SDL_DestroyWindow(window);
   SDL_Quit();
-  return 0;
+  // Non-zero only when a verification above actually ran and failed; every
+  // other path leaves it 0, so no existing invocation's exit code changes.
+  return exitCode;
 }
