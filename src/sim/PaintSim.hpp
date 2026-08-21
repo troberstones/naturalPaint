@@ -238,6 +238,58 @@ class PaintSim {
     float wetness = 0.0f;
   };
 
+  // --- The tile payload, always deferred ------------------------------------
+  //
+  // One tile of the deposited pigment pair is 128*128*16 = 256 KiB per field,
+  // and a bake may want several. Blocking on that drains the queue: with a
+  // realistic watercolour frame in flight, even a ONE-tile readback measured
+  // 3.288 ms -- 16% of PRD F3's 20 ms budget, spent waiting for the solver to
+  // finish rather than on the payload, on a frame where the user is still
+  // painting. So this is a fence-and-poll state machine and the poll has never
+  // had to wait (measured 0.013 ms, ready 200/200 times one frame later).
+  //
+  // Idle -> Submitted -> Ready -> (endPigmentReadback) -> Idle.
+  //
+  // Per-tile copies rather than one bounding box, deliberately: the measured
+  // difference is about 3.6% (bytes are the cost, not command count), so
+  // bounding-box logic would buy nothing and would over-report every stroke
+  // that curves. It costs nothing in padding either -- a 128-texel RGBA32F row
+  // is 2048 bytes, exactly 8 x WebGPU's 256-byte copy alignment, so a tile
+  // copies with no stride padding at all.
+  enum class PigmentReadback { Idle, Submitted, Ready, Failed };
+
+  struct BridgeTile {
+    uint32_t x = 0, y = 0;
+  };
+
+  // Issues the copies and submits. Non-blocking. Refuses if a readback is
+  // already in flight -- one at a time is all the bake needs, and a queue of
+  // them would hide which one a later failure belonged to.
+  bool beginPigmentReadback(GpuContext& gpu, const std::vector<BridgeTile>& tiles);
+
+  // Non-blocking. Pumps the instance once and reports where the machine is.
+  PigmentReadback pollPigmentReadback(GpuContext& gpu);
+
+  // Valid only while `Ready`, and only until `endPigmentReadback()`. Points
+  // straight into the mapped range: the bake decodes from here into
+  // PigmentTile storage without an intermediate copy, which the measurements
+  // said was the largest single term at 64 tiles (2.5 ms of 3.9).
+  //
+  // Each is 128*128*4 floats, row-major within the tile.
+  const float* pigmentReadbackDepC(size_t tileIndex) const;
+  const float* pigmentReadbackDepR(size_t tileIndex) const;
+  size_t pigmentReadbackTileCount() const { return readbackTiles_.size(); }
+  // Which tile the i'th readback slot came from, so a caller can put it back
+  // where it belongs without keeping its own parallel copy of the list it
+  // passed in -- two lists that must stay in step is a bug waiting to happen.
+  BridgeTile bridgeTileAt(size_t i) const {
+    return i < readbackTiles_.size() ? readbackTiles_[i] : BridgeTile{};
+  }
+
+  // Unmaps and returns to Idle. Safe to call in any state. NOT called
+  // automatically on failure, so a caller can ask what went wrong first.
+  void endPigmentReadback();
+
   // Runs the reduction and reads the result back, BLOCKING. That is the right
   // call for this payload and only for this payload: it is a few hundred bytes
   // and sits at the transfer floor (measured 0.129 ms median), where a tile
@@ -437,6 +489,21 @@ class PaintSim {
   WGPUBuffer occupancyBuf_ = nullptr;
   WGPUBuffer occupancyRead_ = nullptr;
   size_t occupancyBytes_ = 0;
+
+  // The deferred tile payload. `readbackBuf_` stays alive until
+  // endPigmentReadback(): the map callback holds a raw WGPUBuffer, and
+  // releasing it before the callback fires surfaces the abort at an unrelated
+  // later submit, naming the wrong code. app/Screenshot.hpp states the same
+  // hazard from the write side.
+  WGPUBuffer readbackBuf_ = nullptr;
+  size_t readbackBytes_ = 0;
+  std::vector<BridgeTile> readbackTiles_;
+  const float* readbackMapped_ = nullptr;
+  PigmentReadback readbackState_ = PigmentReadback::Idle;
+  // Written by the map callback, read by the poll. Not atomic: wgpu callbacks
+  // fire from wgpuInstanceProcessEvents() on this thread, not from another.
+  int readbackDone_ = 0;
+  bool readbackOk_ = false;
   WGPURenderPipeline composite_ = nullptr;
   WGPURenderPipeline grayscalePipeline_ = nullptr;
   WGPURenderPipeline gradePipeline_ = nullptr;

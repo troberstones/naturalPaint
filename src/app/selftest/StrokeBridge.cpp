@@ -1,5 +1,8 @@
 #include "app/selftest/Support.hpp"
 
+#include <chrono>
+
+#include "app/StrokeBake.hpp"
 #include "core/PigmentBake.hpp"
 
 // The stroke bridge's dirty-and-drying question (PLAN.md roadmap section 11).
@@ -230,6 +233,182 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
     } else {
       check(false, "bridge: the end-to-end readback ran");
     }
+  }
+
+  // ======================================================================
+  // 5. The tile payload, deferred -- and bit-identical to the blocking read.
+  // ======================================================================
+  //
+  // The poll must not block, and what it eventually hands back must be exactly
+  // what a full-field readback of the same texels contains. The second half is
+  // the one that matters: a per-tile copy gets its origin, its row stride and
+  // its buffer offset all from separate arithmetic, and any of the three being
+  // wrong produces plausible-looking pigment from the wrong place.
+  std::printf("  -- 5. the deferred tile payload --\n");
+  {
+    std::vector<PaintSim::TileOccupancy> occ;
+    sim.readTileOccupancy(gpu, occ);
+    size_t best = 0;
+    for (size_t t = 1; t < occ.size(); ++t)
+      if (occ[t].mass > occ[best].mass) best = t;
+    const PaintSim::BridgeTile want{static_cast<uint32_t>(best % 3),
+                                    static_cast<uint32_t>(best / 3)};
+
+    check(!sim.beginPigmentReadback(gpu, {}), "bridge: an empty tile list is refused");
+    check(!sim.beginPigmentReadback(gpu, {{99, 0}}),
+          "bridge: a tile outside the canvas is refused rather than read from nowhere");
+
+    check(sim.beginPigmentReadback(gpu, {want}), "bridge: the readback was issued");
+    check(!sim.beginPigmentReadback(gpu, {want}),
+          "bridge: a second readback while one is in flight is refused -- one at a time, so a "
+          "failure belongs to a known request");
+
+    // Non-blocking, and the two halves of that are measured separately.
+    //
+    // FIRST: one poll costs essentially nothing, because it pumps the instance
+    // once and returns whatever it finds. That is the property the design
+    // turns on -- a caller polls once a frame and never stalls.
+    //
+    // SECOND: readiness arrives when the GPU finishes, which is a WALL-CLOCK
+    // wait, not a number of polls. Bounding this loop by an iteration count
+    // was my own bug and it is worth naming: 1000 polls complete in
+    // microseconds and the copy takes milliseconds, so the budget expired long
+    // before the GPU could possibly have finished, and abandoning a pending
+    // map left the next submit to fail validation on a still-mapped buffer.
+    using Clock = std::chrono::steady_clock;
+    const auto started = Clock::now();
+    PaintSim::PigmentReadback st = sim.pollPigmentReadback(gpu);
+    const double firstPollMs =
+        std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+    long long polls = 1;
+    while (st == PaintSim::PigmentReadback::Submitted &&
+           std::chrono::duration<double>(Clock::now() - started).count() < 5.0) {
+      ++polls;
+      st = sim.pollPigmentReadback(gpu);
+    }
+    const double waitedMs =
+        std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+    std::printf("  [selftest] bridge: [measured] one poll %.4f ms; ready after %lld poll(s) "
+                "over %.2f ms of wall clock -- the wait is the GPU's, and no single poll "
+                "carries it\n",
+                firstPollMs, polls, waitedMs);
+    check(st == PaintSim::PigmentReadback::Ready, "bridge: the readback reached Ready");
+    check(firstPollMs < 1.0,
+          "bridge: a single poll costs well under a millisecond -- it pumps once and returns, "
+          "which is what lets a caller poll every frame");
+
+    // The comparison. A full-field readback of depC, indexed at the same
+    // texels, must match the tile copy bit for bit -- not to a tolerance.
+    std::vector<float> full;
+    const bool got =
+        sim.readbackField(gpu, sim.depCTexForDiag(), WGPUTextureFormat_RGBA32Float, full);
+    check(got, "bridge: full-field readback for the comparison");
+    const float* tileC = sim.pigmentReadbackDepC(0);
+    check(tileC != nullptr, "bridge: the mapped depC pointer is valid while Ready");
+
+    if (got && tileC != nullptr) {
+      size_t mismatches = 0, nonZero = 0;
+      for (uint32_t y = 0; y < PaintSim::kBridgeTile; ++y) {
+        for (uint32_t x = 0; x < PaintSim::kBridgeTile; ++x) {
+          const size_t inTile = (static_cast<size_t>(y) * PaintSim::kBridgeTile + x) * 4;
+          const size_t inFull =
+              ((static_cast<size_t>(want.y * PaintSim::kBridgeTile + y) * kW) +
+               (want.x * PaintSim::kBridgeTile + x)) * 4;
+          for (int c = 0; c < 4; ++c)
+            if (tileC[inTile + c] != full[inFull + c]) ++mismatches;
+          if (tileC[inTile + 3] > 0.0f) ++nonZero;
+        }
+      }
+      std::printf("  [selftest] bridge: %zu of %u texels in the tile carry mass; %zu channel "
+                  "mismatches against the full-field read\n",
+                  nonZero, PaintSim::kBridgeTile * PaintSim::kBridgeTile, mismatches);
+      check(mismatches == 0,
+            "bridge: the tile copy is BIT-IDENTICAL to the full read -- origin, stride and "
+            "offset all agree");
+      check(nonZero > 0, "bridge: and the tile it copied is not an empty one");
+    }
+  }
+
+  // ======================================================================
+  // 6. The bake: solver texels become tiles a layer holds.
+  // ======================================================================
+  std::printf("  -- 6. the bake, into a real Pigment layer --\n");
+  {
+    Layer layer = makePigmentLayer("baked wash");
+    check(layer.pigmentTiles.has_value(), "bridge: the target is a Pigment layer");
+
+    const BakeResult r = bakePigmentTiles(sim, layer, kAbsorptionWatercolor);
+    std::printf("  [selftest] bridge: baked %zu tile(s), %zu texel(s), peak coverage %.4f, "
+                "%zu tile(s) had nothing above the floor\n",
+                r.tilesWritten, r.texelsWritten, static_cast<double>(r.peakCoverage),
+                r.tilesEmpty);
+    check(r.texelsWritten > 0, "bridge: the bake wrote texels into the layer");
+    check(r.peakCoverage > 0.0f && r.peakCoverage <= 1.0f,
+          "bridge: and every one of them is a coverage in [0,1]");
+
+    // The layer now holds what core/PigmentBake says the solver texels mean.
+    // Recomputed here from the mapped floats rather than trusted, so this
+    // compares the stored tile against the mapping, not against itself.
+    const float* depC = sim.pigmentReadbackDepC(0);
+    const float* depR = sim.pigmentReadbackDepR(0);
+    const PaintSim::BridgeTile at = sim.bridgeTileAt(0);
+    const PigmentTile* stored =
+        layer.pigmentTiles->find(TileCoord{static_cast<int32_t>(at.x), static_cast<int32_t>(at.y)});
+    check(stored != nullptr, "bridge: the tile landed at the coordinate it came from");
+
+    if (stored != nullptr && depC != nullptr && depR != nullptr) {
+      float worst = 0.0f;
+      size_t compared = 0;
+      for (int32_t y = 0; y < kTileSize; ++y) {
+        for (int32_t x = 0; x < kTileSize; ++x) {
+          const size_t i = (static_cast<size_t>(y) * kTileSize + x) * 4;
+          if (!(depC[i + 3] > 1e-4f)) continue;
+          const PigmentTexel expect = projectSolverTexel(
+              {depC[i], depC[i + 1], depC[i + 2], depC[i + 3]},
+              {depR[i], depR[i + 1], depR[i + 2], depR[i + 3]}, kAbsorptionWatercolor);
+          const PigmentTexel got = stored->readTexel(PixelCoord{x, y});
+          worst = std::max(worst, std::fabs(got.mass - expect.mass));
+          for (size_t c = 0; c < 3; ++c)
+            worst = std::max(worst, std::fabs(got.latent.c[c] - expect.latent.c[c]));
+          ++compared;
+        }
+      }
+      std::printf("  [selftest] bridge: %zu baked texels compared against core/PigmentBake, "
+                  "worst channel error %.3e (f16 storage gives ~4.9e-4 relative)\n",
+                  compared, static_cast<double>(worst));
+      check(worst < 1e-3f,
+            "bridge: every stored texel IS what core/PigmentBake says its solver texel means");
+    }
+
+    // A bake ADDS. Texels below the floor are skipped rather than stamped as
+    // transparent, so a second bake over a tile that already holds paint
+    // cannot erase what the first one put there -- which a whole-tile assign
+    // would, for every texel this stroke did not touch.
+    if (stored != nullptr) {
+      const PixelCoord corner{0, 0};
+      PigmentTexel sentinel;
+      sentinel.mass = 0.75f;
+      sentinel.latent.c = {0.1f, 0.2f, 0.3f};
+      layer.pigmentTiles->getOrCreate(
+          TileCoord{static_cast<int32_t>(at.x), static_cast<int32_t>(at.y)})
+          .writeTexel(corner, sentinel);
+      const bool cornerWasEmpty = !(depC[3] > 1e-4f);
+      bakePigmentTiles(sim, layer, kAbsorptionWatercolor);
+      const PigmentTexel after =
+          layer.pigmentTiles
+              ->find(TileCoord{static_cast<int32_t>(at.x), static_cast<int32_t>(at.y)})
+              ->readTexel(corner);
+      check(!cornerWasEmpty || std::fabs(after.mass - 0.75f) < 1e-3f,
+            "bridge: re-baking does not erase paint the solver had nothing to say about");
+    }
+
+    sim.endPigmentReadback();
+    check(sim.pigmentReadbackDepC(0) == nullptr,
+          "bridge: after endPigmentReadback the mapped pointer is gone -- no reading a buffer "
+          "that has been unmapped");
+    check(sim.beginPigmentReadback(gpu, {{1, 1}}),
+          "bridge: and the machine is back at Idle, so a new readback can start");
+    sim.endPigmentReadback();
   }
 
   sim.shutdown();

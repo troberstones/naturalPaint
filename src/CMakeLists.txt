@@ -81,6 +81,7 @@ add_executable(naturalPaint
   app/selftest/TiledViewport.cpp
   app/selftest/ViewTransform.cpp
   app/Snapping.cpp
+  app/StrokeBake.cpp
   app/StrokeSession.cpp
   app/ViewTransform.cpp
   brush/Deposit.cpp

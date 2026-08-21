@@ -168,6 +168,13 @@ void PaintSim::releaseFields() {
     f->release();
   inkAllocated_ = false;
   oilAllocated_ = false;
+  endPigmentReadback();
+  if (readbackBuf_ != nullptr) {
+    wgpuBufferDestroy(readbackBuf_);
+    wgpuBufferRelease(readbackBuf_);
+    readbackBuf_ = nullptr;
+    readbackBytes_ = 0;
+  }
   for (WGPUBuffer* b : {&occupancyBuf_, &occupancyRead_}) {
     if (*b != nullptr) {
       wgpuBufferDestroy(*b);
@@ -1122,6 +1129,120 @@ bool PaintSim::readbackGraded(GpuContext& gpu, std::vector<uint8_t>& out) {
   wgpuBufferDestroy(staging);
   wgpuBufferRelease(staging);
   return ok;
+}
+
+namespace {
+// One tile of one RGBA32F field. 128 texels x 16 bytes = 2048 bytes a row,
+// which is exactly 8 x WebGPU's 256-byte copy alignment -- so a tile copies
+// with no stride padding, and the mapped bytes are the texels in row order.
+constexpr size_t kTileFieldBytes = static_cast<size_t>(PaintSim::kBridgeTile) *
+                                   PaintSim::kBridgeTile * 4 * sizeof(float);
+static_assert((static_cast<size_t>(PaintSim::kBridgeTile) * 16) % 256 == 0,
+              "a tile row must be a whole number of 256-byte copy rows, or the mapped "
+              "layout below is wrong");
+}  // namespace
+
+bool PaintSim::beginPigmentReadback(GpuContext& gpu, const std::vector<BridgeTile>& tiles) {
+  if (readbackState_ != PigmentReadback::Idle) return false;
+  if (tiles.empty() || depC_.srcTex() == nullptr || depR_.srcTex() == nullptr) return false;
+  for (const BridgeTile& t : tiles)
+    if (t.x >= tileCountX() || t.y >= tileCountY()) return false;
+
+  const size_t want = tiles.size() * 2 * kTileFieldBytes;
+  if (readbackBuf_ == nullptr || readbackBytes_ < want) {
+    if (readbackBuf_ != nullptr) {
+      wgpuBufferDestroy(readbackBuf_);
+      wgpuBufferRelease(readbackBuf_);
+    }
+    WGPUBufferDescriptor bd = {};
+    bd.label = sv("pigment tile readback");
+    bd.size = want;
+    bd.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    readbackBuf_ = wgpuDeviceCreateBuffer(gpu.device, &bd);
+    readbackBytes_ = want;
+  }
+  if (readbackBuf_ == nullptr) return false;
+
+  WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(gpu.device, nullptr);
+  // depC for every tile, then depR for every tile. Two runs rather than
+  // interleaved so the decode reads each field contiguously.
+  for (int field = 0; field < 2; ++field) {
+    WGPUTexture tex = (field == 0) ? depC_.srcTex() : depR_.srcTex();
+    for (size_t i = 0; i < tiles.size(); ++i) {
+      WGPUTexelCopyTextureInfo src = {};
+      src.texture = tex;
+      src.aspect = WGPUTextureAspect_All;
+      src.origin = {tiles[i].x * kBridgeTile, tiles[i].y * kBridgeTile, 0};
+      WGPUTexelCopyBufferInfo dst = {};
+      dst.buffer = readbackBuf_;
+      dst.layout.offset =
+          (static_cast<size_t>(field) * tiles.size() + i) * kTileFieldBytes;
+      dst.layout.bytesPerRow = kBridgeTile * 16;
+      dst.layout.rowsPerImage = kBridgeTile;
+      WGPUExtent3D extent = {kBridgeTile, kBridgeTile, 1};
+      wgpuCommandEncoderCopyTextureToBuffer(enc, &src, &dst, &extent);
+    }
+  }
+  WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+  wgpuQueueSubmit(gpu.queue, 1, &cmd);
+  wgpuCommandBufferRelease(cmd);
+  wgpuCommandEncoderRelease(enc);
+
+  readbackTiles_ = tiles;
+  readbackDone_ = 0;
+  readbackOk_ = false;
+  readbackMapped_ = nullptr;
+  readbackState_ = PigmentReadback::Submitted;
+
+  WGPUBufferMapCallbackInfo mci = {};
+  mci.mode = WGPUCallbackMode_AllowProcessEvents;
+  mci.userdata1 = this;
+  mci.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void* ud1, void*) {
+    auto* self = static_cast<PaintSim*>(ud1);
+    self->readbackOk_ = (status == WGPUMapAsyncStatus_Success);
+    self->readbackDone_ = 1;
+  };
+  wgpuBufferMapAsync(readbackBuf_, WGPUMapMode_Read, 0, want, mci);
+  return true;
+}
+
+PaintSim::PigmentReadback PaintSim::pollPigmentReadback(GpuContext& gpu) {
+  if (readbackState_ != PigmentReadback::Submitted) return readbackState_;
+  // One pump, then look. This is the whole of "non-blocking": there is no
+  // loop here, and a caller that polls every frame simply finds it ready on a
+  // later one.
+  wgpuInstanceProcessEvents(gpu.instance);
+  if (readbackDone_ == 0) return PigmentReadback::Submitted;
+
+  if (!readbackOk_) {
+    readbackState_ = PigmentReadback::Failed;
+    return readbackState_;
+  }
+  const size_t want = readbackTiles_.size() * 2 * kTileFieldBytes;
+  readbackMapped_ =
+      static_cast<const float*>(wgpuBufferGetConstMappedRange(readbackBuf_, 0, want));
+  readbackState_ = (readbackMapped_ != nullptr) ? PigmentReadback::Ready : PigmentReadback::Failed;
+  return readbackState_;
+}
+
+const float* PaintSim::pigmentReadbackDepC(size_t tileIndex) const {
+  if (readbackState_ != PigmentReadback::Ready || tileIndex >= readbackTiles_.size()) return nullptr;
+  return readbackMapped_ + tileIndex * (kTileFieldBytes / sizeof(float));
+}
+
+const float* PaintSim::pigmentReadbackDepR(size_t tileIndex) const {
+  if (readbackState_ != PigmentReadback::Ready || tileIndex >= readbackTiles_.size()) return nullptr;
+  return readbackMapped_ +
+         (readbackTiles_.size() + tileIndex) * (kTileFieldBytes / sizeof(float));
+}
+
+void PaintSim::endPigmentReadback() {
+  if (readbackState_ == PigmentReadback::Ready) wgpuBufferUnmap(readbackBuf_);
+  readbackMapped_ = nullptr;
+  readbackTiles_.clear();
+  readbackDone_ = 0;
+  readbackOk_ = false;
+  readbackState_ = PigmentReadback::Idle;
 }
 
 bool PaintSim::readTileOccupancy(GpuContext& gpu, std::vector<TileOccupancy>& out) {
