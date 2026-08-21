@@ -137,6 +137,20 @@ bool GpuContext::init(SDL_Window* window) {
   WGPUSurfaceCapabilities caps = {};
   wgpuSurfaceGetCapabilities(surface, adapter, &caps);
   if (caps.formatCount > 0) surfaceFormat = caps.formats[0];
+  // Whether this is an `...UnormSrgb` format is not a detail: Dear ImGui's WGPU
+  // backend keys its fragment-shader gamma off exactly this value, applying
+  // `pow(rgb, 2.2)` for any sRGB format and `pow(rgb, 1.0)` otherwise. Every
+  // pixel the application presents -- chrome *and* the document quad -- goes
+  // through that one branch, so the format the adapter happened to prefer is
+  // load-bearing for colour correctness and belongs in the log.
+  std::printf("[gpu] surface format: %d (%s), %zu offered\n",
+              static_cast<int>(surfaceFormat),
+              surfaceFormat == WGPUTextureFormat_BGRA8UnormSrgb   ? "BGRA8UnormSrgb"
+              : surfaceFormat == WGPUTextureFormat_RGBA8UnormSrgb ? "RGBA8UnormSrgb"
+              : surfaceFormat == WGPUTextureFormat_BGRA8Unorm     ? "BGRA8Unorm"
+              : surfaceFormat == WGPUTextureFormat_RGBA8Unorm     ? "RGBA8Unorm"
+                                                                 : "other",
+              caps.formatCount);
   wgpuSurfaceCapabilitiesFreeMembers(caps);
 
   int w = 0, h = 0;

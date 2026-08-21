@@ -823,6 +823,10 @@ int main(int argc, char** argv) {
     const bool fontsOk = np::runFontsTest();
     const bool atelierOk = np::runAtelierChromeTest();
     const bool activeLayerOk = np::runActiveLayerTest();
+    // The presentation transfer function, from a linear value in a layer to a
+    // byte in a screenshot -- the one edge no section covered, which is why the
+    // chrome's measured darkening had no explanation. Needs the GPU.
+    const bool presentTransferOk = np::runPresentTransferTest(gpu);
     // Phase 2 step 2: core/Half's shared half<->float codec and
     // core/TileStore's allocate-on-write / query-without-allocating /
     // iterate-occupied sparse map. Also headless and GPU-free -- pure CPU,
@@ -1246,7 +1250,7 @@ int main(int argc, char** argv) {
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
                     exportStatesOk && pigmentDepositOk && layerMultiSelectOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
-                    atelierOk && activeLayerOk;
+                    atelierOk && activeLayerOk && presentTransferOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

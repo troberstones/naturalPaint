@@ -2001,4 +2001,16 @@ bool runAtelierChromeTest();
 // something calls it.
 bool runActiveLayerTest();
 
+// The presentation transfer function: what the value in a layer becomes by the
+// time it is a byte in a screenshot. Establishes the surface format the adapter
+// actually preferred and the gamma Dear ImGui's backend selects from it, then
+// authors known linear values into a layer and runs them through the real
+// upload, the real surface format, the real hardware sRGB encode and the real
+// app/Screenshot writer, decodes the PNG's raw bytes and compares against
+// color/Space's srgbEncode(). The same fixture is rendered at gamma 1.0 beside
+// it, which is what isolates the measured error to that one uniform. Needs the
+// GPU. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
+// configurations; writes and removes two `selftest_present_*.png` files.
+bool runPresentTransferTest(GpuContext& gpu);
+
 }  // namespace np

@@ -65,6 +65,7 @@ add_executable(naturalPaint
   app/selftest/PigmentLayer.cpp
   app/selftest/PlaceImageAsLayer.cpp
   app/selftest/PointOps.cpp
+  app/selftest/PresentTransfer.cpp
   app/selftest/Probe.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/Shaper.cpp
