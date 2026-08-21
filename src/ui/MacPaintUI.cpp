@@ -1,20 +1,26 @@
 #include "ui/MacPaintUI.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 
+#include <functional>
 #include <string>
 #include <vector>
 
+#include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/HistoryPanel.hpp"
 #include "app/Journal.hpp"
+#include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
+#include "core/LayerOps.hpp"
 #include "imgui.h"
 #include "io/ExportAs.hpp"
 #include "ui/DocumentTexture.hpp"
@@ -25,7 +31,11 @@ namespace {
 constexpr float kToolCol = 2.0f;
 constexpr float kToolSize = 30.0f;
 constexpr float kPaletteW = kToolCol * kToolSize + 18.0f;
-constexpr float kControlsW = 268.0f;
+// Widened from 268 px by UI detour step 3. The old width could not hold the
+// longest label in the column beside a usable slider at all -- see the label
+// column below, which now measures what it actually needs and reports it. 300
+// costs the canvas 32 px of width and buys every control its whole name.
+constexpr float kControlsW = 300.0f;
 constexpr float kSwatchStripH = 62.0f;
 // Peak gravity, in the same cells-per-step units as the rest of the velocity field.
 constexpr float kMaxTilt = 0.50f;
@@ -49,6 +59,133 @@ constexpr float kSnapThresholdPx = 8.0f;
 // destructor running after the device is gone would be worse than the leak it
 // prevents. See DocumentTexture::release().
 DocumentTexture g_documentTexture;
+
+// --- The label column (UI detour step 3, problem 1b) ----------------------
+//
+// Dear ImGui draws a widget's label to the *right* of the widget, and the
+// controls column is a fixed-width docked panel, so before this step four of
+// its sliders read "Granulatio", "Edge darke", "Paper slop" and "Working ti" --
+// clipped by the window edge, mid-word.
+//
+// Every labelled control in that column now goes through `ctlSlider()` /
+// `ctlSliderInt()` / `ctlCombo()` below, which draw the label at the left and
+// give the widget what is left. app/ControlsLayout owns the arithmetic and its
+// one invariant (the widget never starts before the label ends); this half owns
+// the measurement, because only ImGui knows how wide a string is in the loaded
+// font at the current scale.
+//
+// `g_labelColumn` only grows, and it grows in the same frame that first
+// measures a wider label, so a slider added later cannot clip even on its
+// first frame. The widest label and the column it forced are printed whenever
+// they change -- once at startup, and again only if a wider label ever appears
+// -- so the claim "no label is clipped" is a measured number in the log rather
+// than a look at a screenshot.
+float g_labelColumn = 0.0f;
+float g_widestLabelPx = 0.0f;
+std::string g_widestLabel;
+float g_reportedColumn = -1.0f;
+
+// Draws `label`, positions the cursor for the widget and sizes it. Returns the
+// `##`-prefixed id the widget must be given, in a caller-owned buffer, so the
+// label is never drawn twice.
+void beginLabelled(const char* label, char* idOut, size_t idCap) {
+  std::snprintf(idOut, idCap, "##%s", label);
+  const float labelPx = ImGui::CalcTextSize(label).x;
+  if (labelPx > g_widestLabelPx) {
+    g_widestLabelPx = labelPx;
+    g_widestLabel = label;
+  }
+  const float startX = ImGui::GetCursorPosX();
+  const LabelledControlLayout lay =
+      layoutLabelledControl(g_labelColumn, labelPx, ImGui::GetContentRegionAvail().x);
+  ImGui::TextUnformatted(label);
+  if (!lay.labelOnOwnLine) {
+    // SameLine()'s own offset argument is measured from the line start and
+    // ignores the current indent, which the layers panel uses; setting the x
+    // directly keeps an indented control aligned with its own group.
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::SetCursorPosX(startX + lay.labelColumn);
+  }
+  ImGui::SetNextItemWidth(lay.widgetWidth);
+}
+
+bool ctlSlider(const char* label, float* v, float lo, float hi, const char* fmt = "%.3f") {
+  char id[96];
+  beginLabelled(label, id, sizeof(id));
+  return ImGui::SliderFloat(id, v, lo, hi, fmt);
+}
+
+bool ctlSliderInt(const char* label, int* v, int lo, int hi) {
+  char id[96];
+  beginLabelled(label, id, sizeof(id));
+  return ImGui::SliderInt(id, v, lo, hi);
+}
+
+// BeginCombo, laid out the same way. The caller ends it with EndCombo() as
+// usual -- this only replaces the label and the width.
+bool ctlBeginCombo(const char* label, const char* preview) {
+  char id[96];
+  beginLabelled(label, id, sizeof(id));
+  return ImGui::BeginCombo(id, preview);
+}
+
+// `ImGui::TextDisabled()` that wraps at the panel edge. The same failure as
+// the labels above, in a different widget: the layers panel's own status lines
+// carry a document name and a counter triple, neither of which is bounded, and
+// an unwrapped one is cut off by the window rather than continued.
+void textDisabledWrapped(const char* fmt, ...) IM_FMTARGS(1);
+void textDisabledWrapped(const char* fmt, ...) {
+  char buf[512];
+  va_list args;
+  va_start(args, fmt);
+  std::vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::TextWrapped("%s", buf);
+  ImGui::PopStyleColor();
+}
+
+bool ctlInputText(const char* label, char* buf, size_t cap, ImGuiInputTextFlags flags) {
+  char id[96];
+  beginLabelled(label, id, sizeof(id));
+  return ImGui::InputText(id, buf, cap, flags);
+}
+
+// --- The layer editor's shared state (UI detour step 3, problem 2) --------
+//
+// The `Layer` menu and the LAYERS panel are two views of one editor, so they
+// share one selection and one refusal line: a command issued from the menu
+// must move the panel's selection, and a refusal provoked from the menu has to
+// be legible somewhere, which is the panel's own error line. File-scope for
+// the same reason `g_documentTexture` is -- two places in this file need the
+// same instance, and app/AppState.hpp's rule is that transient UI state stays
+// in ui/.
+//
+// `selected` is an index into `Document::layers` (bottom-first), never a panel
+// row, so it keeps meaning the same layer across a reorder. app/LayerPanel owns
+// the one reversal between the two and nothing here reverses anything.
+struct LayerEditorUiState {
+  size_t selected = 0;
+  std::string lastError;
+};
+LayerEditorUiState g_layers;
+
+// The one path from a gesture to an edit, whichever control issued it. Every
+// mutation lands in `app::recordLayerEdit()` inside `applyLayerCommand()`, so
+// it bumps the document's revision (which is what makes ui/DocumentTexture
+// recomposite and the canvas change), appends a history entry and marks the
+// document structurally dirty.
+void runLayerCommand(AppState& st, LayerCommand command) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    g_layers.lastError =
+        "layer command refused: no document is open. File > New Document makes one.";
+    return;
+  }
+  const LayerEditResult r = applyLayerCommand(*od, command, g_layers.selected);
+  g_layers.selected = r.selected;
+  g_layers.lastError = r.ok ? std::string() : r.error;
+}
 
 const char* toolName(Tool t) {
   switch (t) {
@@ -371,17 +508,10 @@ float distancePointToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
 // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and a
 // curve widget operating in the shaper domain"). ---------------------------
 
-const char* pointOpKindName(PointOpKind k) {
-  switch (k) {
-    case PointOpKind::Levels:       return "Levels";
-    case PointOpKind::Curves:       return "Curves";
-    case PointOpKind::Exposure:     return "Exposure";
-    case PointOpKind::Saturation:   return "Saturation";
-    case PointOpKind::Grayscale:    return "Grayscale";
-    case PointOpKind::ChannelMixer: return "Channel Mixer";
-    default:                       return "?";
-  }
-}
+// An op's name is `core::opDisplayName()` -- this file's private copy of that
+// switch was deleted by UI detour step 3, which gave core/LayerOps the same
+// question to answer for a journal label. Two copies would have been a row
+// saying "Curves" and an undo entry saying something else about the same op.
 
 // The one PLAN.md step 8 names explicitly ("a curve widget operating in the
 // shaper domain"). ImGui glue around app/CurveEdit.hpp's pure geometry/
@@ -506,85 +636,105 @@ bool drawCurveWidget(Curve& curve) {
   return changed;
 }
 
-// The rest of PLAN.md step 8: add/list/toggle/reorder/delete, plus the
-// per-kind inline editors -- deliberately minimal outside Curves (see this
-// step's own scope notes below at each kind). Called once from the
-// ##controls panel's GRADE section, mirroring that panel's existing
-// TextUnformatted/Separator/Dummy idiom for every other section (BRUSH,
-// PIGMENT, OIL/INK/WATER, GRID, SOLVER above it).
-void drawGradeSection(AppState& st) {
-  ImGui::Checkbox("Preview Graded Output", &st.view.grade);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Shows the canvas through the op stack below\n"
-                      "(PLAN.md Phase 3's grading pipeline). Off by\n"
-                      "default, the same as Grayscale Preview above --\n"
-                      "grading never turns on just because the stack\n"
-                      "below is non-empty.");
+// --- One op stack, edited ------------------------------------------------
+//
+// The rest of PLAN.md step 8 (add / list / toggle / reorder / delete, plus the
+// per-kind inline editors, deliberately minimal outside Curves), generalised
+// by UI detour step 3 over **which** stack it is editing. Two are:
+//
+//   * `AppState::opStack` -- the session-level grading preview in the GRADE
+//     section. UI state; mutated directly, and undo knows nothing about it.
+//   * `Layer::ops` -- a layer's own non-destructive stack (PLAN.md Phase 5
+//     steps 3 and 5, composited by core/Composite for every kind and the
+//     entire content of an Adjustment layer). *Document* state; every mutation
+//     goes through core/LayerOps and `app::recordLayerEdit()`, so it lands in
+//     history and moves the revision ui/DocumentTexture caches the composite
+//     by. A layer op edited around that funnel would not reach the screen.
+//
+// Those two mutation paths are the whole difference between the two, so they
+// are what the caller binds, and every row, every params editor and the curve
+// widget are written once. The alternative -- a second copy of this loop for
+// layers -- would have been a second curve widget inside a week.
+struct OpStackBinding {
+  const OpStack* stack = nullptr;
+  std::function<void(Op)> add;
+  std::function<void(size_t)> remove;
+  std::function<void(size_t, size_t)> move;
+  std::function<void(size_t, bool)> setEnabled;
+  std::function<void(size_t, Op)> setOp;
+};
 
-  // 1. Add -- PLAN.md step 8 item 1. A new op always starts disabled: this
-  // codebase already has one established "build then reveal" pattern for
-  // brand-new content (a freshly dragged guide, a newly placed layer) never
-  // exists, so "add a not-yet-visible op, then opt it in" is the safer
-  // default over "adding an op instantly changes what you see" -- the same
-  // reasoning CanvasView::grade itself follows for the whole preview.
-  static int newOpKindIdx = 0;
+void drawOpStackEditor(const OpStackBinding& bound) {
+  const OpStack& stack = *bound.stack;
+
+  // 1. Add -- PLAN.md step 8 item 1. The new op's shape (class PointA, and
+  // **disabled**, so adding one never changes what is on screen) is
+  // `app::makeNewOp()`, which is now the single home of that rule for both
+  // stacks.
+  //
+  // The chosen kind lives in ImGui's ID-scoped storage rather than in a
+  // `static` local, because this function draws more than one stack per frame
+  // now -- a `static` would make the GRADE combo and the selected layer's
+  // combo the same combo.
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  const ImGuiID kindKey = ImGui::GetID("newOpKind");
+  int newOpKindIdx = storage->GetInt(kindKey, 0);
   const char* kKindNames[] = {"Levels", "Curves", "Exposure",
                               "Saturation", "Grayscale", "Channel Mixer"};
-  ImGui::SetNextItemWidth(150.0f);
-  ImGui::Combo("##newOpKind", &newOpKindIdx, kKindNames, IM_ARRAYSIZE(kKindNames));
+  const float addW = ImGui::CalcTextSize("+ Add").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+  ImGui::SetNextItemWidth(std::max(
+      80.0f, ImGui::GetContentRegionAvail().x - addW - ImGui::GetStyle().ItemSpacing.x));
+  if (ImGui::Combo("##newOpKind", &newOpKindIdx, kKindNames, IM_ARRAYSIZE(kKindNames)))
+    storage->SetInt(kindKey, newOpKindIdx);
   ImGui::SameLine();
-  if (ImGui::Button("+ Add")) {
-    Op op;
-    op.opClass = OpClass::PointA;
-    op.enabled = false;
-    op.pointKind = static_cast<PointOpKind>(newOpKindIdx);
-    st.opStack.add(op);
-  }
+  if (ImGui::Button("+ Add")) bound.add(makeNewOp(static_cast<PointOpKind>(newOpKindIdx)));
 
   // 2/3. List, one row per op in stack order, each with an enable checkbox,
   // a kind label, up/down/delete, and (for Curves) the widget above.
   //
-  // `op` is a *copy* of st.opStack.at(i), not a reference -- reorder()/
-  // remove() erase-and-insert into OpStack's internal std::vector<Op>,
-  // which can invalidate references to later elements; holding a reference
-  // across one of those calls and then reading it again in the same
-  // iteration (e.g. the per-kind editor below) would be exactly that bug.
+  // `op` is a *copy* of stack.at(i), not a reference -- reorder()/remove()
+  // erase-and-insert into OpStack's internal std::vector<Op>, which can
+  // invalidate references to later elements; holding a reference across one of
+  // those calls and then reading it again in the same iteration (e.g. the
+  // per-kind editor below) would be exactly that bug.
   // `structureChanged` stops the loop the same frame a reorder/remove
   // fires, rather than continuing to render rows against indices that no
   // longer mean what they did a moment ago -- the list simply reflects the
-  // new state from the next frame on, standard immediate-mode practice.
+  // new state from the next frame on, standard immediate-mode practice. It is
+  // set whether or not the mutation succeeded: a refused layer-op edit changed
+  // nothing, and re-rendering the rest of the rows this frame would say so no
+  // more clearly than the refusal line does.
   bool structureChanged = false;
-  for (size_t i = 0; i < st.opStack.size() && !structureChanged; ++i) {
+  for (size_t i = 0; i < stack.size() && !structureChanged; ++i) {
     ImGui::PushID(static_cast<int>(i));
-    Op op = st.opStack.at(i);
+    Op op = stack.at(i);
 
     bool enabled = op.enabled;
-    // Must go through OpStack::setEnabled(), never `op.enabled = ...`
-    // directly: `op` here is a local copy, so a direct mutation wouldn't
-    // even reach the live stack, and OpStack doesn't expose a non-const
-    // reference to mutate in place either way -- setEnabled() is the only
-    // path that bumps version(), which updateGradePreview()'s rebake gate
-    // depends on entirely.
-    if (ImGui::Checkbox("##en", &enabled)) st.opStack.setEnabled(i, enabled);
+    // Must go through the binding, never `op.enabled = ...` directly: `op`
+    // here is a local copy, so a direct mutation wouldn't even reach the live
+    // stack, and OpStack doesn't expose a non-const reference to mutate in
+    // place either way -- setEnabled() is the only path that bumps version(),
+    // which updateGradePreview()'s rebake gate depends on entirely.
+    if (ImGui::Checkbox("##en", &enabled)) bound.setEnabled(i, enabled);
     ImGui::SameLine();
-    ImGui::TextUnformatted(pointOpKindName(op.pointKind));
+    ImGui::TextUnformatted(opDisplayName(op).c_str());
 
     ImGui::BeginDisabled(i == 0);
     if (ImGui::SmallButton("Up")) {
-      st.opStack.reorder(i, i - 1);
+      bound.move(i, i - 1);
       structureChanged = true;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(i + 1 >= st.opStack.size());
+    ImGui::BeginDisabled(i + 1 >= stack.size());
     if (ImGui::SmallButton("Down")) {
-      st.opStack.reorder(i, i + 1);
+      bound.move(i, i + 1);
       structureChanged = true;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::SmallButton("Delete")) {
-      st.opStack.remove(i);
+      bound.remove(i);
       structureChanged = true;
     }
 
@@ -596,20 +746,30 @@ void drawGradeSection(AppState& st) {
     if (!structureChanged) {
       ImGui::Indent();
       bool changed = false;
-      switch (op.pointKind) {
+      switch (op.opClass == OpClass::PointA ? op.pointKind : PointOpKind::Levels) {
         case PointOpKind::Exposure:
           // Linear-light stops (ops/PointOps.hpp's ExposureParams -- the
           // one op deliberately NOT in the shaper domain). +-5 stops is a
           // generously wide but ordinary editing range.
-          changed = ImGui::SliderFloat("Stops", &op.exposure.stops, -5.0f, 5.0f);
+          changed = ctlSlider("Stops", &op.exposure.stops, -5.0f, 5.0f);
           break;
         case PointOpKind::Saturation:
           // lumaWeights stays at kRec709LumaWeights -- not exposed in this
           // narrow scope, matching Grayscale's own cut below for the same
           // shared weight.
-          changed = ImGui::SliderFloat("Scale", &op.saturation.scale, 0.0f, 2.0f);
+          changed = ctlSlider("Scale", &op.saturation.scale, 0.0f, 2.0f);
           break;
         case PointOpKind::Levels: {
+          // A non-PointA entry lands here too (an op a newer build wrote,
+          // carried verbatim by PRD I10) and must not be offered an editor at
+          // all: its params fields are meaningless and writing one back would
+          // turn a preserved op into a fabricated one. It is named by
+          // `opDisplayName()` in the row above and left alone.
+          if (op.opClass != OpClass::PointA) {
+            ImGui::TextDisabled("(this build cannot edit this op -- it is carried\n"
+                                "through unchanged, PRD I10)");
+            break;
+          }
           // ONE shared LevelsParams editor applied identically to all
           // three levels[0..2] entries on any change -- PLAN.md step 2's
           // own wording: "a composite levels adjustment is just the caller
@@ -618,11 +778,11 @@ void drawGradeSection(AppState& st) {
           // narrow scope.
           LevelsParams p = op.levels[0];
           bool ch = false;
-          ch |= ImGui::SliderFloat("Black in", &p.blackIn, 0.0f, 1.0f);
-          ch |= ImGui::SliderFloat("White in", &p.whiteIn, 0.0f, 1.0f);
-          ch |= ImGui::SliderFloat("Gamma", &p.gamma, 0.1f, 4.0f);
-          ch |= ImGui::SliderFloat("Black out", &p.blackOut, 0.0f, 1.0f);
-          ch |= ImGui::SliderFloat("White out", &p.whiteOut, 0.0f, 1.0f);
+          ch |= ctlSlider("Black in", &p.blackIn, 0.0f, 1.0f);
+          ch |= ctlSlider("White in", &p.whiteIn, 0.0f, 1.0f);
+          ch |= ctlSlider("Gamma", &p.gamma, 0.1f, 4.0f);
+          ch |= ctlSlider("Black out", &p.blackOut, 0.0f, 1.0f);
+          ch |= ctlSlider("White out", &p.whiteOut, 0.0f, 1.0f);
           if (ch) {
             op.levels[0] = op.levels[1] = op.levels[2] = p;
             changed = true;
@@ -650,7 +810,6 @@ void drawGradeSection(AppState& st) {
           // state storage (GetStateStorage()), not a new AppState field --
           // this is UI-only state, exactly like drawCurveWidget()'s own
           // drag-index storage right above it.
-          ImGuiStorage* storage = ImGui::GetStateStorage();
           const ImGuiID chKey = ImGui::GetID("curveChannel");
           int channel = storage->GetInt(chKey, 0);
           const char* chNames[3] = {"R", "G", "B"};
@@ -668,12 +827,40 @@ void drawGradeSection(AppState& st) {
           break;
         }
       }
-      if (changed) st.opStack.setOp(i, op);
+      if (changed) bound.setOp(i, op);
       ImGui::Unindent();
     }
     ImGui::Dummy(ImVec2(0, 4));
     ImGui::PopID();
   }
+  if (stack.size() == 0) ImGui::TextDisabled("(no ops)");
+}
+
+// The GRADE section: the session-level preview toggle, and the same op-stack
+// editor every other stack gets. `AppState::opStack` is UI state, so these
+// mutations are direct and are deliberately not recorded -- nothing about the
+// document changed, and a "grade preview" entry in a document's undo history
+// would be a lie about what undo would take back.
+void drawGradeSection(AppState& st) {
+  ImGui::Checkbox("Preview Graded Output", &st.view.grade);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Shows the canvas through the op stack below\n"
+                      "(PLAN.md Phase 3's grading pipeline). Off by\n"
+                      "default, the same as Grayscale Preview above --\n"
+                      "grading never turns on just because the stack\n"
+                      "below is non-empty.\n"
+                      "This stack grades the PAINTING canvas and is not\n"
+                      "part of the document; a layer's own op stack is in\n"
+                      "LAYERS, under the selected layer.");
+
+  OpStackBinding bound;
+  bound.stack = &st.opStack;
+  bound.add = [&st](Op op) { st.opStack.add(std::move(op)); };
+  bound.remove = [&st](size_t i) { st.opStack.remove(i); };
+  bound.move = [&st](size_t from, size_t to) { st.opStack.reorder(from, to); };
+  bound.setEnabled = [&st](size_t i, bool on) { st.opStack.setEnabled(i, on); };
+  bound.setOp = [&st](size_t i, Op op) { st.opStack.setOp(i, std::move(op)); };
+  drawOpStackEditor(bound);
 }
 
 // ------------------------------------------------------------------ Layers
@@ -735,6 +922,63 @@ void drawGradeSection(AppState& st) {
 // is deliberately no string literal naming a blend mode anywhere in this file.
 // The row also *displays* the blend it carries, marked `(!)` when this build
 // cannot composite it.
+//
+// **UI detour step 3 made five built features reachable from here**: a Pigment
+// layer, an Adjustment layer, add/remove mask, a layer's own op stack, and the
+// Clip checkbox against a composite that now shows what it does. The gestures
+// themselves -- what each one does, where the selection lands, when a command
+// is offerable at all -- are app/LayerEditor's, shared with the `Layer` menu,
+// and that header carries the argument. What is left here is the chrome.
+//
+// The kind glyph docs/ui.md §3.2 asks for, or an ASCII stand-in when the font
+// cannot draw it.
+//
+// **No font file is loaded anywhere in this project** -- ImGui's built-in
+// ProggyClean is ASCII-only -- so every one of app/LayerPanel's glyphs
+// (`◉ □ ▤ ◈ ✂ ▩`) renders as ImGui's `?` fallback and the glyph column says
+// nothing at all about the kind. Discovered by photographing the panel, which
+// is the whole reason this step's screenshots exist.
+//
+// The stand-in is the kind name's initial in brackets, from
+// `core::layerKindName()`, so it needs no second table to fall out of date:
+// `[R]`, `[P]`, `[A]`. The real glyph is used the moment a font that has it is
+// loaded, because the test is against the font rather than against a build
+// flag. This lives in ui/ and not in app/LayerPanel because "can the loaded
+// font draw this" is a question only the renderer can answer -- `--selftest`
+// checks the glyph, which is still what the panel asks for.
+std::string layerKindGlyphForFont(LayerKind kind) {
+  const char* glyph = layerKindGlyph(kind);
+  // The first code point, decoded here: ImGui's own UTF-8 decoder is internal
+  // API, and every glyph in that table is either ASCII or a 3-byte sequence.
+  const unsigned char* u = reinterpret_cast<const unsigned char*>(glyph);
+  unsigned int cp = 0;
+  if (u[0] < 0x80) {
+    cp = u[0];
+  } else if ((u[0] & 0xF0) == 0xE0 && u[1] != 0 && u[2] != 0) {
+    cp = static_cast<unsigned int>((u[0] & 0x0F) << 12 | (u[1] & 0x3F) << 6 | (u[2] & 0x3F));
+  }
+  if (cp != 0 && ImGui::GetFont()->IsGlyphInFont(static_cast<ImWchar>(cp)))
+    return glyph;
+  const char* name = layerKindName(kind);
+  return std::string("[") + static_cast<char>(std::toupper(name[0])) + "]";
+}
+
+// One button in the layers panel that issues a `LayerCommand`. Greyed out by
+// `app::layerCommandAvailable()` -- the same predicate the `Layer` menu greys
+// its items with -- and tooltipped with the command's own menu text, so an
+// abbreviated button and the menu item it duplicates can never come to mean
+// different things.
+void layerCommandButton(AppState& st, LayerCommand command, const char* text) {
+  const OpenDocument* od = st.documents.active();
+  const bool available =
+      od != nullptr && layerCommandAvailable(od->document, command, g_layers.selected);
+  ImGui::BeginDisabled(!available);
+  if (ImGui::SmallButton(text)) runLayerCommand(st, command);
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("%s", layerCommandLabel(command));
+}
+
 void drawLayersSection(AppState& st) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
@@ -748,7 +992,7 @@ void drawLayersSection(AppState& st) {
   }
 
   Document& doc = od->document;
-  ImGui::TextDisabled("%s -- %d x %d, %zu layer(s)", documentDisplayName(*od).c_str(), doc.width,
+  textDisabledWrapped("%s -- %d x %d, %zu layer(s)", documentDisplayName(*od).c_str(), doc.width,
                       doc.height, doc.layers.size());
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("The layers of the open document, composited and drawn\n"
@@ -760,47 +1004,46 @@ void drawLayersSection(AppState& st) {
   // owns the argument). `uploads` counts recomposites; `cached` counts frames
   // that cost two integer comparisons. In a still window the second number
   // climbs at the frame rate and the first does not move at all.
-  ImGui::TextDisabled("composite: %llu upload(s), %llu cached, last %.2f ms",
+  textDisabledWrapped("composite: %llu upload(s), %llu cached, last %.2f ms",
                       static_cast<unsigned long long>(g_documentTexture.uploads()),
                       static_cast<unsigned long long>(g_documentTexture.cacheHits()),
                       g_documentTexture.lastUploadMs());
 
-  // Session-local, exactly like drawGradeSection()'s newOpKindIdx and the
-  // Export As dialog's fields -- app/AppState.hpp's own rule is that transient
-  // widget state stays in ui/. The selection is a *model* index (bottom-first),
-  // not a panel row, so it survives a reorder meaning the same layer.
-  static size_t selected = 0;
-  static std::string lastError;
   static char renameBuf[128] = "";
-
+  size_t& selected = g_layers.selected;
   if (selected >= doc.layers.size()) selected = doc.layers.empty() ? 0 : doc.layers.size() - 1;
 
   auto run = [&](LayerOpResult r) {
     const DocumentOpResult out = recordLayerEdit(*od, std::move(r));
-    lastError = out.ok ? std::string() : out.error;
+    g_layers.lastError = out.ok ? std::string() : out.error;
     return out.ok;
   };
 
-  if (ImGui::SmallButton("+ Add")) {
-    // Above the selection, which is where every editor puts a new layer.
-    const size_t at = doc.layers.empty() ? 0 : selected + 1;
-    if (run(addLayer(doc, at, makeRgbLayer(defaultNewLayerName(doc))))) selected = at;
-  }
+  // The three creations, on their own row and in kind order. Every one of them
+  // was a function nothing could call before this step -- the panel offered a
+  // single "+ Add" that always made an RGB layer, so `makePigmentLayer()` and
+  // `makeAdjustmentLayer()` existed, were tested, and were unreachable.
+  layerCommandButton(st, LayerCommand::NewRgbLayer, "+ RGB");
   ImGui::SameLine();
-  ImGui::BeginDisabled(doc.layers.empty());
-  if (ImGui::SmallButton("Duplicate")) {
-    if (run(duplicateLayer(doc, selected))) selected += 1;
-  }
+  layerCommandButton(st, LayerCommand::NewPigmentLayer, "+ Pigment");
   ImGui::SameLine();
-  if (ImGui::SmallButton("Delete")) {
-    if (run(removeLayer(doc, selected)) && selected > 0) selected -= 1;
-  }
-  ImGui::EndDisabled();
+  layerCommandButton(st, LayerCommand::NewAdjustmentLayer, "+ Adjust");
+
+  layerCommandButton(st, LayerCommand::DuplicateLayer, "Duplicate");
+  ImGui::SameLine();
+  layerCommandButton(st, LayerCommand::DeleteLayer, "Delete");
+  ImGui::SameLine();
+  // PLAN.md Phase 5 step 4's pair, likewise unreachable until now. A mask that
+  // reveals everything costs no allocation (core/Mask.hpp), and "Hide All" is
+  // deliberately absent -- core/LayerOps.hpp says why.
+  layerCommandButton(st, LayerCommand::AddMask, "+ Mask");
+  ImGui::SameLine();
+  layerCommandButton(st, LayerCommand::RemoveMask, "- Mask");
 
   // Rows, top of the stack first. `structureChanged` stops the loop the same
   // frame a reorder/add/remove fires rather than continuing to render rows
   // against indices that no longer mean what they did -- the identical
-  // precaution drawGradeSection() takes over core::OpStack, and for the
+  // precaution drawOpStackEditor() takes over core::OpStack, and for the
   // identical reason (core/LayerOps' move/remove shift the vector).
   bool structureChanged = false;
   const size_t count = doc.layers.size();
@@ -817,11 +1060,11 @@ void drawLayersSection(AppState& st) {
       ImGui::SetTooltip("Visibility. Allowed even on a locked layer --\n"
                         "hiding a layer changes nothing about it.");
     ImGui::SameLine();
-    ImGui::TextUnformatted(layerKindGlyph(layer.kind));
+    ImGui::TextUnformatted(layerKindGlyphForFont(layer.kind).c_str());
     ImGui::SameLine();
     if (ImGui::Selectable(layerRowTitle(layer, i).c_str(), selected == i)) selected = i;
     ImGui::Indent();
-    ImGui::TextDisabled("%s", layerRowSubLine(layer).c_str());
+    textDisabledWrapped("%s", layerRowSubLine(layer).c_str());
 
     ImGui::BeginDisabled(i + 1 >= count);
     if (ImGui::SmallButton("Up")) {  // up the panel == up the stack == +1
@@ -848,7 +1091,7 @@ void drawLayersSection(AppState& st) {
     // an unbroken clipped run below, a live `Mix` pair -- depends on the whole
     // stack and is surfaced as core/LayerOps' own refusal sentence below,
     // which is the same split drawExportAsDialog() uses for io/Export's.
-    ImGui::BeginDisabled(i == 0);
+    ImGui::BeginDisabled(i == 0 && !layer.clipped);
     bool clipped = layer.clipped;
     if (ImGui::Checkbox("Clip", &clipped)) run(setLayerClipped(doc, i, clipped));
     ImGui::EndDisabled();
@@ -872,7 +1115,7 @@ void drawLayersSection(AppState& st) {
       // per frame of a drag -- accepted here because history (Phase 5 step 7)
       // is what owns coalescing an interaction into one entry, and inventing a
       // second, weaker coalescing rule in the panel would be in its way.
-      if (ImGui::SliderFloat("Opacity", &opacity, 0.0f, 1.0f, "%.2f"))
+      if (ctlSlider("Opacity", &opacity, 0.0f, 1.0f, "%.2f"))
         run(setLayerOpacity(doc, i, opacity));
 
       // The blend dropdown. The preview string is the *selected entry's* text
@@ -886,7 +1129,7 @@ void drawLayersSection(AppState& st) {
       const std::string preview =
           sel < menu.size() ? blendMenuEntryText(menu[sel]) : layer.blend + "  (this build "
                                                                            "cannot set this)";
-      if (ImGui::BeginCombo("Blend", preview.c_str())) {
+      if (ctlBeginCombo("Blend", preview.c_str())) {
         for (size_t m = 0; m < menu.size(); ++m) {
           const bool isSelected = (m == sel);
           if (ImGui::Selectable(blendMenuEntryText(menu[m]).c_str(), isSelected))
@@ -905,9 +1148,42 @@ void drawLayersSection(AppState& st) {
                           "tiles land.");
 
       std::snprintf(renameBuf, sizeof(renameBuf), "%s", layer.name.c_str());
-      if (ImGui::InputText("Name", renameBuf, sizeof(renameBuf),
-                           ImGuiInputTextFlags_EnterReturnsTrue))
+      if (ctlInputText("Name", renameBuf, sizeof(renameBuf),
+                       ImGuiInputTextFlags_EnterReturnsTrue))
         run(setLayerName(doc, i, renameBuf));
+
+      // The layer's own op stack (PLAN.md Phase 5 steps 3 and 5, reachable
+      // from this step on). The same editor the GRADE section uses, bound to
+      // core/LayerOps' five recorded op operations instead of to
+      // `OpStack`'s raw mutators -- see drawOpStackEditor() for why the
+      // binding is the only difference between the two.
+      //
+      // On an Adjustment layer this stack is the layer's entire content: the
+      // kind holds no pixels, so a fresh one is an exact no-op and stays
+      // invisible until an op here is added *and* enabled.
+      if (ImGui::TreeNodeEx("layerOps", ImGuiTreeNodeFlags_DefaultOpen, "Ops (%zu)",
+                            layer.ops.size())) {
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("This layer's own non-destructive op stack. It\n"
+                            "composites through core/Composite: over the layer's\n"
+                            "own pixels for a layer that has them, and over\n"
+                            "everything beneath for an Adjustment layer.\n"
+                            "Every change here is recorded, so undo takes it\n"
+                            "back and the canvas updates.");
+        OpStackBinding bound;
+        bound.stack = &layer.ops;
+        bound.add = [&](Op op) { run(addLayerOp(doc, i, std::move(op))); };
+        bound.remove = [&](size_t opIndex) { run(removeLayerOp(doc, i, opIndex)); };
+        bound.move = [&](size_t from, size_t to) { run(moveLayerOp(doc, i, from, to)); };
+        bound.setEnabled = [&](size_t opIndex, bool on) {
+          run(setLayerOpEnabled(doc, i, opIndex, on));
+        };
+        bound.setOp = [&](size_t opIndex, Op op) {
+          run(setLayerOp(doc, i, opIndex, std::move(op)));
+        };
+        drawOpStackEditor(bound);
+        ImGui::TreePop();
+      }
     }
     ImGui::Unindent();
     ImGui::Dummy(ImVec2(0, 4));
@@ -917,13 +1193,177 @@ void drawLayersSection(AppState& st) {
   // The refusal, verbatim. core/LayerOps' sentences already name the layer and
   // say what to do about it, so there is no second vocabulary here to drift
   // from the model's -- the same rule drawExportAsDialog() follows for
-  // io/Export's messages.
-  if (!lastError.empty()) {
+  // io/Export's messages. Shared with the `Layer` menu: a command refused from
+  // the menu bar is answered here, because this is where a user is looking at
+  // the layer it was refused on.
+  if (!g_layers.lastError.empty()) {
     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(230, 120, 110, 255));
-    ImGui::TextWrapped("%s", lastError.c_str());
+    ImGui::TextWrapped("%s", g_layers.lastError.c_str());
     ImGui::PopStyleColor();
-    if (ImGui::SmallButton("Dismiss")) lastError.clear();
+    if (ImGui::SmallButton("Dismiss")) g_layers.lastError.clear();
   }
+}
+
+// --- The simulation sections ----------------------------------------------
+//
+// One function per collapsing header (UI detour step 3). These were an
+// unbroken run of statements inside drawUI()'s controls window; splitting them
+// costs nothing and is what lets `app::controlsSections()` decide the order
+// and the default-open set as *data* rather than by where a statement happens
+// to sit in a 200-line block. Every labelled control goes through ctlSlider()
+// so its name cannot be clipped by the panel edge -- four of them were.
+
+void drawBrushSection(AppState& st) {
+  ctlSlider("Load", &st.brush.load, 0.0f, 2.5f);
+  ctlSlider("Water", &st.brush.wetness, 0.0f, 3.0f);
+  ctlSlider("Hardness", &st.brush.hardness, 0.0f, 1.0f);
+  ImGui::Checkbox("Pressure -> size", &st.brush.pressureSize);
+  ImGui::Checkbox("Pressure -> flow", &st.brush.pressureFlow);
+  if (!st.penSeen) ImGui::TextDisabled("(no tablet detected)");
+}
+
+void drawPigmentSection(AppState& st) {
+  ctlSlider("Density", &st.sim.density, 0.0f, 1.0f);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("How fast pigment drops out of suspension.");
+  ctlSlider("Staining", &st.sim.staining, 0.02f, 1.0f);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Resistance to being lifted back into the water.");
+  ctlSlider("Granulation", &st.sim.granulation, 0.0f, 1.0f);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Affinity for the paper's valleys.");
+  ctlSlider("Diffusion", &st.sim.pigmentDiffuse, 0.0f, 1.0f);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Pigment spreading through the wet film.\n"
+                      "At zero the water outruns the pigment and the\n"
+                      "leading edge of a wash runs clear.");
+}
+
+// The three media share one header and one slot in the column, because exactly
+// one of them is ever on screen -- switching medium switches the whole solver
+// (main.cpp), so these are alternatives rather than three sections.
+void drawMediumSection(AppState& st, PaintSim* sim) {
+  ImGui::TextDisabled("%s", paintModeName(st.mode));
+  if (st.mode == PaintMode::Oil) {
+    ctlSlider("Brush load", &st.sim.brushLoad, 0.0f, 3.0f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Paint the brush picks up when a stroke starts.\n"
+                        "It runs out as you paint, like a real one.");
+    ctlSlider("Pressure", &st.sim.penetration, 0.05f, 2.0f);
+    ctlSlider("Squish", &st.sim.oilPressure, 0.0f, 4.0f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("vp = -c * grad(penetration): paint pushed out\n"
+                        "sideways from under the bristles.");
+    ctlSlider("Transfer", &st.sim.xferFraction, 0.0f, 0.5f);
+    ctlSlider("Max transfer", &st.sim.maxXfer, 0.0f, 0.1f, "%.4f");
+    ctlSlider("Levelling", &st.sim.viscosity, 0.0f, 0.25f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Wet paint relaxing under surface tension.\n"
+                        "At zero the brush stamps leave periodic ridges.");
+    ctlSlider("Impasto light", &st.sim.impastoLight, 0.0f, 1.5f);
+    ctlSlider("Adhesion", &st.sim.adhesion, 0.0f, 0.4f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Paint never fully leaves a cell. At zero the\n"
+                        "canvas feels like Teflon.");
+  } else if (st.mode == PaintMode::Ink) {
+    ctlSlider("Relaxation", &st.sim.omega, 0.5f, 1.95f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("LBE omega. Viscosity = (1/omega - 1/2)/3.");
+    ctlSlider("Blocking", &st.sim.blocking, 0.0f, 0.9f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Base permeability of the paper. Higher blocks\n"
+                        "more flow and pins the mark's edge.");
+    ctlSlider("Grain block", &st.sim.grainBlock, 0.0f, 0.9f);
+    ctlSlider("Glue", &st.sim.glue, 0.0f, 0.6f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Artists add glue to limit spread.");
+    ctlSlider("Receptivity", &st.sim.receptivity, 0.1f, 2.5f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Wet paper takes less ink. Lower this and a second\n"
+                        "stroke over a damp mark barely registers.");
+    ctlSlider("Settle rate", &st.sim.settleScale, 0.0f, 0.05f, "%.4f");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("How fast ink fixes to the fibres. Too high and it\n"
+                        "deposits before it can travel, so nothing bleeds.");
+    if (sim) ctlSliderInt("Lattice steps", &sim->inkSubsteps, 1, 20);
+    ctlSlider("Evaporation", &st.sim.evaporation, 0.0f, 0.03f, "%.4f");
+  } else {
+    ctlSlider("Viscosity", &st.sim.viscosity, 0.0f, 0.5f);
+    ctlSlider("Drag", &st.sim.drag, 0.0f, 1.5f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Above ~0.5 the velocity field dies before water moves.");
+    ctlSlider("Edge darkening", &st.sim.edgeDarkening, 0.0f, 2.0f, "%.3f");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Curtis FlowOutward: pulls pigment to the stroke rim.\n"
+                        "Zero this and washes go flat.");
+    ctlSlider("Paper slope", &st.sim.paperSlope, 0.0f, 4.0f);
+
+    // One control for the wet lifetime. Evaporation and absorption are derived
+    // from it rather than exposed separately: letting the two drift out of step
+    // only makes the timing unpredictable, and neither means much alone.
+    if (ctlSlider("Working time", &st.workingTime, 1.0f, 20.0f, "%.1f s"))
+      setWorkingTime(st.sim, st.workingTime);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("How long a wash keeps bleeding before it sets.\n"
+                        "Good to about 15%% across this range. Past ~20 s the\n"
+                        "wash spreads thin enough that capillary dilution ends\n"
+                        "it regardless of how slowly it dries.");
+
+    ctlSlider("Max film", &st.sim.maxFilm, 0.2f, 8.0f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Deepest water the paper holds before it runs.\n"
+                        "Raise it far and a wash empties into its own rim.");
+    ctlSlider("Capillary diffuse", &st.sim.diffuseRate, 0.0f, 1.0f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("How fast water wicks through the fibres.\n"
+                        "Sets how far a wash reaches, not how long it lasts.");
+  }
+}
+
+void drawBoardTiltSection(AppState& st) {
+  tiltPad(st, 96.0f);
+  ImGui::SameLine();
+  ImGui::BeginGroup();
+  const float steep = std::sqrt(st.sim.tiltX * st.sim.tiltX +
+                                st.sim.tiltY * st.sim.tiltY) / kMaxTilt;
+  ImGui::TextDisabled("%.0f%%", steep * 100.0f);
+  ImGui::TextDisabled("drag to");
+  ImGui::TextDisabled("tilt");
+  ImGui::Dummy(ImVec2(0, 4));
+  if (ImGui::SmallButton("Level")) { st.sim.tiltX = 0.0f; st.sim.tiltY = 0.0f; }
+  ImGui::EndGroup();
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Only wet paint runs — the force scales with film\n"
+                      "depth, so a puddle streaks and damp paper does not.\n"
+                      "Double-click the pad to level.");
+}
+
+// PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD Q7):
+// "a simple settings surface... doesn't need its own dedicated window" --
+// a couple of sliders here, alongside the rest of the view/sim controls,
+// is sufficient. Mirrors the View menu's Grid/Snap checkboxes (same
+// AppState fields; either path sets the one place that's actually read,
+// this file's canvas block below).
+void drawGridSection(AppState& st) {
+  ImGui::Checkbox("Show grid", &st.showGrid);
+  ctlSlider("Spacing", &st.gridSpacing, 4.0f, 512.0f, "%.0f px");
+  ctlSliderInt("Subdivisions", &st.gridSubdivisions, 1, 10);
+  ImGui::Checkbox("Snap", &st.snappingEnabled);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Snaps guide creation/dragging to guides, the grid\n"
+                      "and canvas edges. Never affects freehand painting.");
+}
+
+void drawSolverSection(AppState& st, PaintSim* sim) {
+  if (sim) {
+    if (st.mode == PaintMode::Watercolor)
+      ctlSliderInt("Jacobi iters", &sim->jacobiIterations, 1, 60);
+    ctlSliderInt("Substeps", &sim->substeps, 1, 6);
+  }
+  ImGui::Checkbox("Paused", &st.paused);
+  if (ImGui::Button("Clear canvas")) st.requestClear = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Reload shaders")) st.requestReload = true;
 }
 
 // ----------------------------------------------------------------- History
@@ -1029,9 +1469,16 @@ void drawHistorySection(AppState& st) {
     ImGui::PushID(static_cast<int>(row.serial));
     const bool redoable = row.state == HistoryRowState::Redoable;
     if (redoable) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(150, 150, 150, 255));
-    if (ImGui::Selectable(historyRowText(row).c_str(), row.state == HistoryRowState::Current))
+    const std::string text = historyRowText(row);
+    if (ImGui::Selectable(text.c_str(), row.state == HistoryRowState::Current))
       clickedEntry = row.serial;
     if (redoable) ImGui::PopStyleColor();
+    // A row is a whole sentence built from an edit label a user typed part of
+    // ("rename layer 2 to ..."), so it has no bounded width and a docked column
+    // will clip some of them. A row is a list item rather than a label, so it
+    // is clipped rather than wrapped -- and the full text is one hover away,
+    // which is the part that was missing.
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text.c_str());
     ImGui::PopID();
   }
 
@@ -1727,6 +2174,54 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (ImGui::MenuItem("Clear Canvas", "Cmd+K")) st.requestClear = true;
       ImGui::EndMenu();
     }
+    // UI detour step 3. The whole menu is `app::allLayerCommands()` walked in
+    // order: a command added to that list without a menu entry is impossible,
+    // which is the failure this step exists to fix (five built features with
+    // no entry point at all). No shortcut strings -- docs/shortcuts.md assigns
+    // none of these and keymaps/default.json binds no action for them, so
+    // advertising a chord that resolves to nothing would be worse than
+    // menu-only, the same call File > Export As... already makes.
+    // --open-layer-menu: the same id BeginMenu() below opens on a click, so
+    // the menu can be photographed. See AppState::openLayerMenu.
+    if (st.openLayerMenu) ImGui::OpenPopup("Layer");
+    if (ImGui::BeginMenu("Layer")) {
+      const OpenDocument* od = st.documents.active();
+      if (od == nullptr) {
+        ImGui::TextDisabled("(no document open)");
+      } else {
+        const Document& doc = od->document;
+        const size_t selected = g_layers.selected;
+        // The row every one of these acts on, named rather than assumed: the
+        // menu bar is a long way from the panel and "which layer is this
+        // about" is otherwise invisible from here.
+        ImGui::TextDisabled("%s", selected < doc.layers.size()
+                                      ? layerRowTitle(doc.layers[selected], selected).c_str()
+                                      : "(no layer selected)");
+        ImGui::Separator();
+        for (const LayerCommand command : allLayerCommands()) {
+          // The three toggles show the selected layer's current state as a
+          // check mark, which is what makes "Toggle Visibility" honest about
+          // which way it is about to go.
+          bool checked = false;
+          if (selected < doc.layers.size()) {
+            if (command == LayerCommand::ToggleVisible) checked = doc.layers[selected].visible;
+            if (command == LayerCommand::ToggleLocked) checked = doc.layers[selected].locked;
+            if (command == LayerCommand::ToggleClipped) checked = doc.layers[selected].clipped;
+          }
+          if (ImGui::MenuItem(layerCommandLabel(command), nullptr, checked,
+                              layerCommandAvailable(doc, command, selected)))
+            runLayerCommand(st, command);
+          // Grouped as the panel groups them: creation, then the whole-layer
+          // operations, then the mask, then the flags.
+          if (command == LayerCommand::NewAdjustmentLayer ||
+              command == LayerCommand::MoveLayerDown || command == LayerCommand::RemoveMask)
+            ImGui::Separator();
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("refusals appear in the LAYERS panel");
+      }
+      ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("Medium")) {
       for (int i = 0; i < static_cast<int>(PaintMode::Count); ++i) {
         const PaintMode m = static_cast<PaintMode>(i);
@@ -1957,196 +2452,74 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   }
   ImGui::End();
 
-  // ------------------------------------------------------------ solver panel
+  // --------------------------------------------------------- controls column
+  //
+  // docs/ui.md §2's "docked column of collapsing headers", which this was not
+  // until UI detour step 3: it was one unbroken scroll with six
+  // simulation-parameter sections above everything Phase 5 built, so LAYERS and
+  // HISTORY were off the bottom of the window at the default size and a
+  // screenshot of the running application did not contain them at all.
+  //
+  // The order and the default-open set are `app::controlsSections()`, as data,
+  // so both are asserted by `--selftest` rather than being a property of where
+  // a statement sits in this function. That header carries the argument for
+  // them; what is here is the loop.
   ImGui::SetNextWindowPos(ImVec2(work.x + size.x - kControlsW, work.y));
   ImGui::SetNextWindowSize(ImVec2(kControlsW, size.y - kSwatchStripH));
   if (ImGui::Begin("##controls", nullptr,
                    fixedFlags & ~ImGuiWindowFlags_NoScrollbar)) {
-    ImGui::TextUnformatted("BRUSH");
-    ImGui::Separator();
-    ImGui::SliderFloat("Load", &st.brush.load, 0.0f, 2.5f);
-    ImGui::SliderFloat("Water", &st.brush.wetness, 0.0f, 3.0f);
-    ImGui::SliderFloat("Hardness", &st.brush.hardness, 0.0f, 1.0f);
-    ImGui::Checkbox("Pressure -> size", &st.brush.pressureSize);
-    ImGui::Checkbox("Pressure -> flow", &st.brush.pressureFlow);
-    if (!st.penSeen) ImGui::TextDisabled("(no tablet detected)");
-
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("PIGMENT");
-    ImGui::Separator();
-    ImGui::SliderFloat("Density", &st.sim.density, 0.0f, 1.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("How fast pigment drops out of suspension.");
-    ImGui::SliderFloat("Staining", &st.sim.staining, 0.02f, 1.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Resistance to being lifted back into the water.");
-    ImGui::SliderFloat("Granulation", &st.sim.granulation, 0.0f, 1.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Affinity for the paper's valleys.");
-    ImGui::SliderFloat("Diffusion", &st.sim.pigmentDiffuse, 0.0f, 1.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Pigment spreading through the wet film.\n"
-                        "At zero the water outruns the pigment and the\n"
-                        "leading edge of a wash runs clear.");
-
-    ImGui::Dummy(ImVec2(0, 8));
-    if (st.mode == PaintMode::Oil) {
-      ImGui::TextUnformatted("OIL");
-      ImGui::Separator();
-      ImGui::SliderFloat("Brush load", &st.sim.brushLoad, 0.0f, 3.0f);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Paint the brush picks up when a stroke starts.\n"
-                          "It runs out as you paint, like a real one.");
-      ImGui::SliderFloat("Pressure", &st.sim.penetration, 0.05f, 2.0f);
-      ImGui::SliderFloat("Squish", &st.sim.oilPressure, 0.0f, 4.0f);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("vp = -c * grad(penetration): paint pushed out\n"
-                          "sideways from under the bristles.");
-      ImGui::SliderFloat("Transfer", &st.sim.xferFraction, 0.0f, 0.5f);
-      ImGui::SliderFloat("Max transfer", &st.sim.maxXfer, 0.0f, 0.1f, "%.4f");
-      ImGui::SliderFloat("Levelling", &st.sim.viscosity, 0.0f, 0.25f);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Wet paint relaxing under surface tension.\n"
-                          "At zero the brush stamps leave periodic ridges.");
-      ImGui::SliderFloat("Impasto light", &st.sim.impastoLight, 0.0f, 1.5f);
-      ImGui::SliderFloat("Adhesion", &st.sim.adhesion, 0.0f, 0.4f);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Paint never fully leaves a cell. At zero the\n"
-                          "canvas feels like Teflon.");
-    } else if (st.mode == PaintMode::Ink) {
-      ImGui::TextUnformatted("INK");
-      ImGui::Separator();
-      ImGui::SliderFloat("Relaxation", &st.sim.omega, 0.5f, 1.95f);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("LBE omega. Viscosity = (1/omega - 1/2)/3.");
-      ImGui::SliderFloat("Blocking", &st.sim.blocking, 0.0f, 0.9f);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Base permeability of the paper. Higher blocks\n"
-                          "more flow and pins the mark's edge.");
-      ImGui::SliderFloat("Grain block", &st.sim.grainBlock, 0.0f, 0.9f);
-      ImGui::SliderFloat("Glue", &st.sim.glue, 0.0f, 0.6f);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Artists add glue to limit spread.");
-      ImGui::SliderFloat("Receptivity", &st.sim.receptivity, 0.1f, 2.5f);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Wet paper takes less ink. Lower this and a second\n"
-                          "stroke over a damp mark barely registers.");
-      ImGui::SliderFloat("Settle rate", &st.sim.settleScale, 0.0f, 0.05f, "%.4f");
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("How fast ink fixes to the fibres. Too high and it\n"
-                          "deposits before it can travel, so nothing bleeds.");
-      if (sim) ImGui::SliderInt("Lattice steps", &sim->inkSubsteps, 1, 20);
-      ImGui::SliderFloat("Evaporation", &st.sim.evaporation, 0.0f, 0.03f, "%.4f");
-    } else {
-    ImGui::TextUnformatted("WATER");
-    ImGui::Separator();
-    ImGui::SliderFloat("Viscosity", &st.sim.viscosity, 0.0f, 0.5f);
-    ImGui::SliderFloat("Drag", &st.sim.drag, 0.0f, 1.5f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Above ~0.5 the velocity field dies before water moves.");
-    ImGui::SliderFloat("Edge darkening", &st.sim.edgeDarkening, 0.0f, 2.0f, "%.3f");
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Curtis FlowOutward: pulls pigment to the stroke rim.\n"
-                        "Zero this and washes go flat.");
-    ImGui::SliderFloat("Paper slope", &st.sim.paperSlope, 0.0f, 4.0f);
-
-    // One control for the wet lifetime. Evaporation and absorption are derived
-    // from it rather than exposed separately: letting the two drift out of step
-    // only makes the timing unpredictable, and neither means much alone.
-    if (ImGui::SliderFloat("Working time", &st.workingTime, 1.0f, 20.0f, "%.1f s"))
-      setWorkingTime(st.sim, st.workingTime);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("How long a wash keeps bleeding before it sets.\n"
-                        "Good to about 15%% across this range. Past ~20 s the\n"
-                        "wash spreads thin enough that capillary dilution ends\n"
-                        "it regardless of how slowly it dries.");
-
-    ImGui::SliderFloat("Max film", &st.sim.maxFilm, 0.2f, 8.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Deepest water the paper holds before it runs.\n"
-                        "Raise it far and a wash empties into its own rim.");
-    ImGui::SliderFloat("Capillary diffuse", &st.sim.diffuseRate, 0.0f, 1.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("How fast water wicks through the fibres.\n"
-                        "Sets how far a wash reaches, not how long it lasts.");
-
-    ImGui::Dummy(ImVec2(0, 6));
-    ImGui::TextUnformatted("BOARD TILT");
-    ImGui::Separator();
-    tiltPad(st, 96.0f);
-    ImGui::SameLine();
-    ImGui::BeginGroup();
-    const float steep = std::sqrt(st.sim.tiltX * st.sim.tiltX +
-                                  st.sim.tiltY * st.sim.tiltY) / kMaxTilt;
-    ImGui::TextDisabled("%.0f%%", steep * 100.0f);
-    ImGui::TextDisabled("drag to");
-    ImGui::TextDisabled("tilt");
-    ImGui::Dummy(ImVec2(0, 4));
-    if (ImGui::SmallButton("Level")) { st.sim.tiltX = 0.0f; st.sim.tiltY = 0.0f; }
-    ImGui::EndGroup();
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Only wet paint runs — the force scales with film\n"
-                        "depth, so a puddle streaks and damp paper does not.\n"
-                        "Double-click the pad to level.");
+    for (const ControlsSectionSpec& spec : controlsSections()) {
+      // The board is a shallow-water idea: only the watercolour solver reads
+      // `tiltX/tiltY`, and the section was inside the WATER branch before this
+      // step. A section can be absent when its subject is; it is still in the
+      // list, because the list is the column's order and not its contents.
+      if (spec.section == ControlsSection::BoardTilt && st.mode != PaintMode::Watercolor)
+        continue;
+      // --controls-all-open: see AppState::controlsAllOpen. Once, so it is a
+      // starting state rather than a mode that fights the user.
+      if (st.controlsAllOpen) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+      const bool open = ImGui::CollapsingHeader(
+          spec.title, spec.defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+      // --controls-all-open <SECTION>: pin that header to the top of the
+      // column so a screenshot can reach a section that is below the fold.
+      // See AppState::controlsScrollTo.
+      if (st.controlsScrollTo == spec.title) ImGui::SetScrollHereY(0.0f);
+      if (!open) continue;
+      switch (spec.section) {
+        // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with
+        // reorder, visibility, lock, opacity"; PRD C4), and every entry point
+        // UI detour step 3 added. See drawLayersSection()'s own doc comment.
+        case ControlsSection::Layers:    drawLayersSection(st); break;
+        // PLAN.md Phase 5 step 8 ("History panel ...", PRD O2/O3). docs/ui.md
+        // §5: "The History panel (PRD O2) joins the right-hand docked column."
+        // Below LAYERS, because a history row names an edit made to the stack
+        // above it.
+        case ControlsSection::History:   drawHistorySection(st); break;
+        // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and
+        // a curve widget operating in the shaper domain").
+        case ControlsSection::Grade:     drawGradeSection(st); break;
+        case ControlsSection::Brush:     drawBrushSection(st); break;
+        case ControlsSection::Pigment:   drawPigmentSection(st); break;
+        case ControlsSection::Medium:    drawMediumSection(st, sim.get()); break;
+        case ControlsSection::BoardTilt: drawBoardTiltSection(st); break;
+        case ControlsSection::Grid:      drawGridSection(st); break;
+        case ControlsSection::Solver:    drawSolverSection(st, sim.get()); break;
+      }
+      ImGui::Dummy(ImVec2(0, 6));
     }
 
-    // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD Q7):
-    // "a simple settings surface... doesn't need its own dedicated window" --
-    // a couple of sliders here, alongside the rest of the view/sim controls,
-    // is sufficient. Mirrors the View menu's Grid/Snap checkboxes (same
-    // AppState fields; either path sets the one place that's actually read,
-    // this file's canvas block below).
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("GRID");
-    ImGui::Separator();
-    ImGui::Checkbox("Show grid", &st.showGrid);
-    ImGui::SliderFloat("Spacing", &st.gridSpacing, 4.0f, 512.0f, "%.0f px");
-    ImGui::SliderInt("Subdivisions", &st.gridSubdivisions, 1, 10);
-    ImGui::Checkbox("Snap", &st.snappingEnabled);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Snaps guide creation/dragging to guides, the grid\n"
-                        "and canvas edges. Never affects freehand painting.");
-
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("SOLVER");
-    ImGui::Separator();
-    if (sim) {
-      if (st.mode == PaintMode::Watercolor)
-        ImGui::SliderInt("Jacobi iters", &sim->jacobiIterations, 1, 60);
-      ImGui::SliderInt("Substeps", &sim->substeps, 1, 6);
+    // The label column, measured and reported (UI detour step 3, problem 1b).
+    // Printed when it changes rather than every frame: it settles on the first
+    // frame that has drawn every open section once, and moves again only if a
+    // section that opens later carries a wider label. A log line is what makes
+    // "no label is clipped" a number rather than a look at a screenshot.
+    if (g_labelColumn != g_reportedColumn) {
+      g_reportedColumn = g_labelColumn;
+      std::printf("[controls] label column %.0f px -- widest label \"%s\" at %.0f px, "
+                  "panel %.0f px, so a slider gets %.0f px\n",
+                  g_labelColumn, g_widestLabel.c_str(), g_widestLabelPx, kControlsW,
+                  ImGui::GetContentRegionAvail().x - g_labelColumn);
     }
-    ImGui::Checkbox("Paused", &st.paused);
-    if (ImGui::Button("Clear canvas")) st.requestClear = true;
-    ImGui::SameLine();
-    if (ImGui::Button("Reload shaders")) st.requestReload = true;
-
-    // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and
-    // a curve widget operating in the shaper domain"), the last step of
-    // Phase 3. Same TextUnformatted/Separator/Dummy idiom as every section
-    // above -- see drawGradeSection()'s own doc comment for the full
-    // breakdown of what's here and what's deliberately left out.
-    // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
-    // visibility, lock, opacity"; PRD C4). docs/ui.md's layout puts LAYERS in
-    // this right-hand stack, above CHANNELS -- same section idiom as every
-    // block above. See drawLayersSection()'s own doc comment for what it does
-    // not show, which is the painting canvas.
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("LAYERS");
-    ImGui::Separator();
-    drawLayersSection(st);
-
-    // PLAN.md Phase 5 step 8 ("History panel ...", PRD O2/O3). docs/ui.md §5:
-    // "The History panel (PRD O2) joins the right-hand docked column." Below
-    // LAYERS, because a history row names an edit made to the stack above it.
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("HISTORY");
-    ImGui::Separator();
-    drawHistorySection(st);
-
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("GRADE");
-    ImGui::Separator();
-    drawGradeSection(st);
   }
   ImGui::End();
 
@@ -2591,5 +2964,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 }
 
 const DocumentTexture& canvasDocumentTexture() { return g_documentTexture; }
+
+void setLayersPanelSelection(size_t layerIndex) { g_layers.selected = layerIndex; }
 
 }  // namespace np

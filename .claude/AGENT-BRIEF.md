@@ -62,6 +62,23 @@ it. Then:
 Step 8 wrote its serial-vs-index argument four times. That is output tokens, the
 expensive kind, spent on duplication.
 
+## 4b. Mark every run-to-run-variable line `[measured]`
+
+If a line you print can differ between two runs of the *same* binary — a
+timing, a rate, an RSS figure, anything divided by a duration — it **must**
+contain the literal token `[measured]`.
+
+That token is what the reviewer's regression filter keys off. A varying line
+without it shows up as a *changed* line in the additions-only diff, and the
+reviewer has to stop, re-run the previous binary twice, prove the line noisy,
+and extend the filter by hand. That has now happened twice in a row — step 9's
+`marginal cost of the layer:` line and step 2's four document-texture timing
+lines.
+
+The corollary is just as important: **do not put `[measured]` on a line that is
+deterministic.** It would exclude a real assertion from the diff, which is worse
+than the noise it was meant to suppress.
+
 ## 5. What is NOT being cut
 
 * **Assertion count and rigour.** Step 8's 53 checks are the value.

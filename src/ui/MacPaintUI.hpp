@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -35,5 +36,15 @@ void drawUI(AppState& state, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 // scrolls and that section can sit below the fold at small window sizes, so
 // the shutdown line is the one that is always observable.
 const DocumentTexture& canvasDocumentTexture();
+
+// Which layer the LAYERS panel and the `Layer` menu act on, as an index into
+// `Document::layers` (bottom-first), never a panel row.
+//
+// The selection is UI state and lives in ui/MacPaintUI.cpp with the rest of it;
+// this setter exists for one caller, main.cpp's `--ui-layer-demo`, which drives
+// the editor's own commands and would otherwise leave the panel expanded on
+// whichever layer the selection happened to start on. Clamped by the panel
+// itself on the next frame, so an index past the end is not an error here.
+void setLayersPanelSelection(size_t layerIndex);
 
 }  // namespace np

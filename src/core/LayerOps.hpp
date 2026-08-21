@@ -328,4 +328,61 @@ LayerOpResult setLayerClipped(Document& doc, size_t index, bool clipped);
 // layer's -- names are explicitly not unique.
 LayerOpResult setLayerName(Document& doc, size_t index, std::string name);
 
+// --- The layer's own op stack (UI detour step 3; PRD C1, C5) --------------
+//
+// `Layer::ops` has been real since PLAN.md Phase 5 step 3 and persisted since
+// step 5: core/Composite runs it over the layer's own pixels, and over
+// everything already accumulated beneath when the layer is an Adjustment. What
+// it has never had is a checked path a user could reach -- an op could only get
+// into a layer from a `.npaint` or from a test. These five are that path.
+//
+// **Five functions rather than one `setLayerOps(OpStack)`**, and the reason is
+// the journal rather than the arithmetic. A wholesale replace can honestly
+// label itself only "edit ops"; `core::History`'s rows are read by a human (PRD
+// O2), and "add Curves to layer 2" and "delete op 0 of layer 2" are different
+// things to want back. Each of these mirrors exactly one `core::OpStack`
+// mutator, so there is no second op-stack semantics here to drift from that
+// one -- the ordering rule, the version bump and the run-detection consequences
+// are all still core/OpStack's.
+//
+// Each adds this file's two standing guards -- the layer index, and the lock,
+// refused for `setLayerBlend()`'s reason (an op stack is part of how a layer
+// looks, and on an Adjustment layer it is the entire content of the layer) --
+// plus the one guard `core::OpStack` deliberately does not have: **a bounds
+// check on the op index that returns a sentence instead of throwing.**
+// `OpStack::remove()`/`reorder()`/`setEnabled()`/`setOp()` all index through
+// `std::vector::at`, so a stale op row from a panel whose stack shrank under it
+// is a `std::out_of_range` escaping into a draw loop. Every other refusal a UI
+// can provoke in this file is a sentence; this makes that one too.
+//
+// A note on what is *not* refused: an op stack on a kind that ignores it. Every
+// kind carries an `OpStack` (core/Layer.hpp), core/Composite evaluates it for
+// every kind that has pixels, and the inert kinds have no pixels to grade
+// today but will. Refusing here would encode "which kinds are implemented in
+// this build" as a rule about documents, which is exactly what PRD I10 says
+// not to do.
+
+// Appends `op` to the end of the layer's stack -- the top of it, evaluated
+// last. `index` is the layer; the op lands at `doc.layers[index].ops.size()`
+// as it stood before the call.
+LayerOpResult addLayerOp(Document& doc, size_t index, Op op);
+
+// Removes the op at `opIndex` from the layer's stack; every later op shifts
+// down by one.
+LayerOpResult removeLayerOp(Document& doc, size_t index, size_t opIndex);
+
+// Moves the op at `from` so it ends up at `to`, `core::OpStack::reorder()`'s
+// semantics exactly. `from == to` succeeds and changes nothing, matching
+// `moveLayer()`.
+LayerOpResult moveLayerOp(Document& doc, size_t index, size_t from, size_t to);
+
+// Replaces the op at `opIndex` wholesale -- what a params edit is, since
+// `core::OpStack` hands out no mutable reference to an entry.
+LayerOpResult setLayerOp(Document& doc, size_t index, size_t opIndex, Op op);
+
+// Enables or disables the op at `opIndex` without otherwise touching it.
+// Setting the value it already has succeeds and changes nothing, matching
+// `setLayerVisible()`.
+LayerOpResult setLayerOpEnabled(Document& doc, size_t index, size_t opIndex, bool enabled);
+
 }  // namespace np

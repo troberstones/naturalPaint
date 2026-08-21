@@ -107,4 +107,35 @@ std::vector<OpRun> OpStack::detectRuns() const {
   return runs;
 }
 
+const char* pointOpKindName(PointOpKind kind) noexcept {
+  switch (kind) {
+    case PointOpKind::Levels:       return "Levels";
+    case PointOpKind::Curves:       return "Curves";
+    case PointOpKind::Exposure:     return "Exposure";
+    case PointOpKind::Saturation:   return "Saturation";
+    case PointOpKind::Grayscale:    return "Grayscale";
+    case PointOpKind::ChannelMixer: return "Channel Mixer";
+  }
+  // Unreachable for a valid enumerator; a name rather than a crash if a value
+  // is ever cast in from outside the enum, which is what a serialised file's
+  // kind code is before io/OpSerial validates it.
+  return "?";
+}
+
+std::string opDisplayName(const Op& op) {
+  switch (op.opClass) {
+    case OpClass::PointA:   return pointOpKindName(op.pointKind);
+    case OpClass::SpatialB: return "spatial op";
+    case OpClass::StrokeC:  return "stroke op";
+    case OpClass::BakedD:   return "baked op";
+    case OpClass::Unknown:
+      // PRD I10's entry-level case. The bytes are carried verbatim and their
+      // size is the only thing this build honestly knows about the op, so it
+      // is what the name says -- a row reading "unrecognised op (48 bytes)" is
+      // the difference between a preserved op and a lost one being visible.
+      return "unrecognised op (" + std::to_string(op.unrecognised.size()) + " bytes)";
+  }
+  return "?";
+}
+
 }  // namespace np

@@ -55,6 +55,23 @@ bool notLocked(const Document& doc, size_t index, const char* what, LayerOpResul
   return false;
 }
 
+// The op-index bounds check, the same shape as inRange() above. Separate
+// because it names a different list -- "op 4 of layer 2" rather than "layer 4"
+// -- and because it is checked *after* the layer index, so it can index
+// `doc.layers[index]` safely.
+bool opInRange(const Document& doc, size_t index, size_t opIndex, const char* what,
+               LayerOpResult* out) {
+  const size_t count = doc.layers[index].ops.size();
+  if (opIndex < count) return true;
+  *out = fail(std::string(what) + " refused: there is no op at index " +
+              std::to_string(opIndex) + " on " + describe(doc, index) + " -- its stack has " +
+              std::to_string(count) +
+              " op(s), indexed from 0 at the bottom (evaluated first). core::OpStack throws on "
+              "an out-of-range index; a refusal is what a panel row that went stale under a "
+              "delete should get instead.");
+  return false;
+}
+
 }  // namespace
 
 std::string defaultNewLayerName(const Document& doc) {
@@ -362,6 +379,69 @@ LayerOpResult setLayerName(Document& doc, size_t index, std::string name) {
   if (!notLocked(doc, index, "rename layer", &refusal)) return refusal;
   const std::string label = "rename " + describe(doc, index) + " to \"" + name + "\"";
   doc.layers[index].name = std::move(name);
+  return succeed(label, index);
+}
+
+// --- The layer's own op stack ---------------------------------------------
+//
+// See core/LayerOps.hpp for why these are five functions and not one setter.
+// Each is: the layer bounds check, the lock, the *op* bounds check, then the
+// matching core::OpStack mutator. The op bounds check exists because OpStack
+// indexes through `std::vector::at` and throws; a UI must get a sentence.
+
+LayerOpResult addLayerOp(Document& doc, size_t index, Op op) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "add op", &refusal)) return refusal;
+  if (!notLocked(doc, index, "add op", &refusal)) return refusal;
+  const std::string label = "add " + opDisplayName(op) + " to " + describe(doc, index);
+  doc.layers[index].ops.add(std::move(op));
+  return succeed(label, index);
+}
+
+LayerOpResult removeLayerOp(Document& doc, size_t index, size_t opIndex) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "delete op", &refusal)) return refusal;
+  if (!notLocked(doc, index, "delete op", &refusal)) return refusal;
+  if (!opInRange(doc, index, opIndex, "delete op", &refusal)) return refusal;
+  const std::string label = "delete " + opDisplayName(doc.layers[index].ops.at(opIndex)) +
+                            " from " + describe(doc, index);
+  doc.layers[index].ops.remove(opIndex);
+  return succeed(label, index);
+}
+
+LayerOpResult moveLayerOp(Document& doc, size_t index, size_t from, size_t to) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "move op", &refusal)) return refusal;
+  if (!notLocked(doc, index, "move op", &refusal)) return refusal;
+  if (!opInRange(doc, index, from, "move op", &refusal)) return refusal;
+  if (!opInRange(doc, index, to, "move op", &refusal)) return refusal;
+  const std::string label = "move " + opDisplayName(doc.layers[index].ops.at(from)) +
+                            " to position " + std::to_string(to) + " on " + describe(doc, index);
+  // `from == to` is a no-op reorder that still reports ok, exactly as
+  // moveLayer() does, and for the same reason: the gesture happened.
+  if (from != to) doc.layers[index].ops.reorder(from, to);
+  return succeed(label, index);
+}
+
+LayerOpResult setLayerOp(Document& doc, size_t index, size_t opIndex, Op op) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "edit op", &refusal)) return refusal;
+  if (!notLocked(doc, index, "edit op", &refusal)) return refusal;
+  if (!opInRange(doc, index, opIndex, "edit op", &refusal)) return refusal;
+  const std::string label = "edit " + opDisplayName(op) + " on " + describe(doc, index);
+  doc.layers[index].ops.setOp(opIndex, std::move(op));
+  return succeed(label, index);
+}
+
+LayerOpResult setLayerOpEnabled(Document& doc, size_t index, size_t opIndex, bool enabled) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "enable op", &refusal)) return refusal;
+  if (!notLocked(doc, index, "enable op", &refusal)) return refusal;
+  if (!opInRange(doc, index, opIndex, "enable op", &refusal)) return refusal;
+  const std::string label = std::string(enabled ? "enable " : "disable ") +
+                            opDisplayName(doc.layers[index].ops.at(opIndex)) + " on " +
+                            describe(doc, index);
+  doc.layers[index].ops.setEnabled(opIndex, enabled);
   return succeed(label, index);
 }
 

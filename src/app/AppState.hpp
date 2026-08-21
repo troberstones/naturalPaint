@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
@@ -156,6 +157,34 @@ struct AppState {
   uint64_t lastInputEventNs = 0;
 
   bool showDemo = false;
+  // --controls-all-open (UI detour step 3): opens every collapsing header in
+  // the right-hand controls column on the first frame, overriding
+  // `app::controlsSections()`' default-open set for that session only.
+  //
+  // It exists for one job: `--screenshot` has to be able to photograph a
+  // section the default state deliberately closes, and the label-clipping fix
+  // (app/ControlsLayout.hpp) is only visible on the simulation sliders, which
+  // are exactly the sections that now start collapsed. A verification claim
+  // that cannot be photographed is a verification claim on trust.
+  //
+  // `ImGuiCond_Once`, so it is a starting state and not a mode: a header
+  // closed by hand after that stays closed.
+  bool controlsAllOpen = false;
+  // --open-layer-menu (UI detour step 3): holds the `Layer` menu open, so a
+  // `--screenshot` can photograph its items. Same justification as
+  // `controlsAllOpen` above -- a menu is opened by a click, and the screenshot
+  // path has no input.
+  bool openLayerMenu = false;
+  // --controls-all-open <SECTION>: scrolls that header to the top of the
+  // column, every frame, so a `--screenshot` can photograph a section that
+  // sits below the fold once every section is open. Empty means "do not
+  // scroll". Matched against `ControlsSectionSpec::title` exactly.
+  //
+  // Pinning rather than scrolling once is deliberate and is why this is a
+  // debug flag rather than a feature: the column's layout settles over several
+  // frames as headers open, so a single scroll lands somewhere else by the time
+  // the shot is taken.
+  std::string controlsScrollTo;
   bool paused = false;
   bool requestClear = false;
   bool requestMode = false;

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "ops/PointOps.hpp"
@@ -227,5 +228,20 @@ class OpStack {
   std::vector<Op> ops_;
   uint64_t version_ = 0;
 };
+
+// What one op is called, in one place (UI detour step 3). ui/MacPaintUI's
+// GRADE section had a private copy of this switch, and the moment
+// `core::addLayerOp()` started naming ops in journal labels there would have
+// been two -- one deciding what the panel row says and one deciding what undo
+// says about the same op. A kind added to `PointOpKind` is named here or
+// nowhere.
+const char* pointOpKindName(PointOpKind kind) noexcept;
+
+// What one *entry* is called: its point-op kind for a PointA op, and its class
+// for every other, including `Unknown` -- an op a newer build wrote, which has
+// no kind this build can read and must still be nameable in a row and in an
+// undo label ("unrecognised op"). Returns a `std::string` rather than a
+// `const char*` because that is what its callers concatenate into.
+std::string opDisplayName(const Op& op);
 
 }  // namespace np

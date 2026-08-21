@@ -1578,4 +1578,66 @@ bool runClippingMaskTest();
 // Needs the GPU (it uploads and reads back real textures); writes no files.
 bool runDocumentTextureTest(GpuContext& gpu);
 
+// UI detour step 3, problem 2 ("five built features have no entry point"):
+// app/LayerEditor, the one surface the `Layer` menu and the LAYERS panel
+// buttons both go through, plus core/LayerOps' five new op-stack operations.
+//
+// What is asserted:
+//  - **Coverage.** Every `LayerCommand` is in the list the menu walks and has
+//    its own label -- scanned by casting integers, so a command added to the
+//    enum and left out of the list fails here rather than shipping
+//    unreachable, which is the exact failure this step exists to fix.
+//  - **What each command does**: the kind and the storage shape of each of the
+//    three creations (a Pigment layer with rgb tiles would be the same bug in
+//    a different disguise), the insertion point, where the selection lands,
+//    the mask's lifecycle, the clip and the three flags.
+//  - **A fresh Adjustment layer changes no pixel**, and a reveal-all mask
+//    composites byte-identically to no mask -- both in pixels through
+//    core/Composite, not in flags.
+//  - **An unavailable command always refuses.** A matrix of commands over four
+//    documents, each unavailable pair attempted anyway. The converse is
+//    deliberately not claimed: Delete is offered on a locked layer and refused
+//    with a sentence, because a sentence explains and a greyed item does not.
+//  - **The op stack**: an op arrives disabled and is proven to change nothing
+//    until enabled, reorder/delete/params edits, the out-of-range op index
+//    refused with a sentence rather than the `std::out_of_range` core::OpStack
+//    throws, the lock, and an op edit taken back by undo.
+//  - **The rule the panel rests on**: every successful command moves
+//    `OpenDocument::revision` by exactly one and appends exactly one history
+//    entry, and a refusal moves neither. ui/DocumentTexture caches the
+//    composite by that number, so the trap is demonstrated beside it -- a raw
+//    tile write leaves the revision where it was and never reaches the screen.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+// Headless and GPU-free; writes no files.
+bool runLayerEditorTest();
+
+// UI detour step 3, problems 1 and 1b: app/ControlsLayout -- the right-hand
+// column's section order, its default-open set, and the label column.
+//
+// What is asserted:
+//  - **The order rule**: every section that describes the open document comes
+//    before every section that tunes the solver, and the document sections are
+//    exactly the ones that start open. Written against roles rather than a
+//    fixed list, so a new simulation section cannot bury LAYERS and still
+//    pass. The old and new position of LAYERS and HISTORY are printed.
+//  - **The label column's invariant**: the widget never starts before the
+//    label ends, checked per label over the column's real label set and at
+//    every point during the frame that grows it, plus order independence, the
+//    no-shrink rule, and the narrow-panel case where the label takes its own
+//    line instead.
+//  - **The rejected alternative run beside the built one**: Dear ImGui's own
+//    label-to-the-right-of-a-default-width-widget, whose remaining label space
+//    is computed at both the old and the new panel width and shown to clip
+//    several of these labels while the built scheme clips none.
+//
+// Pinned to a measured number rather than a guess about a font: the running
+// application prints its label column whenever it changes, and 119 px for the
+// 17-character "Capillary diffuse" is the 7.0 px/char this section derives
+// every other width from.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+// Headless, GPU-free and ImGui-free; writes no files.
+bool runControlsLayoutTest();
+
 }  // namespace np

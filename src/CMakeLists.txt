@@ -1,11 +1,13 @@
 add_executable(naturalPaint
   main.cpp
+  app/ControlsLayout.cpp
   app/CurveEdit.cpp
   app/DocumentLifecycle.cpp
   app/Journal.cpp
   app/HistoryPanel.cpp
   app/Keymap.cpp
   app/Screenshot.cpp
+  app/LayerEditor.cpp
   app/LayerPanel.cpp
   app/Latency.cpp
   app/Memory.cpp

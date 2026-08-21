@@ -24,6 +24,8 @@
 #include "app/Screenshot.hpp"
 #include "app/SelfTest.hpp"
 #include "core/Blend.hpp"
+#include "app/LayerEditor.hpp"
+#include "app/LayerPanel.hpp"
 #include "core/LayerOps.hpp"
 #include "core/Tile.hpp"
 #include "gfx/Context.hpp"
@@ -108,6 +110,97 @@ void buildDemoDocument(np::OpenDocument& od) {
   od.recordEdit("demo document", np::EditKind::Content);
 }
 
+// --ui-layer-demo [noclip] (UI detour step 3): builds a layer stack using
+// **only the layer editor's own entry points** -- the same `applyLayerCommand()`
+// the `Layer` menu and the LAYERS panel buttons call, and the same recorded
+// op-stack operations the per-layer op editor calls.
+//
+// This is deliberately not a second `buildDemoDocument()`. That one writes
+// tiles directly and calls `recordEdit()` by hand, which is honest for a
+// pixel fixture and is exactly what a UI can never do; this one presses
+// buttons. Every line it prints is one gesture and the document's revision
+// after it, so the claim "this document was built through the UI's own
+// operations" is checkable from the log rather than from a screenshot.
+//
+// The stack it leaves, on top of whatever the document already had:
+//
+//   T+2  Pigment, with a mask                 -- steps 4 and 5 of Phase 5
+//   T+1  Adjustment, one Exposure op, clipped -- steps 5, 9 and this step
+//   T    whatever was on top before
+//
+// The adjustment is clipped to the layer that was on top when the script
+// started, which is a layer with pixels in it under `--demo-document`. That is
+// the pair that makes clipping visible on screen: the grade lands only where
+// that layer has alpha. `noclip` runs the identical script without the clip,
+// for the comparison shot.
+void runUiLayerDemo(np::OpenDocument& od, bool clip) {
+  size_t selected = od.document.layers.empty() ? 0 : od.document.layers.size() - 1;
+  int step = 0;
+  auto report = [&](const char* gesture, bool ok, const std::string& error) {
+    std::printf("[ui-layer-demo] %2d. %-24s %s%s  (revision %llu, %zu layers)\n", ++step, gesture,
+                ok ? "ok" : "REFUSED -- ", ok ? "" : error.c_str(),
+                static_cast<unsigned long long>(od.revision), od.document.layers.size());
+  };
+  auto press = [&](np::LayerCommand command) {
+    const np::LayerEditResult r = np::applyLayerCommand(od, command, selected);
+    report(np::layerCommandLabel(command), r.ok, r.error);
+    selected = r.selected;
+    return r.ok;
+  };
+  // The op-stack half. `recordLayerEdit` is the same funnel `applyLayerCommand`
+  // uses internally, and the same one ui/MacPaintUI's op editor binds its
+  // buttons to -- a layer op written around it would not move the revision, and
+  // ui/DocumentTexture would not recomposite.
+  auto opEdit = [&](const char* gesture, np::LayerOpResult result) {
+    const np::DocumentOpResult out = np::recordLayerEdit(od, std::move(result));
+    report(gesture, out.ok, out.error);
+    return out.ok;
+  };
+
+  std::printf("[ui-layer-demo] starting from %zu layer(s), selection on layer %zu\n",
+              od.document.layers.size(), selected);
+
+  press(np::LayerCommand::NewAdjustmentLayer);
+  const size_t adjustment = selected;
+  // "+ Add" with the kind combo on Exposure: `makeNewOp()` is what the button
+  // adds, disabled, so nothing on screen changes yet.
+  opEdit("+ Add op (Exposure)",
+         np::addLayerOp(od.document, adjustment, np::makeNewOp(np::PointOpKind::Exposure)));
+  // The Stops slider, which writes the whole op back through setLayerOp().
+  //
+  // **Negative**, so the clip is legible in a single frame rather than only in
+  // the difference between two: a darkening grade confined to the base layer's
+  // alpha draws its own boundary against the layers it is not allowed to
+  // touch. A brightening one on this fixture lands mostly on a region that is
+  // already near white.
+  {
+    np::Op op = od.document.layers[adjustment].ops.at(0);
+    op.exposure.stops = -1.5f;
+    opEdit("Stops slider -> -1.5", np::setLayerOp(od.document, adjustment, 0, op));
+  }
+  opEdit("enable op", np::setLayerOpEnabled(od.document, adjustment, 0, true));
+  if (clip) press(np::LayerCommand::ToggleClipped);
+
+  press(np::LayerCommand::NewPigmentLayer);
+  press(np::LayerCommand::AddMask);
+
+  // Leave the panel showing the adjustment layer, so its op stack is on screen
+  // in the screenshot rather than collapsed behind another row's selection.
+  np::setLayersPanelSelection(adjustment);
+
+  // The finished stack, in the layers panel's own words -- app/LayerPanel's row
+  // text, top first, which is what the panel draws. Printed so the picture and
+  // the log can be checked against each other.
+  std::printf("[ui-layer-demo] final stack, top first:\n");
+  const size_t count = od.document.layers.size();
+  for (size_t row = 0; row < count; ++row) {
+    const size_t i = np::layerIndexForPanelRow(row, count);
+    std::printf("[ui-layer-demo]   %s %-24s %s\n", np::layerKindGlyph(od.document.layers[i].kind),
+                np::layerRowTitle(od.document.layers[i], i).c_str(),
+                np::layerRowSubLine(od.document.layers[i]).c_str());
+  }
+}
+
 void handlePenEvent(np::AppState& st, const SDL_Event& e) {
   switch (e.type) {
     case SDL_EVENT_PEN_DOWN:
@@ -158,6 +251,11 @@ int main(int argc, char** argv) {
   const char* screenshotPath = nullptr;
   int screenshotFrames = 30;
   bool demoDocument = false;
+  bool uiLayerDemo = false;
+  bool uiLayerDemoClip = true;
+  bool controlsAllOpen = false;
+  const char* controlsScrollTo = nullptr;
+  bool openLayerMenu = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
     if (a == "--selftest") {
@@ -191,6 +289,28 @@ int main(int argc, char** argv) {
       // --screenshot photographs the composite rather than photographing the
       // fact that a transparent one is invisible. See buildDemoDocument().
       demoDocument = true;
+    } else if (a == "--ui-layer-demo") {
+      // UI detour step 3: build a stack through the layer editor's own
+      // commands. See runUiLayerDemo(). `noclip` runs the same script without
+      // the clip, which is the comparison shot for PRD C9 on screen.
+      uiLayerDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "noclip") {
+        uiLayerDemoClip = false;
+        ++i;
+      }
+    } else if (a == "--controls-all-open") {
+      // UI detour step 3: open every collapsing header in the controls column
+      // on the first frame, so --screenshot can photograph a section the
+      // default state closes. An optional section title (LAYERS, PIGMENT,
+      // MEDIUM, ...) additionally pins that header to the top of the column,
+      // which is the only way to photograph a section that is below the fold
+      // once every one of them is open. See AppState::controlsAllOpen.
+      controlsAllOpen = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') controlsScrollTo = argv[++i];
+    } else if (a == "--open-layer-menu") {
+      // UI detour step 3: hold the `Layer` menu open so --screenshot can
+      // photograph it. See AppState::openLayerMenu.
+      openLayerMenu = true;
     }
   }
 
@@ -634,6 +754,21 @@ int main(int argc, char** argv) {
     // staging buffer. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
     // configurations. Writes no files.
     const bool documentTextureOk = np::runDocumentTextureTest(gpu);
+    // UI detour step 3 ("the layer editor, and making it reachable"):
+    // app/LayerEditor is the one surface the `Layer` menu and the LAYERS panel
+    // buttons share, so this covers what every one of those controls does --
+    // the three layer kinds, the mask, the clip, the flags, the per-layer op
+    // stack -- and the rule that keeps them honest: every successful command
+    // moves the revision exactly once and appends one history entry, while a
+    // refusal moves neither. Runs, and asserts the correct answers, in BOTH
+    // NP_USE_OIIO configurations. Headless and GPU-free; writes no files.
+    const bool layerEditorOk = np::runLayerEditorTest();
+    // The same step's other half: app/ControlsLayout, the right-hand column's
+    // order, its default-open set and the label column that stops a slider's
+    // name being clipped by the panel edge, with ImGui's own
+    // label-on-the-right run beside it and both clip counts printed. Headless
+    // and GPU-free; writes no files.
+    const bool controlsLayoutOk = np::runControlsLayoutTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -648,7 +783,8 @@ int main(int argc, char** argv) {
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
-                    documentTextureOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    documentTextureOk && layerEditorOk && controlsLayoutOk &&
+                    strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -744,6 +880,16 @@ int main(int argc, char** argv) {
                   od->document.height, od->document.layers.size(),
                   static_cast<unsigned long long>(od->revision));
     }
+  }
+  // After --demo-document deliberately: the script builds on whatever the
+  // document already holds, and the layer it clips to is the one that was on
+  // top when it started -- which is a layer with pixels in it exactly when the
+  // fixture above has run.
+  st.controlsAllOpen = controlsAllOpen;
+  st.openLayerMenu = openLayerMenu;
+  if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
+  if (uiLayerDemo) {
+    if (np::OpenDocument* od = st.documents.active()) runUiLayerDemo(*od, uiLayerDemoClip);
   }
 
   // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring
