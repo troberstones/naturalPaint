@@ -291,6 +291,13 @@ bool blendIsImplementedForLayer(const Document& doc, size_t layerIndex);
 // the bottom-most pair in a chain the one that forms: for Pigment layers
 // [P0, P1(mix), P2(mix)] it pairs (0,1) and leaves P2 unpaired, warned about,
 // and composited as `over`.
+//
+// **A pair never crosses a clip boundary** (PLAN.md Phase 5 step 9): if either
+// half is `clipped`, no pair forms. That falls out of
+// `blendModeAvailableForLayer()` rather than being tested again here, so the
+// rule has one implementation. The unpaired `mix` is then composited as
+// `over` and warned about by name with the specific reason, exactly as every
+// other L5 violation is.
 struct MixPairing {
   std::vector<bool> mixedWithBelow;
   std::vector<bool> consumedByAbove;
@@ -305,6 +312,15 @@ MixPairing mixPairing(const Document& doc);
 // a Pigment layer -- docs/ui.md §3.4's resolution in those words ("shown only
 // when both the layer and the one beneath it are Pigment layers -- it is
 // meaningless otherwise").
+//
+// **PLAN.md Phase 5 step 9 added one more condition to `Mix`: neither the
+// layer nor the one beneath it may be `clipped`.** A mix composites the two as
+// one unit; a clip makes the lower one the alpha that decides where the upper
+// one shows. Those are two different relationships with the same neighbour, so
+// the pair is refused here rather than resolved by whichever check happens to
+// run first -- core/Composite.hpp §15 derives it. Keeping the condition in
+// this predicate is what makes the dropdown, `core::setLayerBlend()` and
+// `mixPairing()` agree without three copies of the rule.
 //
 // "Beneath" is `layerIndex - 1`, because `Document::layers` is bottom-to-top
 // (docs/document-format.md, and core/Composite walks index 0 first). So the

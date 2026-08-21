@@ -188,6 +188,18 @@ LayerOpResult removeLayer(Document& doc, size_t index);
 // still reports `ok` -- a no-op reorder is not an error, and a caller that
 // records an edit for it is recording something that genuinely happened as far
 // as the user's gesture is concerned.
+//
+// **Refuses to move a `clipped` layer to index 0** (PLAN.md Phase 5 step 9),
+// by name and with the numbers. That is the one reorder that would create a
+// state `setLayerClipped()` refuses to create directly -- a clipped bottom
+// layer, with no alpha below it to be clipped by -- and letting a *reorder* be
+// the back door into it would make the setter's refusal decorative. Silently
+// clearing the flag instead was the alternative and is worse: a drag would
+// then change a layer's properties as a side effect, which is not what a drag
+// means. Nothing else about clipping restricts a move: the base a clipped
+// layer clips to is derived from position (core/Layer.hpp), so every other
+// reorder legitimately re-parents it, which is exactly what dragging a clipped
+// layer around a stack is for.
 LayerOpResult moveLayer(Document& doc, size_t from, size_t to);
 
 // Inserts a deep copy of the layer at `index` **directly above it**, at
@@ -276,6 +288,40 @@ LayerOpResult addLayerMask(Document& doc, size_t index);
 // a destructive edit with a different name and a different undo entry. It is
 // not built here and is not what this function does.
 LayerOpResult removeLayerMask(Document& doc, size_t index);
+
+// --- Clipping (PLAN.md Phase 5 step 9; PRD C9) ---------------------------
+
+// Sets `Layer::clipped` -- whether the layer is clipped by the alpha of the
+// layer below it. Refused on a locked layer, for `setLayerBlend()`'s reason:
+// whether a layer is clipped is part of how that layer looks.
+//
+// **Three refusals, each with the numbers**, and each is a state
+// core/Composite would otherwise have to approximate and warn about:
+//
+//   the bottom layer   index 0 has nothing below it. PRD C9 clips a layer by
+//                      "the alpha of the layer below it", so there is no such
+//                      alpha. Refused rather than accepted-and-ignored, which
+//                      would leave a flag on screen that does nothing.
+//   no alpha below     the nearest layer below that is not itself clipped
+//                      holds no pixels -- an Adjustment layer, or one of the
+//                      inert kinds. Same reason: no alpha to clip by. It is
+//                      **not** resolved by clipping to something further down;
+//                      core/Composite.hpp §12 says why.
+//   a mixed pair       the layer, or the layer directly below it, is currently
+//                      half of a `Mix` pair (PRD L5). A mix composites two
+//                      layers as one unit and a clip makes one of them the
+//                      alpha for the other; core/Composite.hpp §15 derives why
+//                      both cannot hold. Clearing the blend first is the fix,
+//                      and the refusal says so.
+//
+// Un-clipping (`clipped == false`) is never refused for any of the three --
+// only the lock applies -- because none of them is a reason a layer may not
+// stop being clipped.
+//
+// Setting the value it already has succeeds and changes nothing, matching
+// `setLayerVisible()` and `setLayerLocked()`: a no-op the user asked for is
+// not an error.
+LayerOpResult setLayerClipped(Document& doc, size_t index, bool clipped);
 
 // Sets the user-facing name. Any string is accepted, including an empty one
 // (which means "unnamed", core/Layer.hpp) and one that duplicates another

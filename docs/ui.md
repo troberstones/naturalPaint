@@ -131,6 +131,15 @@ T  [▨] Plate caption        TEXT · NORMAL · 100%
 | `T` | Text |
 | `▩` | Flats — suffixed with the fill count |
 
+> ✅ **`CLIPPED` became real at PLAN.md Phase 5 step 9 (PRD C9).** The `ADJUSTMENT ·
+> CLIPPED` row above predated the feature by four steps; `app::layerRowSubLine()` now
+> emits the marker, after `MASK` and before `HIDDEN`, so a full row reads
+> `ADJUSTMENT · NORMAL · 100% · 2 OPS · CLIPPED`. It reports what the layer *asks for*
+> — that function takes a `Layer` and no `Document`, exactly as the `(!)` blend marker
+> does, and "is there anything below to clip to" is a question only a stack can answer.
+> A clipped layer with no base is reported by the compositor instead, by name, at every
+> boundary that writes a file.
+
 A **Flats** row reads `FLATS · 153 FILLS · NORMAL`, and its fills are listed in a
 **Fills panel** beside Layers rather than as layer rows — hundreds of them would make the
 layer panel useless. See

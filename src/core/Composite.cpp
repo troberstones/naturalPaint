@@ -9,6 +9,21 @@
 #include "core/TileStore.hpp"
 
 namespace np {
+namespace {
+
+// Whether a layer has an alpha of its own for something to be clipped by --
+// i.e. whether the walk would ever composite a texel *from* it. Exactly the
+// test `compositeDocumentPremultiplied()` makes before it walks a layer's
+// tiles, kept in one place so a clip base and a compositable layer cannot
+// become two different ideas. An Adjustment layer is false here by
+// construction (it holds no tiles at all), which is core/Composite.hpp §12's
+// "the alpha of the layer below is not a quantity such a layer has".
+bool layerHoldsPixels(const Layer& layer) noexcept {
+  return (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) ||
+         (layer.kind == LayerKind::Pigment && layer.pigmentTiles.has_value());
+}
+
+}  // namespace
 
 float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept {
   if (!layer.mask.has_value()) return 1.0f;
@@ -117,6 +132,112 @@ std::array<float, 4> adjustedPremultiplied(const std::array<float, 4>& below,
   return out;
 }
 
+ClipRuns clipRuns(const Document& doc) {
+  ClipRuns runs;
+  const size_t n = doc.layers.size();
+  runs.members.assign(n, {});
+  runs.clippedToBase.assign(n, false);
+  runs.clippedWithoutBase.assign(n, false);
+
+  // **The three lines that make a run clip to ONE base.** `base` advances only
+  // when a layer is *not* clipped, so every layer of a consecutive clipped run
+  // sees the same base and no clipped layer is ever anybody's base. The
+  // cumulative reading -- each clipped layer clipping to the one below it --
+  // is the one this loop is shaped to rule out; core/Composite.hpp §12 says
+  // why it is worth ruling out explicitly.
+  size_t base = n;  // n means "nothing below is eligible"
+  bool baseHoldsPixels = false;
+  for (size_t i = 0; i < n; ++i) {
+    const Layer& layer = doc.layers[i];
+    if (!layer.clipped) {
+      base = i;
+      baseHoldsPixels = layerHoldsPixels(layer);
+      continue;
+    }
+    runs.any = true;
+    if (base == n || !baseHoldsPixels) {
+      runs.clippedWithoutBase[i] = true;
+      continue;
+    }
+    runs.clippedToBase[i] = true;
+    runs.members[base].push_back(i);
+  }
+  return runs;
+}
+
+std::array<float, 4> clipGroupOpen(const std::array<float, 4>& basePremultiplied) noexcept {
+  const float a = basePremultiplied[3];
+  if (!(a > 0.0f)) return {0.0f, 0.0f, 0.0f, 0.0f};  // also catches NaN
+  // The base's straight colour, considered opaque. Alpha is the literal 1.0f
+  // rather than `a / a` so the invariant is a constant and not a rounding.
+  return {basePremultiplied[0] / a, basePremultiplied[1] / a, basePremultiplied[2] / a, 1.0f};
+}
+
+std::array<float, 4> clipGroupFold(const std::array<float, 4>& group, BlendMode mode,
+                                   std::array<float, 4> src, const std::vector<PointOp>& ops,
+                                   float effectiveCoverage) {
+  // The same two lines every other kind's source goes through -- grade, then
+  // scale by one coverage scalar -- so a clipped layer and an unclipped one
+  // differ in what they are blended *against*, never in how they are prepared.
+  src = gradedPremultiplied(src, ops);
+  if (effectiveCoverage != 1.0f) {
+    src[0] *= effectiveCoverage;
+    src[1] *= effectiveCoverage;
+    src[2] *= effectiveCoverage;
+    src[3] *= effectiveCoverage;
+  }
+  std::array<float, 4> out = blendPixel(mode, src, group);
+  // Assigned, not computed. `as + 1*(1 - as)` is two roundings and is not
+  // exactly 1 for every `as`; a clipping group's coverage has to *be* the
+  // base's, not round to it (core/Composite.hpp §13).
+  out[3] = 1.0f;
+  return out;
+}
+
+std::array<float, 4> clipGroupClose(const std::array<float, 4>& group, float baseAlpha) noexcept {
+  return {group[0] * baseAlpha, group[1] * baseAlpha, group[2] * baseAlpha, baseAlpha};
+}
+
+std::string clippedLayerWithoutBaseWarning(const Document& doc, size_t layerIndex) {
+  std::string s = "layer " + std::to_string(layerIndex);
+  if (layerIndex < doc.layers.size() && !doc.layers[layerIndex].name.empty())
+    s += " (\"" + doc.layers[layerIndex].name + "\")";
+  s += " asks to be clipped, but there is nothing beneath it to clip to. ";
+
+  // Which of the three reasons applies, because what a user should do about
+  // them differs: un-clip the layer, un-clip the run below it, or put a layer
+  // that actually holds pixels under it.
+  if (layerIndex == 0) {
+    s += "It is the bottom layer of a " + std::to_string(doc.layers.size()) +
+         "-layer stack, and PRD C9 clips a layer by \"the alpha of the layer below it\" -- at "
+         "index 0 there is no layer below. ";
+  } else {
+    // The nearest non-clipped layer below, which is what `clipRuns()` looked
+    // for and did not accept.
+    size_t j = layerIndex;
+    while (j > 0 && doc.layers[j - 1].clipped) --j;
+    if (j == 0) {
+      s += "Every layer beneath it is clipped as well, down to layer 0, so the whole run has "
+           "no base -- a clipped layer is never another clipped layer's base (core/Composite.hpp "
+           "§12), which is what keeps a run of them clipping to one alpha instead of eroding "
+           "each other. ";
+    } else {
+      const Layer& below = doc.layers[j - 1];
+      s += "The nearest layer below it that is not itself clipped is layer " +
+           std::to_string(j - 1) + ", a " + std::string(layerKindName(below.kind)) +
+           " layer, which holds no pixels of its own -- so it has no alpha for this layer to be "
+           "clipped by. Clipping is not resolved by searching further down, because that would "
+           "clip to something other than the layer below. ";
+    }
+  }
+
+  s += "It was composited **unclipped** instead, so the composite is an approximation of what "
+       "the layer stack means -- but every texel the layer holds is still in it. Dropping the "
+       "layer would let one bit of metadata be the thing that makes a layer's pixels vanish. "
+       "The flag itself is preserved exactly and is written back unchanged (PRD I10).";
+  return s;
+}
+
 std::string adjustmentLayerBlendWarning(size_t layerIndex, const Layer& layer) {
   std::string s = "layer " + std::to_string(layerIndex);
   if (!layer.name.empty()) s += " (\"" + layer.name + "\")";
@@ -185,6 +306,55 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
   // and core/Probe cannot disagree about it.
   const MixPairing pairing = mixPairing(doc);
 
+  // Which layer clips which, resolved once for the document for the identical
+  // reason (PRD C9, this file's header §12). A document with no clipped layer
+  // pays three empty vectors and no tile access at all, and every branch below
+  // that mentions clipping is then not taken -- which is what makes step 1's
+  // byte-identity boundary survive this step.
+  const ClipRuns clips = clipRuns(doc);
+
+  // **The blend-name warning, in one place**, because as of this step there are
+  // two callers: the walk's own per-layer iteration, and a clipping base
+  // reporting for the members it composites on their behalf. Without the
+  // second, a clipped layer would be the one kind of layer whose unhonourable
+  // blend went unreported -- silently, which is the thing §7 exists to forbid.
+  auto warnUnimplementedBlend = [&](size_t li) {
+    if (warningsOut == nullptr) return;
+    const Layer& l = doc.layers[li];
+    const std::optional<BlendMode> resolved = blendModeFromName(l.blend);
+    const bool implementedHere =
+        resolved.has_value() && (blendModeInfo(*resolved).compositesPixels ||
+                                 (blendModeInfo(*resolved).compositesLatents &&
+                                  pairing.mixedWithBelow[li]));
+    if (implementedHere) return;
+    std::string mixReason;
+    if (resolved == BlendMode::Mix) {
+      if (l.kind != LayerKind::Pigment)
+        mixReason =
+            "this is a " + std::string(layerKindName(l.kind)) + " layer, not a Pigment layer";
+      else if (li == 0)
+        mixReason = "it is the bottom layer, so there is nothing beneath it to mix with";
+      else if (doc.layers[li - 1].kind != LayerKind::Pigment)
+        mixReason = "the layer beneath it is a " +
+                    std::string(layerKindName(doc.layers[li - 1].kind)) +
+                    " layer, not a Pigment layer";
+      else if (l.clipped)
+        mixReason = "it is clipped, and a clip and a mix are two different relationships with "
+                    "the same neighbour -- a mix composites the two layers as one unit, while a "
+                    "clip makes the lower one the alpha that decides where the upper one shows "
+                    "(PRD C9). No pair forms when either half is clipped";
+      else if (doc.layers[li - 1].clipped)
+        mixReason = "the Pigment layer beneath it is clipped, so it belongs to a clipping run "
+                    "whose base is further down; mixing it into a pair with this layer would "
+                    "composite it outside its own group and the clip would silently stop "
+                    "applying";
+      else
+        mixReason = "the Pigment layer beneath it is already half of another mixed pair, "
+                    "and chained mixes are not implemented (core/Composite.hpp says why)";
+    }
+    warningsOut->push_back(unimplementedBlendWarning(li, l, mixReason));
+  };
+
   // Blends one already-scaled premultiplied texel into the accumulator.
   auto blendInto = [&](int32_t docX, int32_t docY, BlendMode mode,
                        const std::array<float, 4>& src) {
@@ -206,6 +376,17 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
     // iteration later, and never on its own -- the mix replaces both layers
     // rather than sitting over one of them.
     if (pairing.consumedByAbove[i]) continue;
+    // A clipped layer with a base is composited **by** that base, as part of
+    // its group, and never on its own -- the same relationship the line above
+    // expresses for the lower half of a mixed pair. See §13.
+    if (clips.clippedToBase[i]) continue;
+    // A layer that asks to be clipped with nothing to clip to is composited
+    // unclipped and warned about by name -- §17. Warned before every skip
+    // below it, for §7's reason: whether the composite is an approximation is
+    // a property of the document, not of whether this particular hidden layer
+    // happened to matter today.
+    if (clips.clippedWithoutBase[i] && warningsOut != nullptr)
+      warningsOut->push_back(clippedLayerWithoutBaseWarning(doc, i));
 
     // **An Adjustment layer inverts the walk**: it contributes nothing and
     // instead transforms what is already accumulated beneath it. See this
@@ -272,29 +453,8 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
     // `blendIsImplementedForLayer()` answers exactly this, but it recomputes
     // the pairing on every call; this walk already has it, so the same
     // question is asked of the same data instead of once per layer.
+    warnUnimplementedBlend(i);
     const std::optional<BlendMode> resolved = blendModeFromName(layer.blend);
-    const bool implementedHere =
-        resolved.has_value() && (blendModeInfo(*resolved).compositesPixels ||
-                                 (blendModeInfo(*resolved).compositesLatents &&
-                                  pairing.mixedWithBelow[i]));
-    if (!implementedHere && warningsOut != nullptr) {
-      std::string mixReason;
-      if (resolved == BlendMode::Mix) {
-        if (layer.kind != LayerKind::Pigment)
-          mixReason = "this is a " + std::string(layerKindName(layer.kind)) +
-                      " layer, not a Pigment layer";
-        else if (i == 0)
-          mixReason = "it is the bottom layer, so there is nothing beneath it to mix with";
-        else if (doc.layers[i - 1].kind != LayerKind::Pigment)
-          mixReason = "the layer beneath it is a " +
-                      std::string(layerKindName(doc.layers[i - 1].kind)) +
-                      " layer, not a Pigment layer";
-        else
-          mixReason = "the Pigment layer beneath it is already half of another mixed pair, "
-                      "and chained mixes are not implemented (core/Composite.hpp says why)";
-      }
-      warningsOut->push_back(unimplementedBlendWarning(i, layer, mixReason));
-    }
 
     // Resolved once per layer, never per texel: `blend` is a std::string and a
     // string comparison in the inner loop would be the one plausible way to
@@ -321,6 +481,118 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
     // before this step, which is what keeps step 1's byte-identity boundary
     // exact (see this file's header, §5).
     const MaskTileStore* maskTiles = layer.mask.has_value() ? &*layer.mask : nullptr;
+
+    // --- The clipping group this layer is the base of (§§12-17) -----------
+    //
+    // Resolved once per layer like everything above it, and **empty for every
+    // layer of a document with no clipped layers**, which is what lets the
+    // three tile walks below keep their pre-step-9 arithmetic exactly.
+    //
+    // A base is never the lower half of a mixed pair. It cannot be: for that,
+    // the layer directly above it would have to carry a `mix` that paired,
+    // which `blendModeAvailableForLayer()` refuses when that layer is clipped
+    // -- and every layer directly above a base is, by definition, clipped.
+    struct ClipMember {
+      bool adjustment = false;
+      BlendMode mode = BlendMode::Normal;
+      std::vector<PointOp> ops;
+      float coverage = 0.0f;
+      const MaskTileStore* maskTiles = nullptr;
+      const TileStore* rgbTiles = nullptr;
+      const PigmentTileStore* pigmentTiles = nullptr;
+      // Rebound once per tile **of the base**, never per texel -- the same
+      // hoist every other store lookup in this walk gets.
+      const MaskTile* maskTile = nullptr;
+      const Tile* rgbTile = nullptr;
+      const PigmentTile* pigmentTile = nullptr;
+    };
+    std::vector<ClipMember> members;
+    for (const size_t mi : clips.members[i]) {
+      const Layer& m = doc.layers[mi];
+      ClipMember cm;
+      cm.coverage = layerCoverage(m);
+      cm.ops = layerPointOps(m.ops);
+      cm.maskTiles = m.mask.has_value() ? &*m.mask : nullptr;
+      if (m.kind == LayerKind::Adjustment) {
+        // Reported before the coverage test, exactly as an unclipped
+        // Adjustment layer's is -- §11's blend rule does not change because
+        // the layer is clipped, and neither does the reporting of it.
+        const std::optional<BlendMode> mb = blendModeFromName(m.blend);
+        if ((!mb.has_value() || *mb != BlendMode::Normal) && warningsOut != nullptr)
+          warningsOut->push_back(adjustmentLayerBlendWarning(mi, m));
+        cm.adjustment = true;
+        // The same two exact no-ops §10 gives an unclipped adjustment layer:
+        // an empty stack and zero coverage must cost nothing at all, which
+        // here means never being a member that could open the group.
+        if (cm.ops.empty() || cm.coverage <= 0.0f) continue;
+      } else if (layerHoldsPixels(m)) {
+        warnUnimplementedBlend(mi);
+        const std::optional<BlendMode> mb = blendModeFromName(m.blend);
+        cm.mode = (mb.has_value() && blendModeInfo(*mb).compositesPixels) ? *mb : BlendMode::Normal;
+        if (m.kind == LayerKind::RGB)
+          cm.rgbTiles = &*m.rgbTiles;
+        else
+          cm.pigmentTiles = &*m.pigmentTiles;
+        if (cm.coverage <= 0.0f) continue;
+      } else {
+        // A kind that holds no pixels (Media/Strokes/Text/Flats, or a
+        // malformed RGB layer with no store) contributes nothing here for the
+        // same reason it contributes nothing anywhere else in this walk.
+        continue;
+      }
+      members.push_back(std::move(cm));
+    }
+
+    // Rebinds every member's per-tile pointers for one tile of the base.
+    auto bindMemberTiles = [&](const TileCoord& coord) {
+      for (ClipMember& m : members) {
+        m.maskTile = m.maskTiles ? m.maskTiles->find(coord) : nullptr;
+        m.rgbTile = m.rgbTiles ? m.rgbTiles->find(coord) : nullptr;
+        m.pigmentTile = m.pigmentTiles ? m.pigmentTiles->find(coord) : nullptr;
+      }
+    };
+
+    // The whole of §13, per texel. `base` is the base's own final premultiplied
+    // source texel -- graded and coverage-applied, i.e. exactly what this walk
+    // would have blended in had nothing been clipped to it -- and the returned
+    // texel takes its place. Returns `base` **bit-identically** when no member
+    // contributes here, which is what keeps the bracket's divide-and-multiply
+    // out of every texel that does not need it.
+    auto foldClipGroup = [&](const std::array<float, 4>& base,
+                             const PixelCoord& local) -> std::array<float, 4> {
+      std::array<float, 4> g{};
+      bool opened = false;
+      for (const ClipMember& m : members) {
+        const float cov = m.maskTiles ? m.coverage * maskCoverage(m.maskTile, local) : m.coverage;
+        if (cov <= 0.0f) continue;  // a skip, not a multiply by zero -- §5
+        std::array<float, 4> src{};
+        if (!m.adjustment) {
+          if (m.rgbTiles != nullptr) {
+            if (m.rgbTile == nullptr) continue;  // no tile here: contributes nothing
+            src = m.rgbTile->readPixel(local);
+          } else {
+            if (m.pigmentTile == nullptr) continue;
+            src = projectPigmentTexel(m.pigmentTile->readTexel(local));
+          }
+        }
+        if (!opened) {
+          // A base with no coverage clips everything away, which is PRD C9
+          // read literally -- and is also what keeps clipGroupOpen()'s
+          // division unreachable rather than guarded twice.
+          if (!(base[3] > 0.0f)) return base;
+          g = clipGroupOpen(base);
+          opened = true;
+        }
+        // A clipped **Adjustment** layer's "composite below" is the group, not
+        // the document accumulator -- §14, and the whole of why a clipped
+        // adjustment layer grades its base and nothing else. `g[3]` is exactly
+        // 1.0f here, so `adjustedPremultiplied()`'s own un-premultiply is a
+        // division by one and its `below.a <= 0` early-out is unreachable.
+        g = m.adjustment ? adjustedPremultiplied(g, m.ops, cov)
+                         : clipGroupFold(g, m.mode, src, m.ops, cov);
+      }
+      return opened ? clipGroupClose(g, base[3]) : base;
+    };
 
     if (pairing.mixedWithBelow[i]) {
       // A mixed pair. Deliberately *not* skipped when this layer's coverage is
@@ -366,6 +638,7 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
         const PigmentTile* low = lowTiles ? lowTiles->find(coord) : nullptr;
         const MaskTile* upMask = maskTiles ? maskTiles->find(coord) : nullptr;
         const MaskTile* lowMask = lowerMaskTiles ? lowerMaskTiles->find(coord) : nullptr;
+        if (!members.empty()) bindMemberTiles(coord);
         const PixelCoord origin = tileOrigin(coord);
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
@@ -386,8 +659,13 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
                 lowerMaskTiles ? lowerCoverage * maskCoverage(lowMask, local) : lowerCoverage;
             // `over` always: the pair's own arithmetic *is* the mix, and what
             // it produces meets everything beneath it as ordinary coverage.
-            blendInto(docX, docY, BlendMode::Normal,
-                      mixedPairTexel(lowTexel, lowerOps, covLow, upTexel, ops, covUp));
+            std::array<float, 4> pair =
+                mixedPairTexel(lowTexel, lowerOps, covLow, upTexel, ops, covUp);
+            // **A mixed pair is a perfectly good clip base** (§15): the pair is
+            // one unit, and one unit is what a base is. No special case is
+            // needed -- the pair's output texel *is* the base's `S`.
+            if (!members.empty()) pair = foldClipGroup(pair, local);
+            blendInto(docX, docY, BlendMode::Normal, pair);
           }
         }
       }
@@ -405,7 +683,8 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
     // coverage already multiplied by its mask sample at this texel -- one
     // scalar, because a mask and an opacity are the same quantity and compose
     // as a plain product (this file's header, §5).
-    auto contribute = [&](int32_t docX, int32_t docY, std::array<float, 4> src, float effective) {
+    auto contribute = [&](int32_t docX, int32_t docY, std::array<float, 4> src, float effective,
+                          const PixelCoord& local) {
       src = gradedPremultiplied(src, ops);
       // The one place opacity enters. At the default 1.0 this is a
       // multiplication by literal 1.0f -- exact for every finite float --
@@ -417,6 +696,11 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
         src[2] *= effective;
         src[3] *= effective;
       }
+      // The clipping group, if this layer is a base (§13). The branch is a
+      // per-layer constant, and the *whole* of what step 9 added to this hot
+      // path: a document with no clipped layer never enters it, so the texel
+      // blended below is the one this line blended before that step.
+      if (!members.empty()) src = foldClipGroup(src, local);
       blendInto(docX, docY, mode, src);
     };
 
@@ -424,6 +708,11 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
       for (const auto& [coord, tile] : *layer.rgbTiles) {
         const PixelCoord origin = tileOrigin(coord);
         const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
+        // **The base's tiles are the clipping run's whole extent** (§17):
+        // outside them the base's alpha is 0, so the group contributes exactly
+        // nothing. A clipped layer's own tiles are never visited for their own
+        // sake, which is why clipping can only make this walk cheaper.
+        if (!members.empty()) bindMemberTiles(coord);
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
           if (docY < 0 || docY >= doc.height) continue;  // clipped to the canvas
@@ -439,7 +728,7 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
             const float effective =
                 maskTiles ? coverage * maskCoverage(maskTile, local) : coverage;
             if (effective <= 0.0f) continue;
-            contribute(docX, docY, tile.readPixel(local), effective);
+            contribute(docX, docY, tile.readPixel(local), effective, local);
           }
         }
       }
@@ -447,6 +736,7 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
       for (const auto& [coord, tile] : *layer.pigmentTiles) {
         const PixelCoord origin = tileOrigin(coord);
         const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
+        if (!members.empty()) bindMemberTiles(coord);
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
           if (docY < 0 || docY >= doc.height) continue;
@@ -461,7 +751,7 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
             // into it: `projectPigmentTexel()` is handed the stored texel
             // unchanged. §5 says why that is the difference between a mask and
             // an eraser.
-            contribute(docX, docY, projectPigmentTexel(tile.readTexel(local)), effective);
+            contribute(docX, docY, projectPigmentTexel(tile.readTexel(local)), effective, local);
           }
         }
       }

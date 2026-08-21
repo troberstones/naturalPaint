@@ -84,6 +84,7 @@ part 1   "L0001"          R G B A                    ← baked projection
                  np:visible     1
                  np:locked      1
                  np:parent      ""
+                 np:clipped     1        (only when clipped; PRD C9)
                  np:ops         <blob>
 
 part 2   "L0002"          R G B A + pig.* + res.*
@@ -245,6 +246,31 @@ part 4   "S0001"          coverage                   ← a saved selection
 > The unmasked case fills the channel with binary16 1.0 — "reveal", which is what the reader
 > reads for an absent tile anyway — so the channel and `np:mask` agree whichever the reader
 > trusts.
+
+> ✅ **Implemented, 2026-08-21, at PLAN.md Phase 5 step 9: `np:clipped`.** One `int`
+> attribute, 0 or 1, saying whether the layer is clipped by the alpha of the layer below it
+> (PRD C9). `int` is one of the three types the measurement at the top of this section found
+> survives a round trip through this OpenImageIO, so the carrier problem that `np:ops` had
+> does not arise here at all.
+>
+> - **Written only when the flag is true.** A document with no clipped layer produces the
+>   bytes it produced before this step — measured against a file written with the flags
+>   cleared, not assumed, exactly as step 4 measured the `mask` channel and step 5 `np:ops`.
+>   Absent therefore reads as `false`, which is `core::Layer`'s own default: the identity
+>   element is the absent case, the same rule the `mask` channel uses for 1.0.
+> - **It is universal, unlike `np:mask`.** Every layer kind can be clipped, so this is
+>   written on any part whose layer carries the flag rather than on one kind's parts.
+>   `np:mask` is Adjustment-only because it exists to replace a *channel presence* test that
+>   only Adjustment parts cannot make; this attribute replaces nothing.
+> - **A clipped bottom layer is carried, not refused.** There is nothing beneath layer 0 to
+>   clip to, and `core::setLayerClipped()` and `core::moveLayer()` both refuse to create the
+>   state — but a file may already hold it, and §3.2's preservation rule is what makes an
+>   older build safe to open a newer document with. So the loader carries the flag exactly,
+>   the compositor composites the layer **unclipped** and names it in a warning that
+>   `saveNpaint()` and `exportDocument()` both surface, and the next save writes the flag
+>   back unchanged. Refusing would let a preserved attribute be the thing that bricks the
+>   file it was preserved in — the same argument §3.3 already makes for an unimplementable
+>   `np:blend`.
 
 - **Every part must agree about being tiled.** Also measured: OpenImageIO cannot write a
   multi-part EXR mixing tiled and scanline parts — it fails partway through with

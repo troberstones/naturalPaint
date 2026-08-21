@@ -126,6 +126,13 @@ bool blendModeAvailableForLayer(const Document& doc, size_t layerIndex,
   // Pigment layers. `layers` is bottom-to-top, so "beneath" is index - 1 and
   // the bottom layer has nothing beneath it.
   if (layerIndex == 0) return false;
+  // PLAN.md Phase 5 step 9: **and neither of them may be clipped.** `Mix`
+  // composites two layers as one unit; a clip makes the layer below the thing
+  // that decides where the layer above *shows*. Both are relationships with
+  // the same neighbour and there is no reading in which both hold -- see
+  // core/Composite.hpp §15, which derives the rule and says what the composite
+  // does with a document that carries the combination anyway (PRD I10).
+  if (doc.layers[layerIndex].clipped || doc.layers[layerIndex - 1].clipped) return false;
   return doc.layers[layerIndex].kind == LayerKind::Pigment &&
          doc.layers[layerIndex - 1].kind == LayerKind::Pigment;
 }

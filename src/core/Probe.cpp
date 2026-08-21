@@ -145,6 +145,14 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
     // an operation that runs on every pointer move. Op stacks are hoisted for
     // a stronger reason -- building a PointOp allocates.
     const MixPairing pairing = mixPairing(doc);
+    // **Phase 5 step 9**: and which layer clips which, for the identical
+    // reason -- an eyedropper that did not know about clipping would report a
+    // colour the export does not produce. Every piece of arithmetic below is
+    // core/Composite's own (`clipRuns`, `clipGroupOpen/Fold/Close`,
+    // `adjustedPremultiplied`), called rather than re-derived; only the loop
+    // differs, because a probe walks a small box and the flattener walks
+    // occupied tiles.
+    const ClipRuns clips = clipRuns(doc);
     std::vector<BlendMode> modes(doc.layers.size(), BlendMode::Normal);
     std::vector<std::vector<PointOp>> ops(doc.layers.size());
     std::vector<float> coverages(doc.layers.size(), 0.0f);
@@ -158,6 +166,45 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
       ops[i] = layerPointOps(layer.ops);
       coverages[i] = layerCoverage(layer);
     }
+    // The clipping group layer `li` is the base of, folded at one texel --
+    // core/Composite.hpp §13, through that file's own three bracket functions
+    // rather than a second copy of them here. Returns `base` bit-identically
+    // when no member contributes at this texel, which is the same lazy-open
+    // rule the flattener follows and for the same reason.
+    auto foldClipGroupAt = [&](std::array<float, 4> base, size_t li,
+                               PixelCoord docPos) -> std::array<float, 4> {
+      std::array<float, 4> g{};
+      bool opened = false;
+      for (const size_t mi : clips.members[li]) {
+        const Layer& m = doc.layers[mi];
+        const float cov = coverages[mi] * layerMaskCoverageAt(m, docPos);
+        if (cov <= 0.0f) continue;
+        const bool adjustment = m.kind == LayerKind::Adjustment;
+        std::array<float, 4> src{};
+        if (adjustment) {
+          if (ops[mi].empty()) continue;  // an empty stack costs exactly nothing (§10)
+        } else if (m.kind == LayerKind::RGB && m.rgbTiles.has_value()) {
+          const Tile* t = m.rgbTiles->find(tileCoordAt(docPos));
+          if (t == nullptr) continue;
+          src = t->readPixel(tileLocalOffset(docPos));
+        } else if (m.kind == LayerKind::Pigment && m.pigmentTiles.has_value()) {
+          const PigmentTile* t = m.pigmentTiles->find(tileCoordAt(docPos));
+          if (t == nullptr) continue;
+          src = projectPigmentTexel(t->readTexel(tileLocalOffset(docPos)));
+        } else {
+          continue;  // a kind that holds no pixels contributes nothing here either
+        }
+        if (!opened) {
+          if (!(base[3] > 0.0f)) return base;  // no coverage to clip to: PRD C9, literally
+          g = clipGroupOpen(base);
+          opened = true;
+        }
+        g = adjustment ? adjustedPremultiplied(g, ops[mi], cov)
+                       : clipGroupFold(g, modes[mi], src, ops[mi], cov);
+      }
+      return opened ? clipGroupClose(g, base[3]) : base;
+    };
+
     if (any) {
       for (int32_t dy = 0; dy < sampleSize; ++dy) {
         for (int32_t dx = 0; dx < sampleSize; ++dx) {
@@ -167,6 +214,9 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
             const Layer& layer = doc.layers[li];
             // The lower half of a mixed pair is composited by the pair.
             if (pairing.consumedByAbove[li]) continue;
+            // **Phase 5 step 9**: and a clipped layer is composited by its
+            // base, as part of that base's group -- never on its own.
+            if (clips.clippedToBase[li]) continue;
 
             // **Phase 5 step 5**: an Adjustment layer transforms `acc` -- the
             // composite accumulated beneath it -- instead of contributing to
@@ -197,12 +247,12 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
                       : nullptr;
               if (up == nullptr && low == nullptr) continue;
               const PixelCoord local = tileLocalOffset(docPos);
-              acc = blendPixel(BlendMode::Normal,
-                               mixedPairTexel(low ? low->readTexel(local) : PigmentTexel{},
-                                              ops[li - 1], covLow,
-                                              up ? up->readTexel(local) : PigmentTexel{}, ops[li],
-                                              covUp),
-                               acc);
+              std::array<float, 4> pair =
+                  mixedPairTexel(low ? low->readTexel(local) : PigmentTexel{}, ops[li - 1], covLow,
+                                 up ? up->readTexel(local) : PigmentTexel{}, ops[li], covUp);
+              // A mixed pair is one unit, and one unit is what a clip base is.
+              if (!clips.members[li].empty()) pair = foldClipGroupAt(pair, li, docPos);
+              acc = blendPixel(BlendMode::Normal, pair, acc);
               continue;
             }
 
@@ -233,6 +283,10 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
               src[2] *= coverage;
               src[3] *= coverage;
             }
+            // The clipping group this layer is the base of, if any. Empty for
+            // every layer of a document with no clipped layers, so the probe's
+            // pre-step-9 arithmetic is untouched there.
+            if (!clips.members[li].empty()) src = foldClipGroupAt(src, li, docPos);
             acc = blendPixel(modes[li], src, acc);
           }
           sum[0] += acc[0];

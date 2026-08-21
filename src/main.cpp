@@ -509,6 +509,27 @@ int main(int argc, char** argv) {
     // and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
     // Headless and GPU-free; writes no files.
     const bool historyPanelOk = np::runHistoryPanelTest();
+    // Phase 5 step 9 ("Clipping masks -- a layer or group clipped by the alpha
+    // of the layer below"; PRD C9): one bool on core::Layer, one clipRuns()
+    // pass, and a three-function bracket that folds a clipping group per texel
+    // inside the base's own tile walk -- no offscreen buffer, which is the
+    // prediction this step falsified. A run of clipped layers is proven to
+    // clip to ONE base in pixels rather than in bookkeeping, with the
+    // cumulative reading's answer printed beside it. The rejected reading of
+    // "which alpha, and where the group lands" is implemented inside the test
+    // and printed beside the built one on fixtures where they differ. A
+    // clipped Adjustment layer is proven to grade its base and nothing else,
+    // which is step 5's function re-pointed rather than rewritten; `Mix` and a
+    // clip are proven mutually exclusive through the one PRD L5 predicate; a
+    // layer's own mask and its clip are proven to be different operators, one
+    // acting on colour and one on coverage; and the bottom layer is refused by
+    // name with the numbers at both setters while the compositor still
+    // composites and warns about one that arrived from a file. The regression
+    // boundary is asserted at zero tolerance, and the lazy-open rule that
+    // makes it hold is proven necessary rather than asserted. Runs, and
+    // asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+    // Headless and GPU-free; writes and removes three `.npaint` files.
+    const bool clippingMaskOk = np::runClippingMaskTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -522,8 +543,8 @@ int main(int argc, char** argv) {
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
-                    cowTileOk && historyOk && historyPanelOk && strokeSpeedOk && idleMemOk &&
-                    fieldAllocOk;
+                    cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
+                    strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

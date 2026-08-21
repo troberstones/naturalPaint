@@ -1451,4 +1451,73 @@ bool runHistoryTest();
 // prints. Headless and GPU-free; writes no files.
 bool runHistoryPanelTest();
 
+// PLAN.md Phase 5 step 9 ("Clipping masks -- a layer or group clipped by the
+// alpha of the layer below"; PRD C9 (P0), and C3/C4/C5/L5/I10/I11 which it has
+// to keep honouring). One bool on `core::Layer`, one `clipRuns()` pass, and a
+// three-function bracket in core/Composite that folds a clipping group per
+// texel inside the base's own tile walk -- no offscreen buffer, which is the
+// prediction this step falsified rather than fulfilled.
+//
+// Covers, and the first four are the decisions the step turns on:
+//  - **A run clips to ONE base**, proven in pixels rather than in bookkeeping:
+//    three clipped layers over one opaque base, each covering a different
+//    texel, all three visible -- where the cumulative reading (each clipped
+//    layer masked by the one below it) would confine two of them to the
+//    first's single texel. The coverage half of the same claim is printed
+//    beside it: three opaque clipped layers on a 0.5-alpha base leave the
+//    coverage at exactly 0.5, against 0.125 under cumulative erosion and
+//    0.875 under independent growth.
+//  - **Which alpha, and where the group lands.** The base's *effective* alpha
+//    -- stored, after its op stack, times its opacity and its mask -- and the
+//    group composites internally then lands through the base's blend mode.
+//    The rejected reading (each clipped layer composited onto the backdrop
+//    independently) is **implemented in the test** and printed beside the
+//    built one on a fixture where they differ: a half-transparent base gives
+//    0.5/0/0.5 one way and 0.5/0.25/0.75 the other, and a `multiply` base
+//    with an opaque white clipped layer gives 0.5 against 1.0. Hiding the
+//    base is proven byte-identical to the layers not existing, a 0.5 mask on
+//    the base byte-identical to 0.5 opacity on it, and a grade on the base
+//    proven to leave the clip boundary bit-identical.
+//  - **A clipped Adjustment layer sees its base and nothing else**, which is
+//    step 5's `adjustedPremultiplied()` re-pointed rather than rewritten: the
+//    same document is composited with the adjustment clipped and unclipped and
+//    both are printed, the untouched texels are `memcmp`-identical to the
+//    document without the layer, and the partly-transparent-base case shows
+//    the grade landing on the base's *straight* colour (1.5) rather than on
+//    the composite (2.0).
+//  - **`Mix` and a clip are mutually exclusive**, decided in
+//    `blendModeAvailableForLayer()` so the dropdown, `setLayerBlend()` and
+//    `mixPairing()` cannot disagree: all three arrangements are asserted, the
+//    unpaired `mix` is warned about with its own reason and proven
+//    byte-identical to `over`, and a mixed pair is proven to work as a clip
+//    *base*.
+//  - **A layer's own mask and its clip are different operators**: the four
+//    combinations of {mask 1, 0.5} x {base alpha 1, 0.5} printed side by side,
+//    with the colours multiplying and the coverages not, plus a negative
+//    control showing that "clip == mask by the base's alpha" gives a different
+//    answer.
+//  - **The bottom layer cannot be clipped**: `setLayerClipped()` and
+//    `moveLayer()` each refused with the index and the layer count, the two
+//    other baseless arrangements refused by their own reasons, and -- because
+//    a file can carry what the setters refuse -- the compositor proven to
+//    composite such a layer *unclipped*, warn by name, and produce a buffer
+//    byte-identical to the flag being clear.
+//  - **The regression boundary at zero tolerance**: a document with no clipped
+//    layer composited byte-identically to a plain sum written inside the test,
+//    and the lazy-open rule proven necessary by showing that the open/close
+//    bracket is NOT a bit-exact round trip on a non-dyadic alpha.
+//  - **The probe and the flattener agreeing** on a clipped stack, with the
+//    largest residual measured and printed against the derived bound.
+//  - **The cost claim measured**, not asserted: a clipped layer's tiles
+//    outside its base's are never visited, timed against the same layer
+//    unclipped.
+//  - **The `.npaint` round trip**: `np:clipped` surviving on RGB, Pigment and
+//    Adjustment layers, a clipped bottom layer carried rather than refused,
+//    and the property the format change rests on -- clearing every clip flag
+//    gives back a file byte-identical to one written before any was set.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+// Headless and GPU-free; writes and removes three `.npaint` files.
+bool runClippingMaskTest();
+
 }  // namespace np

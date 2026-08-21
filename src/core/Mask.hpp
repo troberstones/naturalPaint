@@ -25,8 +25,11 @@
 //
 // It is **not** a clipping mask. A clipping mask is a layer clipped by the
 // alpha of the layer *below* (PRD C9), it stores nothing of its own, and
-// PLAN.md schedules it separately as Phase 5 step 9. The two words are one
-// letter apart and the features share no code.
+// PLAN.md built it separately at Phase 5 step 9. The two words are one letter
+// apart and **the features still share no code**: nothing was added to this
+// file for step 9, and core/Composite.hpp §16 shows that they are not even the
+// same kind of operator -- a layer mask scales a source's colour, a clip
+// scales a group's coverage, and the two land at different points of the walk.
 //
 // --- The tile: one f16 channel, 32 KiB ------------------------------------
 //

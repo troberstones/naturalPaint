@@ -805,6 +805,30 @@ void drawLayersSection(AppState& st) {
     ImGui::SameLine();
     bool locked = layer.locked;
     if (ImGui::Checkbox("Lock", &locked)) run(setLayerLocked(doc, i, locked));
+    ImGui::SameLine();
+    // PLAN.md Phase 5 step 9 / PRD C9. Disabled on the bottom row rather than
+    // offered-and-refused, because "there is nothing below this layer" is a
+    // property of the row itself and the Up/Down buttons on the same line
+    // already use exactly that idiom for the ends of the stack. Every *other*
+    // reason a clip cannot be taken -- a layer that holds no pixels beneath,
+    // an unbroken clipped run below, a live `Mix` pair -- depends on the whole
+    // stack and is surfaced as core/LayerOps' own refusal sentence below,
+    // which is the same split drawExportAsDialog() uses for io/Export's.
+    ImGui::BeginDisabled(i == 0);
+    bool clipped = layer.clipped;
+    if (ImGui::Checkbox("Clip", &clipped)) run(setLayerClipped(doc, i, clipped));
+    ImGui::EndDisabled();
+    // `AllowWhenDisabled` on purpose: the bottom row is exactly the row whose
+    // user most needs the last sentence of this tooltip, and a disabled item
+    // reports no hover without it.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("Clip to the layer below (PRD C9): this layer shows only\n"
+                        "where the layer beneath it has alpha. A run of clipped\n"
+                        "layers all clips to ONE base -- the nearest unclipped\n"
+                        "layer below -- and the group meets the document through\n"
+                        "that base's blend mode and opacity, so hiding the base\n"
+                        "hides the whole group. The bottom layer cannot be\n"
+                        "clipped: there is nothing below it.");
 
     if (selected == i && !structureChanged) {
       float opacity = layer.opacity;

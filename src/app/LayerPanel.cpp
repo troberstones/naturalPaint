@@ -97,6 +97,24 @@ std::string layerRowSubLine(const Layer& layer) {
     s += kSep;
     s += "MASK";
   }
+  // docs/ui.md §3.2's own example row is `ADJUSTMENT · CLIPPED`, so this
+  // vocabulary is the document's rather than invented here -- the UI assumed
+  // the feature before PLAN.md Phase 5 step 9 built it.
+  //
+  // It says what the layer *asks for*, not whether the ask can be honoured,
+  // and that is deliberate: a `Layer` alone does not know where it sits, and
+  // this function takes only a `Layer` (the same reason `blendIsImplemented()`
+  // and not `blendIsImplementedForLayer()` is what marks a blend with `(!)`
+  // here). A clipped layer with nothing to clip to is reported where the
+  // question can actually be answered -- by the compositor, through
+  // `core::clippedLayerWithoutBaseWarning()`, at every boundary that writes a
+  // file. `core::setLayerClipped()` refuses to create the state in the first
+  // place, so the only way to see the marker without a base is a document that
+  // arrived carrying one (PRD I10).
+  if (layer.clipped) {
+    s += kSep;
+    s += "CLIPPED";
+  }
   if (!layer.visible) {
     s += kSep;
     s += "HIDDEN";

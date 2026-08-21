@@ -16,7 +16,9 @@
 // `Document`, with reorder, visibility, lock, opacity"; step 2 moved the blend
 // arithmetic out to core/Blend and left the document walk here; step 3 gave
 // the walk Pigment layers, the latent -> RGB projection, the per-layer op
-// stack and `Mix`; step 4 gave every kind a per-layer mask).
+// stack and `Mix`; step 4 gave every kind a per-layer mask; step 5 made
+// Adjustment layers transform the composite below; step 9 gave the walk
+// clipping masks).
 //
 // ==========================================================================
 // Phase 5 step 3 -- Pigment layers, in the order the walk does them
@@ -251,7 +253,10 @@
 //                  with whom, only how much each half covers.
 //   clipping masks **A different feature** (PRD C9, PLAN.md Phase 5 step 9): a
 //                  layer clipped by the *alpha of the layer below*, storing
-//                  nothing of its own. Not built here, and not conflated.
+//                  nothing of its own. Built at step 9 -- see §§12-17 -- and
+//                  still not conflated with this one: §16 is the whole of what
+//                  a layer's own mask and its clip do to each other, and they
+//                  act at different points and on different operands.
 //
 // ==========================================================================
 // Phase 5 step 5 -- Adjustment layers
@@ -352,11 +357,13 @@
 //                canvas: an adjustment layer has no tiles, so there is no
 //                sparse set to walk and no data window to clip to. That is
 //                what PRD C5 asks for. Restricting it to just the layer
-//                beneath is a **clipping mask** (PRD C9, PLAN.md step 9), a
-//                different feature with a different UI and its own row marker
-//                (`ADJUSTMENT · CLIPPED` in docs/ui.md §3.2) -- not built
-//                here and not conflated, exactly as step 4 did not conflate a
-//                layer mask with one.
+//                beneath is a **clipping mask** (PRD C9), a different feature
+//                with its own row marker (`ADJUSTMENT · CLIPPED` in
+//                docs/ui.md §3.2) -- built at PLAN.md step 9 and still not
+//                conflated with this: an adjustment layer with
+//                `clipped == false` behaves exactly as this section
+//                describes, and one with `clipped == true` is composited by
+//                §14's group instead of by this branch at all.
 //   groups       Unchanged: `Layer::parent` is still carried and never acted
 //                on, so an adjustment layer inside a group would still affect
 //                everything below it rather than the group. This build creates
@@ -366,6 +373,215 @@
 //                taken -- but there is no ROI narrowing here; that is PLAN.md
 //                phase 6's "`roi(rect) -> rect` per op, walked backwards" and
 //                the hash-keyed tile cache that goes with it.
+//
+// ==========================================================================
+// Phase 5 step 9 -- Clipping masks
+// ==========================================================================
+//
+// PRD C9 (**P0**): "a layer or group is clipped by the alpha of the layer
+// below it". PRD C4's "layers behave as in Photoshop". docs/ui.md §3.2 already
+// assumed it -- `ADJUSTMENT · CLIPPED` is one of its own example rows.
+//
+// One bool on the layer (`Layer::clipped`); everything else about a clip is a
+// property of where the layer sits, derived here by `clipRuns()`.
+//
+// --- 12. A RUN clips to ONE base, and never to itself ---------------------
+//
+// **The base is the nearest layer below that is not itself clipped.** Three
+// clipped layers over one base all clip to that base's alpha; they do not
+// progressively erode one another, and the second clipped layer is *not* the
+// third one's base. In `clipRuns()` that is three lines -- the running `base`
+// index is updated only when a layer is **not** clipped -- and it is called
+// out here because the cumulative reading is the single most common
+// clipping-mask bug and both readings look right in a one-clipped-layer
+// screenshot. `--selftest` separates them numerically: under the cumulative
+// reading a stack of three clipped layers over a half-alpha base would land at
+// 0.5^3 = 0.125 coverage; under this one it lands at 0.5, and the two numbers
+// are printed side by side.
+//
+// A clipped layer whose nearest non-clipped layer below **holds no pixels** --
+// an Adjustment layer, a Media/Strokes/Text/Flats placeholder, or an RGB layer
+// whose tile store is absent -- has no base either. "The alpha of the layer
+// below" is not a quantity such a layer has. It is *not* resolved by searching
+// further down, because that would clip to something that is not the layer
+// below, which is not what PRD C9 says.
+//
+// --- 13. Which alpha, and where the group lands: the two-part answer -------
+//
+// **(i) The alpha that clips is the base's EFFECTIVE alpha** -- its stored
+// alpha, after its own op stack, times its own opacity and its own mask
+// sample. Concretely it is the alpha of the exact premultiplied texel the walk
+// would have blended into the accumulator had nothing been clipped to it,
+// which is why the code needs no separate notion of "the clip alpha" at all.
+//
+// Two consequences worth stating because they are the reason for choosing the
+// effective alpha over the stored one: **hiding the base hides the whole
+// clipping group** (its coverage is 0, so the group's is), and **a mask on the
+// base masks the group**, which is what a user who has just masked a base
+// expects and is Photoshop's behaviour. The op stack is in that list too but
+// changes nothing: ops/PointOps' committed set never touches alpha, so a grade
+// on the base cannot move the clip boundary -- asserted rather than trusted.
+//
+// **(ii) The clipping group composites INTERNALLY first, and then lands on the
+// backdrop through the base's blend mode and the base's coverage.** It does
+// not composite each clipped layer onto the backdrop independently. The two
+// readings are observably different whenever the base is partly transparent or
+// its blend is not `over`, and `--selftest` prints both rather than only the
+// chosen one. Three reasons for this one:
+//
+//   * **Only this reading makes "clipped by the alpha of the layer below"
+//     literally true.** A clipping group's coverage is *exactly* the base's;
+//     clipping can never add coverage to the document. Under the independent
+//     reading it can: an opaque clipped layer masked to a half-alpha base and
+//     composited `over` gives 0.5 + 0.5*0.5 = 0.75 coverage, i.e. the clipped
+//     layer has made the base *more* opaque than it was. That is not a
+//     clipping mask.
+//   * **A clipped layer must not paint on the backdrop.** Under the
+//     independent reading, where the base is semi-transparent the clipped
+//     layer lands partly on the base and partly on whatever shows through it,
+//     so a clipped highlight bleeds onto the layers below. §16's fixture shows
+//     the two answers.
+//   * **It gives the base's blend mode and opacity one meaning instead of
+//     two.** A `multiply` base with a clipped layer over it multiplies *the
+//     result* into the backdrop, which is what "the base is how this group
+//     meets the document" means.
+//
+// The arithmetic, per texel, and it needs **no offscreen buffer** -- which is
+// the prediction core/Layer.hpp made and this step falsified. Writing `S` for
+// the base's own final premultiplied source texel (graded, coverage applied):
+//
+//     open   g = (S.rgb / S.a, 1)          // the base's straight colour,
+//                                          // treated as an opaque backdrop
+//     fold   g = blendPixel(mode_m, src_m, g),  g.a := 1   for each member m,
+//                                                          bottom to top
+//     close  out = (g.rgb * S.a, S.a)      // the base's alpha, restored
+//
+// and `out` then meets the accumulator through the **base's** blend mode. The
+// open/close bracket is the same shape `applyPointOpsPremultiplied()` already
+// uses for grading, for the same reason: a blend mode is defined on straight
+// colour against a backdrop, and inside a clipping group the backdrop is the
+// base considered opaque. Forcing `g.a` back to 1.0f after every fold makes
+// "a clipping group's coverage is the base's" true by construction rather than
+// by trusting that `as + 1*(1-as)` rounds to exactly 1.
+//
+// **The bracket is opened lazily, and that is a correctness property rather
+// than an optimisation.** `(S.rgb / S.a) * S.a` is a divide and a multiply and
+// is therefore not the identity on every float -- **16.1% of one swept binade
+// of premultiplied components come back one ulp out**, measured and printed by
+// `--selftest` rather than asserted here. So a group whose members contribute
+// nothing at a texel -- an unpainted texel of a clipped layer, a member masked
+// to 0, a member at opacity 0 -- must not go through it at all.
+// It does not: the group is opened by the first member that actually
+// contributes, so such a texel is **bit-identical** to the same document with
+// the clip flags cleared. `--selftest` asserts that by `memcmp`.
+//
+// Where `S.a <= 0` the group is never opened either, and nothing needs to
+// guard the division separately: a base with no coverage clips everything away
+// to nothing, which is PRD C9 read literally.
+//
+// --- 14. A clipped Adjustment layer sees its BASE, not the composite -------
+//
+// This is the most common real use of clipping and it is the one interaction
+// most likely to be quietly wrong, because §8 made `adjustedPremultiplied()`
+// act on "the composite below" -- the whole accumulator. A clipped adjustment
+// layer is a **member**, so the "below" it is handed is the group accumulator
+// `g`, not the document accumulator, and its scope is therefore the base and
+// only the base. Nothing changed in `adjustedPremultiplied()` itself; what
+// changed is which four floats it is handed.
+//
+// Two details fall out and both are worth stating. `g.a` is exactly 1.0f
+// inside a group, so the function's own un-premultiply is a division by one
+// (exact) and its `below.a <= 0` early-out is unreachable there -- a clipped
+// adjustment layer is the one place in this codebase where that bracket is
+// exact for every input. And its own opacity and mask keep meaning what §10
+// says they mean: how much of the adjustment applies, not where.
+//
+// --- 15. `Mix` and a clip are mutually exclusive, decided in one place -----
+//
+// `Mix` composites two Pigment layers **as one unit** (§2). A clip makes the
+// layer below the alpha that decides where the layer above **shows**. Both are
+// relationships with the same neighbour, they are not the same relationship,
+// and a document can ask for both. The resolution is a single added condition
+// in `blendModeAvailableForLayer()` -- PRD L5's existing predicate -- so that
+// the dropdown, `core::setLayerBlend()` and `mixPairing()` cannot disagree:
+//
+//   **no mixed pair forms if either half is `clipped`.**
+//
+// Each of the three arrangements it rules out is ruled out for its own reason:
+//
+//   upper half clipped   the layer would be asking the layer beneath it both
+//                        to be its mixing partner and to be the alpha it is
+//                        masked by. There is no composite that is both.
+//   lower half clipped   that layer is a *member* of a clipping run whose base
+//                        is further down. Consuming it into a pair with a
+//                        layer outside the run would composite it outside its
+//                        own group, and the clip would silently stop applying
+//                        -- the worst of the three outcomes, because nothing
+//                        on screen would say so.
+//   a clipped layer
+//   between a pair       [P0, C1(clipped), P2(mix)] -- P2's "layer beneath" is
+//                        a member of P0's run, which is the previous case.
+//
+// The layer that loses its pair is composited as `over` and warned about by
+// name with the specific reason, which is the contract §7 has applied to a
+// `mix` PRD L5 does not permit since step 3 -- not a new one. It is **not** a
+// refusal: `np:blend` and `np:clipped` are both carried verbatim from a file
+// (PRD I10), so a document can arrive holding the combination and must still
+// composite and still save.
+//
+// A mixed pair is, however, a perfectly good clip **base**: [P0, P1(mix),
+// C2(clipped)] clips C2 to the *pair's* alpha, because the pair is one unit
+// and one unit is what a base is. That needs no special case at all -- `S`
+// above is `mixedPairTexel()`'s output for such a base.
+//
+// --- 16. A layer's own mask and its clip are different operators -----------
+//
+// **Both apply, and they are not the same thing applied twice.** The layer's
+// own mask (and opacity) scale its source *inside* the group, at the fold; the
+// clip scales the group's *result*, at the close. So on colour they multiply
+// -- a clipped layer at mask 0.5 over a base of alpha 0.5 lands its colour at
+// 0.25 -- but on **coverage they do not**: the group's alpha is 0.5, the
+// base's, not 0.25. That is exactly what separates a clip from a mask, and
+// `--selftest` prints the four combinations of {mask 1, 0.5} x {base alpha 1,
+// 0.5} side by side with the two alphas visibly different.
+//
+// The base's own mask and opacity are a different case again: they are a
+// single scalar on the whole group, so multiplying them into the clip alpha
+// and fading the finished group are the same arithmetic, and the suite asserts
+// the equality on dyadic fixtures rather than assuming that a float product
+// re-associates.
+//
+// --- 17. The bottom layer, and what a clip costs --------------------------
+//
+//   the bottom layer  **cannot be clipped** -- there is nothing below it.
+//                     `core::setLayerClipped()` refuses index 0 by name and
+//                     with the document's layer count, and `core::moveLayer()`
+//                     refuses a move that would put a clipped layer there.
+//                     But a *file* can carry the flag (PRD I10), so the
+//                     composite answers for one too: it is composited
+//                     **unclipped**, and warned about by name with its index
+//                     -- never silently ignored, and never dropped. Dropping
+//                     it would let a one-bit attribute be the thing that makes
+//                     a layer's pixels vanish, which is the failure §7 refuses
+//                     for an unimplementable blend for exactly the same
+//                     reason.
+//   groups            PRD C9 says "a layer **or group**". This build has no
+//                     `LayerKind::Group` and creates no groups (`Layer::parent`
+//                     is still carried and still never acted on), so the
+//                     group half of C9 is **not built here** and is not
+//                     pretended to be. What this step did establish is that it
+//                     will not need the offscreen buffer core/Layer.hpp
+//                     predicted: a clipping group is folded per texel inside
+//                     the base's own tile walk.
+//   cost              A clipping run is walked over **the base's occupied
+//                     tiles only**, because outside them the base's alpha is 0
+//                     and the group contributes exactly nothing. So a clipped
+//                     layer's own tiles are never visited for their own sake,
+//                     and clipping is the one feature in this walk that can
+//                     only make it cheaper. A document with no clipped layer
+//                     pays one `clipRuns()` pass -- three vectors, no tile
+//                     access -- and takes byte-for-byte the path it took
+//                     before this step.
 //
 // --- Why this module exists at all ----------------------------------------
 //
@@ -407,13 +623,13 @@
 //   - The latent -> RGB projection (core/Pigment).
 //   - The mask *storage* and its value rules (core/Mask), which this file
 //     reads and does not own.
-//   - Clipping masks (step 9), adjustment layers (step 5) and groups.
-//     `Layer::parent` is still carried and never acted on: this build creates
-//     no groups, and honouring a parent link means compositing a group's
-//     members into an offscreen buffer first, which is step 9's machinery,
-//     not this step's. A **clipping** mask -- a layer clipped by the alpha of
-//     the layer below (PRD C9) -- is a different feature from the per-layer
-//     mask §5 describes, shares no code with it, and is not conflated here.
+//   - **Groups.** `Layer::parent` is still carried and never acted on: this
+//     build creates no groups. This bullet used to add "and honouring a parent
+//     link means compositing a group's members into an offscreen buffer first,
+//     which is step 9's machinery" -- step 9 has landed and that turned out to
+//     be wrong twice over (§17): clipping needed no offscreen buffer, and
+//     groups are still unbuilt. Clipping masks themselves *are* here, at
+//     §§12-17, and still share no code with the per-layer mask of §5.
 //   - Media layers. They will reuse the Pigment tile plus per-medium state
 //     that has no home on `Layer` yet, so they are still skipped.
 //
@@ -569,6 +785,86 @@ std::array<float, 4> adjustedPremultiplied(const std::array<float, 4>& below,
 // document says, and every boundary that makes them durable reports it.
 std::string adjustmentLayerBlendWarning(size_t layerIndex, const Layer& layer);
 
+// --- Clipping masks (PLAN.md Phase 5 step 9; PRD C9) ----------------------
+
+// Which layer clips which, resolved **once for a whole Document** so that
+// core/Composite's walk and core/Probe cannot disagree about it -- the same
+// shape, and the same reason, as `mixPairing()`.
+//
+// See this header's §12: the base of a clipped layer is the nearest layer
+// below it that is **not itself clipped** and that actually holds pixels, so a
+// run of consecutive clipped layers shares one base rather than eroding one
+// another.
+struct ClipRuns {
+  // `members[b]` lists the layers clipped to base `b`, bottom-to-top. Empty
+  // for every index in a document with no clipped layers, which is what makes
+  // the whole feature cost nothing there.
+  std::vector<std::vector<size_t>> members;
+  // `clippedToBase[i]` is true when layer `i` is composited **by its base**,
+  // as part of that base's group, and must therefore be skipped by the walk's
+  // own per-layer iteration -- exactly as `MixPairing::consumedByAbove` marks
+  // the lower half of a mixed pair.
+  std::vector<bool> clippedToBase;
+  // `clippedWithoutBase[i]` is true when layer `i` carries `clipped` and there
+  // is nothing for it to clip to: it is the bottom layer, every layer below it
+  // is also clipped, or the nearest non-clipped layer below holds no pixels.
+  // Such a layer is composited **unclipped** and warned about; see §17.
+  std::vector<bool> clippedWithoutBase;
+  // True when any layer in the document carries `clipped`, whether or not it
+  // found a base. Lets a caller take the pre-step-9 path verbatim.
+  bool any = false;
+};
+ClipRuns clipRuns(const Document& doc);
+
+// Opens a clipping group on the base's own final premultiplied source texel:
+// its **straight** colour, with alpha forced to exactly 1.0f, i.e. the base
+// considered as an opaque backdrop for the members to blend against.
+//
+// Returns `{0,0,0,0}` when `basePremultiplied`'s alpha is not > 0. Callers
+// must not open a group there and none does -- a base with no coverage clips
+// its members away entirely (§13), so the division is unreachable rather than
+// guarded twice.
+//
+// **Only ever called when a member actually contributes at this texel**, which
+// is a correctness requirement and not an optimisation: `clipGroupClose()`
+// does not exactly undo this, so a texel where the group turns out to be empty
+// must never enter the bracket. §13 says why, and `--selftest` asserts the
+// resulting byte-identity.
+std::array<float, 4> clipGroupOpen(const std::array<float, 4>& basePremultiplied) noexcept;
+
+// Folds one clipped member into the group: `src` graded by `ops`, scaled by
+// `effectiveCoverage` (the member's own opacity times its own mask sample at
+// this texel), then blended over `group` under the member's own `mode`.
+//
+// The group's alpha is **assigned** 1.0f rather than left as the blend's `ao`,
+// so "a clipping group's coverage is exactly the base's" is true by
+// construction; see §13. `over` against an opaque backdrop rounds to 1.0 in
+// practice, and "in practice" is not what an invariant is made of.
+//
+// A member with nothing to contribute -- no tile at this texel, coverage <= 0
+// -- must be skipped by the caller rather than folded with a zero, for the
+// same reason every other skip in this file is a skip (§5).
+std::array<float, 4> clipGroupFold(const std::array<float, 4>& group, BlendMode mode,
+                                   std::array<float, 4> src, const std::vector<PointOp>& ops,
+                                   float effectiveCoverage);
+
+// Closes the group: back to premultiplied, with the base's alpha restored
+// unchanged. This is the step that makes the group "clipped by the alpha of
+// the layer below" -- it is the only alpha the result can have.
+std::array<float, 4> clipGroupClose(const std::array<float, 4>& group, float baseAlpha) noexcept;
+
+// **A layer carrying `clipped` with nothing to clip to is composited
+// unclipped, and warned about by name -- never silently, and never dropped.**
+// See §17: `core::setLayerClipped()` and `core::moveLayer()` both refuse to
+// create the state, but a `.npaint` can carry it (PRD I10), so the compositor
+// has to answer for it, and the answer is the one §7 already gives for a blend
+// this build cannot honour.
+//
+// Names the layer by index, by its user-facing name when it has one, and says
+// which of the three reasons applies -- the layer count is in the sentence,
+// the io/Export and core/LayerOps refusal style applied to a warning.
+std::string clippedLayerWithoutBaseWarning(const Document& doc, size_t layerIndex);
+
 // Composites every RGB-kind layer of `doc` **bottom to top** into one
 // premultiplied, linear-light RGBA buffer of `doc.width * doc.height * 4`
 // floats, row-major, top-to-bottom, no padding.
@@ -603,8 +899,11 @@ std::string adjustmentLayerBlendWarning(size_t layerIndex, const Layer& layer);
 // canvas, not of its content's bounding box.
 //
 // `warningsOut`, when non-null, gains one `unimplementedBlendWarning()`
-// sentence per layer whose blend this build could not honour. It is appended
-// to, never cleared, so a caller can collect from several stages.
+// sentence per layer whose blend this build could not honour, one
+// `adjustmentLayerBlendWarning()` per Adjustment layer carrying a blend mode,
+// and one `clippedLayerWithoutBaseWarning()` per layer that asks to be clipped
+// with nothing beneath it to clip to. It is appended to, never cleared, so a
+// caller can collect from several stages.
 std::vector<float> compositeDocumentPremultiplied(
     const Document& doc, std::vector<std::string>* warningsOut = nullptr);
 

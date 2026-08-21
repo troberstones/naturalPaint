@@ -66,6 +66,8 @@
 //                   np:ops      "npops1:<hex>"   only when the stack is
 //                               non-empty; io/OpSerial owns the encoding
 //                   np:mask     0/1              Adjustment parts only
+//                   np:clipped  1                only when the layer is
+//                               clipped by the alpha of the layer below
 //
 // Part names are the stable synthetic ids docs/document-format.md requires
 // (`L0001`, one-based, in layer order): "layer names are not unique -- two
@@ -130,6 +132,18 @@
 //    the job the channel's *presence* does on every other kind. `np:mask` is
 //    written on Adjustment parts and nowhere else, so no other part's bytes
 //    change.
+//
+//  * ~~**Clipping masks**~~ -- **delivered at PLAN.md Phase 5 step 9.** One
+//    `np:clipped` int attribute, 0/1, the same shape `np:visible` and
+//    `np:locked` already have and one of the three types
+//    docs/document-format.md measured as surviving this OpenImageIO. Written
+//    **only when true**, so a document with no clipped layer produces exactly
+//    the bytes it produced before the attribute existed -- the property step 4
+//    established for the `mask` channel and step 5 for `np:ops`, and asserted
+//    the same way rather than assumed. A clipped **bottom** layer is carried
+//    rather than refused: core/Composite composites it unclipped and warns by
+//    name, because a refusal here would turn a preserved attribute into the
+//    thing that makes a file unopenable.
 //
 //  * **A `strokes` part and its `np:dabs` blob.** `LayerKind::Strokes`
 //    exists as an enum value and core/Layer.hpp calls it an "inert

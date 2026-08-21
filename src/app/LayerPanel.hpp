@@ -91,6 +91,16 @@ std::string layerRowTitle(const Layer& layer, size_t layerIndex);
 // byte-identically to no mask at all (core/Mask.hpp), so this marker is the
 // only thing a user can see that tells the two apart.
 //
+// A clipped layer reads `· CLIPPED` after the mask marker (PLAN.md Phase 5
+// step 9, PRD C9) -- and docs/ui.md §3.2's own example row was `ADJUSTMENT ·
+// CLIPPED` several steps before the feature existed, so the word is the
+// document's rather than this file's. It reports what the layer **asks for**,
+// not whether the ask can be honoured where it sits: this function takes a
+// `Layer` and no `Document`, exactly as the `(!)` blend marker does, and
+// "is there anything below to clip to" is a question only a stack can answer.
+// core/Composite warns about a clipped layer with no base at every boundary
+// that writes a file.
+//
 // The blend name is upper-cased **as carried**, never mapped through a table:
 // an unrecognised `np:blend` from a newer build shows as itself
 // (`LINEAR-BURN`), which is the value-level PRD I10 preservation core/Layer.hpp

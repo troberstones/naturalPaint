@@ -55,6 +55,11 @@ constexpr const char* kAttrOps = "np:ops";
 // answers that question with the *presence* of the `mask` channel, which an
 // Adjustment part cannot do -- see buildAdjustmentLayerPart().
 constexpr const char* kAttrMask = "np:mask";
+// Whether the layer is clipped by the alpha of the layer below (PRD C9,
+// PLAN.md Phase 5 step 9). An `int` 0/1, the type `np:visible` and `np:locked`
+// already use and one of the three docs/document-format.md measured as
+// surviving this OpenImageIO. Written **only when true** -- see the writer.
+constexpr const char* kAttrClipped = "np:clipped";
 
 constexpr const char* kCompositePartName = "composite";
 
@@ -164,7 +169,8 @@ bool isDocumentAttributeRecognised(const std::string& name) {
 bool isLayerAttributeRecognised(const std::string& name) {
   return name == kAttrKind || name == kAttrName || name == kAttrBlend ||
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
-         name == kAttrParent || name == kAttrOps || name == kAttrMask;
+         name == kAttrParent || name == kAttrOps || name == kAttrMask ||
+         name == kAttrClipped;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -1206,6 +1212,15 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // buildAdjustmentLayerPart().
     if (layer.kind == LayerKind::Adjustment)
       part.attributes.push_back(intAttr(kAttrMask, layer.mask.has_value() ? 1 : 0));
+    // **Written only when the layer is actually clipped** (PLAN.md Phase 5
+    // step 9), for the reason `np:ops` and `np:mask` each state in their own
+    // way: a document with no clipped layer has to keep producing the bytes
+    // this build produced before the attribute existed, and `--selftest`
+    // asserts that against a file written before any clip flag is set rather
+    // than assuming it. Absent therefore reads as `false`, which is
+    // `Layer::clipped`'s own default -- the same "the identity element is the
+    // absent case" rule the mask channel uses for 1.0.
+    if (layer.clipped) part.attributes.push_back(intAttr(kAttrClipped, 1));
     if (carry && i < carry->layerAttributes.size()) {
       for (const NpaintAttribute& a : carry->layerAttributes[i]) {
         // The one exception to "a recognised name is this build's to write":
@@ -1562,6 +1577,16 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     if (const NpaintAttribute* a = findAttr(part.attributes, kAttrParent);
         a && a->type == NpaintAttribute::Type::String)
       layer.parent = a->stringValue;
+    // PLAN.md Phase 5 step 9. Absent means `false`, which is the default the
+    // member already has, so a `.npaint` written before this step loads with
+    // no clipped layers without the reader having to know that. A clipped
+    // *bottom* layer is not refused here: the flag is carried exactly as
+    // written (PRD I10) and core/Composite composites the layer unclipped and
+    // warns by name, because refusing on load would make a preserved attribute
+    // the thing that makes a file unopenable.
+    if (const NpaintAttribute* a = findAttr(part.attributes, kAttrClipped);
+        a && a->type == NpaintAttribute::Type::Int)
+      layer.clipped = a->intValue != 0;
 
     // The per-layer op stack (PLAN.md Phase 5 step 5). io/OpSerial owns the
     // encoding; this is the one place a `.npaint` reaches it.

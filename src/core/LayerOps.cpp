@@ -137,6 +137,32 @@ LayerOpResult moveLayer(Document& doc, size_t from, size_t to) {
   if (!inRange(doc, from, "move layer", &refusal)) return refusal;
   if (!inRange(doc, to, "move layer", &refusal)) return refusal;
   if (!notLocked(doc, from, "move layer", &refusal)) return refusal;
+  // Dragging a clipped layer *to* the bottom is refused: `setLayerClipped()`
+  // refuses to put a clip there, and a drag that did it anyway would make that
+  // refusal decorative. See core/LayerOps.hpp on why this is a refusal rather
+  // than a silent un-clip.
+  //
+  // **This is not the only reorder that can reach a baseless clip, and it is
+  // deliberately not made so.** Moving a *base* out from under its run --
+  // `moveLayer(0, 2)` on `[base, clipped, top]` -- leaves the clipped layer at
+  // index 0 with nothing below it, and that move is allowed. Refusing it would
+  // let one layer's flag veto a reorder of a different layer, which is a worse
+  // rule than the state it would prevent: the state is already one a document
+  // must tolerate, because PRD I10 says a file may carry any flag this build
+  // did not write. So the compositor is the safety net rather than a second
+  // gate -- `core::clipRuns()` marks it `clippedWithoutBase`, composites it
+  // unclipped, and warns by name. `--selftest` asserts that orphaning path
+  // directly, so "allowed, and degrades loudly" is a checked claim and not an
+  // oversight.
+  if (to == 0 && from != 0 && doc.layers[from].clipped) {
+    return fail("move layer refused: " + describe(doc, from) +
+                " is clipped, and index 0 is the bottom of a " +
+                std::to_string(doc.layers.size()) +
+                "-layer stack. PRD C9 clips a layer by \"the alpha of the layer below it\", and "
+                "at index 0 there is no layer below. Un-clip it first, or move it to index 1 or "
+                "above. Nothing was changed -- clearing the clip for you would make a drag "
+                "change a layer's properties as a side effect.");
+  }
   const std::string label = "move " + describe(doc, from) + " to index " + std::to_string(to);
   if (from == to) return succeed(label, to);
 
@@ -266,6 +292,68 @@ LayerOpResult removeLayerMask(Document& doc, size_t index) {
   // built here; see core/LayerOps.hpp.
   doc.layers[index].mask.reset();
   return succeed("remove mask from " + describe(doc, index), index);
+}
+
+LayerOpResult setLayerClipped(Document& doc, size_t index, bool clipped) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "set layer clipping", &refusal)) return refusal;
+  if (!notLocked(doc, index, "set layer clipping", &refusal)) return refusal;
+
+  // Every refusal below is a reason a layer may not *become* clipped. None of
+  // them is a reason it may not stop being clipped, so un-clipping skips them
+  // all -- a state a document can hold (from a file, PRD I10) must always be
+  // one a user can get out of.
+  if (clipped) {
+    if (index == 0) {
+      return fail("set layer clipping refused: " + describe(doc, index) +
+                  " is the bottom layer of a " + std::to_string(doc.layers.size()) +
+                  "-layer stack. PRD C9 clips a layer by \"the alpha of the layer below it\", "
+                  "and at index 0 there is no layer below -- so there is no alpha to clip by. "
+                  "Layers are indexed from 0 at the bottom of the stack.");
+    }
+    // The base a clip would use: the nearest layer below that is not itself
+    // clipped. Derived here exactly as core/Composite's `clipRuns()` derives
+    // it, so the setter cannot accept a clip the compositor would then have to
+    // warn about.
+    size_t base = index;
+    while (base > 0 && doc.layers[base - 1].clipped) --base;
+    if (base == 0) {
+      return fail("set layer clipping refused: every layer beneath " + describe(doc, index) +
+                  " is already clipped, down to layer 0, so the whole run has no base. A "
+                  "clipped layer is never another clipped layer's base -- a run of them clips "
+                  "to one alpha rather than eroding each other (core/Composite.hpp §12) -- so "
+                  "clipping this one would leave it with nothing to clip to.");
+    }
+    const Layer& below = doc.layers[base - 1];
+    const bool holdsPixels = (below.kind == LayerKind::RGB && below.rgbTiles.has_value()) ||
+                             (below.kind == LayerKind::Pigment && below.pigmentTiles.has_value());
+    if (!holdsPixels) {
+      return fail("set layer clipping refused: the nearest layer beneath " +
+                  describe(doc, index) + " that is not itself clipped is " +
+                  describe(doc, base - 1) + ", a " + std::string(layerKindName(below.kind)) +
+                  " layer, which holds no pixels and therefore has no alpha to clip by. "
+                  "Clipping is not resolved by searching further down the stack, because that "
+                  "would clip to something other than the layer below (PRD C9).");
+    }
+    // PRD L5 against PRD C9. `mixPairing()` is asked rather than the blend
+    // strings inspected here, so the setter and the compositor agree by
+    // construction about which pairs actually exist.
+    const MixPairing pairing = mixPairing(doc);
+    const bool inPair = pairing.mixedWithBelow[index] || pairing.consumedByAbove[index];
+    if (inPair) {
+      return fail("set layer clipping refused: " + describe(doc, index) +
+                  " is currently half of a `Mix` pair, and a mix and a clip are two different "
+                  "relationships with the same neighbour -- a mix composites the two layers as "
+                  "one unit (PRD L5), while a clip makes the lower one the alpha that decides "
+                  "where the upper one shows (PRD C9). Change the blend mode away from \"" +
+                  std::string(blendModeName(BlendMode::Mix)) + "\" first.");
+    }
+  }
+
+  const std::string label =
+      std::string(clipped ? "clip " : "unclip ") + describe(doc, index);
+  doc.layers[index].clipped = clipped;
+  return succeed(label, index);
 }
 
 LayerOpResult setLayerName(Document& doc, size_t index, std::string name) {

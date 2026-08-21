@@ -134,9 +134,17 @@ inline constexpr const char* kDefaultBlendName = "normal";
 //            all there is to enforce it on: there is still no pixel-edit
 //            path to a layer at all. core/LayerOps.hpp states the exact
 //            scope of the lock and is blunt about what it cannot mean yet.
-//   parent   still carried, still never acted on. Honouring a group link
-//            means compositing a group's members offscreen first, which is
-//            Phase 5 step 9's machinery, and this build creates no groups.
+//   parent   still carried, still never acted on -- **and Phase 5 step 9 did
+//            not change that, which is worth saying because it was expected
+//            to.** This line used to read "honouring a group link means
+//            compositing a group's members offscreen first, which is Phase 5
+//            step 9's machinery". Step 9 landed clipping masks and needed no
+//            offscreen buffer at all: a clipping group is folded per texel,
+//            inside the base's own tile walk (core/Composite.hpp §13). So the
+//            prediction was wrong about the mechanism as well as the timing,
+//            and groups are still unbuilt -- this build creates none.
+//   clipped   real as of Phase 5 step 9: the layer is clipped by the alpha of
+//            the layer below (PRD C9). See the member below.
 struct Layer {
   // CONTEXT.md: Pigment is "the default kind for a new layer", and PRD's
   // principle 3 ("Pigment by default. A new layer mixes as paint"). Kept as
@@ -297,6 +305,39 @@ struct Layer {
   float opacity = 1.0f;
 
   bool visible = true;
+
+  // **Clipped by the alpha of the layer below** (PRD C9, P0; PLAN.md Phase 5
+  // step 9). One bool, because clipping is one bit of state per layer and
+  // everything else about it is a property of where the layer sits.
+  //
+  // A bool rather than an index or a pointer to the base, and that is the one
+  // decision this member makes. The base is *derived* -- it is the nearest
+  // layer below that is not itself clipped -- so storing it would be storing a
+  // second, invalidatable copy of the stack order, and every reorder would
+  // have to fix it up. `Layer::parent` already carries a part *name* for
+  // exactly the opposite reason (a group link is not derivable from position),
+  // and the two are different relationships: a parent is membership, a clip is
+  // adjacency. core/Composite's `clipRuns()` is the single place that turns
+  // this bit plus the stack order into "which layer clips which".
+  //
+  // **A run of consecutive clipped layers clips to ONE base**, the nearest
+  // non-clipped layer below the run -- they do not progressively erode each
+  // other. core/Composite.hpp §12 derives it; it is stated here because a
+  // reader of this member will otherwise assume the cumulative reading, which
+  // is the single most common clipping-mask bug.
+  //
+  // **The bottom layer cannot be clipped** -- there is nothing below it.
+  // `core::setLayerClipped()` refuses index 0 by name and with the numbers,
+  // `core::moveLayer()` refuses a move that would put a clipped layer there,
+  // and core/Composite composites a baseless clipped layer *unclipped* and
+  // warns by name, because a file may still carry the flag (PRD I10) and a
+  // flag must never be the thing that makes a layer's pixels vanish.
+  //
+  // Persisted as `np:clipped` (int, 0 or 1), written **only when true** so
+  // that every `.npaint` this build wrote before this step keeps producing the
+  // same bytes -- measured against HEAD, not assumed. See
+  // docs/document-format.md.
+  bool clipped = false;
 
   // Locked layers reject edits, to the exact extent core/LayerOps.hpp spells
   // out: its operations refuse to remove, move, rename or re-opacity a locked
