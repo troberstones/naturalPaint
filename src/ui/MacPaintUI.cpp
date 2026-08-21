@@ -167,6 +167,12 @@ bool ctlInputText(const char* label, char* buf, size_t cap, ImGuiInputTextFlags 
 struct LayerEditorUiState {
   size_t selected = 0;
   std::string lastError;
+  // What a *successful* merge had to say (PLAN.md Phase 5 step 10). Kept apart
+  // from `lastError` and drawn in a different colour because it is a different
+  // claim: the operation went ahead, and something that used to be adjustable
+  // is not any more. core/Merge.hpp §3 is why those are warnings rather than
+  // refusals.
+  std::vector<std::string> lastWarnings;
 };
 LayerEditorUiState g_layers;
 
@@ -185,6 +191,7 @@ void runLayerCommand(AppState& st, LayerCommand command) {
   const LayerEditResult r = applyLayerCommand(*od, command, g_layers.selected);
   g_layers.selected = r.selected;
   g_layers.lastError = r.ok ? std::string() : r.error;
+  g_layers.lastWarnings = r.warnings;
 }
 
 const char* toolName(Tool t) {
@@ -1040,6 +1047,26 @@ void drawLayersSection(AppState& st) {
   ImGui::SameLine();
   layerCommandButton(st, LayerCommand::RemoveMask, "- Mask");
 
+  // PLAN.md Phase 5 step 10 / PRD C10 (P0) and C11 (P1). The five operations
+  // that consume layers, on their own row because that is what they have in
+  // common: every button above this line leaves the stack recoverable by
+  // pressing another one, and every button on it does not (undo, which every
+  // one of these goes through, is the only way back).
+  // Two rows rather than one: five of these do not fit across a 300 px panel,
+  // and the fifth was clipped by the panel edge -- the exact failure
+  // app/ControlsLayout's label column exists to stop happening to labels, seen
+  // here on buttons instead. Split where the meaning splits: the three that
+  // collapse a stack, then the two that turn one layer into pixels.
+  layerCommandButton(st, LayerCommand::MergeDown, "Merge Dn");
+  ImGui::SameLine();
+  layerCommandButton(st, LayerCommand::MergeVisible, "Merge Vis");
+  ImGui::SameLine();
+  layerCommandButton(st, LayerCommand::FlattenImage, "Flatten");
+
+  layerCommandButton(st, LayerCommand::StampVisible, "Stamp Vis");
+  ImGui::SameLine();
+  layerCommandButton(st, LayerCommand::RasteriseLayer, "Rasterise");
+
   // Rows, top of the stack first. `structureChanged` stops the loop the same
   // frame a reorder/add/remove fires rather than continuing to render rows
   // against indices that no longer mean what they did -- the identical
@@ -1201,6 +1228,19 @@ void drawLayersSection(AppState& st) {
     ImGui::TextWrapped("%s", g_layers.lastError.c_str());
     ImGui::PopStyleColor();
     if (ImGui::SmallButton("Dismiss")) g_layers.lastError.clear();
+  }
+
+  // PLAN.md Phase 5 step 10. A merge that succeeded and still has something to
+  // say: a mask baked into alpha, an op stack turned destructive, tiles that
+  // fell outside the canvas, a stamp that will now build up against itself.
+  // Amber rather than red, because none of these is a failure -- and drawn
+  // rather than dropped, because every one of them names something that was
+  // reversible a moment ago and is not now.
+  if (!g_layers.lastWarnings.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 180, 100, 255));
+    for (const std::string& w : g_layers.lastWarnings) ImGui::TextWrapped("%s", w.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::SmallButton("Dismiss##layerwarnings")) g_layers.lastWarnings.clear();
   }
 }
 
@@ -2214,7 +2254,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // Grouped as the panel groups them: creation, then the whole-layer
           // operations, then the mask, then the flags.
           if (command == LayerCommand::NewAdjustmentLayer ||
-              command == LayerCommand::MoveLayerDown || command == LayerCommand::RemoveMask)
+              command == LayerCommand::MoveLayerDown || command == LayerCommand::RemoveMask ||
+              command == LayerCommand::ToggleClipped)
             ImGui::Separator();
         }
         ImGui::Separator();
@@ -2966,5 +3007,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 const DocumentTexture& canvasDocumentTexture() { return g_documentTexture; }
 
 void setLayersPanelSelection(size_t layerIndex) { g_layers.selected = layerIndex; }
+
+void setLayersPanelMessages(std::string error, std::vector<std::string> warnings) {
+  g_layers.lastError = std::move(error);
+  g_layers.lastWarnings = std::move(warnings);
+}
 
 }  // namespace np

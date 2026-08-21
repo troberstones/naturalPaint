@@ -201,6 +201,88 @@ void runUiLayerDemo(np::OpenDocument& od, bool clip) {
   }
 }
 
+// --ui-merge-demo <command> (PLAN.md Phase 5 step 10): press exactly one of
+// core/Merge's five buttons on the session's document, through the same
+// `applyLayerCommand()` the `Layer` menu and the LAYERS panel call.
+//
+// It exists for one reason: PRD C10 is a P0 whose whole deliverable is *a
+// picture that changed*, and there was no way to make a merge happen from
+// outside the window. Running the app twice -- once with the flag and once
+// without -- and photographing both is the before/after pair. Every line it
+// prints is the result and the warnings, so what the picture shows and what
+// the model says can be checked against each other.
+//
+// The argument is a comma-separated list because two of the five need a
+// stack this build cannot otherwise reach from the command line: `stamp,down`
+// is the shortest route to a merge down that *succeeds* on the demo document,
+// whose middle layer is `multiply` and whose top layer is masked -- so a bare
+// `down` on it is refused, correctly and by design (core/Merge.hpp section 4).
+// Both are worth photographing and the flag can produce either.
+void runUiMergeDemo(np::OpenDocument& od, std::string_view list) {
+  struct Entry {
+    const char* name;
+    np::LayerCommand command;
+  };
+  static constexpr Entry kEntries[] = {
+      {"down", np::LayerCommand::MergeDown},        {"visible", np::LayerCommand::MergeVisible},
+      {"stamp", np::LayerCommand::StampVisible},    {"flatten", np::LayerCommand::FlattenImage},
+      {"rasterise", np::LayerCommand::RasteriseLayer},
+  };
+  // The top layer, which is what a panel opens on and what "merge down" is
+  // about. `--demo-document` leaves three layers with pixels in them.
+  size_t selected = od.document.layers.empty() ? 0 : od.document.layers.size() - 1;
+  np::setLayersPanelSelection(selected);
+  std::printf("[ui-merge-demo] before: %zu layer(s), selection on layer %zu, revision %llu\n",
+              od.document.layers.size(), selected,
+              static_cast<unsigned long long>(od.revision));
+  size_t at = 0;
+  while (at <= list.size()) {
+    const size_t comma = list.find(',', at);
+    std::string_view which =
+        list.substr(at, comma == std::string_view::npos ? std::string_view::npos : comma - at);
+    at = comma == std::string_view::npos ? list.size() + 1 : comma + 1;
+    if (which.empty()) continue;
+    // `name:index` picks the row the command acts on, because the default --
+    // the top layer -- is the wrong one for exactly one of the five:
+    // `--ui-layer-demo` leaves a Pigment layer above the Adjustment layer it
+    // built, and Rasterise Layer is about the Adjustment one.
+    if (const size_t colon = which.find(':'); colon != std::string_view::npos) {
+      selected = static_cast<size_t>(std::atoi(std::string(which.substr(colon + 1)).c_str()));
+      which = which.substr(0, colon);
+    }
+    const np::LayerCommand* command = nullptr;
+    for (const Entry& e : kEntries)
+      if (which == e.name) command = &e.command;
+    if (command == nullptr) {
+      std::printf("[ui-merge-demo] unknown command \"%.*s\" -- one of: down, visible, stamp, "
+                  "flatten, rasterise\n",
+                  static_cast<int>(which.size()), which.data());
+      continue;
+    }
+    const np::LayerEditResult r = np::applyLayerCommand(od, *command, selected);
+    std::printf("[ui-merge-demo] %-16s %s%s\n", np::layerCommandLabel(*command),
+                r.ok ? "ok" : "REFUSED -- ", r.ok ? "" : r.error.c_str());
+    for (const std::string& w : r.warnings)
+      std::printf("[ui-merge-demo]   warning: %s\n", w.c_str());
+    selected = r.selected;
+    // Exactly what a button press would have left in the panel, so the
+    // screenshot shows the same thing a user would see.
+    np::setLayersPanelMessages(r.ok ? std::string() : r.error, r.warnings);
+    std::printf("[ui-merge-demo] after:  %zu layer(s), selection on layer %zu, revision %llu\n",
+                od.document.layers.size(), selected,
+                static_cast<unsigned long long>(od.revision));
+  }
+  np::setLayersPanelSelection(selected);
+  std::printf("[ui-merge-demo] final stack, top first:\n");
+  const size_t count = od.document.layers.size();
+  for (size_t row = 0; row < count; ++row) {
+    const size_t i = np::layerIndexForPanelRow(row, count);
+    std::printf("[ui-merge-demo]   %s %-24s %s\n", np::layerKindGlyph(od.document.layers[i].kind),
+                np::layerRowTitle(od.document.layers[i], i).c_str(),
+                np::layerRowSubLine(od.document.layers[i]).c_str());
+  }
+}
+
 void handlePenEvent(np::AppState& st, const SDL_Event& e) {
   switch (e.type) {
     case SDL_EVENT_PEN_DOWN:
@@ -253,6 +335,7 @@ int main(int argc, char** argv) {
   bool demoDocument = false;
   bool uiLayerDemo = false;
   bool uiLayerDemoClip = true;
+  const char* uiMergeDemo = nullptr;
   bool controlsAllOpen = false;
   const char* controlsScrollTo = nullptr;
   bool openLayerMenu = false;
@@ -298,6 +381,9 @@ int main(int argc, char** argv) {
         uiLayerDemoClip = false;
         ++i;
       }
+    } else if (a == "--ui-merge-demo") {
+      // Phase 5 step 10 / PRD C10: press one merge button. See runUiMergeDemo().
+      if (i + 1 < argc && argv[i + 1][0] != '-') uiMergeDemo = argv[++i];
     } else if (a == "--controls-all-open") {
       // UI detour step 3: open every collapsing header in the controls column
       // on the first frame, so --screenshot can photograph a section the
@@ -769,6 +855,9 @@ int main(int argc, char** argv) {
     // label-on-the-right run beside it and both clip counts printed. Headless
     // and GPU-free; writes no files.
     const bool controlsLayoutOk = np::runControlsLayoutTest();
+    // Phase 5 step 10 / PRD C10, C11: core/Merge's five operations, checked
+    // against the composite they must preserve at a bound derived from f16.
+    const bool mergeFamilyOk = np::runMergeFamilyTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -783,7 +872,7 @@ int main(int argc, char** argv) {
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
-                    documentTextureOk && layerEditorOk && controlsLayoutOk &&
+                    documentTextureOk && layerEditorOk && controlsLayoutOk && mergeFamilyOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
@@ -890,6 +979,12 @@ int main(int argc, char** argv) {
   if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
   if (uiLayerDemo) {
     if (np::OpenDocument* od = st.documents.active()) runUiLayerDemo(*od, uiLayerDemoClip);
+  }
+  // After both fixtures, deliberately: a merge is applied to whatever stack
+  // the flags before it built, which is what makes the before/after pair a
+  // pair.
+  if (uiMergeDemo != nullptr) {
+    if (np::OpenDocument* od = st.documents.active()) runUiMergeDemo(*od, uiMergeDemo);
   }
 
   // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring
