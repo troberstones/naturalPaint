@@ -913,7 +913,7 @@ int main(int argc, char** argv) {
     // now asserted at all five call sites at once. Straight alpha and RGBA16Float
     // are each proven by running the rejected alternative beside them and
     // printing both answers, and the revision cache's saving is measured against
-    // PRD A1's frame budget. Needs the GPU: it uploads a document at a row
+    // PRD F3's pen-to-photon budget. Needs the GPU: it uploads a document at a row
     // stride the readback direction refuses and reads it back through a padded
     // staging buffer. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
     // configurations. Writes no files.

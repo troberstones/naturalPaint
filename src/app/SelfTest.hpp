@@ -1563,7 +1563,7 @@ bool runClippingMaskTest();
 //    (writing tiles without `recordEdit()`) is asserted rather than left to be
 //    discovered.
 //  - **What the cache saves, measured**: the composite timed at two canvas
-//    sizes against PRD A1's 16.7 ms frame budget, and against the two integer
+//    sizes against PRD F3's 20 ms pen-to-photon budget, and against the two integer
 //    comparisons a cache hit costs, with the ratio printed.
 //  - **The GPU round trip**, including the asymmetry that makes it a trap:
 //    `wgpuQueueWriteTexture` accepts any stride while the readback direction

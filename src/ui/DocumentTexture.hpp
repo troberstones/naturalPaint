@@ -85,9 +85,18 @@
 // --- 3. Cached on OpenDocument::revision ----------------------------------
 //
 // A CPU composite of a 2048x2048 document was measured at 0.0458 s (Phase 5
-// step 6's own measurement). PRD A1 asks for 60 fps, a 0.0167 s budget, so
-// recompositing every frame misses it by ~2.7x on one document before the
-// solver has run at all.
+// step 6's own measurement). PRD F3 (P0) asks for pen-to-photon under 20 ms,
+// so recompositing every frame overruns the entire end-to-end budget by ~2.3x
+// on one document before the solver, the upload or the present have run.
+//
+// **20 ms is pen-to-photon, not a compute budget** -- input event to displayed
+// frame -- so a composite that merely fits inside it has still spent all of it
+// and left nothing for anything else. Every "% of budget" figure this codebase
+// prints against F3 should be read that way. (An earlier draft of this
+// decision, and of `--selftest`'s `document texture` section, attributed a
+// 16.67 ms frame budget to PRD A1. A1 is the no-document-open memory
+// requirement and the PRD sets no frame budget at all; the citation was
+// invented, and both sites now cite F3.)
 //
 // So the composite is redone only when `OpenDocument::revision` changes --
 // which is what `recordEdit()` bumps, and therefore what every layer
@@ -126,13 +135,7 @@
 //      latency under 20 ms; the in-progress stroke does not wait on a full
 //      document re-composite." 22 ms exceeds the whole pen-to-photon budget
 //      before the solver, the upload or the present have run.
-//
-// (Decision 3 above attributes a 16.67 ms frame budget to PRD A1. A1 is the
-// no-document-open memory requirement and the PRD has no frame budget; F3's
-// 20 ms pen-to-photon is the real one. That line predates this step and is
-// deliberately left alone rather than widening this diff -- see
-// core/DirtyTiles.hpp.)
-//
+
 // So the composite is now **dirty-region incremental**: core/DirtyTiles says
 // which tiles a change can have moved, core/Composite recomposites exactly
 // those, and this module re-uploads exactly those. The three parts each have

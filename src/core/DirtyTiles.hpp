@@ -34,11 +34,9 @@
 // not a compute budget, so a composite that fits inside 20 ms of CPU time has
 // still spent the entire budget and left nothing for anything else. Any "% of
 // budget" figure this codebase prints against F3 should be read that way.
-// (ui/DocumentTexture.hpp's decision 3 and `--selftest`'s `document texture`
-// section both attribute a 16.67 ms frame budget to PRD A1. **A1 is the
-// no-document-open memory requirement and the PRD contains no frame budget at
-// all**; those lines are wrong and are left untouched here rather than
-// widened into this step's diff.)
+// (Both of those places once attributed a 16.67 ms frame budget to PRD A1.
+// **A1 is the no-document-open memory requirement and the PRD sets no frame
+// budget at all** -- the citation was invented. Both now cite F3.)
 //
 // The second consumer is the reason this lands now rather than later: the
 // layers panel makes toggling visibility, opacity and blend constant, and

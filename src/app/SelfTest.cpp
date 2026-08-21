@@ -6859,7 +6859,7 @@ bool runTileResidencyTest() {
             std::chrono::duration<double, std::micro>(t1 - t0).count() / kWarmIterations;
 
         std::printf(
-            "    fetch cost: cold %.2f us/tile (256 tiles), warm %.3f us/tile (%d fetches); "
+            "    [measured] fetch cost: cold %.2f us/tile (256 tiles), warm %.3f us/tile (%d fetches); "
             "one 2560x1440 viewport = 240 tiles -> cold %.1f ms, warm %.2f ms against phase "
             "1's 12.1 ms p50 frame\n",
             coldUs, warmUs, kWarmIterations, coldUs * 240.0 / 1000.0, warmUs * 240.0 / 1000.0);
@@ -16644,7 +16644,7 @@ bool runClippingMaskTest() {
     // it meant something.
     std::printf("  [measured] 1024x1024 composite: base alone %.4f s, +64-tile layer %.4f s, "
                 "+the same layer CLIPPED %.4f s\n"
-                "    marginal cost of the layer: unclipped %.4f s, clipped %.4f s (%s); "
+                "    [measured] marginal cost of the layer: unclipped %.4f s, clipped %.4f s (%s); "
                 "noise floor %.4f s from re-timing the base\n",
                 tBase, tWide, tClipped, marginalWide, marginalClipped,
                 marginalClipped <= noise
@@ -17265,23 +17265,30 @@ bool runDocumentTextureTest(GpuContext& gpu) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - h0).count();
     const double perHitNs = hitsMs * 1.0e6 / static_cast<double>(kHits);
 
-    constexpr double kFrameBudgetMs = 1000.0 / 60.0;  // PRD A1
+    // PRD F3 (P0): "Pen-to-photon latency under 20 ms; the in-progress stroke
+    // does not wait on a full document re-composite." That budget is
+    // end-to-end -- input event to displayed frame -- and NOT a compute
+    // budget, so a composite that merely fits inside it has already spent the
+    // whole thing and left nothing for the upload or the present. Read the
+    // percentages below that way.
+    constexpr double kPenToPhotonMs = 20.0;  // PRD F3
     std::printf("    CPU composite + un-premultiply + f16 pack:\n");
-    std::printf("      1024x1024  %8.3f ms  (%5.1f%% of PRD A1's %.2f ms frame budget)\n",
-                composite1024Ms, 100.0 * composite1024Ms / kFrameBudgetMs, kFrameBudgetMs);
-    std::printf("      2048x2048  %8.3f ms  (%5.1f%% of the same budget)\n", composite2048Ms,
-                100.0 * composite2048Ms / kFrameBudgetMs);
-    std::printf("    cache hit (build key + compare): %.1f ns, %d hits in %.3f ms\n", perHitNs,
+    std::printf("      [measured] 1024x1024  %8.3f ms  (%5.1f%% of PRD F3's %.0f ms pen-to-photon "
+                "budget, which is end-to-end and not compute)\n",
+                composite1024Ms, 100.0 * composite1024Ms / kPenToPhotonMs, kPenToPhotonMs);
+    std::printf("      [measured] 2048x2048  %8.3f ms  (%5.1f%% of the same budget)\n", composite2048Ms,
+                100.0 * composite2048Ms / kPenToPhotonMs);
+    std::printf("    [measured] cache hit (build key + compare): %.1f ns, %d hits in %.3f ms\n", perHitNs,
                 kHits, hitsMs);
-    std::printf("    so one 1024x1024 upload costs about %.0f cache hits; an unchanged frame "
+    std::printf("    [measured] so one 1024x1024 upload costs about %.0f cache hits; an unchanged frame "
                 "pays the %.1f ns\n",
                 composite1024Ms * 1.0e6 / std::max(perHitNs, 1.0e-9), perHitNs);
 
     check(agreed == kHits, "cache: an unchanged document agrees with its key every time");
     check(perHitNs < composite1024Ms * 1.0e6,
           "cache: a hit is orders of magnitude cheaper than a recomposite");
-    check(composite2048Ms > kFrameBudgetMs,
-          "cache: and a 2048x2048 recomposite really does miss the frame budget");
+    check(composite2048Ms > kPenToPhotonMs,
+          "cache: and a 2048x2048 recomposite alone overruns F3's whole pen-to-photon budget");
   }
 
   std::printf("  -- 7. the GPU round trip, at a stride the readback direction refuses --\n");
