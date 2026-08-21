@@ -37,6 +37,7 @@ add_executable(naturalPaint
   app/selftest/Export.cpp
   app/selftest/ExportAs.cpp
   app/selftest/FieldAllocation.cpp
+  app/selftest/Fonts.cpp
   app/selftest/FormatSupport.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Histogram.cpp
@@ -104,6 +105,7 @@ add_executable(naturalPaint
   ui/DocumentTexture.cpp
   ui/MacPaintUI.cpp
   ui/NaturalPaintUI.cpp
+  ui/Fonts.cpp
   ui/Theme.cpp
 )
 

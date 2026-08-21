@@ -564,6 +564,12 @@ int main(int argc, char** argv) {
     // Phase 2 step 15: app/Keymap load, conflict detection and resolve().
     // Headless, GPU-free -- pure CPU/file-IO, no PaintSim involvement.
     const bool keymapOk = np::runKeymapTest();
+    // UI detour: ui/Fonts -- ImGui's built-in ProggyClean holds no glyph above
+    // U+00FF, so six of docs/ui.md 3.2's seven layer-kind glyphs could not be
+    // drawn at all. Headless and GPU-free: it bakes a real font atlas on the
+    // CPU and asks it, per codepoint, rather than asking what a function
+    // returns -- which is the question nine other sections already ask.
+    const bool fontsOk = np::runFontsTest();
     // Phase 2 step 2: core/Half's shared half<->float codec and
     // core/TileStore's allocate-on-write / query-without-allocating /
     // iterate-occupied sparse map. Also headless and GPU-free -- pure CPU,
@@ -965,7 +971,7 @@ int main(int argc, char** argv) {
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && layerEditorOk && controlsLayoutOk && incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
-                    strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

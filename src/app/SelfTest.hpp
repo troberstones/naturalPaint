@@ -120,6 +120,20 @@ bool runFieldAllocationTest(GpuContext& gpu, PaintSim& sim);
 // scope-correct action for a scoped-only binding.
 bool runKeymapTest();
 
+// Headless, GPU-free check on ui/Fonts -- the glyph coverage the layers panel
+// depends on. **This section exists because nine other sections could not
+// have caught the bug it guards**: nine of them assert `layerKindGlyph()`
+// returns the right glyph and all nine pass whether or not that glyph can be
+// *drawn*, because they check a return value and not a pixel. The gap was
+// found by photographing the panel. Three parts: the UTF-8 decoder the check
+// is built on (including the malformed inputs a display path must not hang
+// on); that every above-U+00FF glyph the panel asks for is in
+// `requiredUiCodepoints()`, with a tripwire that fails if a LayerKind is
+// added; and -- the load-bearing one -- that a real merged font atlas can
+// actually draw every one of them. Creates and destroys its own ImGui
+// context; font baking is CPU-side, so no GPU and no renderer backend.
+bool runFontsTest();
+
 // Headless, GPU-free check on core/Half (the shared half<->float codec,
 // factored out of sim/PaintSim.cpp) and core/TileStore (Phase 2 step 2).
 // See SelfTest.cpp for the full breakdown; in short: direct round-trip
