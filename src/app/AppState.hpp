@@ -175,6 +175,17 @@ struct AppState {
   // `controlsAllOpen` above -- a menu is opened by a click, and the screenshot
   // path has no input.
   bool openLayerMenu = false;
+  // --open-export-states (PLAN.md Phase 5 step 13): holds the File > Export
+  // Comps / Layers To Files... modal open, so a `--screenshot` can photograph
+  // it. `openLayerMenu`'s justification exactly -- a modal is opened by a
+  // click and the screenshot path has no input.
+  bool openExportStatesDialog = false;
+  // --open-export-states <FOLDER>: prefills that dialog's output folder, so a
+  // `--screenshot` can photograph the plan table -- the list of exact
+  // filenames the export would write -- which is the part of the dialog worth
+  // photographing and which stays empty without a folder to resolve against.
+  // `controlsScrollTo`'s pattern, one dialog over.
+  std::string exportStatesFolder;
   // --controls-all-open <SECTION>: scrolls that header to the top of the
   // column, every frame, so a `--screenshot` can photograph a section that
   // sits below the fold once every section is open. Empty means "do not

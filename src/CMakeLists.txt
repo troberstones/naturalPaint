@@ -36,6 +36,7 @@ add_executable(naturalPaint
   app/selftest/Driver.cpp
   app/selftest/Export.cpp
   app/selftest/ExportAs.cpp
+  app/selftest/ExportStates.cpp
   app/selftest/FieldAllocation.cpp
   app/selftest/Fonts.cpp
   app/selftest/FormatSupport.cpp
@@ -93,6 +94,7 @@ add_executable(naturalPaint
   io/CompSerial.cpp
   io/Export.cpp
   io/ExportAs.cpp
+  io/ExportStates.cpp
   io/ImageDecode.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp

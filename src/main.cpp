@@ -405,6 +405,8 @@ int main(int argc, char** argv) {
   bool controlsAllOpen = false;
   const char* controlsScrollTo = nullptr;
   bool openLayerMenu = false;
+  bool openExportStates = false;
+  const char* exportStatesFolder = nullptr;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
     if (a == "--selftest") {
@@ -476,6 +478,11 @@ int main(int argc, char** argv) {
       // UI detour step 3: hold the `Layer` menu open so --screenshot can
       // photograph it. See AppState::openLayerMenu.
       openLayerMenu = true;
+    } else if (a == "--open-export-states") {
+      // Phase 5 step 13: hold File > Export Comps / Layers To Files... open so
+      // --screenshot can photograph it. See AppState::openExportStatesDialog.
+      openExportStates = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') exportStatesFolder = argv[++i];
     }
   }
 
@@ -957,6 +964,17 @@ int main(int argc, char** argv) {
     // correct answers, in BOTH NP_USE_OIIO configurations. Headless and
     // GPU-free; writes and removes five `.npaint` files.
     const bool layerCompOk = np::runLayerCompTest();
+    // Phase 5 step 13 ("Export comps to files, and layers to files -- one
+    // shared loop"; PRD I16, I17): io/ExportStates' name template and its
+    // path refusals, the pre-flight that decides collisions and overwrites
+    // before the first byte, the four-file deliverable proven byte-identical
+    // to clicking each comp and using Export As, layers alone on
+    // transparency with the rejected reading run beside it, and the stop-and-
+    // report behaviour when file 3 of 4 fails. Runs, and asserts the correct
+    // answers, in BOTH NP_USE_OIIO configurations -- the EXR seam is refused
+    // before the first byte in OFF rather than skipped. Headless and
+    // GPU-free; writes and removes a selftest_exportstates/ directory.
+    const bool exportStatesOk = np::runExportStatesTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -971,7 +989,7 @@ int main(int argc, char** argv) {
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
-                    documentTextureOk && layerEditorOk && controlsLayoutOk && incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
+                    documentTextureOk && layerEditorOk && controlsLayoutOk && incrementalCompositeOk && mergeFamilyOk && layerCompOk && exportStatesOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk;
     s->shutdown();
     gpu.shutdown();
@@ -1091,6 +1109,8 @@ int main(int argc, char** argv) {
   // fixture above has run.
   st.controlsAllOpen = controlsAllOpen;
   st.openLayerMenu = openLayerMenu;
+  st.openExportStatesDialog = openExportStates;
+  if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
   if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
   if (uiLayerDemo) {
     if (np::OpenDocument* od = st.documents.active()) runUiLayerDemo(*od, uiLayerDemoClip);
@@ -1100,6 +1120,17 @@ int main(int argc, char** argv) {
   // pair.
   if (uiMergeDemo != nullptr) {
     if (np::OpenDocument* od = st.documents.active()) runUiMergeDemo(*od, uiMergeDemo);
+  }
+  // **Pre-existing defect from Phase 5 step 12, repaired here rather than
+  // worked around.** `--comps-demo` parsed its arguments and `runCompsDemo()`
+  // was defined, but nothing ever called it, so the flag silently did nothing.
+  // Found while trying to photograph step 13's dialog against a document that
+  // actually has comps. It is precisely the failure `.claude/AGENT-BRIEF.md`
+  // §6.3 names, one level out from --selftest, and its fix belongs where the
+  // other fixture flags are applied.
+  if (compsDemo) {
+    if (np::OpenDocument* od = st.documents.active())
+      runCompsDemo(*od, compsDemoRestore, compsDemoDrop);
   }
 
   // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring

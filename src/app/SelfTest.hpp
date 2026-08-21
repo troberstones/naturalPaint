@@ -1800,4 +1800,71 @@ bool runMergeFamilyTest();
 // five `.npaint` files.
 bool runLayerCompTest();
 
+// PLAN.md Phase 5 step 13 ("**Export comps to files, and layers to files** --
+// one shared loop: set a document state, composite, write through phase 4's
+// Export As presets with a name template"); PRD I16 and I17.
+//
+// One correction this section prints on every run: **the name template is PRD
+// I17, not I18.** I18 is "revert, duplicate document, save a copy, save
+// incremental, open recent" -- phase 4 step 8, already landed. I17 is the row
+// whose text contains "with a name template".
+//
+// What is asserted:
+//  - **The name template, hazard by hazard**: the three tokens, the ordinal's
+//    zero padding, an extension derived from the *format* rather than from the
+//    template, an absent `{doc}` rendering as nothing, and a refusal each for
+//    an unknown token, an unbalanced brace, a path separator in the template's
+//    literal text, a path separator in a substituted layer name,
+//    `../../etc/passwd`, `..`, a colon, a leading dot, a control character, an
+//    empty resolved name, and a 300-character name -- that last one refused
+//    with **both numbers**, and 251 + ".png" = 255 accepted at the exact edge.
+//  - **The plan writes nothing**, so a dialog can show the exact filenames a
+//    click would produce before anything is committed.
+//  - **Collisions refused before the first byte**, case-insensitively because
+//    APFS and NTFS are, with both spellings quoted -- and the same pair
+//    planning cleanly once `{index}` is in the template, so the refusal is
+//    provably about the filename and not about the names.
+//  - **PLAN.md's own verify sentence, literally**: four comps exported, four
+//    files confirmed by name, by size against the reported byte count, by
+//    being pairwise *different* bytes (which an exporter ignoring the
+//    state-set would fail), by decoding back out of the PNG to the colours
+//    each comp should hold, and -- the definition of "correct" a user can
+//    check -- by being **byte-identical to clicking that comp in the panel and
+//    using File > Export As**.
+//  - **The document ends exactly as it started, structurally**: every entry
+//    point takes a `const Document&`, so what is asserted is that the
+//    composite bytes, the revision, the structural revision, the history entry
+//    count, the unsaved-edit labels and the dirty flag are all unmoved after
+//    four exports. **Zero history entries for four exports** -- a batch export
+//    is not an edit and never reaches `recordLayerEdit()`.
+//  - **Layers alone on transparency (PRD I16), with the rejected reading run
+//    beside it**: an isolated layer proven byte-identical to hiding every
+//    other, the "composited over what is beneath" alternative proven to be a
+//    different file and costed at one line, an Adjustment layer refused by
+//    name because isolating one composites to nothing, and an isolated
+//    *clipped* layer un-clipped-and-warned -- with the alternative measured,
+//    since leaving the clip on writes a fully transparent file.
+//  - **Partial failure**: file 3 of 4 fails to write, and the run stops with 2
+//    written, 1 failed by name, 1 not attempted and genuinely absent from the
+//    disk -- PRD P4's own acceptance row ("files 13-40 untouched").
+//  - **PRD P4's other half**: an existing output path refuses the whole batch
+//    with the counts and leaves that file byte-for-byte untouched; explicit
+//    overwrite proceeds.
+//  - **It really is phase 4's presets**: an `ExportPreset` saved and
+//    round-tripped through `ExportPresetStore`'s own serialiser, then assigned
+//    into the batch request as one field, and its `FitWithin` resize proven to
+//    reach the file (64x64 comps out at 32x32).
+//  - **The measurement**, marked `[measured]`: the scratch copy, the shared
+//    state-set, the composite-and-encode it feeds, one comp end to end and
+//    four comps end to end.
+//
+// Runs -- and asserts the correct answers -- in BOTH NP_USE_OIIO
+// configurations. A PNG batch is identical in each (PRD I1), and the seam is
+// asserted rather than skipped: the same four-comp EXR batch writes four files
+// in an ON build and is refused **before the first byte** in an OFF build,
+// with `exportRequestAvailability()`'s string verbatim rather than four
+// identical per-file failures. Headless and GPU-free; writes and removes a
+// selftest_exportstates/ scratch directory.
+bool runExportStatesTest();
+
 }  // namespace np

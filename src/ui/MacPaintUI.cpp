@@ -25,6 +25,7 @@
 #include "core/LayerOps.hpp"
 #include "imgui.h"
 #include "io/ExportAs.hpp"
+#include "io/ExportStates.hpp"
 #include "ui/DocumentTexture.hpp"
 
 namespace np {
@@ -1988,6 +1989,296 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   ImGui::EndPopup();
 }
 
+// ------------------------------------------- Export Comps / Layers To Files
+//
+// PLAN.md Phase 5 step 13 / PRD I16 + I17. The same split
+// drawExportAsDialog() has, and for the same reason: everything that can be
+// wrong without a screenshot showing it -- the name template and its path
+// refusals, the collision rule, the overwrite rule, the state-set, the
+// per-file report -- lives in io/ExportStates.hpp and is exercised headlessly
+// by --selftest. This function is widgets.
+//
+// The one property worth naming here, because it is what the dialog is shaped
+// around: **`planStateExport()` writes nothing**, so the table of filenames
+// below is not a guess about what Export will do -- it is the same value the
+// export loop will consume, recomputed every frame. A user sees the exact
+// filenames, the exact skips and the exact refusal before committing, which is
+// the whole reason the refusals are a pre-flight rather than a surprise at
+// file 3.
+bool g_exportStatesRequested = false;
+
+void drawExportStatesDialog(AppState& st) {
+  static ExportStatesRequest request;
+  static ExportPresetStore presets;
+  static bool presetsLoaded = false;
+  static char dirBuf[512] = "";
+  static char templateBuf[256] = "{name}";
+  static std::vector<bool> picked;
+  static std::string status;
+  static ExportStatesReport lastRun;
+  static bool hasRun = false;
+  static bool justOpened = false;
+
+  // --open-export-states: the same id BeginPopupModal() opens on a click, so
+  // the dialog can be photographed. See AppState::openExportStatesDialog.
+  if (g_exportStatesRequested || st.openExportStatesDialog) {
+    g_exportStatesRequested = false;
+    if (!st.exportStatesFolder.empty() && dirBuf[0] == '\0')
+      std::snprintf(dirBuf, sizeof(dirBuf), "%s", st.exportStatesFolder.c_str());
+    justOpened = true;
+    ImGui::OpenPopup("Export Comps / Layers To Files");
+  }
+  if (!ImGui::BeginPopupModal("Export Comps / Layers To Files", nullptr,
+                              ImGuiWindowFlags_AlwaysAutoResize))
+    return;
+
+  if (!presetsLoaded) {
+    presetsLoaded = true;
+    presets.loadFromFile(defaultExportPresetsPath());
+  }
+
+  const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
+  const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
+  const ImVec4 kGood(0.55f, 0.85f, 0.55f, 1.0f);
+
+  const OpenDocument* activeDoc = st.documents.active();
+  if (activeDoc == nullptr) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+    ImGui::TextWrapped("No document is open, so there are no comps or layers to export. Use "
+                       "File > New Document or File > Open... -- the painting canvas is a "
+                       "solver texture, not a document.");
+    ImGui::PopStyleColor();
+    if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return;
+  }
+  const Document& doc = activeDoc->document;
+  request.documentName = documentDisplayName(*activeDoc);
+  // Strip an extension from the document name so {doc} does not put ".npaint"
+  // in the middle of a filename.
+  const size_t dot = request.documentName.rfind('.');
+  if (dot != std::string::npos && dot > 0) request.documentName.resize(dot);
+
+  // A dialog that opens on an empty list is a dialog that looks broken. A
+  // document with no comps has nothing for PRD I17 to enumerate, and PRD I16
+  // is the same loop over a list it certainly does have, so that is where it
+  // opens. Only on open, so switching back is never fought.
+  if (justOpened) {
+    justOpened = false;
+    if (doc.comps.empty()) request.source = ExportStateSource::Layers;
+    picked.clear();
+  }
+
+  ImGui::TextDisabled("Source: document '%s', %zu comps, %zu layers",
+                      request.documentName.c_str(), doc.comps.size(), doc.layers.size());
+  ImGui::Separator();
+
+  // --- What is enumerated: PRD I17 or PRD I16 -----------------------------
+  int sourceIdx = request.source == ExportStateSource::Comps ? 0 : 1;
+  const bool sourceChanged = ImGui::RadioButton("Comps (PRD I17)", &sourceIdx, 0);
+  ImGui::SameLine();
+  const bool sourceChanged2 = ImGui::RadioButton("Layers (PRD I16)", &sourceIdx, 1);
+  if (sourceChanged || sourceChanged2) picked.clear();
+  request.source = sourceIdx == 0 ? ExportStateSource::Comps : ExportStateSource::Layers;
+
+  // --- The four Export As settings, and a preset that carries them --------
+  if (ImGui::BeginCombo("Preset", "Load an Export As preset...")) {
+    if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
+    for (const ExportPreset& p : presets.presets()) {
+      const std::string why = exportRequestAvailability(p.request);
+      if (!why.empty()) ImGui::BeginDisabled();
+      if (ImGui::Selectable(p.name.c_str()) && why.empty()) {
+        request.format = p.request;
+        status = "Loaded preset '" + p.name + "'.";
+      }
+      if (!why.empty()) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("%s", why.c_str());
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::BeginCombo("Format", imageFormatName(request.format.format))) {
+    for (ImageFormat f : offerableExportFormats()) {
+      if (ImGui::Selectable(imageFormatName(f), f == request.format.format)) {
+        request.format.format = f;
+        const std::vector<ExportBitDepth> depths = offerableExportDepths(f);
+        if (!depths.empty() && std::find(depths.begin(), depths.end(), request.format.bitDepth) ==
+                                   depths.end())
+          request.format.bitDepth = depths.front();
+      }
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.format.targetSpace))) {
+    for (int i = 0; i < 3; ++i) {
+      const auto s = static_cast<ExportTargetSpace>(i);
+      if (ImGui::Selectable(exportTargetSpaceName(s), s == request.format.targetSpace))
+        request.format.targetSpace = s;
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.format.bitDepth))) {
+    for (ExportBitDepth d : offerableExportDepths(request.format.format)) {
+      if (ImGui::Selectable(exportBitDepthName(d), d == request.format.bitDepth))
+        request.format.bitDepth = d;
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.format.resize.mode))) {
+    for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
+      const auto m = static_cast<ExportResizeMode>(i);
+      if (ImGui::Selectable(exportResizeModeName(m), m == request.format.resize.mode))
+        request.format.resize.mode = m;
+    }
+    ImGui::EndCombo();
+  }
+  if (request.format.resize.mode == ExportResizeMode::Percent) {
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::SliderFloat("Percent", &request.format.resize.percent, 1.0f, 100.0f, "%.1f%%");
+  } else if (request.format.resize.mode == ExportResizeMode::FitWithin) {
+    int box[2] = {static_cast<int>(request.format.resize.maxWidth),
+                  static_cast<int>(request.format.resize.maxHeight)};
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::InputInt2("Fit within (px)", box)) {
+      request.format.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
+      request.format.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
+    }
+  }
+
+  // --- Where, and under what names (PRD I17's "with a name template") -----
+  ImGui::Separator();
+  ImGui::SetNextItemWidth(420.0f);
+  ImGui::InputText("Output folder", dirBuf, sizeof(dirBuf));
+  ImGui::SetNextItemWidth(420.0f);
+  ImGui::InputText("Name template", templateBuf, sizeof(templateBuf));
+  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 560.0f);
+  ImGui::TextWrapped("%s", exportNameTemplateHelp().c_str());
+  ImGui::PopTextWrapPos();
+  ImGui::PopStyleColor();
+  ImGui::Checkbox("Overwrite files that already exist", &request.overwriteExisting);
+  if (!request.overwriteExisting)
+    ImGui::TextDisabled("Off: an existing output path refuses the whole batch (PRD P4).");
+  request.outputDirectory = dirBuf;
+  request.nameTemplate = templateBuf;
+
+  // --- Which ones (PRD I17's "a choice of which comps") -------------------
+  const size_t total =
+      request.source == ExportStateSource::Comps ? doc.comps.size() : doc.layers.size();
+  if (picked.size() != total) picked.assign(total, true);
+  ImGui::Separator();
+  ImGui::Text("Which %s", exportStateSourcePlural(request.source));
+  ImGui::SameLine();
+  if (ImGui::SmallButton("All")) picked.assign(total, true);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("None")) picked.assign(total, false);
+  if (ImGui::BeginChild("##pick", ImVec2(420.0f, 96.0f), true)) {
+    for (size_t i = 0; i < total; ++i) {
+      const std::string label =
+          (request.source == ExportStateSource::Comps
+               ? (doc.comps[i].name.empty() ? std::string("(unnamed comp)") : doc.comps[i].name)
+               : (doc.layers[i].name.empty() ? std::string("(unnamed layer)")
+                                             : doc.layers[i].name)) +
+          "##" + std::to_string(i);
+      bool on = picked[i];
+      if (ImGui::Checkbox(label.c_str(), &on)) picked[i] = on;
+    }
+  }
+  ImGui::EndChild();
+  request.selection.clear();
+  for (size_t i = 0; i < total; ++i)
+    if (picked[i]) request.selection.push_back(i);
+  // An empty `selection` means "all" to io/ExportStates, which is not what an
+  // empty set of checkboxes means here. Said rather than silently exporting
+  // everything.
+  const bool noneChosen = request.selection.empty();
+
+  // --- The plan: exactly what a click would write, computed for free ------
+  ImGui::Separator();
+  // Recomputed every frame rather than cached, which is the right trade here
+  // and is flagged rather than assumed: the plan is a pure function of controls
+  // the user is editing, so caching it would mean an invalidation rule with one
+  // entry per control. It does cost one `stat` per planned file per frame while
+  // the modal is open (the exists-check of io/ExportStates §7). That is a
+  // handful of stats on a local disk; if this ever runs against a slow network
+  // mount, the fix is to cache on a controls-changed hash, not to drop the
+  // check.
+  ExportStatesReport plan;
+  if (!noneChosen) plan = planStateExport(doc, request);
+  if (noneChosen) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+    ImGui::TextWrapped("Nothing is selected, so there is nothing to export.");
+    ImGui::PopStyleColor();
+  } else if (!plan.error.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kError);
+    ImGui::TextWrapped("%s", plan.error.c_str());
+    ImGui::PopStyleColor();
+  } else {
+    ImGui::Text("Will write %zu file%s (%zu skipped):", plan.items.size() - plan.skipped(),
+                plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
+    if (ImGui::BeginChild("##plan", ImVec2(560.0f, 120.0f), true)) {
+      for (const ExportStateItem& item : plan.items) {
+        if (item.filename.empty()) {
+          ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+          ImGui::TextWrapped("skipped -- %s", item.reason.c_str());
+          ImGui::PopStyleColor();
+        } else {
+          ImGui::TextUnformatted(item.filename.c_str());
+        }
+      }
+    }
+    ImGui::EndChild();
+  }
+
+  // --- Export, and the per-file report (PRD P4) ---------------------------
+  ImGui::Separator();
+  const bool canExport = !noneChosen && plan.error.empty();
+  if (!canExport) ImGui::BeginDisabled();
+  if (ImGui::Button("Export")) {
+    lastRun = exportDocumentStates(doc, request);
+    hasRun = true;
+    status = exportStatesSummary(lastRun);
+  }
+  if (!canExport) ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::TextDisabled("Exports the open document's %s, never the painting canvas.",
+                      exportStateSourcePlural(request.source));
+
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, lastRun.ok ? kGood : kError);
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  if (hasRun && !lastRun.items.empty()) {
+    // Per file, always -- never one line claiming a count. PRD P4.
+    if (ImGui::BeginChild("##report", ImVec2(560.0f, 120.0f), true)) {
+      for (const ExportStateItem& item : lastRun.items) {
+        const bool bad = item.outcome == ExportItemOutcome::Failed ||
+                         item.outcome == ExportItemOutcome::NotAttempted;
+        if (bad) ImGui::PushStyleColor(ImGuiCol_Text, kError);
+        ImGui::TextWrapped("%-13s %s%s%s", exportItemOutcomeName(item.outcome),
+                           item.filename.empty() ? item.stateName.c_str() : item.filename.c_str(),
+                           item.reason.empty() ? "" : " -- ", item.reason.c_str());
+        if (bad) ImGui::PopStyleColor();
+        for (const std::string& w : item.warnings) {
+          ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+          ImGui::TextWrapped("    ! %s", w.c_str());
+          ImGui::PopStyleColor();
+        }
+      }
+    }
+    ImGui::EndChild();
+  }
+
+  if (ImGui::Button("Close")) {
+    st.openExportStatesDialog = false;
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 // ------------------------------------------------------- Document lifecycle
 //
 // PLAN.md Phase 4 step 8 / PRD I18 ("Revert, duplicate document, save a copy,
@@ -2376,6 +2667,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // opened from inside BeginMenu() would be opened against the menu's own
       // ID stack, and drawExportAsDialog() below runs outside it.
       if (ImGui::MenuItem("Export As...")) g_exportAsRequested = true;
+      // PLAN.md Phase 5 step 13 / PRD I16, I17. Next to Export As because it
+      // is Export As run in a loop over document states -- same presets, same
+      // four settings, same encoder -- and the flag rather than
+      // ImGui::OpenPopup() for the same ID-stack reason as above.
+      if (ImGui::MenuItem("Export Comps / Layers To Files..."))
+        g_exportStatesRequested = true;
       ImGui::Separator();
       if (ImGui::MenuItem("Quit", "Cmd+Q")) st.quit = true;
       ImGui::EndMenu();
@@ -2581,6 +2878,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // reason the Add Guide popup above is: a popup opened from a menu item has
   // to be begun outside the menu bar's ID stack.
   drawExportAsDialog(st, canvasW, canvasH);
+
+  // PLAN.md Phase 5 step 13 ("Export comps to files, and layers to files"),
+  // out here for the same ID-stack reason.
+  drawExportStatesDialog(st);
 
   // PLAN.md Phase 4 step 8 ("Document lifecycle"), out here for the same
   // reason: a modal opened from a menu item must be begun outside the menu
