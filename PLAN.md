@@ -420,7 +420,7 @@ been missing.
     Cheap here because the layer model is fresh in hand; expensive later.
 13. **Export comps to files, and layers to files** — one shared loop: set a document state,
     composite, write through phase 4's Export As presets with a name template (PRD I16,
-    I18). Both are the same mechanism, so building them apart would mean building it twice.
+    I17). Both are the same mechanism, so building them apart would mean building it twice.
 
 > **Comps and comp export are not speculative scope.** Export Layer Comps to Files is part
 > of the primary user's existing Photoshop workflow, which is the only evidence that settles
@@ -661,7 +661,7 @@ productivity feature in the incumbent, and here it is mostly a file format.
 5. **Lens correction** and **pattern define/fill** land here as the remaining P2 image ops
    (PRD D22, D27).
 
-Export-to-files already shipped in phase 5 (PRD I16, I18) — the batch runner reuses that
+Export-to-files already shipped in phase 5 (PRD I16, I17) — the batch runner reuses that
 loop rather than growing a second one.
 
 **Verify.** Grade one plate, save the stack as an action, run it over thirty photographs,
