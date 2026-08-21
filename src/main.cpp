@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,6 +23,9 @@
 #include "app/Memory.hpp"
 #include "app/Screenshot.hpp"
 #include "app/SelfTest.hpp"
+#include "core/Blend.hpp"
+#include "core/LayerOps.hpp"
+#include "core/Tile.hpp"
 #include "gfx/Context.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
@@ -36,6 +40,73 @@ namespace {
 
 constexpr uint32_t kCanvasW = 1024;
 constexpr uint32_t kCanvasH = 1024;
+
+// --demo-document (UI detour step 2, Part D): fills the session's document
+// with content, so that a `--screenshot` shows the composite *doing* something
+// rather than showing that a transparent document changes nothing.
+//
+// Here, in main.cpp's anonymous namespace, rather than in a production module:
+// nothing in the application builds a document from literals, this exists to
+// make a verification claim photographable, and a `ui/` or `core/` module that
+// carried demo fixtures would be carrying test data in production code.
+//
+// The three layers are chosen so that a single picture shows three *different*
+// mechanisms, each of which would look identical to the others if it were
+// silently not working:
+//
+//   0. a plain opaque rectangle          -- the composite reaches the screen
+//   1. Multiply at 60% opacity           -- blend and opacity are honoured
+//   2. an opaque rectangle under a mask  -- coverage is per texel
+//
+// Every rectangle is inset well inside the canvas, so the transparent
+// remainder proves the paper is still visible through alpha 0 -- the same
+// regression boundary the no-flag screenshot makes at full canvas size.
+void buildDemoDocument(np::OpenDocument& od) {
+  using np::PixelCoord;
+  np::Document& doc = od.document;
+
+  auto fillRect = [&](size_t layerIndex, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                      const std::array<float, 4>& straight) {
+    // Stored premultiplied (DESIGN-imaging.md §2), which is what makes
+    // ui/DocumentTexture's un-premultiply on the way out a real operation
+    // rather than a copy.
+    const std::array<float, 4> premultiplied{straight[0] * straight[3], straight[1] * straight[3],
+                                             straight[2] * straight[3], straight[3]};
+    for (int32_t y = y0; y < y1; ++y) {
+      for (int32_t x = x0; x < x1; ++x) {
+        const PixelCoord at{x, y};
+        doc.layers[layerIndex].rgbTiles->getOrCreate(np::tileCoordAt(at))
+            .writePixel(np::tileLocalOffset(at), premultiplied);
+      }
+    }
+  };
+
+  fillRect(0, 96, 96, 544, 544, {0.10f, 0.52f, 0.74f, 1.0f});
+  np::setLayerName(doc, 0, "Cyan block");
+
+  np::addLayer(doc, doc.layers.size(), np::makeRgbLayer("Magenta, Multiply 60%"));
+  fillRect(1, 352, 288, 800, 736, {0.86f, 0.16f, 0.42f, 1.0f});
+  np::setLayerBlend(doc, 1, np::BlendMode::Multiply);
+  np::setLayerOpacity(doc, 1, 0.6f);
+
+  np::addLayer(doc, doc.layers.size(), np::makeRgbLayer("Yellow, masked ramp"));
+  fillRect(2, 480, 512, 928, 928, {0.96f, 0.78f, 0.16f, 1.0f});
+  np::addLayerMask(doc, 2);
+  for (int32_t y = 512; y < 928; ++y) {
+    for (int32_t x = 480; x < 928; ++x) {
+      const PixelCoord at{x, y};
+      doc.layers[2].mask->getOrCreate(np::tileCoordAt(at))
+          .writeCoverage(np::tileLocalOffset(at), static_cast<float>(x - 480) / 448.0f);
+    }
+  }
+
+  // One recordEdit at the end, not one per write: tile writes go straight to
+  // the store and bump nothing, so the revision the texture cache keys on has
+  // to be moved deliberately here. That is the caching property
+  // ui/DocumentTexture.hpp names -- demonstrated by the one code path in this
+  // repository that writes tiles without going through core/LayerOps.
+  od.recordEdit("demo document", np::EditKind::Content);
+}
 
 void handlePenEvent(np::AppState& st, const SDL_Event& e) {
   switch (e.type) {
@@ -86,6 +157,7 @@ int main(int argc, char** argv) {
   bool latencyVerbose = false;
   const char* screenshotPath = nullptr;
   int screenshotFrames = 30;
+  bool demoDocument = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
     if (a == "--selftest") {
@@ -114,6 +186,11 @@ int main(int argc, char** argv) {
       // without being slow enough to be annoying in a loop.
       if (i + 1 < argc && argv[i + 1][0] != '-') screenshotPath = argv[++i];
       if (i + 1 < argc && argv[i + 1][0] != '-') screenshotFrames = std::atoi(argv[++i]);
+    } else if (a == "--demo-document") {
+      // UI detour step 2, Part D: put content in the session's document, so a
+      // --screenshot photographs the composite rather than photographing the
+      // fact that a transparent one is invisible. See buildDemoDocument().
+      demoDocument = true;
     }
   }
 
@@ -546,6 +623,17 @@ int main(int argc, char** argv) {
     // asserts the correct answers, in BOTH NP_USE_OIIO configurations.
     // Headless and GPU-free; writes and removes three `.npaint` files.
     const bool clippingMaskOk = np::runClippingMaskTest();
+    // UI detour step 2 ("the document, on screen"): ui/DocumentTexture, the
+    // edge that makes all nine of Phase 5's steps visible, plus core/Premultiply
+    // -- the `a <= 0 -> {0,0,0,0}` guard promoted out of four retyped copies and
+    // now asserted at all five call sites at once. Straight alpha and RGBA16Float
+    // are each proven by running the rejected alternative beside them and
+    // printing both answers, and the revision cache's saving is measured against
+    // PRD A1's frame budget. Needs the GPU: it uploads a document at a row
+    // stride the readback direction refuses and reads it back through a padded
+    // staging buffer. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
+    // configurations. Writes no files.
+    const bool documentTextureOk = np::runDocumentTextureTest(gpu);
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -560,7 +648,7 @@ int main(int argc, char** argv) {
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
-                    strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    documentTextureOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -626,6 +714,36 @@ int main(int argc, char** argv) {
     // that refused to start without a journal would be worse than one that
     // says it has none.
     if (!journalError.empty()) std::fprintf(stderr, "[journal] %s\n", journalError.c_str());
+  }
+
+  // --- A session always has a document (UI detour step 2, Part C) ---------
+  //
+  // Before this, `st.documents` started empty and the LAYERS and HISTORY
+  // panels were dead on launch: "No document open", with File > New Document
+  // the only way to make either mean anything. That was defensible while the
+  // document was invisible -- there was nothing to look at either way -- and
+  // it stops being defensible the moment the canvas draws the composite.
+  //
+  // Sized to kCanvasW/kCanvasH so the document quad and the paper quad are the
+  // same rectangle at the same resolution (ui/MacPaintUI's canvas block draws
+  // the document on the canvas quad). `createBlank()` allocates **no tiles**
+  // (PRD C2), so this costs one empty TileStore and one baseline history
+  // entry, and the canvas looks exactly as it did before this step until a
+  // layer holds content.
+  //
+  // Deliberately after the `--selftest` / `--diag` / `--modes` branches have
+  // already returned, so none of them sees a document they did not ask for --
+  // in particular `--selftest`'s idle-RSS assertion, whose whole point is a
+  // measurement taken before any subsystem exists.
+  st.documents.add(np::makeBlankOpenDocument(static_cast<int32_t>(kCanvasW),
+                                             static_cast<int32_t>(kCanvasH), np::WorkingSpace{}));
+  if (demoDocument) {
+    if (np::OpenDocument* od = st.documents.active()) {
+      buildDemoDocument(*od);
+      std::printf("[demo-document] %d x %d, %zu layers, revision %llu\n", od->document.width,
+                  od->document.height, od->document.layers.size(),
+                  static_cast<unsigned long long>(od->revision));
+    }
   }
 
   // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring
@@ -936,6 +1054,21 @@ int main(int argc, char** argv) {
     std::string journalError;
     if (!st.journal.finishClean(&journalError))
       std::fprintf(stderr, "[journal] %s\n", journalError.c_str());
+  }
+
+  // UI detour step 2: what the revision cache saved over this session's real
+  // frames. `--selftest` benchmarks the same code, which shows the composite is
+  // expensive; this shows how seldom it was actually paid. Printed on every
+  // interactive exit, including the one --screenshot takes, so the picture and
+  // the number come out of the same command.
+  {
+    const np::DocumentTexture& docTex = np::canvasDocumentTexture();
+    const uint64_t served = docTex.uploads() + docTex.cacheHits();
+    std::printf("[document-texture] %llu frame(s) served: %llu composite+upload totalling "
+                "%.1f ms, %llu from cache\n",
+                static_cast<unsigned long long>(served),
+                static_cast<unsigned long long>(docTex.uploads()), docTex.totalUploadMs(),
+                static_cast<unsigned long long>(docTex.cacheHits()));
   }
 
   ImGui_ImplWGPU_Shutdown();

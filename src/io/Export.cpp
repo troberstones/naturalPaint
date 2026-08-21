@@ -10,6 +10,7 @@
 #include "color/Space.hpp"
 #include "core/Composite.hpp"
 #include "core/Layer.hpp"
+#include "core/Premultiply.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 #include "io/Capabilities.hpp"
@@ -79,25 +80,6 @@ void appendToVector(void* context, void* data, int size) {
   auto* v = static_cast<std::vector<uint8_t>*>(context);
   const auto* b = static_cast<const uint8_t*>(data);
   v->insert(v->end(), b, b + size);
-}
-
-// straight[i] = premultiplied[i] / a for the RGB channels, guarding a <= 0
-// (fully transparent -- RGB is arbitrary under premultiplied alpha, and 0
-// is the convention core::Tile's own value-initialization already uses for
-// an untouched texel).
-//
-// This is deliberately the *same* guard shape as core/Probe.cpp's
-// unpremultiply(), not a second, subtly different one: both undo
-// io/ImageIO.cpp's `rgb *= a` at a read boundary, and if the two ever
-// disagreed about the alpha == 0 case, a probe and an export of the same
-// pixel would report different colours. It is duplicated rather than
-// hoisted into a shared header purely because promoting it would mean
-// editing core/Probe, which is outside this step's scope; if a third
-// caller appears, that promotion is the right move.
-std::array<float, 4> unpremultiply(const std::array<float, 4>& premultiplied) {
-  const float a = premultiplied[3];
-  if (a <= 0.0f) return {0.0f, 0.0f, 0.0f, 0.0f};
-  return {premultiplied[0] / a, premultiplied[1] / a, premultiplied[2] / a, a};
 }
 
 // Chromaticity coordinates are authored constants in this codebase
@@ -202,8 +184,8 @@ DecodedImage flattenDocumentToLinear(const Document& doc, std::vector<std::strin
   out.height = h;
   out.pixels.resize(sampleCount);
   for (size_t i = 0; i < sampleCount; i += 4) {
-    const std::array<float, 4> straight = unpremultiply(
-        {premultiplied[i + 0], premultiplied[i + 1], premultiplied[i + 2], premultiplied[i + 3]});
+    const std::array<float, 4> straight = unpremultiply(std::array<float, 4>{
+        premultiplied[i + 0], premultiplied[i + 1], premultiplied[i + 2], premultiplied[i + 3]});
     out.pixels[i + 0] = straight[0];
     out.pixels[i + 1] = straight[1];
     out.pixels[i + 2] = straight[2];

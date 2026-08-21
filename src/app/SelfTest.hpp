@@ -1520,4 +1520,62 @@ bool runHistoryPanelTest();
 // Headless and GPU-free; writes and removes three `.npaint` files.
 bool runClippingMaskTest();
 
+// ---------------------------------------------------------------------------
+// UI detour step 2 -- the document, on screen
+// ---------------------------------------------------------------------------
+//
+// Phase 5 built nine steps of document model and none of it could be seen:
+// `compositeDocumentPremultiplied()` had two callers, io/Export and this file,
+// so the only way to look at a document was to export it and open the export
+// in something else. ui/DocumentTexture is the missing edge -- composite,
+// un-premultiply, upload as RGBA16Float, draw on the canvas quad -- and this
+// section is what makes each of its three decisions a fact rather than a
+// preference.
+//
+// Covers:
+//  - **core/Premultiply, the promoted guard.** The `a <= 0 -> {0,0,0,0}` rule
+//    existed in FOUR retyped copies (core/Probe, io/Export, ops/PointOps,
+//    ops/Resample), two of which carried notes predicting this promotion.
+//    Asserted once as arithmetic -- including that `<=` and not `==` is what
+//    stops a negative alpha from negating colour -- and then asserted at
+//    **all five call sites at once**: an empty document probed, flattened,
+//    graded, resampled and composited-for-upload all return exactly
+//    {0,0,0,0}. The template's reason to exist is measured too: the double
+//    instantiation is shown to give an answer the float one cannot, and
+//    ops/Resample's opaque-alpha regression (its own comment's 0.999996 JPEG
+//    refusal) is re-made at zero tolerance after the rewrite.
+//  - **Straight alpha, with the rejected reading run beside it.** ImGui's
+//    pipeline blends `(SrcAlpha, OneMinusSrcAlpha)` for every widget in the
+//    window. Both readings are computed on the same half-covered texel: the
+//    straight upload is proven to equal core/Blend's own `over`, and the
+//    premultiplied upload is proven to differ and by how much.
+//  - **RGBA16Float, with the 8-bit path run beside it.** Two linear samples
+//    that round to the same byte are proven to stay distinct through f16, and
+//    the maximum round-trip error of both paths is measured on the same
+//    document and printed.
+//  - **The upload buffer's layout**: row-major, top to bottom, four channels,
+//    no padding, `w * h * 4` halves, the texel at (x, y) where it belongs --
+//    and a blank document proven to be *bit-exactly zero everywhere*, which is
+//    this step's regression boundary in numbers rather than in a screenshot.
+//  - **The cache key.** Keyed on (id, revision, width, height); the collision
+//    the obvious key would have had is demonstrated -- two different documents
+//    are both at revision 0 -- and the documented way to defeat the cache
+//    (writing tiles without `recordEdit()`) is asserted rather than left to be
+//    discovered.
+//  - **What the cache saves, measured**: the composite timed at two canvas
+//    sizes against PRD A1's 16.7 ms frame budget, and against the two integer
+//    comparisons a cache hit costs, with the ratio printed.
+//  - **The GPU round trip**, including the asymmetry that makes it a trap:
+//    `wgpuQueueWriteTexture` accepts any stride while the readback direction
+//    needs a 256-byte multiple, so a 61-texel-wide document (976 bytes/row) is
+//    uploaded, read back through a padded staging buffer, and proven identical
+//    to the CPU halves.
+//  - **The visible consequences**: hiding a layer proven to give back the
+//    blank buffer bit-exactly, and opacity, blend, mask, adjustment and
+//    clipping each proven to change the uploaded bytes.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+// Needs the GPU (it uploads and reads back real textures); writes no files.
+bool runDocumentTextureTest(GpuContext& gpu);
+
 }  // namespace np

@@ -5,6 +5,7 @@
 
 #include "color/Space.hpp"
 #include "core/Composite.hpp"
+#include "core/Premultiply.hpp"
 
 namespace np {
 namespace {
@@ -74,19 +75,6 @@ std::array<float, 4> sumPigmentBox(const PigmentTileStore& tiles, PixelCoord at,
     }
   }
   return sum;
-}
-
-// straight[i] = premultiplied[i] / a for the RGB channels, guarding a == 0
-// (fully transparent -- RGB is arbitrary under premultiplied alpha, and 0
-// is the same convention core::Tile's own value-initialization already
-// uses for an untouched texel). Mirrors io/ImageIO.cpp's write-side
-// `rgb *= a` (DESIGN-imaging.md §2's storage policy) at this read
-// boundary, the same write/read split io/ImageDecode.hpp's header comment
-// documents for the opposite (decode) direction.
-std::array<float, 4> unpremultiply(const std::array<float, 4>& premultiplied) {
-  const float a = premultiplied[3];
-  if (a <= 0.0f) return {0.0f, 0.0f, 0.0f, 0.0f};
-  return {premultiplied[0] / a, premultiplied[1] / a, premultiplied[2] / a, a};
 }
 
 }  // namespace

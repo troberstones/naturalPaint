@@ -5,6 +5,7 @@
 #include "app/AppState.hpp"
 #include "gfx/Context.hpp"
 #include "sim/PaintSim.hpp"
+#include "ui/DocumentTexture.hpp"
 
 namespace np {
 
@@ -21,5 +22,18 @@ namespace np {
 // PaintSim gets constructed with.
 void drawUI(AppState& state, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
            const MixboxLut& lut, uint32_t canvasW, uint32_t canvasH);
+
+// The canvas's document-composite texture (UI detour step 2), for reading its
+// counters. It is file-scope inside ui/MacPaintUI.cpp because two places in
+// that file need the same instance; this accessor exists so that main.cpp can
+// report what the revision cache actually saved over a real session's frames,
+// which is a different measurement from `--selftest`'s benchmark of the same
+// code -- a benchmark shows the composite is expensive, a session shows how
+// rarely it was paid.
+//
+// The layers panel shows the same numbers on screen, but the controls column
+// scrolls and that section can sit below the fold at small window sizes, so
+// the shutdown line is the one that is always observable.
+const DocumentTexture& canvasDocumentTexture();
 
 }  // namespace np

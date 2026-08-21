@@ -1,9 +1,12 @@
 #include "ops/Resample.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+
+#include "core/Premultiply.hpp"
 
 namespace np {
 namespace {
@@ -200,32 +203,23 @@ bool resampleAreaAverage(const float* src, uint32_t srcWidth, uint32_t srcHeight
     const double* w = yPlan.weight.data() + yPlan.offset[y];
     float* dstRow = out->data() + static_cast<size_t>(y) * dstWidth * 4u;
     for (uint32_t x = 0; x < dstWidth; ++x) {
-      double acc[4] = {0.0, 0.0, 0.0, 0.0};
+      std::array<double, 4> acc{0.0, 0.0, 0.0, 0.0};
       for (uint32_t k = 0; k < n; ++k) {
         const float* p =
             rows.data() + (static_cast<size_t>(i0 + k) * dstWidth + x) * 4u;
         const double weight = w[k];
         for (int c = 0; c < 4; ++c) acc[c] += weight * static_cast<double>(p[c]);
       }
-      // Un-premultiply, with the same `a <= 0 -> {0,0,0,0}` guard
-      // core/Probe.cpp's unpremultiply() and io/Export.cpp's own copy both
-      // use. This is the third place that guard appears; io/Export.cpp's
-      // copy carries the note "if a third caller appears, that promotion is
-      // the right move", and it is now due. Deliberately not promoted in
-      // this step: hoisting it means editing core/Probe for a three-line
-      // guard, and Phase 5 step 6 ("COW tiles") reworks this exact
-      // premultiplied-storage boundary anyway. Recorded in PLAN.md's
-      // Findings rather than left to be rediscovered.
+      // core/Premultiply's shared `a <= 0 -> {0,0,0,0}` guard. The promotion
+      // this call site's own comment said was "now due" for two steps has
+      // happened; the header carries the argument, including why it is a
+      // template. **`acc` stays double through the divide**: that is this
+      // caller's whole reason for needing a T, and narrowing to float here
+      // would undo the double-weight decision documented at the top of this
+      // file. The narrowing happens once, on the way to storage, below.
+      const std::array<double, 4> straight = unpremultiply(acc);
       float* d = dstRow + static_cast<size_t>(x) * 4u;
-      const double a = acc[3];
-      if (a <= 0.0) {
-        d[0] = d[1] = d[2] = d[3] = 0.0f;
-      } else {
-        d[0] = static_cast<float>(acc[0] / a);
-        d[1] = static_cast<float>(acc[1] / a);
-        d[2] = static_cast<float>(acc[2] / a);
-        d[3] = static_cast<float>(a);
-      }
+      for (int c = 0; c < 4; ++c) d[c] = static_cast<float>(straight[c]);
     }
   }
   return true;

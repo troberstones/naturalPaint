@@ -17,6 +17,7 @@
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
 #include "imgui.h"
 #include "io/ExportAs.hpp"
+#include "ui/DocumentTexture.hpp"
 
 namespace np {
 namespace {
@@ -35,6 +36,19 @@ constexpr float kMaxTilt = 0.50f;
 // document-space threshold per-frame; see the canvas block below).
 constexpr float kRulerThickness = 20.0f;
 constexpr float kSnapThresholdPx = 8.0f;
+
+// ui/DocumentTexture: the active document, composited and uploaded once per
+// revision, drawn over the paper by the canvas block and reported on by the
+// layers panel. File-scope for exactly that reason -- two places in this file
+// need the same instance, and it is neither app state (app/AppState.hpp's own
+// rule: transient UI-owned state stays in ui/) nor something a caller of
+// drawUI() has any use for.
+//
+// It owns GPU objects and is deliberately never released: gfx/Wgpu.hpp's
+// convention is that every GPU object here lives for the process, and a
+// destructor running after the device is gone would be worse than the leak it
+// prevents. See DocumentTexture::release().
+DocumentTexture g_documentTexture;
 
 const char* toolName(Tool t) {
   switch (t) {
@@ -689,19 +703,28 @@ void drawGradeSection(AppState& st) {
 //    edit (PRD O5) rather than something the journal finds out about on its
 //    next timer tick.
 //
-// --- What this panel does NOT show, stated plainly ------------------------
+// --- Which half is visible, stated plainly --------------------------------
 //
-// **The painting canvas is not one of these layers.** `sim::PaintSim` owns a
-// single dense GPU texture with no layer or document awareness; a stroke writes
-// that texture and touches no `Layer::rgbTiles` anywhere. So this panel lists
-// the layers of the *open document* -- what File > New Document, File > Open...
-// and a `.npaint` load put there -- and a document that has been painted on
-// does not show the paint, because the paint never reached it. That is the same
-// gap every prior UI-facing step's Findings row records, it is not closed here,
-// and the panel says so on screen rather than leaving a user to infer it from
-// an empty thumbnail. There are no thumbnails, for the same reason: a thumbnail
-// of a document whose pixels the canvas cannot reach would imply a connection
-// that does not exist.
+// **These layers are on the canvas**, as of the UI detour's step 2.
+// ui/DocumentTexture composites this document and the canvas block draws it
+// over the paper, so toggling a visibility box, dragging an opacity, changing
+// a blend, adding a mask, grading through an adjustment layer or clipping one
+// layer to another changes what is on screen while you watch. Every sentence
+// this comment used to carry about a panel that "never shows what is on
+// screen" is deleted rather than softened, because it is no longer true.
+//
+// **The paint is still not one of these layers.** `sim::PaintSim` owns a
+// single dense GPU texture with no layer or document awareness; a stroke
+// writes that texture and touches no `Layer::rgbTiles` anywhere. So the two
+// pictures are *stacked* -- document over paper -- and not merged: a document
+// that has been painted on still holds none of the paint. Closing that gap is
+// the stroke bridge, a later step of this detour, and the panel says which
+// half is which on screen rather than leaving a user to infer it.
+//
+// There are still no thumbnails. The reason used to be that a thumbnail of a
+// document the canvas could not reach would imply a connection that did not
+// exist; now it is only that the canvas shows the composite itself, at full
+// size, which is a better thumbnail than a thumbnail.
 //
 // **The blend dropdown arrived with PLAN.md Phase 5 step 2** and it holds no
 // list of its own. Which modes exist, which of them may be offered on *this*
@@ -716,9 +739,11 @@ void drawLayersSection(AppState& st) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
     ImGui::TextDisabled("No document open.");
-    ImGui::TextWrapped("File > New Document or File > Open... makes one. The painting canvas "
-                       "is not a document -- a stroke writes sim::PaintSim's texture, not a "
-                       "layer -- so this panel never shows what is on screen.");
+    ImGui::TextWrapped("A session starts with one, so this means every document was closed. "
+                       "File > New Document or File > Open... makes another, and its layers "
+                       "are drawn on the canvas over the paper. Painting is separate: a "
+                       "stroke writes sim::PaintSim's texture, not a layer, so paint never "
+                       "appears in this list.");
     return;
   }
 
@@ -726,10 +751,19 @@ void drawLayersSection(AppState& st) {
   ImGui::TextDisabled("%s -- %d x %d, %zu layer(s)", documentDisplayName(*od).c_str(), doc.width,
                       doc.height, doc.layers.size());
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("The layers of the open document.\n"
-                      "NOT the painting canvas: sim::PaintSim owns one dense\n"
+    ImGui::SetTooltip("The layers of the open document, composited and drawn\n"
+                      "on the canvas over the paper.\n"
+                      "Painting is still separate: sim::PaintSim owns one dense\n"
                       "texture with no layer awareness, so a stroke reaches no\n"
                       "layer and nothing painted appears here.");
+  // The revision cache, measured rather than believed (ui/DocumentTexture.hpp
+  // owns the argument). `uploads` counts recomposites; `cached` counts frames
+  // that cost two integer comparisons. In a still window the second number
+  // climbs at the frame rate and the first does not move at all.
+  ImGui::TextDisabled("composite: %llu upload(s), %llu cached, last %.2f ms",
+                      static_cast<unsigned long long>(g_documentTexture.uploads()),
+                      static_cast<unsigned long long>(g_documentTexture.cacheHits()),
+                      g_documentTexture.lastUploadMs());
 
   // Session-local, exactly like drawGradeSection()'s newOpKindIdx and the
   // Export As dialog's fields -- app/AppState.hpp's own rule is that transient
@@ -2224,6 +2258,37 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // real canvasView() from the very next frame.
       dl->AddQuadFilled(q00, q10, q11, q01, IM_COL32(250, 250, 247, 255));
     }
+
+    // --- The open document, over the paper (UI detour step 2) -------------
+    //
+    // The same quad, drawn second, so the document composites over whatever
+    // the paper is -- PaintSim's canvas when a stroke has constructed one,
+    // the flat blank sheet when nothing has. **A new document is fully
+    // transparent**, so this call changes nothing about the picture until a
+    // layer holds content; that is this step's regression boundary and it is
+    // checkable in a screenshot.
+    //
+    // ui/DocumentTexture.hpp owns the argument for all three of the
+    // decisions behind this one line -- RGBA16Float rather than 8-bit,
+    // straight alpha rather than premultiplied because of ImGui's global
+    // blend state, and the revision cache that keeps an unchanged frame free.
+    //
+    // The document is drawn on the *canvas* quad, so a document whose own
+    // dimensions differ from kCanvasW/kCanvasH is stretched onto the paper
+    // rather than placed at its own size. That is right for today -- the
+    // document a session starts with is exactly canvas-sized (see main.cpp),
+    // and the two pictures are stacked precisely because they are not yet one
+    // thing -- and it stops being a question at all once the stroke bridge
+    // makes the document the canvas.
+    //
+    // No warnings are collected: `compositeDocumentPremultiplied()` would
+    // report an unimplemented blend once per layer per upload, and the layers
+    // panel already marks exactly those layers `(!)` on their own rows, which
+    // is the same fact in the place a user can act on it.
+    if (const OpenDocument* activeDocument = st.documents.active()) {
+      if (const WGPUTextureView documentView = g_documentTexture.viewFor(gpu, *activeDocument))
+        dl->AddImageQuad((ImTextureID)(intptr_t)documentView, q00, q10, q11, q01);
+    }
     dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
 
     ImGui::SetCursorScreenPos(paintOrigin);
@@ -2524,5 +2589,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     st.requestReload = false;
   }
 }
+
+const DocumentTexture& canvasDocumentTexture() { return g_documentTexture; }
 
 }  // namespace np

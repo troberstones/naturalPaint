@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "color/Shaper.hpp"
+#include "core/Premultiply.hpp"
 
 namespace np {
 namespace {
@@ -152,15 +153,16 @@ std::array<float, 3> applyChannelMixer(const std::array<float, 3>& rgb,
 
 std::array<float, 4> applyPointOpsPremultiplied(const std::array<float, 4>& premultiplied,
                                                  const std::vector<PointOp>& ops) {
-  // Mirrors core/Probe.cpp's unpremultiply() guard exactly: a <= 0 means
-  // nothing to grade, and RGB is arbitrary under premultiplied alpha, so
-  // the defined result is fully transparent black -- the same value an
-  // untouched core::Tile texel already reads.
-  const float a = premultiplied[3];
-  if (a <= 0.0f) return {0.0f, 0.0f, 0.0f, 0.0f};
+  // core/Premultiply's shared guard, not a fourth retyping of it: a <= 0
+  // means nothing to grade, and the defined result is fully transparent
+  // black -- the same value an untouched core::Tile texel already reads,
+  // which is why returning it verbatim is correct here rather than a
+  // stand-in for one.
+  const std::array<float, 4> undone = unpremultiply(premultiplied);
+  const float a = undone[3];
+  if (a <= 0.0f) return undone;
 
-  std::array<float, 3> straight{premultiplied[0] / a, premultiplied[1] / a,
-                                premultiplied[2] / a};
+  std::array<float, 3> straight{undone[0], undone[1], undone[2]};
   for (const PointOp& op : ops) straight = op(straight);
 
   // Re-premultiply; alpha itself is never touched (see PointOps.hpp's doc

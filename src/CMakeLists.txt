@@ -39,6 +39,7 @@ add_executable(naturalPaint
   ops/Resample.cpp
   paint/Palette.cpp
   sim/PaintSim.cpp
+  ui/DocumentTexture.cpp
   ui/MacPaintUI.cpp
   ui/NaturalPaintUI.cpp
   ui/Theme.cpp
