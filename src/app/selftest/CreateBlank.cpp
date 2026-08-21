@@ -7,7 +7,7 @@ namespace np {
 // shipped the Document/Layer *types*; step 5 is a distinct policy decision
 // on top of them (what kind the blank layer is, whether it starts with any
 // tiles allocated), same "one function per PLAN.md step" shape as
-// runTileStoreTest()/runImageDecodeTest() elsewhere in this file.
+// runTileStoreTest()/runImageDecodeTest() in the TUs beside this one.
 //
 // The size/working-space/layer-count/layer-kind checks are the ordinary
 // half. The interesting half is occupiedTileCount() == 0 for a *large*

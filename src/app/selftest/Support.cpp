@@ -476,7 +476,7 @@ bool blitPipelineRenderAndReadback(GpuContext& gpu, WGPURenderPipeline pipeline,
 
 // Reads an RGBA16Float texture back with a **padded** row stride.
 //
-// The anonymous-namespace `readbackRGBA16F()` further up this file refuses a
+// `readbackRGBA16F()` further up this file refuses a
 // width whose tight stride is not a multiple of 256 -- which is correct for
 // what it does, but it is exactly the case this section has to exercise. A
 // document is whatever size a file says, and `wgpuQueueWriteTexture` accepts

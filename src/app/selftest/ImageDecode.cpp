@@ -85,7 +85,7 @@ bool runImageDecodeTest() {
   // --- 16-bit PNG: 2x2 fixture, built by io/Export's encodePng16() ---------
   // stb_image_write's PNG writer (used for every other fixture here) is
   // 8-bit-per-channel only, so this fixture goes through the hand-rolled
-  // 16-bit writer instead. That writer used to live in this file as a
+  // 16-bit writer instead. That writer used to live in the suite as a
   // test-only helper; PRD B6 made 16-bit export a P0 production
   // requirement, so it is now io/Export.hpp's encodePng16() and this
   // fixture calls the same one production export does -- there is exactly

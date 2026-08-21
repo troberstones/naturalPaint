@@ -37,7 +37,7 @@ bool runExportAsTest() {
   //     value. Each rounding is at most half a float ulp, i.e. 6e-8 relative,
   //     so for the [0,1] values used here the bound is 2 * 6e-8 = 1.2e-7.
   //     Landed 1.0e-6, 8.3x the bound -- deliberately looser than the ~1.4x
-  //     the round-trip tolerances elsewhere in this file use, because these
+  //     the round-trip tolerances elsewhere in the suite use, because these
   //     comparisons are against hand-computed decimal references (0.3666667
   //     for (0.2 + 0.35)/1.5) whose own decimal-to-float conversion is worth
   //     more headroom than the arithmetic is.
