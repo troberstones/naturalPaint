@@ -445,7 +445,25 @@ bool runDocumentResidencyTest(GpuContext& gpu) {
     // itself from the canvas rather than from the content. At 2048x2048 a tab
     // that did would be 32 MiB, so the bound has four orders of magnitude of
     // room and is still a real test.
-    check(perTabBytes > 0.0 && perTabBytes < 64.0 * 1024.0,
+    //
+    // **Only the upper bound is asserted, and that is a fix rather than a
+    // weakening.** This check used to also require `perTabBytes > 0.0`, which
+    // made it fail whenever RSS did not grow across the loop -- the allocator
+    // returning pages, or reclaim from an earlier section, both of which the
+    // ternary above folds to 0.0 to avoid an unsigned underflow. That is a
+    // process using *less* memory, which is the best possible outcome for the
+    // property under test, being reported as a failure of it. It fired rarely
+    // enough to look like noise and produced a real FAIL when it did.
+    //
+    // Growing by less than the measurement can resolve is not a result this
+    // section is entitled to demand, so it is printed rather than asserted --
+    // and the assertion that remains is the one with a failure behind it.
+    if (perTabBytes == 0.0)
+      std::printf("    [selftest] blank tabs: RSS did not grow measurably across %zu tabs, so "
+                  "the per-tab cost is below this measurement's own resolution -- which is "
+                  "the property passing, not the measurement failing\n",
+                  kManyTabs);
+    check(perTabBytes < 64.0 * 1024.0,
           "each blank tab costs kilobytes, not megabytes (bound: 64 KiB per tab)");
 
     // And the GPU half of the same sentence, on the same twenty tabs.

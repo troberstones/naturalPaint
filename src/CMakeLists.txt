@@ -30,6 +30,7 @@ add_executable(naturalPaint
   app/selftest/CowTile.cpp
   app/selftest/CreateBlank.cpp
   app/selftest/CurveEdit.cpp
+  app/selftest/Descriptor.cpp
   app/selftest/Document.cpp
   app/selftest/DocumentLifecycle.cpp
   app/selftest/DocumentResidency.cpp
@@ -106,6 +107,7 @@ add_executable(naturalPaint
   gfx/ShaderLoader.cpp
   io/Capabilities.cpp
   io/CompSerial.cpp
+  io/Descriptor.cpp
   io/Export.cpp
   io/ExportAs.cpp
   io/ExportStates.cpp

@@ -1246,6 +1246,9 @@ int main(int argc, char** argv) {
     // all-or-nothing rules, the integer-pixel translate align is built on
     // (asserted bit-identical), links, colour labels and the panel filter.
     const bool layerMultiSelectOk = np::runLayerMultiSelectTest();
+    // Phase 12 / PRD G7, G9: io/Descriptor, the Action Descriptor reader, against
+    // synthetic fixtures parsed out of guard-paged mappings.
+    const bool descriptorOk = np::runDescriptorTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1266,7 +1269,7 @@ int main(int argc, char** argv) {
                     exportStatesOk && pigmentDepositOk && layerMultiSelectOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
-                    pigmentBakeOk && strokeBridgeOk;
+                    pigmentBakeOk && strokeBridgeOk && descriptorOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

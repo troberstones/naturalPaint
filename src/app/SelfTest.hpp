@@ -2119,4 +2119,66 @@ bool runActiveLayerTest();
 // configurations; writes and removes two `selftest_present_*.png` files.
 bool runPresentTransferTest(GpuContext& gpu);
 
+// Headless, GPU-free check on io/Descriptor -- the Photoshop Action Descriptor
+// reader (PLAN.md "12 -- Import brushes", first bullet; PRD G7, G9). No file
+// I/O: every fixture is bytes built in the section itself.
+//
+// **This section's centre of gravity is the adversarial half, not the happy
+// one.** io/Descriptor parses files this project did not write and cannot
+// trust -- an `.abr` from a marketplace or a forum -- so the property that
+// matters is that no input causes a read outside the caller's buffer. A test
+// handing the parser a `std::vector` cannot check that: malloc's slack absorbs
+// an overread and the test passes anyway. So **every parse in this section,
+// good fixture and corrupt alike, runs out of a mapping whose last byte abuts
+// an `mprotect(PROT_NONE)` page**, and a single byte of overread is a SIGSEGV
+// at the instruction that did it, in the ordinary RelWithDebInfo build, with no
+// sanitizer. The guarded-parse count is printed, so a change that quietly
+// stopped exercising the guard shows up as a number rather than as a silent
+// `pass`. Identical in both NP_USE_OIIO configurations -- nothing here touches
+// OpenImageIO (PLAN.md 1.5).
+//
+// Covered, in order:
+//
+//  - Every type this build parses -- `Objc`, `GlbO`, `VlLs`, `UntF`, `doub`,
+//    `TEXT`, `enum`, `long`, `comp`, `bool`, `type`, `alis` and `tdta` -- each
+//    read back to its exact value, doubles included, since they are bit
+//    patterns rather than conversions. Ten of them sit in one flat descriptor
+//    whose whole tree is compared against a twelve-line expected dump, so a
+//    framing regression shows as a diff instead of as one wrong accessor.
+//  - **The Key quirk**, which is where third-party readers break: a length of
+//    zero means exactly four characters, any other length means itself. All
+//    four cases -- the zero form, an explicit length of *4* (legal, and what a
+//    reader that special-cases the number 4 gets wrong), a 14-character key and
+//    a 1-character one -- in one descriptor, with the item after each checked
+//    to still be aligned.
+//  - A nested `Objc` inside a `VlLs` inside the root, read through two levels,
+//    with the list element after the nested descriptor proven still aligned and
+//    `path()` reporting `lst /1/useTipDynamics`.
+//  - The typed reads coerce nothing: `asDouble()` on a `long` is absent, not
+//    3.0. An invalid cursor is usable, propagates through `field()` and reads
+//    as absent, so a walk into a file that lacks the key is an expression
+//    rather than a null-check ladder.
+//  - Unpaired UTF-16 surrogates repaired to U+FFFD with **one warning per
+//    string, not per code unit**, each naming the item and a byte offset --
+//    the shape PRD G9's import report is assembled from. The rest of the
+//    string survives, because a brush preset with one bad code unit in its name
+//    is still a brush preset.
+//  - **Every proper prefix of all three good fixtures**, each in its own
+//    guarded mapping. Zero may be accepted, and every one must be refused with
+//    this module's own named sentence.
+//  - Hostile field values, each the good fixture with one number replaced:
+//    item count 2^32-1, list count 2^32-1, `tdta` length 2^32-1, a
+//    UnicodeString length of 2^30 code units, a key length of 2^32-1 and an
+//    oversized classId length. Each refused before anything is reserved.
+//  - `obj `, `ObAr` and an unprintable four-byte type: refused **by name**,
+//    naming the item they sat under, with the escaped bytes rather than raw
+//    ones. An Action Descriptor puts no length in front of a value, so an
+//    unrecognised type genuinely cannot be stepped over -- the refusal says so,
+//    and that sentence is asserted, because it is the argument for refusing.
+//  - Both sides of the depth cap: 60 nested descriptors parse, 4000 are refused
+//    naming the level and the option. Plus `maxNodes` refusing in this module's
+//    words rather than the allocator's, and `maxDepth = 0` reported as a caller
+//    error rather than blamed on the file.
+bool runDescriptorTest();
+
 }  // namespace np
