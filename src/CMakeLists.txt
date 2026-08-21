@@ -72,6 +72,7 @@ add_executable(naturalPaint
   app/selftest/Probe.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/Shaper.cpp
+  app/selftest/StrokeBridge.cpp
   app/selftest/StrokeSpeed.cpp
   app/selftest/Support.cpp
   app/selftest/TileResidency.cpp

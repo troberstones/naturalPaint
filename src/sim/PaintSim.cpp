@@ -99,7 +99,11 @@ static const char* kPassLabels[] = {
     "flow_outward", "advect_water", "advect_pigment", "transfer_pigment",
     "capillary_flow",
     "oil_splat", "oil_velocity", "oil_advect", "oil_transfer", "oil_brush",
-    "ink_splat", "ink_stream", "ink_collide", "ink_pigment", "composite"};
+    "ink_splat", "ink_stream", "ink_collide", "ink_pigment",
+    // Must stay in Pass order. "composite" is not a Pass -- it is the render
+    // pipeline, and it sits past kPassCount so a label lookup for it still
+    // works; anything added to the enum goes BEFORE it.
+    "tile_occupancy", "composite"};
 
 const char* passLabel(int id) {
   const int n = static_cast<int>(sizeof(kPassLabels) / sizeof(kPassLabels[0]));
@@ -164,6 +168,14 @@ void PaintSim::releaseFields() {
     f->release();
   inkAllocated_ = false;
   oilAllocated_ = false;
+  for (WGPUBuffer* b : {&occupancyBuf_, &occupancyRead_}) {
+    if (*b != nullptr) {
+      wgpuBufferDestroy(*b);
+      wgpuBufferRelease(*b);
+      *b = nullptr;
+    }
+  }
+  occupancyBytes_ = 0;
   if (paperView_) { wgpuTextureViewRelease(paperView_); paperView_ = nullptr; }
   if (paper_) { wgpuTextureDestroy(paper_); wgpuTextureRelease(paper_); paper_ = nullptr; }
   if (canvasView_) { wgpuTextureViewRelease(canvasView_); canvasView_ = nullptr; }
@@ -194,6 +206,30 @@ void PaintSim::allocFields(GpuContext& gpu, uint32_t w, uint32_t h) {
   makePingPong(gpu.device, depR_, w, h, "deposited residual*mass", kPigmentFormat);
   makePingPong(gpu.device, sat_, w, h, "capillary saturation", kWaterFormat);
   makePingPong(gpu.device, aux_, w, h, "divergence + pressure correction", kWaterFormat);
+
+  // The bridge's occupancy pair: one `vec2<f32>` per document tile. Two
+  // buffers because a storage buffer cannot be mapped -- the compute pass
+  // writes the first and a copy lands in the second, which is host-visible.
+  //
+  // 8 bytes a tile is 512 bytes at 1024^2 and 2 KiB at 2048^2. (The design
+  // study said 256 bytes at 1024^2; that counted one float per tile, and this
+  // reduction answers the drying question in the same pass, which is what
+  // makes the bake cadence affordable. The number is small either way -- it is
+  // the transfer floor that costs, not the payload.)
+  occupancyBytes_ = static_cast<size_t>(tileCountX()) * tileCountY() * 2 * sizeof(float);
+  if (occupancyBytes_ > 0) {
+    WGPUBufferDescriptor obd = {};
+    obd.label = sv("tile occupancy");
+    obd.size = occupancyBytes_;
+    obd.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc;
+    occupancyBuf_ = wgpuDeviceCreateBuffer(gpu.device, &obd);
+
+    WGPUBufferDescriptor rbd = {};
+    rbd.label = sv("tile occupancy readback");
+    rbd.size = occupancyBytes_;
+    rbd.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    occupancyRead_ = wgpuDeviceCreateBuffer(gpu.device, &rbd);
+  }
 
   paper_ = makeField(gpu.device, w, h, "paper(h,c)", kWaterFormat);
   paperView_ = wgpuTextureCreateView(paper_, nullptr);
@@ -371,6 +407,7 @@ bool PaintSim::buildPipelines(GpuContext& gpu) {
       "oil_transfer.wgsl", "oil_brush.wgsl",
       "ink_splat.wgsl",    "ink_stream.wgsl",      "ink_collide.wgsl",
       "ink_pigment.wgsl",
+      "tile_occupancy.wgsl",
   };
 
   // Build into locals first so a failed reload leaves the old pipelines intact.
@@ -1084,6 +1121,75 @@ bool PaintSim::readbackGraded(GpuContext& gpu, std::vector<uint8_t>& out) {
   }
   wgpuBufferDestroy(staging);
   wgpuBufferRelease(staging);
+  return ok;
+}
+
+bool PaintSim::readTileOccupancy(GpuContext& gpu, std::vector<TileOccupancy>& out) {
+  if (occupancyBuf_ == nullptr || occupancyRead_ == nullptr || occupancyBytes_ == 0) return false;
+  if (pipelines_[kTileOccupancy] == nullptr) return false;
+
+  // The uniform carries the resolution the shader derives its tile grid from,
+  // and the mode that picks the suspended weight. Written here rather than
+  // relying on whatever frame() left behind, so a caller that has not stepped
+  // the sim this frame still gets the right answer.
+  SimParams params = {};
+  params.resolutionX = width_;
+  params.resolutionY = height_;
+  params.mode = static_cast<uint32_t>(mode_);
+  wgpuQueueWriteBuffer(gpu.queue, uniform_, 0, &params, sizeof(params));
+
+  WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(gpu.device, nullptr);
+  WGPUComputePassEncoder cpass = wgpuCommandEncoderBeginComputePass(enc, nullptr);
+  const std::vector<WGPUBindGroupEntry> entries = {
+      bufEntry(0, uniform_, sizeof(SimParams)), texEntry(1, water_.src()),
+      texEntry(2, pigC_.src()),             texEntry(3, depC_.src()),
+      texEntry(4, sat_.src()),              bufEntry(5, occupancyBuf_, occupancyBytes_)};
+  WGPUBindGroupLayout layout =
+      wgpuComputePipelineGetBindGroupLayout(pipelines_[kTileOccupancy], 0);
+  wgpuComputePassEncoderSetPipeline(cpass, pipelines_[kTileOccupancy]);
+  wgpuComputePassEncoderSetBindGroup(
+      cpass, 0, bindGroup(gpu, kTileOccupancy, layout, entries), 0, nullptr);
+  // One workgroup per tile: the reduction's whole shape.
+  wgpuComputePassEncoderDispatchWorkgroups(cpass, tileCountX(), tileCountY(), 1);
+  wgpuComputePassEncoderEnd(cpass);
+  wgpuComputePassEncoderRelease(cpass);
+  wgpuBindGroupLayoutRelease(layout);
+  wgpuCommandEncoderCopyBufferToBuffer(enc, occupancyBuf_, 0, occupancyRead_, 0, occupancyBytes_);
+  WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(enc, nullptr);
+  wgpuQueueSubmit(gpu.queue, 1, &cmd);
+  wgpuCommandBufferRelease(cmd);
+  wgpuCommandEncoderRelease(enc);
+
+  // Blocking, and only because this payload is at the transfer floor. The
+  // tile payload it gates is megabytes and must never be read this way -- see
+  // the header.
+  struct MapState { bool done = false; bool ok = false; } state;
+  WGPUBufferMapCallbackInfo mci = {};
+  mci.mode = WGPUCallbackMode_AllowProcessEvents;
+  mci.userdata1 = &state;
+  mci.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void* ud1, void*) {
+    auto* st = static_cast<MapState*>(ud1);
+    st->ok = (status == WGPUMapAsyncStatus_Success);
+    st->done = true;
+  };
+  wgpuBufferMapAsync(occupancyRead_, WGPUMapMode_Read, 0, occupancyBytes_, mci);
+  while (!state.done) wgpuInstanceProcessEvents(gpu.instance);
+
+  bool ok = false;
+  if (state.ok) {
+    const auto* raw =
+        static_cast<const float*>(wgpuBufferGetConstMappedRange(occupancyRead_, 0, occupancyBytes_));
+    if (raw != nullptr) {
+      const size_t n = static_cast<size_t>(tileCountX()) * tileCountY();
+      out.resize(n);
+      for (size_t i = 0; i < n; ++i) {
+        out[i].mass = raw[i * 2];
+        out[i].wetness = raw[i * 2 + 1];
+      }
+      ok = true;
+    }
+    wgpuBufferUnmap(occupancyRead_);
+  }
   return ok;
 }
 

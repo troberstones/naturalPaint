@@ -827,6 +827,7 @@ int main(int argc, char** argv) {
     // The solver-to-document mass mapping, the arithmetic half of the
     // stroke bridge. Pure CPU -- it is a claim about numbers.
     const bool pigmentBakeOk = np::runPigmentBakeTest();
+    const bool strokeBridgeOk = np::runStrokeBridgeTest(gpu);
     // The presentation transfer function, from a linear value in a layer to a
     // byte in a screenshot -- the one edge no section covered, which is why the
     // chrome's measured darkening had no explanation. Needs the GPU.
@@ -1265,7 +1266,7 @@ int main(int argc, char** argv) {
                     exportStatesOk && pigmentDepositOk && layerMultiSelectOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
-                    pigmentBakeOk;
+                    pigmentBakeOk && strokeBridgeOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

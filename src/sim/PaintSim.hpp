@@ -220,6 +220,42 @@ class PaintSim {
   Stats computeStats(GpuContext& gpu);
 
   // --diag only: lets the harness measure where pigment actually ended up.
+  // --- The stroke bridge's dirty-and-drying question -----------------------
+  //
+  // One entry per 128x128 document tile, in row-major tile order. `mass` is
+  // the largest `deposited + weight*suspended` pigment mass anywhere in the
+  // tile, using the same suspended weight shaders/composite.wgsl draws with;
+  // `wetness` is the largest of the water film's depth, its wet mask and the
+  // capillary saturation. A tile is ready to bake when `mass` is above the
+  // noise floor and `wetness` has gone to zero.
+  //
+  // Deliberately NOT a bounding box. The measured cost of taking exactly the
+  // tiles you need rather than one bounding-box copy is about 3.6%, so
+  // bounding-box logic would buy nothing and would over-report every stroke
+  // that curves.
+  struct TileOccupancy {
+    float mass = 0.0f;
+    float wetness = 0.0f;
+  };
+
+  // Runs the reduction and reads the result back, BLOCKING. That is the right
+  // call for this payload and only for this payload: it is a few hundred bytes
+  // and sits at the transfer floor (measured 0.129 ms median), where a tile
+  // payload is megabytes and must always be deferred. Returns false and leaves
+  // `out` untouched if the sim has no fields yet.
+  //
+  // `out` is resized to `tileCountX() * tileCountY()`.
+  bool readTileOccupancy(GpuContext& gpu, std::vector<TileOccupancy>& out);
+
+  uint32_t tileCountX() const { return (width_ + kBridgeTile - 1) / kBridgeTile; }
+  uint32_t tileCountY() const { return (height_ + kBridgeTile - 1) / kBridgeTile; }
+
+  // The tile edge the bridge reduces over. It is core/Tile's 128, and it has
+  // to stay that: the whole point is that one entry here answers for exactly
+  // one document tile, so a mismatch would make the mapping many-to-many and
+  // the bake would have to intersect rectangles instead of naming tiles.
+  static constexpr uint32_t kBridgeTile = 128;
+
   bool readbackField(GpuContext& gpu, WGPUTexture tex, WGPUTextureFormat format,
                      std::vector<float>& out);
   WGPUTexture depCTexForDiag() const { return depC_.srcTex(); }
@@ -393,8 +429,14 @@ class PaintSim {
               kFlowOutward, kAdvectWater, kAdvectPig, kTransferPig, kCapillary,
               kOilSplat, kOilVelocity, kOilAdvect, kOilTransfer, kOilBrush,
               kInkSplat, kInkStream, kInkCollide, kInkPigment,
+              kTileOccupancy,
               kPassCount };
   WGPUComputePipeline pipelines_[kPassCount] = {};
+  // The bridge's occupancy buffer and its host-visible staging copy. Sized
+  // by allocFields() from the tile counts, so a resize reallocates both.
+  WGPUBuffer occupancyBuf_ = nullptr;
+  WGPUBuffer occupancyRead_ = nullptr;
+  size_t occupancyBytes_ = 0;
   WGPURenderPipeline composite_ = nullptr;
   WGPURenderPipeline grayscalePipeline_ = nullptr;
   WGPURenderPipeline gradePipeline_ = nullptr;

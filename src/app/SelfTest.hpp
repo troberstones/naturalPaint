@@ -1269,6 +1269,14 @@ bool runPigmentLayerTest();
 // configurations.
 bool runPigmentBakeTest();
 
+// The stroke bridge's dirty-and-drying query (PLAN.md roadmap section 11):
+// PaintSim::readTileOccupancy() reduced against a full-field readback of the
+// same fields, so the cheap answer is proven not to under-report the expensive
+// one -- the failure mode that would silently lose paint. Then the whole path,
+// occupancy -> readback -> core/PigmentBake, on a real solver stroke. Needs the
+// GPU.
+bool runStrokeBridgeTest(GpuContext& gpu);
+
 bool runPigmentBasisTest();
 
 // PLAN.md Phase 5 step 4 -- "Layer masks -- single-channel tile store, the
