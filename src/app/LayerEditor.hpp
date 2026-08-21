@@ -83,6 +83,18 @@ enum class LayerCommand {
   ToggleLocked,
   // PLAN.md Phase 5 step 9 / PRD C9.
   ToggleClipped,
+  // PLAN.md Phase 5 step 10 / PRD C10 (P0) and C11 (P1) -- core/Merge. Listed
+  // here rather than wired into the menu separately for this file's own
+  // reason: `allLayerCommands()` is what both the `Layer` menu and the LAYERS
+  // panel walk, so a merge added anywhere else would be a merge only one of
+  // them offered. They sit after the flags because that is the order the menu
+  // presents them in -- creation, whole-layer operations, mask, flags, then
+  // the operations that consume layers.
+  MergeDown,
+  MergeVisible,
+  StampVisible,
+  FlattenImage,
+  RasteriseLayer,
 };
 
 // Every command, in menu order. Used by the menu, by the panel and by the
@@ -113,6 +125,13 @@ struct LayerEditResult {
   bool ok = false;
   // core/LayerOps' own refusal sentence, verbatim. Empty when `ok`.
   std::string error;
+  // What went ahead but is worth saying (PLAN.md Phase 5 step 10). Only the
+  // five core/Merge commands ever fill this: a merge is the one gesture here
+  // that succeeds *and* destroys something -- a mask, an op stack, a layer, a
+  // tile that fell outside the canvas -- and core/Merge.hpp §3 argues at
+  // length why each of those is reported rather than refused. Empty for every
+  // other command, and empty on a refusal.
+  std::vector<std::string> warnings;
   // Where the selection ends up: the new layer after a create, the copy after
   // a duplicate, the moved layer after a reorder, the row that took the
   // deleted one's place after a delete, and the unchanged selection after any

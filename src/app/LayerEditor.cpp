@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "core/LayerOps.hpp"
+#include "core/Merge.hpp"
 
 namespace np {
 namespace {
@@ -36,6 +37,24 @@ LayerEditResult record(OpenDocument& doc, LayerOpResult result, size_t selected,
   return r;
 }
 
+// The same funnel for a core/Merge operation, which differs from every
+// core/LayerOps one in two ways and in no others: it can succeed with
+// something to say (core/Merge.hpp §3), and where the selection lands is
+// `LayerOpResult::index` rather than something this file computes -- a merge
+// decides for itself which row the result occupies, because that row is the
+// one it created.
+LayerEditResult recordMerge(OpenDocument& doc, LayerOpResult result, size_t selected,
+                            std::vector<std::string> warnings) {
+  const size_t landed = result.index;
+  const DocumentOpResult out = recordLayerEdit(doc, std::move(result));
+  if (!out.ok) return refused(out.error, selected);
+  LayerEditResult r;
+  r.ok = true;
+  r.selected = landed;
+  r.warnings = std::move(warnings);
+  return r;
+}
+
 }  // namespace
 
 const std::vector<LayerCommand>& allLayerCommands() {
@@ -46,6 +65,9 @@ const std::vector<LayerCommand>& allLayerCommands() {
       LayerCommand::MoveLayerDown,  LayerCommand::AddMask,
       LayerCommand::RemoveMask,     LayerCommand::ToggleVisible,
       LayerCommand::ToggleLocked,   LayerCommand::ToggleClipped,
+      LayerCommand::MergeDown,      LayerCommand::MergeVisible,
+      LayerCommand::StampVisible,   LayerCommand::FlattenImage,
+      LayerCommand::RasteriseLayer,
   };
   return kAll;
 }
@@ -64,6 +86,11 @@ const char* layerCommandLabel(LayerCommand command) noexcept {
     case LayerCommand::ToggleVisible:      return "Toggle Visibility";
     case LayerCommand::ToggleLocked:       return "Toggle Lock";
     case LayerCommand::ToggleClipped:      return "Clip to Layer Below";
+    case LayerCommand::MergeDown:          return "Merge Down";
+    case LayerCommand::MergeVisible:       return "Merge Visible";
+    case LayerCommand::StampVisible:       return "Stamp Visible";
+    case LayerCommand::FlattenImage:       return "Flatten Image";
+    case LayerCommand::RasteriseLayer:     return "Rasterise Layer";
   }
   return "?";
 }
@@ -101,6 +128,26 @@ bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t sel
     // arrived at index 0 from a file.
     case LayerCommand::ToggleClipped:
       return haveSelection && (selected > 0 || doc.layers[selected].clipped);
+    // PLAN.md Phase 5 step 10. Availability only where the gesture is
+    // meaningless on this row -- the bottom layer has nothing below it to
+    // merge into, and an empty document has nothing to collapse. Everything
+    // else a merge can object to (a lock, a blend, a Pigment pair, a hidden
+    // layer, a kind that is not parametric) is a **refusal** with core/Merge's
+    // own sentence, for this header's stated reason: greying out replaces an
+    // explanation with a control that silently does nothing, and a merge has
+    // more to explain than any other command here.
+    case LayerCommand::MergeDown:
+      return haveSelection && selected > 0;
+    case LayerCommand::MergeVisible:
+    case LayerCommand::StampVisible:
+    case LayerCommand::FlattenImage:
+      return count > 0;
+    // Deliberately not gated on `kind == Adjustment`. PRD C11 names four
+    // parametric kinds and only one exists; a user who picks a Text layer and
+    // finds the item greyed learns nothing, and a user who picks it and gets
+    // core/Merge's sentence learns which three kinds are still unbuilt and why.
+    case LayerCommand::RasteriseLayer:
+      return haveSelection;
   }
   return false;
 }
@@ -171,6 +218,35 @@ LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t
                     setLayerClipped(doc, selected,
                                     selected < count ? !doc.layers[selected].clipped : true),
                     selected, selected);
+    // PLAN.md Phase 5 step 10 / PRD C10, C11. Each collects core/Merge's
+    // warnings into a local list and hands it on, so the panel can say what a
+    // successful merge cost. `recordMerge()` takes the landing index from the
+    // result rather than computing one here -- see its comment.
+    case LayerCommand::MergeDown: {
+      std::vector<std::string> warnings;
+      LayerOpResult r = mergeLayerDown(doc, selected, &warnings);
+      return recordMerge(od, std::move(r), selected, std::move(warnings));
+    }
+    case LayerCommand::MergeVisible: {
+      std::vector<std::string> warnings;
+      LayerOpResult r = mergeVisibleLayers(doc, &warnings);
+      return recordMerge(od, std::move(r), selected, std::move(warnings));
+    }
+    case LayerCommand::StampVisible: {
+      std::vector<std::string> warnings;
+      LayerOpResult r = stampVisibleLayers(doc, &warnings);
+      return recordMerge(od, std::move(r), selected, std::move(warnings));
+    }
+    case LayerCommand::FlattenImage: {
+      std::vector<std::string> warnings;
+      LayerOpResult r = flattenDocument(doc, &warnings);
+      return recordMerge(od, std::move(r), selected, std::move(warnings));
+    }
+    case LayerCommand::RasteriseLayer: {
+      std::vector<std::string> warnings;
+      LayerOpResult r = rasteriseLayer(doc, selected, &warnings);
+      return recordMerge(od, std::move(r), selected, std::move(warnings));
+    }
   }
   return refused("unknown layer command.", selected);
 }

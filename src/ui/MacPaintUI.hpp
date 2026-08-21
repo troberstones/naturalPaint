@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "app/AppState.hpp"
 #include "gfx/Context.hpp"
@@ -46,5 +48,17 @@ const DocumentTexture& canvasDocumentTexture();
 // whichever layer the selection happened to start on. Clamped by the panel
 // itself on the next frame, so an index past the end is not an error here.
 void setLayersPanelSelection(size_t layerIndex);
+
+// What the LAYERS panel shows under the stack after an operation: the refusal
+// sentence when one was refused, and core/Merge's warnings when one went ahead
+// and cost something (PLAN.md Phase 5 step 10).
+//
+// Same shape and same one reason as the setter above: main.cpp's
+// `--ui-merge-demo` calls `app::applyLayerCommand()` directly rather than
+// through this file's `runLayerCommand()`, so without this the panel would be
+// photographed showing nothing while the terminal showed the sentence. It sets
+// exactly what a button press would have set, so the screenshot is of the
+// state a click produces and not of a second one invented for it.
+void setLayersPanelMessages(std::string error, std::vector<std::string> warnings);
 
 }  // namespace np

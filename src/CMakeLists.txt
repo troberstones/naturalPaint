@@ -25,6 +25,7 @@ add_executable(naturalPaint
   core/Histogram.cpp
   core/History.cpp
   core/LayerOps.cpp
+  core/Merge.cpp
   core/OpStack.cpp
   core/Pigment.cpp
   core/Probe.cpp

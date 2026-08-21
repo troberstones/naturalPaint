@@ -1694,4 +1694,44 @@ bool runControlsLayoutTest();
 // Needs the GPU (it uploads sub-rectangles and reads them back).
 bool runIncrementalCompositeTest(GpuContext& gpu);
 
+// PLAN.md Phase 5 step 10 / PRD C10 (P0), C11 (P1): core/Merge -- merge down,
+// merge visible, stamp visible, flatten image, and rasterise a parametric
+// layer.
+//
+// What is asserted:
+//  - **The property that makes a merge trustworthy**: the document's composite
+//    before and after, compared at a *derived* bound rather than a chosen one
+//    (2^-11 relative plus 2^-25 absolute -- one f16 round trip, which is the
+//    only error there is), with the measured maximum printed beside it. A
+//    fixture whose composite is exactly representable in f16 is merged too and
+//    asserted bit-exact, which is what shows the error is storage and not
+//    arithmetic.
+//  - **Every refusal, with its numbers**: the bottom layer, an out-of-range
+//    index, a locked layer on either side, a hidden layer, a non-normal blend
+//    on either side, an Adjustment layer, an inert kind, a group boundary, a
+//    clip base whose member sits above the pair, and the one clip arrangement
+//    of four that has no answer.
+//  - **Pigment, decided rather than degraded**: two Pigment layers under `over`
+//    are refused (a glaze has no latent), a `Mix` pair merges *in latent space*
+//    and the result is asserted to still be mixable through the project's own
+//    `blendModeAvailableForLayer()`. The rejected RGB fallback is built beside
+//    it and shown to fail that same predicate.
+//  - **One walk, not two**: merge visible is run over a fixture carrying a mix
+//    pair, a clipping run and an adjustment layer at once, and the collapsed
+//    single layer is asserted to reproduce the composite.
+//  - **Stamp visible's honest invariant**: it is *not* appearance-preserving,
+//    so what is asserted is that the stamped layer alone composites to what the
+//    whole document did -- and the case where the full document then differs is
+//    measured and shown to be warned about.
+//  - **Undo**: a merge through `applyLayerCommand()` moves the revision exactly
+//    once, appends exactly one history entry, and undoes to a bit-identical
+//    composite.
+//  - **The cost of reusing core/Composite**, printed: the sub-document's shared
+//    tiles against what a deep copy would have cost, the canvas-sized
+//    intermediate buffer, and the merged layer's own tiles.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+// Headless and GPU-free; writes no files.
+bool runMergeFamilyTest();
+
 }  // namespace np
