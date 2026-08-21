@@ -173,6 +173,19 @@ struct AppState {
   bool requestZoomOut = false;
   bool quit = false;
 
+  // F12, and `--screenshot <path>`. Serviced in main.cpp between the UI's
+  // submission and the present, which is the only moment the backbuffer both
+  // holds this frame and is still readable. app/Screenshot.hpp says why the app
+  // photographs itself rather than being photographed: every macOS route to
+  // another process's window pixels is behind a permission that fails
+  // *silently*, handing back the desktop with all windows stripped out.
+  //
+  // A request, not a call, for the same reason every other `request*` above is
+  // one -- the key arrives during event handling, and the only legal place to
+  // act on it is a specific point in the frame that has not happened yet.
+  bool requestScreenshot = false;
+  std::string screenshotPath = "naturalpaint-screenshot.png";
+
   // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD
   // Q5-Q7). Session-local view state, the same treatment every other
   // AppState field above gets -- not document state. Photoshop-style guides

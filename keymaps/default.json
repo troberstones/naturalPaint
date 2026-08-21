@@ -18,6 +18,8 @@
 
     { "key": ";", "mods": ["Cmd"], "action": "toggle_guides" },
     { "key": ";", "mods": ["Cmd", "Shift"], "action": "toggle_snapping" },
-    { "key": "'", "mods": ["Cmd"], "action": "toggle_grid" }
+    { "key": "'", "mods": ["Cmd"], "action": "toggle_grid" },
+
+    { "key": "F12", "action": "screenshot" }
   ]
 }

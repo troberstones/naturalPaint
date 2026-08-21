@@ -20,6 +20,7 @@
 #include "app/Keymap.hpp"
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
+#include "app/Screenshot.hpp"
 #include "app/SelfTest.hpp"
 #include "gfx/Context.hpp"
 #include "paint/Palette.hpp"
@@ -83,6 +84,8 @@ int main(int argc, char** argv) {
   float diagSeconds = 0.0f;
   bool modeTest = false;
   bool latencyVerbose = false;
+  const char* screenshotPath = nullptr;
+  int screenshotFrames = 30;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
     if (a == "--selftest") {
@@ -98,6 +101,19 @@ int main(int argc, char** argv) {
     } else if (a == "--latency") {
       // Prints a line per recorded sample, not just the per-stroke summary.
       latencyVerbose = true;
+    } else if (a == "--screenshot") {
+      // --screenshot <path> [frames] : render, photograph the window into
+      // <path>, and exit. See app/Screenshot.hpp for why the app captures
+      // itself rather than being captured -- in short, every macOS route to
+      // another process's window pixels is behind a permission that fails
+      // *silently*, returning the desktop with all windows stripped out.
+      //
+      // The frame count exists because the first frames are not
+      // representative: ImGui needs a frame to lay out docked panels, and the
+      // GPU context reports its adapter on frame 0. The default settles both
+      // without being slow enough to be annoying in a loop.
+      if (i + 1 < argc && argv[i + 1][0] != '-') screenshotPath = argv[++i];
+      if (i + 1 < argc && argv[i + 1][0] != '-') screenshotFrames = std::atoi(argv[++i]);
     }
   }
 
@@ -636,6 +652,9 @@ int main(int argc, char** argv) {
   latency.setVerbose(latencyVerbose);
   bool strokeWasActive = false;
 
+  // Frame counter, used only by --screenshot: the first frames are not
+  // representative (ImGui lays out docked panels on frame 1).
+  uint64_t frameIndex = 0;
   while (!st.quit) {
     st.lastInputEventNs = 0;
     SDL_Event e;
@@ -671,6 +690,10 @@ int main(int argc, char** argv) {
         else if (action == "clear_canvas") st.requestClear = true;
         else if (action == "reload_shaders") st.requestReload = true;
         else if (action == "quit") st.quit = true;
+        // F12: app/Screenshot -- the app photographs its own window, because
+        // every macOS route to another process's pixels is behind a
+        // permission that fails silently. Serviced in the present block.
+        else if (action == "screenshot") st.requestScreenshot = true;
         // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4). Fit/100%/
         // zoom-in/zoom-out are request flags because they need the canvas
         // window's actual on-screen size, which only exists inside
@@ -848,6 +871,24 @@ int main(int argc, char** argv) {
     wgpuQueueSubmit(gpu.queue, 1, &cmd);
     wgpuCommandBufferRelease(cmd);
     wgpuCommandEncoderRelease(enc);
+
+    // --screenshot / F12: between the UI's submission and the present, which
+    // is the only window where the backbuffer both holds this frame's UI and
+    // is still readable. app/Screenshot.hpp explains why the app photographs
+    // itself instead of being photographed.
+    if (st.requestScreenshot || (screenshotPath != nullptr && frameIndex == screenshotFrames)) {
+      const std::string shotPath =
+          st.requestScreenshot && screenshotPath == nullptr ? st.screenshotPath : screenshotPath;
+      std::string shotError;
+      if (np::captureSurfaceToPng(gpu, surfaceTex.texture, gpu.width, gpu.height, shotPath,
+                                  &shotError))
+        std::printf("[screenshot] wrote %s (%ux%u)\n", shotPath.c_str(), gpu.width, gpu.height);
+      else
+        std::fprintf(stderr, "[screenshot] %s\n", shotError.c_str());
+      st.requestScreenshot = false;
+      if (screenshotPath != nullptr) st.quit = true;  // --screenshot is capture-and-exit
+    }
+    ++frameIndex;
 
     wgpuSurfacePresent(gpu.surface);
     // st.paintingThisFrame (not st.sim.brushActive): post-1.3 brushActive

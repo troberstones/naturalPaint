@@ -153,7 +153,10 @@ void GpuContext::configureSurface(uint32_t w, uint32_t h) {
   WGPUSurfaceConfiguration config = {};
   config.device = device;
   config.format = surfaceFormat;
-  config.usage = WGPUTextureUsage_RenderAttachment;
+  // CopySrc is app/Screenshot: it lets the app photograph its own window, which
+  // needs no Screen Recording permission and cannot be defeated by window focus
+  // or Spaces. Free on a surface that was already a render target.
+  config.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
   config.width = w;
   config.height = h;
   config.presentMode = WGPUPresentMode_Fifo;
