@@ -1986,4 +1986,11 @@ bool runPigmentDepositTest();
 // and removes three `.npaint` files.
 bool runLayerMultiSelectTest();
 
+// The Atelier chrome -- docs/ui.md section 1's twelve design tokens and
+// section 2's dimensioned layout, checked against the document rather than
+// against a screenshot, plus PRD L1's working-space label, L6's surround and
+// L7's resident/budget pair. Headless and GPU-free; the layout is arithmetic
+// and the tokens are integers, which is why both are free of ImGui.
+bool runAtelierChromeTest();
+
 }  // namespace np

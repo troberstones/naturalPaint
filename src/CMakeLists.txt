@@ -39,6 +39,7 @@ add_executable(naturalPaint
   app/selftest/ExportStates.cpp
   app/selftest/FieldAllocation.cpp
   app/selftest/Fonts.cpp
+  app/selftest/AtelierChrome.cpp
   app/selftest/FormatSupport.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Histogram.cpp
@@ -114,7 +115,9 @@ add_executable(naturalPaint
   ui/MacPaintUI.cpp
   ui/NaturalPaintUI.cpp
   ui/Fonts.cpp
-  ui/Theme.cpp
+  ui/AtelierTheme.cpp
+  ui/AtelierLayout.cpp
+  ui/AtelierChrome.cpp
 )
 
 target_include_directories(naturalPaint PRIVATE

@@ -1,5 +1,9 @@
 #include "ui/MacPaintUI.hpp"
 
+#include "ui/AtelierChrome.hpp"
+#include "ui/AtelierLayout.hpp"
+#include "ui/AtelierTheme.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -31,20 +35,25 @@
 namespace np {
 namespace {
 
-constexpr float kToolCol = 2.0f;
-constexpr float kToolSize = 30.0f;
-constexpr float kPaletteW = kToolCol * kToolSize + 18.0f;
-// Widened from 268 px by UI detour step 3. The old width could not hold the
-// longest label in the column beside a usable slider at all -- see the label
-// column below, which now measures what it actually needs and reports it. 300
-// costs the canvas 32 px of width and buys every control its whole name.
-constexpr float kControlsW = 300.0f;
-constexpr float kSwatchStripH = 62.0f;
+// The three layout constants this file used to invent are now docs/ui.md
+// section 2's, in ui/AtelierLayout: a 104 px palette of 50 px cells (this file
+// had 78 px and 30 px) and a 322 px right column (this file had 300 px, itself
+// widened from 268 px by UI detour step 3 to stop the longest label clipping
+// -- 322 keeps that fix and takes the design's number).
+//
+// `kSwatchStripH` is gone with the band it measured: the design has no
+// full-width swatch strip along the bottom of the window. That row is where
+// the status bar goes, and the pigment well it held has moved into the COLOR
+// section of the right-hand column, which is where docs/ui.md section 3.3 puts
+// colour selection.
+constexpr float kToolCol = static_cast<float>(kToolGridCols);
+constexpr float kToolSize = kToolCellSize;
+constexpr float kControlsW = kRightColumnW;
 // Peak gravity, in the same cells-per-step units as the rest of the velocity field.
 constexpr float kMaxTilt = 0.50f;
 // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD Q5-Q7).
 // Screen-space px, not document-space -- the ruler strip's on-screen size is
-// a layout constant like kSwatchStripH above, and the snap radius is
+// a layout constant like the band heights above, and the snap radius is
 // defined to *feel* constant on screen regardless of zoom (converted to a
 // document-space threshold per-frame; see the canvas block below).
 constexpr float kRulerThickness = 20.0f;
@@ -249,17 +258,6 @@ void runLayerSetCommand(AppState& st, LayerSetCommand command) {
       r.selection.empty() ? 0 : r.selection.indices.front();
 }
 
-const char* toolName(Tool t) {
-  switch (t) {
-    case Tool::Brush:      return "Brush";
-    case Tool::Water:      return "Water";
-    case Tool::DryBrush:   return "Dry Brush";
-    case Tool::Eyedropper: return "Eyedropper";
-    case Tool::Hand:       return "Hand";
-    case Tool::Zoom:       return "Zoom";
-    default:               return "?";
-  }
-}
 
 // Icons are drawn rather than loaded so there is no asset to ship and they stay
 // crisp at any DPI. Chunky strokes, no anti-aliased flourishes — the originals
@@ -1422,6 +1420,106 @@ void drawLayersSection(AppState& st) {
 // to sit in a 200-line block. Every labelled control goes through ctlSlider()
 // so its name cannot be clipped by the panel edge -- four of them were.
 
+// docs/ui.md section 3.3, and PRD **L4** (P0): "The colour panel has RGB and
+// PIGMENT modes; PIGMENT selects physical constants, not just a colour."
+//
+// The reconciliation this section exists for, in the design's own words: the
+// wireframe's COLOR panel was HSV + hex + RGB, "but pigment selection drives
+// *physical* constants -- density, staining, granulation -- so Ultramarine and
+// Phthalo Blue behave differently at the same RGB." So PIGMENT mode shows
+// those three numbers beside the well, because they are the reason the mode
+// exists; a well that only set a colour would be RGB mode with fewer options.
+//
+// The pigment well itself is the swatch row that used to be a 62 px strip
+// along the bottom of the window. Same palette, same click, same tooltip --
+// what changed is that it is in the panel the design puts colour in, and that
+// selecting a pigment now visibly reports what it selected.
+//
+// Panel-local state, like `drawCompsSection()`'s selection: which mode the
+// panel is in is not a property of the document and no file records it.
+bool g_colorPigmentMode = true;
+float g_colorRgb[3] = {0.10f, 0.12f, 0.45f};
+
+void drawColorSection(AppState& st) {
+  // The mode toggle in the header row, where section 3.3 puts it ("COLOR
+  // gains a mode toggle in its header"). Two buttons rather than a combo: the
+  // set has two members and will not grow, and the accent then does what the
+  // accent is for -- marking which one is on.
+  const auto modeButton = [](const char* label, bool on) {
+    if (on) {
+      float ac[3], fg[3];
+      unpackRgb(kAccent, ac);
+      unpackRgb(kOnAccent, fg);
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(ac[0], ac[1], ac[2], 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(ac[0], ac[1], ac[2], 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(fg[0], fg[1], fg[2], 1.0f));
+    }
+    const bool pressed = ImGui::SmallButton(label);
+    if (on) ImGui::PopStyleColor(3);
+    return pressed;
+  };
+  if (modeButton("PIGMENT", g_colorPigmentMode)) g_colorPigmentMode = true;
+  ImGui::SameLine();
+  if (modeButton("RGB", !g_colorPigmentMode)) g_colorPigmentMode = false;
+
+  const std::vector<Pigment>& palette = defaultPalette();
+  const Pigment& sel = palette[st.brush.pigment];
+
+  if (g_colorPigmentMode) {
+    // The well. Wrapped to the panel width rather than laid out in one row:
+    // the strip this came from was as wide as the window, and a 322 px column
+    // is not.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float sw = 26.0f;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    float rowX = 0.0f;
+    for (size_t i = 0; i < palette.size(); ++i) {
+      if (rowX > 0.0f && rowX + sw <= avail) ImGui::SameLine(0.0f, 3.0f);
+      else rowX = 0.0f;
+      ImGui::PushID(static_cast<int>(i));
+      const ImVec2 p = ImGui::GetCursorScreenPos();
+      if (ImGui::InvisibleButton("##sw", ImVec2(sw, sw)))
+        st.brush.pigment = static_cast<int>(i);
+      const Pigment& pg = palette[i];
+      dl->AddRectFilled(p, ImVec2(p.x + sw, p.y + sw),
+                        IM_COL32((int)(pg.rgb[0] * 255), (int)(pg.rgb[1] * 255),
+                                 (int)(pg.rgb[2] * 255), 255));
+      const bool on = st.brush.pigment == static_cast<int>(i);
+      dl->AddRect(p, ImVec2(p.x + sw, p.y + sw),
+                  on ? atelierToken(kAccent) : atelierToken(kDivider), 0.0f, 0,
+                  on ? kRuleThickness : kDividerThickness);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", pg.name);
+      ImGui::PopID();
+      rowX += sw + 3.0f;
+    }
+    ImGui::Dummy(ImVec2(0, 2));
+    ImGui::TextUnformatted(sel.name);
+
+    // The three constants, which are the whole argument for this mode. On two
+    // lines because all three plus their labels do not fit a 322 px column at
+    // this font, and a clipped `granulation` would hide the one of the three a
+    // reader is least likely to guess from the swatch.
+    ImGui::TextDisabled("density %.2f    staining %.2f", sel.density, sel.staining);
+    ImGui::TextDisabled("granulation %.2f", sel.granulation);
+    // "The RGB readout stays visible as the resulting colour, read-only."
+    ImGui::TextDisabled("rgb %.3f %.3f %.3f", sel.rgb[0], sel.rgb[1], sel.rgb[2]);
+  } else {
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::ColorPicker3("##rgb", g_colorRgb,
+                        ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview |
+                            ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_Float);
+    // Said plainly rather than left for a user to discover by painting.
+    // Section 3.3 allows a raw RGB colour on a Pigment layer -- "it maps
+    // through RGB->latent, with the caveat ... that the decomposition is
+    // plausible rather than true" -- but the mapping is not built, and neither
+    // is the path from any colour here to a deposit: the pen is not yet wired
+    // to a layer at all (PLAN.md's Phase 5 finding).
+    ImGui::TextWrapped("Not yet connected: no tool reads this colour. The brush deposits the "
+                       "PIGMENT selection, which carries physical constants an RGB triple "
+                       "does not.");
+  }
+}
+
 void drawBrushSection(AppState& st) {
   ctlSlider("Load", &st.brush.load, 0.0f, 2.5f);
   ctlSlider("Water", &st.brush.wetness, 0.0f, 3.0f);
@@ -1617,6 +1715,26 @@ void drawSolverSection(AppState& st, PaintSim* sim) {
 // texture no stroke escapes -- core/History.hpp says so at length. So the rows
 // are layer operations, placing an image, duplicating and reverting, and a
 // session spent painting produces exactly one row.
+// One path from a widget to a history cursor move, shared by the HISTORY
+// panel and the title bar's undo/redo pair -- docs/ui.md section 2 draws
+// undo/redo in the title bar, so there are now two widgets that move the
+// cursor and there must still be one place that knows what moving it costs.
+//
+// A cursor move is not an edit: it must NOT go through recordEdit(), which
+// would append a history entry for the act of moving through history. It does
+// change the document on screen, so the dirty flag and the journal's
+// structural revision both move -- an undone "add layer" changes the layer
+// stack, and a journal that kept the pre-jump structural state would be
+// holding a document that is no longer open.
+std::string g_historyError;
+void installHistoryCursor(OpenDocument& od, const HistoryPanelClick& r) {
+  g_historyError = r.ok ? std::string() : r.refusal;
+  if (!r.ok || r.document == nullptr) return;
+  od.document = *r.document;
+  ++od.revision;
+  ++od.structuralRevision;
+}
+
 void drawHistorySection(AppState& st) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
@@ -1625,21 +1743,8 @@ void drawHistorySection(AppState& st) {
   }
 
   History& h = od->history;
-  static std::string lastError;
-
-  // A cursor move is not an edit: it must NOT go through recordEdit(), which
-  // would append a history entry for the act of moving through history. It
-  // does change the document on screen, so the dirty flag and the journal's
-  // structural revision both move -- an undone "add layer" changes the layer
-  // stack, and a journal that kept the pre-jump structural state would be
-  // holding a document that is no longer open.
-  auto install = [&](const HistoryPanelClick& r) {
-    lastError = r.ok ? std::string() : r.refusal;
-    if (!r.ok || r.document == nullptr) return;
-    od->document = *r.document;
-    ++od->revision;
-    ++od->structuralRevision;
-  };
+  std::string& lastError = g_historyError;
+  auto install = [&](const HistoryPanelClick& r) { installHistoryCursor(*od, r); };
 
   const std::vector<HistoryPanelRow> rows = historyPanelRows(h);
   ImGui::TextDisabled("%zu state(s), cursor on %zu", rows.size(),
@@ -2813,7 +2918,30 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   const ImGuiViewport* vp = ImGui::GetMainViewport();
 
   // ------------------------------------------------------------ menu bar
-  if (ImGui::BeginMainMenuBar()) {
+  // ------------------------------------------------------------ title bar
+  //
+  // docs/ui.md section 2's first band: 36 px, wordmark then menus, undo/redo
+  // at the right. ImGui fixes the main menu bar's height at `GetFrameHeight()`
+  // -- font size plus twice the frame padding -- so the padding is pushed for
+  // exactly the `BeginMainMenuBar()` call that reads it and popped
+  // immediately, leaving every *menu item* at its normal size. The band is
+  // 36 px because the design says 36 px; the items are then centred in it.
+  const float titleBarPad = (kTitleBarH - ImGui::GetFontSize()) * 0.5f;
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                      ImVec2(ImGui::GetStyle().FramePadding.x, titleBarPad));
+  const bool menuBarOpen = ImGui::BeginMainMenuBar();
+  ImGui::PopStyleVar();
+  if (menuBarOpen) {
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
+                         (kTitleBarH - ImGui::GetFrameHeight()) * 0.5f);
+
+    // docs/ui.md section 6: "substitute the naturalPaint wordmark in the menu
+    // bar". The wireframe's "ATELIER 2D" is not adopted -- the project keeps
+    // its name, and the codename appears in this build only as the module
+    // prefix for the chrome that implements the design.
+    ImGui::TextUnformatted("naturalPaint");
+    ImGui::SameLine(0.0f, 14.0f);
+
     if (ImGui::BeginMenu("File")) {
       // "New" is the *canvas* command it has always been -- it clears the
       // solver texture. "New Document" below is a different thing entirely,
@@ -3006,9 +3134,19 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // every lifecycle command in the File menu acts on this one, and a
     // "Save" whose target is not on screen is how the wrong file gets
     // overwritten. The `*` is the dirty marker.
-    if (const OpenDocument* activeForBar = st.documents.active()) {
-      ImGui::TextDisabled("| %s%s", documentDisplayName(*activeForBar).c_str(),
-                          activeForBar->isDirty() ? " *" : "");
+    OpenDocument* activeForBar = st.documents.active();
+    if (activeForBar != nullptr) {
+      ImGui::TextDisabled("| %s", documentDisplayName(*activeForBar).c_str());
+      // docs/ui.md section 1 reserves the accent for "active tool, dirty
+      // marker, selection", and the diagram draws the dirty document's tab
+      // with a filled dot. This is that marker, in that colour, rather than an
+      // asterisk in the same grey as the filename it qualifies.
+      if (activeForBar->isDirty()) {
+        ImGui::SameLine(0.0f, 6.0f);
+        float ac[3];
+        unpackRgb(kAccent, ac);
+        ImGui::TextColored(ImVec4(ac[0], ac[1], ac[2], 1.0f), "*");
+      }
     }
     if (!g_docStatus.empty()) {
       const size_t firstLine = g_docStatus.find('\n');
@@ -3018,14 +3156,41 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", g_docStatus.c_str());
     }
 
-    // Right-aligned status, the way the classic apps put the zoom box.
-    char status[128];
-    std::snprintf(status, sizeof(status), "%s   %.1f fps   %ux%u   %.0f%%",
-                  paintModeName(st.mode),
-                  st.frameMs > 0.0f ? 1000.0f / st.frameMs : 0.0f, canvasW,
-                  canvasH, st.view.zoom * 100.0f);
-    const float w = ImGui::CalcTextSize(status).x;
-    ImGui::SameLine(ImGui::GetWindowWidth() - w - 12.0f);
+    // Right-aligned: undo / redo, where docs/ui.md section 2 draws them.
+    //
+    // The zoom, the dimensions and the working space that used to sit here
+    // have moved to the status bar, which is where the design puts them and
+    // which did not exist until now. The frame rate stays -- it is not in the
+    // design at all, and it is here rather than in the status bar for exactly
+    // that reason: it is instrumentation, and it should be the first thing
+    // removed when the title bar needs the room.
+    //
+    // Not built: the design's `panels` control. There is no panel manager to
+    // wire it to, and a button that does nothing is worse than a gap.
+    History* titleHistory = activeForBar != nullptr ? &activeForBar->history : nullptr;
+    char status[64];
+    std::snprintf(status, sizeof(status), "%.1f fps",
+                  st.frameMs > 0.0f ? 1000.0f / st.frameMs : 0.0f);
+    const float undoW = ImGui::CalcTextSize("Undo").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float redoW = ImGui::CalcTextSize("Redo").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float statusW = ImGui::CalcTextSize(status).x;
+    ImGui::SameLine(ImGui::GetWindowWidth() - undoW - redoW - statusW - 40.0f);
+    ImGui::BeginDisabled(titleHistory == nullptr || !titleHistory->canUndo());
+    if (ImGui::SmallButton("Undo"))
+      installHistoryCursor(*activeForBar,
+                           historyPanelClick(*titleHistory,
+                                             historySerialForRow(*titleHistory,
+                                                                 titleHistory->cursor() - 1)));
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(titleHistory == nullptr || !titleHistory->canRedo());
+    if (ImGui::SmallButton("Redo"))
+      installHistoryCursor(*activeForBar,
+                           historyPanelClick(*titleHistory,
+                                             historySerialForRow(*titleHistory,
+                                                                 titleHistory->cursor() + 1)));
+    ImGui::EndDisabled();
+    ImGui::SameLine(ImGui::GetWindowWidth() - statusW - 12.0f);
     ImGui::TextDisabled("%s", status);
     ImGui::EndMainMenuBar();
   }
@@ -3087,8 +3252,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // because PRD O8's offer happens on launch, before any menu is touched.
   drawRecoveryDialog(st);
 
-  const ImVec2 work = vp->WorkPos;
-  const ImVec2 size = vp->WorkSize;
+  // ------------------------------------------------------------ the bands
+  //
+  // docs/ui.md section 2, computed by ui/AtelierLayout from the *full*
+  // viewport rather than from `WorkPos`/`WorkSize`: the title bar above is a
+  // band of the design too, and ImGui shrinks the work area by the main menu
+  // bar it drew itself. Taking the full viewport means one function owns every
+  // edge in the window, including the one the menu bar sits on -- and that
+  // function is testable without a window (see `--selftest`, atelier chrome).
+  const AtelierBands bands =
+      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, /*showTabStrip=*/false);
 
   const ImGuiWindowFlags fixedFlags =
       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
@@ -3096,65 +3269,43 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar;
 
   // ------------------------------------------------------------ tool palette
-  ImGui::SetNextWindowPos(work);
-  ImGui::SetNextWindowSize(ImVec2(kPaletteW, size.y - kSwatchStripH));
+  ImGui::SetNextWindowPos(ImVec2(bands.toolPalette.x, bands.toolPalette.y));
+  ImGui::SetNextWindowSize(ImVec2(bands.toolPalette.w, bands.toolPalette.h));
   if (ImGui::Begin("##tools", nullptr, fixedFlags)) {
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       if (i % 2 != 0) ImGui::SameLine();
       toolButton(st, static_cast<Tool>(i));
     }
-    ImGui::Dummy(ImVec2(0, 6));
-    ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, 6));
 
-    // Brush size preview, MacPaint's line-width box reinterpreted.
+    // The foreground swatch, at the bottom of the palette where docs/ui.md
+    // section 2's diagram puts `FG/BG` -- pinned there rather than left to
+    // follow the tool grid, because the design's palette scrolls and the
+    // swatch does not scroll with it.
+    //
+    // **FG only, no BG.** The pair is Photoshop's, and the second half of it
+    // means something only once something fills with it: Fill-with-colour is
+    // PRD D26 and the paint bucket D25, both phase 6, and nothing in this
+    // build reads a background colour. A second well that no operation
+    // consumes would be the `PRESET` dropdown problem again -- chrome
+    // promising a feature that is not behind it.
+    const float swatchSide = kToolCol * kToolSize - 8.0f;
+    const float swatchTop = bands.toolPalette.h - swatchSide - 34.0f;
+    if (swatchTop > ImGui::GetCursorPosY()) ImGui::SetCursorPosY(swatchTop);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float boxW = kToolCol * kToolSize + 4.0f;
-    const float boxH = 54.0f;
-    dl->AddRectFilled(p, ImVec2(p.x + boxW, p.y + boxH),
-                      ImGui::GetColorU32(ImGuiCol_ChildBg));
-    dl->AddRect(p, ImVec2(p.x + boxW, p.y + boxH),
-                ImGui::GetColorU32(ImGuiCol_Border));
     const auto& pig = defaultPalette()[st.brush.pigment];
-    dl->AddCircleFilled(ImVec2(p.x + boxW * 0.5f, p.y + boxH * 0.5f),
-                        std::min(st.brush.radius * 0.5f, boxH * 0.4f),
-                        IM_COL32((int)(pig.rgb[0] * 255), (int)(pig.rgb[1] * 255),
-                                 (int)(pig.rgb[2] * 255), 255),
-                        24);
-    ImGui::Dummy(ImVec2(boxW, boxH));
-    ImGui::SetNextItemWidth(boxW);
-    ImGui::SliderFloat("##size", &st.brush.radius, 2.0f, 90.0f, "%.0f px");
-  }
-  ImGui::End();
-
-  // ------------------------------------------------------------ pigment strip
-  ImGui::SetNextWindowPos(ImVec2(work.x, work.y + size.y - kSwatchStripH));
-  ImGui::SetNextWindowSize(ImVec2(size.x, kSwatchStripH));
-  if (ImGui::Begin("##pigments", nullptr, fixedFlags)) {
-    const auto& palette = defaultPalette();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float sw = 30.0f;
-    for (size_t i = 0; i < palette.size(); ++i) {
-      if (i) ImGui::SameLine(0.0f, 3.0f);
-      ImGui::PushID(static_cast<int>(i));
-      const ImVec2 p = ImGui::GetCursorScreenPos();
-      if (ImGui::InvisibleButton("##sw", ImVec2(sw, sw)))
-        st.brush.pigment = static_cast<int>(i);
-
-      const auto& pg = palette[i];
-      dl->AddRectFilled(p, ImVec2(p.x + sw, p.y + sw),
-                        IM_COL32((int)(pg.rgb[0] * 255), (int)(pg.rgb[1] * 255),
-                                 (int)(pg.rgb[2] * 255), 255));
-      const bool sel = st.brush.pigment == static_cast<int>(i);
-      dl->AddRect(p, ImVec2(p.x + sw, p.y + sw),
-                  sel ? IM_COL32(235, 235, 225, 255)
-                      : ImGui::GetColorU32(ImGuiCol_Border),
-                  0.0f, 0, sel ? 2.0f : 1.0f);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", pg.name);
-      ImGui::PopID();
-    }
-    ImGui::TextDisabled("%s", palette[st.brush.pigment].name);
+    dl->AddRectFilled(p, ImVec2(p.x + swatchSide, p.y + swatchSide),
+                      IM_COL32((int)(pig.rgb[0] * 255), (int)(pig.rgb[1] * 255),
+                               (int)(pig.rgb[2] * 255), 255));
+    dl->AddRect(p, ImVec2(p.x + swatchSide, p.y + swatchSide), atelierToken(kRule), 0.0f, 0,
+                kRuleThickness);
+    ImGui::Dummy(ImVec2(swatchSide, swatchSide));
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3)",
+                        pig.name);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
+    ImGui::TextUnformatted("FG");
+    ImGui::PopStyleColor();
   }
   ImGui::End();
 
@@ -3170,8 +3321,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // so both are asserted by `--selftest` rather than being a property of where
   // a statement sits in this function. That header carries the argument for
   // them; what is here is the loop.
-  ImGui::SetNextWindowPos(ImVec2(work.x + size.x - kControlsW, work.y));
-  ImGui::SetNextWindowSize(ImVec2(kControlsW, size.y - kSwatchStripH));
+  ImGui::SetNextWindowPos(ImVec2(bands.rightColumn.x, bands.rightColumn.y));
+  ImGui::SetNextWindowSize(ImVec2(bands.rightColumn.w, bands.rightColumn.h));
   if (ImGui::Begin("##controls", nullptr,
                    fixedFlags & ~ImGuiWindowFlags_NoScrollbar)) {
     for (const ControlsSectionSpec& spec : controlsSections()) {
@@ -3208,6 +3359,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and
         // a curve widget operating in the shaper domain").
         case ControlsSection::Grade:     drawGradeSection(st); break;
+        // docs/ui.md section 3.3 / PRD L4. First in the column, which is the
+        // design's own order -- see app/ControlsLayout.hpp's `Tool` role.
+        case ControlsSection::Color:     drawColorSection(st); break;
         case ControlsSection::Brush:     drawBrushSection(st); break;
         case ControlsSection::Pigment:   drawPigmentSection(st); break;
         case ControlsSection::Medium:    drawMediumSection(st, sim.get()); break;
@@ -3234,11 +3388,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   ImGui::End();
 
   // ------------------------------------------------------------ canvas
-  const ImVec2 canvasPos(work.x + kPaletteW, work.y);
-  const ImVec2 canvasSize(size.x - kPaletteW - kControlsW, size.y - kSwatchStripH);
+  const ImVec2 canvasPos(bands.canvas.x, bands.canvas.y);
+  const ImVec2 canvasSize(bands.canvas.w, bands.canvas.h);
   ImGui::SetNextWindowPos(canvasPos);
   ImGui::SetNextWindowSize(canvasSize);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  // The canvas surround (PRD **L6**), and the one place this chrome
+  // deliberately disagrees with the wireframe it implements.
+  //
+  // docs/ui.md section 1's warning callout: the design painted this `#2d2b2b`,
+  // the same near-black as the panels, and "simultaneous contrast makes paint
+  // read lighter and more saturated against a near-black surround than it
+  // truly is, which is precisely the judgement a painting application must not
+  // distort." So the surround is its own value, defaulting to mid-grey, and it
+  // is deliberately NOT `ImGuiCol_WindowBg` -- every other window in the frame
+  // stays chrome, and only this one is the neutral you judge colour against.
+  ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                        ImGui::ColorConvertU32ToFloat4(atelierToken(atelierSurround())));
   if (ImGui::Begin("##canvas", nullptr, fixedFlags)) {
     const ImVec2 fullAvail = ImGui::GetContentRegionAvail();
     const float texW = static_cast<float>(canvasW);
@@ -3652,7 +3818,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
   }
   ImGui::End();
+  ImGui::PopStyleColor();
   ImGui::PopStyleVar();
+
+  // ------------------------------------------------------- the other bands
+  //
+  // After the canvas rather than before it, for one reason that is not
+  // cosmetic: both read `st.brush` and `st.view`, and a band drawn first
+  // would show the values as they were before this frame's canvas input
+  // changed them -- a zoom readout one frame stale, which is exactly the
+  // juddering docs/ui.md section 5 asks the monospace numerics to prevent.
+  drawAtelierOptionsBar(st, bands);
+  drawAtelierStatusBar(st, bands, canvasW, canvasH);
+  // Last, and on the foreground draw list: a 2 px rule that a neighbouring
+  // window overdrew by a pixel would be a 1 px rule, and the design's whole
+  // separation of major regions is that thickness.
+  drawAtelierRules(bands);
 
   if (st.showDemo) ImGui::ShowDemoWindow(&st.showDemo);
 

@@ -61,16 +61,16 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 10, "every section has exactly one spec (10)");
-  check(newOrder.size() == kOldOrder.size() + 1,
-        "the same sections plus COMPS, reordered -- none was dropped");
+  check(sections.size() == 11, "every section has exactly one spec (11)");
+  check(newOrder.size() == kOldOrder.size() + 2,
+        "the same sections plus COMPS and COLOR, reordered -- none was dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
     // enumerators rather than against a count, so a section added to the enum
     // and forgotten in the list fails here rather than being invisible.
     const ControlsSection kAll[] = {
-        ControlsSection::Layers, ControlsSection::History,   ControlsSection::Comps,
-        ControlsSection::Grade,
+        ControlsSection::Color,  ControlsSection::Layers,    ControlsSection::History,
+        ControlsSection::Comps,  ControlsSection::Grade,
         ControlsSection::Brush,  ControlsSection::Pigment,   ControlsSection::Medium,
         ControlsSection::BoardTilt, ControlsSection::Grid,   ControlsSection::Solver};
     bool eachOnce = true;
@@ -100,38 +100,63 @@ bool runControlsLayoutTest() {
   }
 
   {
-    // The rule: Document before View before Simulation. Asserted as an
-    // ordering over roles rather than as a fixed list of titles, so inserting
-    // a new simulation section cannot bury LAYERS and still pass.
+    // The rule: Tool before Document before View before Simulation. Asserted
+    // as an ordering over roles rather than as a fixed list of titles, so
+    // inserting a new simulation section cannot bury LAYERS and still pass.
+    //
+    // `Tool` leads as of the Atelier chrome, and that is a reversal of what
+    // this section originally asserted ("LAYERS is the first section"). It is
+    // docs/ui.md section 2's own column order -- COLOR / BRUSH SET. / LAYERS /
+    // CHANNELS -- and the argument is the one that put LAYERS above the
+    // simulation parameters to begin with: a control touched every stroke
+    // outranks one touched every few minutes. LAYERS is still asserted, now as
+    // the first *document* section, so a new tool section cannot bury it
+    // either.
     auto rank = [](ControlsSectionRole role) {
       switch (role) {
-        case ControlsSectionRole::Document:   return 0;
-        case ControlsSectionRole::View:       return 1;
-        case ControlsSectionRole::Simulation: return 2;
+        case ControlsSectionRole::Tool:       return 0;
+        case ControlsSectionRole::Document:   return 1;
+        case ControlsSectionRole::View:       return 2;
+        case ControlsSectionRole::Simulation: return 3;
       }
-      return 3;
+      return 4;
     };
     bool nonDecreasing = true;
     for (size_t i = 1; i < sections.size(); ++i)
       if (rank(sections[i].role) < rank(sections[i - 1].role)) nonDecreasing = false;
-    check(nonDecreasing, "document sections precede view, view precedes simulation");
-    check(sections.front().section == ControlsSection::Layers, "LAYERS is the first section");
-    check(sections[1].section == ControlsSection::History, "HISTORY is the second section");
+    check(nonDecreasing,
+          "tool sections precede document, document precedes view, view precedes simulation");
+    check(sections.front().section == ControlsSection::Color, "COLOR is the first section");
+    size_t firstDoc = sections.size();
+    for (size_t i = 0; i < sections.size(); ++i)
+      if (sections[i].role == ControlsSectionRole::Document) { firstDoc = i; break; }
+    check(firstDoc < sections.size() && sections[firstDoc].section == ControlsSection::Layers,
+          "LAYERS is still the first document section");
+    check(firstDoc + 1 < sections.size() &&
+              sections[firstDoc + 1].section == ControlsSection::History,
+          "HISTORY still follows it");
   }
 
   {
     // The default-open set is exactly the document sections. This is the
     // decision the step was asked to make deliberately, so it is asserted in
     // both directions: no document section closed, no other section open.
+    // COLOR joins them: docs/ui.md section 2 draws the COLOR panel expanded,
+    // and it is the panel you reach for before you have done anything else.
+    // BRUSH does not, because its three sliders are also in the options bar
+    // now -- the panel is the long form, and opening both by default would
+    // spend the column's first screen on one control set.
     bool exact = true;
     size_t open = 0;
     for (const ControlsSectionSpec& spec : sections) {
-      const bool shouldBeOpen = spec.role == ControlsSectionRole::Document;
+      const bool shouldBeOpen = spec.role == ControlsSectionRole::Document ||
+                                spec.section == ControlsSection::Color;
       if (spec.defaultOpen != shouldBeOpen) exact = false;
       if (spec.defaultOpen) ++open;
     }
-    check(exact && open == 3,
-          "exactly the document sections start open (LAYERS, HISTORY, COMPS)");
+    check(exact && open == 4,
+          "exactly COLOR and the document sections start open "
+          "(COLOR, LAYERS, HISTORY, COMPS)");
   }
 
   // --- Part B: the label column -------------------------------------------

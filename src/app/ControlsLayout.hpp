@@ -83,6 +83,12 @@ namespace np {
 // (OIL / INK / WATER) is one enumerator, `Medium`, because exactly one of the
 // three is ever on screen and they occupy one slot in the column.
 enum class ControlsSection {
+  // docs/ui.md section 3.3 and PRD **L4** (P0): "The colour panel has RGB and
+  // PIGMENT modes; PIGMENT selects physical constants, not just a colour."
+  // First in the column because the design's own diagram puts COLOR first --
+  // see `ControlsSectionRole::Tool` below for why that outranks the
+  // document-sections-lead rule this list used to open with.
+  Color,
   Layers,
   History,
   // PLAN.md Phase 5 step 12 / PRD C14. A `Document` section like the two above
@@ -104,6 +110,15 @@ enum class ControlsSection {
 // What a section is *about*, which is what decides where it sits and whether
 // it starts open. See this header's section 1.
 enum class ControlsSectionRole {
+  // What the *next stroke* will be: the colour it lays down and the brush that
+  // lays it. Ahead of the document sections, which is a reversal of the
+  // ordering this file shipped with -- and it is docs/ui.md section 2's
+  // ordering, not a preference. The diagram's right-hand column reads COLOR /
+  // BRUSH SET. / LAYERS / CHANNELS, and the reason is the same one that put
+  // LAYERS above the simulation parameters in the first place: a control
+  // touched every stroke outranks one touched every few minutes. A layer is
+  // selected occasionally; a colour is chosen constantly.
+  Tool,
   // The open document itself: its layer stack and its undo history. These edit
   // what is on the canvas.
   Document,

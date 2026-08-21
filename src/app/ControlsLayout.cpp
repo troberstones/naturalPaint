@@ -7,13 +7,14 @@ namespace np {
 const std::vector<ControlsSectionSpec>& controlsSections() {
   using R = ControlsSectionRole;
   // The order and the default-open set, in one place. See the header for why
-  // the two Document sections lead and are the only two that start open.
+  // COLOR leads and why the three Document sections follow it.
   static const std::vector<ControlsSectionSpec> kSections = {
+      {ControlsSection::Color, R::Tool, "COLOR", true},
+      {ControlsSection::Brush, R::Tool, "BRUSH", false},
       {ControlsSection::Layers, R::Document, "LAYERS", true},
       {ControlsSection::History, R::Document, "HISTORY", true},
       {ControlsSection::Comps, R::Document, "COMPS", true},
       {ControlsSection::Grade, R::View, "GRADE", false},
-      {ControlsSection::Brush, R::Simulation, "BRUSH", false},
       {ControlsSection::Pigment, R::Simulation, "PIGMENT", false},
       {ControlsSection::Medium, R::Simulation, "MEDIUM", false},
       {ControlsSection::BoardTilt, R::Simulation, "BOARD TILT", false},

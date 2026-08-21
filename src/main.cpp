@@ -37,7 +37,7 @@
 #include "sim/PaintSim.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
-#include "ui/Theme.hpp"
+#include "ui/AtelierTheme.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -785,6 +785,7 @@ int main(int argc, char** argv) {
     // CPU and asks it, per codepoint, rather than asking what a function
     // returns -- which is the question nine other sections already ask.
     const bool fontsOk = np::runFontsTest();
+    const bool atelierOk = np::runAtelierChromeTest();
     // Phase 2 step 2: core/Half's shared half<->float codec and
     // core/TileStore's allocate-on-write / query-without-allocating /
     // iterate-occupied sparse map. Also headless and GPU-free -- pure CPU,
@@ -1207,7 +1208,8 @@ int main(int argc, char** argv) {
                     documentTextureOk && layerEditorOk && controlsLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
                     exportStatesOk && pigmentDepositOk && layerMultiSelectOk &&
-                    strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk;
+                    strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
+                    atelierOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -1220,7 +1222,7 @@ int main(int argc, char** argv) {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.IniFilename = nullptr;  // the layout is fixed; don't persist window state
-  np::applyMacPaintDarkTheme();
+  np::applyAtelierTheme();
 
   // ui/Fonts: six of the seven layer-kind glyphs docs/ui.md 3.2 assigns are
   // above U+00FF and ImGui's built-in ProggyClean holds nothing above U+00FF,
