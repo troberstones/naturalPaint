@@ -1640,4 +1640,58 @@ bool runLayerEditorTest();
 // Headless, GPU-free and ImGui-free; writes no files.
 bool runControlsLayoutTest();
 
+// ---------------------------------------------------------------------------
+// The incremental composite
+// ---------------------------------------------------------------------------
+//
+// `OpenDocument::revision` says *that* a document changed and never *what*, so
+// ui/DocumentTexture had two answers: the frame is free, or the whole canvas is
+// recomposited -- 22 ms at 1024x1024 and 89 ms at 2048x2048, against PRD F3's
+// 20 ms pen-to-photon budget and its second clause, "the in-progress stroke
+// does not wait on a full document re-composite". core/DirtyTiles localises a
+// change to a tile set, core/Composite recomposites exactly that set, and
+// ui/DocumentTexture uploads exactly those sub-rectangles.
+//
+// Covers:
+//  - **Localisation by copy-on-write slot identity.** A `Document` copy shares
+//    every tile, so the barrier must copy on the next write and the slot
+//    address must move; that is proved as arithmetic (use counts and pointer
+//    equality), and its converse is proved too -- with no snapshot held, the
+//    barrier writes in place and the address does *not* move, which is exactly
+//    why holding one is what makes the set complete.
+//  - **The one leak, demonstrated rather than described.** A write through a
+//    handle taken *before* the snapshot mutates both copies, so no address
+//    moves and the tile is missed. core/TileStore.hpp already states that
+//    caller rule; here it is a fixture with a stale texel in it, beside the
+//    supported ordering that does not leak.
+//  - **The classification of what is NOT tile-local**, one named reason at a
+//    time: visibility, opacity, blend, clip, op stack, mask presence, layer
+//    count, kind, canvas size and working space each force a full recomposite,
+//    while name, locked and parent are asserted to force *nothing* -- zero
+//    tiles and a bit-identical composite. The one reorder that is tile-local
+//    is proved by patching only its two dirty tiles into the previous
+//    composite and comparing against a full recomposite.
+//  - **Bit-identity of the region walk**, on a document carrying a mixed
+//    Pigment pair, a masked and faded layer, a clipping run, a masked
+//    adjustment layer and an unhonourable blend: composited whole, then one
+//    tile at a time, and compared by `memcmp`. Also into a buffer at a tile's
+//    own origin rather than the canvas's, and with the warnings proved
+//    identical -- a cheap frame must not stop reporting an approximation.
+//  - **Ten edits end to end** through one `DocumentTexture` and a real GPU
+//    texture -- single-tile paint, multi-tile stroke, property change,
+//    reorder, added and removed layer, mask edit, clipped run, adjustment
+//    layer and an empty edit -- each compared against a fresh full composite
+//    at zero tolerance, then read back off the GPU and compared again.
+//  - **The cost and the crossover, measured**: the full recomposite, one tile,
+//    a four-tile dab and eight tiles, fitted to a setup-plus-per-tile line,
+//    with the crossover printed beside the fraction the policy actually uses.
+//  - **A photographable sequence** on a 1024x1024 document, asserted
+//    bit-identical at every step. It writes PNGs only when
+//    `NP_INCREMENTAL_PNG_DIR` is set in the environment; a plain `--selftest`
+//    run writes no files.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations.
+// Needs the GPU (it uploads sub-rectangles and reads them back).
+bool runIncrementalCompositeTest(GpuContext& gpu);
+
 }  // namespace np

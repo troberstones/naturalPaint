@@ -769,6 +769,11 @@ int main(int argc, char** argv) {
     // label-on-the-right run beside it and both clip counts printed. Headless
     // and GPU-free; writes no files.
     const bool controlsLayoutOk = np::runControlsLayoutTest();
+    // The incremental composite (core/DirtyTiles + core/Composite's region
+    // walk + ui/DocumentTexture's sub-rectangle upload): that the dirty set is
+    // complete, that a non-tile-local change is classified as one, and that
+    // ten kinds of edit composite bit-identically to a full recomposite.
+    const bool incrementalCompositeOk = np::runIncrementalCompositeTest(gpu);
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -784,7 +789,7 @@ int main(int argc, char** argv) {
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && layerEditorOk && controlsLayoutOk &&
-                    strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    incrementalCompositeOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
