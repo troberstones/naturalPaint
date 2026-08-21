@@ -223,6 +223,48 @@ bool runAtelierChromeTest() {
           "and the bands keep the sizes their hit targets are sized for");
   }
 
+  // --- Part C2: the navigator ---------------------------------------------
+  {
+    const AtelierBands b = atelierLayout(0.0f, 0.0f, 1366.0f, 1024.0f, false);
+
+    // A square document in a landscape box fits by height, and the box keeps
+    // the document's aspect rather than the box's -- a navigator that lies
+    // about the shape of the paper is worse than no navigator.
+    const AtelierRect sq = atelierNavigatorRect(b.canvas, 1024.0f, 1024.0f);
+    check(!sq.empty() && std::fabs(sq.w - sq.h) < 0.01f && sq.h == kNavigatorMaxH,
+          "a square document fits the navigator by its limiting axis");
+    const AtelierRect wide = atelierNavigatorRect(b.canvas, 4000.0f, 1000.0f);
+    check(std::fabs(wide.w / wide.h - 4.0f) < 0.01f && wide.w == kNavigatorMaxW,
+          "and a 4:1 document stays 4:1");
+
+    check(std::fabs(sq.right() - (b.canvas.right() - kNavigatorInset)) < 0.01f &&
+              std::fabs(sq.bottom() - (b.canvas.bottom() - kNavigatorInset)) < 0.01f,
+          "inset from the canvas region's bottom-right corner");
+
+    // It hides itself rather than covering the picture it navigates.
+    check(atelierNavigatorRect(AtelierRect{0, 0, 300, 200}, 1024.0f, 1024.0f).empty(),
+          "a canvas too small to spare the corner gets no navigator");
+    check(atelierNavigatorRect(b.canvas, 0.0f, 0.0f).empty(),
+          "and a document with no area gets none either");
+
+    // The viewport indicator. At 100% on a 936 x 910 canvas, a 1024 x 1024
+    // document is wider and taller than the view, so the marked region is a
+    // proper sub-rect; zoomed far out it covers the whole box and is clamped
+    // there rather than drawn outside it.
+    const AtelierRect part = atelierNavigatorMap(sq, 1024.0f, 1024.0f, 0.0f, 0.0f, 512.0f, 512.0f);
+    check(std::fabs(part.w - sq.w * 0.5f) < 0.01f && std::fabs(part.h - sq.h * 0.5f) < 0.01f,
+          "half the document marks half the navigator");
+    const AtelierRect over =
+        atelierNavigatorMap(sq, 1024.0f, 1024.0f, -800.0f, -800.0f, 1800.0f, 1800.0f);
+    check(std::fabs(over.w - sq.w) < 0.01f && std::fabs(over.h - sq.h) < 0.01f &&
+              over.x == sq.x && over.y == sq.y,
+          "a view larger than the paper clamps to the box, never outside it");
+    const AtelierRect flipped =
+        atelierNavigatorMap(sq, 1024.0f, 1024.0f, 700.0f, 700.0f, 200.0f, 200.0f);
+    check(std::fabs(flipped.w - sq.w * (500.0f / 1024.0f)) < 0.01f,
+          "and a mirrored view's reversed corners still give a positive rect");
+  }
+
   // --- Part D: what the status bar says ------------------------------------
   {
     Document doc = Document::createBlank(64, 64, WorkingSpace{});

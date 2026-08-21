@@ -82,4 +82,32 @@ struct AtelierBands {
 // mode for a window too small to hold the design is a canvas you cannot see.
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip);
 
+// ------------------------------------------------------------- navigator
+//
+// docs/ui.md section 2 draws a NAVIGATOR floating over the bottom-right of the
+// canvas. Its geometry is here with the rest of the layout, and for the same
+// reason: it is arithmetic, and arithmetic checked by looking at a screenshot
+// is arithmetic nobody has checked.
+constexpr float kNavigatorMaxW = 180.0f;
+constexpr float kNavigatorMaxH = 140.0f;
+constexpr float kNavigatorInset = 16.0f;
+
+// The navigator's box: the document's aspect fitted inside
+// kNavigatorMaxW x kNavigatorMaxH, inset from the canvas region's bottom-right
+// corner.
+//
+// Returns an empty rect when the document has no area, or when the canvas is
+// too small to hold the box and its inset without covering the paint area --
+// a navigator that hides the picture it navigates is worse than none, and at
+// that size the user is already scrolled into a corner of a window that cannot
+// hold the design.
+AtelierRect atelierNavigatorRect(const AtelierRect& canvas, float docW, float docH);
+
+// Map a document-space rect (`x0,y0`-`x1,y1`, in document pixels) onto the
+// navigator box. Used for the viewport indicator; clamped to the box, because
+// the visible region of a zoomed-out view extends past the paper on every side
+// and an unclamped indicator would draw outside the navigator.
+AtelierRect atelierNavigatorMap(const AtelierRect& nav, float docW, float docH, float x0,
+                                float y0, float x1, float y1);
+
 }  // namespace np

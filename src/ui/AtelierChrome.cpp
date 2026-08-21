@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "app/DocumentLifecycle.hpp"
 #include "app/Memory.hpp"
 #include "core/TileStore.hpp"
 #include "ui/AtelierTheme.hpp"
@@ -126,6 +127,103 @@ void drawAtelierRules(const AtelierBands& bands) {
     const AtelierRect& r = bands.rules[i];
     dl->AddRectFilled(ImVec2(r.x, r.y), ImVec2(r.right(), r.bottom()), atelierToken(kRule));
   }
+}
+
+bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* statusOut) {
+  if (bands.tabStrip.empty()) return false;
+  beginBand("##atelierTabs", bands.tabStrip, kChromeMid);
+
+  bool newDocument = false;
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const float h = bands.tabStrip.h;
+  float x = bands.tabStrip.x;
+  const float top = bands.tabStrip.y;
+
+  // Hand-drawn rather than ImGui's own tab bar. Three reasons, in the order
+  // they bite: ImGui tabs size themselves to their labels and reorder on drag,
+  // which a fixed 34 px band cannot express; the active tab has to be chrome
+  // *deep* cut into a chrome-mid strip, which is the inverse of ImGui's raised
+  // selected tab; and the dirty marker is a filled accent dot, not the `*`
+  // ImGui appends to the label.
+  for (size_t i = 0; i < st.documents.count(); ++i) {
+    const OpenDocument* doc = st.documents.at(i);
+    if (doc == nullptr) continue;
+    const bool active = i == st.documents.activeIndex();
+    const std::string name = documentDisplayName(*doc);
+
+    const float labelW = ImGui::CalcTextSize(name.c_str()).x;
+    const float tabW = labelW + 54.0f;  // dirty dot, close box, padding
+    if (x + tabW > bands.tabStrip.right()) break;  // no scroll yet; see below
+
+    ImGui::SetCursorScreenPos(ImVec2(x, top));
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::InvisibleButton("##tab", ImVec2(tabW, h))) st.documents.setActive(i);
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered) ImGui::SetTooltip("%s", name.c_str());
+
+    dl->AddRectFilled(ImVec2(x, top), ImVec2(x + tabW, top + h),
+                      active         ? atelierToken(kChromeDeep)
+                      : hovered      ? atelierToken(kChromeBase)
+                                     : atelierToken(kChromeMid));
+    // A 2 px accent underline on the active tab. The design marks the active
+    // tab by its fill; the underline is what keeps it legible at a glance in a
+    // strip where the fills are two greys four steps apart.
+    if (active)
+      dl->AddRectFilled(ImVec2(x, top + h - kRuleThickness), ImVec2(x + tabW, top + h),
+                        atelierToken(kAccent));
+    dl->AddText(ImVec2(x + 12.0f, top + (h - ImGui::GetTextLineHeight()) * 0.5f),
+                atelierToken(active ? kTextPrimary : kTextSecondary), name.c_str());
+
+    if (doc->isDirty())
+      dl->AddCircleFilled(ImVec2(x + tabW - 26.0f, top + h * 0.5f), 4.0f, atelierToken(kAccent),
+                          12);
+
+    // Close. Refuses a dirty document by name, which is the File menu's own
+    // rule and the same call -- a tab that discarded work on one click would
+    // be the one place in the application where PRD I11 did not hold.
+    ImGui::SetCursorScreenPos(ImVec2(x + tabW - 18.0f, top + (h - 14.0f) * 0.5f));
+    if (ImGui::InvisibleButton("##close", ImVec2(14.0f, 14.0f))) {
+      std::string err;
+      if (!st.documents.close(i, false, &err) && statusOut != nullptr) *statusOut = err;
+      ImGui::PopID();
+      break;  // the list changed under the loop
+    }
+    const ImU32 xCol = ImGui::IsItemHovered() ? atelierToken(kAccent)
+                                              : atelierToken(kTextSecondary);
+    const ImVec2 c(x + tabW - 11.0f, top + h * 0.5f);
+    dl->AddLine(ImVec2(c.x - 4, c.y - 4), ImVec2(c.x + 4, c.y + 4), xCol, 1.5f);
+    dl->AddLine(ImVec2(c.x - 4, c.y + 4), ImVec2(c.x + 4, c.y - 4), xCol, 1.5f);
+
+    ImGui::PopID();
+    // 1 px internal divider between tabs (docs/ui.md section 1).
+    dl->AddRectFilled(ImVec2(x + tabW, top), ImVec2(x + tabW + kDividerThickness, top + h),
+                      atelierToken(kDivider));
+    x += tabW + kDividerThickness;
+  }
+
+  // `+` -- a new blank document. The caller makes it: only main.cpp's canvas
+  // dimensions decide how big a blank one is, and this module does not know
+  // them and should not learn them for one button.
+  ImGui::SetCursorScreenPos(ImVec2(x, top));
+  if (ImGui::InvisibleButton("##newdoc", ImVec2(h, h))) newDocument = true;
+  const ImU32 plusCol =
+      ImGui::IsItemHovered() ? atelierToken(kAccent) : atelierToken(kTextSecondary);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("New document");
+  const ImVec2 pc(x + h * 0.5f, top + h * 0.5f);
+  dl->AddLine(ImVec2(pc.x - 6, pc.y), ImVec2(pc.x + 6, pc.y), plusCol, 1.5f);
+  dl->AddLine(ImVec2(pc.x, pc.y - 6), ImVec2(pc.x, pc.y + 6), plusCol, 1.5f);
+
+  // Overflow is dropped, and said so out loud rather than left as a silently
+  // short strip: with no scroll and no overflow menu, a document past the
+  // right edge is reachable only from the Window menu. Wiring a scroll here
+  // before the split exists would be building the wrong half of step 14.
+  if (x + h > bands.tabStrip.right()) {
+    ImGui::SetCursorScreenPos(ImVec2(bands.tabStrip.right() - 30.0f, top));
+    capsLabel("...");
+  }
+
+  endBand();
+  return newDocument;
 }
 
 void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands) {

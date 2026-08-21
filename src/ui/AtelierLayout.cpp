@@ -74,4 +74,34 @@ AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip
   return b;
 }
 
+AtelierRect atelierNavigatorRect(const AtelierRect& canvas, float docW, float docH) {
+  if (docW <= 0.0f || docH <= 0.0f) return AtelierRect{};
+
+  const float scale = std::min(kNavigatorMaxW / docW, kNavigatorMaxH / docH);
+  const float w = docW * scale;
+  const float h = docH * scale;
+
+  // Room for the box, its inset, and as much again of canvas left over. The
+  // second half is the part that matters: the first is only "it fits".
+  if (canvas.w < (w + kNavigatorInset) * 2.0f || canvas.h < (h + kNavigatorInset) * 2.0f)
+    return AtelierRect{};
+
+  return AtelierRect{canvas.right() - kNavigatorInset - w, canvas.bottom() - kNavigatorInset - h,
+                     w, h};
+}
+
+AtelierRect atelierNavigatorMap(const AtelierRect& nav, float docW, float docH, float x0,
+                                float y0, float x1, float y1) {
+  if (nav.empty() || docW <= 0.0f || docH <= 0.0f) return AtelierRect{};
+  const auto mapX = [&](float x) {
+    return nav.x + std::clamp(x / docW, 0.0f, 1.0f) * nav.w;
+  };
+  const auto mapY = [&](float y) {
+    return nav.y + std::clamp(y / docH, 0.0f, 1.0f) * nav.h;
+  };
+  const float ax = mapX(std::min(x0, x1)), bx = mapX(std::max(x0, x1));
+  const float ay = mapY(std::min(y0, y1)), by = mapY(std::max(y0, y1));
+  return AtelierRect{ax, ay, bx - ax, by - ay};
+}
+
 }  // namespace np

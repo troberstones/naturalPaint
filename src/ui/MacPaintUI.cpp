@@ -2917,7 +2917,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
            const MixboxLut& lut, uint32_t canvasW, uint32_t canvasH) {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
 
-  // ------------------------------------------------------------ menu bar
   // ------------------------------------------------------------ title bar
   //
   // docs/ui.md section 2's first band: 36 px, wordmark then menus, undo/redo
@@ -3100,6 +3099,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // resolved by a product decision, not by this step picking a
       // different key on its own initiative.
       ImGui::MenuItem("Rulers", nullptr, &st.showRulers);
+      // docs/ui.md section 2's NAVIGATOR. No shortcut, for the same reason
+      // Rulers has none: keymaps/default.json binds no action for it, and
+      // advertising a chord that resolves to nothing is worse than none.
+      ImGui::MenuItem("Navigator", nullptr, &st.showNavigator);
       ImGui::MenuItem("Guides", "Cmd+;", &st.showGuides);
       if (ImGui::MenuItem("Add Guide...")) ImGui::OpenPopup("AddGuidePopup");
       if (ImGui::MenuItem("Clear Guides", nullptr, false, !st.guides.empty()))
@@ -3130,24 +3133,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       ImGui::EndMenu();
     }
 
-    // The active document, always visible rather than only inside a dialog:
-    // every lifecycle command in the File menu acts on this one, and a
-    // "Save" whose target is not on screen is how the wrong file gets
-    // overwritten. The `*` is the dirty marker.
+    // The active document's name used to be here, with a `*` dirty marker,
+    // and the argument for it was that "a Save whose target is not on screen
+    // is how the wrong file gets overwritten". That argument is now the tab
+    // strip's -- the band directly below shows every open document by name
+    // with an accent dot on the dirty one, which is strictly more of what the
+    // name was here to provide. Two copies of it would be the design's own
+    // redundancy, not a safeguard.
     OpenDocument* activeForBar = st.documents.active();
-    if (activeForBar != nullptr) {
-      ImGui::TextDisabled("| %s", documentDisplayName(*activeForBar).c_str());
-      // docs/ui.md section 1 reserves the accent for "active tool, dirty
-      // marker, selection", and the diagram draws the dirty document's tab
-      // with a filled dot. This is that marker, in that colour, rather than an
-      // asterisk in the same grey as the filename it qualifies.
-      if (activeForBar->isDirty()) {
-        ImGui::SameLine(0.0f, 6.0f);
-        float ac[3];
-        unpackRgb(kAccent, ac);
-        ImGui::TextColored(ImVec4(ac[0], ac[1], ac[2], 1.0f), "*");
-      }
-    }
     if (!g_docStatus.empty()) {
       const size_t firstLine = g_docStatus.find('\n');
       const std::string oneLine =
@@ -3260,8 +3253,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // bar it drew itself. Taking the full viewport means one function owns every
   // edge in the window, including the one the menu bar sits on -- and that
   // function is testable without a window (see `--selftest`, atelier chrome).
-  const AtelierBands bands =
-      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, /*showTabStrip=*/false);
+  // The tab strip appears when there is a document to name. Not "when there
+  // is more than one": a single open document still has a name, a dirty
+  // marker and a `+` beside it, and a band that materialised on the second
+  // document would move every other band down by 36 px at the moment a user
+  // opened one.
+  const AtelierBands bands = atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
+                                           /*showTabStrip=*/!st.documents.empty());
 
   const ImGuiWindowFlags fixedFlags =
       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
@@ -3534,11 +3532,59 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // report an unimplemented blend once per layer per upload, and the layers
     // panel already marks exactly those layers `(!)` on their own rows, which
     // is the same fact in the place a user can act on it.
-    if (const OpenDocument* activeDocument = st.documents.active()) {
-      if (const WGPUTextureView documentView = g_documentTexture.viewFor(gpu, *activeDocument))
-        dl->AddImageQuad((ImTextureID)(intptr_t)documentView, q00, q10, q11, q01);
+    const OpenDocument* activeDocument = st.documents.active();
+    WGPUTextureView documentView = nullptr;
+    if (activeDocument != nullptr) {
+      documentView = g_documentTexture.viewFor(gpu, *activeDocument);
+      if (documentView) dl->AddImageQuad((ImTextureID)(intptr_t)documentView, q00, q10, q11, q01);
     }
     dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
+
+    // --- navigator (docs/ui.md section 2) --------------------------------
+    //
+    // The same composite texture the canvas just drew, at thumbnail size in
+    // the bottom-right corner, with the visible region marked in the accent.
+    // Free: `DocumentTexture::viewFor()` is revision-cached, so the second
+    // call in a frame is a map lookup and no second composite happens.
+    //
+    // Drawn into the canvas window rather than as its own floating window,
+    // because it floats over the *surround* -- a window would take focus and
+    // would have to be excluded from the canvas hit test.
+    //
+    // The viewport rectangle is derived from `origin`/`drawSize`/`avail`, the
+    // same three the canvas block computed for itself, rather than from a
+    // second reconstruction of the same arithmetic. It is axis-aligned, so
+    // under a rotated view it marks the *bounding box* of what is visible
+    // rather than the rotated quad -- honest at a glance and wrong only in the
+    // corners, which is the same compromise drawRulers() makes for the same
+    // reason.
+    const AtelierRect navBox =
+        st.showNavigator && documentView != nullptr
+            ? atelierNavigatorRect(bands.canvas, texW, texH)
+            : AtelierRect{};
+    if (!navBox.empty()) {
+      const ImVec2 navMin(navBox.x, navBox.y);
+      const ImVec2 navMax(navBox.right(), navBox.bottom());
+      dl->AddRectFilled(ImVec2(navMin.x + 4, navMin.y + 4), ImVec2(navMax.x + 4, navMax.y + 4),
+                        IM_COL32(0, 0, 0, 110));
+      // Paper, not chrome: the document composites with straight alpha, so an
+      // unpainted region is transparent and takes whatever is behind it. On
+      // the canvas that is the paper quad, and a navigator backed by chrome
+      // deep would show black where the canvas shows white -- a thumbnail that
+      // does not match the picture it is a thumbnail of.
+      dl->AddRectFilled(navMin, navMax, atelierToken(kCanvasPaper));
+      dl->AddImage((ImTextureID)(intptr_t)documentView, navMin, navMax);
+
+      const float visX0 = (paintOrigin.x - origin.x) / st.view.zoom;
+      const float visY0 = (paintOrigin.y - origin.y) / st.view.zoom;
+      const AtelierRect vis = atelierNavigatorMap(navBox, texW, texH, visX0, visY0,
+                                                  visX0 + avail.x / st.view.zoom,
+                                                  visY0 + avail.y / st.view.zoom);
+      if (!vis.empty())
+        dl->AddRect(ImVec2(vis.x, vis.y), ImVec2(vis.right(), vis.bottom()),
+                    atelierToken(kAccent), 0.0f, 0, kRuleThickness);
+      dl->AddRect(navMin, navMax, atelierToken(kRule), 0.0f, 0, kRuleThickness);
+    }
 
     ImGui::SetCursorScreenPos(paintOrigin);
     ImGui::InvisibleButton("##canvasHit", avail,
@@ -3828,6 +3874,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // would show the values as they were before this frame's canvas input
   // changed them -- a zoom readout one frame stale, which is exactly the
   // juddering docs/ui.md section 5 asks the monospace numerics to prevent.
+  if (drawAtelierTabStrip(st, bands, &g_docStatus)) {
+    st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
+                                           static_cast<int32_t>(canvasH), WorkingSpace{}));
+    g_docStatus.clear();
+  }
   drawAtelierOptionsBar(st, bands);
   drawAtelierStatusBar(st, bands, canvasW, canvasH);
   // Last, and on the foreground draw list: a 2 px rule that a neighbouring

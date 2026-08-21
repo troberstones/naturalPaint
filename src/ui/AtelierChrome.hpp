@@ -91,6 +91,25 @@ ImU32 atelierToken(uint32_t rgb) noexcept;
 // never covered by the window it borders.
 void drawAtelierRules(const AtelierBands& bands);
 
+// docs/ui.md section 2's 34px band: the open documents as tabs (PRD **A5**,
+// "Documents present as tabs, with an optional split showing two").
+//
+// **The strip, not the split.** A5's second half and PRD A6's "only *visible*
+// documents hold GPU textures, at most two" are the substantial part of
+// PLAN.md Phase 5 step 14 -- a second viewport, a second `DocumentTexture` and
+// the residency rule that keeps the pair honest. So the design's two
+// split icons in the right of the strip are not drawn here: they would be two
+// buttons that do nothing, which is the same objection this module already
+// makes to the `PRESET` dropdown and the `BG` swatch.
+//
+// `statusOut`, when non-null, receives the refusal from a close the session
+// declined -- a dirty document names what would be lost (PRD I11), exactly as
+// the File menu's own Close Document does, because it is the same call.
+//
+// Returns true when a new document was asked for (the `+`), which the caller
+// makes, since only it knows the canvas dimensions a blank one gets.
+bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* statusOut);
+
 // docs/ui.md section 2's 46px band: the active tool and its options.
 //
 // No PRESET control: the design draws `PRESET [] Round Bristle 03`, and this

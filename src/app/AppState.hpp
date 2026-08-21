@@ -319,6 +319,12 @@ struct AppState {
   // view.rotation == 0 -- see MacPaintUI.cpp's canvas block for how a
   // rotated view degrades the ruler strips rather than drawing nonsense.
   bool showRulers = false;
+  // docs/ui.md section 2's NAVIGATOR, floating over the bottom-right of the
+  // canvas. On by default, unlike the rulers: the design draws it, and unlike
+  // a ruler strip it costs the paint area nothing -- it floats over the
+  // surround, and hides itself when the canvas is too small to spare the
+  // corner (ui/AtelierLayout's `atelierNavigatorRect`).
+  bool showNavigator = true;
   bool showGuides = true;
   bool showGrid = false;
   // PRD Q6: global toggle. When true, dragging a new guide off a ruler
