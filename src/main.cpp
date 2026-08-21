@@ -32,6 +32,7 @@
 #include "gfx/Context.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
+#include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
 #include "ui/Theme.hpp"
 
@@ -985,6 +986,22 @@ int main(int argc, char** argv) {
   ImGuiIO& io = ImGui::GetIO();
   io.IniFilename = nullptr;  // the layout is fixed; don't persist window state
   np::applyMacPaintDarkTheme();
+
+  // ui/Fonts: six of the seven layer-kind glyphs docs/ui.md 3.2 assigns are
+  // above U+00FF and ImGui's built-in ProggyClean holds nothing above U+00FF,
+  // so none of them could be drawn -- ui/MacPaintUI substituted `[R]`/`[P]`/
+  // `[A]` instead. Merged, not replaced, so no existing string changes width.
+  // Reported either way: a silent failure here is a panel of stand-ins with
+  // no explanation, which is how this survived nine passing --selftest
+  // sections that assert the glyph values. 13.0f is ProggyClean's own native
+  // size (imgui_draw.cpp's AddFontDefault); the merge source has to be asked
+  // for the same size or the merged glyphs sit off the baseline beside it.
+  const np::FontLoadResult fontResult = np::installUiGlyphFont(13.0f);
+  if (fontResult.ok)
+    std::printf("[fonts] merged %s for %zu layer-kind glyphs\n", fontResult.path.c_str(),
+                np::requiredUiCodepoints().size());
+  else
+    std::printf("[fonts] %s\n", fontResult.error.c_str());
 
   ImGui_ImplSDL3_InitForOther(window);
   ImGui_ImplWGPU_InitInfo wgpuInit;
