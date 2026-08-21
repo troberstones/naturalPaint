@@ -1866,5 +1866,72 @@ bool runLayerCompTest();
 // identical per-file failures. Headless and GPU-free; writes and removes a
 // selftest_exportstates/ scratch directory.
 bool runExportStatesTest();
+// PLAN.md Phase 5 -- **the CPU Pigment deposit**: `brush/Deposit` (what one dab
+// does to one texel) and `app/StrokeSession` (the stroke lifecycle around it).
+// The project's oldest open blocker: before this step no stroke had ever
+// reached a `Layer`, so PRD C3's `Mix` -- a P0 feature -- was asserted and
+// never witnessed, and `core/History` had never seen a stroke.
+//
+// **What it is not**, stated first because it is the part a reader must not
+// misread: this is the cheap interim, *not* the GPU->CPU solver readback
+// designed in `scratchpad/design-stroke-bridge.md`. Nothing here simulates
+// water. `sim::PaintSim::readbackCanvas()` is deliberately not reused (8-bit,
+// display-referred, PRD B6). See brush/Deposit.hpp's opening section.
+//
+// What is asserted:
+//  - **The falloff**, including the clause the whole footprint argument rests
+//    on: coverage is *exactly* `0.0f` at and beyond the radius. The rejected
+//    linear ramp is run beside the built smoothstep and both profiles' worst
+//    slope discontinuity is printed.
+//  - **What one dab does to one texel**, against the equation the header
+//    states: the lerp form and the quotient form agree to a derived 4-ulp
+//    bound, `m + dm == 0` returns the brush's latent (the limit, not a
+//    convention), and mass saturates at 1 while the mixing weight does not --
+//    with the rejected "cap the delta instead" run beside it, freezing a
+//    full-mass texel exactly as predicted.
+//  - **Hue idempotence at ZERO tolerance**: 65 deposits of one pigment leave
+//    the latent bit-identical to the brush's, and two half-mass dabs split the
+//    same way as one full one. Its stated limit is asserted too -- two
+//    *different* pigments do not split, because Kubelka-Munk mixing is
+//    order-dependent.
+//  - **Latent space against RGB space**, both printed: blue into yellow gives
+//    green in latents and a desaturated tan in RGB.
+//  - **Mass IS alpha** (PRD F10): the composite's alpha at a deposited texel
+//    is the stored mass and its RGB is `latentToRgb(latent) * mass`; 41
+//    overlapping dabs leave nothing above mass 1.
+//  - **Footprint completeness**, brute-forced rather than argued: for six dab
+//    positions the reported tile set is exactly the set of tiles whose raw half
+//    words changed, including a dab centred on the corner where four tiles
+//    meet. The set is *tight* as well -- a dab that clips a tile corner without
+//    reaching it allocates one tile where a bounding box would have allocated
+//    four, and the 224 KiB-per-tile difference is printed.
+//  - **One stroke is ONE undo step**: hundreds of dabs, exactly one
+//    `HistoryEntry` labelled for the tool, the content revision moved and the
+//    structural one not, and undo proven to return the tiles to a
+//    **byte-identical** pre-stroke state by `memcmp` of the raw half words.
+//  - **Every refusal**: out-of-range index, an RGB layer, a locked Pigment
+//    layer and the Water tool each refuse by name and record nothing; a stroke
+//    that deposited nothing records no entry at all; a held-still brush still
+//    emits no dabs (ADR-0003).
+//  - **The whole routing table** (which tools reach the CPU deposit and which
+//    still reach `sim::PaintSim`), every row.
+//  - **`Mix`, witnessed**: two hand-painted strokes on two Pigment layers,
+//    composited under `Normal` and under `Mix`, with both colours printed --
+//    the first time in this project's life that a stroke, rather than a
+//    literal, produced PLAN.md's green.
+//  - **Live feedback**: an in-progress stroke fed one sample per frame with a
+//    document snapshot held across every frame (as ui/DocumentTexture holds
+//    one), the per-frame deposit-plus-region-composite cost measured against
+//    PRD F3's 20 ms **end-to-end** budget, and the region walk proven
+//    bit-identical to the full one over the same tiles.
+//  - **The measurement**: per-dab cost, a ~400-dab stroke, tiles touched
+//    against tiles on the canvas, and the distinct bytes the stroke's history
+//    entry costs under copy-on-write.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all, and `oiioBackendCompiledIn()` is checked so that
+// claim is made twice rather than merely compiled twice. Headless and GPU-free;
+// writes no files.
+bool runPigmentDepositTest();
 
 }  // namespace np

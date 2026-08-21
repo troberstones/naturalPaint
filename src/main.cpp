@@ -23,6 +23,9 @@
 #include "app/Memory.hpp"
 #include "app/Screenshot.hpp"
 #include "app/SelfTest.hpp"
+#include "app/StrokeSession.hpp"
+#include "brush/Deposit.hpp"
+#include "core/Composite.hpp"
 #include "core/Blend.hpp"
 #include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
@@ -110,6 +113,99 @@ void buildDemoDocument(np::OpenDocument& od) {
   // ui/DocumentTexture.hpp names -- demonstrated by the one code path in this
   // repository that writes tiles without going through core/LayerOps.
   od.recordEdit("demo document", np::EditKind::Content);
+}
+
+// --pigment-stroke-demo [normal] (Phase 5, the CPU Pigment deposit): **the
+// first hand-made stroke in this project's life that reaches a `Layer`.**
+//
+// Two Pigment layers, each painted by a real `app::StrokeSession` -- the same
+// class the pen will drive -- with the upper one blended `Mix` (the default)
+// or `Normal` (the `normal` argument). The two screenshots differ in exactly
+// one property of one layer, so the difference between the pictures *is*
+// PRD C3, which is what makes the pair worth capturing rather than either one
+// alone.
+//
+// A broad yellow stroke crossed by a broad blue one, and the crossing square
+// is the whole point: under `Mix` it is green, because half a mass of blue
+// pigment mixed into a mass of yellow pigment IS green; under `Normal` it is
+// the blue-over-yellow average, which is a pale wash. The arms of each stroke
+// show the two pigments unmixed in both pictures, so the crossing is the only
+// thing that moved.
+//
+// Here in main.cpp's anonymous namespace for the same reason
+// buildDemoDocument() is: this exists to make a verification claim
+// photographable, and a `ui/` or `core/` module carrying demo fixtures would
+// be carrying test data in production code.
+void buildPigmentStrokeDemo(np::OpenDocument& od, bool mix) {
+  np::Document& doc = od.document;
+  np::recordLayerEdit(
+      od, np::addLayer(doc, doc.layers.size(), np::makePigmentLayer("Yellow ground")));
+  np::recordLayerEdit(od, np::addLayer(doc, doc.layers.size(),
+                                       np::makePigmentLayer(mix ? "Blue, Mix" : "Blue, Normal")));
+
+  // Mixbox's own primaries, straight from core/Pigment.cpp's polynomial: c1 is
+  // its yellow, c0 its blue, and the derived fourth weight is white. No LUT is
+  // loaded for this, because latent -> RGB needs none.
+  np::Latent yellow;
+  yellow.c = {0.0f, 1.0f, 0.0f};
+  np::Latent blue;
+  blue.c = {0.625f, 0.0f, 0.0f};
+
+  auto paint = [&](size_t layerIndex, const np::Latent& pigment, float flow, float x0, float y0,
+                   float x1, float y1) {
+    np::BrushTip tip;
+    tip.radius = 110.0f;
+    tip.hardness = 0.55f;
+    tip.flow = flow;
+    tip.pigment = pigment;
+
+    np::StrokeSession session;
+    std::string error;
+    if (!session.begin(od, layerIndex, tip, np::Tool::Brush, &error)) {
+      std::fprintf(stderr, "[pigment-stroke-demo] %s\n", error.c_str());
+      return;
+    }
+    constexpr int kSamples = 48;  // one per render frame, as the pen would
+    for (int i = 0; i <= kSamples; ++i) {
+      const float u = static_cast<float>(i) / static_cast<float>(kSamples);
+      session.addPoint(x0 + (x1 - x0) * u, y0 + (y1 - y0) * u);
+    }
+    session.end();
+    std::printf("[pigment-stroke-demo] layer %zu '%s': %zu dabs, %zu texels, %zu tiles, "
+                "1 history entry ('%s')\n",
+                layerIndex, doc.layers[layerIndex].name.c_str(), session.dabCount(),
+                session.texelsWritten(), session.strokeTiles().size(),
+                session.label().c_str());
+  };
+
+  // Full flow on the ground so its core saturates; a low flow on the blue so
+  // its core lands near half a mass, which is PRD C3's own worked example.
+  paint(1, yellow, 0.5f, 150.0f, 512.0f, 880.0f, 512.0f);
+  paint(2, blue, 0.075f, 512.0f, 150.0f, 512.0f, 880.0f);
+
+  np::setLayerBlend(doc, 2, mix ? np::BlendMode::Mix : np::BlendMode::Normal);
+
+  // The numbers behind the picture, so the screenshot is checkable from the
+  // log rather than only by eye.
+  auto texelAt = [&](size_t layerIndex, int32_t x, int32_t y) {
+    const np::PixelCoord at{x, y};
+    const np::PigmentTile* t = doc.layers[layerIndex].pigmentTiles->find(np::tileCoordAt(at));
+    return t ? t->readTexel(np::tileLocalOffset(at)) : np::PigmentTexel{};
+  };
+  const np::PigmentTexel low = texelAt(1, 512, 512);
+  const np::PigmentTexel up = texelAt(2, 512, 512);
+  const std::vector<float> comp = np::compositeDocumentPremultiplied(doc);
+  const size_t i = (static_cast<size_t>(512) * static_cast<size_t>(doc.width) + 512) * 4;
+  const float a = comp[i + 3];
+  std::printf("[pigment-stroke-demo] crossing: yellow mass %.3f, blue mass %.3f -- %s gives "
+              "(%.3f %.3f %.3f) at alpha %.3f\n",
+              static_cast<double>(low.mass), static_cast<double>(up.mass),
+              mix ? "Mix" : "Normal", static_cast<double>(comp[i + 0] / a),
+              static_cast<double>(comp[i + 1] / a), static_cast<double>(comp[i + 2] / a),
+              static_cast<double>(a));
+  std::printf("[pigment-stroke-demo] %zu layers, revision %llu, %zu history entries\n",
+              doc.layers.size(), static_cast<unsigned long long>(od.revision),
+              od.history.entries().size());
 }
 
 // --ui-layer-demo [noclip] (UI detour step 3): builds a layer stack using
@@ -396,6 +492,8 @@ int main(int argc, char** argv) {
   const char* screenshotPath = nullptr;
   int screenshotFrames = 30;
   bool demoDocument = false;
+  bool pigmentStrokeDemo = false;
+  bool pigmentStrokeDemoMix = true;
   bool compsDemo = false;
   size_t compsDemoRestore = 0;
   bool compsDemoDrop = false;
@@ -440,6 +538,15 @@ int main(int argc, char** argv) {
       // --screenshot photographs the composite rather than photographing the
       // fact that a transparent one is invisible. See buildDemoDocument().
       demoDocument = true;
+    } else if (a == "--pigment-stroke-demo") {
+      // Phase 5, the CPU Pigment deposit: paint two Pigment layers with real
+      // strokes so --screenshot photographs `Mix` against `Normal`. See
+      // buildPigmentStrokeDemo(). `normal` is the comparison shot.
+      pigmentStrokeDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "normal") {
+        pigmentStrokeDemoMix = false;
+        ++i;
+      }
     } else if (a == "--comps-demo") {
       // PLAN.md Phase 5 step 12: capture two comps of the current document and
       // restore the one named, so --screenshot can photograph the same
@@ -975,6 +1082,10 @@ int main(int argc, char** argv) {
     // before the first byte in OFF rather than skipped. Headless and
     // GPU-free; writes and removes a selftest_exportstates/ directory.
     const bool exportStatesOk = np::runExportStatesTest();
+    // Phase 5 -- the CPU Pigment deposit (brush/Deposit + app/StrokeSession):
+    // what one dab does to one texel, that a stroke's tile set is complete and
+    // tight, that N dabs are one undo step, and `Mix` witnessed from a stroke.
+    const bool pigmentDepositOk = np::runPigmentDepositTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -989,7 +1100,9 @@ int main(int argc, char** argv) {
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
-                    documentTextureOk && layerEditorOk && controlsLayoutOk && incrementalCompositeOk && mergeFamilyOk && layerCompOk && exportStatesOk &&
+                    documentTextureOk && layerEditorOk && controlsLayoutOk &&
+                    incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
+                    exportStatesOk && pigmentDepositOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk;
     s->shutdown();
     gpu.shutdown();
@@ -1102,6 +1215,10 @@ int main(int argc, char** argv) {
                   od->document.height, od->document.layers.size(),
                   static_cast<unsigned long long>(od->revision));
     }
+  }
+  if (pigmentStrokeDemo) {
+    if (np::OpenDocument* od = st.documents.active())
+      buildPigmentStrokeDemo(*od, pigmentStrokeDemoMix);
   }
   // After --demo-document deliberately: the script builds on whatever the
   // document already holds, and the layer it clips to is the one that was on

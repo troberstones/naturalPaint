@@ -58,6 +58,7 @@ add_executable(naturalPaint
   app/selftest/MipPyramid.cpp
   app/selftest/NpaintFormat.cpp
   app/selftest/OpStack.cpp
+  app/selftest/PigmentDeposit.cpp
   app/selftest/PigmentLayer.cpp
   app/selftest/PlaceImageAsLayer.cpp
   app/selftest/PointOps.cpp
@@ -71,7 +72,9 @@ add_executable(naturalPaint
   app/selftest/TiledViewport.cpp
   app/selftest/ViewTransform.cpp
   app/Snapping.cpp
+  app/StrokeSession.cpp
   app/ViewTransform.cpp
+  brush/Deposit.cpp
   brush/StrokePath.cpp
   color/LutBake.cpp
   color/Shaper.cpp

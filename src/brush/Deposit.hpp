@@ -1,0 +1,334 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+#include "brush/StrokePath.hpp"
+#include "core/Pigment.hpp"
+#include "core/Tile.hpp"
+
+// brush/Deposit -- **what happens to a dab.**
+//
+// ==========================================================================
+// 0. What this delivers, what it does not, and what is still owed
+// ==========================================================================
+//
+// Twelve Phase 5 steps deep, no stroke had ever reached a `Layer`. `sim::
+// PaintSim` owns one dense `RGBA8Unorm` canvas texture and nothing wrote
+// `Layer::pigmentTiles` outside `--selftest`, so `Mix` (PRD C3, **P0**, and
+// the reason this application exists) was asserted and never witnessed, and
+// `core/History` had never seen a stroke.
+//
+// **This module is the cheap interim, not the designed fix.** The designed fix
+// is the GPU->CPU solver readback in `scratchpad/design-stroke-bridge.md` (983
+// lines, 12 steps): the fluid solver runs, its pigment field is read back in
+// f16 and *that* is what lands in a Pigment layer, so what the document holds
+// is what the water actually did. What is built here instead is the direct
+// path -- **the same dab stream `brush/StrokePath` already emits, deposited
+// into a Pigment layer's tiles on the CPU, with no solver in the loop at all.**
+//
+// So, plainly:
+//
+//   Delivered here          A stroke reaches a Layer. A Pigment layer holds
+//                           hand-painted content. `Mix` is visible. A stroke
+//                           is one undo step. The dirty-tile path carries an
+//                           in-progress stroke to the screen.
+//
+//   NOT delivered here      Any fluid behaviour whatsoever: no water, no
+//                           diffusion, no edge darkening, no granulation, no
+//                           paper tooth, no wet-in-wet. A dab deposited here
+//                           is a stamp with a falloff, and it stays exactly
+//                           where it was stamped forever. Watercolour and oil
+//                           still live only in `sim::PaintSim`'s texture and
+//                           still never reach a `Layer`.
+//
+//   Still owed              The solver readback. Until it lands, the medium a
+//                           user can *keep* in a document is "flat pigment",
+//                           and the medium they can *see* simulated is one
+//                           they cannot save. That is the whole of the gap and
+//                           it is not narrowed by anything in this file.
+//
+// **`sim::PaintSim::readbackCanvas()` is deliberately not reused**, and it is
+// the shortcut a reader will reach for first: it already returns the canvas as
+// pixels, so "just write those into the layer" looks like the bridge for free.
+// It is 8-bit and display-referred (`RGBA8Unorm`, `sim/PaintSim.cpp`'s canvas
+// target), which violates PRD B6 outright -- a document part must hold
+// scene-referred linear data, and 8 bits of sRGB cannot round-trip through the
+// f16 tile it would be written into. It also has no latent in it at all, so
+// everything a Pigment layer exists for (`Mix`, PRD C3) would have to be
+// re-invented from RGB by `rgbToLatent()`, whose decomposition docs/ui.md §3.3
+// calls "plausible rather than true". Nothing in this file calls it.
+//
+// ==========================================================================
+// 1. What one dab does to one texel
+// ==========================================================================
+//
+// A dab is a centre, a radius, a falloff and a pigment. Per covered texel it
+// **adds mass and mixes latent**, and the rule is exactly:
+//
+//     dm  = flow * coverage(|texel_centre - dab_centre| / radius)
+//     w   = dm / (m + dm)                       // (m + dm == 0 -> w = 1)
+//     z'  = lerp(z, z_brush, w)                 // == (z*m + z_brush*dm)/(m+dm)
+//     m'  = min(m + dm, kMaxMass)
+//
+// Three things in those four lines are decisions rather than algebra.
+//
+// **(i) The latent blend is mass-weighted, and it is written as a lerp rather
+// than as the quotient.** `(z*m + z_brush*dm) / (m + dm)` and `lerp(z,
+// z_brush, dm/(m+dm))` are the same number in exact arithmetic and are *not*
+// the same number in floating point. The lerp form is chosen because it is
+// exact at the endpoint that matters: on empty paper `m == 0` gives `w = dm /
+// dm`, which is exactly `1.0f` for any finite non-zero `dm`, and `std::lerp(a,
+// b, 1)` is specified to return `b` exactly. The quotient form computes
+// `z_brush*dm/dm`, two roundings that need not come back to `z_brush`. That
+// exactness is what makes the hue invariant below assertable at **zero**
+// tolerance instead of at an f16 tolerance.
+//
+// **(ii) `m + dm == 0` yields the brush's latent, and that is the limit, not a
+// convention.** `depositDab()` never calls the rule with `dm == 0` -- a texel
+// whose coverage is zero is skipped and not rewritten at all, which is also
+// what keeps a dab's reported footprint equal to what it changed (§3). So the
+// singular case is reachable only by a direct call to `depositTexel()`. It is
+// still defined, because a function with an undefined input is a bug waiting
+// for a caller: as `dm -> 0+` with `m == 0`, `w = dm/dm -> 1`, so the limit is
+// `z_brush`, and the limit is what the function returns. The alternative --
+// leaving the destination latent untouched -- is what a mass-0 texel would
+// then carry forever: a stale hue at zero coverage, which PRD F10's eraser
+// (mass down, "leaving the Latent untouched") deliberately creates and which
+// the *next* deposit must not be biased by. `w = 1` is the answer that erases
+// that bias.
+//
+// **(iii) Mass saturates; the mixing weight does not.** `core/Composite`
+// projects a Pigment texel as `(latentToRgb(latent) * mass, mass)` -- **mass
+// IS the layer's alpha** -- so a mass above 1 is not a bright texel, it is a
+// document with alpha 1.4 in it, which no compositor in this codebase or any
+// other has a meaning for. The stored mass is therefore capped at
+// `kMaxMass == 1`. The *weight* `w` deliberately uses the uncapped `dm`, so a
+// texel already at full mass keeps taking on the brush's hue as more paint
+// goes down (`w = dm/(1+dm) > 0`) instead of freezing at the first colour that
+// happened to saturate it. Capping `dm` instead -- "the paper can only hold so
+// much" -- would make an opaque area permanently un-repaintable, which is
+// wrong for paint and wrong for every application that has ever shipped a
+// brush.
+//
+// **The invariant that justifies storing latents at all.** Two half-mass dabs
+// of one pigment must equal one full-mass dab of it -- the deposit must be
+// *idempotent in hue*. It is, exactly: with `z == z_brush`, `lerp(z, z, w)`
+// returns `z` for every `w`, so repeated deposits of one pigment cannot walk
+// the stored latent anywhere, at any mass, in any order. `--selftest` asserts
+// that at **zero** tolerance over a whole dab footprint, and asserts the mass
+// half at the derived f16 bound (splitting a dab rounds the intermediate mass
+// through binary16 twice instead of once; the latent does not round at all,
+// because it does not change).
+//
+// **The invariant's other half, which `--selftest` found rather than confirmed.**
+// Below saturation the rule is a *running mass-weighted mean*: after any
+// sequence of deposits, `z = sum(z_i * dm_i) / sum(dm_i)`. So it is
+// **order-independent** -- two pigments laid down in either order, in any
+// number of instalments, give the identical latent. That is ADR-0003's rule
+// (deposition depends on distance travelled, never on how many events that
+// distance was divided into) holding in *hue* as well as in mass, and it was
+// not designed in; the first draft of this header asserted the opposite and
+// the test refused it.
+//
+// Order-dependence appears at **saturation**, and only there: once `m` is
+// capped at `kMaxMass` the denominator stops growing, so a later deposit
+// carries more weight than an earlier one of the same size. A mass of blue
+// then half a mass of red is a different colour from half a mass of red then a
+// mass of blue -- which is the behaviour paint has, and it arrives from the
+// cap rather than from anything added for it. `--selftest` asserts both halves.
+//
+// ==========================================================================
+// 2. Why the falloff is what it is
+// ==========================================================================
+//
+// `coverage()` is 1 inside a flat core of `hardness * radius`, falls by a
+// smoothstep to 0 at `radius`, and is **exactly zero at and beyond `radius`**.
+// The last clause is not cosmetic: it is what makes a dab's footprint a
+// bounded, checkable set (§3). A Gaussian, the other obvious profile, has no
+// zero anywhere, so its footprint is either unbounded or truncated at an
+// arbitrary sigma count -- and a truncated Gaussian has a visible step at the
+// truncation radius, which is exactly the seam this module cannot afford.
+//
+// Smoothstep rather than a linear ramp because a linear ramp is C0: its
+// derivative jumps at the core edge and at the rim, and overlapping dabs at
+// 0.25-radius spacing turn those two circles of curvature discontinuity into
+// visible banding along a stroke. `hardness == 1` degenerates to a hard disc
+// with no division at all, which is the `DryBrush` end of the range.
+//
+// ==========================================================================
+// 3. Which tiles a dab touches, and why the set is complete
+// ==========================================================================
+//
+// A dab near a tile boundary covers up to four tiles, and **a missed tile is a
+// stroke with a visible seam that nothing will ever repair** -- no later pass
+// revisits a tile that was not reported. Completeness rests on two facts, in
+// this order:
+//
+//   1. Every texel this module changes lies inside `dabPixelBounds()`. That
+//      holds because `coverage()` returns exactly `0.0f` for every offset with
+//      `dx*dx + dy*dy >= radius*radius`, tested by the squared comparison
+//      before any square root or division happens, and the bounds are the
+//      integer texel rectangle containing that disc.
+//   2. Every tile holding such a texel is reported, because the tile is
+//      reported at the moment its **first** changed texel is written -- the
+//      same `if (tile == nullptr)` that fetches it. There is no separate
+//      "which tiles did I touch" calculation that could disagree with the
+//      writes; reporting and writing are the same branch.
+//
+// The second fact is also what keeps the set *tight*. Reporting the bounding
+// box's tiles instead would be safe and would cost a **224 KiB allocation per
+// tile that the dab clipped but never wrote** -- a dab one texel inside a tile
+// corner would allocate three empty tiles and hand three empty tiles to the
+// incremental composite and to every history entry from then on.
+//
+// `--selftest` does not take either fact on trust: it brute-force scans the
+// whole layer before and after a deposit and asserts the reported set is
+// exactly the set of tiles whose bytes changed, including a dab centred on the
+// corner where four tiles meet.
+//
+// ==========================================================================
+// 4. What is deliberately not here
+// ==========================================================================
+//
+// **No `Document`, no `History`, no `OpenDocument`.** This module is
+// `core/`-only and takes a `PigmentTileStore&`: it is the arithmetic of
+// deposition and nothing else. The stroke lifecycle -- pen-down, live
+// feedback, one undo step at pen-up, and which tool routes here at all --
+// is `app/StrokeSession`, because it needs the document record and the
+// history that `app/` owns, and a `brush/` -> `app/` include edge would be
+// upside down (`color/ core/ ops/ app/ io/ ui/ gfx/ paint/ sim/ brush/` are
+// directory groupings, never namespaces, but they still have a direction).
+//
+// **No pressure, tilt, jitter, texture or scatter.** `BrushTip` is what the
+// deposit reads. `app/AppState`'s `BrushState` already turns pressure into a
+// radius and a flow multiplier for the solver path; a second copy of that
+// mapping here would be a second place for it to drift.
+namespace np {
+
+// The cap on stored mass, and therefore on a Pigment layer's alpha.
+//
+// 1.0 rather than "uncapped, clamp at the composite": `core/Composite` reads
+// `mass` straight into the alpha channel of a premultiplied texel, and every
+// consumer downstream of it (the blend table, `layerCoverage()`'s product,
+// io/Export's quantization) assumes alpha is in [0,1]. Clamping at the point
+// of storage means the invariant is true of the *document* and not merely of
+// one reader of it -- and it is the same discipline `MaskTile::readCoverage()`
+// already applies at its own boundary.
+inline constexpr float kMaxMass = 1.0f;
+
+// One stamp of the brush tip: its shape, its load, and what it is loaded with.
+//
+// `spacing` is carried here rather than left to the caller because it belongs
+// to the tip -- `brush/StrokePath` wants `spacing * radius` in pixels and
+// nothing else in a stroke knows both numbers. It is in units of the radius,
+// the same convention and the same 0.25 default `app/AppState`'s `BrushState`
+// already uses (ADR-0003: deposition depends on distance travelled, never on
+// time or event count).
+struct BrushTip {
+  // Pixels. Coverage is exactly zero at and beyond this distance from the
+  // dab centre; a radius of 0 or less deposits nothing at all.
+  float radius = 24.0f;
+
+  // The fraction of the radius that is the flat, fully-covered core, in
+  // [0,1]. 0 is a pure smoothstep from the centre; 1 is a hard disc.
+  float hardness = 0.35f;
+
+  // Mass laid down per dab where coverage is 1. Not clamped to [0,1] here --
+  // a flow above 1 is a legitimate "one dab saturates the paper" tip, and the
+  // cap that matters is on the stored mass, not on the tip.
+  float flow = 0.35f;
+
+  // Arc-length dab spacing, in radii. `spacingPx()` is what StrokePath wants.
+  float spacing = 0.25f;
+
+  // What the tip is loaded with. `paint/Palette`'s `MixboxLut::rgbToLatent()`
+  // produces one from a colour; `core/Pigment`'s `latentToRgb()` projects it
+  // back with no LUT at all, which is why a Pigment layer composites in a
+  // build that never loaded the 512x512 texture.
+  Latent pigment{};
+
+  // Floored exactly as `ui/MacPaintUI`'s solver path floors it, so the two
+  // stroke routes cannot emit dabs at different spacings from one tip.
+  float spacingPx() const noexcept {
+    const float px = spacing * radius;
+    return px > 0.1f ? px : 0.1f;
+  }
+};
+
+// The dab's coverage profile at an offset from its centre, in [0,1]. See §2.
+//
+// Exactly 0.0f for every offset at or beyond `tip.radius`, exactly 1.0f
+// inside `tip.hardness * tip.radius`, and a smoothstep between them.
+float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept;
+
+// The rule of §1, as a pure function of one texel, for the one reason a pure
+// function earns its keep here: the invariants are about *this arithmetic*,
+// so `--selftest` asserts them on this and not on a tile of it.
+//
+// Defined for every finite input, including `dst.mass + deltaMass == 0` (see
+// §1(ii): the result takes `pigment` as its latent and keeps mass 0).
+PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment,
+                          float deltaMass) noexcept;
+
+// The inclusive texel rectangle a dab centred at `centre` can change, clipped
+// to `[0,canvasW) x [0,canvasH)`. Empty (`x1 < x0` or `y1 < y0`) when the dab
+// falls entirely outside the canvas or has no radius.
+//
+// A texel is sampled at its **centre**, `(x + 0.5, y + 0.5)`, which is the
+// convention that makes a dab centred exactly on a tile corner symmetric
+// across all four of the tiles it lands on -- the boundary case §3 tests.
+struct PixelBounds {
+  int32_t x0 = 0, y0 = 0, x1 = -1, y1 = -1;
+  bool empty() const noexcept { return x1 < x0 || y1 < y0; }
+};
+PixelBounds dabPixelBounds(const BrushTip& tip, Vec2 centre, int32_t canvasW,
+                           int32_t canvasH) noexcept;
+
+// What one deposit changed. Counted, not estimated: `texels` is incremented at
+// the write and `tiles` at the fetch.
+struct DepositCount {
+  size_t texels = 0;
+  size_t tiles = 0;
+};
+
+// Deposits one dab into `store`, clipped to the canvas.
+//
+// Every tile it writes is appended to `touchedOut` when that is non-null,
+// exactly once per dab, at the moment the tile is first written -- see §3 on
+// why that is the same branch as the write. Duplicates across dabs are
+// expected and are the caller's to fold (`sortUniqueTiles()`).
+//
+// `store.getOrCreate()` is what fetches the tile, so a tile shared with a
+// history entry is copied here, once per dab that touches it, and the entry's
+// copy is left exactly as it was. That is the whole of what makes one stroke
+// cost its own tiles and not the layer's.
+DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
+                        int32_t canvasW, int32_t canvasH,
+                        std::vector<TileCoord>* touchedOut);
+
+// Sorts ascending by (y, x) and removes duplicates, in place.
+//
+// That order is `documentDirtyTiles()`'s own, and it is load-bearing rather
+// than tidy: `ui/DocumentTexture` uploads the dirty set one **tile band** at a
+// time, a band being a maximal run sharing a tile row, so a set sorted any
+// other way costs one upload per tile instead of one per row.
+void sortUniqueTiles(std::vector<TileCoord>& tiles);
+
+// What a whole stroke's worth of dabs changed.
+struct StrokeDeposit {
+  size_t dabs = 0;
+  size_t texels = 0;
+  // Sorted ascending by (y, x), unique. Ready for
+  // `compositeDocumentTilesPremultiplied()`.
+  std::vector<TileCoord> tiles;
+};
+
+// Deposits every dab in `dabs`, in order. Order matters: §1's mixing rule is
+// not commutative across two different pigments, and a stroke is a sequence.
+StrokeDeposit depositDabs(PigmentTileStore& store, const BrushTip& tip,
+                          const std::vector<Vec2>& dabs, int32_t canvasW,
+                          int32_t canvasH);
+
+}  // namespace np
