@@ -634,6 +634,11 @@ int main(int argc, char** argv) {
     // staging buffer. Runs, and asserts the correct answers, in BOTH NP_USE_OIIO
     // configurations. Writes no files.
     const bool documentTextureOk = np::runDocumentTextureTest(gpu);
+    // The incremental composite (core/DirtyTiles + core/Composite's region
+    // walk + ui/DocumentTexture's sub-rectangle upload): tests that the dirty
+    // set is complete, that a non-tile-local change is classified as one, and
+    // that ten kinds of edit composite bit-identically to a full recomposite.
+    const bool incrementalCompositeOk = np::runIncrementalCompositeTest(gpu);
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -648,7 +653,8 @@ int main(int argc, char** argv) {
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
-                    documentTextureOk && strokeSpeedOk && idleMemOk && fieldAllocOk;
+                    documentTextureOk && incrementalCompositeOk && strokeSpeedOk && idleMemOk &&
+                    fieldAllocOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

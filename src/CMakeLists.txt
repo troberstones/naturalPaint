@@ -18,6 +18,7 @@ add_executable(naturalPaint
   color/Space.cpp
   core/Blend.cpp
   core/Composite.cpp
+  core/DirtyTiles.cpp
   core/Half.cpp
   core/Histogram.cpp
   core/History.cpp

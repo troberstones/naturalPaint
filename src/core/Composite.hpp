@@ -907,4 +907,65 @@ std::string clippedLayerWithoutBaseWarning(const Document& doc, size_t layerInde
 std::vector<float> compositeDocumentPremultiplied(
     const Document& doc, std::vector<std::string>* warningsOut = nullptr);
 
+// --- The same walk, restricted to a tile set (the incremental composite) ---
+//
+// **Why this is the same function and not a second compositor.** Everything
+// §§1-17 above decides -- the pairing, the clip runs, the projection, the
+// grade, the mask, the adjustment inversion -- is *unchanged* here. What
+// changes is which tiles the three tile loops visit and where the accumulator
+// texel lives. That is deliberate to the point of being the whole design:
+// `compositeDocumentPremultiplied()` and this function are one walk behind one
+// `#include`, so the incremental result cannot drift from the full one.
+//
+// **Bit-identity, and why it is structural rather than tested-into-existence.**
+// The accumulator is per texel: every branch of the walk reads storage at a
+// document coordinate and writes the accumulator at that same coordinate, and
+// no op in this build reads a neighbour (core/DirtyTiles.hpp §4). So the value
+// written at `p` is the same sequence of floating-point operations whether the
+// walk visited one tile or every tile -- restricting the tile set removes
+// whole texels from the output, never a term from any texel's arithmetic.
+// `--selftest` asserts it by `memcmp` over the raw half words across ten kinds
+// of edit anyway, because "structural" is an argument and the boundary is a
+// number.
+//
+// The destination rectangle. `pixels` is `width * height * 4` floats,
+// row-major, premultiplied linear RGBA, describing the document rectangle
+// `[origin, origin + (width, height))`. A tile that falls outside it is
+// clipped exactly as one falling outside the canvas is.
+//
+// **Not the whole canvas**, because the whole point is not to touch it: an
+// eight-tile edit on a 2048x2048 document should cost eight tiles of memory
+// traffic, and a caller that had to hand over a 64 MiB canvas-sized buffer
+// would have paid the canvas anyway. `--selftest` measures the difference.
+struct CompositeRegion {
+  float* pixels = nullptr;
+  PixelCoord origin{0, 0};
+  int32_t width = 0;
+  int32_t height = 0;
+};
+
+// Composites `tiles` of `doc` into `region`, **zeroing each tile's texels
+// first** -- the accumulator has to start at transparent black for the same
+// reason `compositeDocumentPremultiplied()`'s buffer does, and doing it here
+// rather than in the caller keeps "an untouched texel is transparent black"
+// in one place.
+//
+// Texels of `region` outside `tiles` are left exactly as the caller left them.
+// A duplicate coordinate is harmless -- the filter is a set and the tile loops
+// iterate the *stores*, so no tile is composited twice -- but every caller
+// passes a set anyway (`documentDirtyTiles()` and `canvasTiles()` both return
+// one), and a coordinate outside the canvas is clipped away exactly as a tile
+// that straddles the canvas edge is.
+//
+// `warningsOut` behaves exactly as it does for the full walk, and produces the
+// **same sentences**: every warning is emitted per layer, before any tile is
+// visited, so a region composite reports an unimplementable blend, an
+// Adjustment layer's ignored mode and a baseless clip just as a full one does.
+// `--selftest` asserts the two lists match, because a user must not stop being
+// told a document is approximate merely because a frame was cheap.
+void compositeDocumentTilesPremultiplied(const Document& doc,
+                                         const std::vector<TileCoord>& tiles,
+                                         const CompositeRegion& region,
+                                         std::vector<std::string>* warningsOut = nullptr);
+
 }  // namespace np

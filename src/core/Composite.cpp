@@ -1,5 +1,6 @@
 #include "core/Composite.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <unordered_set>
 
@@ -287,19 +288,36 @@ std::string unimplementedBlendWarning(size_t layerIndex, const Layer& layer,
   return s;
 }
 
-std::vector<float> compositeDocumentPremultiplied(const Document& doc,
-                                                  std::vector<std::string>* warningsOut) {
-  if (doc.width <= 0 || doc.height <= 0) return {};
+namespace {
 
-  const size_t w = static_cast<size_t>(doc.width);
-  const size_t h = static_cast<size_t>(doc.height);
+// **The document walk, in one place, for both callers.** `only` restricts it
+// to a tile set (null means "every tile a store holds", the pre-incremental
+// behaviour); `region` says where the accumulator lives, which for a full
+// composite is the canvas and for an incremental one is a rectangle around
+// the dirty tiles. Nothing else differs between the two, which is what makes
+// an incremental result bit-identical to a full one rather than merely close
+// -- see core/Composite.hpp's region section.
+void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* only,
+                   const CompositeRegion& region, std::vector<std::string>* warningsOut) {
+  // The accumulator texel at a document coordinate, or null when it is
+  // outside the canvas or outside the destination rectangle. The canvas test
+  // is the one this walk has always made; the rectangle test is a second
+  // clip, and for a full composite it is the same rectangle and therefore
+  // never fires.
+  auto accum = [&](int32_t docX, int32_t docY) -> float* {
+    if (docX < 0 || docX >= doc.width || docY < 0 || docY >= doc.height) return nullptr;
+    const int32_t rx = docX - region.origin.x;
+    const int32_t ry = docY - region.origin.y;
+    if (rx < 0 || rx >= region.width || ry < 0 || ry >= region.height) return nullptr;
+    return region.pixels + (static_cast<size_t>(ry) * static_cast<size_t>(region.width) +
+                            static_cast<size_t>(rx)) *
+                               4u;
+  };
 
-  // Zero-filled: an untouched pixel is transparent black, exactly what
-  // core::Tile gives an unwritten texel, so nothing needs a separate "was
-  // anything here" flag -- and, per core/Blend.hpp's transparent-backdrop
-  // identity, an all-zero accumulator composites the first contributing layer
-  // through unchanged **under every mode**, not only under `over`.
-  std::vector<float> out(w * h * 4, 0.0f);
+  // Whether this walk visits a tile at all. A per-tile test, never per texel.
+  auto visits = [&](const TileCoord& coord) {
+    return only == nullptr || only->find(coord) != only->end();
+  };
 
   // Which layers form a mixed pair, resolved once for the document (PRD L5,
   // core/Blend's `mixPairing()`), so this walk, `blendIsImplementedForLayer()`
@@ -358,8 +376,8 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
   // Blends one already-scaled premultiplied texel into the accumulator.
   auto blendInto = [&](int32_t docX, int32_t docY, BlendMode mode,
                        const std::array<float, 4>& src) {
-    if (docX < 0 || docX >= doc.width || docY < 0 || docY >= doc.height) return;  // clipped
-    float* dst = &out[(static_cast<size_t>(docY) * w + static_cast<size_t>(docX)) * 4];
+    float* dst = accum(docX, docY);
+    if (dst == nullptr) return;  // clipped to the canvas, or outside the region
     const std::array<float, 4> composited = blendPixel(mode, src, {dst[0], dst[1], dst[2], dst[3]});
     dst[0] = composited[0];
     dst[1] = composited[1];
@@ -410,33 +428,44 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
       const MaskTileStore* adjMask = layer.mask.has_value() ? &*layer.mask : nullptr;
       // Walked a tile at a time so the mask lookup is hoisted exactly as it is
       // for every other kind -- one hash lookup per canvas tile, not one per
-      // texel. The canvas starts at (0,0), so its tile coordinates run from 0.
-      for (int32_t tileY = 0; tileY * kTileSize < doc.height; ++tileY) {
-        for (int32_t tileX = 0; tileX * kTileSize < doc.width; ++tileX) {
-          const MaskTile* maskTile = adjMask ? adjMask->find(TileCoord{tileX, tileY}) : nullptr;
-          const PixelCoord origin = tileOrigin(TileCoord{tileX, tileY});
-          for (int32_t ty = 0; ty < kTileSize; ++ty) {
-            const int32_t docY = origin.y + ty;
-            if (docY >= doc.height) break;
-            for (int32_t tx = 0; tx < kTileSize; ++tx) {
-              const int32_t docX = origin.x + tx;
-              if (docX >= doc.width) break;
-              float* dst = &out[(static_cast<size_t>(docY) * w + static_cast<size_t>(docX)) * 4];
-              const float effective =
-                  adjMask ? coverage * maskCoverage(maskTile, PixelCoord{tx, ty}) : coverage;
-              const std::array<float, 4> adjusted = adjustedPremultiplied(
-                  {dst[0], dst[1], dst[2], dst[3]}, ops, effective);
-              // Three channels, deliberately: `adjusted[3]` is `dst[3]` by
-              // construction (core/Composite.hpp §11), and not writing it at
-              // all is what makes "an adjustment layer cannot change coverage"
-              // a property of this loop rather than a property of a contract
-              // two files away.
-              dst[0] = adjusted[0];
-              dst[1] = adjusted[1];
-              dst[2] = adjusted[2];
-            }
+      // texel.
+      auto adjustTile = [&](const TileCoord& coord) {
+        const MaskTile* maskTile = adjMask ? adjMask->find(coord) : nullptr;
+        const PixelCoord origin = tileOrigin(coord);
+        for (int32_t ty = 0; ty < kTileSize; ++ty) {
+          const int32_t docY = origin.y + ty;
+          if (docY >= doc.height) break;
+          for (int32_t tx = 0; tx < kTileSize; ++tx) {
+            const int32_t docX = origin.x + tx;
+            if (docX >= doc.width) break;
+            float* dst = accum(docX, docY);
+            if (dst == nullptr) continue;
+            const float effective =
+                adjMask ? coverage * maskCoverage(maskTile, PixelCoord{tx, ty}) : coverage;
+            const std::array<float, 4> adjusted = adjustedPremultiplied(
+                {dst[0], dst[1], dst[2], dst[3]}, ops, effective);
+            // Three channels, deliberately: `adjusted[3]` is `dst[3]` by
+            // construction (core/Composite.hpp §11), and not writing it at
+            // all is what makes "an adjustment layer cannot change coverage"
+            // a property of this loop rather than a property of a contract
+            // two files away.
+            dst[0] = adjusted[0];
+            dst[1] = adjusted[1];
+            dst[2] = adjusted[2];
           }
         }
+      };
+      // An Adjustment layer has no tiles, so its extent is the canvas -- or,
+      // when this is an incremental walk, the dirty set, which is the one
+      // place restricting the walk saves an O(canvas) pass rather than a
+      // sparse one. The canvas starts at (0,0), so its tile coordinates run
+      // from 0.
+      if (only != nullptr) {
+        for (const TileCoord& coord : *only) adjustTile(coord);
+      } else {
+        for (int32_t tileY = 0; tileY * kTileSize < doc.height; ++tileY)
+          for (int32_t tileX = 0; tileX * kTileSize < doc.width; ++tileX)
+            adjustTile(TileCoord{tileX, tileY});
       }
       continue;
     }
@@ -634,6 +663,7 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
         }
 
       for (const TileCoord& coord : coords) {
+        if (!visits(coord)) continue;
         const PigmentTile* up = upTiles ? upTiles->find(coord) : nullptr;
         const PigmentTile* low = lowTiles ? lowTiles->find(coord) : nullptr;
         const MaskTile* upMask = maskTiles ? maskTiles->find(coord) : nullptr;
@@ -706,6 +736,7 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
 
     if (hasRgb) {
       for (const auto& [coord, tile] : *layer.rgbTiles) {
+        if (!visits(coord)) continue;
         const PixelCoord origin = tileOrigin(coord);
         const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
         // **The base's tiles are the clipping run's whole extent** (§17):
@@ -734,6 +765,7 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
       }
     } else {
       for (const auto& [coord, tile] : *layer.pigmentTiles) {
+        if (!visits(coord)) continue;
         const PixelCoord origin = tileOrigin(coord);
         const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
         if (!members.empty()) bindMemberTiles(coord);
@@ -757,8 +789,73 @@ std::vector<float> compositeDocumentPremultiplied(const Document& doc,
       }
     }
   }
+}
 
+}  // namespace
+
+std::vector<float> compositeDocumentPremultiplied(const Document& doc,
+                                                  std::vector<std::string>* warningsOut) {
+  if (doc.width <= 0 || doc.height <= 0) return {};
+
+  // Zero-filled: an untouched pixel is transparent black, exactly what
+  // core::Tile gives an unwritten texel, so nothing needs a separate "was
+  // anything here" flag -- and, per core/Blend.hpp's transparent-backdrop
+  // identity, an all-zero accumulator composites the first contributing layer
+  // through unchanged **under every mode**, not only under `over`.
+  std::vector<float> out(static_cast<size_t>(doc.width) * static_cast<size_t>(doc.height) * 4,
+                         0.0f);
+
+  CompositeRegion region;
+  region.pixels = out.data();
+  region.origin = PixelCoord{0, 0};
+  region.width = doc.width;
+  region.height = doc.height;
+  // `nullptr` is "every tile a store holds", which is byte-for-byte the walk
+  // this function performed before the incremental path existed.
+  compositeWalk(doc, nullptr, region, warningsOut);
   return out;
+}
+
+void compositeDocumentTilesPremultiplied(const Document& doc, const std::vector<TileCoord>& tiles,
+                                         const CompositeRegion& region,
+                                         std::vector<std::string>* warningsOut) {
+  if (doc.width <= 0 || doc.height <= 0) return;
+  // An **empty** tile set with a zero-sized region is legal and is how a
+  // caller asks for nothing but the warnings: no tile is visited, so `accum()`
+  // is never reached and `region.pixels` is never dereferenced -- and the
+  // per-layer warnings below are emitted in full, because they were never a
+  // property of which tiles a walk visited. ui/DocumentTexture uses it for the
+  // edit that moved the revision and moved no texel.
+  if (!tiles.empty() && (region.pixels == nullptr || region.width <= 0 || region.height <= 0))
+    return;
+
+  // The accumulator starts at transparent black for the same reason the full
+  // walk's buffer does, and only over the tiles being recomposited -- a texel
+  // outside them is the caller's and is not touched at all. Done here rather
+  // than in the caller so that "an untouched texel is transparent black" has
+  // one home.
+  for (const TileCoord& coord : tiles) {
+    const PixelCoord origin = tileOrigin(coord);
+    for (int32_t ty = 0; ty < kTileSize; ++ty) {
+      const int32_t docY = origin.y + ty;
+      if (docY < 0 || docY >= doc.height) continue;
+      const int32_t ry = docY - region.origin.y;
+      if (ry < 0 || ry >= region.height) continue;
+      // The run of texels this tile row contributes, clipped to the canvas and
+      // to the region, cleared in one pass rather than one texel at a time.
+      const int32_t x0 = std::max({origin.x, 0, region.origin.x});
+      const int32_t x1 = std::min({origin.x + kTileSize, doc.width,
+                                   region.origin.x + region.width});
+      if (x1 <= x0) continue;
+      float* row = region.pixels + (static_cast<size_t>(ry) * static_cast<size_t>(region.width) +
+                                    static_cast<size_t>(x0 - region.origin.x)) *
+                                       4u;
+      std::fill(row, row + static_cast<size_t>(x1 - x0) * 4u, 0.0f);
+    }
+  }
+
+  const std::unordered_set<TileCoord> only(tiles.begin(), tiles.end());
+  compositeWalk(doc, &only, region, warningsOut);
 }
 
 }  // namespace np
