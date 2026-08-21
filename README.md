@@ -10,7 +10,7 @@ Real-time natural-media painting on WebGPU: watercolour, oil and ink.
 | GPU | WebGPU via **wgpu-native** | One WGSL compute path across Metal / Vulkan / D3D12 |
 | Window / input | **SDL3** | `SDL_PenEvent` gives real tablet pressure and tilt with no per-platform code |
 | UI | **Dear ImGui** | MacPaint chrome, dark |
-| Build | CMake + FetchContent | No submodules, no package manager |
+| Build | CMake + FetchContent | No package manager. SDL3 and Dear ImGui are fetched at configure time, wgpu-native is vendored, and there is exactly **one git submodule** — `third_party/mixbox`, which a plain clone leaves empty. See [Build](#build) |
 
 **Why not Dawn.** Dawn is the reference WebGPU implementation and has better WGSL
 diagnostics, plus a first-party C++ wrapper. But it is packaged for Chromium, not
@@ -381,11 +381,28 @@ linear cost.
 ## Build
 
 ```bash
+git submodule update --init third_party/mixbox
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build -j
 ```
 
-Configure takes ~2 minutes (cloning SDL3 and ImGui); the build is a couple of
-minutes more. wgpu-native is vendored in `third_party/wgpu`.
+⚠️ **Do not skip the first line.** `third_party/mixbox` is a git submodule, and a
+plain `git clone` — or a `git worktree add` — leaves that directory empty.
+Nothing complains at that point: CMake configures, the build succeeds, and the
+binary links, because the pigment LUT is not compiled in. It is a path baked
+into `NP_MIXBOX_LUT` at configure time and read from the source tree at runtime.
+The first sign anything is wrong is the app exiting immediately with
+
+```
+[mixbox] cannot load .../third_party/mixbox/shaders/mixbox_lut.png: can't fopen
+Could not load the Mixbox LUT. Expected it at:
+  .../third_party/mixbox/shaders/mixbox_lut.png
+```
+
+on stderr, with exit code 1 — from `--selftest` too, not only from the UI. That
+pair is a missing submodule every time, not a broken build.
+
+Configure takes ~1 minute (fetching SDL3 and ImGui); the build is a couple of
+minutes more. wgpu-native is vendored in `third_party/wgpu`, not fetched.
 
 ```bash
 ./build/src/naturalPaint
@@ -408,7 +425,11 @@ Track where the pigment actually goes:
 
 Lays one wet blob, then reports suspended/deposited mass, wet-cell and
 pigment-cell counts, and flow speed every 2 s. Mass should be flat once the brush
-lifts; it is not, and the table under Known bugs is what this prints.
+lifts, and is: a run measured while writing this went from 225 939 total pigment
+at t=0 to 225 674 at t=20 s — 0.12% over the whole run, with all of the movement
+being suspended pigment becoming deposited as the canvas dries. This paragraph
+used to say it was *not* flat and to point at a table under Known bugs; that
+table is gone and the claim went stale with it.
 
 Shaders and the pigment LUT are read from the source tree at runtime — edit any
 `.wgsl` and hit **Cmd+R** to recompile the solver without restarting.

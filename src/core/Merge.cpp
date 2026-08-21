@@ -8,6 +8,7 @@
 
 #include "core/Blend.hpp"
 #include "core/Composite.hpp"
+#include "core/LayerOpRefusal.hpp"
 #include "core/Mask.hpp"
 #include "core/Pigment.hpp"
 #include "core/Tile.hpp"
@@ -16,55 +17,20 @@
 namespace np {
 namespace {
 
-// --- The refusal idiom ----------------------------------------------------
+// --- The refusal idiom is no longer rebuilt here --------------------------
 //
-// `fail`, `succeed`, `describe`, `inRange` and `notLocked` are the same five
-// helpers core/LayerOps.cpp builds in *its* anonymous namespace, producing the
-// same sentences. They are rebuilt here rather than shared for one reason and
-// it is worth naming rather than pretending otherwise: they are internal
-// linkage there, so sharing them means promoting three of them to core/LayerOps'
-// public surface. That is a one-line change per helper and it is the right
-// change; it is not made in the same step that introduces the second caller,
-// because moving a definition out of a file this step otherwise does not touch
-// is the kind of edit that costs more in review than it saves in lines.
-LayerOpResult fail(std::string message) {
-  LayerOpResult r;
-  r.ok = false;
-  r.error = std::move(message);
-  return r;
-}
-
-LayerOpResult succeed(std::string label, size_t index) {
-  LayerOpResult r;
-  r.ok = true;
-  r.editLabel = std::move(label);
-  r.index = index;
-  return r;
-}
-
-std::string describe(const Document& doc, size_t index) {
-  std::string s = "layer " + std::to_string(index);
-  if (index < doc.layers.size() && !doc.layers[index].name.empty())
-    s += " (\"" + doc.layers[index].name + "\")";
-  return s;
-}
-
-bool inRange(const Document& doc, size_t index, const char* what, LayerOpResult* out) {
-  if (index < doc.layers.size()) return true;
-  *out = fail(std::string(what) + " refused: there is no layer at index " +
-              std::to_string(index) + " -- this document has " +
-              std::to_string(doc.layers.size()) +
-              " layer(s), indexed from 0 at the bottom of the stack.");
-  return false;
-}
-
-bool notLocked(const Document& doc, size_t index, const char* what, LayerOpResult* out) {
-  if (!doc.layers[index].locked) return true;
-  *out = fail(std::string(what) + " refused: " + describe(doc, index) +
-              " is locked. A merge destroys the layers it merges, which is exactly the edit a "
-              "lock exists to refuse (core/LayerOps.hpp). Unlock it first.");
-  return false;
-}
+// This file used to carry its own `fail`, `succeed`, `describe`, `inRange` and
+// `notLocked`, with a comment saying they were copies of core/LayerOps.cpp's
+// and that sharing them was "the right change" deferred to a later step. That
+// step happened: they are core/LayerOpRefusal.hpp's `layerOpFail`,
+// `layerOpSucceed`, `layerOpDescribe`, `layerOpInRange` and `layerOpNotLocked`,
+// included above.
+//
+// One thing the copies had already lost, and worth knowing before reading the
+// call sites below: the two `notLocked`s had **drifted**, and this file's
+// second sentence ("A merge destroys the layers it merges...") is the better
+// one for these five operations. It survives, as `kLockedMergeDestroys`, which
+// every merge refusal below passes explicitly. See core/LayerOpRefusal.hpp §3.
 
 // The two kinds that own pixel storage in this build. The other five own none
 // -- core/Layer.hpp is explicit that Adjustment/Text/Strokes/Flats never will,
@@ -251,10 +217,11 @@ LayerOpResult mergeDownComposited(Document& doc, size_t index, std::vector<std::
   merged.clipped = lowerClipped;
   merged.parent = doc.layers[lower].parent;
 
-  const std::string label = "merge " + describe(doc, index) + " down into " + describe(doc, lower);
+  const std::string label =
+      "merge " + layerOpDescribe(doc, index) + " down into " + layerOpDescribe(doc, lower);
   doc.layers.erase(doc.layers.begin() + static_cast<std::ptrdiff_t>(index));
   doc.layers[lower] = std::move(merged);
-  return succeed(label, lower);
+  return layerOpSucceed(label, lower);
 }
 
 // --- Merge down, the latent path (§5) -------------------------------------
@@ -287,7 +254,7 @@ LayerOpResult mergeDownLatent(Document& doc, size_t index, std::vector<std::stri
   merged.blend = kDefaultBlendName;
   merged.parent = doc.layers[lower].parent;
   if (doc.layers[lower].blend != std::string(kDefaultBlendName))
-    append(warnings, "merge down dropped " + describe(doc, lower) + "'s blend \"" +
+    append(warnings, "merge down dropped " + layerOpDescribe(doc, lower) + "'s blend \"" +
                          doc.layers[lower].blend +
                          "\": core/Composite composites a mixed pair with `over` regardless of "
                          "the lower half's blend, so the name was already having no effect and "
@@ -328,11 +295,11 @@ LayerOpResult mergeDownLatent(Document& doc, size_t index, std::vector<std::stri
          "`mix` blend is consumed by the merge and the merged layer is `" +
              std::string(kDefaultBlendName) + "`.");
 
-  const std::string label =
-      "merge " + describe(doc, index) + " down into " + describe(doc, lower) + " (latent mix)";
+  const std::string label = "merge " + layerOpDescribe(doc, index) + " down into " +
+                            layerOpDescribe(doc, lower) + " (latent mix)";
   doc.layers.erase(doc.layers.begin() + static_cast<std::ptrdiff_t>(index));
   doc.layers[lower] = std::move(merged);
-  return succeed(label, lower);
+  return layerOpSucceed(label, lower);
 }
 
 // §5's conditions, each with its own sentence. Returns an empty string when
@@ -348,27 +315,27 @@ std::string latentPathObstacle(const Document& doc, size_t index) {
            "\", not \"mix\". `over` between two Pigment layers is a glaze -- an upper film of "
            "paint sitting on a lower one -- and no single (latent, mass) texel is a glaze, so "
            "there is nothing to merge them into that would still be paint. Set " +
-           describe(doc, index) +
+           layerOpDescribe(doc, index) +
            "'s blend to Mix to merge them as a mixture, which is exact, or rasterise the pair "
            "another way.";
 
   const MixPairing pairing = mixPairing(doc);
   if (index >= pairing.mixedWithBelow.size() || !pairing.mixedWithBelow[index])
-    return describe(doc, index) +
-           " carries \"mix\" but is not paired with " + describe(doc, lower) +
+    return layerOpDescribe(doc, index) + " carries \"mix\" but is not paired with " +
+           layerOpDescribe(doc, lower) +
            ": core::mixPairing() pairs greedily from the bottom and PRD L5 refuses a pair whose "
            "halves are not both unclipped Pigment layers, so this layer is composited as `over` "
            "and warned about. There is no mix to merge.";
 
   if (index + 1 < doc.layers.size() && blendIsMix(doc.layers[index + 1]))
-    return describe(doc, index + 1) +
+    return layerOpDescribe(doc, index + 1) +
            " directly above the pair also carries \"mix\". Merging the pair would offer it a new "
            "partner and change how it composites, which is the picture changing one layer above "
            "the merge. Clear that layer's blend first.";
 
   if (low.opacity != 1.0f || up.opacity != 1.0f)
-    return "one of the two layers is not at opacity 1 (" + describe(doc, lower) + " is at " +
-           std::to_string(low.opacity) + ", " + describe(doc, index) + " at " +
+    return "one of the two layers is not at opacity 1 (" + layerOpDescribe(doc, lower) +
+           " is at " + std::to_string(low.opacity) + ", " + layerOpDescribe(doc, index) + " at " +
            std::to_string(up.opacity) +
            "). Opacity is transparency and fades the *projected* colour (core/Composite.hpp §3), "
            "so it cannot be folded into a latent without turning transparency into mass -- which "
@@ -472,48 +439,56 @@ Layer layerFromPremultiplied(const Document& doc, const std::vector<float>& prem
 
 LayerOpResult mergeLayerDown(Document& doc, size_t index, std::vector<std::string>* warningsOut) {
   LayerOpResult refusal;
-  if (!inRange(doc, index, "merge down", &refusal)) return refusal;
+  if (!layerOpInRange(doc, index, "merge down", &refusal)) return refusal;
   if (index == 0)
-    return fail("merge down refused: " + describe(doc, 0) +
-                " is the bottom layer -- there is nothing below it to merge into. Merge down "
-                "folds a layer into the one beneath it, so it needs one.");
+    return layerOpFail(
+        "merge down refused: " + layerOpDescribe(doc, 0) +
+        " is the bottom layer -- there is nothing below it to merge into. Merge down "
+        "folds a layer into the one beneath it, so it needs one.");
   const size_t lower = index - 1;
-  if (!notLocked(doc, index, "merge down", &refusal)) return refusal;
-  if (!notLocked(doc, lower, "merge down", &refusal)) return refusal;
+  if (!layerOpNotLocked(doc, index, "merge down", kLockedMergeDestroys, &refusal)) return refusal;
+  if (!layerOpNotLocked(doc, lower, "merge down", kLockedMergeDestroys, &refusal)) return refusal;
 
   const Layer& up = doc.layers[index];
   const Layer& low = doc.layers[lower];
 
   // §4's two refusals that are not about arithmetic.
   if (!up.visible || !low.visible)
-    return fail("merge down refused: " + describe(doc, up.visible ? lower : index) +
-                " is hidden. Merging a hidden layer discards its pixels and changes nothing on "
-                "screen, which is the most silently destructive thing this operation could do. "
-                "Show it first, or delete it. (A layer at opacity 0 is *not* refused -- opacity "
-                "bakes exactly, visibility is a switch you expect to be able to flip back.)");
+    return layerOpFail(
+        "merge down refused: " + layerOpDescribe(doc, up.visible ? lower : index) +
+        " is hidden. Merging a hidden layer discards its pixels and changes nothing on "
+        "screen, which is the most silently destructive thing this operation could do. "
+        "Show it first, or delete it. (A layer at opacity 0 is *not* refused -- opacity "
+        "bakes exactly, visibility is a switch you expect to be able to flip back.)");
 
   if (up.parent != low.parent)
-    return fail("merge down refused: " + describe(doc, index) + " and " + describe(doc, lower) +
-                " are in different groups (np:parent \"" + up.parent + "\" and \"" + low.parent +
-                "\"). A merge across a group boundary has to decide which group the result joins, "
-                "and this build creates no groups at all (core/Layer.hpp) -- so the two names "
-                "came from a file and are not this build's to reinterpret.");
+    return layerOpFail(
+        "merge down refused: " + layerOpDescribe(doc, index) + " and " +
+        layerOpDescribe(doc, lower) + " are in different groups (np:parent \"" + up.parent +
+        "\" and \"" + low.parent +
+        "\"). A merge across a group boundary has to decide which group the result joins, "
+        "and this build creates no groups at all (core/Layer.hpp) -- so the two names "
+        "came from a file and are not this build's to reinterpret.");
 
   if (index + 1 < doc.layers.size() && doc.layers[index + 1].clipped)
-    return fail("merge down refused: " + describe(doc, index + 1) + " directly above is clipped "
-                "to " + describe(doc, index) +
-                "'s alpha, and merging unions that alpha with " + describe(doc, lower) +
-                "'s -- so the clipped layer would show through where it is currently cut away. "
-                "Un-clip it first, or merge it down instead.");
+    return layerOpFail(
+        "merge down refused: " + layerOpDescribe(doc, index + 1) +
+        " directly above is clipped "
+        "to " +
+        layerOpDescribe(doc, index) + "'s alpha, and merging unions that alpha with " +
+        layerOpDescribe(doc, lower) +
+        "'s -- so the clipped layer would show through where it is currently cut away. "
+        "Un-clip it first, or merge it down instead.");
 
   // §6's fourth arrangement.
   if (low.clipped && !up.clipped)
-    return fail("merge down refused: " + describe(doc, lower) +
-                " is clipped and " + describe(doc, index) +
-                " is not. The merged layer has to be one or the other, and either answer changes "
-                "a picture -- clipped, and the upper layer's pixels are cut away by a base it "
-                "never touched; unclipped, and the lower layer's escape one. Clip them alike, or "
-                "un-clip both.");
+    return layerOpFail(
+        "merge down refused: " + layerOpDescribe(doc, lower) + " is clipped and " +
+        layerOpDescribe(doc, index) +
+        " is not. The merged layer has to be one or the other, and either answer changes "
+        "a picture -- clipped, and the upper layer's pixels are cut away by a base it "
+        "never touched; unclipped, and the lower layer's escape one. Clip them alike, or "
+        "un-clip both.");
 
   // Kinds. Each of the three refusals below names what the kind *is* rather
   // than that it is unsupported.
@@ -521,52 +496,58 @@ LayerOpResult mergeLayerDown(Document& doc, size_t index, std::vector<std::strin
                            up.pigmentTiles.has_value() && low.pigmentTiles.has_value();
 
   if (up.kind == LayerKind::Adjustment || low.kind == LayerKind::Adjustment)
-    return fail("merge down refused: " +
-                describe(doc, up.kind == LayerKind::Adjustment ? index : lower) +
-                " is an Adjustment layer, which holds no pixels -- it transforms what is beneath "
-                "it (PRD C5). There is nothing to merge into it and nothing in it to merge. "
-                "Layer > Rasterise Layer turns it into pixels first (PRD C11), and then this "
-                "merge is an ordinary one.");
+    return layerOpFail(
+        "merge down refused: " +
+        layerOpDescribe(doc, up.kind == LayerKind::Adjustment ? index : lower) +
+        " is an Adjustment layer, which holds no pixels -- it transforms what is beneath "
+        "it (PRD C5). There is nothing to merge into it and nothing in it to merge. "
+        "Layer > Rasterise Layer turns it into pixels first (PRD C11), and then this "
+        "merge is an ordinary one.");
 
   if (!holdsPixels(up) || !holdsPixels(low))
-    return fail("merge down refused: " + describe(doc, holdsPixels(up) ? lower : index) +
-                " is a " +
-                layerKindName(holdsPixels(up) ? low.kind : up.kind) +
-                " layer, which owns no pixel storage in this build (core/Layer.hpp: Media needs "
-                "the fluid solver's per-medium state, and Text/Strokes/Flats have no parameter "
-                "member yet). A merge would produce an empty layer and call it a merge.");
+    return layerOpFail(
+        "merge down refused: " + layerOpDescribe(doc, holdsPixels(up) ? lower : index) +
+        " is a " + layerKindName(holdsPixels(up) ? low.kind : up.kind) +
+        " layer, which owns no pixel storage in this build (core/Layer.hpp: Media needs "
+        "the fluid solver's per-medium state, and Text/Strokes/Flats have no parameter "
+        "member yet). A merge would produce an empty layer and call it a merge.");
 
   if (pigmentPair) {
     const std::string obstacle = latentPathObstacle(doc, index);
     if (obstacle.empty()) return mergeDownLatent(doc, index, warningsOut);
-    return fail("merge down refused: " + describe(doc, index) + " and " + describe(doc, lower) +
-                " are both Pigment layers, and merging them through RGB would spend PRD C3's "
-                "`Mix` (P0) and PRD F10's mass -- both of which live in the latents -- to satisfy "
-                "PRD C10. The one merge that stays in latent space is a mixed pair, and " +
-                obstacle);
+    return layerOpFail(
+        "merge down refused: " + layerOpDescribe(doc, index) + " and " +
+        layerOpDescribe(doc, lower) +
+        " are both Pigment layers, and merging them through RGB would spend PRD C3's "
+        "`Mix` (P0) and PRD F10's mass -- both of which live in the latents -- to satisfy "
+        "PRD C10. The one merge that stays in latent space is a mixed pair, and " +
+        obstacle);
   }
 
   if (up.kind == LayerKind::Pigment || low.kind == LayerKind::Pigment)
-    return fail("merge down refused: " + describe(doc, up.kind == LayerKind::Pigment ? index : lower) +
-                " is a Pigment layer and " +
-                describe(doc, up.kind == LayerKind::Pigment ? lower : index) +
-                " is not. The merged layer would have to be RGB, which throws away the latents "
-                "PRD C3's `Mix` (P0) and PRD F10's eraser both act on -- silently, and with no "
-                "way back. Two Pigment layers with `Mix` merge in latent space and lose nothing; "
-                "a mixed pair of kinds has no such answer.");
+    return layerOpFail(
+        "merge down refused: " +
+        layerOpDescribe(doc, up.kind == LayerKind::Pigment ? index : lower) +
+        " is a Pigment layer and " +
+        layerOpDescribe(doc, up.kind == LayerKind::Pigment ? lower : index) +
+        " is not. The merged layer would have to be RGB, which throws away the latents "
+        "PRD C3's `Mix` (P0) and PRD F10's eraser both act on -- silently, and with no "
+        "way back. Two Pigment layers with `Mix` merge in latent space and lose nothing; "
+        "a mixed pair of kinds has no such answer.");
 
   // §4's equation. Both blends must be `over` for the merge to preserve the
   // picture, and this codebase refuses rather than changing it quietly.
   if (!blendIsNormal(up) || !blendIsNormal(low)) {
     const bool upperIsTheProblem = !blendIsNormal(up);
     const size_t which = upperIsTheProblem ? index : lower;
-    return fail("merge down refused: " + describe(doc, which) + " uses blend \"" +
-                doc.layers[which].blend +
-                "\". A blend combines its layer with everything beneath it, not with the one "
-                "layer below -- so folding the pair into one layer changes the picture the "
-                "moment anything at all sits under them, and no merged layer can reproduce it "
-                "(core/Merge.hpp §4). Set the blend to Normal, or use Layer > Merge Visible or "
-                "Flatten Image, which collapse the backdrop too and are exact for any blend.");
+    return layerOpFail(
+        "merge down refused: " + layerOpDescribe(doc, which) + " uses blend \"" +
+        doc.layers[which].blend +
+        "\". A blend combines its layer with everything beneath it, not with the one "
+        "layer below -- so folding the pair into one layer changes the picture the "
+        "moment anything at all sits under them, and no merged layer can reproduce it "
+        "(core/Merge.hpp §4). Set the blend to Normal, or use Layer > Merge Visible or "
+        "Flatten Image, which collapse the backdrop too and are exact for any blend.");
   }
 
   return mergeDownComposited(doc, index, warningsOut);
@@ -582,24 +563,27 @@ LayerOpResult mergeVisibleLayers(Document& doc, std::vector<std::string>* warnin
     if (doc.layers[i].visible) visible.push_back(i);
 
   if (visible.size() < 2)
-    return fail("merge visible refused: this document has " + std::to_string(visible.size()) +
-                " visible layer(s) of " + std::to_string(doc.layers.size()) +
-                ", and a merge needs two. One visible layer collapsed on its own is a bake of its "
-                "mask, opacity and op stack rather than a merge; Layer > Stamp Visible makes the "
-                "same pixels as a new layer and keeps the original.");
+    return layerOpFail(
+        "merge visible refused: this document has " + std::to_string(visible.size()) +
+        " visible layer(s) of " + std::to_string(doc.layers.size()) +
+        ", and a merge needs two. One visible layer collapsed on its own is a bake of its "
+        "mask, opacity and op stack rather than a merge; Layer > Stamp Visible makes the "
+        "same pixels as a new layer and keeps the original.");
 
   for (const size_t i : visible) {
     LayerOpResult refusal;
-    if (!notLocked(doc, i, "merge visible", &refusal)) return refusal;
+    if (!layerOpNotLocked(doc, i, "merge visible", kLockedMergeDestroys, &refusal))
+      return refusal;
   }
   for (const size_t i : visible)
     if (doc.layers[i].parent != doc.layers[visible.front()].parent)
-      return fail("merge visible refused: the visible layers span more than one group (" +
-                  describe(doc, visible.front()) + " has np:parent \"" +
-                  doc.layers[visible.front()].parent + "\", " + describe(doc, i) + " has \"" +
-                  doc.layers[i].parent +
-                  "\"). This build creates no groups (core/Layer.hpp), so those names came from a "
-                  "file and are not this build's to collapse.");
+      return layerOpFail(
+          "merge visible refused: the visible layers span more than one group (" +
+          layerOpDescribe(doc, visible.front()) + " has np:parent \"" +
+          doc.layers[visible.front()].parent + "\", " + layerOpDescribe(doc, i) + " has \"" +
+          doc.layers[i].parent +
+          "\"). This build creates no groups (core/Layer.hpp), so those names came from a "
+          "file and are not this build's to collapse.");
 
   std::vector<std::string> subWarnings;
   const std::vector<float> premultiplied = compositeDocumentPremultiplied(doc, &subWarnings);
@@ -624,7 +608,7 @@ LayerOpResult mergeVisibleLayers(Document& doc, std::vector<std::string>* warnin
     doc.layers.erase(doc.layers.begin() + static_cast<std::ptrdiff_t>(visible[k]));
   doc.layers.insert(doc.layers.begin() + static_cast<std::ptrdiff_t>(at), std::move(merged));
 
-  return succeed("merge " + std::to_string(visible.size()) + " visible layers", at);
+  return layerOpSucceed("merge " + std::to_string(visible.size()) + " visible layers", at);
 }
 
 LayerOpResult stampVisibleLayers(Document& doc, std::vector<std::string>* warningsOut) {
@@ -632,8 +616,9 @@ LayerOpResult stampVisibleLayers(Document& doc, std::vector<std::string>* warnin
   for (const Layer& layer : doc.layers)
     if (layer.visible) ++visible;
   if (visible == 0)
-    return fail("stamp visible refused: this document has " + std::to_string(doc.layers.size()) +
-                " layer(s) and none of them is visible, so the stamp would be an empty layer.");
+    return layerOpFail(
+        "stamp visible refused: this document has " + std::to_string(doc.layers.size()) +
+        " layer(s) and none of them is visible, so the stamp would be an empty layer.");
 
   std::vector<std::string> subWarnings;
   const std::vector<float> premultiplied = compositeDocumentPremultiplied(doc, &subWarnings);
@@ -654,16 +639,19 @@ LayerOpResult stampVisibleLayers(Document& doc, std::vector<std::string>* warnin
   Layer stamp = mergedLayer(doc, premultiplied, "Stamp");
   const size_t at = doc.layers.size();
   doc.layers.push_back(std::move(stamp));
-  return succeed("stamp " + std::to_string(visible) + " visible layers to a new layer", at);
+  return layerOpSucceed("stamp " + std::to_string(visible) + " visible layers to a new layer",
+                        at);
 }
 
 LayerOpResult flattenDocument(Document& doc, std::vector<std::string>* warningsOut) {
   if (doc.layers.empty())
-    return fail("flatten image refused: this document has no layers. Flatten collapses a stack to "
-                "one layer and there is no stack.");
+    return layerOpFail(
+        "flatten image refused: this document has no layers. Flatten collapses a stack to "
+        "one layer and there is no stack.");
   for (size_t i = 0; i < doc.layers.size(); ++i) {
     LayerOpResult refusal;
-    if (!notLocked(doc, i, "flatten image", &refusal)) return refusal;
+    if (!layerOpNotLocked(doc, i, "flatten image", kLockedMergeDestroys, &refusal))
+      return refusal;
   }
 
   // Only the visible layers are *baked* into the result; the hidden ones are
@@ -701,7 +689,7 @@ LayerOpResult flattenDocument(Document& doc, std::vector<std::string>* warningsO
   Layer flat = mergedLayer(doc, premultiplied, "Flattened");
   doc.layers.clear();
   doc.layers.push_back(std::move(flat));
-  return succeed("flatten " + std::to_string(count) + " layers to one", 0);
+  return layerOpSucceed("flatten " + std::to_string(count) + " layers to one", 0);
 }
 
 // ==========================================================================
@@ -710,31 +698,35 @@ LayerOpResult flattenDocument(Document& doc, std::vector<std::string>* warningsO
 
 LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::string>* warningsOut) {
   LayerOpResult refusal;
-  if (!inRange(doc, index, "rasterise layer", &refusal)) return refusal;
-  if (!notLocked(doc, index, "rasterise layer", &refusal)) return refusal;
+  if (!layerOpInRange(doc, index, "rasterise layer", &refusal)) return refusal;
+  if (!layerOpNotLocked(doc, index, "rasterise layer", kLockedMergeDestroys, &refusal))
+    return refusal;
 
   const Layer& layer = doc.layers[index];
   if (layer.kind != LayerKind::Adjustment)
-    return fail("rasterise layer refused: " + describe(doc, index) + " is a " +
-                layerKindName(layer.kind) +
-                " layer. PRD C11 rasterises a *parametric* layer -- Text, Adjustment, Strokes, "
-                "Flats -- and of those four only Adjustment exists in this build: a Text layer "
-                "here has no text, a Strokes layer no dabs and a Flats layer no regions, because "
-                "none of them has a parameter member yet (core/Layer.hpp). An RGB or Pigment "
-                "layer is already pixels and has nothing to rasterise.");
+    return layerOpFail(
+        "rasterise layer refused: " + layerOpDescribe(doc, index) + " is a " +
+        layerKindName(layer.kind) +
+        " layer. PRD C11 rasterises a *parametric* layer -- Text, Adjustment, Strokes, "
+        "Flats -- and of those four only Adjustment exists in this build: a Text layer "
+        "here has no text, a Strokes layer no dabs and a Flats layer no regions, because "
+        "none of them has a parameter member yet (core/Layer.hpp). An RGB or Pigment "
+        "layer is already pixels and has nothing to rasterise.");
 
   if (layer.ops.size() == 0)
-    return fail("rasterise layer refused: " + describe(doc, index) +
-                " has an empty op stack, which core/Composite treats as an exact no-op -- so "
-                "rasterising it would produce a copy of the composite beneath it under a "
-                "misleading name. Layer > Stamp Visible is that operation. Add and enable an op "
-                "first.");
+    return layerOpFail(
+        "rasterise layer refused: " + layerOpDescribe(doc, index) +
+        " has an empty op stack, which core/Composite treats as an exact no-op -- so "
+        "rasterising it would produce a copy of the composite beneath it under a "
+        "misleading name. Layer > Stamp Visible is that operation. Add and enable an op "
+        "first.");
 
   if (index == 0)
-    return fail("rasterise layer refused: " + describe(doc, 0) +
-                " is an Adjustment layer at the bottom of the stack, so there is nothing beneath "
-                "it to evaluate against -- an adjustment layer transforms the composite below it "
-                "(PRD C5), and below this one there is none. Move it up first.");
+    return layerOpFail(
+        "rasterise layer refused: " + layerOpDescribe(doc, 0) +
+        " is an Adjustment layer at the bottom of the stack, so there is nothing beneath "
+        "it to evaluate against -- an adjustment layer transforms the composite below it "
+        "(PRD C5), and below this one there is none. Move it up first.");
 
   // §10. The adjustment layer *included*, so the mask, the clip, the coverage
   // and `adjustedPremultiplied()` are all the compositor's own -- there is no
@@ -775,9 +767,9 @@ LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::strin
   // cut would remove content that never belonged to the clipped layer.
   raster.clipped = false;
   raster.parent = layer.parent;
-  const std::string label = "rasterise " + describe(doc, index);
+  const std::string label = "rasterise " + layerOpDescribe(doc, index);
   doc.layers[index] = std::move(raster);
-  return succeed(label, index);
+  return layerOpSucceed(label, index);
 }
 
 }  // namespace np
