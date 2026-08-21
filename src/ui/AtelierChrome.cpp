@@ -10,6 +10,7 @@
 #include "app/Memory.hpp"
 #include "core/TileStore.hpp"
 #include "ui/AtelierTheme.hpp"
+#include "ui/Fonts.hpp"
 
 #include "imgui.h"
 
@@ -48,9 +49,11 @@ void centreInBand(float h, float contentH) {
 // caps" role, standing in until the type ramp lands (this build still draws
 // the whole UI in one 13 px face; see ui/Fonts.hpp).
 void capsLabel(const char* text) {
+  pushAtelierMono();
   ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
   ImGui::TextUnformatted(text);
   ImGui::PopStyleColor();
+  popAtelierMono();
 }
 
 void bandSeparator() {
@@ -69,6 +72,13 @@ std::string formatMiB(size_t bytes) {
 }
 
 }  // namespace
+
+void pushAtelierMono() {
+  if (uiFonts().mono != nullptr) ImGui::PushFont(uiFonts().mono, 0.0f);
+}
+void popAtelierMono() {
+  if (uiFonts().mono != nullptr) ImGui::PopFont();
+}
 
 ImU32 atelierToken(uint32_t rgb) noexcept {
   float c[3];
@@ -244,25 +254,39 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands) {
   capsLabel("SIZE");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(140.0f);
+  // The value inside the slider is a live numeric, so it is monospace: it
+  // changes every frame of a drag, and a proportional face makes the track's
+  // text jump about as the digits change width.
+  pushAtelierMono();
   ImGui::SliderFloat("##size", &st.brush.radius, 2.0f, 90.0f, "%.0f px");
+  popAtelierMono();
 
   bandSeparator();
   capsLabel("HARD");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(110.0f);
+  pushAtelierMono();
   ImGui::SliderFloat("##hard", &st.brush.hardness, 0.0f, 1.0f, "%.2f");
+  popAtelierMono();
 
   bandSeparator();
+  // The same range drawBrushSection() uses (0..2.5), not a second one invented
+  // here: one field behind two widgets with two ranges is two clamps, and the
+  // narrower one silently truncates what the other set.
   capsLabel("LOAD");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(110.0f);
-  ImGui::SliderFloat("##load", &st.brush.load, 0.0f, 1.0f, "%.2f");
+  pushAtelierMono();
+  ImGui::SliderFloat("##load", &st.brush.load, 0.0f, 2.5f, "%.2f");
+  popAtelierMono();
 
   bandSeparator();
   capsLabel("WET");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(110.0f);
+  pushAtelierMono();
   ImGui::SliderFloat("##wet", &st.brush.wetness, 0.0f, 3.0f, "%.2f");
+  popAtelierMono();
 
   endBand();
 }
@@ -270,6 +294,9 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands) {
 void drawAtelierStatusBar(AppState& st, const AtelierBands& bands, uint32_t canvasW,
                           uint32_t canvasH) {
   beginBand("##atelierStatus", bands.statusBar, kChromeBase);
+  // The whole band is numerics and caps markers -- there is no prose in it --
+  // so the face is pushed once around the lot rather than at five sites.
+  pushAtelierMono();
   centreInBand(bands.statusBar.h, ImGui::GetTextLineHeight());
 
   ImGui::Text("%.0f%%", st.view.zoom * 100.0f);
@@ -304,6 +331,7 @@ void drawAtelierStatusBar(AppState& st, const AtelierBands& bands, uint32_t canv
     ImGui::PopStyleColor();
   }
 
+  popAtelierMono();
   endBand();
 }
 

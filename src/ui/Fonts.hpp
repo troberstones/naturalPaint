@@ -1,5 +1,7 @@
 #pragma once
 
+#include "imgui.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -83,11 +85,44 @@ const std::vector<uint32_t>& requiredUiCodepoints();
 // because the caller is a display path.
 std::vector<uint32_t> decodeUtf8(std::string_view utf8);
 
+// The UI type ramp (docs/ui.md section 1): "Type is Archivo (400 / 600 / 800)
+// with `ui-monospace` for all numerics and caps labels".
+//
+// Two faces, not five. The weight ramp is a web design's, and this build draws
+// its whole UI at one size through one ImGui style; what the design's ramp
+// actually buys at 13 px is the *distinction* between prose and numerics, and
+// that is a face change rather than a weight change. So: a grotesque for
+// names, menus and prose, and a monospace for numerics, caps labels and the
+// status bar -- which is the half of the ramp that stops the layout juddering
+// as live values change (docs/ui.md section 5).
+//
+// **Archivo is not on this machine and probably not on yours.** It is a Google
+// font, not a system one. The candidate list below names it first anyway, so
+// that installing it is all it takes; what actually loads here is Helvetica
+// Neue, which is the same species -- a neo-grotesque -- and is the substitution
+// this build makes rather than pretending the design's face is present.
+struct UiFonts {
+  ImFont* text = nullptr;  // proportional: names, menus, prose
+  ImFont* mono = nullptr;  // numerics, caps labels, the status bar
+};
+
+// The loaded ramp. Both members are null until `installUiFonts()` runs, and
+// `mono` stays null if no monospace face loaded -- callers push it only when
+// it exists, so a missing face costs the distinction and nothing else.
+const UiFonts& uiFonts();
+
 struct FontLoadResult {
   // True when a merge source loaded AND it covered every required codepoint.
   bool ok = false;
   // The file that was merged, or empty when none loaded.
   std::string path;
+  // The two ramp faces that loaded, each empty when that half fell back:
+  // `textPath` to ImGui's built-in ProggyClean, `monoPath` to nothing at all
+  // (numerics then share the text face). Neither affects `ok`, which is about
+  // the glyphs -- a UI in the fallback face is ugly, a UI that cannot draw a
+  // layer's kind is wrong.
+  std::string textPath;
+  std::string monoPath;
   // Non-empty exactly when !ok. Names every candidate tried and what was
   // wrong with it, in the tone core/LayerOps refuses in.
   std::string error;
@@ -99,6 +134,14 @@ struct FontLoadResult {
 // `requiredUiCodepoints()`. Call once, after `ImGui::CreateContext()` and
 // before the first frame. `sizePx` should match the default font's size so
 // the merged glyphs sit on the same baseline.
-FontLoadResult installUiGlyphFont(float sizePx);
+// Loads the type ramp and merges the layer-kind glyph source into its text
+// face. Call once, after `ImGui::CreateContext()` and before the first frame.
+//
+// `result.path` names the glyph source, as before; `textPath` and `monoPath`
+// name the two ramp faces, empty when a face fell back to ImGui's built-in
+// ProggyClean. The `ok` / `missing` / `error` contract is unchanged and is
+// still about the *glyphs*: a UI drawn in the fallback face is ugly, a UI that
+// cannot draw a layer's kind is wrong.
+FontLoadResult installUiFonts(float sizePx);
 
 }  // namespace np

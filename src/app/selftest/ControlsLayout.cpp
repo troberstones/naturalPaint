@@ -161,23 +161,40 @@ bool runControlsLayoutTest() {
 
   // --- Part B: the label column -------------------------------------------
   //
-  // The measured input, and the only one this section needs from the running
-  // application: the app prints its label column every time it changes, and on
-  // this machine it prints
+  // The width model, and what it is now a model *of*.
   //
-  //   [controls] label column 129 px -- widest label "Capillary diffuse" at
-  //   119 px, panel 300 px, so a slider gets 159 px
+  // This used to say that 7.0 px per character "reproduces the app's measured
+  // 119 px", and it did: the only font this project loaded was ImGui's
+  // built-in ProggyClean, a fixed-width bitmap face, and a per-character width
+  // was not a model of the UI's type but a description of it.
   //
-  // 119 px for 17 characters is 7.0 px per character exactly, which is what a
-  // fixed-width bitmap font at this scale should be -- ImGui's built-in
-  // ProggyClean, which is the only font this project loads. Every width below
-  // is derived from that one measurement, so this test is pinned to a number
-  // the application prints rather than to a guess about a font.
+  // **That stopped being true when the chrome took docs/ui.md's type ramp.**
+  // The column now draws its labels in Helvetica Neue at 13 px, and the app
+  // prints
+  //
+  //   [controls] label column 49 px -- widest label "Opacity" at 39 px,
+  //   panel 322 px, so a slider gets 257 px
+  //
+  // 39 px for seven characters is 5.6 px per character, and there is no single
+  // per-character width for a proportional face anyway. So 7.0 is kept and its
+  // status changes: it is a deliberate **over-estimate**, roughly 25% wider
+  // per character than the face actually draws, which makes every synthetic
+  // label below at least as wide as the real one. `layoutLabelledControl()` is
+  // a pure function of widths; feeding it labels that are too wide can only
+  // make the no-overlap invariant harder to satisfy, never easier.
+  //
+  // The over-estimate is asserted rather than asserted-to-be-exact, which is
+  // the honest form of the same check: if the UI ever takes a face wider than
+  // this model, the model stops being conservative and the assertion says so.
   constexpr float kCharPx = 7.0f;
-  constexpr float kAvailPx = 288.0f;  // 300 px panel, less padding and scrollbar
+  constexpr float kMeasuredWidestPx = 39.0f;  // "Opacity", printed by the app
+  constexpr float kMeasuredWidestChars = 7.0f;
+  constexpr float kAvailPx = 306.0f;  // 322 px panel, less padding and scrollbar
   auto labelPx = [](const char* s) { return kCharPx * static_cast<float>(std::strlen(s)); };
-  check(std::fabs(labelPx("Capillary diffuse") - 119.0f) < 0.001f,
-        "7.0 px/char reproduces the app's measured 119 px");
+  check(kCharPx > kMeasuredWidestPx / kMeasuredWidestChars,
+        "the synthetic width model over-estimates the face the column now draws in");
+  check(labelPx("Opacity") > kMeasuredWidestPx,
+        "so the widest label the app measured is narrower here than the model makes it");
 
   // Every label the controls column draws through ctlSlider()/ctlSliderInt().
   // Listed here because a *test* may hold a copy of what a UI draws; the panel
@@ -211,9 +228,9 @@ bool runControlsLayoutTest() {
       if (lay.widgetWidth <= 0.0f) neverOverlaps = false;
     }
     check(neverOverlaps, "no label is overlapped by its widget, at any point in the frame");
-    check(!everOnOwnLine, "at 300 px every label fits beside its widget");
+    check(!everOnOwnLine, "at the design's 322 px every label fits beside its widget");
     check(std::fabs(column - (labelPx("Capillary diffuse") + kControlsLabelGapPx)) < 0.001f,
-          "the settled column is the widest label plus the gap (129 px)");
+          "the settled column is the widest label plus the gap");
     std::printf("  settled label column %.0f px, slider %.0f px, over %zu labels\n", column,
                 kAvailPx - column, kLabels.size());
   }
@@ -277,7 +294,8 @@ bool runControlsLayoutTest() {
       const float innerSpacing = 4.0f;                    // ItemInnerSpacing
       return panelPx - padding - widget - innerSpacing;
     };
-    for (const float panelPx : {268.0f, 300.0f}) {
+    // 268 is what the column shipped with, 322 is docs/ui.md section 2's.
+    for (const float panelPx : {268.0f, 322.0f}) {
       const float space = oldSchemeLabelSpace(panelPx);
       size_t clippedOld = 0;
       for (const char* label : kLabels)

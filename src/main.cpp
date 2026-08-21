@@ -1227,13 +1227,22 @@ int main(int argc, char** argv) {
   // ui/Fonts: six of the seven layer-kind glyphs docs/ui.md 3.2 assigns are
   // above U+00FF and ImGui's built-in ProggyClean holds nothing above U+00FF,
   // so none of them could be drawn -- ui/MacPaintUI substituted `[R]`/`[P]`/
-  // `[A]` instead. Merged, not replaced, so no existing string changes width.
+  // `[A]` instead. Merged into the text face, which the same call loads.
   // Reported either way: a silent failure here is a panel of stand-ins with
   // no explanation, which is how this survived nine passing --selftest
   // sections that assert the glyph values. 13.0f is ProggyClean's own native
   // size (imgui_draw.cpp's AddFontDefault); the merge source has to be asked
   // for the same size or the merged glyphs sit off the baseline beside it.
-  const np::FontLoadResult fontResult = np::installUiGlyphFont(13.0f);
+  const np::FontLoadResult fontResult = np::installUiFonts(13.0f);
+  // Both halves reported, because both can silently fall back: the ramp to
+  // ImGui's bitmap ProggyClean, the glyph merge to boxes. docs/ui.md section 1
+  // names Archivo, which nothing ships -- so the line says what actually
+  // loaded rather than what was asked for.
+  std::printf("[fonts] text %s, mono %s\n",
+              fontResult.textPath.empty() ? "(ImGui ProggyClean fallback)"
+                                          : fontResult.textPath.c_str(),
+              fontResult.monoPath.empty() ? "(none -- numerics share the text face)"
+                                          : fontResult.monoPath.c_str());
   if (fontResult.ok)
     std::printf("[fonts] merged %s for %zu layer-kind glyphs\n", fontResult.path.c_str(),
                 np::requiredUiCodepoints().size());

@@ -1257,7 +1257,12 @@ void drawLayersSection(AppState& st) {
       // what *other* layers carry, and it takes a `Layer` and no `Document`.
       if (const size_t partners = layerLinkPartnerCount(doc, i); partners > 0)
         sub += " \xC2\xB7 LINKED+" + std::to_string(partners);
+      // Caps and a percentage: docs/ui.md section 3.2's row sub-line is the
+      // canonical example of the monospace half of the ramp, and it is what
+      // makes a column of rows line up as a table rather than as prose.
+      pushAtelierMono();
       textDisabledWrapped("%s", sub.c_str());
+      popAtelierMono();
     }
 
     ImGui::BeginDisabled(i + 1 >= count);
@@ -1499,10 +1504,12 @@ void drawColorSection(AppState& st) {
     // lines because all three plus their labels do not fit a 322 px column at
     // this font, and a clipped `granulation` would hide the one of the three a
     // reader is least likely to guess from the swatch.
+    pushAtelierMono();
     ImGui::TextDisabled("density %.2f    staining %.2f", sel.density, sel.staining);
     ImGui::TextDisabled("granulation %.2f", sel.granulation);
     // "The RGB readout stays visible as the resulting colour, read-only."
     ImGui::TextDisabled("rgb %.3f %.3f %.3f", sel.rgb[0], sel.rgb[1], sel.rgb[2]);
+    popAtelierMono();
   } else {
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
     ImGui::ColorPicker3("##rgb", g_colorRgb,
@@ -3333,8 +3340,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // --controls-all-open: see AppState::controlsAllOpen. Once, so it is a
       // starting state rather than a mode that fights the user.
       if (st.controlsAllOpen) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+      // docs/ui.md section 1: caps labels are monospace. A section title is
+      // the column's largest caps label, so it is the one where the face
+      // change is most of what tells a header from the prose under it.
+      pushAtelierMono();
       const bool open = ImGui::CollapsingHeader(
           spec.title, spec.defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+      popAtelierMono();
       // --controls-all-open <SECTION>: pin that header to the top of the
       // column so a screenshot can reach a section that is below the fold.
       // See AppState::controlsScrollTo.

@@ -77,7 +77,7 @@ bool runFontsTest() {
   ImGuiContext* previous = ImGui::GetCurrentContext();
   ImGuiContext* context = ImGui::CreateContext();
   ImGui::SetCurrentContext(context);
-  const FontLoadResult loaded = installUiGlyphFont(13.0f);
+  const FontLoadResult loaded = installUiFonts(13.0f);
   std::printf("    [measured] %s\n",
               loaded.ok ? ("merged " + loaded.path).c_str() : loaded.error.c_str());
   check(loaded.ok, "a glyph source loaded and covers every required codepoint");

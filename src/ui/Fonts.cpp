@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <iterator>
+#include <system_error>
 
 #include "app/LayerPanel.hpp"
 #include "core/Layer.hpp"
@@ -25,7 +27,61 @@ constexpr GlyphFontCandidate kCandidates[] = {
      "covers 6 of 7 -- no U+2702 scissors, which is reported rather than drawn as a box"},
 };
 
+// The type ramp's two faces (docs/ui.md section 1). Same short-list discipline
+// as the glyph source above: every entry is one somebody has a reason for.
+//
+// Archivo leads both lists it could plausibly satisfy, at the paths a manual
+// or Homebrew install puts it, so that installing the design's actual face is
+// the whole of the work. It is a Google font; nothing ships it.
+constexpr GlyphFontCandidate kTextCandidates[] = {
+    {"/Library/Fonts/Archivo-Regular.ttf", "the design's own face, if it was ever installed"},
+    {"/System/Library/Fonts/HelveticaNeue.ttc",
+     "the substitution this build makes -- a neo-grotesque, the same species as Archivo"},
+    {"/System/Library/Fonts/Helvetica.ttc", "the older grotesque, if Neue is absent"},
+};
+
+// `ui-monospace` on macOS is SF Mono. Menlo is second because ui/Fonts already
+// proves it loads and covers -- it is the glyph source above -- so a machine
+// where SFNSMono refuses still gets the distinction rather than losing it.
+constexpr GlyphFontCandidate kMonoCandidates[] = {
+    {"/System/Library/Fonts/SFNSMono.ttf", "macOS's own ui-monospace, which is what the doc names"},
+    {"/System/Library/Fonts/Menlo.ttc", "proven here already: it is the glyph source"},
+};
+
+UiFonts g_fonts;
+
+// Loads the first candidate that exists and that ImGui accepts, appending to
+// `tried` for the ones that did not. Returns nullptr when none did.
+ImFont* loadFirst(const GlyphFontCandidate* first, size_t count, float sizePx, std::string* pathOut,
+                  std::string* tried) {
+  ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+  for (size_t i = 0; i < count; ++i) {
+    const GlyphFontCandidate& candidate = first[i];
+    std::error_code ec;
+    if (!std::filesystem::exists(candidate.path, ec)) {
+      if (!tried->empty()) *tried += "; ";
+      *tried += std::string(candidate.path) + " (not present)";
+      continue;
+    }
+    ImFontConfig config;
+    // Deliberately NOT PixelSnapH: that exists for ImGui's built-in bitmap
+    // font, and snapping a vector face's advances to whole pixels at 13 px is
+    // what makes proportional text look unevenly spaced.
+    ImFont* font = atlas->AddFontFromFileTTF(candidate.path, sizePx, &config);
+    if (font == nullptr) {
+      if (!tried->empty()) *tried += "; ";
+      *tried += std::string(candidate.path) + " (present, but ImGui refused it)";
+      continue;
+    }
+    *pathOut = candidate.path;
+    return font;
+  }
+  return nullptr;
+}
+
 }  // namespace
+
+const UiFonts& uiFonts() { return g_fonts; }
 
 const std::vector<uint32_t>& requiredUiCodepoints() {
   // Built from `layerKindGlyph()` itself rather than retyped, so the two can
@@ -98,21 +154,31 @@ std::vector<uint32_t> decodeUtf8(std::string_view utf8) {
   return out;
 }
 
-FontLoadResult installUiGlyphFont(float sizePx) {
+FontLoadResult installUiFonts(float sizePx) {
   FontLoadResult result;
+  ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+
+  // --- the ramp -----------------------------------------------------------
+  //
+  // The text face goes in FIRST, and that ordering is the whole of the
+  // installation: ImGui draws with `Fonts[0]` unless something pushes another,
+  // and `MergeMode` merges into the *previous* font in the atlas (imgui.h). So
+  // loading the grotesque here makes it both the default face and the merge
+  // target for the layer-kind glyphs below, in one step.
+  //
+  // If none loads, ProggyClean is added explicitly rather than left to ImGui's
+  // lazy first-use path -- lazy is too late to merge into, and this call is the
+  // reason the merge has a target at all.
+  std::string textTried;
+  g_fonts.text =
+      loadFirst(kTextCandidates, std::size(kTextCandidates), sizePx, &result.textPath, &textTried);
+  if (g_fonts.text == nullptr) g_fonts.text = atlas->AddFontDefault();
+
   const std::vector<uint32_t>& required = requiredUiCodepoints();
   if (required.empty()) {
     result.ok = true;
     return result;
   }
-
-  ImFontAtlas* atlas = ImGui::GetIO().Fonts;
-
-  // `MergeMode` merges into the *previous* font in the atlas (imgui.h), so
-  // there has to be one. ImGui adds ProggyClean lazily at first use if the
-  // atlas is empty, which is too late to merge into -- so it is added here,
-  // explicitly, and this call is the reason the merge has a target at all.
-  if (atlas->Fonts.Size == 0) atlas->AddFontDefault();
 
   // ImGui's *LEGACY* GlyphRanges array: pairs of inclusive bounds, zero
   // terminated, and "THE ARRAY DATA NEEDS TO PERSIST AS LONG AS THE FONT IS
@@ -138,8 +204,10 @@ FontLoadResult installUiGlyphFont(float sizePx) {
       continue;
     }
     ImFontConfig config;
-    config.MergeMode = true;   // add to the default font, do not replace it
-    config.PixelSnapH = true;  // the default font is a bitmap font
+    config.MergeMode = true;  // add to the text face above, do not replace it
+    // PixelSnapH only when the target is ImGui's bitmap ProggyClean -- see
+    // loadFirst() above on why a vector face must not be snapped.
+    config.PixelSnapH = result.textPath.empty();
     config.GlyphRanges = ranges.data();
     ImFont* font = atlas->AddFontFromFileTTF(candidate.path, sizePx, &config);
     if (font == nullptr) {
@@ -187,6 +255,16 @@ FontLoadResult installUiGlyphFont(float sizePx) {
                    "); those will draw as boxes.";
     return result;
   }
+
+  // --- the monospace half of the ramp -------------------------------------
+  //
+  // Last, and separately: it is a font callers *push*, not the default one, so
+  // it must not be the atlas's first entry and must not be a merge target.
+  // A missing mono face costs the prose/numerics distinction and nothing else,
+  // so it does not touch `result.ok` -- which is still about the glyphs.
+  std::string monoTried;
+  g_fonts.mono =
+      loadFirst(kMonoCandidates, std::size(kMonoCandidates), sizePx, &result.monoPath, &monoTried);
 
   result.ok = true;
   return result;

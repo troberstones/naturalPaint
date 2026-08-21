@@ -86,6 +86,19 @@ const char* toolName(Tool t);
 // on its own.
 ImU32 atelierToken(uint32_t rgb) noexcept;
 
+// docs/ui.md section 1: "`ui-monospace` for all numerics and caps labels".
+//
+// The distinction the design's type ramp is actually for at 13 px, and the
+// reason section 5 gives for it: "Every numeric in the chrome is monospace and
+// right-aligned in a fixed-width cell. With live values this is what stops the
+// layout juddering as numbers change."
+//
+// No-ops when no monospace face loaded (ui/Fonts.hpp's `UiFonts::mono`), so
+// every call site is unconditional and a machine without SF Mono or Menlo
+// loses the distinction rather than crashing on a null font.
+void pushAtelierMono();
+void popAtelierMono();
+
 // The 2px `#f3f2f2` rules between major regions (docs/ui.md section 1). Drawn
 // on the foreground draw list, after every band's window, so that a rule is
 // never covered by the window it borders.
