@@ -5,7 +5,9 @@
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
+#include "core/Blend.hpp"
 #include "core/Document.hpp"
+#include "core/LayerSetOps.hpp"
 #include "core/OpStack.hpp"
 
 // app/LayerEditor (UI detour step 3, problem 2: "five built features have no
@@ -164,6 +166,48 @@ struct LayerEditResult {
 // which refuses it by name with the numbers, because a clamp would silently
 // act on a different layer than the one the caller named.
 LayerEditResult applyLayerCommand(OpenDocument& doc, LayerCommand command, size_t selected);
+
+// --- The multi-selection entry point (PLAN.md Phase 5 step 11; PRD C12, C13,
+//     C15) -------------------------------------------------------------------
+//
+// **A second entry point rather than a widened `applyLayerCommand()`**, and
+// this file's own doc comment above `LayerCommand::CaptureComp` is why: that
+// signature's `selected` is an index into `Document::layers` and overloading it
+// to mean anything else "is precisely the kind of double meaning that produces
+// an operation on the wrong list". A set is not an index, and every existing
+// assertion in `--selftest` is about the single-index path, which is unchanged
+// here -- not one line of `applyLayerCommand()` moved.
+//
+// The division of labour is the same one this file already has: core owns the
+// rules (core/LayerSetOps: what a set means, what order each verb walks it,
+// the all-or-nothing trial), and this function owns the funnel -- one
+// `recordLayerEdit()` per gesture, which is what makes a five-layer delete one
+// undo instead of five.
+
+struct LayerSetEditResult {
+  bool ok = false;
+  // core/LayerSetOps' or core/LayerOps' own refusal sentence, verbatim.
+  std::string error;
+  // What went ahead but is worth saying -- today only an align or a distribute
+  // that had to round to whole pixels. Same channel the merge family's warnings
+  // already use, so the panel needs no second place to show one.
+  std::vector<std::string> warnings;
+  // Where the selection ends up; unchanged after a refusal.
+  LayerSelection selection;
+};
+
+// Applies one set command to the whole selection and records it as **one**
+// structural edit. `sel` holds indices into `Document::layers`, never panel
+// rows.
+LayerSetEditResult applyLayerSetCommand(OpenDocument& doc, LayerSetCommand command,
+                                        const LayerSelection& sel);
+
+// The two value-carrying set controls, through the same funnel -- the opacity
+// slider and the blend dropdown when more than one row is selected.
+LayerSetEditResult applyLayerSetOpacity(OpenDocument& doc, const LayerSelection& sel,
+                                        float opacity);
+LayerSetEditResult applyLayerSetBlend(OpenDocument& doc, const LayerSelection& sel,
+                                      BlendMode mode);
 
 // A new op, as both op-stack editors add one: class PointA, the given kind,
 // and **disabled**.

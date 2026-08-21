@@ -63,6 +63,30 @@ inline const char* layerKindName(LayerKind kind) {
   return "?";
 }
 
+// The colour labels PRD C15 asks for, as *names* rather than an enum, for
+// exactly `kDefaultBlendName`'s reason one screen down: the member that carries
+// one is a `std::string`, so a label a newer build invented (`teal`) survives a
+// load/save through this build untouched (PRD I10 at the value level), and
+// app/LayerPanel maps a known name to a swatch while showing an unknown one as
+// itself. This list is the set this build can draw; it is not a closed set the
+// format enforces.
+//
+// Photoshop's seven, because a user's existing muscle memory for "the red ones
+// are the ones I have not finished" is the only evidence available about which
+// seven, and inventing a different palette would make the labels a translation
+// exercise. Lower case, because that is what goes in the file and comparisons
+// are exact -- app/LayerPanel upper-cases for display the way it already does
+// for `np:blend`.
+inline const char* const kLayerColorLabelNames[] = {"red",  "orange", "yellow", "green",
+                                                    "blue", "violet", "grey"};
+
+// "No label", which is the empty string and is what every layer this build has
+// ever created carries. Named rather than spelled `""` at each site, and it is
+// the reason io/NpaintFile writes no `np:label` attribute at all for an
+// unlabelled layer: a document with no labels produces exactly the bytes it
+// produced before this member existed.
+inline constexpr const char* kNoLayerColorLabel = "";
+
 inline std::optional<LayerKind> layerKindFromName(std::string_view name) {
   if (name == "Pigment") return LayerKind::Pigment;
   if (name == "RGB") return LayerKind::RGB;
@@ -399,6 +423,55 @@ struct Layer {
   // `restoreLayerComp()` refuses it by name with the numbers rather than
   // picking one of them.
   uint64_t id = 0;
+
+  // **The colour label** (PRD C15, P2; PLAN.md Phase 5 step 11). A *name*, not
+  // an enum, for `blend`'s reason -- see `kLayerColorLabelNames` above.
+  // `kNoLayerColorLabel` (empty) means unlabelled, which is what every layer
+  // this build has ever created carries and what makes the attribute absent
+  // from every `.npaint` written before this step.
+  //
+  // A label is metadata a user sorts by and nothing composites through: it does
+  // not reach core/Composite, it is not in a layer comp (core/LayerComp.hpp's
+  // boundary is "a property clicking a comp silently overwrites", and a label
+  // is organisation rather than appearance), and it is deliberately settable on
+  // a **locked** layer -- labelling is how a user marks a layer they have
+  // finished and locked, so a lock that froze the label would fight its own
+  // most common use.
+  std::string colorLabel = kNoLayerColorLabel;
+
+  // **Link group membership** (PRD C15's "linking"; PLAN.md Phase 5 step 11).
+  // 0 means unlinked. Two layers are linked when they carry the same non-zero
+  // value.
+  //
+  // A group *id* rather than a list of partner ids, and the difference is what
+  // makes a link symmetric for free: with a list, linking A to B is two writes
+  // that can disagree, and every delete has to walk every other layer's list to
+  // repair it. With a shared number, membership is a single field and the
+  // relation cannot become one-sided.
+  //
+  // **Links are resolved, never repaired: a group with fewer than two live
+  // members is not a link.** That is this member's answer to "what happens to a
+  // partner's link when a linked layer is deleted", and it is the reason
+  // nothing in core/LayerOps had to grow a cleanup pass. A survivor keeps its
+  // number; `core::linkedLayers()` is the single place that turns a number into
+  // a set, it counts members before it reports one, and a group of one behaves
+  // in every way like no link at all. Undo restores the deleted partner and the
+  // link with it, because the number was never destroyed. Eager cleanup would
+  // have had to run inside `removeLayer()` -- a mutation of layers the user did
+  // not name, on the one path every other delete in the codebase goes through.
+  //
+  // **Not a `Layer::id`.** Ids are handed out lazily and are 0 for every layer
+  // until a comp is captured (see `id` above), so keying links off them would
+  // force id assignment onto every document that ever links two layers and
+  // destroy step 12's "a document that never uses a comp carries zeros"
+  // property. Group numbers come from `core::nextLinkGroupId()`, which is
+  // one above the highest value present -- safe here and *not* safe for `id`,
+  // because nothing outside `Document::layers` ever names a link group, so a
+  // number can never be re-issued to something that still refers to it.
+  //
+  // Persisted as `np:link` (int), written **only when non-zero**, the rule
+  // `np:clipped` already uses.
+  uint64_t linkGroup = 0;
 };
 
 }  // namespace np

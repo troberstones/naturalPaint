@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include "core/Blend.hpp"
@@ -327,6 +328,38 @@ LayerOpResult setLayerClipped(Document& doc, size_t index, bool clipped);
 // (which means "unnamed", core/Layer.hpp) and one that duplicates another
 // layer's -- names are explicitly not unique.
 LayerOpResult setLayerName(Document& doc, size_t index, std::string name);
+
+// --- Organisation rather than appearance (PLAN.md Phase 5 step 11; PRD C15) -
+//
+// The two properties a layer carries that say nothing about how it looks: what
+// colour flag the panel draws beside it, and which other layers it moves with.
+// core/LayerSetOps owns the set-level gestures that reach these; these are the
+// per-layer writes underneath, here rather than there so that every checked
+// write to a `Layer` member is still in one file.
+//
+// **Both are allowed on a locked layer, and that is the one decision they
+// make.** Every other setter above refuses a locked layer on the header's
+// stated ground -- "which blend a layer uses is part of how that layer looks,
+// and a lock that froze content but not blending would be a lock in name only".
+// Neither of these is part of how a layer looks. Worse, labelling and linking
+// are what a user *does to* a finished layer, and finishing a layer is the
+// commonest reason to lock it -- so a lock that also froze the label would
+// fight its own most frequent use, in the same way core/Layer.hpp's `locked`
+// note says a lock that froze the eye icon would. `--selftest` asserts both
+// against a locked layer rather than leaving the exemption to this paragraph.
+
+// Sets the colour label. Any string is accepted, including one this build has
+// no swatch for: the member is a name for `np:blend`'s reason (core/Layer.hpp),
+// so a label a newer build invented round-trips rather than being normalised
+// away. `kNoLayerColorLabel` (empty) clears it.
+LayerOpResult setLayerColorLabel(Document& doc, size_t index, std::string colorLabel);
+
+// Sets link group membership; 0 unlinks. Callers wanting the *gesture* ("link
+// these three layers together") want `core::applyLayerSetOp()` with
+// `LayerSetCommand::LinkLayers`, which allocates the group number and writes
+// every member as one edit -- this is the single write it is built from, and a
+// caller using it directly is responsible for the number meaning something.
+LayerOpResult setLayerLinkGroup(Document& doc, size_t index, uint64_t group);
 
 // --- The layer's own op stack (UI detour step 3; PRD C1, C5) --------------
 //

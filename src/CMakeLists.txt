@@ -52,6 +52,7 @@ add_executable(naturalPaint
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
   app/selftest/LayerMask.cpp
+  app/selftest/LayerMultiSelect.cpp
   app/selftest/LayerStack.cpp
   app/selftest/LutBake.cpp
   app/selftest/MergeFamily.cpp
@@ -86,7 +87,9 @@ add_executable(naturalPaint
   core/Histogram.cpp
   core/History.cpp
   core/LayerCompOps.cpp
+  core/LayerGeometry.cpp
   core/LayerOps.cpp
+  core/LayerSetOps.cpp
   core/Merge.cpp
   core/OpStack.cpp
   core/Pigment.cpp

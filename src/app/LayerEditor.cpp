@@ -267,6 +267,56 @@ LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t
   return refused("unknown layer command.", selected);
 }
 
+namespace {
+
+// The one funnel for every set gesture: core/LayerSetOps has already run the
+// whole operation (atomically, on its own copy) by the time this is called, so
+// all that is left is to turn the result into the single `EditKind::Structural`
+// edit the header promises. `LayerOpResult::index` is the lowest surviving
+// selected row, which is only ever read as "which layer did this touch" by the
+// journal.
+LayerSetEditResult recordSet(OpenDocument& od, LayerSetOpResult r, const LayerSelection& before) {
+  LayerSetEditResult out;
+  if (!r.ok) {
+    out.ok = false;
+    out.error = std::move(r.error);
+    out.selection = before;
+    return out;
+  }
+  LayerOpResult forRecord;
+  forRecord.ok = true;
+  forRecord.editLabel = std::move(r.editLabel);
+  forRecord.index = r.selection.empty() ? 0 : r.selection.indices.front();
+  const DocumentOpResult recorded = recordLayerEdit(od, std::move(forRecord));
+  if (!recorded.ok) {
+    out.ok = false;
+    out.error = recorded.error;
+    out.selection = before;
+    return out;
+  }
+  out.ok = true;
+  out.warnings = std::move(r.warnings);
+  out.selection = std::move(r.selection);
+  return out;
+}
+
+}  // namespace
+
+LayerSetEditResult applyLayerSetCommand(OpenDocument& od, LayerSetCommand command,
+                                        const LayerSelection& sel) {
+  return recordSet(od, applyLayerSetOp(od.document, command, sel), sel);
+}
+
+LayerSetEditResult applyLayerSetOpacity(OpenDocument& od, const LayerSelection& sel,
+                                        float opacity) {
+  return recordSet(od, setLayerSetOpacity(od.document, sel, opacity), sel);
+}
+
+LayerSetEditResult applyLayerSetBlend(OpenDocument& od, const LayerSelection& sel,
+                                      BlendMode mode) {
+  return recordSet(od, setLayerSetBlend(od.document, sel, mode), sel);
+}
+
 Op makeNewOp(PointOpKind kind) {
   Op op;
   op.opClass = OpClass::PointA;

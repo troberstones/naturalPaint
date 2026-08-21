@@ -444,6 +444,30 @@ class TileStoreOf {
     for (auto& entry : tiles_) unshare(entry.second);
   }
 
+  // Moves every tile by a whole number of **tiles**, re-keying the map and
+  // **copying nothing** (PLAN.md Phase 5 step 11; core/LayerGeometry owns the
+  // general operation this is the fast half of).
+  //
+  // The one translation of a layer's pixels that costs no bytes at all: the
+  // slots move between keys, so a shared tile stays shared and an exclusive one
+  // stays exclusive. `--selftest` measures it beside the sub-tile path, which
+  // has to gather across tile boundaries and therefore has to copy.
+  //
+  // Deliberately **not** a general translate: a sub-tile shift is not
+  // expressible as a re-key, and pretending it were is how a one-pixel nudge
+  // silently becomes a 128-pixel one. core/LayerGeometry calls this only when
+  // both deltas are exact multiples of `kTileSize`.
+  void rekeyTiles(int32_t deltaTileX, int32_t deltaTileY) {
+    if (deltaTileX == 0 && deltaTileY == 0) return;
+    Map moved;
+    moved.reserve(tiles_.size());
+    for (auto& entry : tiles_) {
+      moved.emplace(TileCoord{entry.first.x + deltaTileX, entry.first.y + deltaTileY},
+                    std::move(entry.second));
+    }
+    tiles_ = std::move(moved);
+  }
+
   // --- Iteration ----------------------------------------------------------
   //
   // Iterates exactly the allocated tiles -- begin()/end() so a plain

@@ -316,6 +316,101 @@ void runUiLayerDemo(np::OpenDocument& od, bool clip) {
 // whose middle layer is `multiply` and whose top layer is masked -- so a bare
 // `down` on it is refused, correctly and by design (core/Merge.hpp section 4).
 // Both are worth photographing and the flag can produce either.
+// --ui-multiselect-demo <script> (PLAN.md Phase 5 step 11; PRD C12, C13, C15):
+// presses the multi-selection's own set commands through
+// `app::applyLayerSetCommand()` -- the identical entry point the LAYERS panel's
+// Multi-selection buttons and the `Layer` > Selection menu items call, so a
+// screenshot of the result is a screenshot of what a click does.
+//
+// `runUiLayerDemo()`'s reason for existing, one level up: a fixture that wrote
+// `Layer::colorLabel` directly would photograph a struct field, not a feature.
+//
+// The script is comma-separated. `select:0.2.4` sets the selection (dot-
+// separated indices, so a comma stays the script's own separator); every other
+// token is a set command by short name.
+void runUiMultiSelectDemo(np::OpenDocument& od, std::string_view script) {
+  struct Entry {
+    const char* name;
+    np::LayerSetCommand command;
+  };
+  static constexpr Entry kEntries[] = {
+      {"delete", np::LayerSetCommand::DeleteLayers},
+      {"duplicate", np::LayerSetCommand::DuplicateLayers},
+      {"up", np::LayerSetCommand::MoveLayersUp},
+      {"down", np::LayerSetCommand::MoveLayersDown},
+      {"show", np::LayerSetCommand::ShowLayers},
+      {"hide", np::LayerSetCommand::HideLayers},
+      {"lock", np::LayerSetCommand::LockLayers},
+      {"unlock", np::LayerSetCommand::UnlockLayers},
+      {"link", np::LayerSetCommand::LinkLayers},
+      {"unlink", np::LayerSetCommand::UnlinkLayers},
+      {"red", np::LayerSetCommand::LabelRed},
+      {"orange", np::LayerSetCommand::LabelOrange},
+      {"yellow", np::LayerSetCommand::LabelYellow},
+      {"green", np::LayerSetCommand::LabelGreen},
+      {"blue", np::LayerSetCommand::LabelBlue},
+      {"violet", np::LayerSetCommand::LabelViolet},
+      {"grey", np::LayerSetCommand::LabelGrey},
+      {"nolabel", np::LayerSetCommand::LabelNone},
+      {"alignleft", np::LayerSetCommand::AlignSelectionLeft},
+      {"alignright", np::LayerSetCommand::AlignSelectionRight},
+      {"aligncx", np::LayerSetCommand::AlignSelectionCenterX},
+      {"aligncy", np::LayerSetCommand::AlignSelectionCenterY},
+      {"canvascx", np::LayerSetCommand::AlignCanvasCenterX},
+      {"canvascy", np::LayerSetCommand::AlignCanvasCenterY},
+      {"canvasleft", np::LayerSetCommand::AlignCanvasLeft},
+      {"distx", np::LayerSetCommand::DistributeHorizontally},
+      {"disty", np::LayerSetCommand::DistributeVertically},
+  };
+  np::LayerSelection selection =
+      np::singleLayerSelection(od.document.layers.empty() ? 0 : od.document.layers.size() - 1);
+  np::setLayersPanelSelectionSet(selection);
+  std::printf("[ui-multiselect-demo] before: %zu layer(s), revision %llu\n",
+              od.document.layers.size(), static_cast<unsigned long long>(od.revision));
+  size_t at = 0;
+  while (at <= script.size()) {
+    const size_t comma = script.find(',', at);
+    const std::string_view token =
+        script.substr(at, comma == std::string_view::npos ? std::string_view::npos : comma - at);
+    at = comma == std::string_view::npos ? script.size() + 1 : comma + 1;
+    if (token.empty()) continue;
+    if (token.rfind("select:", 0) == 0) {
+      std::vector<size_t> indices;
+      const std::string list(token.substr(7));
+      size_t p = 0;
+      while (p <= list.size()) {
+        const size_t dot = list.find('.', p);
+        const std::string one =
+            list.substr(p, dot == std::string::npos ? std::string::npos : dot - p);
+        p = dot == std::string::npos ? list.size() + 1 : dot + 1;
+        if (!one.empty()) indices.push_back(static_cast<size_t>(std::atoi(one.c_str())));
+      }
+      selection = np::makeLayerSelection(std::move(indices));
+      np::setLayersPanelSelectionSet(selection);
+      std::printf("[ui-multiselect-demo]     select %zu layer(s)\n", selection.size());
+      continue;
+    }
+    const np::LayerSetCommand* command = nullptr;
+    for (const Entry& e : kEntries)
+      if (token == e.name) command = &e.command;
+    if (command == nullptr) {
+      std::printf("[ui-multiselect-demo] unknown command \"%.*s\"\n",
+                  static_cast<int>(token.size()), token.data());
+      continue;
+    }
+    const np::LayerSetEditResult r = np::applyLayerSetCommand(od, *command, selection);
+    std::printf("[ui-multiselect-demo] %-34s %s%s  (revision %llu, %zu layers)\n",
+                np::layerSetCommandLabel(*command), r.ok ? "ok" : "REFUSED -- ",
+                r.ok ? "" : r.error.c_str(), static_cast<unsigned long long>(od.revision),
+                od.document.layers.size());
+    for (const std::string& w : r.warnings)
+      std::printf("[ui-multiselect-demo]     warning: %s\n", w.c_str());
+    if (r.ok) selection = r.selection;
+    np::setLayersPanelSelectionSet(selection);
+    np::setLayersPanelMessages(r.ok ? std::string() : r.error, r.warnings);
+  }
+}
+
 void runUiMergeDemo(np::OpenDocument& od, std::string_view list) {
   struct Entry {
     const char* name;
@@ -500,6 +595,7 @@ int main(int argc, char** argv) {
   bool uiLayerDemo = false;
   bool uiLayerDemoClip = true;
   const char* uiMergeDemo = nullptr;
+  const char* uiMultiSelectDemo = nullptr;
   bool controlsAllOpen = false;
   const char* controlsScrollTo = nullptr;
   bool openLayerMenu = false;
@@ -572,6 +668,10 @@ int main(int argc, char** argv) {
     } else if (a == "--ui-merge-demo") {
       // Phase 5 step 10 / PRD C10: press one merge button. See runUiMergeDemo().
       if (i + 1 < argc && argv[i + 1][0] != '-') uiMergeDemo = argv[++i];
+    } else if (a == "--ui-multiselect-demo") {
+      // PLAN.md Phase 5 step 11 / PRD C12, C13, C15: press the multi-selection's
+      // own set commands. See runUiMultiSelectDemo().
+      if (i + 1 < argc && argv[i + 1][0] != '-') uiMultiSelectDemo = argv[++i];
     } else if (a == "--controls-all-open") {
       // UI detour step 3: open every collapsing header in the controls column
       // on the first frame, so --screenshot can photograph a section the
@@ -1086,6 +1186,10 @@ int main(int argc, char** argv) {
     // what one dab does to one texel, that a stroke's tile set is complete and
     // tight, that N dabs are one undo step, and `Mix` witnessed from a stroke.
     const bool pigmentDepositOk = np::runPigmentDepositTest();
+    // Phase 5 step 11 / PRD C12, C13, C15: the multi-selection's ordering and
+    // all-or-nothing rules, the integer-pixel translate align is built on
+    // (asserted bit-identical), links, colour labels and the panel filter.
+    const bool layerMultiSelectOk = np::runLayerMultiSelectTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1102,7 +1206,7 @@ int main(int argc, char** argv) {
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && layerEditorOk && controlsLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
-                    exportStatesOk && pigmentDepositOk &&
+                    exportStatesOk && pigmentDepositOk && layerMultiSelectOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk;
     s->shutdown();
     gpu.shutdown();
@@ -1248,6 +1352,14 @@ int main(int argc, char** argv) {
   if (compsDemo) {
     if (np::OpenDocument* od = st.documents.active())
       runCompsDemo(*od, compsDemoRestore, compsDemoDrop);
+  }
+
+  // Last, deliberately: a set gesture acts on whatever stack the flags before
+  // it built, so `--demo-document --ui-multiselect-demo ...` photographs the
+  // three-layer fixture acted on as a set.
+  if (uiMultiSelectDemo != nullptr) {
+    if (np::OpenDocument* od = st.documents.active())
+      runUiMultiSelectDemo(*od, uiMultiSelectDemo);
   }
 
   // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring

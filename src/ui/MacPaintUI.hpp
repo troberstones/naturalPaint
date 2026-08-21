@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "app/AppState.hpp"
+#include "core/LayerSetOps.hpp"
 #include "gfx/Context.hpp"
 #include "sim/PaintSim.hpp"
 #include "ui/DocumentTexture.hpp"
@@ -48,6 +49,14 @@ const DocumentTexture& canvasDocumentTexture();
 // whichever layer the selection happened to start on. Clamped by the panel
 // itself on the next frame, so an index past the end is not an error here.
 void setLayersPanelSelection(size_t layerIndex);
+
+// The whole multi-selection (PLAN.md Phase 5 step 11), for the one caller
+// `setLayersPanelSelection()` exists for: main.cpp's `--ui-multiselect-demo`,
+// which presses the set commands directly and would otherwise leave the panel
+// photographing a single-row selection while the terminal reported a gesture
+// over three. The primary row follows the lowest member, exactly as a click
+// does. An empty selection is ignored -- the panel never has one.
+void setLayersPanelSelectionSet(const LayerSelection& selection);
 
 // What the LAYERS panel shows under the stack after an operation: the refusal
 // sentence when one was refused, and core/Merge's warnings when one went ahead

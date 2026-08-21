@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include <array>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -69,6 +70,32 @@ constexpr const char* kAttrMask = "np:mask";
 // already use and one of the three docs/document-format.md measured as
 // surviving this OpenImageIO. Written **only when true** -- see the writer.
 constexpr const char* kAttrClipped = "np:clipped";
+// The colour label and the link group (PLAN.md Phase 5 step 11; PRD C15).
+//
+// **Scalars, and deliberately not a third string carrier.**
+// docs/document-format.md's measured warning is about *array* attributes --
+// `UINT8[n]` reads back silently absent through this OpenImageIO -- which is
+// why `np:ops` and `np:comps` had to become hex `string`s. A label is one name
+// and a link group is one number, so each fits a type already measured as
+// surviving: `string`, as `np:name`, `np:blend` and `np:parent` do, and `int`,
+// as `np:visible`, `np:locked` and `np:clipped` do. A per-layer carrier for two
+// scalars would have been a third encoding to keep in step for no gain.
+//
+// Both are written **only when set**, which is `np:clipped`'s rule: a document
+// with no labels and no links produces exactly the bytes it produced before
+// this step, and `--selftest` asserts that against a file rather than assuming
+// it. Absent therefore reads as each member's own default -- unlabelled, and
+// unlinked.
+//
+// **`np:link` is an `int`, so a group number above `INT32_MAX` is refused by
+// name** rather than written truncated (PRD I11, the rule an out-of-range
+// opacity already follows). `core::nextLinkGroupId()` hands out one above the
+// highest present, so reaching that would take 2^31 link gestures on one
+// document -- but a `Layer` is a plain aggregate and a test can construct the
+// state directly, so the guard is real and asserted rather than assumed
+// unreachable.
+constexpr const char* kAttrLabel = "np:label";
+constexpr const char* kAttrLink = "np:link";
 
 constexpr const char* kCompositePartName = "composite";
 
@@ -180,7 +207,7 @@ bool isLayerAttributeRecognised(const std::string& name) {
   return name == kAttrKind || name == kAttrName || name == kAttrBlend ||
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
          name == kAttrParent || name == kAttrOps || name == kAttrMask ||
-         name == kAttrClipped;
+         name == kAttrClipped || name == kAttrLabel || name == kAttrLink;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -1032,6 +1059,18 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
                   "on literally, so writing an out-of-range value would put a number in the "
                   "file that no reader -- including this one -- can honour.");
     }
+    // PLAN.md Phase 5 step 11. `np:link` is an `int`, so a group number this
+    // build could only truncate is refused by name -- the same rule the
+    // opacity check above follows, and for the same reason: a truncated group
+    // number would silently link two layers that were never linked.
+    if (layer.linkGroup > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+      return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
+                  "\") is in link group " + std::to_string(layer.linkGroup) +
+                  ", which does not fit `np:link`'s int attribute (max " +
+                  std::to_string(std::numeric_limits<int32_t>::max()) +
+                  "). Writing it truncated would silently link this layer to a different "
+                  "group on reload.");
+    }
   }
 
   // docs/document-format.md §3.3: "a basis mismatch" is one of the things a
@@ -1270,6 +1309,14 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // `Layer::clipped`'s own default -- the same "the identity element is the
     // absent case" rule the mask channel uses for 1.0.
     if (layer.clipped) part.attributes.push_back(intAttr(kAttrClipped, 1));
+    // PLAN.md Phase 5 step 11 / PRD C15. Written only when set; see the
+    // attribute names at the top of this file for why these two are scalars
+    // rather than a carrier, and why the range check on the link group is a
+    // refusal rather than a truncation.
+    if (!layer.colorLabel.empty())
+      part.attributes.push_back(stringAttr(kAttrLabel, layer.colorLabel));
+    if (layer.linkGroup != 0)
+      part.attributes.push_back(intAttr(kAttrLink, static_cast<int32_t>(layer.linkGroup)));
     if (carry && i < carry->layerAttributes.size()) {
       for (const NpaintAttribute& a : carry->layerAttributes[i]) {
         // The one exception to "a recognised name is this build's to write":
@@ -1668,6 +1715,20 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     if (const NpaintAttribute* a = findAttr(part.attributes, kAttrClipped);
         a && a->type == NpaintAttribute::Type::Int)
       layer.clipped = a->intValue != 0;
+    // PLAN.md Phase 5 step 11 / PRD C15. Absent means each member's own default
+    // -- unlabelled, unlinked -- so a `.npaint` written before this step loads
+    // with neither, without the reader having to know that. The label is taken
+    // **verbatim**, including a name this build has no swatch for (PRD I10);
+    // app/LayerPanel shows an unknown name as text rather than mapping it onto
+    // some default colour. A negative `np:link` -- which this build never
+    // writes -- is ignored rather than carried, because `Layer::linkGroup` is
+    // unsigned and a negative number has no group it could mean.
+    if (const NpaintAttribute* a = findAttr(part.attributes, kAttrLabel);
+        a && a->type == NpaintAttribute::Type::String)
+      layer.colorLabel = a->stringValue;
+    if (const NpaintAttribute* a = findAttr(part.attributes, kAttrLink);
+        a && a->type == NpaintAttribute::Type::Int && a->intValue > 0)
+      layer.linkGroup = static_cast<uint64_t>(a->intValue);
 
     // The per-layer op stack (PLAN.md Phase 5 step 5). io/OpSerial owns the
     // encoding; this is the one place a `.npaint` reaches it.

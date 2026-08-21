@@ -1,12 +1,15 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/Blend.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
+#include "core/LayerSetOps.hpp"
 
 // app/LayerPanel (PLAN.md "Phase 5 -- Stack it", step 1; docs/ui.md §3.2's
 // layer rows).
@@ -91,6 +94,18 @@ std::string layerRowTitle(const Layer& layer, size_t layerIndex);
 // byte-identically to no mask at all (core/Mask.hpp), so this marker is the
 // only thing a user can see that tells the two apart.
 //
+// A labelled layer reads `· RED` last of all (PLAN.md Phase 5 step 11, PRD
+// C15), upper-cased **as carried** for the same PRD I10 reason the blend name
+// is: a label a newer build invented shows as itself rather than being
+// normalised away or dropped. An unlabelled layer -- every layer this build has
+// ever created -- prints nothing at all, which is what keeps every existing
+// `--selftest` sub-line assertion character-identical.
+//
+// The **link** is deliberately not here, and that is the same boundary this
+// function already draws for the clip: whether a layer is linked depends on
+// whether any *other* layer carries the same group number, which is a question
+// only a stack can answer. `layerLinkPartnerCount()` below takes the Document.
+//
 // A clipped layer reads `· CLIPPED` after the mask marker (PLAN.md Phase 5
 // step 9, PRD C9) -- and docs/ui.md §3.2's own example row was `ADJUSTMENT ·
 // CLIPPED` several steps before the feature existed, so the word is the
@@ -155,5 +170,93 @@ std::string blendMenuEntryText(BlendMode mode);
 // ui/MacPaintUI shows the carried string itself in that case.
 size_t blendMenuSelection(const Document& doc, size_t layerIndex,
                           const std::vector<BlendMode>& menu);
+
+// --- Colour labels, links and panel filtering (PLAN.md Phase 5 step 11; PRD
+//     C15) --------------------------------------------------------------------
+
+// The swatch this build draws for a label name, or `std::nullopt` for a name it
+// has none for -- including `kNoLayerColorLabel`. **A name with no swatch is
+// not an error**: `core::Layer::colorLabel` is a string precisely so a label a
+// newer build invented survives a round trip (PRD I10), and the panel's answer
+// is to draw no chip and let `layerRowSubLine()` show the name as text. Mapping
+// an unknown name onto some default colour would be the one behaviour that
+// makes two different labels look like the same one.
+//
+// Values are the sRGB the chip is filled with, in [0,1] -- display values, not
+// Working-space linear ones, because this is chrome and never touches a pixel
+// of the document (ui/Theme.hpp's colours are the same).
+struct LayerLabelSwatch {
+  float r = 0.0f;
+  float g = 0.0f;
+  float b = 0.0f;
+
+  friend bool operator==(const LayerLabelSwatch&, const LayerLabelSwatch&) = default;
+};
+std::optional<LayerLabelSwatch> layerColorLabelSwatch(std::string_view name);
+
+// How many **other** layers share this layer's link group; 0 for an unlinked
+// layer and for the lone survivor of a deleted pair (core/LayerSetOps.hpp §4).
+// This is the whole of what a row needs to decide whether to draw a link badge.
+size_t layerLinkPartnerCount(const Document& doc, size_t layerIndex);
+
+// --- Filtering the panel (PRD C15's third clause) --------------------------
+//
+// **The rule, because a filter that hides rows is a filter that can make a
+// command act invisibly:**
+//
+//   A filter changes **which rows are drawn** and nothing else. It does not
+//   change the selection, and it does not change the document.
+//
+//   **A hidden row stays selected** -- clearing the filter brings it back
+//   exactly as it was. Dropping it instead would make typing three characters
+//   into a search box a destructive edit to the user's selection, recoverable
+//   by nothing (a selection is not in the undo stack).
+//
+//   **A command acts only on the rows the user can see.** `ui/MacPaintUI` calls
+//   `restrictSelectionToFilter()` on the way into every set command, so a layer
+//   that is selected but filtered out is not deleted, hidden, moved or aligned
+//   by a gesture aimed at the rows on screen. The alternative -- act on the
+//   whole selection -- is the invisible-action failure: five rows visible,
+//   Delete pressed, eight layers gone.
+//
+//   **If restriction empties the set, the command refuses** rather than
+//   quietly doing nothing, and the sentence says how many selected layers the
+//   filter is hiding. Silence here would be indistinguishable from a broken
+//   button.
+struct LayerFilter {
+  // Case-insensitive substring of the row's **title as displayed**
+  // (`layerRowTitle()`), not of `Layer::name`. That is deliberate: an unnamed
+  // layer's row reads "Layer 3", so a user typing `3` is matching what is in
+  // front of them. Matching the empty stored name instead would make the
+  // synthesised rows unfindable by the only text they show.
+  std::string text;
+
+  // `std::nullopt` matches every kind.
+  std::optional<LayerKind> kind;
+
+  // Whether anything is being filtered at all. An inactive filter matches every
+  // layer, so no caller needs a special case for "no filter".
+  bool active() const noexcept { return !text.empty() || kind.has_value(); }
+};
+
+bool layerMatchesFilter(const Document& doc, size_t layerIndex, const LayerFilter& filter);
+
+// The layers the panel draws, as **model indices ascending** (bottom-first).
+// The panel walks the result in reverse, which is the same single reversal
+// `layerIndexForPanelRow()` owns -- this function deliberately does not return
+// panel rows, so there is still exactly one place in the codebase that knows
+// the panel is upside down.
+std::vector<size_t> layersMatchingFilter(const Document& doc, const LayerFilter& filter);
+
+// The selection with every filtered-out member removed. See the rule above:
+// this is what a command receives, while the panel keeps the unrestricted
+// selection so clearing the filter restores it.
+LayerSelection restrictSelectionToFilter(const Document& doc, const LayerSelection& sel,
+                                         const LayerFilter& filter);
+
+// How many members `restrictSelectionToFilter()` would drop -- the number the
+// refusal sentence needs when it drops all of them.
+size_t layersHiddenFromSelection(const Document& doc, const LayerSelection& sel,
+                                 const LayerFilter& filter);
 
 }  // namespace np

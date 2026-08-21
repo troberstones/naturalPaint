@@ -1,8 +1,10 @@
 #include "app/LayerPanel.hpp"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <optional>
+#include <utility>
 
 #include "core/Blend.hpp"
 
@@ -123,6 +125,17 @@ std::string layerRowSubLine(const Layer& layer) {
     s += kSep;
     s += "LOCKED";
   }
+  // The colour label (PLAN.md Phase 5 step 11, PRD C15), last because it is
+  // organisation rather than anything about how the layer composites. Absent
+  // for an unlabelled layer -- which is every layer this build created before
+  // this step -- so no existing row's text changes by a character. Upper-cased
+  // **as carried**, exactly as the blend name is, so a label this build has no
+  // swatch for still reads as itself.
+  if (!layer.colorLabel.empty()) {
+    s += kSep;
+    for (const char c : layer.colorLabel)
+      s += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
   return s;
 }
 
@@ -163,6 +176,80 @@ size_t blendMenuSelection(const Document& doc, size_t layerIndex,
   for (size_t i = 0; i < menu.size(); ++i)
     if (carried == blendModeName(menu[i])) return i;
   return menu.size();
+}
+
+// --- Colour labels, links and filtering -----------------------------------
+
+std::optional<LayerLabelSwatch> layerColorLabelSwatch(std::string_view name) {
+  // Deliberately not derived from ui/Theme.hpp's palette: these are the seven
+  // label colours, which have to stay distinguishable from each other as chips
+  // a few pixels wide, and the theme's greys would give two of them the same
+  // apparent value. Muted rather than saturated so a column of chips does not
+  // out-shout the rows they annotate.
+  if (name == "red") return LayerLabelSwatch{0.83f, 0.29f, 0.27f};
+  if (name == "orange") return LayerLabelSwatch{0.87f, 0.53f, 0.20f};
+  if (name == "yellow") return LayerLabelSwatch{0.85f, 0.76f, 0.24f};
+  if (name == "green") return LayerLabelSwatch{0.36f, 0.68f, 0.35f};
+  if (name == "blue") return LayerLabelSwatch{0.28f, 0.51f, 0.82f};
+  if (name == "violet") return LayerLabelSwatch{0.56f, 0.38f, 0.78f};
+  if (name == "grey") return LayerLabelSwatch{0.55f, 0.55f, 0.55f};
+  return std::nullopt;
+}
+
+size_t layerLinkPartnerCount(const Document& doc, size_t layerIndex) {
+  const std::vector<size_t> members = linkedLayers(doc, layerIndex);
+  return members.size() > 1 ? members.size() - 1 : 0;
+}
+
+namespace {
+
+// ASCII case folding only, which is exactly what a substring test over layer
+// names can promise here: there is no locale in this build and no Unicode
+// case-folding table, so pretending to fold a non-ASCII name would be the kind
+// of half-kept promise this codebase writes down rather than ships.
+std::string asciiLower(std::string_view in) {
+  std::string out;
+  out.reserve(in.size());
+  for (const char c : in) out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return out;
+}
+
+}  // namespace
+
+bool layerMatchesFilter(const Document& doc, size_t layerIndex, const LayerFilter& filter) {
+  if (layerIndex >= doc.layers.size()) return false;
+  const Layer& layer = doc.layers[layerIndex];
+  if (filter.kind.has_value() && layer.kind != *filter.kind) return false;
+  if (!filter.text.empty()) {
+    // Matched against the row's displayed title, not the stored name -- see the
+    // header. An unnamed layer's row says "Layer 3", and that is the only text
+    // a user has to search by.
+    if (asciiLower(layerRowTitle(layer, layerIndex)).find(asciiLower(filter.text)) ==
+        std::string::npos)
+      return false;
+  }
+  return true;
+}
+
+std::vector<size_t> layersMatchingFilter(const Document& doc, const LayerFilter& filter) {
+  std::vector<size_t> out;
+  for (size_t i = 0; i < doc.layers.size(); ++i)
+    if (layerMatchesFilter(doc, i, filter)) out.push_back(i);
+  return out;
+}
+
+LayerSelection restrictSelectionToFilter(const Document& doc, const LayerSelection& sel,
+                                         const LayerFilter& filter) {
+  if (!filter.active()) return sel;
+  std::vector<size_t> kept;
+  for (const size_t index : sel.indices)
+    if (layerMatchesFilter(doc, index, filter)) kept.push_back(index);
+  return makeLayerSelection(std::move(kept));
+}
+
+size_t layersHiddenFromSelection(const Document& doc, const LayerSelection& sel,
+                                 const LayerFilter& filter) {
+  return sel.size() - restrictSelectionToFilter(doc, sel, filter).size();
 }
 
 }  // namespace np

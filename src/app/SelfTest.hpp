@@ -1933,5 +1933,57 @@ bool runExportStatesTest();
 // claim is made twice rather than merely compiled twice. Headless and GPU-free;
 // writes no files.
 bool runPigmentDepositTest();
+// PLAN.md Phase 5 step 11 ("Multi-select, align and distribute, colour labels,
+// linking, panel filtering"; PRD C12 (P0), C13 (P1), C15 (P2)).
+//
+// **Two of PRD C12's five verbs are refused, and this section prints both
+// refusals on every run rather than leaving them in a header**: there is no
+// geometric **transform** of a layer anywhere in this codebase (what this step
+// built is an integer-pixel translate, the one case that needs no resampling),
+// and there is no `LayerKind::Group`, so **group** would mean writing an
+// `np:parent` naming a group nothing composites.
+//
+// **C13 is delivered in full**, which is the step's surprise: core/LayerComp.hpp
+// refused a third of C14 one step earlier because a layer has no position, and
+// that is still true -- but aligning needs a content bounding box and a
+// translate, not a position, and both are built here (core/LayerGeometry).
+//
+// What is asserted:
+//  - **The bounding box**, to the pixel, across a tile edge, off the canvas,
+//    on a Pigment layer's mass channel rather than an RGB alpha, and empty for
+//    a kind that holds no pixels.
+//  - **The translate is lossless at ZERO tolerance**, on raw half words rather
+//    than decoded values -- 19 881 texels compared -- because it moves `uint16`
+//    words and has no decode step that could round. Its two paths are measured
+//    beside each other: a whole-tile shift is a re-key that copies **0 bytes**,
+//    a sub-tile shift gathers. The mask moves with the layer and what moves in
+//    behind it reads 1.0 (reveal), not 0.0.
+//  - **The delete ordering, with the bug run beside it.** {0,2,4} of five named
+//    layers, descending; the ascending walk an implementation without the rule
+//    would take is implemented in the test and the layers it destroys instead
+//    are printed.
+//  - **All-or-nothing**: one locked member refuses the whole set, and the
+//    revision, the history length and every layer are proven unchanged. The
+//    trial copy this is built on is measured against the deep copy it replaces.
+//  - **One gesture, one edit**: three layers hidden move the revision once,
+//    append one history entry, and come back on ONE undo.
+//  - **Links**: symmetric by construction, geometry-propagating and nothing
+//    else, and a group with one live member is not a link -- so a deleted
+//    partner leaves nothing dangling and undo restores the link with it.
+//  - **Align and distribute in pixels**, including a link group moving as one
+//    unit, the half-pixel residual an integer translate cannot remove, and the
+//    rounding reported rather than swallowed.
+//  - **Colour labels and the filter**, including a label name this build has no
+//    swatch for, and the rule that a command acts only on the rows a filter
+//    lets the user see while the selection itself survives.
+//  - **Persistence**: `np:label` and `np:link` round-trip, and a document with
+//    neither writes a file **byte-identical** to one written before either
+//    attribute existed.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// only the `.npaint` round trip differs and the OFF build's refusal is
+// asserted rather than skipped (PLAN.md §1.5). Headless and GPU-free; writes
+// and removes three `.npaint` files.
+bool runLayerMultiSelectTest();
 
 }  // namespace np

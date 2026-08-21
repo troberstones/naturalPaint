@@ -176,6 +176,22 @@ struct LayerEditorUiState {
   // is not any more. core/Merge.hpp §3 is why those are warnings rather than
   // refusals.
   std::vector<std::string> lastWarnings;
+  // **The multi-selection** (PLAN.md Phase 5 step 11, PRD C12). Indices into
+  // `Document::layers`, never panel rows, exactly as `selected` is; `selected`
+  // stays the *primary* row -- the one whose opacity slider, blend dropdown and
+  // name field the panel draws -- and is kept a member of this set.
+  //
+  // Two pieces of state rather than one, because they answer different
+  // questions. "Which layer's properties am I editing" has exactly one answer
+  // and always has, and every single-selection assertion in `--selftest` is
+  // about that one. Collapsing them would have made `selected` mean "the first
+  // of the set", which is a different layer after every gesture that reorders.
+  LayerSelection selection = singleLayerSelection(0);
+  // **The panel filter** (PRD C15). app/LayerPanel.hpp states the rule it
+  // follows: it changes which rows are drawn and nothing else, the selection
+  // survives it, and a command acts only on the rows that are visible.
+  LayerFilter filter;
+  char filterBuf[64] = "";
 };
 LayerEditorUiState g_layers;
 
@@ -193,8 +209,44 @@ void runLayerCommand(AppState& st, LayerCommand command) {
   }
   const LayerEditResult r = applyLayerCommand(*od, command, g_layers.selected);
   g_layers.selected = r.selected;
+  g_layers.selection = singleLayerSelection(r.selected);
   g_layers.lastError = r.ok ? std::string() : r.error;
   g_layers.lastWarnings = r.warnings;
+}
+
+// The same path for a gesture over the whole selection (PLAN.md Phase 5
+// step 11). Two things happen here and nowhere else, both of them
+// app/LayerPanel.hpp's stated filter rule:
+//
+//   the selection is **restricted to what the filter lets the user see**
+//   before the command is applied, so a row hidden by a search box is never
+//   deleted, moved or aligned by a gesture aimed at the rows on screen;
+//   a restriction that empties the set **refuses with the count**, rather than
+//   leaving a button that appears to do nothing.
+void runLayerSetCommand(AppState& st, LayerSetCommand command) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    g_layers.lastError =
+        "layer command refused: no document is open. File > New Document makes one.";
+    return;
+  }
+  const LayerSelection visible =
+      restrictSelectionToFilter(od->document, g_layers.selection, g_layers.filter);
+  if (visible.empty() && !g_layers.selection.empty()) {
+    g_layers.lastError =
+        std::string(layerSetCommandLabel(command)) + " refused: all " +
+        std::to_string(g_layers.selection.size()) +
+        " selected layer(s) are hidden by the panel filter, so this would have acted on "
+        "rows you cannot see. Clear the filter, or select a visible row.";
+    return;
+  }
+  const LayerSetEditResult r = applyLayerSetCommand(*od, command, visible);
+  g_layers.lastError = r.ok ? std::string() : r.error;
+  g_layers.lastWarnings = r.warnings;
+  if (!r.ok) return;
+  g_layers.selection = r.selection;
+  g_layers.selected =
+      r.selection.empty() ? 0 : r.selection.indices.front();
 }
 
 const char* toolName(Tool t) {
@@ -1070,6 +1122,62 @@ void drawLayersSection(AppState& st) {
   ImGui::SameLine();
   layerCommandButton(st, LayerCommand::RasteriseLayer, "Rasterise");
 
+  // --- The filter and the multi-selection (PLAN.md Phase 5 step 11) --------
+  //
+  // app/LayerPanel.hpp states the filter's whole rule; the two halves visible
+  // here are that a hidden row **stays selected** (so clearing the box brings
+  // it back) and that `runLayerSetCommand()` restricts every gesture to the
+  // rows on screen.
+  ImGui::SetNextItemWidth(120.0f);
+  if (ImGui::InputTextWithHint("##layerfilter", "filter by name", g_layers.filterBuf,
+                               sizeof(g_layers.filterBuf)))
+    g_layers.filter.text = g_layers.filterBuf;
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Filters which rows are drawn -- nothing else.\n"
+                      "A hidden row stays selected, so clearing this\n"
+                      "brings it back, and a Multi-selection command\n"
+                      "acts only on the rows you can see.");
+  ImGui::SameLine();
+  {
+    const char* kindPreview =
+        g_layers.filter.kind.has_value() ? layerKindName(*g_layers.filter.kind) : "any kind";
+    ImGui::SetNextItemWidth(100.0f);
+    if (ImGui::BeginCombo("##layerkindfilter", kindPreview)) {
+      if (ImGui::Selectable("any kind", !g_layers.filter.kind.has_value()))
+        g_layers.filter.kind.reset();
+      for (int k = 0; k <= static_cast<int>(LayerKind::Flats); ++k) {
+        const LayerKind kind = static_cast<LayerKind>(k);
+        const bool on = g_layers.filter.kind.has_value() && *g_layers.filter.kind == kind;
+        if (ImGui::Selectable(layerKindName(kind), on)) g_layers.filter.kind = kind;
+      }
+      ImGui::EndCombo();
+    }
+  }
+
+  // Every set command, walked from `core::allLayerSetCommands()` -- the same
+  // list the `Layer` > Selection menu walks, so the panel and the menu cannot
+  // offer different sets. One button per line rather than a packed grid: these
+  // labels are long, a 300 px panel clips them, and a clipped label is the
+  // exact failure app/ControlsLayout exists to have fixed once. Collapsed by
+  // default, so a single-selection session never sees it.
+  // --controls-all-open opens this one too, so `--screenshot` can photograph a
+  // section whose default state is closed -- the same reason the flag exists
+  // for the outer sections (app/AppState.hpp).
+  if (st.controlsAllOpen) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+  if (ImGui::CollapsingHeader("Multi-selection")) {
+    ImGui::TextDisabled("%zu layer(s) selected -- ctrl-click a row to add,",
+                        g_layers.selection.size());
+    ImGui::TextDisabled("shift-click to extend.");
+    const LayerSelection visible =
+        restrictSelectionToFilter(doc, g_layers.selection, g_layers.filter);
+    for (const LayerSetCommand command : allLayerSetCommands()) {
+      const bool available = layerSetCommandAvailable(doc, command, visible);
+      ImGui::BeginDisabled(!available);
+      if (ImGui::SmallButton(layerSetCommandLabel(command))) runLayerSetCommand(st, command);
+      ImGui::EndDisabled();
+    }
+  }
+
   // Rows, top of the stack first. `structureChanged` stops the loop the same
   // frame a reorder/add/remove fires rather than continuing to render rows
   // against indices that no longer mean what they did -- the identical
@@ -1077,8 +1185,15 @@ void drawLayersSection(AppState& st) {
   // identical reason (core/LayerOps' move/remove shift the vector).
   bool structureChanged = false;
   const size_t count = doc.layers.size();
-  for (size_t row = 0; row < count && !structureChanged; ++row) {
-    const size_t i = layerIndexForPanelRow(row, count);
+  // The rows the filter lets through. `layersMatchingFilter()` returns model
+  // indices ascending (bottom-first), so walking it backwards is the panel's
+  // own top-first order -- app/LayerPanel still owns the single reversal in the
+  // codebase and nothing here computes `count - 1 - row` a second time.
+  const std::vector<size_t> visibleRows = layersMatchingFilter(doc, g_layers.filter);
+  if (visibleRows.empty() && count > 0)
+    ImGui::TextDisabled("no layer matches the filter (%zu hidden)", count);
+  for (size_t vr = visibleRows.size(); vr-- > 0 && !structureChanged;) {
+    const size_t i = visibleRows[vr];
     const Layer& layer = doc.layers[i];
     ImGui::PushID(static_cast<int>(i));
 
@@ -1090,11 +1205,62 @@ void drawLayersSection(AppState& st) {
       ImGui::SetTooltip("Visibility. Allowed even on a locked layer --\n"
                         "hiding a layer changes nothing about it.");
     ImGui::SameLine();
+    // The colour label chip (PLAN.md Phase 5 step 11, PRD C15). Drawn only for
+    // a label this build has a swatch for; an unrecognised one from a newer
+    // build shows as text in the sub-line instead, because painting it in some
+    // default colour would make two different labels look like one
+    // (app/LayerPanel.hpp).
+    if (const std::optional<LayerLabelSwatch> swatch = layerColorLabelSwatch(layer.colorLabel)) {
+      const ImVec2 at = ImGui::GetCursorScreenPos();
+      const float h = ImGui::GetTextLineHeight();
+      ImGui::GetWindowDrawList()->AddRectFilled(
+          ImVec2(at.x, at.y + 2.0f), ImVec2(at.x + 8.0f, at.y + h - 1.0f),
+          ImGui::GetColorU32(ImVec4(swatch->r, swatch->g, swatch->b, 1.0f)), 2.0f);
+      ImGui::Dummy(ImVec2(9.0f, h));
+      ImGui::SameLine();
+    }
     ImGui::TextUnformatted(layerKindGlyphForFont(layer.kind).c_str());
     ImGui::SameLine();
-    if (ImGui::Selectable(layerRowTitle(layer, i).c_str(), selected == i)) selected = i;
+    // Multi-select (PRD C12). Plain click replaces the selection, ctrl-click
+    // (cmd-click on this platform) toggles one row, shift-click extends from
+    // the primary row to this one. `selected` follows the row that was clicked
+    // in every case, so the property editors below always describe a row the
+    // user just touched.
+    const bool inSelection = g_layers.selection.contains(i);
+    if (ImGui::Selectable(layerRowTitle(layer, i).c_str(), inSelection)) {
+      const ImGuiIO& io = ImGui::GetIO();
+      std::vector<size_t> next;
+      if (io.KeyShift) {
+        const size_t lo = std::min(selected, i);
+        const size_t hi = std::max(selected, i);
+        for (size_t k = lo; k <= hi; ++k) next.push_back(k);
+      } else if (io.KeyCtrl || io.KeySuper) {
+        next = g_layers.selection.indices;
+        const auto at = std::find(next.begin(), next.end(), i);
+        if (at != next.end())
+          next.erase(at);
+        else
+          next.push_back(i);
+        // A selection is never empty: ctrl-clicking the only selected row
+        // leaves it selected rather than leaving the panel with no primary row
+        // for the opacity slider and the name field to describe.
+        if (next.empty()) next.push_back(i);
+      } else {
+        next.push_back(i);
+      }
+      g_layers.selection = makeLayerSelection(std::move(next));
+      selected = i;
+    }
     ImGui::Indent();
-    textDisabledWrapped("%s", layerRowSubLine(layer).c_str());
+    {
+      std::string sub = layerRowSubLine(layer);
+      // The link badge (PRD C15). Here rather than in `layerRowSubLine()` for
+      // that function's own stated reason: whether a layer is linked depends on
+      // what *other* layers carry, and it takes a `Layer` and no `Document`.
+      if (const size_t partners = layerLinkPartnerCount(doc, i); partners > 0)
+        sub += " \xC2\xB7 LINKED+" + std::to_string(partners);
+      textDisabledWrapped("%s", sub.c_str());
+    }
 
     ImGui::BeginDisabled(i + 1 >= count);
     if (ImGui::SmallButton("Up")) {  // up the panel == up the stack == +1
@@ -2726,6 +2892,34 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             ImGui::Separator();
         }
         ImGui::Separator();
+        // PLAN.md Phase 5 step 11 / PRD C12, C13, C15. The same construction as
+        // the loop above, over `core::allLayerSetCommands()`: a set command
+        // added to that enum without a menu entry is impossible, and the LAYERS
+        // panel's "Multi-selection" section walks the identical list, so the two
+        // views cannot come to offer different sets.
+        if (ImGui::BeginMenu("Selection")) {
+          const LayerSelection visible =
+              restrictSelectionToFilter(doc, g_layers.selection, g_layers.filter);
+          ImGui::TextDisabled("%zu layer(s) selected%s", g_layers.selection.size(),
+                              visible.size() != g_layers.selection.size()
+                                  ? ", some hidden by the filter"
+                                  : "");
+          ImGui::Separator();
+          for (const LayerSetCommand command : allLayerSetCommands()) {
+            if (ImGui::MenuItem(layerSetCommandLabel(command), nullptr, false,
+                                layerSetCommandAvailable(doc, command, visible)))
+              runLayerSetCommand(st, command);
+            if (command == LayerSetCommand::MoveLayersDown ||
+                command == LayerSetCommand::UnclipLayers ||
+                command == LayerSetCommand::UnlinkLayers ||
+                command == LayerSetCommand::LabelGrey ||
+                command == LayerSetCommand::AlignSelectionBottom ||
+                command == LayerSetCommand::AlignCanvasBottom)
+              ImGui::Separator();
+          }
+          ImGui::EndMenu();
+        }
+        ImGui::Separator();
         ImGui::TextDisabled("refusals appear in the LAYERS panel");
       }
       ImGui::EndMenu();
@@ -3481,7 +3675,19 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
 const DocumentTexture& canvasDocumentTexture() { return g_documentTexture; }
 
-void setLayersPanelSelection(size_t layerIndex) { g_layers.selected = layerIndex; }
+void setLayersPanelSelection(size_t layerIndex) {
+  g_layers.selected = layerIndex;
+  // The multi-selection follows the primary row, so an external jump (a
+  // history row, a comp) leaves the panel in the single-selection state a
+  // user expects rather than in a stale multi-selection from before the jump.
+  g_layers.selection = singleLayerSelection(layerIndex);
+}
+
+void setLayersPanelSelectionSet(const LayerSelection& selection) {
+  if (selection.empty()) return;
+  g_layers.selection = selection;
+  g_layers.selected = selection.indices.front();
+}
 
 void setLayersPanelMessages(std::string error, std::vector<std::string> warnings) {
   g_layers.lastError = std::move(error);

@@ -389,6 +389,28 @@ LayerOpResult setLayerName(Document& doc, size_t index, std::string name) {
   return succeed(label, index);
 }
 
+// --- Organisation rather than appearance (PLAN.md Phase 5 step 11; PRD C15)
+//
+// Both deliberately skip the lock check; the header's lock section says why.
+
+LayerOpResult setLayerColorLabel(Document& doc, size_t index, std::string colorLabel) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "set layer colour label", &refusal)) return refusal;
+  const std::string label =
+      (colorLabel.empty() ? "clear colour label on " : "label " + colorLabel + " on ") +
+      describe(doc, index);
+  doc.layers[index].colorLabel = std::move(colorLabel);
+  return succeed(label, index);
+}
+
+LayerOpResult setLayerLinkGroup(Document& doc, size_t index, uint64_t group) {
+  LayerOpResult refusal;
+  if (!inRange(doc, index, "set layer link", &refusal)) return refusal;
+  const std::string label = (group == 0 ? "unlink " : "link ") + describe(doc, index);
+  doc.layers[index].linkGroup = group;
+  return succeed(label, index);
+}
+
 // --- The layer's own op stack ---------------------------------------------
 //
 // See core/LayerOps.hpp for why these are five functions and not one setter.
