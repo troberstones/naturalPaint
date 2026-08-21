@@ -62,6 +62,7 @@ add_executable(naturalPaint
   app/selftest/MipPyramid.cpp
   app/selftest/NpaintFormat.cpp
   app/selftest/OpStack.cpp
+  app/selftest/PigmentBake.cpp
   app/selftest/PigmentBasis.cpp
   app/selftest/PigmentDeposit.cpp
   app/selftest/PigmentLayer.cpp
@@ -98,6 +99,7 @@ add_executable(naturalPaint
   core/Merge.cpp
   core/OpStack.cpp
   core/Pigment.cpp
+  core/PigmentBake.cpp
   core/Probe.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp

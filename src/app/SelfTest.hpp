@@ -1258,6 +1258,17 @@ bool runPigmentLayerTest();
 // answer for the file half is that `saveNpaint()`/`loadNpaint()` refuse by name
 // (PLAN.md §1.5). Headless and GPU-free; writes and removes eight `.npaint`
 // files.
+// The solver-to-document mass mapping (PLAN.md roadmap section 11): what a
+// texel of sim/PaintSim's deposited pigment fields becomes as a PigmentTexel.
+// Asserts that a baked tile renders the SAME pixel core/Composite would --
+// which is what makes a bake invisible -- that `over` on Beer-Lambert
+// coverages equals Beer-Lambert accumulation exactly (so a rolling bake cannot
+// drift from one bake at the end), and that the constants the mapping shares
+// with shaders/composite.wgsl still agree, by READING that shader rather than
+// transcribing it. Headless and GPU-free; identical in both NP_USE_OIIO
+// configurations.
+bool runPigmentBakeTest();
+
 bool runPigmentBasisTest();
 
 // PLAN.md Phase 5 step 4 -- "Layer masks -- single-channel tile store, the
