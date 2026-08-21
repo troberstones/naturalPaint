@@ -123,6 +123,12 @@ add_executable(naturalPaint
 
 target_include_directories(naturalPaint PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
+)
+# third_party is SYSTEM so the -Werror=unused-* guard at the bottom of this
+# file judges only code this project owns: stb_image.h's implementation emits
+# static functions a given translation unit may not call, and that is the
+# vendored header's business, not a defect in src/.
+target_include_directories(naturalPaint SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party
 )
 
@@ -192,3 +198,34 @@ if(NP_USE_OIIO)
   # builds on an older macOS and does see it, the fix belongs in their
   # toolchain file, not in this project's unconditional settings.
 endif()
+
+# PLAN.md Phase 5 step 13, the fixture-flag audit. §6.3 house rule 3 -- "a test
+# that was defined and never called has shipped on this project before" -- has
+# a second form one level out: `--comps-demo` parsed its arguments into locals
+# and `runCompsDemo()` sat in main.cpp's anonymous namespace, and *nothing ever
+# called it*, so every step 12 screenshot photographed a document with zero
+# comps. Both halves of that defect are diagnosable by the compiler, and
+# neither warning is on by default in a build that sets no warning flags at
+# all, which is what this target was until now:
+#
+#   -Wunused-function          the anonymous-namespace helper nobody calls
+#   -Wunused-but-set-variable  the parsed flag nobody reads
+#   -Wunused-variable          the declared-and-never-touched case between them
+#
+# Errors rather than warnings, deliberately. House rule 4 already requires
+# "zero warnings naming a src/ path", so a warning here is a build that is
+# already considered broken -- making it fail the build is the rule enforced by
+# the toolchain instead of by the reviewer's eyes, which is the whole point of
+# a permanent guard. Scoped to this target, so third_party's SDL/ImGui/wgpu
+# targets are untouched; third_party *headers* are included as SYSTEM above,
+# so stb_image.h's unused statics cannot fail a build over code this project
+# does not own.
+#
+# The escape hatch for a genuinely-intentional unused symbol is [[maybe_unused]]
+# on the declaration, which is local, visible in the diff, and says why -- not a
+# flag removed from this file.
+target_compile_options(naturalPaint PRIVATE
+  -Werror=unused-function
+  -Werror=unused-variable
+  -Werror=unused-but-set-variable
+)

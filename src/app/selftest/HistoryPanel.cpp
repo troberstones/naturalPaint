@@ -32,7 +32,6 @@ bool runHistoryPanelTest() {
   auto seconds = [](Clock::time_point a, Clock::time_point b) {
     return std::chrono::duration<double>(b - a).count();
   };
-  constexpr double kMiB = 1024.0 * 1024.0;
 
   // --- Tolerances -------------------------------------------------------
   //
@@ -92,24 +91,6 @@ bool runHistoryPanelTest() {
   };
   auto sameRaw = [](const std::vector<uint16_t>& a, const std::vector<uint16_t>& b) {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * 2) == 0;
-  };
-
-  auto sameTiles = [](const Document& a, const Document& b) {
-    if (a.layers.size() != b.layers.size()) return false;
-    for (size_t i = 0; i < a.layers.size(); ++i) {
-      const auto& la = a.layers[i];
-      const auto& lb = b.layers[i];
-      if (la.rgbTiles.has_value() != lb.rgbTiles.has_value()) return false;
-      if (!la.rgbTiles) continue;
-      if (la.rgbTiles->occupiedTileCount() != lb.rgbTiles->occupiedTileCount()) return false;
-      for (const auto& [coord, tile] : *la.rgbTiles) {
-        const Tile* other = lb.rgbTiles->find(coord);
-        if (!other) return false;
-        if (std::memcmp(tile.data(), other->data(), Tile::kTexelCount * sizeof(uint16_t)) != 0)
-          return false;
-      }
-    }
-    return true;
   };
 
   // The invariant app/HistoryPanel's binary search rests on, checked wherever

@@ -2,6 +2,11 @@
 
 namespace np {
 
+// ---------------------------------------------------------------------------
+// PLAN.md Phase 5 step 1 -- multiple layers, with reorder, visibility, lock
+// and opacity, and the `over` compositing that makes the last two mean
+// anything. See app/SelfTest.hpp for the section's own contents list.
+// ---------------------------------------------------------------------------
 bool runLayerStackTest() {
   bool ok = true;
   auto check = [&](bool cond, const char* what) {

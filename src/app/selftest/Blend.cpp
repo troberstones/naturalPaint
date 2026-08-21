@@ -3,9 +3,10 @@
 namespace np {
 
 // ---------------------------------------------------------------------------
-// PLAN.md Phase 5 step 1 -- multiple layers, with reorder, visibility, lock
-// and opacity, and the `over` compositing that makes the last two mean
-// anything. See app/SelfTest.hpp for the section's own contents list.
+// PLAN.md Phase 5 step 2 -- core/Blend: the linear-safe set (over, plus,
+// multiply, screen, min, max) plus `Mix`, the KM latent lerp, with the
+// display-referred modes labelled as such. See app/SelfTest.hpp for the
+// section's own contents list.
 // ---------------------------------------------------------------------------
 bool runBlendTest() {
   bool ok = true;

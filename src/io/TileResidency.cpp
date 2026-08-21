@@ -40,6 +40,11 @@ std::string noBackendRefusal(const std::string& path) {
 // already requires of any part it turns into a layer, restated here because
 // this module accepts sources io/NpaintFile never saw (a tiled TIFF, a plain
 // tiled EXR).
+// `[[maybe_unused]]`: its only caller is inside this file's
+// `#if defined(NP_USE_OIIO)` open path, so with NP_USE_OIIO=OFF it is dead by
+// design. Marked per symbol rather than exempting the file from
+// src/CMakeLists.txt's -Werror=unused-* guard.
+[[maybe_unused]]
 bool tileAligned(int32_t value) { return floorMod(value, kTileSize) == 0; }
 
 }  // namespace
