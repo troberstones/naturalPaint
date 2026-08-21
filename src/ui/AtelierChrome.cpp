@@ -8,6 +8,7 @@
 
 #include "app/DocumentLifecycle.hpp"
 #include "app/Memory.hpp"
+#include "app/StrokeSession.hpp"
 #include "core/TileStore.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
@@ -236,7 +237,8 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* s
   return newDocument;
 }
 
-void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands) {
+void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
+                           const std::string& refusal) {
   beginBand("##atelierOptions", bands.optionsBar, kChromeDeep);
   centreInBand(bands.optionsBar.h, ImGui::GetFrameHeight());
 
@@ -287,6 +289,38 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands) {
   pushAtelierMono();
   ImGui::SliderFloat("##wet", &st.brush.wetness, 0.0f, 3.0f, "%.2f");
   popAtelierMono();
+
+  // --- what the next stroke will actually hit ------------------------------
+  //
+  // The layers panel says which layer is selected; this says what *painting*
+  // on it does, which is a different question with three answers
+  // (app/StrokeSession section 1) and no other place in the chrome that
+  // answers it. A brush that routes to the solver when the user thinks they
+  // are painting a layer, or that refuses because the layer is locked, both
+  // look identical on the canvas: nothing happens where you expected pigment.
+  bandSeparator();
+  const OpenDocument* od = st.documents.active();
+  const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
+  const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
+  if (!refusal.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
+    ImGui::TextUnformatted(refusal.c_str());
+    ImGui::PopStyleColor();
+  } else if (target == nullptr) {
+    capsLabel("NO LAYER");
+  } else {
+    pushAtelierMono();
+    ImGui::PushStyleColor(
+        ImGuiCol_Text,
+        ImGui::ColorConvertU32ToFloat4(atelierToken(
+            route == StrokeRoute::CpuDeposit ? kAccent : kTextSecondary)));
+    ImGui::Text("-> %s", strokeRouteName(route));
+    ImGui::PopStyleColor();
+    popAtelierMono();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("The active layer is \"%s\".\nA %s stroke on it goes to: %s",
+                        target->name.c_str(), toolName(st.brush.tool), strokeRouteName(route));
+  }
 
   endBand();
 }

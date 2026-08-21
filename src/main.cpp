@@ -37,6 +37,7 @@
 #include "sim/PaintSim.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacPaintUI.hpp"
+#include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
 
 #include "imgui.h"
@@ -231,6 +232,28 @@ void buildPigmentStrokeDemo(np::OpenDocument& od, bool mix) {
 // the pair that makes clipping visible on screen: the grade lands only where
 // that layer has alpha. `noclip` runs the identical script without the clip,
 // for the comparison shot.
+// --pen-demo's fixture: give the pointer something it is allowed to paint.
+//
+// The brush routes to the CPU deposit only on an unlocked Pigment layer
+// (app/StrokeSession section 1), and neither a blank document nor
+// `--demo-document` has one -- so without this the flag would exercise the
+// PaintSim branch and prove nothing about the new route. Added on top and made
+// **active**, which is the state a user reaches by pressing `+ Pigment` in
+// LAYERS.
+void preparePenDemo(np::OpenDocument& od) {
+  const np::LayerEditResult r =
+      np::applyLayerCommand(od, np::LayerCommand::NewPigmentLayer, od.activeLayer);
+  if (!r.ok) {
+    std::fprintf(stderr, "[pen-demo] %s\n", r.error.c_str());
+    return;
+  }
+  np::setActiveLayer(od, r.selected);
+  const np::Layer* target = np::activeLayerOf(od);
+  std::printf("[pen-demo] active layer %zu of %zu: '%s', route %s\n", od.activeLayer,
+              od.document.layers.size(), target != nullptr ? target->name.c_str() : "(none)",
+              np::strokeRouteName(np::strokeRouteFor(np::Tool::Brush, target)));
+}
+
 void runUiLayerDemo(np::OpenDocument& od, bool clip) {
   size_t selected = od.document.layers.empty() ? 0 : od.document.layers.size() - 1;
   int step = 0;
@@ -284,7 +307,7 @@ void runUiLayerDemo(np::OpenDocument& od, bool clip) {
 
   // Leave the panel showing the adjustment layer, so its op stack is on screen
   // in the screenshot rather than collapsed behind another row's selection.
-  np::setLayersPanelSelection(adjustment);
+  np::setLayersPanelSelection(od, adjustment);
 
   // The finished stack, in the layers panel's own words -- app/LayerPanel's row
   // text, top first, which is what the panel draws. Printed so the picture and
@@ -364,7 +387,7 @@ void runUiMultiSelectDemo(np::OpenDocument& od, std::string_view script) {
   };
   np::LayerSelection selection =
       np::singleLayerSelection(od.document.layers.empty() ? 0 : od.document.layers.size() - 1);
-  np::setLayersPanelSelectionSet(selection);
+  np::setLayersPanelSelectionSet(od, selection);
   std::printf("[ui-multiselect-demo] before: %zu layer(s), revision %llu\n",
               od.document.layers.size(), static_cast<unsigned long long>(od.revision));
   size_t at = 0;
@@ -386,7 +409,7 @@ void runUiMultiSelectDemo(np::OpenDocument& od, std::string_view script) {
         if (!one.empty()) indices.push_back(static_cast<size_t>(std::atoi(one.c_str())));
       }
       selection = np::makeLayerSelection(std::move(indices));
-      np::setLayersPanelSelectionSet(selection);
+      np::setLayersPanelSelectionSet(od, selection);
       std::printf("[ui-multiselect-demo]     select %zu layer(s)\n", selection.size());
       continue;
     }
@@ -406,7 +429,7 @@ void runUiMultiSelectDemo(np::OpenDocument& od, std::string_view script) {
     for (const std::string& w : r.warnings)
       std::printf("[ui-multiselect-demo]     warning: %s\n", w.c_str());
     if (r.ok) selection = r.selection;
-    np::setLayersPanelSelectionSet(selection);
+    np::setLayersPanelSelectionSet(od, selection);
     np::setLayersPanelMessages(r.ok ? std::string() : r.error, r.warnings);
   }
 }
@@ -424,7 +447,7 @@ void runUiMergeDemo(np::OpenDocument& od, std::string_view list) {
   // The top layer, which is what a panel opens on and what "merge down" is
   // about. `--demo-document` leaves three layers with pixels in them.
   size_t selected = od.document.layers.empty() ? 0 : od.document.layers.size() - 1;
-  np::setLayersPanelSelection(selected);
+  np::setLayersPanelSelection(od, selected);
   std::printf("[ui-merge-demo] before: %zu layer(s), selection on layer %zu, revision %llu\n",
               od.document.layers.size(), selected,
               static_cast<unsigned long long>(od.revision));
@@ -465,7 +488,7 @@ void runUiMergeDemo(np::OpenDocument& od, std::string_view list) {
                 od.document.layers.size(), selected,
                 static_cast<unsigned long long>(od.revision));
   }
-  np::setLayersPanelSelection(selected);
+  np::setLayersPanelSelection(od, selected);
   std::printf("[ui-merge-demo] final stack, top first:\n");
   const size_t count = od.document.layers.size();
   for (size_t row = 0; row < count; ++row) {
@@ -586,6 +609,12 @@ int main(int argc, char** argv) {
   bool latencyVerbose = false;
   const char* screenshotPath = nullptr;
   int screenshotFrames = 30;
+  bool penDemo = false;
+  // Frame 4 so the UI has settled (the first frames are not representative --
+  // see the screenshot counter's own comment), and 24 steps because that is a
+  // stroke long enough to cross several tiles at the default brush radius.
+  constexpr int kPenDemoFirstFrame = 4;
+  constexpr int kPenDemoSteps = 24;
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
   bool pigmentStrokeDemoMix = true;
@@ -634,6 +663,13 @@ int main(int argc, char** argv) {
       // --screenshot photographs the composite rather than photographing the
       // fact that a transparent one is invisible. See buildDemoDocument().
       demoDocument = true;
+    } else if (a == "--pen-demo") {
+      // --pen-demo : drag a synthetic pointer across the canvas through the
+      // real UI, so the *interactive* stroke path is exercised rather than
+      // `app::StrokeSession` being called directly. See the injection block in
+      // the frame loop, and `preparePenDemo()` for the Pigment layer it needs
+      // to have something to paint into.
+      penDemo = true;
     } else if (a == "--pigment-stroke-demo") {
       // Phase 5, the CPU Pigment deposit: paint two Pigment layers with real
       // strokes so --screenshot photographs `Mix` against `Normal`. See
@@ -786,6 +822,7 @@ int main(int argc, char** argv) {
     // returns -- which is the question nine other sections already ask.
     const bool fontsOk = np::runFontsTest();
     const bool atelierOk = np::runAtelierChromeTest();
+    const bool activeLayerOk = np::runActiveLayerTest();
     // Phase 2 step 2: core/Half's shared half<->float codec and
     // core/TileStore's allocate-on-write / query-without-allocating /
     // iterate-occupied sparse map. Also headless and GPU-free -- pure CPU,
@@ -1209,7 +1246,7 @@ int main(int argc, char** argv) {
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
                     exportStatesOk && pigmentDepositOk && layerMultiSelectOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
-                    atelierOk;
+                    atelierOk && activeLayerOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -1334,6 +1371,9 @@ int main(int argc, char** argv) {
   if (pigmentStrokeDemo) {
     if (np::OpenDocument* od = st.documents.active())
       buildPigmentStrokeDemo(*od, pigmentStrokeDemoMix);
+  }
+  if (penDemo) {
+    if (np::OpenDocument* od = st.documents.active()) preparePenDemo(*od);
   }
   // After --demo-document deliberately: the script builds on whatever the
   // document already holds, and the layer it clips to is the one that was on
@@ -1494,6 +1534,45 @@ int main(int argc, char** argv) {
 
     ImGui_ImplWGPU_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+
+    // --pen-demo: drive the *interactive* stroke path with synthetic pointer
+    // input, so the thing under test is `ui/MacPaintUI`'s canvas block and its
+    // routing branch rather than `app/StrokeSession` called directly.
+    //
+    // This is the difference from `--pigment-stroke-demo`, which constructs a
+    // session itself: that one proves the deposit works, this one proves
+    // something *calls* it. The distinction is exactly the one that made
+    // commit bd30c2c ship a font module nothing invoked -- a test that
+    // constructs its own subject proves the subject works, not that anything
+    // reaches it.
+    //
+    // Injected after `ImGui_ImplSDL3_NewFrame()` and before `NewFrame()`,
+    // which is the window in which ImGui accepts queued input events for the
+    // frame about to be built.
+    if (penDemo) {
+      const int step = static_cast<int>(frameIndex) - kPenDemoFirstFrame;
+      if (step >= 0 && step <= kPenDemoSteps) {
+        const float u = static_cast<float>(step) / static_cast<float>(kPenDemoSteps);
+        ImGuiIO& io = ImGui::GetIO();
+        // A diagonal across the middle half of the canvas band, found the same
+        // way the chrome finds it -- `ui/AtelierLayout` -- rather than from
+        // hard-coded screen coordinates that would stop being over the canvas
+        // the moment a band's height changed.
+        const np::AtelierBands bands =
+            np::atelierLayout(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y,
+                              /*showTabStrip=*/true);
+        const ImVec2 from(bands.canvas.x + bands.canvas.w * 0.25f,
+                          bands.canvas.y + bands.canvas.h * 0.25f);
+        const ImVec2 to(bands.canvas.x + bands.canvas.w * 0.75f,
+                        bands.canvas.y + bands.canvas.h * 0.75f);
+        io.AddMousePosEvent(from.x + (to.x - from.x) * u, from.y + (to.y - from.y) * u);
+        // Down on the first step and held; released one step past the end, so
+        // the pen-up branch runs on a frame the pointer is still over the
+        // canvas rather than on the frame the demo happens to stop moving.
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, step < kPenDemoSteps);
+      }
+    }
+
     ImGui::NewFrame();
 
     np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);

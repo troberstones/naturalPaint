@@ -128,7 +128,10 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, std::string* s
 // No PRESET control: the design draws `PRESET [] Round Bristle 03`, and this
 // build has no brush presets at all. A dropdown showing one invented name
 // would put a feature in the chrome that does not exist behind it.
-void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands);
+// `refusal` is the sentence the brush could not paint, or empty. Shown here
+// rather than logged: a locked target makes the brush silently stop working,
+// which is the one failure a painter cannot diagnose by looking at the canvas.
+void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands, const std::string& refusal);
 
 // docs/ui.md section 2's 26px band: zoom, dimensions and working space,
 // resident against budget, and the view-state markers.

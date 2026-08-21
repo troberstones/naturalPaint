@@ -9,6 +9,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "brush/Deposit.hpp"
 #include "brush/StrokePath.hpp"
+#include "paint/Palette.hpp"
 #include "core/Layer.hpp"
 #include "core/Tile.hpp"
 
@@ -139,15 +140,25 @@
 // 4. What this is not
 // ==========================================================================
 //
-// **The pen is not wired to this yet, and that is a missing decision rather
-// than missing plumbing.** A deposit needs a target layer, and this
-// application has **no concept of an active layer**: `app/AppState` holds a
-// `DocumentSession` and no selected index anywhere (its own comment reserves
-// "a combo's selected index" for `ui/`), and `ui/LayerPanel` renders rows
-// without owning a selection. Answering "which layer does the brush paint
-// on", and what the PIGMENT panel's swatch means as a `Latent`, is a UI step
-// with its own choices to make. `--pigment-stroke-demo` drives this class the
-// way that step will, so the screenshot is of the real path.
+// **The pen IS wired to this now.** This section used to say it was not, and
+// that "a deposit needs a target layer, and this application has no concept of
+// an active layer". Both halves of that missing decision were made:
+//
+//   * `OpenDocument::activeLayer` -- on the session record, per document, and
+//     deliberately not in `core::History` (that header carries the argument).
+//   * `brushTipFor()` below -- what the PIGMENT panel's swatch means as a
+//     `Latent`, which is the colour and deliberately not the three physical
+//     constants.
+//
+// `ui/MacPaintUI.cpp`'s canvas block decides the route before it constructs a
+// `PaintSim`, so painting a Pigment layer allocates no solver fields, and
+// `--pen-demo` drags a synthetic pointer through the real UI to prove that
+// something *calls* this class rather than only that the class works.
+//
+// **Not wired: the other direction.** Nothing carries solver state back into a
+// document, so a stroke on a Media layer, and wetness generally, still live
+// only on the dense canvas texture. That is the readback bridge, and it is
+// still owed.
 //
 // ==========================================================================
 // 5. The target, and the one hazard this cannot close yet
@@ -196,6 +207,32 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept;
 // O2's panel reads consistently down the column.
 const char* strokeEditLabel(Tool tool) noexcept;
 
+// The pen's brush state, as a tip -- the one mapping from what the UI holds to
+// what `brush/Deposit` takes, so the interactive route and `--selftest` cannot
+// disagree about what a given brush deposits.
+//
+// **What the PIGMENT panel's swatch means as a `Latent`**, which is the second
+// half of the missing decision section 4 named. The swatch is a
+// `paint::Pigment` with an sRGB triple and three physical constants, and the
+// answer here is deliberately the narrow one: the colour goes through
+// `MixboxLut::rgbToLatent()` and **the three constants do not travel**.
+// Density, staining and granulation are properties the *solver* reads -- they
+// decide how a wash settles, lifts and pools -- and `brush/Deposit` simulates
+// none of that (its own section 1 says so: "no diffusion, no edge darkening,
+// no granulation"). Carrying them into a tip that cannot use them would put
+// three dead fields in the deposit path and imply a fidelity that is not
+// there. They are not lost: they are still what the pigment *is*, and they
+// become live for a Pigment layer when the solver readback bridge lands.
+//
+// `pressure` in [0,1] scales radius and flow by the same two curves the solver
+// route uses, and honours `BrushState::pressureSize` / `pressureFlow`
+// independently, so a pen configured one way behaves the same on both routes.
+//
+// Falls back to the pigment's own RGB projected through `latentToRgb()`'s
+// inverse-free path when `lut` has not loaded -- a build with no LUT still
+// paints, in the pigment's colour, rather than painting nothing.
+BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressure);
+
 // One stroke, from pen-down to pen-up.
 //
 // Deliberately shaped like the block in `ui/MacPaintUI.cpp` that already feeds
@@ -214,6 +251,23 @@ class StrokeSession {
              std::string* errorOut);
 
   bool active() const noexcept { return doc_ != nullptr; }
+
+  // Replace the tip mid-stroke, which is how **pressure** reaches a CPU
+  // deposit.
+  //
+  // Frame granularity, deliberately, and it is parity rather than a
+  // compromise: `ui/MacPaintUI`'s solver route sets one `sim.brushRadius` per
+  // frame from the current pen pressure and every dab that frame shares it.
+  // This is the same rule on the same schedule -- the UI rebuilds the tip from
+  // this frame's pressure and calls this before `addPoint()`. Within a frame a
+  // batch of dabs shares one tip, in both routes.
+  //
+  // `StrokePath` already takes its spacing per call, so a tip whose radius
+  // changed also changes the spacing from that point on rather than keeping
+  // pen-down's -- which is what "spacing is in radii" has to mean for a
+  // pressure-sized brush.
+  void setTip(const BrushTip& tip) noexcept { tip_ = tip; }
+  const BrushTip& tip() const noexcept { return tip_; }
 
   // One raw pointer sample, in document texel coordinates. Deposits whatever
   // dabs `brush/StrokePath` emits for it and returns **this frame's** tile

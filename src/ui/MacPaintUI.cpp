@@ -1,5 +1,6 @@
 #include "ui/MacPaintUI.hpp"
 
+#include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
@@ -71,6 +72,16 @@ constexpr float kSnapThresholdPx = 8.0f;
 // destructor running after the device is gone would be worse than the leak it
 // prevents. See DocumentTexture::release().
 DocumentTexture g_documentTexture;
+
+// The in-flight CPU stroke (app/StrokeSession), file-scope for the same reason
+// `g_documentTexture` is: it has to outlive one call of `drawUI()`, because a
+// stroke spans frames. Exactly one exists, which is also the invariant -- two
+// pens are not a thing this application has.
+StrokeSession g_stroke;
+// Why the brush is not painting, when it is not. Shown in the options bar
+// rather than in a log line: a locked target makes the brush silently stop
+// working, which is the failure a user cannot diagnose from the canvas.
+std::string g_strokeRefusal;
 
 // --- The label column (UI detour step 3, problem 1b) ----------------------
 //
@@ -173,11 +184,17 @@ bool ctlInputText(const char* label, char* buf, size_t cap, ImGuiInputTextFlags 
 // same instance, and app/AppState.hpp's rule is that transient UI state stays
 // in ui/.
 //
-// `selected` is an index into `Document::layers` (bottom-first), never a panel
-// row, so it keeps meaning the same layer across a reorder. app/LayerPanel owns
-// the one reversal between the two and nothing here reverses anything.
+// **The primary row is not here.** It moved to `OpenDocument::activeLayer`,
+// because it is the layer the *brush* paints into as well as the one whose
+// properties this panel edits, and those must be the same layer or the panel
+// is lying about what a stroke will hit. That header carries the argument for
+// where it lives; what stays here is everything that is genuinely panel state.
+//
+// The multi-selection below is still an index set into `Document::layers`
+// (bottom-first), never panel rows, so it keeps meaning the same layers across
+// a reorder. app/LayerPanel owns the one reversal between the two and nothing
+// here reverses anything.
 struct LayerEditorUiState {
-  size_t selected = 0;
   std::string lastError;
   // What a *successful* merge had to say (PLAN.md Phase 5 step 10). Kept apart
   // from `lastError` and drawn in a different colour because it is a different
@@ -216,8 +233,8 @@ void runLayerCommand(AppState& st, LayerCommand command) {
         "layer command refused: no document is open. File > New Document makes one.";
     return;
   }
-  const LayerEditResult r = applyLayerCommand(*od, command, g_layers.selected);
-  g_layers.selected = r.selected;
+  const LayerEditResult r = applyLayerCommand(*od, command, od->activeLayer);
+  setActiveLayer(*od, r.selected);
   g_layers.selection = singleLayerSelection(r.selected);
   g_layers.lastError = r.ok ? std::string() : r.error;
   g_layers.lastWarnings = r.warnings;
@@ -254,8 +271,7 @@ void runLayerSetCommand(AppState& st, LayerSetCommand command) {
   g_layers.lastWarnings = r.warnings;
   if (!r.ok) return;
   g_layers.selection = r.selection;
-  g_layers.selected =
-      r.selection.empty() ? 0 : r.selection.indices.front();
+  setActiveLayer(*od, r.selection.empty() ? 0 : r.selection.indices.front());
 }
 
 
@@ -1031,7 +1047,7 @@ std::string layerKindGlyphForFont(LayerKind kind) {
 void layerCommandButton(AppState& st, LayerCommand command, const char* text) {
   const OpenDocument* od = st.documents.active();
   const bool available =
-      od != nullptr && layerCommandAvailable(od->document, command, g_layers.selected);
+      od != nullptr && layerCommandAvailable(od->document, command, od->activeLayer);
   ImGui::BeginDisabled(!available);
   if (ImGui::SmallButton(text)) runLayerCommand(st, command);
   ImGui::EndDisabled();
@@ -1070,7 +1086,12 @@ void drawLayersSection(AppState& st) {
                       g_documentTexture.lastUploadMs());
 
   static char renameBuf[128] = "";
-  size_t& selected = g_layers.selected;
+  // A reference to the document's own active layer, so every mutation below
+  // -- click, ctrl-click, shift-range, Up/Down, a command's returned row --
+  // moves what the brush paints into as well as what this panel edits. The
+  // clamp on the next line is the reason `activeLayerIndex()` exists: a stack
+  // can shrink under a stored index between frames.
+  size_t& selected = od->activeLayer;
   if (selected >= doc.layers.size()) selected = doc.layers.empty() ? 0 : doc.layers.size() - 1;
 
   auto run = [&](LayerOpResult r) {
@@ -2997,7 +3018,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         ImGui::TextDisabled("(no document open)");
       } else {
         const Document& doc = od->document;
-        const size_t selected = g_layers.selected;
+        const size_t selected = od->activeLayer;
         // The row every one of these acts on, named rather than assumed: the
         // menu bar is a long way from the panel and "which layer is this
         // about" is otherwise invisible from here.
@@ -3756,7 +3777,60 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // entirely out of the brush path: resolveSnap() is only ever called
     // from the pendingGuide block above, never from here -- a stroke is
     // exactly as continuous and unsnapped after this step as before it.
+    // --- which route this stroke takes (app/StrokeSession section 1) -------
+    //
+    // Decided *before* `ensurePaintSim()` below, and that ordering is the
+    // whole of ADR-0001's idle-memory rule surviving this step: a stroke into
+    // a Pigment layer must not construct the solver, or painting on the one
+    // layer kind that needs no simulation would allocate every field a
+    // watercolour session does.
+    OpenDocument* strokeDoc = st.documents.active();
+    const Layer* strokeTarget = strokeDoc != nullptr ? activeLayerOf(*strokeDoc) : nullptr;
+    const StrokeRoute route = strokeRouteFor(st.brush.tool, strokeTarget);
+
     if (paintTool && down && hovered && inside && !panning && !rotating &&
+        !st.pendingGuide.has_value() && route == StrokeRoute::CpuDeposit) {
+      // **The pen reaches a Layer.** app/StrokeSession section 4 said this was
+      // "a missing decision rather than missing plumbing", and the decision it
+      // was missing was `OpenDocument::activeLayer`.
+      //
+      // Shaped exactly as that header predicted: `begin()` where
+      // `strokePath.reset()` is, `addPoint()` where `strokePath.addPoint()`
+      // is, `end()` where `strokePath.flush()` is. No solver, no
+      // `st.pendingDabs`, no `st.sim.brush*` -- those belong to the other
+      // route and setting them here would leave the oil segment carrying a
+      // stroke that never touched the canvas texture.
+      st.paintingThisFrame = true;
+      const float pressure = st.penSeen ? st.penPressure : 1.0f;
+      const BrushTip tip = brushTipFor(st.brush, lut, pressure);
+      if (!g_stroke.active()) {
+        g_strokeRefusal.clear();
+        if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
+                            &g_strokeRefusal)) {
+          st.paintingThisFrame = false;
+        }
+        st.lastX = tx;
+        st.lastY = ty;
+      }
+      if (g_stroke.active()) {
+        // Per frame, from this frame's pressure -- the same granularity the
+        // solver route gets, which sets one brushRadius per frame.
+        g_stroke.setTip(tip);
+        g_stroke.addPoint(tx, ty);
+        st.lastX = tx;
+        st.lastY = ty;
+      }
+    } else if (paintTool && down && hovered && inside && !panning && !rotating &&
+               !st.pendingGuide.has_value() && route == StrokeRoute::None &&
+               strokeTarget != nullptr) {
+      // The one refusal worth saying out loud: a locked Pigment layer. The
+      // route table sends it nowhere rather than falling through to the
+      // solver, because falling through would put paint on the *canvas* when
+      // the user aimed at a layer -- and the user has to be told, or the brush
+      // just silently stops working.
+      g_strokeRefusal = std::string("locked layer: \"") + strokeTarget->name +
+                        "\" cannot be painted. Clear its Lock in LAYERS.";
+    } else if (paintTool && down && hovered && inside && !panning && !rotating &&
         !st.pendingGuide.has_value()) {
       // 1.4 / ADR-0001: this is the first moment a paint tool actually
       // deposits, so it's where PaintSim gets constructed if it doesn't
@@ -3820,6 +3894,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         applyDabsToOilSegment();
       }
       st.strokeActive = false;
+      // The CPU route's pen-up. Separate from `strokeActive`, which is the
+      // solver's flag: the two routes never run at once (the route is decided
+      // per frame and one branch above is taken), but a stroke that began on
+      // one and was interrupted -- window blur, a layer deleted mid-stroke --
+      // must still be ended exactly once. `end()` records the single history
+      // entry, and records nothing at all if the stroke deposited nothing.
+      if (g_stroke.active()) {
+        g_stroke.end();
+        std::printf("[stroke] %s: %zu dabs, %zu texels, %zu tiles\n", g_stroke.label().c_str(),
+                    g_stroke.dabCount(), g_stroke.texelsWritten(), g_stroke.strokeTiles().size());
+      }
     }
 
     // --- grid + guides overlay (PRD Q7, Q5) -- drawn once, after every
@@ -3891,7 +3976,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                            static_cast<int32_t>(canvasH), WorkingSpace{}));
     g_docStatus.clear();
   }
-  drawAtelierOptionsBar(st, bands);
+  drawAtelierOptionsBar(st, bands, g_strokeRefusal);
   drawAtelierStatusBar(st, bands, canvasW, canvasH);
   // Last, and on the foreground draw list: a 2 px rule that a neighbouring
   // window overdrew by a pixel would be a 1 px rule, and the design's whole
@@ -3919,18 +4004,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
 const DocumentTexture& canvasDocumentTexture() { return g_documentTexture; }
 
-void setLayersPanelSelection(size_t layerIndex) {
-  g_layers.selected = layerIndex;
+void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex) {
+  setActiveLayer(doc, layerIndex);
   // The multi-selection follows the primary row, so an external jump (a
   // history row, a comp) leaves the panel in the single-selection state a
   // user expects rather than in a stale multi-selection from before the jump.
-  g_layers.selection = singleLayerSelection(layerIndex);
+  g_layers.selection = singleLayerSelection(doc.activeLayer);
 }
 
-void setLayersPanelSelectionSet(const LayerSelection& selection) {
+void setLayersPanelSelectionSet(OpenDocument& doc, const LayerSelection& selection) {
   if (selection.empty()) return;
   g_layers.selection = selection;
-  g_layers.selected = selection.indices.front();
+  setActiveLayer(doc, selection.indices.front());
 }
 
 void setLayersPanelMessages(std::string error, std::vector<std::string> warnings) {

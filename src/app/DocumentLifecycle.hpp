@@ -1,8 +1,8 @@
 #pragma once
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -228,6 +228,32 @@ struct OpenDocument {
   // record does not hold `LayerResidency` objects yet.
   TileResidencyMode residencyMode = TileResidencyMode::Eager;
 
+  // **The active layer** -- an index into `Document::layers` (bottom-first),
+  // never a panel row.
+  //
+  // This is what `app/StrokeSession.hpp` section 4 said was missing: "the pen
+  // is not wired to this yet, and that is a missing decision rather than
+  // missing plumbing. A deposit needs a target layer, and this application has
+  // no concept of an active layer". This member is that decision, and the two
+  // halves of it are *where* it lives and *what* it is not:
+  //
+  //  * **On the open document, not on `AppState`.** The layers panel used to
+  //    hold one index for the whole application, so switching documents
+  //    carried the previous one's row over -- which is wrong the moment two
+  //    documents have different stacks, and silently wrong rather than
+  //    visibly so. Each document remembers its own.
+  //  * **On the session record, not on `Document`.** `core::History` entries
+  //    hold a whole `Document` (core/History.hpp), so an active layer stored
+  //    there would be *undone* -- pressing Cmd+Z would move the user's
+  //    selection as a side effect of undoing a paint stroke. Which layer you
+  //    are working on is not part of the picture, and it is not saved to a
+  //    file for the same reason.
+  //
+  // Not clamped here: `Document::layers` is a public aggregate that anything
+  // may shrink, so every reader clamps. `activeLayerIndex()` below is that
+  // clamp, and it is the accessor to use rather than this member directly.
+  size_t activeLayer = 0;
+
   // Monotonic change counter. Bumped by `recordEdit()`; a save sets
   // `savedRevision = revision`; a revert bumps it *and* marks clean, because
   // the document changed (back) and anything caching a derived product must
@@ -308,6 +334,26 @@ struct OpenDocument {
 // `title` otherwise, and a last-resort synthesised name so a document can
 // never be nameless in a menu.
 std::string documentDisplayName(const OpenDocument& doc);
+
+// `doc.activeLayer`, clamped into `doc.document.layers`, or `std::nullopt`
+// when the document has no layers at all.
+//
+// Every reader goes through this rather than the member: a layer delete, an
+// undo past a layer add, or a comp restore can all shrink the stack under a
+// stored index, and a stroke or a menu command that acted on a clamped-away
+// index would act on the wrong layer rather than on none.
+std::optional<size_t> activeLayerIndex(const OpenDocument& doc);
+
+// The active layer itself, or nullptr. The overload a caller wanting to *ask
+// about* the layer wants -- `strokeRouteFor()`, the blend dropdown, the
+// options bar -- rather than one that wants to edit it by index.
+const Layer* activeLayerOf(const OpenDocument& doc);
+Layer* activeLayerOf(OpenDocument& doc);
+
+// Sets the active layer, clamping into the stack. A no-op on a document with
+// no layers, which leaves `activeLayerIndex()` reporting nothing rather than
+// reporting 0 for a stack that has no row 0.
+void setActiveLayer(OpenDocument& doc, size_t index);
 
 // A blank document (PRD C7) wrapped in a lifecycle record. `title` is what
 // the caller wants it called; empty gets "Untitled".

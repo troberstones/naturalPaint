@@ -40,6 +40,7 @@ add_executable(naturalPaint
   app/selftest/FieldAllocation.cpp
   app/selftest/Fonts.cpp
   app/selftest/AtelierChrome.cpp
+  app/selftest/ActiveLayer.cpp
   app/selftest/FormatSupport.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Histogram.cpp

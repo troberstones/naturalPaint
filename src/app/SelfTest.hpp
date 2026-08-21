@@ -1993,4 +1993,12 @@ bool runLayerMultiSelectTest();
 // and the tokens are integers, which is why both are free of ImGui.
 bool runAtelierChromeTest();
 
+// The active layer (`OpenDocument::activeLayer`) and `brushTipFor()` -- the two
+// halves of the decision app/StrokeSession.hpp section 4 said the pen was
+// waiting on. Headless and GPU-free. The *wiring* is covered by `--pen-demo`,
+// which drags a synthetic pointer through the real UI, because a headless test
+// that built its own session would prove the deposit works rather than proving
+// something calls it.
+bool runActiveLayerTest();
+
 }  // namespace np

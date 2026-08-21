@@ -52,6 +52,46 @@ const char* strokeEditLabel(Tool tool) noexcept {
   return "stroke";
 }
 
+BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressure) {
+  // The same two curves ui/MacPaintUI's solver route applies, and they are
+  // here rather than there so the two routes cannot drift apart. A pen
+  // configured for size-only pressure must feel the same whichever layer kind
+  // it lands on.
+  const float p = pressure < 0.0f ? 0.0f : (pressure > 1.0f ? 1.0f : pressure);
+  const float sizeMul = brush.pressureSize ? (0.25f + 0.75f * p) : 1.0f;
+  const float flowMul = brush.pressureFlow ? (0.15f + 0.85f * p) : 1.0f;
+
+  BrushTip tip;
+  tip.radius = brush.radius * sizeMul;
+  tip.hardness = brush.hardness;
+  // `BrushState::load` is "pigment concentration" and ranges 0..2.5; a tip's
+  // `flow` is "mass laid down per dab where coverage is 1" and is deliberately
+  // not clamped to [0,1] (brush/Deposit.hpp: "a flow above 1 is a legitimate
+  // one dab saturates the paper tip"). So this is the same number, scaled by
+  // pressure, and not a remapping that would make the LOAD slider mean two
+  // things.
+  tip.flow = brush.load * flowMul;
+  tip.spacing = brush.spacing;
+
+  const std::vector<Pigment>& palette = defaultPalette();
+  const size_t index =
+      brush.pigment >= 0 && static_cast<size_t>(brush.pigment) < palette.size()
+          ? static_cast<size_t>(brush.pigment)
+          : 0;
+  const Pigment& pigment = palette[index];
+  if (lut.valid())
+    tip.pigment = lut.rgbToLatent(pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]);
+  else
+    // No LUT: `Latent::c` is Mixbox's own three weights and the fourth
+    // (white) is derived, so a straight copy of the sRGB triple is not the
+    // right latent -- but it is a colour in the right family, and a build
+    // that never loaded the 512x512 PNG painting *something* beats one that
+    // paints white. The LUT is loaded by main.cpp before any UI exists, so
+    // this branch is for tests and for a broken install.
+    tip.pigment.c = {pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]};
+  return tip;
+}
+
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
                           std::string* errorOut) {
   if (errorOut != nullptr) errorOut->clear();

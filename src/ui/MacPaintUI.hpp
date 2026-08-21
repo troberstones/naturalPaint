@@ -40,15 +40,17 @@ void drawUI(AppState& state, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 // the shutdown line is the one that is always observable.
 const DocumentTexture& canvasDocumentTexture();
 
-// Which layer the LAYERS panel and the `Layer` menu act on, as an index into
-// `Document::layers` (bottom-first), never a panel row.
+// Which layer the LAYERS panel, the `Layer` menu and **the brush** act on.
 //
-// The selection is UI state and lives in ui/MacPaintUI.cpp with the rest of it;
-// this setter exists for one caller, main.cpp's `--ui-layer-demo`, which drives
+// It is `OpenDocument::activeLayer` now, not a file-scope index in
+// ui/MacPaintUI.cpp -- see that member's own comment for why it lives on the
+// document, and app/StrokeSession.hpp section 4 for what it unblocked. This
+// wrapper exists for one caller, main.cpp's `--ui-layer-demo`, which drives
 // the editor's own commands and would otherwise leave the panel expanded on
-// whichever layer the selection happened to start on. Clamped by the panel
-// itself on the next frame, so an index past the end is not an error here.
-void setLayersPanelSelection(size_t layerIndex);
+// whichever layer the selection happened to start on; it sets the active layer
+// *and* collapses the multi-selection onto it, which `setActiveLayer()` alone
+// does not do. Clamped, so an index past the end is not an error here.
+void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex);
 
 // The whole multi-selection (PLAN.md Phase 5 step 11), for the one caller
 // `setLayersPanelSelection()` exists for: main.cpp's `--ui-multiselect-demo`,
@@ -56,7 +58,7 @@ void setLayersPanelSelection(size_t layerIndex);
 // photographing a single-row selection while the terminal reported a gesture
 // over three. The primary row follows the lowest member, exactly as a click
 // does. An empty selection is ignored -- the panel never has one.
-void setLayersPanelSelectionSet(const LayerSelection& selection);
+void setLayersPanelSelectionSet(OpenDocument& doc, const LayerSelection& selection);
 
 // What the LAYERS panel shows under the stack after an operation: the refusal
 // sentence when one was refused, and core/Merge's warnings when one went ahead

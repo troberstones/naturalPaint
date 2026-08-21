@@ -159,6 +159,26 @@ std::string documentDisplayName(const OpenDocument& doc) {
   return "Untitled " + std::to_string(doc.id);
 }
 
+std::optional<size_t> activeLayerIndex(const OpenDocument& doc) {
+  if (doc.document.layers.empty()) return std::nullopt;
+  return std::min(doc.activeLayer, doc.document.layers.size() - 1);
+}
+
+const Layer* activeLayerOf(const OpenDocument& doc) {
+  const std::optional<size_t> index = activeLayerIndex(doc);
+  return index ? &doc.document.layers[*index] : nullptr;
+}
+
+Layer* activeLayerOf(OpenDocument& doc) {
+  const std::optional<size_t> index = activeLayerIndex(doc);
+  return index ? &doc.document.layers[*index] : nullptr;
+}
+
+void setActiveLayer(OpenDocument& doc, size_t index) {
+  if (doc.document.layers.empty()) return;
+  doc.activeLayer = std::min(index, doc.document.layers.size() - 1);
+}
+
 OpenDocument makeBlankOpenDocument(int32_t width, int32_t height, WorkingSpace space,
                                    std::string title) {
   OpenDocument doc;
