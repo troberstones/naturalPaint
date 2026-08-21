@@ -12,7 +12,62 @@ add_executable(naturalPaint
   app/LayerPanel.cpp
   app/Latency.cpp
   app/Memory.cpp
-  app/SelfTest.cpp
+  # One translation unit per --selftest section, plus Driver.cpp for the three
+  # drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
+  # These were one 20 815-line app/SelfTest.cpp until every parallel branch
+  # started conflicting in it; app/SelfTest.hpp is still the single index of
+  # what the suite proves and is deliberately NOT split. Listed explicitly
+  # rather than globbed, same as every other source in this target, so adding
+  # a section is a visible line in the diff and CMake reconfigures for it.
+  app/selftest/Accumulator.cpp
+  app/selftest/AdjustmentLayer.cpp
+  app/selftest/ApplyPass.cpp
+  app/selftest/BaseLayerAlpha.cpp
+  app/selftest/Blend.cpp
+  app/selftest/ClippingMask.cpp
+  app/selftest/ColorSpace.cpp
+  app/selftest/ControlsLayout.cpp
+  app/selftest/CowTile.cpp
+  app/selftest/CreateBlank.cpp
+  app/selftest/CurveEdit.cpp
+  app/selftest/Document.cpp
+  app/selftest/DocumentLifecycle.cpp
+  app/selftest/DocumentTexture.cpp
+  app/selftest/Driver.cpp
+  app/selftest/Export.cpp
+  app/selftest/ExportAs.cpp
+  app/selftest/FieldAllocation.cpp
+  app/selftest/FormatSupport.cpp
+  app/selftest/GuidesGridSnap.cpp
+  app/selftest/Histogram.cpp
+  app/selftest/History.cpp
+  app/selftest/HistoryPanel.cpp
+  app/selftest/IdleMemory.cpp
+  app/selftest/ImageDecode.cpp
+  app/selftest/ImageIO.cpp
+  app/selftest/IncrementalComposite.cpp
+  app/selftest/Keymap.cpp
+  app/selftest/LayerComp.cpp
+  app/selftest/LayerEditor.cpp
+  app/selftest/LayerMask.cpp
+  app/selftest/LayerStack.cpp
+  app/selftest/LutBake.cpp
+  app/selftest/MergeFamily.cpp
+  app/selftest/MipPyramid.cpp
+  app/selftest/NpaintFormat.cpp
+  app/selftest/OpStack.cpp
+  app/selftest/PigmentLayer.cpp
+  app/selftest/PlaceImageAsLayer.cpp
+  app/selftest/PointOps.cpp
+  app/selftest/Probe.cpp
+  app/selftest/RecoveryJournal.cpp
+  app/selftest/Shaper.cpp
+  app/selftest/StrokeSpeed.cpp
+  app/selftest/Support.cpp
+  app/selftest/TileResidency.cpp
+  app/selftest/TileStore.cpp
+  app/selftest/TiledViewport.cpp
+  app/selftest/ViewTransform.cpp
   app/Snapping.cpp
   app/ViewTransform.cpp
   brush/StrokePath.cpp
