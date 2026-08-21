@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -14,10 +15,79 @@
 // the one factory PLAN.md's step 5 (PRD C7) asks for: createBlank().
 namespace np {
 
+// The pigment basis this build fits latents in (PRD C8: "the file records
+// which pigment basis produced them"). core/Pigment's `latentToRgb()` is
+// Mixbox's own 20-term polynomial over Mixbox's own three stored pigment
+// weights, and paint/MixboxLut's 512x512 texture is the inverse of exactly
+// that map -- so "mixbox-v1" is not a label chosen here, it names the model
+// core/Pigment implements.
+//
+// Declared in `core/` rather than in io/NpaintFile because it is the default
+// of the member below, and a default has to live where the member does.
+// io/NpaintFile's `kNpaintPigmentBasis` -- the format's name for the same
+// string, which docs/document-format.md's own example uses -- is defined *as*
+// this constant rather than as a second spelling of "mixbox-v1", so the
+// document's claim and the attribute the writer stamps cannot drift apart.
+inline constexpr const char* kPigmentBasisMixbox = "mixbox-v1";
+
 struct Document {
   int32_t width = 0;
   int32_t height = 0;
   WorkingSpace workingSpace;
+
+  // **Which pigment basis this document's latents are fitted in** (PLAN.md
+  // Phase 5 step 15; PRD C8 (P1), "Pigment latents survive save/load; the
+  // file records which pigment basis produced them").
+  //
+  // Sits immediately below `workingSpace` because it is the same kind of fact
+  // about the same pixels: a working space says what a Layer's RGB numbers
+  // mean, and a pigment basis says what a Pigment layer's `pig.c0/c1/c2` mean.
+  // Neither is recoverable from the numbers themselves, and a document that
+  // has lost either one holds pixels nobody can interpret.
+  //
+  // **A `std::string` and not an enum**, and that is the whole point of the
+  // field. An enum could only hold bases this build has heard of, and the
+  // case the field exists for is the opposite one: a file written by a future
+  // build declaring `km2-v1`, whose latents are perfectly good data this build
+  // cannot interpret. The value is carried verbatim -- never mapped onto a
+  // nearest known basis, never silently replaced with this build's -- exactly
+  // the rule `Layer::blend` follows for a blend mode this build cannot
+  // composite.
+  //
+  // **On `Document` and not on `app::OpenDocument`.** The basis describes the
+  // pixel data, so it has to travel with the pixel data:
+  //
+  //  * `core::History` entries hold a whole `Document` **by value**
+  //    (core/History.hpp), so undo restores this alongside the tiles it
+  //    describes. On the session record it would sit outside every history
+  //    entry, and an undo that gave back foreign latents would give them back
+  //    under whatever label the session happened to be holding -- the numbers
+  //    and the label disagreeing is precisely the failure this field exists to
+  //    prevent, so putting it where undo cannot reach it would defeat it.
+  //  * `saveNpaint(const Document&, ...)` takes a `Document`. A basis on the
+  //    open-document record would have to be threaded through as a further
+  //    argument to be stamped at all -- the same argument `comps` makes below.
+  //
+  // The cost of that placement is one `std::string` per history entry, and it
+  // is a copy rather than a share. That is affordable for a measured reason
+  // rather than an assumed one: "mixbox-v1" is 9 bytes, inside libc++'s
+  // short-string capacity, so copying a history entry does **not** allocate
+  // for this member; the entry grows by `sizeof(std::string)` and nothing
+  // else. `--selftest` asserts that rather than trusting it.
+  //
+  // Never empty in a document this build produces. io/NpaintFile refuses to
+  // save an empty one by name rather than writing a file that declares no
+  // basis at all -- an absent `np:basis` and an empty one are indistinguishable
+  // in an EXR header, because this OpenImageIO drops empty string attributes
+  // (io/NpaintFile.hpp measures it).
+  //
+  // **The invariant every writer of latents owes this field**: code that
+  // deposits new `PigmentTexel`s into a layer must check that this build's
+  // basis is the document's before it does, or the document ends up holding
+  // latents from two bases under one label. Nothing in the paint path checks
+  // it today -- see io/NpaintFile.hpp's basis section for what that leaves
+  // open and what closes it.
+  std::string pigmentBasis = kPigmentBasisMixbox;
 
   // Ordered, **bottom to top**: index 0 is the bottom of the stack
   // (DESIGN-imaging.md §3's `Layer[]` diagram, and docs/document-format.md's

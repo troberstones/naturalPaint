@@ -222,6 +222,23 @@ part 4   "S0001"          coverage                   ← a saved selection
 > `np:basis` stops being inert here: a document holding Pigment layers whose carried
 > `np:basis` is not this build's is **refused** on save, which is §3.3's own listed case.
 
+> ✅ **Narrowed, 2026-08-21, at PLAN.md Phase 5 step 15 (PRD C8): `np:basis` is written from
+> the document, not from a constant.** `core::Document` now carries a `pigmentBasis`, the
+> reader puts the file's value onto it verbatim, and the writer stamps *that* — so a file
+> written in a basis this build has never heard of round-trips its own label instead of being
+> relabelled by whoever opened it. The refusal above narrows to the case it was actually right
+> about: the document's basis and the file's carried basis **disagree**, and the document
+> holds Pigment layers. As written before this step it compared the carry against this build's
+> constant, which caught every foreign-basis document rather than only the incoherent ones —
+> so a document that had loaded perfectly well could never be saved again, crash checkpoints
+> included. A refusal that costs the user their work to protect a label has the trade
+> backwards; `io/NpaintFile.hpp` argues it, with the three rejected alternatives.
+>
+> One measured note that belongs to the format rather than to the step: **a `.npaint` is not
+> byte-reproducible.** OpenEXR stamps a `capDate` attribute — wall clock, one per part — so
+> two saves of the identical document differ in three places. Everything else is
+> deterministic, and `--selftest` masks those three fields to compare the rest.
+
 > ✅ **Implemented, 2026-08-20, at PLAN.md Phase 5 step 4: the `mask` channel above carries a
 > real layer mask.** One `HALF` channel of per-texel coverage, so an RGB layer part is
 > `R G B A mask` and a Pigment one is the eleven above plus `mask`. Four notes from doing it:

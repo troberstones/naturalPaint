@@ -211,15 +211,15 @@
 // "untitled" makes two different unsaved documents resolve to the same
 // filenames -- a collision the user cannot see the cause of.
 //
-// **One adjacent gap, stated rather than left to be discovered.**
-// `exportDocumentWithRequest()` (phase 4 step 7) calls the one-argument
-// `flattenDocumentToLinear()`, so `ExportResult::warnings` from it is always
-// empty and core/Composite's blend approximations do not reach an item's
-// `warnings`. The item warnings this module fills are its own: the comp
-// restore summary and the un-clip note. Closing it is a four-line change to
-// io/ExportAs.cpp -- collect the flatten's warnings and merge them into the
-// returned result -- and it is deliberately not made here, because it changes
-// a phase 4 module's observable behaviour on behalf of a phase 5 step.
+// ~~**One adjacent gap, stated rather than left to be discovered.**~~
+// **Closed at PLAN.md Phase 5 step 15.** `exportDocumentWithRequest()` (phase
+// 4 step 7) called the one-argument `flattenDocumentToLinear()`, so
+// `ExportResult::warnings` from it was always empty and core/Composite's blend
+// approximations never reached an item's `warnings` -- this module's own item
+// warnings, the comp restore summary and the un-clip note, were all a batch
+// ever reported. It now calls the two-argument overload and carries what it
+// produces, on a refusal as well as a success, so an item exported from a
+// document holding a blend this build approximates says so.
 //
 // ==========================================================================
 // (6) A template names a FILE. Every path hazard follows from that

@@ -61,6 +61,7 @@ add_executable(naturalPaint
   app/selftest/MipPyramid.cpp
   app/selftest/NpaintFormat.cpp
   app/selftest/OpStack.cpp
+  app/selftest/PigmentBasis.cpp
   app/selftest/PigmentDeposit.cpp
   app/selftest/PigmentLayer.cpp
   app/selftest/PlaceImageAsLayer.cpp

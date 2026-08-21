@@ -1212,6 +1212,54 @@ bool runBlendTest();
 //    the named warning for an op stack the format cannot yet carry.
 bool runPigmentLayerTest();
 
+// PLAN.md Phase 5 step 15 ("**Native save/load carrying layers and latents**,
+// with the pigment basis stamped and a baked RGB composite embedded"); PRD C8
+// (P1) and I4 (P0).
+//
+// Most of that sentence was already true at step 3 -- io/NpaintFile round-trips
+// layers and latents with zero loss and regenerates part 0 on every save, and
+// runNpaintFormatTest() and runPigmentLayerTest() own those claims. What was
+// missing is the word "stamped": the basis was a constant in io/NpaintFile, so
+// every file this build wrote said "mixbox-v1" whatever it had opened. This
+// section covers the field that replaced it:
+//
+//  - **The field**: on `core::Document` beside `workingSpace`, because it says
+//    what the latents *mean* exactly as the working space says what the RGB
+//    numbers mean. Asserted to survive undo and redo, which is the argument for
+//    that placement over `app::OpenDocument`; and its default asserted to be
+//    short-string-optimised, so a history entry pays no allocation for it.
+//  - **One constant, not two**: io/NpaintFile's `kNpaintPigmentBasis` is checked
+//    by *pointer* to be core/Document's `kPigmentBasisMixbox`, because string
+//    equality would still pass after the drift that check exists to catch.
+//  - **The decision**: a file declaring a basis this build cannot interpret
+//    loads, keeps the string verbatim, warns by name, and saves back out under
+//    its own basis -- proven across two generations with **no carry at all**, so
+//    the document is the only place the value can have come from. A document
+//    whose own basis and whose file's disagree, and which holds Pigment layers,
+//    is still refused by name; that rejected reading is run beside the built
+//    one. An empty basis is refused rather than written as an absent attribute.
+//  - **Byte-identity**: an ordinary document's file is unchanged by the step,
+//    proven three ways with the comparator's non-vacuity proven too. The
+//    measurement behind it is a fact about the format worth knowing: a
+//    `.npaint` is **not** byte-reproducible, because OpenEXR stamps a wall-clock
+//    `capDate` per part. Those three fields are masked; everything else is
+//    deterministic.
+//  - **The adjacent debt**, nothing to do with the basis:
+//    `exportDocumentWithRequest()` called the one-argument
+//    `flattenDocumentToLinear()`, so `ExportResult::warnings` was always empty
+//    from it and every Export As -- and every batch item io/ExportStates drove
+//    through it -- reported no warnings whatever the document held.
+//    io/ExportStates.hpp had the gap written down. Asserted with a negative
+//    control, on a refused request as well as a successful one, and against
+//    `exportDocument()`, which was correct all along.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// the field, the constant and the export half are pure, and the OFF build's
+// answer for the file half is that `saveNpaint()`/`loadNpaint()` refuse by name
+// (PLAN.md §1.5). Headless and GPU-free; writes and removes eight `.npaint`
+// files.
+bool runPigmentBasisTest();
+
 // PLAN.md Phase 5 step 4 -- "Layer masks -- single-channel tile store, the
 // same machinery." PRD C4 (P0), C3 (P0), C2, I4, I11.
 //

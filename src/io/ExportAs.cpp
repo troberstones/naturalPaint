@@ -892,20 +892,42 @@ std::string defaultExportPresetsPath() {
 // --- The composed operation ----------------------------------------------
 
 ExportResult exportDocumentWithRequest(const Document& doc, const ExportRequest& request) {
-  DecodedImage flat = flattenDocumentToLinear(doc);
+  // The two-argument flatten, and every return below carries what it produced
+  // (PLAN.md Phase 5 step 15). This called the one-argument overload until
+  // then, which meant core/Composite's blend approximations -- "this build
+  // composites `Mix` as `over`" and the rest -- reached `exportDocument()`'s
+  // caller but never `exportDocumentWithRequest()`'s, so every Export As, and
+  // every batch item io/ExportStates drove through it, reported no warnings
+  // whatever the document contained. io/ExportStates.hpp had the gap written
+  // down; this closes it.
+  //
+  // Carried on a refusal too, exactly as io/Export's `exportDocument()` does
+  // and for the reason stated there: a user whose export was refused for a
+  // depth or a size reason still needs to know the composite it would have
+  // written is an approximation, or they will fix the depth and be none the
+  // wiser.
+  std::vector<std::string> warnings;
+  DecodedImage flat = flattenDocumentToLinear(doc, &warnings);
+  const auto carrying = [&warnings](ExportResult r) {
+    // Appends rather than assigns: encodeLinearImage() fills PRD I11's own
+    // warnings (clipping above white, a bit depth that cannot hold the range)
+    // and those must not be dropped to make room for these.
+    r.warnings.insert(r.warnings.begin(), warnings.begin(), warnings.end());
+    return r;
+  };
   if (!flat.valid()) {
     char buf[256];
     std::snprintf(buf, sizeof(buf),
                   "export refused: the document has no pixels to export (canvas is %dx%d).",
                   doc.width, doc.height);
-    return exportFailure(buf);
+    return carrying(exportFailure(buf));
   }
 
   uint32_t outWidth = 0, outHeight = 0;
   std::string sizeError;
   if (!resolveExportSize(request.resize, flat.width, flat.height, &outWidth, &outHeight,
                          &sizeError)) {
-    return exportFailure(std::move(sizeError));
+    return carrying(exportFailure(std::move(sizeError)));
   }
 
   if (outWidth != flat.width || outHeight != flat.height) {
@@ -918,15 +940,15 @@ ExportResult exportDocumentWithRequest(const Document& doc, const ExportRequest&
     std::string resizeError;
     if (!resampleAreaAverage(flat.pixels.data(), flat.width, flat.height, outWidth, outHeight,
                              &resized, &resizeError)) {
-      return exportFailure(std::move(resizeError));
+      return carrying(exportFailure(std::move(resizeError)));
     }
     flat.pixels = std::move(resized);
     flat.width = outWidth;
     flat.height = outHeight;
   }
 
-  return encodeLinearImage(flat, doc.workingSpace, request.format, request.targetSpace,
-                           request.bitDepth);
+  return carrying(encodeLinearImage(flat, doc.workingSpace, request.format, request.targetSpace,
+                                    request.bitDepth));
 }
 
 bool exportDocumentWithRequestToFile(const Document& doc, const std::string& path,

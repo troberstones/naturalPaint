@@ -1071,6 +1071,12 @@ int main(int argc, char** argv) {
     // NP_USE_OIIO configurations. Headless and GPU-free; writes and removes
     // one selftest_pigment.npaint.
     const bool pigmentLayerOk = np::runPigmentLayerTest();
+    // Phase 5 step 15 / PRD C8, I4: the pigment basis as a `core::Document`
+    // field -- stamped from the document, read back onto it, a basis this build
+    // cannot interpret round-tripped rather than relabelled, an ordinary
+    // document's file proven byte-identical, and the export warnings that never
+    // reached a caller.
+    const bool pigmentBasisOk = np::runPigmentBasisTest();
     // Phase 5 step 4 ("Layer masks -- single-channel tile store, the same
     // machinery"; PRD C4 (P0), C3 (P0), C2, I4, I11): the 32 KiB
     // single-channel f16 mask tile whose default is REVEAL, its derived 2^-12
@@ -1244,7 +1250,7 @@ int main(int argc, char** argv) {
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
-                    blendOk && pigmentLayerOk && layerMaskOk && adjustmentLayerOk &&
+                    blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && layerEditorOk && controlsLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&

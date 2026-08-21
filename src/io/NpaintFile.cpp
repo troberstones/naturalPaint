@@ -1102,26 +1102,51 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     }
   }
 
+  // PRD C8: "the file records which pigment basis produced them". The value
+  // stamped is the *document's* (PLAN.md Phase 5 step 15), not this build's
+  // constant, so a document loaded from a file written in another basis is
+  // written back declaring that basis rather than relabelled with this one. A
+  // non-empty carried basis wins, because that is the string the source file
+  // actually held and PRD I10's carry-through is verbatim by definition; after
+  // any load the two are the same string, so the precedence only decides a
+  // case that a load cannot produce.
+  if (doc.pigmentBasis.empty()) {
+    return fail(std::string("save refused: the document declares no pigment basis (its "
+                            "`pigmentBasis` is empty), so this file would record nothing about "
+                            "which model produced its latents (PRD C8). An empty `np:basis` is "
+                            "not even distinguishable from an absent one -- this OpenImageIO "
+                            "drops empty string attributes on write. Nothing was written. Set it "
+                            "to \"") +
+                kNpaintPigmentBasis + "\" for latents this build produced.");
+  }
+
   // docs/document-format.md §3.3: "a basis mismatch" is one of the things a
-  // save must name rather than degrade silently. Until Phase 5 step 3 this
-  // could not happen -- io/NpaintFile.hpp said so in as many words ("a file
-  // with no latent channels has nothing whose meaning depends on it") -- and
-  // now it can: a document loaded from a file written in another pigment basis
-  // carries latents whose `c0..c2` mean different pigments, and writing this
-  // build's own latents into a file still stamped with that basis would
-  // produce a document that is wrong and says it is right. Refused rather than
-  // warned, because unlike an unimplemented blend this is not an approximation
-  // of the pixels -- it is a mislabelling of what the numbers *are*.
+  // save must name rather than degrade silently. The mismatch that matters is
+  // between what the document says its latents are and what the file it came
+  // from said they were: writing latents fitted in one basis into a file
+  // stamped with another produces a document that is wrong and says it is
+  // right. Refused rather than warned, because unlike an unimplemented blend
+  // this is not an approximation of the pixels -- it is a mislabelling of what
+  // the numbers *are*.
+  //
+  // Narrower than it was before step 15, and deliberately: it used to compare
+  // the carry against this build's constant, which caught every foreign-basis
+  // document rather than only the incoherent ones, and so made a legitimately
+  // loaded document impossible to save at all -- including by app/Journal's
+  // crash checkpoint. A document loaded from a foreign-basis file now agrees
+  // with itself and saves; only something that *changed* one of the two can
+  // land here. See io/NpaintFile.hpp's kNpaintPigmentBasis for the three
+  // rejected alternatives.
   //
   // Only when the document actually has a Pigment layer. An RGB-only document
   // loaded from a foreign-basis file still round-trips its `np:basis`
   // untouched (PRD I10), exactly as it did before this step.
   if (anyPigmentLayer && carry != nullptr && !carry->basis.empty() &&
-      carry->basis != kNpaintPigmentBasis) {
-    return fail(std::string("save refused: this document has Pigment layers whose latents this "
-                            "build produced in the \"") +
-                kNpaintPigmentBasis + "\" basis, but it was loaded from a file declaring "
-                "np:basis \"" + carry->basis +
+      carry->basis != doc.pigmentBasis) {
+    return fail(std::string("save refused: this document has Pigment layers whose latents it "
+                            "declares to be in the \"") +
+                doc.pigmentBasis + "\" basis, but it was loaded from a file declaring np:basis \"" +
+                carry->basis +
                 "\", which is preserved verbatim on save (PRD I10). A latent is only "
                 "meaningful in the basis it was fitted in, and silently so -- writing both "
                 "into one file would produce a document no reader could interpret correctly. "
@@ -1215,8 +1240,13 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
 
   NpaintRawPart composite = buildCompositePart(doc, &result.warnings);
   composite.attributes.push_back(intAttr(kAttrVersion, kNpaintFormatVersion));
+  // PRD C8, and the document's own claim rather than this build's constant --
+  // see the basis checks in the request validation above, and
+  // io/NpaintFile.hpp's kNpaintPigmentBasis for why a foreign value is stamped
+  // back out rather than replaced. Refused above if it were empty, so this
+  // cannot write an attribute the writer would silently drop.
   composite.attributes.push_back(stringAttr(
-      kAttrBasis, (carry && !carry->basis.empty()) ? carry->basis : kNpaintPigmentBasis));
+      kAttrBasis, (carry && !carry->basis.empty()) ? carry->basis : doc.pigmentBasis));
   composite.attributes.push_back(intAttr(kAttrTileSize, kTileSize));
   if (carry) {
     // PRD I10, the write half. These are the np:* attributes the reader did
@@ -1492,16 +1522,30 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       continue;
     }
     if (a.name == kAttrBasis && a.type == NpaintAttribute::Type::String) {
+      // Both halves of the pair, from the same string (io/NpaintFile.hpp,
+      // NpaintCarry::basis): the carry records what the *file* declared, and
+      // the document records what *its own* latents are. PRD C8's "the file
+      // records which pigment basis produced them" is only half a promise
+      // until the reader puts it back on the document -- otherwise every
+      // reader relabels what it opens.
+      //
+      // An empty `np:basis` cannot arrive here (this OpenImageIO drops empty
+      // string attributes), and an absent one leaves both at their defaults:
+      // an empty carry, and this build's basis on the document, which is what
+      // the writer would have stamped anyway.
       result.carry.basis = a.stringValue;
+      if (!a.stringValue.empty()) result.document.pigmentBasis = a.stringValue;
       if (a.stringValue != kNpaintPigmentBasis) {
         result.warnings.push_back(
             "'" + path + "' declares np:basis \"" + a.stringValue + "\", not this build's \"" +
             kNpaintPigmentBasis +
             "\". Any pigment latents in this file were fitted in that basis, so their "
             "pig.c0/c1/c2 name different pigments from the ones this build's Mixbox model "
-            "would; the value is preserved verbatim on save. Saving is refused outright if "
-            "the document ends up holding Pigment layers, because one file cannot honestly "
-            "carry latents in two bases (docs/document-format.md §3.3).");
+            "would; the document was opened anyway and keeps that basis verbatim, so saving "
+            "it writes np:basis \"" + a.stringValue +
+            "\" back rather than relabelling it. Painting pigment into this document would "
+            "mix two bases under one label, which is the case docs/document-format.md §3.3 "
+            "names and the case a save refuses.");
       }
       continue;
     }

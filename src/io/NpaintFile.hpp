@@ -116,10 +116,17 @@
 //    part 0 is. Media layers are still refused: they need per-medium
 //    simulation state `core::Layer` has no member for.
 //
-//  * **`np:basis` is now load-bearing, and a mismatch is a refusal.** It was
-//    metadata while this build wrote no latents. A document holding Pigment
-//    layers whose carry declares another basis is refused by name, which is
-//    docs/document-format.md §3.3's own listed case.
+//  * ~~**`np:basis`**~~ -- **delivered at PLAN.md Phase 5 step 15** (PRD C8).
+//    It was metadata while this build wrote no latents, then a constant with
+//    a refusal behind it at step 3. `core::Document` now owns the value, the
+//    writer stamps the *document's* basis rather than this build's, and the
+//    reader puts the file's basis back onto the document -- so a file written
+//    in a basis this build has never heard of round-trips its own label
+//    instead of being relabelled by whoever opened it. A save is refused only
+//    when the document's basis and the file's carried basis disagree *and*
+//    the document holds Pigment layers, which is the one genuinely unwritable
+//    case and is docs/document-format.md §3.3's own listed one. The whole
+//    argument, and the three rejected alternatives, is at kNpaintPigmentBasis.
 //
 //  * ~~**A `mask` channel per part / layer masks**~~ -- **delivered at
 //    PLAN.md Phase 5 step 4.** An RGB layer part is `R G B A mask` and a
@@ -226,8 +233,13 @@
 //    but whose `pigmentTiles` is absent, or Adjustment but which carries
 //    pixel tiles anyway -- each malformed against core/Layer.hpp's own
 //    contract.
-//  * A document with Pigment layers whose carried `np:basis` is not this
-//    build's (docs/document-format.md §3.3).
+//  * A document with Pigment layers whose own `pigmentBasis` and whose
+//    carried `np:basis` disagree (docs/document-format.md §3.3) -- one file
+//    cannot honestly declare two bases for its latents.
+//  * A document whose `pigmentBasis` is **empty**. An empty string attribute
+//    does not survive this OpenImageIO (see NpaintAttribute), so the file
+//    would come back declaring no basis at all rather than declaring an
+//    unknown one.
 //  * An `opacity` outside [0,1].
 //  * A lossy EXR compression, by name. See NpaintSaveOptions::compression.
 //  * A canvas with a non-positive width or height.
@@ -413,19 +425,31 @@ struct NpaintCarry {
   // any rawParts.
   std::vector<NpaintPartSlot> partOrder;
 
-  // The file's own `np:basis`, preserved verbatim. Empty means "this build's
-  // own" (kNpaintPigmentBasis).
+  // The file's own `np:basis`, preserved verbatim. Empty for a document that
+  // was never loaded from a file, in which case saveNpaint() stamps the
+  // document's own `Document::pigmentBasis`.
   //
-  // Preserving rather than overwriting was the right call while this build
-  // wrote no latents. **Phase 5 step 3 made latents real, so this field is
-  // now load-bearing and the check it was reserved for exists**:
-  // `saveNpaint()` refuses a document that holds Pigment layers when this
-  // field names a basis other than `kNpaintPigmentBasis`, because a latent is
-  // only meaningful in the basis it was fitted in and a file cannot honestly
-  // carry two. An RGB-only document still carries a foreign basis through a
-  // load/save untouched, exactly as before -- nothing in such a file depends
-  // on it. docs/document-format.md §3.3 lists "a basis mismatch" alongside
-  // the other refusals for this reason.
+  // **This is not a duplicate of `Document::pigmentBasis`, and the difference
+  // is what the refusal below is made of.** Since PLAN.md Phase 5 step 15 the
+  // document carries its own basis -- what the latents *in this Document* are
+  // -- and this field carries what the *file it came from* declared. A load
+  // sets both, from the same string, so they agree; they can only disagree
+  // afterwards, and the disagreement means exactly one thing: something
+  // changed the document's basis away from the file's. That is the pair
+  // `sourceVersion` below already forms with `kNpaintFormatVersion`, for the
+  // same reason -- a "what the file said" beside a "what this is" is not
+  // redundancy, it is the only way to notice a change.
+  //
+  // So: `saveNpaint()` refuses a document that holds Pigment layers when this
+  // field is non-empty and names a basis other than the document's own,
+  // because a latent is only meaningful in the basis it was fitted in and a
+  // file cannot honestly carry two. A document *loaded* from a foreign-basis
+  // file is no longer caught by that -- it agrees with itself -- and saves
+  // back out under the file's own basis, which is the point of step 15 and is
+  // argued at kNpaintPigmentBasis below. An RGB-only document carries a
+  // foreign basis through a load/save untouched in either case; nothing in
+  // such a file depends on it. docs/document-format.md §3.3 lists "a basis
+  // mismatch" alongside the other refusals for this reason.
   std::string basis;
 
   // The file's own `np:version`, as read. Reported, not written back:
@@ -442,12 +466,61 @@ struct NpaintCarry {
 // carry-through in NpaintCarry exists to make survivable without a bump.
 inline constexpr int32_t kNpaintFormatVersion = 1;
 
-// `np:basis`. docs/document-format.md's own example value. There is no
-// Document-level basis field to read this from yet (Phase 5 step 15, "native
-// save/load carrying layers and latents, with the pigment basis stamped"),
-// and this build has exactly one pigment model, so it is a constant here
-// rather than a guess dressed up as data.
-inline constexpr const char* kNpaintPigmentBasis = "mixbox-v1";
+// `np:basis` for latents *this build* produced. docs/document-format.md's own
+// example value.
+//
+// **Defined as core/Document's `kPigmentBasisMixbox`, not as a second spelling
+// of the literal.** Until PLAN.md Phase 5 step 15 there was no Document-level
+// basis to read from and this was a constant standing in for one; the document
+// now owns the value, and the writer stamps `Document::pigmentBasis` rather
+// than this. What this constant is still for is the *comparison*: "is the
+// document's basis one this build can interpret?" There is exactly one such
+// basis, so the question has a constant answer, and it is asked in three
+// places -- the reader's warning, the mismatch refusal, and `--selftest`.
+//
+// --- The decision this step turned on: an uninterpretable basis ------------
+//
+// A file declaring `np:basis "km2-v1"` -- a basis this build has never heard
+// of -- **loads**, keeps that string verbatim on `Document::pigmentBasis`,
+// warns by name, and **saves back out still declaring `km2-v1`**. Three
+// alternatives were considered and each is worse:
+//
+//  * **Refuse the load.** A basis is a label on latents that are otherwise
+//    perfectly good `HALF` data. Refusing would make a document unopenable
+//    over a string, and it is the exact opposite of what PRD I10's verbatim
+//    carry-through exists to do: an older build must be able to open a newer
+//    build's document, edit it, and destroy nothing.
+//  * **Load it and relabel it `mixbox-v1` on save.** The worst of the three,
+//    and the only one that loses data silently: the latents would be `km2-v1`
+//    numbers under this build's name, and every later reader -- including this
+//    one -- would project them through the wrong model and get plausible,
+//    wrong colour. Nothing about the file would say so.
+//  * **Load it and refuse to save it** (what this module did between step 3
+//    and step 15, when the *only* basis a document could claim was this
+//    build's constant, so a foreign carry always looked like a mismatch).
+//    That is not a middle ground, it is a trap: the document opens, accepts
+//    edits, and can never be written back -- and because app/Journal's crash
+//    checkpoint *is* a `saveNpaint()`, a foreign-basis document could not be
+//    checkpointed either. A refusal that costs the user their work to protect
+//    a label has the trade backwards.
+//
+// What survives from that third option, narrowed to the case it was actually
+// right about: a save is refused when the document's basis and the file's
+// carried basis **disagree** and the document holds Pigment layers. That is
+// the genuinely unwritable document -- one file, two bases, no honest label --
+// and it is now the only case refused.
+//
+// **What this does not yet close, stated rather than left to be discovered.**
+// Painting into a foreign-basis document deposits `mixbox-v1` latents beside
+// `km2-v1` ones, and the file is then stamped `km2-v1` for all of them. The
+// check belongs at the deposit, not at the save -- `core::Document`'s own
+// header states the invariant a latent writer owes the field -- and closing it
+// needs brush/Deposit to consult `Document::pigmentBasis` before its first
+// texel, plus a decision about what the UI offers when it disagrees (convert,
+// or refuse the stroke). Neither is this step's, and neither is reachable from
+// a document this build can currently produce, because nothing in this build
+// writes a basis other than its own.
+inline constexpr const char* kNpaintPigmentBasis = kPigmentBasisMixbox;
 
 // The conventional extension. `.exr` is the same container under a different
 // name (PRD I8), and nothing in this module inspects the extension -- both
@@ -518,6 +591,13 @@ struct NpaintSaveResult {
 //
 // `carry` may be null. When non-null, its unrecognised attributes and parts
 // are written back verbatim, in their original order (PRD I10).
+//
+// `np:basis` is stamped from `doc.pigmentBasis` -- the document's own claim
+// about its latents (PRD C8) -- except that a non-empty `carry->basis` wins,
+// because that is the string the file this document came from declared and
+// PRD I10's carry-through is verbatim by definition. The two agree after any
+// load; when they disagree and the document holds Pigment layers the save is
+// refused rather than resolved. See kNpaintPigmentBasis.
 NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
                             const NpaintSaveOptions& options = {},
                             const NpaintCarry* carry = nullptr);
@@ -528,8 +608,15 @@ struct NpaintLoadResult {
   bool ok = false;
   std::string error;
 
-  // The reconstructed document: canvas size and working space from part 0,
-  // one Layer per `L####` part whose channels are exactly R/G/B/A in HALF.
+  // The reconstructed document: canvas size, working space and pigment basis
+  // from part 0, one Layer per `L####` part whose channels are exactly R/G/B/A
+  // in HALF.
+  //
+  // `document.pigmentBasis` is the file's `np:basis` verbatim, whatever it
+  // says -- a file declaring a basis this build cannot interpret is loaded and
+  // warned about, never refused and never relabelled. A file with no
+  // `np:basis` at all makes no claim, so the field keeps its default (this
+  // build's), which is the same thing the writer would have stamped.
   Document document;
 
   // Everything the Document has nowhere to hold. Feed this straight back to
