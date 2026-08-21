@@ -35,8 +35,14 @@ Read the full output **once**, at the end, and only to confirm additions only.
 
 ## 2. Iterate with incremental builds
 
-`cmake --build <dir> -j` is 10 s; a from-scratch build is 66 s. Do **one** clean
-build of each configuration at the very end. Do not `rm -rf` between iterations.
+`cmake --build <dir> -j` is **3 s** since the suite was split one-TU-per-section
+(it was 10 s); a from-scratch build is 16 s. Do **one** clean build of each
+configuration at the very end. Do not `rm -rf` between iterations.
+
+**Capture stdout and stderr to separate files** — `> out.txt 2> err.txt`, never
+`> out.txt 2>&1`. One section feeds a deliberately truncated PNG and libpng
+writes a diagnostic to stderr; merged into one stream it lands at a different
+byte offset every run and corrupts two unrelated lines of the diff.
 
 The reviewer rebuilds both configurations from scratch independently anyway —
 that is the actual guarantee, so an agent repeating it is pure duplication.
@@ -45,8 +51,17 @@ that is the actual guarantee, so an agent repeating it is pure duplication.
 
 The brief carries the API surface and line anchors you need. Read a file in full
 only when you are about to change its design, not to look up a signature.
-`SelfTest.cpp` in particular is 15 700+ lines: navigate to your anchor, do not
-survey it.
+
+**`src/app/SelfTest.cpp` no longer exists.** The suite is one translation unit
+per section under `src/app/selftest/`, each `#include "app/selftest/Support.hpp"`,
+in flat `namespace np`, with a local `check` lambda and a closing
+`[selftest] <name> PASS/FAIL`. Copy the shape from a small one such as
+`src/app/selftest/FieldAllocation.cpp` (42 lines). **Add a new file — never
+reopen or append to someone else's section.** Your step then touches exactly
+four shared lines: one `#include` line in `src/CMakeLists.txt`, one declaration
+in `src/app/SelfTest.hpp` (still the single public index, one entry per
+section), one call and one `&&` in `src/main.cpp`'s `ok` chain. That is the
+whole point of the split: parallel steps now merge cleanly.
 
 ## 4. One home per rationale
 
@@ -71,9 +86,14 @@ contain the literal token `[measured]`.
 That token is what the reviewer's regression filter keys off. A varying line
 without it shows up as a *changed* line in the additions-only diff, and the
 reviewer has to stop, re-run the previous binary twice, prove the line noisy,
-and extend the filter by hand. That has now happened twice in a row — step 9's
-`marginal cost of the layer:` line and step 2's four document-texture timing
-lines.
+and extend the filter by hand.
+
+That filter had grown **seven** hand-written special cases this way, each one
+added after a spurious diff. It has since been re-derived empirically and is
+now exactly two entries — `[measured]` and `idle RSS` — with every other
+variable line carrying the marker. Two runs of the same binary diff to zero
+while comparing 96.6% of lines. **Do not be the change that puts a third
+special case back in.**
 
 The corollary is just as important: **do not put `[measured]` on a line that is
 deterministic.** It would exclude a real assertion from the diff, which is worse
