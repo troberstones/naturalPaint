@@ -195,8 +195,18 @@ the backend updates.
 |---|---|
 | **OS** | macOS on **Apple Silicon**, and only that — see below |
 | **Toolchain** | Xcode Command Line Tools (Clang with C++20), CMake **≥ 3.24**, Git |
+| **OpenImageIO** | **required** — backs the native `.npaint` format, so the build refuses without it |
 | **Network** | needed at configure time — CMake fetches SDL3 and Dear ImGui |
 | **Disk** | ~350 MB for the clone, fetched dependencies and build tree |
+
+**OpenImageIO** is not available as a plain `brew install` here: the bottle
+hard-requires ffmpeg and Python, which this project deliberately avoids. Build it
+from source with the heavy plugins disabled and install it somewhere local — this
+project's own copy lives at `~/.local/openimageio` and is built with
+`USE_PYTHON=0`, `ENABLE_FFmpeg=0`, `ENABLE_LibRaw=0` and the rest of the optional
+readers off. Its light dependencies (`imath`, `openexr`, `opencolorio`,
+`robin-map`) do come from Homebrew. Point `CMAKE_PREFIX_PATH` at the install
+prefix when configuring, below.
 
 ⚠️ **macOS/arm64 only, in two independent ways.** `src/gfx/Context.cpp` wires up
 surface creation for Metal alone and hits a hard `#error` on any other platform
@@ -228,36 +238,55 @@ tracked in the repository.
 ### Build
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build -j
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCMAKE_PREFIX_PATH="$HOME/.local/openimageio" && cmake --build build -j
 ```
 
 The first configure takes about a minute (it shallow-clones SDL3 and Dear ImGui);
 the build is a couple of minutes more. `RelWithDebInfo` is the default if you omit
 `CMAKE_BUILD_TYPE` — a Debug build will not keep up with the solver.
 
+`CMAKE_PREFIX_PATH` is **not** optional: OpenImageIO is a required dependency and
+`find_package` will not locate a non-standard install on its own. Point it at
+wherever your OpenImageIO lives; see [Build options](#build-options) for why the
+dependency is required, and [Requirements](#requirements) above for building it.
+
 ### Build options
 
 | Option | Default | What it does |
 |---|---|---|
-| `NP_USE_MIXBOX` | `ON` | Use the Mixbox pigment LUT. **CC BY-NC — non-commercial only.** `OFF` falls back to a plain two-constant Kubelka-Munk mix with no licence encumbrance. |
-| `NP_USE_OIIO` | `OFF` | Add OpenImageIO for EXR/TIFF/HDR/DPX and flattened-PSD read. |
+| `NP_USE_MIXBOX` | `ON` | Use the Mixbox pigment LUT. **CC BY-NC — non-commercial only.** ⚠️ The `OFF` path is **not implemented** — see below. |
 
-`NP_USE_OIIO` is off by default deliberately, and the reasoning is the opposite of
-`NP_USE_MIXBOX`'s: format support is a *runtime capability query*, not a
-build-time requirement, so the default configure must succeed on a machine with
-no OpenImageIO anywhere. PNG/JPEG/TGA/BMP are stb-backed regardless, so the
-default build is a complete implementation of the base format set rather than a
-crippled one. Turning it on always needs a `CMAKE_PREFIX_PATH`, because
-`find_package` will not locate a non-standard install:
+**OpenImageIO is a required dependency**, not a build option. It used to be
+`NP_USE_OIIO`, defaulting `OFF`, on the reasoning that format support is a
+*runtime capability query* rather than a build-time requirement — which is still
+true of EXR, TIFF, HDR and DPX, and PNG/JPEG/TGA/BMP are stb-backed regardless.
+
+What that argument missed is that `io/NpaintFile` builds the **native** `.npaint`
+format on multi-part EXR. The same guard that made foreign formats optional also
+made `saveNpaint()` and `loadNpaint()` refuse, and gated the crash-recovery
+journal with them, so the default build could not save a document, open one, or
+recover from a crash. A foreign format you cannot read is a capability gap; a
+document you cannot save is not an application.
+
+`find_package` will not locate a non-standard install, so configuring needs a
+`CMAKE_PREFIX_PATH`:
 
 ```bash
-cmake -S . -B build-oiio -DNP_USE_OIIO=ON -DCMAKE_PREFIX_PATH="$HOME/.local/openimageio"
+cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/.local/openimageio"
 ```
 
-Both configurations are expected to build and pass `--selftest`. `--selftest`
-asserts the *correct* answers for whichever backend set is compiled in rather
-than compiling itself out of the `OFF` build — an unexercised build option is not
-a seam.
+Passing `-DNP_USE_OIIO=OFF` is refused at configure time with a message naming
+the fix, rather than being silently ignored now that the option is gone.
+
+> ⚠️ **`NP_USE_MIXBOX=OFF` does not do what this table used to say.** No source
+> file reads `NP_USE_MIXBOX` — the only occurrences are CMake setting the define
+> and a comment noting the option "had rotted from never being built" — and
+> `NP_MIXBOX_LUT` is defined unconditionally. Building with the option `OFF`
+> still produces a binary that requires the CC BY-NC Mixbox LUT and dies at
+> startup without it. The two-constant Kubelka-Munk fallback was planned and
+> never written. Treat this project as CC BY-NC-encumbered until it is.
+> An unexercised build option is not a seam, and this is what one rots into.
 
 ---
 
@@ -527,7 +556,7 @@ src/
   sim/       PaintSim — the three fluid solvers
   gfx/       WebGPU context and shader loading (Metal surface only)
   io/        image decode/encode, Export As, the .npaint format,
-             tile residency, the optional OpenImageIO backend
+             tile residency, the OpenImageIO backend
   color/     working space, shaper, 3-D LUT baking
   ops/       point ops, resampling
   app/       document lifecycle, recovery journal, keymap, latency,
@@ -568,7 +597,7 @@ option exists as the seam for that swap, and building with `-DNP_USE_MIXBOX=OFF`
 takes the unencumbered path.
 
 Everything else: SDL3 (Zlib), Dear ImGui (MIT), wgpu-native (MIT/Apache-2.0),
-stb_image (public domain), OpenImageIO (Apache-2.0, optional).
+stb_image (public domain), OpenImageIO (Apache-2.0, required).
 
 ## Papers
 
