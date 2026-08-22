@@ -125,6 +125,20 @@ const std::vector<LayerCommand>& allLayerCommands();
 // these are menu items; the panel's buttons abbreviate them itself.
 const char* layerCommandLabel(LayerCommand command) noexcept;
 
+// The compact icon a toolbar button draws for this command, UTF-8, or `""`
+// for a command with no icon distinct enough to earn one (`CaptureComp` --
+// COMPS has its own panel and this list is LAYERS') -- never a fallback
+// string, which is ui/Fonts' job exactly as it is for `layerKindGlyph()`.
+//
+// The three creation commands return **the exact glyph the layer they create
+// will carry** -- `app/LayerPanel`'s `layerKindGlyph()` -- so the icon a user
+// clicks and the kind glyph on the row it produces are the same mark, not two
+// marks that happen to agree today. The rest have no row of their own to
+// borrow from, so this is their only source, and every one of them is a
+// codepoint ui/Fonts.cpp's Menlo merge was measured to draw before it was
+// picked (`--selftest fonts` asserts the coverage, not this file).
+const char* layerCommandGlyph(LayerCommand command) noexcept;
+
 // Whether the command can be offered at all for `selected` -- what a menu item
 // greys itself out on.
 //

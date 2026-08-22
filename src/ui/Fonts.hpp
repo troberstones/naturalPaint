@@ -74,9 +74,9 @@ namespace np {
 // than leaving boxes on screen with no explanation.
 
 // The codepoints the UI needs beyond ImGui's default `0x0020-0x00FF`.
-// `app/LayerPanel`'s kind glyphs are the only source of these today; a new
-// kind whose glyph is not in this list fails `--selftest` rather than
-// shipping as a box.
+// `app/LayerPanel`'s kind glyphs and `app/LayerEditor`'s command-button icons
+// are the sources of these today; a new kind or command icon whose glyph is
+// not in this list fails `--selftest` rather than shipping as a box.
 const std::vector<uint32_t>& requiredUiCodepoints();
 
 // UTF-8 -> codepoints. Pure, and the piece the glyph test needs: it turns

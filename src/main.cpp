@@ -981,6 +981,7 @@ int main(int argc, char** argv) {
   bool openLayerMenu = false;
   bool openExportStates = false;
   const char* exportStatesFolder = nullptr;
+  bool openLayerProperties = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
     if (a == "--selftest") {
@@ -1093,6 +1094,11 @@ int main(int argc, char** argv) {
       // --screenshot can photograph it. See AppState::openExportStatesDialog.
       openExportStates = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') exportStatesFolder = argv[++i];
+    } else if (a == "--open-layer-properties") {
+      // The LAYERS panel's own gear-button modal, same justification as
+      // --open-export-states one dialog over: it too is opened by a click and
+      // --screenshot has no input. See AppState::openLayerProperties.
+      openLayerProperties = true;
     }
   }
 
@@ -1772,6 +1778,7 @@ int main(int argc, char** argv) {
   st.controlsAllOpen = controlsAllOpen;
   st.openLayerMenu = openLayerMenu;
   st.openExportStatesDialog = openExportStates;
+  st.openLayerProperties = openLayerProperties;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
   if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
   if (uiLayerDemo) {

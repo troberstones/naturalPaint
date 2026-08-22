@@ -235,6 +235,20 @@ struct LayerEditorUiState {
   // survives it, and a command acts only on the rows that are visible.
   LayerFilter filter;
   char filterBuf[64] = "";
+
+  // **Inline rename** (double-click a row's title). `renaming` is the model
+  // index whose title is currently an edit field instead of a Selectable;
+  // `nullopt` the rest of the time, which is most frames. The buffer is
+  // seeded once, the moment a double-click sets `renaming`, and is only ever
+  // written back to the layer on Enter -- `IsItemDeactivated()` without a
+  // commit (a click elsewhere, Tab, Escape) just clears `renaming` and drops
+  // the typed text, which is "cancel" without a second code path for it.
+  std::optional<size_t> renaming;
+  char renameFieldBuf[128] = "";
+  // `SetKeyboardFocusHere()` must run on the exact frame the field is first
+  // drawn, not on the frame the double-click set `renaming` -- so this is
+  // consumed (set false) the first time the field is drawn after it is set.
+  bool renameFieldFocusPending = false;
 };
 LayerEditorUiState g_layers;
 
@@ -1039,10 +1053,13 @@ void drawGradeSection(AppState& st) {
 // flag. This lives in ui/ and not in app/LayerPanel because "can the loaded
 // font draw this" is a question only the renderer can answer -- `--selftest`
 // checks the glyph, which is still what the panel asks for.
-std::string layerKindGlyphForFont(LayerKind kind) {
-  const char* glyph = layerKindGlyph(kind);
-  // The first code point, decoded here: ImGui's own UTF-8 decoder is internal
-  // API, and every glyph in that table is either ASCII or a 3-byte sequence.
+// The shared half of `layerKindGlyphForFont()` and `layerCommandGlyphForFont()`
+// below: decode a glyph's first code point (ImGui's own UTF-8 decoder is
+// internal API, and every glyph either table hands this is ASCII or a single
+// 3-byte sequence) and ask the running font whether it can draw it. Returns
+// `glyph` when it can, `fallback` when it cannot -- which keeps the decode
+// logic in exactly one place rather than one copy per glyph table.
+std::string glyphOrFallback(const char* glyph, const std::string& fallback) {
   const unsigned char* u = reinterpret_cast<const unsigned char*>(glyph);
   unsigned int cp = 0;
   if (u[0] < 0x80) {
@@ -1050,10 +1067,51 @@ std::string layerKindGlyphForFont(LayerKind kind) {
   } else if ((u[0] & 0xF0) == 0xE0 && u[1] != 0 && u[2] != 0) {
     cp = static_cast<unsigned int>((u[0] & 0x0F) << 12 | (u[1] & 0x3F) << 6 | (u[2] & 0x3F));
   }
-  if (cp != 0 && ImGui::GetFont()->IsGlyphInFont(static_cast<ImWchar>(cp)))
-    return glyph;
+  if (cp != 0 && ImGui::GetFont()->IsGlyphInFont(static_cast<ImWchar>(cp))) return glyph;
+  return fallback;
+}
+
+std::string layerKindGlyphForFont(LayerKind kind) {
   const char* name = layerKindName(kind);
-  return std::string("[") + static_cast<char>(std::toupper(name[0])) + "]";
+  return glyphOrFallback(layerKindGlyph(kind),
+                         std::string("[") + static_cast<char>(std::toupper(name[0])) + "]");
+}
+
+// The same fallback idiom as `layerKindGlyphForFont()`, for the compact icon
+// toolbar's own glyphs (`app::layerCommandGlyph()`). A short, hand-picked
+// abbreviation rather than an initial: several of these commands share a
+// first letter ("Duplicate" / "Delete", "Rasterise" / the RGB glyph's own
+// `[R]`), which the kind table never has to worry about because it only ever
+// draws three of these buttons.  Only reached on a machine with no usable
+// glyph source at all (ui/Fonts.cpp), so legibility under that failure -- not
+// brevity -- is what this table is for.
+const char* layerCommandGlyphFallback(LayerCommand command) noexcept {
+  switch (command) {
+    case LayerCommand::NewRgbLayer: return "[R]";
+    case LayerCommand::NewPigmentLayer: return "[P]";
+    case LayerCommand::NewAdjustmentLayer: return "[A]";
+    case LayerCommand::DuplicateLayer: return "[Dup]";
+    case LayerCommand::DeleteLayer: return "[Del]";
+    case LayerCommand::AddMask: return "[+Mask]";
+    case LayerCommand::RemoveMask: return "[-Mask]";
+    case LayerCommand::MergeDown: return "[MrgDn]";
+    case LayerCommand::MergeVisible: return "[MrgVis]";
+    case LayerCommand::StampVisible: return "[Stamp]";
+    case LayerCommand::FlattenImage: return "[Flat]";
+    case LayerCommand::RasteriseLayer: return "[Raster]";
+    case LayerCommand::MoveLayerUp:
+    case LayerCommand::MoveLayerDown:
+    case LayerCommand::ToggleVisible:
+    case LayerCommand::ToggleLocked:
+    case LayerCommand::ToggleClipped:
+    case LayerCommand::CaptureComp:
+      return "?";
+  }
+  return "?";
+}
+
+std::string layerCommandGlyphForFont(LayerCommand command) {
+  return glyphOrFallback(layerCommandGlyph(command), layerCommandGlyphFallback(command));
 }
 
 // One button in the layers panel that issues a `LayerCommand`. Greyed out by
@@ -1067,6 +1125,25 @@ void layerCommandButton(AppState& st, LayerCommand command, const char* text) {
       od != nullptr && layerCommandAvailable(od->document, command, od->activeLayer);
   ImGui::BeginDisabled(!available);
   if (ImGui::SmallButton(text)) runLayerCommand(st, command);
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("%s", layerCommandLabel(command));
+}
+
+// The compact icon toolbar's own button: `layerCommandButton()`'s twin, same
+// availability predicate, same tooltip, same `runLayerCommand()` dispatch --
+// the icon is a second face on the identical command, never a second
+// implementation of one. Only the visible glyph differs, from
+// `layerCommandGlyphForFont()`; the ID is the glyph plus the command's own
+// label so two buttons that ever drew the same fallback glyph still get
+// distinct ImGui IDs.
+void layerCommandIconButton(AppState& st, LayerCommand command) {
+  const OpenDocument* od = st.documents.active();
+  const bool available =
+      od != nullptr && layerCommandAvailable(od->document, command, od->activeLayer);
+  const std::string id = layerCommandGlyphForFont(command) + "##" + layerCommandLabel(command);
+  ImGui::BeginDisabled(!available);
+  if (ImGui::SmallButton(id.c_str())) runLayerCommand(st, command);
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip("%s", layerCommandLabel(command));
@@ -1126,47 +1203,6 @@ void drawLayersSection(AppState& st) {
     return out.ok;
   };
 
-  // The three creations, on their own row and in kind order. Every one of them
-  // was a function nothing could call before this step -- the panel offered a
-  // single "+ Add" that always made an RGB layer, so `makePigmentLayer()` and
-  // `makeAdjustmentLayer()` existed, were tested, and were unreachable.
-  layerCommandButton(st, LayerCommand::NewRgbLayer, "+ RGB");
-  ImGui::SameLine();
-  layerCommandButton(st, LayerCommand::NewPigmentLayer, "+ Pigment");
-  ImGui::SameLine();
-  layerCommandButton(st, LayerCommand::NewAdjustmentLayer, "+ Adjust");
-
-  layerCommandButton(st, LayerCommand::DuplicateLayer, "Duplicate");
-  ImGui::SameLine();
-  layerCommandButton(st, LayerCommand::DeleteLayer, "Delete");
-  ImGui::SameLine();
-  // PLAN.md Phase 5 step 4's pair, likewise unreachable until now. A mask that
-  // reveals everything costs no allocation (core/Mask.hpp), and "Hide All" is
-  // deliberately absent -- core/LayerOps.hpp says why.
-  layerCommandButton(st, LayerCommand::AddMask, "+ Mask");
-  ImGui::SameLine();
-  layerCommandButton(st, LayerCommand::RemoveMask, "- Mask");
-
-  // PLAN.md Phase 5 step 10 / PRD C10 (P0) and C11 (P1). The five operations
-  // that consume layers, on their own row because that is what they have in
-  // common: every button above this line leaves the stack recoverable by
-  // pressing another one, and every button on it does not (undo, which every
-  // one of these goes through, is the only way back).
-  // Two rows rather than one: five of these do not fit across a 300 px panel,
-  // and the fifth was clipped by the panel edge -- the exact failure
-  // app/ControlsLayout's label column exists to stop happening to labels, seen
-  // here on buttons instead. Split where the meaning splits: the three that
-  // collapse a stack, then the two that turn one layer into pixels.
-  layerCommandButton(st, LayerCommand::MergeDown, "Merge Dn");
-  ImGui::SameLine();
-  layerCommandButton(st, LayerCommand::MergeVisible, "Merge Vis");
-  ImGui::SameLine();
-  layerCommandButton(st, LayerCommand::FlattenImage, "Flatten");
-
-  layerCommandButton(st, LayerCommand::StampVisible, "Stamp Vis");
-  ImGui::SameLine();
-  layerCommandButton(st, LayerCommand::RasteriseLayer, "Rasterise");
-
   // --- The filter and the multi-selection (PLAN.md Phase 5 step 11) --------
   //
   // app/LayerPanel.hpp states the filter's whole rule; the two halves visible
@@ -1223,6 +1259,39 @@ void drawLayersSection(AppState& st) {
     }
   }
 
+  // **The active layer's blend mode, above the list** (Krita's own docker
+  // layout: a persistent bar naming the selected layer's blend, not a
+  // per-row control). Bare -- no `ctlBeginCombo()` label column, because
+  // Krita's own bar has no "Blend:" prefix, just the mode filling the row --
+  // and it always describes `selected`, so clicking a different row changes
+  // what this reads on the very next frame with no state of its own to sync.
+  if (selected < doc.layers.size()) {
+    const std::vector<BlendMode> menu = blendMenuForLayer(doc, selected);
+    const size_t sel = blendMenuSelection(doc, selected, menu);
+    const std::string preview = sel < menu.size()
+                                    ? blendMenuEntryText(menu[sel])
+                                    : doc.layers[selected].blend + "  (this build cannot set this)";
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##activeLayerBlend", preview.c_str())) {
+      for (size_t m = 0; m < menu.size(); ++m) {
+        const bool isSelected = (m == sel);
+        if (ImGui::Selectable(blendMenuEntryText(menu[m]).c_str(), isSelected))
+          run(setLayerBlend(doc, selected, menu[m]));
+        if (isSelected) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("The selected layer's blend mode. Blend modes are\n"
+                        "chosen for the linear working space; Screen only\n"
+                        "behaves above 1.0 if 1.0 is white, so it is labelled\n"
+                        "display-referred (PRD B7). Mix is offered only on a\n"
+                        "Pigment layer sitting on another Pigment layer (PRD\n"
+                        "L5), and does not composite yet.");
+  } else {
+    ImGui::TextDisabled("No layer selected.");
+  }
+
   // Rows, top of the stack first. `structureChanged` stops the loop the same
   // frame a reorder/add/remove fires rather than continuing to render rows
   // against indices that no longer mean what they did -- the identical
@@ -1250,6 +1319,18 @@ void drawLayersSection(AppState& st) {
       ImGui::SetTooltip("Visibility. Allowed even on a locked layer --\n"
                         "hiding a layer changes nothing about it.");
     ImGui::SameLine();
+    // Lock, moved here from the row's old second line (Krita's own row is a
+    // single line too, with the lock as a bare icon rather than a labelled
+    // checkbox -- app::layerKindGlyphForFont()'s font-or-fallback idiom is
+    // for a *glyph*, not a checkbox, so this stays a checkbox with no visible
+    // label, exactly like Visibility above it).
+    bool locked = layer.locked;
+    if (ImGui::Checkbox("##lock", &locked)) run(setLayerLocked(doc, i, locked));
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Locked. A locked layer refuses edits that change its\n"
+                        "pixels or its place in the stack -- visibility and\n"
+                        "this checkbox itself still work.");
+    ImGui::SameLine();
     // The colour label chip (PLAN.md Phase 5 step 11, PRD C15). Drawn only for
     // a label this build has a swatch for; an unrecognised one from a newer
     // build shows as text in the sub-line instead, because painting it in some
@@ -1266,116 +1347,264 @@ void drawLayersSection(AppState& st) {
     }
     ImGui::TextUnformatted(layerKindGlyphForFont(layer.kind).c_str());
     ImGui::SameLine();
-    // Multi-select (PRD C12). Plain click replaces the selection, ctrl-click
-    // (cmd-click on this platform) toggles one row, shift-click extends from
-    // the primary row to this one. `selected` follows the row that was clicked
-    // in every case, so the property editors below always describe a row the
-    // user just touched.
-    const bool inSelection = g_layers.selection.contains(i);
-    if (ImGui::Selectable(layerRowTitle(layer, i).c_str(), inSelection)) {
-      const ImGuiIO& io = ImGui::GetIO();
-      std::vector<size_t> next;
-      if (io.KeyShift) {
-        const size_t lo = std::min(selected, i);
-        const size_t hi = std::max(selected, i);
-        for (size_t k = lo; k <= hi; ++k) next.push_back(k);
-      } else if (io.KeyCtrl || io.KeySuper) {
-        next = g_layers.selection.indices;
-        const auto at = std::find(next.begin(), next.end(), i);
-        if (at != next.end())
-          next.erase(at);
-        else
-          next.push_back(i);
-        // A selection is never empty: ctrl-clicking the only selected row
-        // leaves it selected rather than leaving the panel with no primary row
-        // for the opacity slider and the name field to describe.
-        if (next.empty()) next.push_back(i);
-      } else {
-        next.push_back(i);
+    if (g_layers.renaming.has_value() && *g_layers.renaming == i) {
+      // **Inline rename.** The field replaces the Selectable entirely rather
+      // than sitting beside it -- two editable widgets for one value on
+      // screen at once is what the properties panel's own "Name" field would
+      // otherwise become the moment this row is also the selection, so that
+      // field is suppressed below for exactly this row while this is up.
+      if (g_layers.renameFieldFocusPending) {
+        ImGui::SetKeyboardFocusHere();
+        g_layers.renameFieldFocusPending = false;
       }
-      g_layers.selection = makeLayerSelection(std::move(next));
-      selected = i;
-    }
-    ImGui::Indent();
-    {
-      std::string sub = layerRowSubLine(layer);
-      // The link badge (PRD C15). Here rather than in `layerRowSubLine()` for
-      // that function's own stated reason: whether a layer is linked depends on
-      // what *other* layers carry, and it takes a `Layer` and no `Document`.
-      if (const size_t partners = layerLinkPartnerCount(doc, i); partners > 0)
-        sub += " \xC2\xB7 LINKED+" + std::to_string(partners);
-      // Caps and a percentage: docs/ui.md section 3.2's row sub-line is the
-      // canonical example of the monospace half of the ramp, and it is what
-      // makes a column of rows line up as a table rather than as prose.
-      pushAtelierMono();
-      textDisabledWrapped("%s", sub.c_str());
-      popAtelierMono();
-    }
+      ImGui::SetNextItemWidth(-1.0f);
+      const bool committed =
+          ImGui::InputText("##inlineRename", g_layers.renameFieldBuf,
+                           sizeof(g_layers.renameFieldBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+      if (committed) {
+        run(setLayerName(doc, i, g_layers.renameFieldBuf));
+        g_layers.renaming.reset();
+      } else if (ImGui::IsItemDeactivated()) {
+        // Lost focus without Enter -- a click elsewhere, Tab, or Escape.
+        // Cancel: the buffer is simply never written back.
+        g_layers.renaming.reset();
+      }
+    } else {
+      // Multi-select (PRD C12). Plain click replaces the selection, ctrl-click
+      // (cmd-click on this platform) toggles one row, shift-click extends from
+      // the primary row to this one. `selected` follows the row that was
+      // clicked in every case, so the property editors below always describe a
+      // row the user just touched. `AllowDoubleClick` makes a double-click
+      // still report as a click here (so single-click selection keeps
+      // working) and separately queryable via `IsMouseDoubleClicked()` right
+      // after, which is what starts the inline rename above.
+      const bool inSelection = g_layers.selection.contains(i);
+      const bool clicked = ImGui::Selectable(layerRowTitle(layer, i).c_str(), inSelection,
+                                             ImGuiSelectableFlags_AllowDoubleClick);
+      // The old second line -- docs/ui.md §3.2's `KIND · BLEND · OPACITY% ·
+      // flags` sub-line -- lives here now instead of always being on screen,
+      // which is what keeps every row exactly one line tall. The information
+      // did not go away: `layerRowSubLine()` is unchanged and still tested,
+      // this is only where its result is drawn.
+      if (ImGui::IsItemHovered()) {
+        std::string sub = layerRowSubLine(layer);
+        if (const size_t partners = layerLinkPartnerCount(doc, i); partners > 0)
+          sub += " \xC2\xB7 LINKED+" + std::to_string(partners);
+        ImGui::SetTooltip("%s", sub.c_str());
+      }
+      if (clicked) {
+        const ImGuiIO& io = ImGui::GetIO();
+        std::vector<size_t> next;
+        if (io.KeyShift) {
+          const size_t lo = std::min(selected, i);
+          const size_t hi = std::max(selected, i);
+          for (size_t k = lo; k <= hi; ++k) next.push_back(k);
+        } else if (io.KeyCtrl || io.KeySuper) {
+          next = g_layers.selection.indices;
+          const auto at = std::find(next.begin(), next.end(), i);
+          if (at != next.end())
+            next.erase(at);
+          else
+            next.push_back(i);
+          // A selection is never empty: ctrl-clicking the only selected row
+          // leaves it selected rather than leaving the panel with no primary
+          // row for the opacity slider and the name field to describe.
+          if (next.empty()) next.push_back(i);
+        } else {
+          next.push_back(i);
+        }
+        g_layers.selection = makeLayerSelection(std::move(next));
+        selected = i;
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+          g_layers.renaming = i;
+          std::snprintf(g_layers.renameFieldBuf, sizeof(g_layers.renameFieldBuf), "%s",
+                       layer.name.c_str());
+          g_layers.renameFieldFocusPending = true;
+        }
+      }
 
-    ImGui::BeginDisabled(i + 1 >= count);
-    if (ImGui::SmallButton("Up")) {  // up the panel == up the stack == +1
-      if (run(moveLayer(doc, i, i + 1))) selected = i + 1;
-      structureChanged = true;
+      // **Right-click context menu.** Selects the row first, the same way a
+      // left-click does, so a command chosen from the menu acts on the row
+      // the user right-clicked rather than whatever was selected before --
+      // and so `runLayerCommand()` below, which always acts on
+      // `OpenDocument::activeLayer`, is acting on the right one.
+      if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        g_layers.selection = singleLayerSelection(i);
+        selected = i;
+      }
+      if (ImGui::BeginPopupContextItem("layerRowContext")) {
+        for (const LayerCommand command : allLayerCommands()) {
+          // CaptureComp captures the whole stack, not this row -- it belongs
+          // to the COMPS panel and the `Layer` menu, not a per-row menu whose
+          // every other entry is about the layer under the cursor.
+          if (command == LayerCommand::CaptureComp) continue;
+          const bool available = layerCommandAvailable(doc, command, i);
+          if (ImGui::MenuItem(layerCommandLabel(command), nullptr, false, available)) {
+            runLayerCommand(st, command);
+            structureChanged = true;
+          }
+        }
+        // **Add Op, for now.** The full op-stack editor moved to Layer
+        // Properties along with everything else that used to live under the
+        // selected row -- but *adding* one is a single gesture with no
+        // parameters to show yet (`app::makeNewOp()` always builds a
+        // disabled PointA op), so it gets a fast path here rather than
+        // waiting for the dialog to be opened first.
+        if (ImGui::BeginMenu("Add Op")) {
+          for (const PointOpKind kind :
+               {PointOpKind::Levels, PointOpKind::Curves, PointOpKind::Exposure,
+                PointOpKind::Saturation, PointOpKind::Grayscale, PointOpKind::ChannelMixer}) {
+            if (ImGui::MenuItem(pointOpKindName(kind))) {
+              run(addLayerOp(doc, i, makeNewOp(kind)));
+              structureChanged = true;
+            }
+          }
+          ImGui::EndMenu();
+        }
+        ImGui::EndPopup();
+      }
+
+      // **Drag to reorder.** The dragged payload is the model index; the
+      // drop target is whichever row's rectangle the pointer released over,
+      // refined by which half of that row it was in
+      // (`app::layerDropTargetIndex()` turns "row + half" into the `to`
+      // `core::moveLayer()` wants). Not offered while renaming -- a text
+      // field and a drag source on the same item would fight over the mouse.
+      if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
+        ImGui::SetDragDropPayload("NP_LAYER_ROW", &i, sizeof(size_t));
+        ImGui::TextUnformatted(layerRowTitle(layer, i).c_str());
+        ImGui::EndDragDropSource();
+      }
+      if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("NP_LAYER_ROW")) {
+          const size_t from = *static_cast<const size_t*>(payload->Data);
+          const ImVec2 rowMin = ImGui::GetItemRectMin();
+          const ImVec2 rowMax = ImGui::GetItemRectMax();
+          const bool droppedAboveMidpoint =
+              ImGui::GetMousePos().y < (rowMin.y + rowMax.y) * 0.5f;
+          const size_t to = layerDropTargetIndex(i, droppedAboveMidpoint, count);
+          if (from != to) run(moveLayer(doc, from, to));
+          structureChanged = true;
+        }
+        ImGui::EndDragDropTarget();
+      }
     }
+    // **One row, one line.** Up/Down are gone -- drag-to-reorder above does
+    // their job -- and Opacity, Blend, Name, Clip and the op stack all moved
+    // to the Layer Properties dialog (the gear button above the list), the
+    // same relocation Krita's own docker makes: a row is identity and
+    // structure (eye, lock, kind, name), everything else is one dialog away.
+    ImGui::PopID();
+  }
+
+  // The compact icon toolbar (Photoshop/Affinity/Krita convention: a strip of
+  // small glyph buttons under the stack, not a column of abbreviated text
+  // ones). Below the list rather than above it -- Krita's own docker puts
+  // its equivalent toolbar at the bottom too, under the rows it acts on, not
+  // between the document header and the thing it edits. Every icon still
+  // funnels through `layerCommandIconButton()`'s twin `layerCommandButton()`
+  // -- same availability predicate, same tooltip, same dispatch -- so this
+  // is a second face on each command, not a second implementation of one.
+  // Two rows, split the way the five-row text version already split it:
+  // creation and the single-layer edits first, then PLAN.md Phase 5 step 10
+  // / PRD C10 (P0), C11 (P1)'s five operations that consume layers -- undo
+  // is the only way back from any of those, which is exactly why the old
+  // layout gave them their own row too.
+  layerCommandIconButton(st, LayerCommand::NewRgbLayer);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::NewPigmentLayer);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::NewAdjustmentLayer);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::DuplicateLayer);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::DeleteLayer);
+  ImGui::SameLine();
+  // PLAN.md Phase 5 step 4's pair. A mask that reveals everything costs no
+  // allocation (core/Mask.hpp), and "Hide All" is deliberately absent --
+  // core/LayerOps.hpp says why.
+  layerCommandIconButton(st, LayerCommand::AddMask);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::RemoveMask);
+
+  layerCommandIconButton(st, LayerCommand::MergeDown);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::MergeVisible);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::FlattenImage);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::StampVisible);
+  ImGui::SameLine();
+  layerCommandIconButton(st, LayerCommand::RasteriseLayer);
+  ImGui::SameLine();
+  // **Layer Properties** (Krita's own "sliders" toolbar button): opens the
+  // modal below, which is where Opacity, Blending mode, Colour label,
+  // Visible, Locked, Clip and the op stack all moved to once the row itself
+  // became one line. Not a `LayerCommand` -- it mutates no document, only
+  // opens a dialog -- so it draws its own button rather than going through
+  // `layerCommandIconButton()`.
+  {
+    const bool available = selected < doc.layers.size();
+    ImGui::BeginDisabled(!available);
+    if (ImGui::SmallButton(glyphOrFallback("\xE2\x9A\x99", "[Props]").c_str()))
+      ImGui::OpenPopup("Layer Properties");
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(i == 0);
-    if (ImGui::SmallButton("Down")) {
-      if (run(moveLayer(doc, i, i - 1))) selected = i - 1;
-      structureChanged = true;
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    bool locked = layer.locked;
-    if (ImGui::Checkbox("Lock", &locked)) run(setLayerLocked(doc, i, locked));
-    ImGui::SameLine();
-    // PLAN.md Phase 5 step 9 / PRD C9. Disabled on the bottom row rather than
-    // offered-and-refused, because "there is nothing below this layer" is a
-    // property of the row itself and the Up/Down buttons on the same line
-    // already use exactly that idiom for the ends of the stack. Every *other*
-    // reason a clip cannot be taken -- a layer that holds no pixels beneath,
-    // an unbroken clipped run below, a live `Mix` pair -- depends on the whole
-    // stack and is surfaced as core/LayerOps' own refusal sentence below,
-    // which is the same split drawExportAsDialog() uses for io/Export's.
-    ImGui::BeginDisabled(i == 0 && !layer.clipped);
-    bool clipped = layer.clipped;
-    if (ImGui::Checkbox("Clip", &clipped)) run(setLayerClipped(doc, i, clipped));
-    ImGui::EndDisabled();
-    // `AllowWhenDisabled` on purpose: the bottom row is exactly the row whose
-    // user most needs the last sentence of this tooltip, and a disabled item
-    // reports no hover without it.
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("Clip to the layer below (PRD C9): this layer shows only\n"
-                        "where the layer beneath it has alpha. A run of clipped\n"
-                        "layers all clips to ONE base -- the nearest unclipped\n"
-                        "layer below -- and the group meets the document through\n"
-                        "that base's blend mode and opacity, so hiding the base\n"
-                        "hides the whole group. The bottom layer cannot be\n"
-                        "clipped: there is nothing below it.");
+      ImGui::SetTooltip("Layer Properties -- name, opacity, blend mode,\n"
+                        "colour label, visibility, lock, clip and this\n"
+                        "layer's op stack, all in one place.");
+  }
 
-    if (selected == i && !structureChanged) {
+  // --- Layer Properties (Krita's own dialog, opened by the gear above) -----
+  //
+  // Everything a selected row used to expand to show now lives here instead,
+  // bound to `selected` for the dialog's whole open lifetime -- a
+  // `BeginPopupModal` blocks every other widget in the application, so
+  // `selected` cannot change out from under it mid-edit the way it could while
+  // it was inline in the list. Kind, and everything the reference dialog
+  // shows that this build has no equivalent of (colour space, ICC profile,
+  // per-channel toggles), is left out rather than faked with a control that
+  // would do nothing -- the same rule the design doc's own PRESET dropdown
+  // and BG swatch follow.
+  //
+  // --open-layer-properties: the same id BeginPopupModal() opens on a click,
+  // so --screenshot can photograph it. See AppState::openLayerProperties.
+  if (st.openLayerProperties) {
+    st.openLayerProperties = false;
+    ImGui::OpenPopup("Layer Properties");
+  }
+  if (ImGui::BeginPopupModal("Layer Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (selected >= doc.layers.size()) {
+      ImGui::TextDisabled("This layer no longer exists.");
+    } else {
+      const size_t i = selected;
+      Layer& layer = doc.layers[i];
+
+      ImGui::TextDisabled("%s  %s", layerKindGlyphForFont(layer.kind).c_str(),
+                          layerKindName(layer.kind));
+
+      std::snprintf(renameBuf, sizeof(renameBuf), "%s", layer.name.c_str());
+      if (ctlInputText("Name", renameBuf, sizeof(renameBuf), ImGuiInputTextFlags_EnterReturnsTrue))
+        run(setLayerName(doc, i, renameBuf));
+
       float opacity = layer.opacity;
       // SliderFloat reports a change every frame of a drag; each one goes
       // through setLayerOpacity() so a locked layer refuses every one of them
-      // rather than the first only. The revision counter therefore rises once
-      // per frame of a drag -- accepted here because history (Phase 5 step 7)
-      // is what owns coalescing an interaction into one entry, and inventing a
-      // second, weaker coalescing rule in the panel would be in its way.
+      // rather than the first only. History (Phase 5 step 7) is what owns
+      // coalescing an interaction into one undo entry.
       if (ctlSlider("Opacity", &opacity, 0.0f, 1.0f, "%.2f"))
         run(setLayerOpacity(doc, i, opacity));
 
-      // The blend dropdown. The preview string is the *selected entry's* text
-      // when the layer carries a mode in the menu, and the layer's raw stored
-      // string when it does not -- a value from a newer build (PRD I10), or
-      // `Mix` on a layer a reorder has just taken out of L5's reach. Showing
-      // the first entry instead would quietly claim the layer says "Normal"
-      // when it does not.
+      // The blend dropdown, identical in every particular to the one above
+      // the list -- two controls for the one field, exactly the redundancy
+      // the reference dialog itself has (Krita's docker bar and its own
+      // Layer Properties both carry Blending mode).
       const std::vector<BlendMode> menu = blendMenuForLayer(doc, i);
       const size_t sel = blendMenuSelection(doc, i, menu);
       const std::string preview =
           sel < menu.size() ? blendMenuEntryText(menu[sel]) : layer.blend + "  (this build "
                                                                            "cannot set this)";
-      if (ctlBeginCombo("Blend", preview.c_str())) {
+      if (ctlBeginCombo("Blending mode", preview.c_str())) {
         for (size_t m = 0; m < menu.size(); ++m) {
           const bool isSelected = (m == sel);
           if (ImGui::Selectable(blendMenuEntryText(menu[m]).c_str(), isSelected))
@@ -1393,20 +1622,50 @@ void drawLayersSection(AppState& st) {
                           "yet: no layer stores a pigment latent until Pigment\n"
                           "tiles land.");
 
-      std::snprintf(renameBuf, sizeof(renameBuf), "%s", layer.name.c_str());
-      if (ctlInputText("Name", renameBuf, sizeof(renameBuf),
-                       ImGuiInputTextFlags_EnterReturnsTrue))
-        run(setLayerName(doc, i, renameBuf));
+      ImGui::TextUnformatted("Colour label");
+      ImGui::SameLine();
+      // "None" first, then the seven `kLayerColorLabelNames` swatches, each a
+      // small filled square rather than a text button -- `layerColorLabelSwatch()`
+      // is the same lookup the row chip uses, so a colour picked here is the
+      // exact colour that shows there. `PushID(name)` gives each swatch its
+      // own ID despite every one of them sharing the label "##colorLabel".
+      if (ImGui::SmallButton("None##colorLabelNone"))
+        run(setLayerColorLabel(doc, i, kNoLayerColorLabel));
+      for (const char* name : kLayerColorLabelNames) {
+        ImGui::SameLine();
+        ImGui::PushID(name);
+        const std::optional<LayerLabelSwatch> swatch = layerColorLabelSwatch(name);
+        if (swatch.has_value())
+          ImGui::PushStyleColor(ImGuiCol_Button,
+                                ImGui::GetColorU32(ImVec4(swatch->r, swatch->g, swatch->b, 1.0f)));
+        if (ImGui::Button("##colorLabel", ImVec2(18.0f, 18.0f)))
+          run(setLayerColorLabel(doc, i, name));
+        if (swatch.has_value()) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", name);
+        ImGui::PopID();
+      }
 
-      // The layer's own op stack (PLAN.md Phase 5 steps 3 and 5, reachable
-      // from this step on). The same editor the GRADE section uses, bound to
-      // core/LayerOps' five recorded op operations instead of to
-      // `OpStack`'s raw mutators -- see drawOpStackEditor() for why the
-      // binding is the only difference between the two.
-      //
-      // On an Adjustment layer this stack is the layer's entire content: the
-      // kind holds no pixels, so a fresh one is an exact no-op and stays
-      // invisible until an op here is added *and* enabled.
+      bool visible = layer.visible;
+      if (ImGui::Checkbox("Visible", &visible)) run(setLayerVisible(doc, i, visible));
+      bool locked = layer.locked;
+      if (ImGui::Checkbox("Locked", &locked)) run(setLayerLocked(doc, i, locked));
+      // PLAN.md Phase 5 step 9 / PRD C9. Disabled at the bottom of the stack,
+      // the same "nothing below this layer" rule the row's own checkbox used
+      // to enforce.
+      ImGui::BeginDisabled(i == 0 && !layer.clipped);
+      bool clipped = layer.clipped;
+      if (ImGui::Checkbox("Clip to Layer Below", &clipped)) run(setLayerClipped(doc, i, clipped));
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Clip to the layer below (PRD C9): this layer shows only\n"
+                          "where the layer beneath it has alpha. The bottom layer\n"
+                          "cannot be clipped: there is nothing below it.");
+
+      // The layer's own op stack (PLAN.md Phase 5 steps 3 and 5). Unchanged
+      // from where it used to live inline under the row -- only the location
+      // moved. On an Adjustment layer this stack is the layer's entire
+      // content: the kind holds no pixels, so a fresh one is an exact no-op
+      // until an op here is added *and* enabled.
       if (ImGui::TreeNodeEx("layerOps", ImGuiTreeNodeFlags_DefaultOpen, "Ops (%zu)",
                             layer.ops.size())) {
         if (ImGui::IsItemHovered())
@@ -1415,7 +1674,9 @@ void drawLayersSection(AppState& st) {
                             "own pixels for a layer that has them, and over\n"
                             "everything beneath for an Adjustment layer.\n"
                             "Every change here is recorded, so undo takes it\n"
-                            "back and the canvas updates.");
+                            "back and the canvas updates. The right-click menu on\n"
+                            "the row itself also has \"Add Op\", for adding one\n"
+                            "without opening this dialog first.");
         OpStackBinding bound;
         bound.stack = &layer.ops;
         bound.add = [&](Op op) { run(addLayerOp(doc, i, std::move(op))); };
@@ -1431,9 +1692,9 @@ void drawLayersSection(AppState& st) {
         ImGui::TreePop();
       }
     }
-    ImGui::Unindent();
-    ImGui::Dummy(ImVec2(0, 4));
-    ImGui::PopID();
+    ImGui::Separator();
+    if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
   }
 
   // The refusal, verbatim. core/LayerOps' sentences already name the layer and

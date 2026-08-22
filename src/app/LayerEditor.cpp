@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "app/LayerPanel.hpp"
 #include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
 #include "core/Merge.hpp"
@@ -96,6 +97,31 @@ const char* layerCommandLabel(LayerCommand command) noexcept {
     case LayerCommand::CaptureComp:        return "Capture Layer Comp";
   }
   return "?";
+}
+
+const char* layerCommandGlyph(LayerCommand command) noexcept {
+  switch (command) {
+    case LayerCommand::NewRgbLayer: return layerKindGlyph(LayerKind::RGB);
+    case LayerCommand::NewPigmentLayer: return layerKindGlyph(LayerKind::Pigment);
+    case LayerCommand::NewAdjustmentLayer: return layerKindGlyph(LayerKind::Adjustment);
+    case LayerCommand::DuplicateLayer: return "\xE2\x96\xA3";  // U+25A3 square-in-square
+    case LayerCommand::DeleteLayer: return "\xE2\x9C\x95";     // U+2715 multiplication x
+    case LayerCommand::AddMask: return "\xE2\x97\x90";         // U+25D0 circle, left half
+    case LayerCommand::RemoveMask: return "\xE2\x97\x91";      // U+25D1 circle, right half
+    case LayerCommand::MergeDown: return "\xE2\x86\x93";       // U+2193 down arrow
+    case LayerCommand::MergeVisible: return "\xE2\x88\xAA";    // U+222A union
+    case LayerCommand::StampVisible: return "\xE2\x9A\x90";    // U+2690 white flag
+    case LayerCommand::FlattenImage: return "\xE2\x89\xA1";    // U+2261 identical to
+    case LayerCommand::RasteriseLayer: return "\xE2\x96\xA6";  // U+25A6 raster fill
+    case LayerCommand::MoveLayerUp:
+    case LayerCommand::MoveLayerDown:
+    case LayerCommand::ToggleVisible:
+    case LayerCommand::ToggleLocked:
+    case LayerCommand::ToggleClipped:
+    case LayerCommand::CaptureComp:
+      return "";
+  }
+  return "";
 }
 
 bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t selected) {

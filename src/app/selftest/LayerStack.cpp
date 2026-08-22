@@ -578,6 +578,25 @@ bool runLayerStackTest() {
           "panel: an out-of-range row or index returns 0 rather than wrapping through "
           "unsigned subtraction -- the one arithmetic accident this mapping exists to avoid");
 
+    // Drag-to-reorder's target math. Dropped in the lower half of a row, the
+    // dragged layer lands AT that row's own model index (`to == hoveredIndex`
+    // is the "insert below" case core::moveLayer()'s rotate already lands
+    // correctly with no +1). Dropped in the upper half, it lands one past it
+    // -- "above" in panel terms is `+1` in model terms, the same reversal
+    // layerIndexForPanelRow() owns, restated here for the drop math instead
+    // of the row math.
+    check(layerDropTargetIndex(1, false, 5) == 1,
+          "drop: lower half of row 1 lands the dragged layer AT index 1");
+    check(layerDropTargetIndex(1, true, 5) == 2,
+          "drop: upper half of row 1 lands the dragged layer one past it, at index 2");
+    check(layerDropTargetIndex(4, true, 5) == 4,
+          "drop: the upper half of the topmost row (index 4 of 5) saturates at 4, never 5 -- "
+          "there is no slot past the top of the stack");
+    check(layerDropTargetIndex(0, false, 5) == 0,
+          "drop: the lower half of the bottom row lands at index 0, the bottom itself");
+    check(layerDropTargetIndex(0, true, 1) == 0,
+          "drop: a single-layer document has nowhere else for a drop to land");
+
     Layer row;
     row.kind = LayerKind::RGB;
     check(std::string(layerRowSubLine(row)) == "RGB \xC2\xB7 NORMAL \xC2\xB7 100%",

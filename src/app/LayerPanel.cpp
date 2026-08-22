@@ -20,6 +20,13 @@ size_t panelRowForLayerIndex(size_t layerIndex, size_t layerCount) noexcept {
   return layerCount - 1 - layerIndex;
 }
 
+size_t layerDropTargetIndex(size_t hoveredIndex, bool droppedAboveMidpoint,
+                            size_t layerCount) noexcept {
+  if (layerCount == 0) return 0;
+  const size_t target = hoveredIndex + (droppedAboveMidpoint ? 1 : 0);
+  return target < layerCount ? target : layerCount - 1;
+}
+
 const char* layerKindGlyph(LayerKind kind) noexcept {
   switch (kind) {
     case LayerKind::Pigment: return "\xE2\x97\x89";     // U+25C9 fisheye

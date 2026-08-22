@@ -1,5 +1,6 @@
 #include "app/selftest/Support.hpp"
 
+#include "app/LayerEditor.hpp"
 #include "core/Layer.hpp"
 #include "imgui.h"
 #include "ui/Fonts.hpp"
@@ -58,9 +59,26 @@ bool runFontsTest() {
       if (std::find(required.begin(), required.end(), cp) == required.end()) allListed = false;
     }
   }
-  check(allListed, "every above-U+00FF kind glyph is in requiredUiCodepoints()");
-  check(required.size() == 6,
-        "six of the seven kinds need a merge source (Text's 'T' is ASCII)");
+  for (const LayerCommand command : allLayerCommands()) {
+    for (const uint32_t cp : decodeUtf8(layerCommandGlyph(command))) {
+      if (cp < 0x0100u) continue;
+      if (std::find(required.begin(), required.end(), cp) == required.end()) allListed = false;
+    }
+  }
+  check(allListed,
+        "every above-U+00FF kind glyph and command icon is in requiredUiCodepoints()");
+  // Six of the seven kinds need a merge source (Text's 'T' is ASCII). Nine
+  // command icons are new codepoints -- the toolbar's twelve buttons draw
+  // fifteen distinct glyphs, not twelve, because the three creation commands
+  // deliberately reuse their kind's own glyph (`layerCommandGlyph()`) rather
+  // than adding three more. The Layer Properties gear is the sixteenth --
+  // ui/Fonts.cpp's one hand-added glyph, since it belongs to no table.
+  check(required.size() == 16,
+        "6 kind glyphs + 9 command icons + the Properties gear need a merge source");
+  const auto gear = decodeUtf8("\xE2\x9A\x99");
+  check(gear.size() == 1 && gear[0] == 0x2699u &&
+            std::find(required.begin(), required.end(), 0x2699u) != required.end(),
+        "the Layer Properties gear (U+2699) is in the required set");
 
   // The tripwire. `layerKindGlyph()` returns "?" for a kind it has no case
   // for, so casting one past the last real kind must still be "?" -- if a
@@ -68,6 +86,25 @@ bool runFontsTest() {
   // complete walk. Without this the walk silently covers seven of eight.
   check(std::string(layerKindGlyph(static_cast<LayerKind>(7))) == "?",
         "LayerKind still has exactly 7 values, so the walk above is complete");
+
+  // The three creation icons are their kind's own glyph, verbatim -- not a
+  // second copy of it, so the toolbar button and the row it produces can
+  // never drift to two different marks.
+  check(std::string(layerCommandGlyph(LayerCommand::NewRgbLayer)) ==
+            std::string(layerKindGlyph(LayerKind::RGB)),
+        "the New RGB Layer icon is the RGB kind glyph, not a copy of it");
+  check(std::string(layerCommandGlyph(LayerCommand::NewPigmentLayer)) ==
+            std::string(layerKindGlyph(LayerKind::Pigment)),
+        "the New Pigment Layer icon is the Pigment kind glyph");
+  check(std::string(layerCommandGlyph(LayerCommand::NewAdjustmentLayer)) ==
+            std::string(layerKindGlyph(LayerKind::Adjustment)),
+        "the New Adjustment Layer icon is the Adjustment kind glyph");
+  // CaptureComp is deliberately iconless (it belongs to COMPS, not the
+  // per-row toolbar) -- asserted so a future icon added for it is a decision
+  // rather than an accident that silently changes the required-codepoint
+  // count above.
+  check(std::string(layerCommandGlyph(LayerCommand::CaptureComp)).empty(),
+        "CaptureComp has no toolbar icon");
 
   std::printf("  -- C. and the loaded font can actually draw them --\n");
 
