@@ -537,6 +537,280 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
           "enough to diffuse in)");
   }
 
+  // ======================================================================
+  // 8. The frame sequence: what decides when, and what it refuses to do.
+  // ======================================================================
+  std::printf("  -- 8. the frame sequence (app/StrokeBake.hpp section 1) --\n");
+  {
+    // BakeCycleReport::why is a const char*, and every assertion below checks
+    // that a refusal names its cause rather than merely being a refusal.
+    auto because = [](const char* why, const char* fragment) {
+      return why != nullptr && std::string(why).find(fragment) != std::string::npos;
+    };
+
+    // Drives a cycle the way the frame loop does: keep stepping until it
+    // reaches a terminal action. Two back-to-back step() calls are NOT two
+    // frames -- pollPigmentReadback() pumps the instance once and returns, so
+    // the map callback still needs the wall-clock time a real frame's own GPU
+    // work would have covered.
+    //
+    // **Bounded by the clock, not by a step count**, and section 5 above
+    // already had to learn this the hard way: 240 steps complete in
+    // microseconds while the copy takes milliseconds, so a count-bounded loop
+    // gives up before the GPU could possibly have finished and then abandons a
+    // pending map -- which is the still-mapped-buffer abort all over again.
+    // This is the second time that mistake has been made in this file; the
+    // comment in section 5 is why it was recognised in one run rather than
+    // debugged from scratch.
+    struct Driven {
+      BakeCycleReport report;
+      int steps = 0;
+    };
+    auto drive = [&](StrokeBakeCycle& cycle, OpenDocument* doc, PaintMode mode,
+                     uint64_t firstFrame) {
+      using Clock = std::chrono::steady_clock;
+      const auto started = Clock::now();
+      Driven d;
+      while (std::chrono::duration<double>(Clock::now() - started).count() < 5.0) {
+        d.report = cycle.step(gpu, sim, doc, mode, firstFrame + static_cast<uint64_t>(d.steps));
+        ++d.steps;
+        if (d.report.action == BakeCycleReport::Action::Baked ||
+            d.report.action == BakeCycleReport::Action::Refused)
+          break;
+      }
+      return d;
+    };
+
+    // --- 8a. The absorption table ---------------------------------------
+    check(absorptionFor(PaintMode::Watercolor).has_value() &&
+              *absorptionFor(PaintMode::Watercolor) == kAbsorptionWatercolor,
+          "cycle: watercolour bakes at its own Beer-Lambert coefficient");
+    check(absorptionFor(PaintMode::Ink).has_value() &&
+              *absorptionFor(PaintMode::Ink) == kAbsorptionInk,
+          "cycle: ink bakes at its own, which is not watercolour's");
+    check(!absorptionFor(PaintMode::Oil).has_value(),
+          "cycle: oil has NO coefficient rather than a plausible-looking one -- it is a height "
+          "field, not a Beer-Lambert medium, so there is no honest number to return");
+
+    // --- 8b. The policy, against hand-built occupancy --------------------
+    //
+    // Hand-built rather than solver-derived on purpose: this is the whole
+    // decision the cycle makes, and a table lets it be checked at exactly the
+    // boundaries a real stroke never lands on.
+    {
+      std::vector<PaintSim::TileOccupancy> occ(4);
+      occ[0] = {1.0f, 0.0f};              // loaded and dry     -> take
+      occ[1] = {1.0f, 0.5f};              // loaded but wet     -> hold
+      occ[2] = {kBakeMassFloor, 0.0f};    // exactly at floor   -> skip
+      occ[3] = {0.0f, 0.0f};              // empty              -> skip
+      const DryTileScan s = selectDryTiles(occ, 2, 2);
+      check(s.ready.size() == 1, "cycle: exactly the loaded, dry tile is taken");
+      check(s.ready.size() == 1 && s.ready[0].x == 0 && s.ready[0].y == 0,
+            "cycle: and it is reported at its own (x,y), not at its flat index");
+      check(s.wetHeld == 1,
+            "cycle: the loaded WET tile is counted as held, not taken and not forgotten -- "
+            "'nothing to bake' and 'nothing has dried yet' are different states");
+      check(occ[2].mass == kBakeMassFloor && s.ready.size() == 1,
+            "cycle: the floor is exclusive -- a tile whose best texel sits exactly on it would "
+            "bake to nothing, and taking it would cost a readback and a history entry to write "
+            "zero texels");
+
+      // Index -> (x,y) has to survive a non-square grid, which is where a
+      // transposed row/column bug would finally show up.
+      std::vector<PaintSim::TileOccupancy> wide(6);
+      wide[4] = {1.0f, 0.0f};  // index 4 in a 3-wide grid is (1, 1)
+      const DryTileScan w = selectDryTiles(wide, 3, 2);
+      check(w.ready.size() == 1 && w.ready[0].x == 1 && w.ready[0].y == 1,
+            "cycle: index 4 of a 3x2 grid is (1,1) -- rows and columns are not transposed");
+
+      const DryTileScan bad = selectDryTiles(occ, 3, 3);
+      check(bad.ready.empty() && bad.wetHeld == 0,
+            "cycle: an occupancy vector that does not match the tile counts yields nothing "
+            "rather than indexing past its end");
+    }
+
+    // --- 8c. The cycle against the real solver ---------------------------
+    //
+    // A fresh stroke, because there is nothing left to bake by now: section 2
+    // painted entirely inside the centre tile, and section 7 cleared exactly
+    // that tile, so the canvas is empty. The first draft of this section
+    // assumed section 2's paint was still there and failed with "nothing to
+    // bake" -- worth stating, because the assumption looks safe and is not.
+    {
+      SimParams p{};
+      p.brushRadius = 14.0f;
+      p.brushWater = 1.4f;
+      p.brushPigment = 0.9f;
+      stroke(gpu, sim, p, 160.0f, 160.0f, 224.0f, 224.0f, 8);
+      // Long enough for wetness to reach zero: selectDryTiles() takes a tile
+      // only when it is finished, and section 3 measured 240 frames doing it.
+      settle(gpu, sim, p, 240);
+    }
+
+    OpenDocument od = makeBlankOpenDocument(static_cast<int32_t>(sim.width()),
+                                            static_cast<int32_t>(sim.height()),
+                                            WorkingSpace{}, "bridge");
+    recordLayerEdit(od, addLayer(od.document, od.document.layers.size(),
+                                 makePigmentLayer("dried wash")));
+    od.activeLayer = od.document.layers.size() - 1;
+
+    StrokeBakeCycle cycle;
+    const uint64_t revBefore = od.revision;
+    const size_t historyBefore = od.history.entries().size();
+
+    const BakeCycleReport first = cycle.step(gpu, sim, &od, PaintMode::Watercolor, 0);
+    std::printf("  [selftest] cycle: frame 0 -> action=%d tiles=%zu wetHeld=%zu (%s)\n",
+                static_cast<int>(first.action), first.tiles, first.wetHeld, first.why);
+    check(first.action == BakeCycleReport::Action::Submitted && first.tiles > 0,
+          "cycle: the first frame finds dry paint and SUBMITS a readback -- it does not bake, "
+          "because a blocking tile read measured 3.288 ms of PRD F3's 20 ms budget");
+    check(cycle.readbackInFlight(),
+          "cycle: and it is holding the tile list itself, so the caller cannot get the submit "
+          "and the bake out of step");
+    check(od.revision == revBefore,
+          "cycle: the submit frame changes NOTHING about the document -- no revision bump, so "
+          "no upload, so no frame shows paint that has not arrived yet");
+
+    const Driven drivenBake = drive(cycle, &od, PaintMode::Watercolor, 1);
+    const BakeCycleReport second = drivenBake.report;
+    std::printf("  [selftest] cycle: baked after %d further step(s) -> action=%d baked %zu "
+                "tile(s), %zu texel(s), peak %.4f\n",
+                drivenBake.steps + 1, static_cast<int>(second.action), second.bake.tilesWritten,
+                second.bake.texelsWritten, static_cast<double>(second.bake.peakCoverage));
+    check(second.action == BakeCycleReport::Action::Baked,
+          "cycle: a following frame finds the readback ready and bakes it");
+    check(second.bake.texelsWritten > 0, "cycle: and it wrote real texels into the layer");
+    check(!cycle.readbackInFlight(), "cycle: the cycle is idle again, ready for the next scan");
+
+    // The two assertions this whole section exists for.
+    check(od.revision > revBefore,
+          "cycle: the bake bumped OpenDocument::revision -- ui/DocumentTexture caches on it, so "
+          "without this the freshly baked tiles would sit in the document and never reach the "
+          "screen");
+    check(od.history.entries().size() > historyBefore,
+          "cycle: and appended a history entry, so a dried stroke is undoable (recordEdit does "
+          "both; see the one-bake-one-entry limitation in StrokeBake.hpp section 3)");
+
+    // Paint is now in EXACTLY ONE of the two stacked pictures.
+    {
+      std::vector<PaintSim::TileOccupancy> after;
+      check(sim.readTileOccupancy(gpu, after), "cycle: occupancy read back after the bake");
+      float bakedTileMass = 0.0f;
+      for (const auto& t : after) bakedTileMass = std::max(bakedTileMass, t.mass);
+      std::printf("  [selftest] cycle: peak solver mass anywhere after the bake -- %.2e\n",
+                  static_cast<double>(bakedTileMass));
+      check(bakedTileMass < kBakeMassFloor,
+            "cycle: the solver no longer holds ANY tile above the bake floor -- the document "
+            "and the canvas are drawn stacked, so paint left in both would render twice, at "
+            "double density");
+    }
+
+    // --- 8d. Refusals must not destroy paint -----------------------------
+    //
+    // The dangerous asymmetry: a refusal that had already cleared the solver
+    // would lose the stroke with nowhere to have put it. Every refusal path
+    // has to leave the paint wet-side, and the only way to prove that is to
+    // paint again and drive a refusal for real.
+    {
+      SimParams p{};
+      p.brushRadius = 14.0f;
+      p.brushWater = 1.4f;
+      p.brushPigment = 0.9f;
+      stroke(gpu, sim, p, 160.0f, 160.0f, 224.0f, 224.0f, 8);
+      settle(gpu, sim, p, 240);
+
+      auto peakMass = [&]() {
+        std::vector<PaintSim::TileOccupancy> occ;
+        if (!sim.readTileOccupancy(gpu, occ)) return -1.0f;
+        float m = 0.0f;
+        for (const auto& t : occ) m = std::max(m, t.mass);
+        return m;
+      };
+      const float massBefore = peakMass();
+      check(massBefore > kBakeMassFloor, "cycle: a second stroke has dried, ready to refuse on");
+
+      // An RGB layer is the wrong destination, and it is the likeliest one:
+      // Document::createBlank() always makes an RGB layer at index 0.
+      OpenDocument rgbDoc = makeBlankOpenDocument(static_cast<int32_t>(sim.width()),
+                                                  static_cast<int32_t>(sim.height()),
+                                                  WorkingSpace{}, "rgb");
+      rgbDoc.activeLayer = 0;
+      StrokeBakeCycle rgbCycle;
+      const BakeCycleReport sub = rgbCycle.step(gpu, sim, &rgbDoc, PaintMode::Watercolor, 0);
+      check(sub.action == BakeCycleReport::Action::Submitted,
+            "cycle: the scan half does not look at the destination -- it submits first");
+      const BakeCycleReport refused = drive(rgbCycle, &rgbDoc, PaintMode::Watercolor, 1).report;
+      std::printf("  [selftest] cycle: RGB destination -> action=%d (%s)\n",
+                  static_cast<int>(refused.action), refused.why);
+      check(refused.action == BakeCycleReport::Action::Refused &&
+                because(refused.why, "not a Pigment"),
+            "cycle: baking into an RGB layer is refused BY NAME rather than silently skipped");
+      check(peakMass() >= massBefore - 1e-6f,
+            "cycle: and the solver still holds every bit of the paint -- a refusal that had "
+            "cleared first would have destroyed the stroke with nowhere to have put it");
+
+      // A null document is the state before anything is open, not an error.
+      StrokeBakeCycle nullCycle;
+      nullCycle.step(gpu, sim, nullptr, PaintMode::Watercolor, 0);
+      const BakeCycleReport noDoc = drive(nullCycle, nullptr, PaintMode::Watercolor, 1).report;
+      check(noDoc.action == BakeCycleReport::Action::Refused &&
+                because(noDoc.why, "no open document"),
+            "cycle: no open document refuses by name too");
+      check(peakMass() >= massBefore - 1e-6f,
+            "cycle: and it also left the paint where it was");
+
+      // Oil reaches the same refusal through absorptionFor(), which is the
+      // point of that function returning an optional rather than a number.
+      StrokeBakeCycle oilCycle;
+      oilCycle.step(gpu, sim, &od, PaintMode::Oil, 0);
+      const BakeCycleReport oil = drive(oilCycle, &od, PaintMode::Oil, 1).report;
+      check(oil.action == BakeCycleReport::Action::Refused &&
+                because(oil.why, "does not bake"),
+            "cycle: oil refuses rather than baking a height field as if it were a wash");
+      check(peakMass() >= massBefore - 1e-6f, "cycle: oil's refusal kept the paint as well");
+    }
+
+    // --- 8e. The scan throttle -------------------------------------------
+    //
+    // Cheap (0.129 ms) is not free: every frame would spend 0.6% of PRD F3's
+    // budget re-answering a question whose answer changes on a human timescale.
+    //
+    // Against a DELIBERATELY EMPTY canvas. A scan that finds paint submits a
+    // readback, and then the next call takes the bake half instead of the scan
+    // half -- so on a loaded canvas "Idle" could mean the throttle skipped the
+    // scan, or that a readback is still in flight, or that a scan ran and found
+    // nothing. Three causes behind one action is not a test. Empty, the only
+    // two reachable states are "skipped" and "scanned and found nothing", and
+    // `why` separates them exactly.
+    {
+      sim.clearCanvas(gpu);
+      StrokeBakeCycle throttled;
+
+      const BakeCycleReport a = throttled.step(gpu, sim, &od, PaintMode::Watercolor, 100);
+      check(a.action == BakeCycleReport::Action::Idle && because(a.why, "nothing to bake"),
+            "cycle: the first call always scans, whatever the frame index it is handed");
+
+      const BakeCycleReport soon = throttled.step(gpu, sim, &od, PaintMode::Watercolor, 101);
+      check(soon.action == BakeCycleReport::Action::Idle && soon.why[0] == '\0',
+            "cycle: a scan one frame later does not run at all -- it reports no reason because "
+            "it never looked, which is how a skipped scan differs from an empty one");
+
+      const BakeCycleReport edge = throttled.step(
+          gpu, sim, &od, PaintMode::Watercolor, 100 + StrokeBakeCycle::kScanIntervalFrames - 1);
+      check(edge.why[0] == '\0',
+            "cycle: and the frame one short of the interval is still skipped -- the boundary is "
+            "where an off-by-one would hide");
+
+      const BakeCycleReport later = throttled.step(
+          gpu, sim, &od, PaintMode::Watercolor, 100 + StrokeBakeCycle::kScanIntervalFrames);
+      check(because(later.why, "nothing to bake"),
+            "cycle: and it scans again on exactly the frame the interval is up");
+      check(!throttled.readbackInFlight(),
+            "cycle: the section leaves no readback mapped behind it -- an abandoned mapping "
+            "makes the next wgpuQueueSubmit a validation error that aborts the process");
+    }
+  }
+
   sim.shutdown();
   std::printf("[selftest] stroke bridge %s\n", ok ? "PASS" : "FAIL");
   return ok;

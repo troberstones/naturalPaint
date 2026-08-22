@@ -524,6 +524,13 @@ class PaintSim {
   // later submit, naming the wrong code. app/Screenshot.hpp states the same
   // hazard from the write side.
   WGPUBuffer readbackBuf_ = nullptr;
+  // Cached at init(), and the only GPU handle this class keeps -- every other
+  // entry point takes a GpuContext. endPigmentReadback() needs it and cannot
+  // be given one: it is called from shutdown(), which has no GpuContext of its
+  // own, and from cancel paths where threading a context through would mean
+  // changing every caller to serve one of them. See its implementation for
+  // what it has to pump and why.
+  WGPUInstance instance_ = nullptr;
   size_t readbackBytes_ = 0;
   std::vector<BridgeTile> readbackTiles_;
   const float* readbackMapped_ = nullptr;

@@ -26,6 +26,7 @@
 #include "app/Memory.hpp"
 #include "app/Screenshot.hpp"
 #include "app/SelfTest.hpp"
+#include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
 #include "brush/Deposit.hpp"
 #include "color/Space.hpp"
@@ -1842,6 +1843,13 @@ int main(int argc, char** argv) {
   latency.setVerbose(latencyVerbose);
   bool strokeWasActive = false;
 
+  // The stroke bridge's frame sequence (app/StrokeBake.hpp section 1). A local
+  // beside fixedStepAcc rather than a member of app::AppState, for the reason
+  // app/DocumentLifecycle.hpp set out when it drew that line: AppState holds
+  // document and session state, and this is neither -- it is per-process
+  // solver-bridge bookkeeping with the same lifetime as the loop below.
+  np::StrokeBakeCycle bakeCycle;
+
   // Frame counter, used only by --screenshot: the first frames are not
   // representative (ImGui lays out docked panels on frame 1).
   uint64_t frameIndex = 0;
@@ -1979,6 +1987,26 @@ int main(int argc, char** argv) {
     }
 
     ImGui::NewFrame();
+
+    // ---- the stroke bridge: dried paint moves into the document -----------
+    //
+    // **This call must stay above drawUI(), and the reason is not obvious.**
+    // ui/MacPaintUI draws the solver canvas and the document as two stacked
+    // quads, and ui/DocumentTexture caches its upload on
+    // OpenDocument::revision, which drawUI() reads. Baking here bumps that
+    // revision before the read, so the document uploads this frame, and the
+    // solver clear that goes with it is submitted long before present -- both
+    // pictures change in the same presented image.
+    //
+    // Move this below drawUI() and it still compiles, still passes every
+    // headless assertion, and puts a one-frame dropout on every stroke that
+    // dries: the clear lands (a texture view samples the latest GPU write)
+    // while the document upload waits for next frame's cache key. The full
+    // argument, including the double-render failure in the other direction,
+    // is app/StrokeBake.hpp section 1.
+    if (sim) {
+      bakeCycle.step(gpu, *sim, st.documents.active(), sim->mode(), frameIndex);
+    }
 
     np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
 

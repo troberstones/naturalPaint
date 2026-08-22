@@ -135,6 +135,7 @@ void PingPong::release() {
 
 bool PaintSim::init(GpuContext& gpu, uint32_t width, uint32_t height,
                          const MixboxLut& lut) {
+  instance_ = gpu.instance;
   WGPUSamplerDescriptor sd = {};
   sd.addressModeU = WGPUAddressMode_ClampToEdge;
   sd.addressModeV = WGPUAddressMode_ClampToEdge;
@@ -1249,7 +1250,34 @@ const float* PaintSim::pigmentReadbackDepR(size_t tileIndex) const {
 }
 
 void PaintSim::endPigmentReadback() {
-  if (readbackState_ == PigmentReadback::Ready) wgpuBufferUnmap(readbackBuf_);
+  // **A Submitted readback has to be drained, not just forgotten.**
+  //
+  // `beginPigmentReadback()` issues a `wgpuBufferMapAsync`, and until its
+  // callback fires the buffer is neither mapped (so `wgpuBufferUnmap` would be
+  // wrong) nor free. Clearing the bookkeeping and returning -- which is what
+  // this function used to do for every state except `Ready` -- leaves the
+  // callback to map a buffer that nothing will ever unmap, and from that point
+  // **every `wgpuQueueSubmit` is a validation error that aborts the process**:
+  //
+  //   Error in wgpuQueueSubmit: Validation Error
+  //   Caused by: Buffer with 'pigment tile readback' label is still mapped
+  //
+  // It stayed invisible because the one caller that cancelled mid-flight was
+  // the last thing in its `--selftest` section, so nothing submitted after it.
+  // The frame sequence (app/StrokeBake.hpp) cancels on every refused bake and
+  // then keeps running, which is what turned a latent leak into a crash.
+  //
+  // Pumping here blocks, and that is the right trade for this path: it is the
+  // cancel/teardown path rather than the per-frame one, the work is already
+  // submitted so the wait is bounded by a copy that is on its way, and the
+  // alternative is a process that dies on its next frame.
+  if (readbackState_ == PigmentReadback::Submitted && instance_ != nullptr) {
+    while (readbackDone_ == 0) wgpuInstanceProcessEvents(instance_);
+    // Only a successful map has anything to unmap; a failed one never mapped.
+    if (readbackOk_) wgpuBufferUnmap(readbackBuf_);
+  } else if (readbackState_ == PigmentReadback::Ready) {
+    wgpuBufferUnmap(readbackBuf_);
+  }
   readbackMapped_ = nullptr;
   readbackTiles_.clear();
   readbackDone_ = 0;
@@ -1452,6 +1480,13 @@ PaintSim::Stats PaintSim::computeStats(GpuContext& gpu) {
 }
 
 void PaintSim::shutdown() {
+  // Before anything is released. A pigment readback that is still mapped makes
+  // the *next* wgpuQueueSubmit a validation error ("Buffer with 'pigment tile
+  // readback' label is still mapped"), which aborts the process -- and quitting
+  // mid-cycle is an ordinary thing to do now that app/StrokeBakeCycle drives a
+  // two-frame readback from the frame loop. endPigmentReadback() is documented
+  // as safe in any state, so this needs no guard.
+  endPigmentReadback();
   releaseFields();
   if (linear_) { wgpuSamplerRelease(linear_); linear_ = nullptr; }
   if (uniform_) { wgpuBufferDestroy(uniform_); wgpuBufferRelease(uniform_); uniform_ = nullptr; }
