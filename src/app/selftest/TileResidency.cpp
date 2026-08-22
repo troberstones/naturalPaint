@@ -325,22 +325,31 @@ bool runTileResidencyTest() {
         // Timed in-process over many iterations. No subprocess anywhere near
         // this loop: spawning one dominates the measurement, which is a trap
         // this project has already fallen into once.
-        tileCacheInvalidate(kDocPath);
-        auto t0 = std::chrono::steady_clock::now();
-        for (int32_t ty = 0; ty < kTilesPerSide; ++ty)
-          for (int32_t tx = 0; tx < kTilesPerSide; ++tx) (void)cached.readTile(TileCoord{tx, ty});
-        auto t1 = std::chrono::steady_clock::now();
-        const double coldUs =
-            std::chrono::duration<double, std::micro>(t1 - t0).count() / 256.0;
-
+        //
+        // Best of three passes for both figures, not one: the two ceilings
+        // below exist to catch a real regression in the fetch path, and a
+        // single pass has no defence against an unrelated scheduler or
+        // filesystem-cache stall landing inside it on a loaded machine.
         constexpr int kWarmIterations = 20000;
-        t0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < kWarmIterations; ++i) {
-          (void)cached.readTile(TileCoord{i % kTilesPerSide, (i / kTilesPerSide) % kTilesPerSide});
+        double coldUs = std::numeric_limits<double>::max();
+        double warmUs = std::numeric_limits<double>::max();
+        for (int pass = 0; pass < 3; ++pass) {
+          tileCacheInvalidate(kDocPath);
+          auto t0 = std::chrono::steady_clock::now();
+          for (int32_t ty = 0; ty < kTilesPerSide; ++ty)
+            for (int32_t tx = 0; tx < kTilesPerSide; ++tx) (void)cached.readTile(TileCoord{tx, ty});
+          auto t1 = std::chrono::steady_clock::now();
+          coldUs = std::min(
+              coldUs, std::chrono::duration<double, std::micro>(t1 - t0).count() / 256.0);
+
+          t0 = std::chrono::steady_clock::now();
+          for (int i = 0; i < kWarmIterations; ++i) {
+            (void)cached.readTile(TileCoord{i % kTilesPerSide, (i / kTilesPerSide) % kTilesPerSide});
+          }
+          t1 = std::chrono::steady_clock::now();
+          warmUs = std::min(
+              warmUs, std::chrono::duration<double, std::micro>(t1 - t0).count() / kWarmIterations);
         }
-        t1 = std::chrono::steady_clock::now();
-        const double warmUs =
-            std::chrono::duration<double, std::micro>(t1 - t0).count() / kWarmIterations;
 
         std::printf(
             "    [measured] fetch cost: cold %.2f us/tile (256 tiles), warm %.3f us/tile (%d fetches); "

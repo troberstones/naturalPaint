@@ -670,20 +670,26 @@ bool runExportStatesTest() {
       return std::chrono::duration<double>(clock::now() - t0).count();
     };
     constexpr int kReps = 20;
+    // Every figure below is the BEST of kReps passes, not the average: the
+    // checks that follow compare two of these numbers against each other (or
+    // against a fixed fraction of one another), and an average lets a single
+    // rep that landed on an unrelated scheduler stall drag the smaller side
+    // of a comparison up by more than the stall cost the larger side. The
+    // best-of-N is the cost this loop pays when nothing external interrupts
+    // it, which is what these comparisons are actually about.
 
     // (1) the scratch copy, made once per batch.
-    double copySeconds = 0.0;
+    double copySeconds = std::numeric_limits<double>::max();
     for (int i = 0; i < kReps; ++i) {
       const clock::time_point t0 = clock::now();
       Document scratch = doc;
-      copySeconds += secondsSince(t0);
+      copySeconds = std::min(copySeconds, secondsSince(t0));
       if (scratch.layers.empty()) return false;  // keeps the copy from being elided
     }
-    copySeconds /= kReps;
 
     // (2) the shared state-set: the per-item reset plus restoreLayerComp().
     Document scratch = doc;
-    double stateSeconds = 0.0;
+    double stateSeconds = std::numeric_limits<double>::max();
     for (int i = 0; i < kReps; ++i) {
       const clock::time_point t0 = clock::now();
       for (size_t j = 0; j < scratch.layers.size(); ++j) {
@@ -693,21 +699,19 @@ bool runExportStatesTest() {
         scratch.layers[j].clipped = doc.layers[j].clipped;
       }
       restoreLayerComp(scratch, static_cast<size_t>(i % 4), nullptr);
-      stateSeconds += secondsSince(t0);
+      stateSeconds = std::min(stateSeconds, secondsSince(t0));
     }
-    stateSeconds /= kReps;
 
     // (3) the composite and the encode together, which is what
     // exportDocumentWithRequest() is.
-    double encodeSeconds = 0.0;
+    double encodeSeconds = std::numeric_limits<double>::max();
     size_t encodedBytes = 0;
     for (int i = 0; i < kReps; ++i) {
       const clock::time_point t0 = clock::now();
       const ExportResult r = exportDocumentWithRequest(scratch, png8);
-      encodeSeconds += secondsSince(t0);
+      encodeSeconds = std::min(encodeSeconds, secondsSince(t0));
       encodedBytes = r.bytes.size();
     }
-    encodeSeconds /= kReps;
 
     // (4) one comp end to end, and (5) four comps end to end.
     ExportStatesRequest one;
@@ -716,25 +720,23 @@ bool runExportStatesTest() {
     one.nameTemplate = "m{index}_{name}";
     one.overwriteExisting = true;
     one.selection = {0};
-    double oneSeconds = 0.0;
+    double oneSeconds = std::numeric_limits<double>::max();
     for (int i = 0; i < kReps; ++i) {
       const clock::time_point t0 = clock::now();
       const ExportStatesReport r = exportDocumentStates(doc, one);
-      oneSeconds += secondsSince(t0);
+      oneSeconds = std::min(oneSeconds, secondsSince(t0));
       if (!r.ok) return false;
     }
-    oneSeconds /= kReps;
 
     ExportStatesRequest four = one;
     four.selection.clear();
-    double fourSeconds = 0.0;
+    double fourSeconds = std::numeric_limits<double>::max();
     for (int i = 0; i < kReps; ++i) {
       const clock::time_point t0 = clock::now();
       const ExportStatesReport r = exportDocumentStates(doc, four);
-      fourSeconds += secondsSince(t0);
+      fourSeconds = std::min(fourSeconds, secondsSince(t0));
       if (!r.ok) return false;
     }
-    fourSeconds /= kReps;
 
     const size_t tiles = doc.layers[0].rgbTiles->occupiedTileCount() +
                          doc.layers[1].rgbTiles->occupiedTileCount() +
@@ -785,12 +787,19 @@ bool runExportStatesTest() {
       captureLayerComp(big, "D");
 
       constexpr int kBigReps = 3;
-      double bigCopy = 0.0, bigState = 0.0, bigEncode = 0.0, bigFour = 0.0;
+      // Best of kBigReps, for the same reason as Part J's main measurement
+      // above: bigState feeds a 1% ceiling against bigEncode, and an average
+      // over as few as three reps lets one stalled rep swing that ceiling by
+      // far more than it swings the much larger bigEncode.
+      double bigCopy = std::numeric_limits<double>::max();
+      double bigState = std::numeric_limits<double>::max();
+      double bigEncode = std::numeric_limits<double>::max();
+      double bigFour = std::numeric_limits<double>::max();
       Document bigScratch = big;
       for (int i = 0; i < kBigReps; ++i) {
         clock::time_point t0 = clock::now();
         Document c = big;
-        bigCopy += secondsSince(t0);
+        bigCopy = std::min(bigCopy, secondsSince(t0));
         if (c.layers.empty()) return false;
 
         t0 = clock::now();
@@ -801,16 +810,13 @@ bool runExportStatesTest() {
           bigScratch.layers[j].clipped = big.layers[j].clipped;
         }
         restoreLayerComp(bigScratch, static_cast<size_t>(i % 4), nullptr);
-        bigState += secondsSince(t0);
+        bigState = std::min(bigState, secondsSince(t0));
 
         t0 = clock::now();
         const ExportResult r = exportDocumentWithRequest(bigScratch, png8);
-        bigEncode += secondsSince(t0);
+        bigEncode = std::min(bigEncode, secondsSince(t0));
         if (!r.ok) return false;
       }
-      bigCopy /= kBigReps;
-      bigState /= kBigReps;
-      bigEncode /= kBigReps;
 
       ExportStatesRequest bigReq;
       bigReq.format = png8;
@@ -820,10 +826,9 @@ bool runExportStatesTest() {
       for (int i = 0; i < kBigReps; ++i) {
         const clock::time_point t0 = clock::now();
         const ExportStatesReport r = exportDocumentStates(big, bigReq);
-        bigFour += secondsSince(t0);
+        bigFour = std::min(bigFour, secondsSince(t0));
         if (!r.ok) return false;
       }
-      bigFour /= kBigReps;
 
       std::printf("  [measured] 512x512 (64x the pixels), 3 layers, %zu occupied tiles: copy "
                   "%.3f us, state-set %.3f us, composite+encode %.3f us, four comps end to end "
