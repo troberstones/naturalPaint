@@ -1,7 +1,9 @@
 #include "app/StrokeBake.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <limits>
 
 #include "core/PigmentBake.hpp"
 
@@ -122,70 +124,7 @@ BakeCycleReport StrokeBakeCycle::step(GpuContext& gpu, PaintSim& sim, OpenDocume
       return report;
     }
 
-    // Everything below can refuse, and every refusal path must leave the
-    // solver untouched: the paint is only safe to clear once it is in a layer.
-    Layer* layer = (doc != nullptr) ? activeLayerOf(*doc) : nullptr;
-    const std::optional<float> absorption = absorptionFor(mode);
-    const char* refusal = nullptr;
-    if (doc == nullptr) {
-      refusal = "no open document";
-    } else if (layer == nullptr) {
-      refusal = "no active layer";
-    } else if (layer->kind != LayerKind::Pigment || !layer->pigmentTiles.has_value()) {
-      refusal = "active layer is not a Pigment layer";
-    } else if (layer->locked) {
-      // Matches app/StrokeSession's routing rule: a locked layer refuses
-      // rather than falling through to somewhere the user did not aim.
-      refusal = "active layer is locked";
-    } else if (!absorption.has_value()) {
-      refusal = "this medium does not bake";
-    }
-
-    if (refusal != nullptr) {
-      sim.endPigmentReadback();
-      inFlight_.clear();
-      report.action = BakeCycleReport::Action::Refused;
-      report.why = refusal;
-      return report;
-    }
-
-    report.bake = bakePigmentTiles(sim, *layer, *absorption);
-
-    // The clear goes with the bake, in this order and this frame. See
-    // StrokeBake.hpp section 1: the two pictures are stacked, so a frame
-    // presented between these two lines shows the paint twice.
-    sim.clearBakedTiles(gpu, inFlight_);
-    sim.endPigmentReadback();
-
-    // One of these moves `OpenDocument::revision`, and DocumentTexture caches
-    // on it -- without that the freshly baked tiles would sit in the document
-    // and never reach the screen. Content rather than Structural: this is
-    // paint, so app/Journal writes on its timer rather than within the frame
-    // (ADR-0008).
-    //
-    // Which one depends on whether this batch continues a drying episode. The
-    // check is "is the top entry still the one I created?", asked by serial
-    // rather than by index, because an eviction or an unrelated edit in
-    // between must start a new entry rather than silently rewrite someone
-    // else's. amendEdit() refuses on its own if the cursor has moved -- the
-    // user undid something mid-drying -- and the fallback below is then to
-    // record, which is right: after an undo, this batch really is a new act.
-    const std::vector<HistoryEntry>& entries = doc->history.entries();
-    const bool continues = episodeSerial_ != 0 && !entries.empty() &&
-                           entries.back().serial == episodeSerial_;
-    if (continues && doc->amendEdit("dried paint", EditKind::Content)) {
-      report.coalesced = true;
-    } else {
-      doc->recordEdit("dried paint", EditKind::Content);
-      episodeSerial_ = doc->history.entries().empty()
-                           ? 0
-                           : doc->history.entries().back().serial;
-    }
-
-    report.action = BakeCycleReport::Action::Baked;
-    report.tiles = inFlight_.size();
-    inFlight_.clear();
-    return report;
+    return bakeReadyTiles(gpu, sim, doc, mode);
   }
 
   // --- The scan half: is anything dry enough to take? ---------------------
@@ -228,6 +167,171 @@ BakeCycleReport StrokeBakeCycle::step(GpuContext& gpu, PaintSim& sim, OpenDocume
   inFlight_ = scan.ready;
   report.action = BakeCycleReport::Action::Submitted;
   report.tiles = inFlight_.size();
+  return report;
+}
+
+BakeCycleReport StrokeBakeCycle::bakeReadyTiles(GpuContext& gpu, PaintSim& sim, OpenDocument* doc,
+                                                PaintMode mode) {
+  BakeCycleReport report;
+  // Everything below can refuse, and every refusal path must leave the
+  // solver untouched: the paint is only safe to clear once it is in a layer.
+  Layer* layer = (doc != nullptr) ? activeLayerOf(*doc) : nullptr;
+  const std::optional<float> absorption = absorptionFor(mode);
+  const char* refusal = nullptr;
+  if (doc == nullptr) {
+    refusal = "no open document";
+  } else if (layer == nullptr) {
+    refusal = "no active layer";
+  } else if (layer->kind != LayerKind::Pigment || !layer->pigmentTiles.has_value()) {
+    refusal = "active layer is not a Pigment layer";
+  } else if (layer->locked) {
+    // Matches app/StrokeSession's routing rule: a locked layer refuses
+    // rather than falling through to somewhere the user did not aim.
+    refusal = "active layer is locked";
+  } else if (!absorption.has_value()) {
+    refusal = "this medium does not bake";
+  }
+
+  if (refusal != nullptr) {
+    sim.endPigmentReadback();
+    inFlight_.clear();
+    report.action = BakeCycleReport::Action::Refused;
+    report.why = refusal;
+    return report;
+  }
+
+  report.bake = bakePigmentTiles(sim, *layer, *absorption);
+
+  // The clear goes with the bake, in this order and this frame. See
+  // StrokeBake.hpp section 1: the two pictures are stacked, so a frame
+  // presented between these two lines shows the paint twice.
+  sim.clearBakedTiles(gpu, inFlight_);
+  sim.endPigmentReadback();
+
+  // One of these moves `OpenDocument::revision`, and DocumentTexture caches
+  // on it -- without that the freshly baked tiles would sit in the document
+  // and never reach the screen. Content rather than Structural: this is
+  // paint, so app/Journal writes on its timer rather than within the frame
+  // (ADR-0008).
+  //
+  // Which one depends on whether this batch continues a drying episode. The
+  // check is "is the top entry still the one I created?", asked by serial
+  // rather than by index, because an eviction or an unrelated edit in
+  // between must start a new entry rather than silently rewrite someone
+  // else's. amendEdit() refuses on its own if the cursor has moved -- the
+  // user undid something mid-drying -- and the fallback below is then to
+  // record, which is right: after an undo, this batch really is a new act.
+  const std::vector<HistoryEntry>& entries = doc->history.entries();
+  const bool continues = episodeSerial_ != 0 && !entries.empty() &&
+                         entries.back().serial == episodeSerial_;
+  if (continues && doc->amendEdit("dried paint", EditKind::Content)) {
+    report.coalesced = true;
+  } else {
+    doc->recordEdit("dried paint", EditKind::Content);
+    episodeSerial_ = doc->history.entries().empty()
+                         ? 0
+                         : doc->history.entries().back().serial;
+  }
+
+  report.action = BakeCycleReport::Action::Baked;
+  report.tiles = inFlight_.size();
+  inFlight_.clear();
+  return report;
+}
+
+BakeCycleReport StrokeBakeCycle::forceBake(GpuContext& gpu, PaintSim& sim, OpenDocument* doc,
+                                           PaintMode mode) {
+  using Clock = std::chrono::steady_clock;
+  const auto started = Clock::now();
+  const auto elapsed = [&started]() {
+    return std::chrono::duration<double>(Clock::now() - started).count();
+  };
+  BakeCycleReport report;
+
+  // A cycle already in flight owns the readback slot, and beginPigmentReadback()
+  // refuses a second one. Finish it first rather than abandoning it -- those
+  // tiles are part of the same stroke and belong in the same entry.
+  while (!inFlight_.empty()) {
+    const PaintSim::PigmentReadback state = sim.pollPigmentReadback(gpu);
+    if (state == PaintSim::PigmentReadback::Ready) {
+      report = bakeReadyTiles(gpu, sim, doc, mode);
+      break;
+    }
+    if (state != PaintSim::PigmentReadback::Submitted) {
+      sim.endPigmentReadback();
+      inFlight_.clear();
+      report.action = BakeCycleReport::Action::Refused;
+      report.why = "readback did not complete";
+      return report;
+    }
+    if (elapsed() >= kForceBakeTimeoutSeconds) {
+      // Leave the readback alone: it is still legitimately in flight, and
+      // `step()` will drain it on a later frame. Refusing here loses no paint,
+      // it only means the caller must not treat the canvas as settled.
+      report.action = BakeCycleReport::Action::Refused;
+      report.why = "timed out waiting for an in-flight readback";
+      return report;
+    }
+  }
+  // A refusal from that drain (locked layer, wrong layer kind) applies just as
+  // much to the wet tiles below, so stop rather than retrying the same refusal.
+  if (report.action == BakeCycleReport::Action::Refused) return report;
+
+  std::vector<PaintSim::TileOccupancy> occupancy;
+  if (!sim.readTileOccupancy(gpu, occupancy)) {
+    report.why = "no solver fields yet";
+    return report;
+  }
+
+  // The one line that makes this a *forced* bake: an infinite wetness floor,
+  // so `t.wetness > wetnessFloor` is false for every tile and nothing is held
+  // back. Everything with mass comes, however wet.
+  const DryTileScan scan =
+      selectDryTiles(occupancy, sim.tileCountX(), sim.tileCountY(), kBakeMassFloor,
+                     std::numeric_limits<float>::infinity());
+  if (scan.ready.empty()) {
+    // Nothing on the canvas. The episode closes here for the same reason the
+    // scan half of step() closes it: the canvas is quiet, so whatever was
+    // drying is done, and the next stroke must start its own entry.
+    episodeSerial_ = 0;
+    report.why = "nothing to bake";
+    return report;
+  }
+
+  if (!sim.beginPigmentReadback(gpu, scan.ready)) {
+    report.action = BakeCycleReport::Action::Refused;
+    report.why = "readback refused";
+    return report;
+  }
+  inFlight_ = scan.ready;
+
+  // Bounded by wall clock, never by poll count. A poll is ~0.2 us and the copy
+  // it is waiting on is ~3.3 ms, so an iteration-bounded loop gives up roughly
+  // four orders of magnitude early -- it abandons a pending map, which is how
+  // the "buffer is still mapped" abort was produced twice before.
+  for (;;) {
+    const PaintSim::PigmentReadback state = sim.pollPigmentReadback(gpu);
+    if (state == PaintSim::PigmentReadback::Ready) break;
+    if (state != PaintSim::PigmentReadback::Submitted) {
+      sim.endPigmentReadback();
+      inFlight_.clear();
+      report.action = BakeCycleReport::Action::Refused;
+      report.why = "readback did not complete";
+      return report;
+    }
+    if (elapsed() >= kForceBakeTimeoutSeconds) {
+      report.action = BakeCycleReport::Action::Refused;
+      report.why = "timed out waiting for the forced readback";
+      return report;
+    }
+  }
+
+  report = bakeReadyTiles(gpu, sim, doc, mode);
+  // Whatever happened above, the stroke is over as far as this cycle is
+  // concerned: the caller is about to replace the document. Leaving the
+  // episode open would let the next stroke amend an entry that belongs to a
+  // document state the user has navigated away from.
+  episodeSerial_ = 0;
   return report;
 }
 

@@ -1839,12 +1839,17 @@ int main(int argc, char** argv) {
   latency.setVerbose(latencyVerbose);
   bool strokeWasActive = false;
 
-  // The stroke bridge's frame sequence (app/StrokeBake.hpp section 1). A local
-  // beside fixedStepAcc rather than a member of app::AppState, for the reason
-  // app/DocumentLifecycle.hpp set out when it drew that line: AppState holds
-  // document and session state, and this is neither -- it is per-process
-  // solver-bridge bookkeeping with the same lifetime as the loop below.
-  np::StrokeBakeCycle bakeCycle;
+  // The stroke bridge's frame sequence (app/StrokeBake.hpp section 1) now
+  // lives in `st.bakeCycle`, not as a local here.
+  //
+  // It was a local, on the argument that AppState holds document and session
+  // state and this is neither. That argument was right about what the cycle
+  // *is* and wrong about who needs it: ui/MacPaintUI has to force the same
+  // cycle to settle before it moves the history cursor (app/StrokeBake.hpp
+  // section 4), and a local here is unreachable from there. Giving MacPaintUI
+  // its own would be worse than untidy -- each would keep a separate drying
+  // episode, so one stroke would produce two history entries, and both would
+  // contend for the solver's single readback slot.
 
   // Frame counter, used only by --screenshot: the first frames are not
   // representative (ImGui lays out docked panels on frame 1).
@@ -2001,7 +2006,7 @@ int main(int argc, char** argv) {
     // argument, including the double-render failure in the other direction,
     // is app/StrokeBake.hpp section 1.
     if (sim) {
-      bakeCycle.step(gpu, *sim, st.documents.active(), sim->mode(), frameIndex);
+      st.bakeCycle.step(gpu, *sim, st.documents.active(), sim->mode(), frameIndex);
     }
 
     np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);

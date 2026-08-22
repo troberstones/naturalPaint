@@ -6,6 +6,7 @@
 
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
+#include "app/StrokeBake.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "paint/Palette.hpp"
@@ -109,6 +110,13 @@ struct Guide {
 
 struct AppState {
   PaintMode mode = PaintMode::Watercolor;
+  // The stroke bridge's per-frame cycle. It lives here rather than as a local
+  // in main()'s frame loop because two callers need the same one: main.cpp
+  // steps it every frame (above drawUI() -- see app/StrokeBake.hpp section 1),
+  // and ui/MacPaintUI forces it to settle before moving the history cursor
+  // (section 4). Two cycles would each keep their own drying episode and
+  // fight over one readback slot.
+  StrokeBakeCycle bakeCycle;
   // Seconds a wash keeps moving before it sets. Drives evaporation and
   // absorption together via setWorkingTime(); 15 matches the shipped defaults.
   float workingTime = 15.0f;

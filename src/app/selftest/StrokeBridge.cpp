@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include <chrono>
+#include <limits>
 
 #include "app/StrokeBake.hpp"
 #include "core/PigmentBake.hpp"
@@ -938,6 +939,142 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
             "cadence: so the stranger's edit is left exactly as it was, and undo does not "
             "remove a layer and a wash in one step");
     }
+  }
+
+  // 10. Undo while the paint is still wet.
+  //
+  // The failure this prevents is not subtle once seen: ui/MacPaintUI draws the
+  // solver canvas and the document as two stacked quads, and a cursor move
+  // replaces the document without touching the solver. So a stroke that has
+  // not finished drying stays on screen over a state the user undid to, and
+  // the next bake deposits it there. app/StrokeBake.hpp section 4 argues it;
+  // this proves it.
+  {
+    SimParams p{};
+    p.brushRadius = 14.0f;
+    p.brushWater = 1.4f;
+    p.brushPigment = 0.9f;
+
+    OpenDocument od = makeBlankOpenDocument(static_cast<int32_t>(sim.width()),
+                                            static_cast<int32_t>(sim.height()),
+                                            WorkingSpace{}, "wet-undo");
+    recordLayerEdit(od, addLayer(od.document, od.document.layers.size(),
+                                 makePigmentLayer("wet wash")));
+    od.activeLayer = od.document.layers.size() - 1;
+
+    StrokeBakeCycle cycle;
+    sim.clearCanvas(gpu);
+    // Measured, not assumed: makeBlankOpenDocument() and the recordLayerEdit()
+    // above both put entries in, and the claim below is about what the STROKE
+    // added, not about the absolute count.
+    const size_t entriesAtStart = od.history.entries().size();
+    // Deliberately NOT settled. Every other section in this file waits 240
+    // frames for wetness to reach zero; the whole point here is the state
+    // those waits exist to avoid.
+    stroke(gpu, sim, p, 40.0f, 40.0f, 100.0f, 100.0f, 8);
+
+    // --- 10a. The per-frame cycle refuses to touch it --------------------
+    const BakeCycleReport held = cycle.step(gpu, sim, &od, PaintMode::Watercolor, 0);
+    check(held.action == BakeCycleReport::Action::Idle && held.wetHeld > 0 &&
+              because(held.why, "still wet"),
+          "wet undo: step() HOLDS wet paint rather than baking it -- baking early would drop "
+          "whatever is still suspended, so the frame loop waits");
+    check(od.history.entries().size() == entriesAtStart,
+          "wet undo: so the stroke has added NOTHING to history yet -- it exists only in the "
+          "solver, which is exactly why an undo taken now would walk past it");
+
+    const size_t entriesBefore = od.history.entries().size();
+    const uint64_t revBefore = od.revision;
+
+    // --- 10b. A forced bake takes it anyway ------------------------------
+    const BakeCycleReport forced = cycle.forceBake(gpu, sim, &od, PaintMode::Watercolor);
+    std::printf("  [selftest] wet undo: forceBake -> action=%d tiles=%zu texels=%zu (%s)\n",
+                static_cast<int>(forced.action), forced.tiles, forced.bake.texelsWritten,
+                forced.why);
+    check(forced.action == BakeCycleReport::Action::Baked && forced.bake.texelsWritten > 0,
+          "wet undo: forceBake() takes the very tiles step() held, and writes real texels -- "
+          "the wetness floor is the only difference between them");
+    check(od.revision > revBefore,
+          "wet undo: it moved OpenDocument::revision, so ui/DocumentTexture will upload the "
+          "paint rather than leaving it invisible in the document");
+    check(od.history.entries().size() == entriesBefore + 1,
+          "wet undo: and appended exactly one entry -- the stroke is now an act that can be "
+          "undone, which is the thing it was not a moment ago");
+
+    // --- 10c. The invariant the whole feature exists for ------------------
+    //
+    // The episode check comes FIRST, before any step(). Written the other way
+    // round it passes for the wrong reason and proves nothing: step()'s scan
+    // half closes the episode itself when it finds a quiet canvas, so asking
+    // afterwards asks about step(), not about forceBake(). Verified by
+    // deleting forceBake()'s `episodeSerial_ = 0` -- in the original order the
+    // suite stayed green, and in this order it fails.
+    check(!cycle.inDryingEpisode(),
+          "wet undo: the forced bake CLOSES the drying episode itself, so the next stroke "
+          "starts its own entry instead of amending one that belongs to a state the user has "
+          "navigated away from");
+
+    const BakeCycleReport afterForce =
+        cycle.step(gpu, sim, &od, PaintMode::Watercolor, StrokeBakeCycle::kScanIntervalFrames);
+    check(because(afterForce.why, "nothing to bake") && afterForce.wetHeld == 0,
+          "wet undo: THE SOLVER IS EMPTY afterwards -- nothing wet, nothing ready. This is the "
+          "invariant: after this call the two stacked pictures cannot disagree, so replacing "
+          "the document underneath cannot leave paint floating over it");
+
+    // --- 10d. One undo, and it lands where the painter expects -----------
+    //
+    // The ordering rule made concrete. The target is computed from the cursor
+    // AFTER the forced bake, which is why one step lands on the document that
+    // was under the wet stroke. A target computed before the bake would have
+    // been `cursor() - 1` of the pre-bake cursor -- one act too far back.
+    const size_t cursorAfterBake = od.history.cursor();
+    check(od.history.entries().back().serial ==
+              od.history.entries()[cursorAfterBake].serial,
+          "wet undo: the forced bake left the cursor on its own new entry, so 'one back' means "
+          "'before this stroke'");
+    const Document* undone = od.history.undo();
+    check(undone != nullptr, "wet undo: and there is something to undo");
+    if (undone != nullptr) {
+      const Layer& layerThen = undone->layers[od.activeLayer];
+      check(layerThen.pigmentTiles.has_value() &&
+                layerThen.pigmentTiles->occupiedTileCount() == 0,
+            "wet undo: ONE undo reaches the document as it was before the wet stroke -- the "
+            "layer is back to empty, not one act further back");
+    }
+
+    // --- 10e. A forced bake with nothing to take is not an act -----------
+    StrokeBakeCycle quiet;
+    sim.clearCanvas(gpu);
+    const size_t entriesQuiet = od.history.entries().size();
+    const BakeCycleReport nothing = quiet.forceBake(gpu, sim, &od, PaintMode::Watercolor);
+    check(nothing.action == BakeCycleReport::Action::Idle &&
+              because(nothing.why, "nothing to bake"),
+          "wet undo: forcing a bake on an empty canvas does nothing and says so -- undo must "
+          "stay free when there is no wet paint, which is almost every undo");
+    check(od.history.entries().size() == entriesQuiet,
+          "wet undo: and records NO entry, so settling before every cursor move cannot pile up "
+          "empty 'dried paint' rows");
+
+    // --- 10f. A refusal leaves the paint where it is ---------------------
+    //
+    // Same rule the per-frame cycle follows: the solver is only safe to clear
+    // once the paint is in a layer. A forced bake with nowhere to put it must
+    // not be the thing that destroys the stroke.
+    StrokeBakeCycle homeless;
+    stroke(gpu, sim, p, 200.0f, 200.0f, 260.0f, 260.0f, 8);
+    const BakeCycleReport refused = homeless.forceBake(gpu, sim, nullptr, PaintMode::Watercolor);
+    check(refused.action == BakeCycleReport::Action::Refused &&
+              because(refused.why, "no open document"),
+          "wet undo: a forced bake with no document refuses by name");
+    std::vector<PaintSim::TileOccupancy> stillThere;
+    const bool readBack = sim.readTileOccupancy(gpu, stillThere);
+    const DryTileScan survives =
+        selectDryTiles(stillThere, sim.tileCountX(), sim.tileCountY(), kBakeMassFloor,
+                       std::numeric_limits<float>::infinity());
+    check(readBack && !survives.ready.empty(),
+          "wet undo: and the paint is STILL IN THE SOLVER afterwards -- a refusal costs the "
+          "painter nothing, which is what makes settling safe to do unconditionally");
+    sim.clearCanvas(gpu);
   }
 
   sim.shutdown();

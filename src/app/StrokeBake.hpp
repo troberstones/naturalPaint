@@ -125,14 +125,15 @@ BakeResult bakePigmentTiles(const PaintSim& sim, Layer& layer, float absorption)
 //
 // --- 3. What is deliberately NOT here -------------------------------------
 //
-// **The cadence is one bake, one history entry -- not one stroke, one entry.**
-// `OpenDocument::recordEdit()` appends to history, and a wash that dries in
-// three batches therefore produces three entries where a painter expects one.
-// Undo-while-wet, which has to force a bake before it can undo anything, is
-// not handled either. Both belong to the deferred-history step and neither is
-// repairable from inside a per-frame cycle -- collapsing entries needs to know
-// a stroke ended, which is `app/StrokeSession`'s knowledge, not this file's.
-// Stated here rather than discovered later.
+// Both of the gaps this section used to list are now closed, and it is worth
+// keeping the record of what they were:
+//
+// **The cadence** was one bake, one history entry -- so a wash drying in three
+// batches produced three entries where a painter expects one. Closed by the
+// drying episode below: the first batch records and every later batch of the
+// same episode amends, keyed on the entry's serial.
+//
+// **Undo-while-wet** had no answer at all. Closed by `forceBake()`, section 4.
 //
 // **Oil never bakes.** `kAbsorption*` are Beer-Lambert coefficients and oil is
 // not a Beer-Lambert medium -- it is a height field with impasto lighting, its
@@ -207,6 +208,46 @@ class StrokeBakeCycle {
   // question whose answer changes on a human timescale.
   static constexpr uint64_t kScanIntervalFrames = 15;
 
+  // --- Section 4: the forced bake, and why undo needs one ------------------
+  //
+  // `step()` deliberately leaves wet paint alone: `selectDryTiles()` holds any
+  // tile still above the wetness floor, because baking it would drop whatever
+  // is still suspended in the fluid layer. That is right for the frame loop
+  // and wrong for anything that REPLACES the document under the canvas.
+  //
+  // The case that forces it is undo. `ui/MacPaintUI` draws the solver canvas
+  // and the document as two stacked quads (section 1). Undo swaps the document
+  // and does not touch the solver, so a stroke that had not finished drying
+  // stays on screen -- painted over a document that has never seen it. Undo
+  // again and it is still there. The next `step()` then bakes it into whatever
+  // state the user undid to, depositing paint into a document they were trying
+  // to get back to.
+  //
+  // So: settle first, then move. This takes every tile with mass, wet or dry,
+  // and blocks until it is in the layer. Suspended pigment is lost, which is
+  // the honest cost -- the alternative is either discarding the whole stroke
+  // (losing more) or leaving the solver and the document disagreeing.
+  //
+  // **Callers must compute their history target AFTER calling this, not
+  // before.** A forced bake can append or amend an entry, so a target picked
+  // from the pre-bake cursor is off by one: the user sees "document + wet
+  // stroke", the stroke becomes the newest entry, and one undo should land on
+  // the document as it was under it. Targets identified by *serial* survive
+  // this; targets computed from `cursor() - 1` do not.
+  //
+  // Blocking is the point, so this is not a frame-loop call. It is bounded by
+  // wall clock rather than by poll count -- a GPU copy takes milliseconds
+  // while a poll takes microseconds, and a loop bounded by iterations gives up
+  // before the work could possibly have finished. That mistake has been made
+  // twice in this file's history.
+  BakeCycleReport forceBake(GpuContext& gpu, PaintSim& sim, OpenDocument* doc, PaintMode mode);
+
+  // How long forceBake() will wait for the GPU before giving up and leaving
+  // the paint where it is. Generous by design: it is an upper bound on a
+  // pathology, not a latency target, and the measured cost of the readback it
+  // waits on is 3.288 ms.
+  static constexpr double kForceBakeTimeoutSeconds = 2.0;
+
   bool readbackInFlight() const { return !inFlight_.empty(); }
 
   // True while a drying episode is open -- at least one batch has been baked
@@ -214,6 +255,12 @@ class StrokeBakeCycle {
   bool inDryingEpisode() const { return episodeSerial_ != 0; }
 
  private:
+  // The bake half of step(), shared with forceBake(). Assumes a readback is
+  // Ready and `inFlight_` names its tiles. Bakes, clears, ends the readback
+  // and moves history; clears `inFlight_` on every path, including refusals.
+  BakeCycleReport bakeReadyTiles(GpuContext& gpu, PaintSim& sim, OpenDocument* doc,
+                                 PaintMode mode);
+
   std::vector<PaintSim::BridgeTile> inFlight_;
   uint64_t lastScanFrame_ = 0;
   bool scanned_ = false;

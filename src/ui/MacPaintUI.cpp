@@ -2050,7 +2050,29 @@ void installHistoryCursor(OpenDocument& od, const HistoryPanelClick& r) {
   ++od.structuralRevision;
 }
 
-void drawHistorySection(AppState& st) {
+// Undo-while-wet. The solver keeps a stroke that has not finished drying, and
+// a cursor move replaces the document without touching the solver -- so paint
+// the document has never seen stays on screen over a state the user undid to,
+// and the next bake deposits it there. app/StrokeBake.hpp section 4 has the
+// full argument; this is where it is paid for.
+//
+// **Call this BEFORE computing the history target, never after.** A forced
+// bake can append or amend an entry, so `cursor() - 1` evaluated beforehand
+// is off by one: the user sees "document + wet stroke", the stroke becomes
+// the newest entry, and one undo should land on the document that was under
+// it. Every call site below therefore settles first and reads the cursor
+// second. Row clicks in the panel are identified by *serial* and survive
+// either order, but they go through the same path so there is one rule.
+void settleWetPaintBeforeHistoryMove(AppState& st, std::unique_ptr<PaintSim>& sim,
+                                     GpuContext& gpu, OpenDocument& od) {
+  // No sim means no solver fields and so nothing wet to settle -- the common
+  // case before the first stroke of a session (ADR-0001: idle costs no GPU
+  // memory, so the sim does not exist until something is painted).
+  if (!sim) return;
+  st.bakeCycle.forceBake(gpu, *sim, &od, sim->mode());
+}
+
+void drawHistorySection(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
     ImGui::TextDisabled("No document open.");
@@ -2059,6 +2081,9 @@ void drawHistorySection(AppState& st) {
 
   History& h = od->history;
   std::string& lastError = g_historyError;
+  // Settles before the caller computes its target -- see
+  // settleWetPaintBeforeHistoryMove()'s comment on why the order matters.
+  auto settle = [&]() { settleWetPaintBeforeHistoryMove(st, sim, gpu, *od); };
   auto install = [&](const HistoryPanelClick& r) { installHistoryCursor(*od, r); };
 
   const std::vector<HistoryPanelRow> rows = historyPanelRows(h);
@@ -2071,13 +2096,24 @@ void drawHistorySection(AppState& st) {
   // are `canUndo()` / `canRedo()`, so the neighbouring row always exists and
   // `cursor() - 1` cannot wrap.
   ImGui::BeginDisabled(!h.canUndo());
-  if (ImGui::SmallButton("Undo"))
+  if (ImGui::SmallButton("Undo")) {
+    settle();
     install(historyPanelClick(h, historySerialForRow(h, h.cursor() - 1)));
+  }
   ImGui::EndDisabled();
   ImGui::SameLine();
   ImGui::BeginDisabled(!h.canRedo());
-  if (ImGui::SmallButton("Redo"))
+  // Redo settles too, and the consequence is worth stating: if paint was
+  // applied after an undo, the forced bake records a new entry, which
+  // truncates the redo tail -- so the target computed on the next line
+  // correctly finds no such row and the click refuses by name. That is the
+  // honest answer ("you painted after undoing, so there is nothing to redo")
+  // and it is only reachable because the target is computed AFTER the settle.
+  // Computing it first would install a state the history no longer holds.
+  if (ImGui::SmallButton("Redo")) {
+    settle();
     install(historyPanelClick(h, historySerialForRow(h, h.cursor() + 1)));
+  }
   ImGui::EndDisabled();
   ImGui::SameLine();
   if (ImGui::SmallButton("Snapshot"))
@@ -3484,19 +3520,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const float statusW = ImGui::CalcTextSize(status).x;
     ImGui::SameLine(ImGui::GetWindowWidth() - undoW - redoW - statusW - 40.0f);
     ImGui::BeginDisabled(titleHistory == nullptr || !titleHistory->canUndo());
-    if (ImGui::SmallButton("Undo"))
+    if (ImGui::SmallButton("Undo")) {
+      settleWetPaintBeforeHistoryMove(st, sim, gpu, *activeForBar);
       installHistoryCursor(*activeForBar,
                            historyPanelClick(*titleHistory,
                                              historySerialForRow(*titleHistory,
                                                                  titleHistory->cursor() - 1)));
+    }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(titleHistory == nullptr || !titleHistory->canRedo());
-    if (ImGui::SmallButton("Redo"))
+    if (ImGui::SmallButton("Redo")) {
+      settleWetPaintBeforeHistoryMove(st, sim, gpu, *activeForBar);
       installHistoryCursor(*activeForBar,
                            historyPanelClick(*titleHistory,
                                              historySerialForRow(*titleHistory,
                                                                  titleHistory->cursor() + 1)));
+    }
     ImGui::EndDisabled();
     ImGui::SameLine(ImGui::GetWindowWidth() - statusW - 12.0f);
     ImGui::TextDisabled("%s", status);
@@ -3669,7 +3709,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // §5: "The History panel (PRD O2) joins the right-hand docked column."
         // Below LAYERS, because a history row names an edit made to the stack
         // above it.
-        case ControlsSection::History:   drawHistorySection(st); break;
+        case ControlsSection::History:   drawHistorySection(st, sim, gpu); break;
         // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14). Below HISTORY,
         // because a comp is a saved state *of* the layer stack and a history
         // row is an edit *to* it. See drawCompsSection()'s own doc comment.
