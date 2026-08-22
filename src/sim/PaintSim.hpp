@@ -169,9 +169,9 @@ class PaintSim {
   // kOilBrush, all gated on brushActive) runs inside this function -- see
   // depositDab()'s comment -- so this is genuinely Oil's deposit path and
   // must carry the same slot depositDab() does, or Oil would need its own
-  // retrofit later. Always nullptr until selection tools ship.
+  // retrofit later. Always nullptr until the GPU gate lands.
   void frame(GpuContext& gpu, const SimParams& params,
-             const SelectionMask* selectionMask = nullptr);
+             const Selection* selection = nullptr);
 
   // Deposits exactly one dab at (x, y), canvas texel space -- a single,
   // self-contained dispatch of the medium's splat pass (kSplat / kInkSplat),
@@ -195,12 +195,12 @@ class PaintSim {
   //
   // `selectionMask`: phase-2 seam reservation, not a feature (PLAN.md Phase 2
   // step 7; PRD E1: "every deposit and every op respects the active
-  // selection"; DESIGN-imaging.md "Selections"). Nothing populates a
-  // SelectionMask until the "Select and paste" phase, and this parameter is
-  // not read yet -- it exists purely so this signature does not need to
-  // change again, at every call site, once it is.
+  // selection"; DESIGN-imaging.md "Selections"). core/SelectionMask now provides a real
+  // `Selection`, but nothing wires one to a deposit yet: gating the GPU
+  // splat needs the coverage uploaded as a texture and sampled in the shader,
+  // which is its own change. The slot stays reserved and unread until then.
   void depositDab(GpuContext& gpu, const SimParams& params, float x, float y,
-                  const SelectionMask* selectionMask = nullptr);
+                  const Selection* selection = nullptr);
 
   // Blocking copy of the canvas to RGBA8 host memory. Used by --selftest; slow
   // by design (it stalls the queue), so keep it out of the frame loop.

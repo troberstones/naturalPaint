@@ -72,6 +72,7 @@ add_executable(naturalPaint
   app/selftest/PresentTransfer.cpp
   app/selftest/Probe.cpp
   app/selftest/RecoveryJournal.cpp
+  app/selftest/Selection.cpp
   app/selftest/Shaper.cpp
   app/selftest/StrokeBridge.cpp
   app/selftest/StrokeSpeed.cpp
@@ -103,6 +104,7 @@ add_executable(naturalPaint
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp
+  core/SelectionMask.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp
   io/Capabilities.cpp

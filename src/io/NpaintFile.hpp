@@ -205,7 +205,7 @@
 //    Layer is constructible with content today.
 //
 //  * **Saved selections (`S0001`, `np:kind="selection"`).**
-//    `core::SelectionMask` exists but `core::Document` holds no selection.
+//    `core::Selection` exists but `core::Document` holds no selection.
 //
 //  * **The mip pyramid.** docs/document-format.md's §1 table pairs "128^2
 //    tiles + a display mip pyramid" with EXR's mip-mapped storage, and §6

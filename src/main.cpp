@@ -1278,6 +1278,11 @@ int main(int argc, char** argv) {
     // plus the un-premultiply/re-premultiply wrapper bracketing them.
     // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool pointOpsOk = np::runPointOpsTest();
+    // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
+    // uint8 coverage store, its antialiased rectangle constructor, and the
+    // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
+    // arithmetic, no PaintSim involvement.
+    const bool selectionOk = np::runSelectionTest();
     // Phase 3 step 5 ("core/OpStack -- ordered ops, dirty tracking, run
     // detection for the collapse"): OpStack's add/remove/reorder/setEnabled/
     // setOp mutators and version() bumping, plus detectRuns()'s maximal-run
@@ -1627,7 +1632,7 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
+                    histogramOk && pointOpsOk && selectionOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&

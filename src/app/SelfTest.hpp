@@ -402,6 +402,19 @@ bool runHistogramTest();
 //    matches manual hand computation, not just each op individually.
 bool runPointOpsTest();
 
+// core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
+// The antialiased coverage store, its constructors, and PRD M1's
+// coverage-weighted clear. Headless and GPU-free -- pure CPU tile arithmetic.
+//
+// The section exists mainly for one hazard: the defaults are the INVERSE of
+// core/Mask.hpp's. An absent layer-mask tile reveals (1.0); an absent
+// selection tile excludes (0.0); and a null Selection means no restriction
+// (1.0) rather than nothing selected. Confusing any two of those yields an
+// editor where either nothing can be painted or a marquee does nothing, with
+// no wrong pixel anywhere to point at. Both conventions are asserted side by
+// side so neither can drift onto the other.
+bool runSelectionTest();
+
 // Headless, GPU-free check on core/OpStack (PLAN.md Phase 3 step 5:
 // "ordered ops, dirty tracking, run detection for the collapse"). Pure CPU
 // bookkeeping plus calls into the already-tested ops/PointOps functions --

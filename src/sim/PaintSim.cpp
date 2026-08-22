@@ -615,11 +615,12 @@ WGPUBindGroup PaintSim::bindGroup(GpuContext& gpu, int passId,
 }
 
 void PaintSim::frame(GpuContext& gpu, const SimParams& paramsIn,
-                     const SelectionMask* /*selectionMask*/) {
+                     const Selection* /*selection*/) {
   // `selectionMask` is the phase-2 seam reservation (see PaintSim.hpp) --
-  // deliberately unread. Nothing populates a SelectionMask before the
-  // "Select and paste" phase, and gating the physics substeps or Oil's
-  // in-frame deposit on it belongs there, not here.
+  // deliberately unread. core/SelectionMask now provides a real
+  // `Selection`, but honouring it here means uploading its coverage to the
+  // GPU and sampling it in the splat shader -- a separate change. Gating the
+  // physics substeps or Oil's in-frame deposit on it belongs with that.
   SimParams params = paramsIn;
   params.resolutionX = width_;
   params.resolutionY = height_;
@@ -822,14 +823,15 @@ void PaintSim::frame(GpuContext& gpu, const SimParams& paramsIn,
 }
 
 void PaintSim::depositDab(GpuContext& gpu, const SimParams& paramsIn, float x, float y,
-                          const SelectionMask* /*selectionMask*/) {
+                          const Selection* /*selection*/) {
   // Oil deposits through frame()'s own kOilSplat/kOilTransfer/kOilBrush
   // instead (see PaintSim.hpp's comment on this method) -- nothing to do.
   if (mode_ != PaintMode::Watercolor && mode_ != PaintMode::Ink) return;
 
-  // `selectionMask` is the phase-2 seam reservation (see PaintSim.hpp) --
-  // deliberately unread. Nothing populates a SelectionMask before the
-  // "Select and paste" phase; gating the splat itself belongs there.
+  // `selection` is the phase-2 seam reservation (see PaintSim.hpp) --
+  // deliberately unread. core/SelectionMask now provides a real `Selection`,
+  // but gating the splat means uploading its coverage as a texture and
+  // sampling it here, which is its own change.
 
   SimParams params = paramsIn;
   params.resolutionX = width_;
