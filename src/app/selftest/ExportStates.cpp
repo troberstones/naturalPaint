@@ -14,20 +14,9 @@ bool runExportStatesTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-  // PLAN.md §1.5, "an unexercised build option is not a seam". A PNG batch is
-  // identical in both configurations (PRD I1: PNG has no optional
-  // dependency), and part H asserts the EXR answer for *each* build rather
-  // than compiling either away.
-  std::printf("[selftest] export states: NP_USE_OIIO=%s -- the name template, the plan, the "
-              "collision rule and every PNG export answer identically in both configurations; "
-              "part H is the seam, where an EXR batch writes four files in ON and is refused "
-              "before the first byte in OFF, with io/Export's own string\n",
-              kOiioBuild ? "ON" : "OFF");
+  std::printf("[selftest] export states: the name template, the plan and the collision rule "
+              "hold for every PNG export; part H is where a four-comp EXR batch writes four "
+              "files\n");
   std::printf("  PRD I16 + I17 are ONE loop, and the token set is where that shows: there is "
               "one {name} token, not a {comp} and a {layer}, so a template written for comps "
               "works unchanged on layers. Comps and layers differ in exactly two lines of "
@@ -558,7 +547,7 @@ bool runExportStatesTest() {
   }
 
   // ======================================================================
-  // Part H -- the NP_USE_OIIO seam, asserted in BOTH builds
+  // Part H -- an EXR batch
   // ======================================================================
   {
     const Document doc = makeFourCompDoc();
@@ -572,9 +561,8 @@ bool runExportStatesTest() {
     exr.bitDepth = ExportBitDepth::Half;
 
     const std::string availability = exportRequestAvailability(exr);
-    check(availability.empty() == kOiioBuild,
-          "seam: EXR half is writable in an NP_USE_OIIO=ON build and not in an OFF build, and "
-          "the capability query says which");
+    check(availability.empty(),
+          "EXR half is writable, and the capability query says so");
 
     ExportStatesRequest req;
     req.format = exr;
@@ -585,22 +573,11 @@ bool runExportStatesTest() {
     size_t written = 0;
     for (auto it = fs::directory_iterator(exrDir, ec); it != fs::directory_iterator(); ++it)
       ++written;
-    if (kOiioBuild) {
-      check(run.ok && run.written() == 4 && written == 4 &&
-                run.items[0].filename == "01_All on.exr",
-            "seam (ON): a four-comp EXR batch writes four .exr files -- the extension follows "
-            "the request, not the template");
-    } else {
-      check(!run.ok && run.written() == 0 && written == 0 && run.error == availability,
-            "seam (OFF): the SAME batch is refused before the first byte, with io/Export's own "
-            "string verbatim -- not a reworded one, and not a per-file failure four times over");
-      check(contains(run.error, "OpenImageIO") || contains(run.error, "NP_USE_OIIO") ||
-                contains(run.error, "EXR") || contains(run.error, "OpenEXR"),
-            "seam (OFF): and that string names the build option or the format, so the user can "
-            "act on it");
-    }
-    // What is identical in both, asserted unconditionally: PNG has no
-    // optional dependency (PRD I1), so a PNG batch is the same in either.
+    check(run.ok && run.written() == 4 && written == 4 &&
+              run.items[0].filename == "01_All on.exr",
+          "a four-comp EXR batch writes four .exr files -- the extension follows the request, "
+          "not the template");
+    // PRD I1: PNG has no optional dependency.
     ExportStatesRequest pngReq = req;
     pngReq.format = png8;
     pngReq.nameTemplate = "png_{index}";

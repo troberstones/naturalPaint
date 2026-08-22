@@ -16,18 +16,6 @@ bool runPigmentBasisTest() {
     return s.find(needle) != std::string::npos;
   };
 
-  // Which backend set was compiled in, following runNpaintFormatTest()'s own
-  // precedent and PLAN.md §1.5 ("an unexercised build option is not a seam"):
-  // every assertion below runs in both configurations and states the correct
-  // answer for the one it is in. The OFF build's answer for the file half is
-  // that `saveNpaint()`/`loadNpaint()` refuse by name, which is asserted here
-  // rather than compiled out.
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   auto writeStraight = [](Document& doc, size_t layerIndex, int32_t x, int32_t y, float r,
                           float g, float b, float a) {
     TileStore& tiles = *doc.layers[layerIndex].rgbTiles;
@@ -166,22 +154,10 @@ bool runPigmentBasisTest() {
   {
     const Document doc = plainDocument();
     const NpaintSaveResult saved = saveNpaint(doc, kPlain);
-    check(saved.ok == kOiioBuild,
-          kOiioBuild ? "basis: an ordinary document saves"
-                     : "basis: an ordinary document's save refuses -- no OpenImageIO in this "
-                       "build, which is the OFF build's correct answer, not a skipped test");
-    if (!kOiioBuild) {
-      check(contains(saved.error, ".npaint") && contains(saved.error, "NP_USE_OIIO"),
-            "basis: and the refusal names the format and the cmake option that enables it, "
-            "so the whole basis body below is a refusal against a real entry point");
-      const NpaintLoadResult loaded = loadNpaint(kPlain);
-      check(!loaded.ok && contains(loaded.error, ".npaint") &&
-                contains(loaded.error, "NP_USE_OIIO"),
-            "basis: and so does the read direction");
-    }
+    check(saved.ok, "basis: an ordinary document saves");
   }
 
-  if (kOiioBuild) {
+  {
     // --- The stamp round-trips, on the carry AND on the document ---------
     {
       const Document doc = plainDocument();

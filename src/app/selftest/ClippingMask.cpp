@@ -12,12 +12,6 @@ bool runClippingMaskTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   // --- Tolerances, and why almost everything here is at exactly zero -----
   //
   // A clip stores nothing. The only arithmetic it adds is the open/close
@@ -946,88 +940,78 @@ bool runClippingMaskTest() {
     // The flag-free file first: it is the reference for the property that
     // makes this format change safe.
     const NpaintSaveResult bare = saveNpaint(doc, kBare);
-    check(bare.ok == kOiioBuild && (kOiioBuild || contains(bare.error, "NP_USE_OIIO")),
-          kOiioBuild ? "npaint: the four-layer fixture saves with no clip flags set"
-                     : "npaint: saving is refused in the NP_USE_OIIO=OFF build, naming the "
-                       "build option, exactly as it is for every other attribute");
+    check(bare.ok, "npaint: the four-layer fixture saves with no clip flags set");
 
     bool allClipped = true;
     for (size_t i = 1; i <= 3; ++i) allClipped = setLayerClipped(doc, i, true).ok && allClipped;
     check(allClipped, "npaint: all three layers above the base are clipped");
 
-    if (kOiioBuild) {
-      const NpaintSaveResult saved = saveNpaint(doc, kPath);
-      check(saved.ok && saved.partsWritten == 5 && saved.warnings.empty(),
-            "npaint: it saves as five parts with nothing approximate about it -- a legal "
-            "clipping run is not an approximation and must not warn");
-      const NpaintLoadResult back = loadNpaint(kPath);
-      check(back.ok && back.warnings.empty() && back.document.layers.size() == 4,
-            "npaint: and it loads back clean, with all four layers");
-      if (back.ok && back.document.layers.size() == 4) {
-        check(!back.document.layers[0].clipped && back.document.layers[1].clipped &&
-                  back.document.layers[2].clipped && back.document.layers[3].clipped,
-              "npaint: `np:clipped` round-trips on an RGB layer, a Pigment layer AND an "
-              "Adjustment layer -- it is universal, unlike np:mask");
-        const ClipRuns backRuns = clipRuns(back.document);
-        check(backRuns.members[0].size() == 3 && backRuns.clippedToBase[3],
-              "npaint: so the reloaded document resolves to the same single run -- the flag is "
-              "what persists, and the structure is re-derived from it (core/Layer.hpp)");
-        check(sameImage(flattenDocumentToLinear(doc),
-                        flattenDocumentToLinear(back.document)),
-              "npaint: and it composites BYTE-IDENTICALLY to the saved document, which is the "
-              "only claim that covers the whole path at once");
-      }
-
-      // The property the format change rests on.
-      Document cleared = doc;
-      for (size_t i = 1; i <= 3; ++i) setLayerClipped(cleared, i, false);
-      std::remove(kAgain);
-      const NpaintSaveResult again = saveNpaint(cleared, kAgain);
-      check(again.ok && !bytesWithoutCapDate(kBare).empty() &&
-                bytesWithoutCapDate(kBare) == bytesWithoutCapDate(kAgain),
-            "npaint: clearing every clip flag gives back a file BYTE-IDENTICAL to the one "
-            "written before any was set (OpenImageIO's capDate masked, which HEAD's own two "
-            "runs differ in too) -- np:clipped is written only when true");
-      check(bytesWithoutCapDate(kPath).size() > bytesWithoutCapDate(kBare).size(),
-            "npaint: and the file WITH the flags really is bigger, so the check above is not "
-            "passing because nothing was ever written");
-
-      // A clipped BOTTOM layer survives a round trip rather than being
-      // refused, and the save says what it did about it.
-      Document badBottom = Document::createBlank(128, 128, WorkingSpace{});
-      writeRgb(badBottom, 0, 1, 1, {0.5f, 0.5f, 0.5f, 1.0f});
-      badBottom.layers[0].clipped = true;
-      std::remove(kPath);
-      const NpaintSaveResult bottomSaved = saveNpaint(badBottom, kPath);
-      bool bottomWarned = false;
-      for (const std::string& wmsg : bottomSaved.warnings)
-        if (contains(wmsg, "nothing beneath it to clip to")) bottomWarned = true;
-      const NpaintLoadResult bottomBack = loadNpaint(kPath);
-      check(bottomSaved.ok && bottomWarned,
-            "npaint: a clipped bottom layer is SAVED, not refused, and the save names it -- "
-            "refusing would let a preserved attribute be the thing that bricks the file it was "
-            "preserved in");
-      check(bottomBack.ok && bottomBack.document.layers.size() == 1 &&
-                bottomBack.document.layers[0].clipped,
-            "npaint: and the flag comes back exactly as written (PRD I10), rather than being "
-            "coerced to something this build finds tidier");
-    } else {
-      // Everything that is not the backend is exercised here too: PLAN.md
-      // §1.5's "an unexercised build option is not a seam", applied to the
-      // refusals rather than to the option.
-      const NpaintSaveResult refused = saveNpaint(doc, kPath);
-      check(!refused.ok && contains(refused.error, "NP_USE_OIIO"),
-            "npaint: the OFF build refuses the save by naming the build option, and every "
-            "clipping claim above it in this section ran identically in both configurations");
-      Document badBottom = Document::createBlank(128, 128, WorkingSpace{});
-      writeRgb(badBottom, 0, 1, 1, {0.5f, 0.5f, 0.5f, 1.0f});
-      badBottom.layers[0].clipped = true;
-      std::vector<std::string> warnings;
-      flattenDocumentToLinear(badBottom, &warnings);
-      check(warnings.size() == 1 && contains(warnings[0], "nothing beneath it to clip to"),
-            "npaint: and the clipped-bottom-layer warning the ON build surfaces through "
-            "saveNpaint() is produced by the flattener, so it reads identically here");
+    const NpaintSaveResult saved = saveNpaint(doc, kPath);
+    check(saved.ok && saved.partsWritten == 5 && saved.warnings.empty(),
+          "npaint: it saves as five parts with nothing approximate about it -- a legal "
+          "clipping run is not an approximation and must not warn");
+    const NpaintLoadResult back = loadNpaint(kPath);
+    check(back.ok && back.warnings.empty() && back.document.layers.size() == 4,
+          "npaint: and it loads back clean, with all four layers");
+    if (back.ok && back.document.layers.size() == 4) {
+      check(!back.document.layers[0].clipped && back.document.layers[1].clipped &&
+                back.document.layers[2].clipped && back.document.layers[3].clipped,
+            "npaint: `np:clipped` round-trips on an RGB layer, a Pigment layer AND an "
+            "Adjustment layer -- it is universal, unlike np:mask");
+      const ClipRuns backRuns = clipRuns(back.document);
+      check(backRuns.members[0].size() == 3 && backRuns.clippedToBase[3],
+            "npaint: so the reloaded document resolves to the same single run -- the flag is "
+            "what persists, and the structure is re-derived from it (core/Layer.hpp)");
+      check(sameImage(flattenDocumentToLinear(doc),
+                      flattenDocumentToLinear(back.document)),
+            "npaint: and it composites BYTE-IDENTICALLY to the saved document, which is the "
+            "only claim that covers the whole path at once");
     }
+
+    // The property the format change rests on.
+    Document cleared = doc;
+    for (size_t i = 1; i <= 3; ++i) setLayerClipped(cleared, i, false);
+    std::remove(kAgain);
+    const NpaintSaveResult again = saveNpaint(cleared, kAgain);
+    check(again.ok && !bytesWithoutCapDate(kBare).empty() &&
+              bytesWithoutCapDate(kBare) == bytesWithoutCapDate(kAgain),
+          "npaint: clearing every clip flag gives back a file BYTE-IDENTICAL to the one "
+          "written before any was set (OpenImageIO's capDate masked, which HEAD's own two "
+          "runs differ in too) -- np:clipped is written only when true");
+    check(bytesWithoutCapDate(kPath).size() > bytesWithoutCapDate(kBare).size(),
+          "npaint: and the file WITH the flags really is bigger, so the check above is not "
+          "passing because nothing was ever written");
+
+    // A clipped BOTTOM layer survives a round trip rather than being
+    // refused, and the save says what it did about it.
+    Document badBottom = Document::createBlank(128, 128, WorkingSpace{});
+    writeRgb(badBottom, 0, 1, 1, {0.5f, 0.5f, 0.5f, 1.0f});
+    badBottom.layers[0].clipped = true;
+    std::remove(kPath);
+    const NpaintSaveResult bottomSaved = saveNpaint(badBottom, kPath);
+    bool bottomWarned = false;
+    for (const std::string& wmsg : bottomSaved.warnings)
+      if (contains(wmsg, "nothing beneath it to clip to")) bottomWarned = true;
+    const NpaintLoadResult bottomBack = loadNpaint(kPath);
+    check(bottomSaved.ok && bottomWarned,
+          "npaint: a clipped bottom layer is SAVED, not refused, and the save names it -- "
+          "refusing would let a preserved attribute be the thing that bricks the file it was "
+          "preserved in");
+    check(bottomBack.ok && bottomBack.document.layers.size() == 1 &&
+              bottomBack.document.layers[0].clipped,
+          "npaint: and the flag comes back exactly as written (PRD I10), rather than being "
+          "coerced to something this build finds tidier");
+
+    // The clipped-bottom-layer warning saveNpaint() surfaces above is
+    // produced by the flattener itself, not by anything npaint-specific.
+    Document clipBottomOnly = Document::createBlank(128, 128, WorkingSpace{});
+    writeRgb(clipBottomOnly, 0, 1, 1, {0.5f, 0.5f, 0.5f, 1.0f});
+    clipBottomOnly.layers[0].clipped = true;
+    std::vector<std::string> warnings;
+    flattenDocumentToLinear(clipBottomOnly, &warnings);
+    check(warnings.size() == 1 && contains(warnings[0], "nothing beneath it to clip to"),
+          "npaint: the clipped-bottom-layer warning is produced by the flattener directly, "
+          "confirmed independently of saveNpaint()");
 
     for (const char* p : {kPath, kBare, kAgain}) std::remove(p);
     check(std::fopen(kPath, "rb") == nullptr && std::fopen(kBare, "rb") == nullptr &&

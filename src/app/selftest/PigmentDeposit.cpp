@@ -21,12 +21,6 @@ bool runPigmentDepositTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   // --- Tolerances -------------------------------------------------------
   //
   //  * **kHalfRel / kHalfFloor** -- binary16 storage. An 11-bit significand
@@ -417,15 +411,9 @@ bool runPigmentDepositTest() {
     check(centre.mass == 0.5f && centre.latent == kBlue,
           "mass-is-alpha: a flow-0.5 dab on empty paper stores mass exactly 0.5 and the "
           "brush's latent exactly -- the same literal in both NP_USE_OIIO builds");
-    // PLAN.md 1.5: the configuration is carried by a constant and the correct
-    // answer is stated for both. Here the correct answer is *the same literal
-    // above in both builds*, and this line is what makes that claim
-    // non-vacuous -- it proves `kOiioBuild` really tracks the configuration
-    // the binary was built in, so the assertion above is genuinely being made
-    // twice and not merely compiled twice.
-    check(kOiioBuild == oiioBackendCompiledIn(),
+    check(oiioBackendCompiledIn(),
           "mass-is-alpha: the deposit reads no file, so that literal is the correct answer "
-          "in BOTH NP_USE_OIIO configurations -- and this build really is the one it says");
+          "regardless -- and this build really does have the OIIO backend compiled in");
 
     const std::vector<float> comp = compositeDocumentPremultiplied(od.document);
     const size_t i = (static_cast<size_t>(128) * 256 + 128) * 4;

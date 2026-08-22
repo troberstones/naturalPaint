@@ -12,12 +12,6 @@ bool runHistoryTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   using Clock = std::chrono::steady_clock;
   auto seconds = [](Clock::time_point a, Clock::time_point b) {
     return std::chrono::duration<double>(b - a).count();
@@ -997,20 +991,13 @@ bool runHistoryTest() {
     const NpaintSaveResult s1 = saveNpaint(plain.document, kWithout, {}, &plain.carry);
     const NpaintSaveResult s2 = saveNpaint(busy.document, kWith, {}, &busy.carry);
 
-    if (kOiioBuild) {
-      check(s1.ok && s2.ok, "npaint: both documents saved");
-      const std::vector<unsigned char> a = bytesWithoutCapDate(kWithout);
-      const std::vector<unsigned char> b = bytesWithoutCapDate(kWith);
-      check(!a.empty() && a == b,
-            "npaint: **a document with a history saves byte-identically to one without** "
-            "(OpenImageIO's capDate masked) -- history is session state, reaches no writer, "
-            "and cannot change a file");
-    } else {
-      check(!s1.ok && !s2.ok && contains(s1.error, "NP_USE_OIIO") &&
-                s1.error == s2.error,
-            "npaint: in the build with no writer both refuse identically through "
-            "io/NpaintFile's own named refusal -- history changes nothing about that either");
-    }
+    check(s1.ok && s2.ok, "npaint: both documents saved");
+    const std::vector<unsigned char> a = bytesWithoutCapDate(kWithout);
+    const std::vector<unsigned char> b = bytesWithoutCapDate(kWith);
+    check(!a.empty() && a == b,
+          "npaint: **a document with a history saves byte-identically to one without** "
+          "(OpenImageIO's capDate masked) -- history is session state, reaches no writer, "
+          "and cannot change a file");
 
     for (const char* p : {kWith, kWithout}) std::remove(p);
     check(std::fopen(kWith, "rb") == nullptr && std::fopen(kWithout, "rb") == nullptr,

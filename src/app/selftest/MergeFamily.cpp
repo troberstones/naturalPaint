@@ -12,19 +12,10 @@ bool runMergeFamilyTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
   // PLAN.md §1.5. Nothing in this section reaches a file, an encoder or the
-  // GPU: it composites in memory and writes half floats into tiles. Every
-  // assertion therefore has the same correct answer in both configurations,
-  // and that is said rather than assumed.
-  std::printf("[selftest] merge family: NP_USE_OIIO=%s -- every assertion in this section has the "
-              "same correct answer in both configurations; nothing here reaches a file, an "
-              "encoder or the GPU\n",
-              kOiioBuild ? "ON" : "OFF");
+  // GPU: it composites in memory and writes half floats into tiles.
+  std::printf(
+      "[selftest] merge family: nothing here reaches a file, an encoder or the GPU\n");
 
   // --- The tolerance, derived rather than chosen -------------------------
   //

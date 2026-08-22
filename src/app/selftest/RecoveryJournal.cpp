@@ -15,18 +15,6 @@ bool runRecoveryJournalTest() {
     return s.find(needle) != std::string::npos;
   };
 
-  // PLAN.md §1.5. The journal itself cannot run without a writer, but the
-  // scratch directory's naming and dating, the liveness rule, the whole
-  // timer, the sidecar format and the truncation refusal are all
-  // file-format-free -- so they are asserted in both configurations, and the
-  // parts that differ state the correct answer for each rather than being
-  // compiled out.
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   namespace fs = std::filesystem;
   std::error_code ec;
 
@@ -191,19 +179,9 @@ bool runRecoveryJournalTest() {
 
   // --- Availability, and the honest answer for each build -----------------
   {
-    check(journalAvailable() == kOiioBuild,
-          "the journal is available exactly in the build that has a writer");
+    check(journalAvailable(), "the journal is available now that this build has a writer");
     const std::string why = journalUnavailableReason();
-    check(why.empty() == kOiioBuild,
-          "...and it explains itself exactly when it is not");
-    if (!kOiioBuild) {
-      check(contains(why, ".npaint") && contains(why, "NP_USE_OIIO") && contains(why, "cmake"),
-            "the reason is io/NpaintFile's own refusal, naming the cmake line -- not a "
-            "second vocabulary invented here");
-      check(!fs::exists("journal-availability-probe.npaint", ec),
-            "...and asking for the reason opened no file: the probe stops at the backend "
-            "gate");
-    }
+    check(why.empty(), "...and there is nothing to explain when it is available");
   }
 
   // --- Where the scratch lives --------------------------------------------
@@ -274,23 +252,12 @@ bool runRecoveryJournalTest() {
   }
 
   // --- Beginning a session ------------------------------------------------
-  //
-  // The one place the two builds diverge structurally: without a writer there
-  // is no session, and no directory is created either, because an empty
-  // scratch directory would be offered for recovery next launch and hold
-  // nothing.
   {
     JournalSession session;
     std::string beginError;
     const bool begun = session.begin({}, &beginError);
-    check(begun == kOiioBuild, "a journal session begins exactly in the build that can write");
-    if (!kOiioBuild) {
-      check(contains(beginError, "NP_USE_OIIO"),
-            "...and refuses with io/NpaintFile's own named refusal");
-      check(!fs::exists(root, ec),
-            "...creating no scratch directory at all: an empty one would be offered next "
-            "launch and hold nothing");
-    } else {
+    check(begun, "a journal session begins now that this build can write");
+    {
       check(session.active() && contains(session.directory(), root.c_str()),
             "the session directory is under the configured root");
       const std::string name = fs::path(session.directory()).filename().string();
@@ -399,9 +366,9 @@ bool runRecoveryJournalTest() {
             "...and the refusal names both byte counts rather than saying 'corrupt'");
       OpenDocument out;
       const DocumentOpResult r = recoverDocument(entry, &out);
-      check(!r.ok && contains(r.error, "truncated") && !contains(r.error, "NP_USE_OIIO"),
+      check(!r.ok && contains(r.error, "truncated"),
             "...and recovery refuses it on the integrity record, BEFORE the format reader "
-            "-- provably so in the build that has no reader");
+            "ever gets it");
       check(fs::exists(modelPath, ec) && fs::exists(sidecarPath, ec),
             "...leaving both journal files exactly where they were: a recovery that can "
             "destroy what it failed to read is worse than none");
@@ -436,7 +403,7 @@ bool runRecoveryJournalTest() {
   }
 
   // --- The real thing: write, crash, recover ------------------------------
-  if (kOiioBuild) {
+  {
     OpenDocument doc;
     doc.id = allocateDocumentId();
     doc.document = makeFixtureDocument();
@@ -562,7 +529,7 @@ bool runRecoveryJournalTest() {
   }
 
   // --- What the interval costs, measured ----------------------------------
-  if (kOiioBuild) {
+  {
     // io/TileResidency's own "realistic document": 2048x2048, every one of
     // the 256 tiles occupied, i.e. 32.0 MiB of half data. The interval in
     // app/Journal.hpp is derived from this number, so it is measured every

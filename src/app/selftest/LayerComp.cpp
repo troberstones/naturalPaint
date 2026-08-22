@@ -12,20 +12,8 @@ bool runLayerCompTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-  // PLAN.md §1.5. The model, the panel and the `np:comps` carrier are pure and
-  // answer identically in both configurations; only the `.npaint` round trip
-  // differs, and part G asserts the correct answer for each rather than being
-  // compiled out of either.
-  std::printf("[selftest] layer comps: NP_USE_OIIO=%s -- the model, app/CompPanel and "
-              "io/CompSerial answer identically in both configurations; the `.npaint` round "
-              "trip in part G is the only thing that differs, and the OFF answer is asserted "
-              "rather than skipped\n",
-              kOiioBuild ? "ON" : "OFF");
+  std::printf("[selftest] layer comps: the model, app/CompPanel and io/CompSerial, and the "
+              "`.npaint` round trip in part G\n");
 
   // **PRD C14 asks for three things and this step delivers two.** Printed
   // rather than left in a header, because a requirement two thirds met is the
@@ -660,10 +648,7 @@ bool runLayerCompTest() {
 
     // The comp-free file first: the reference for the regression boundary.
     const NpaintSaveResult bare = saveNpaint(doc, kBare);
-    check(bare.ok == kOiioBuild && (kOiioBuild || contains(bare.error, "NP_USE_OIIO")),
-          kOiioBuild ? "npaint: the two-layer fixture saves with no comps"
-                     : "npaint: saving is refused in the NP_USE_OIIO=OFF build, naming the "
-                       "build option, exactly as it is for every other attribute");
+    check(bare.ok, "npaint: the two-layer fixture saves with no comps");
 
     setLayerVisible(doc, 1, false);
     setLayerOpacity(doc, 1, 0.25f);
@@ -674,20 +659,7 @@ bool runLayerCompTest() {
     check(doc.comps.size() == 2 && doc.layers[0].id != 0,
           "npaint: the fixture has two comps and assigned layer ids");
 
-    if (!kOiioBuild) {
-      // PLAN.md §1.5: say what happens rather than compiling the test away.
-      // The carrier is pure and was proven above in this same build; what is
-      // missing is a writer, and it refuses by name.
-      const NpaintSaveResult refused = saveNpaint(doc, kWith);
-      check(!refused.ok && contains(refused.error, "NP_USE_OIIO") &&
-                contains(refused.error, ".npaint"),
-            "npaint: with comps, the OFF build refuses the save naming .npaint and the build "
-            "option -- there is no second writer for comps and there must not be (PRD I7/I4)");
-      std::printf("  NP_USE_OIIO=OFF: comps are fully live in memory and io/CompSerial "
-                  "round-trips them in this build (asserted in part I); what is absent is the "
-                  "`.npaint` writer itself, so nothing about comps degrades silently -- the "
-                  "save refuses with the same sentence every other attribute gets\n");
-    } else {
+    {
       const NpaintSaveResult saved = saveNpaint(doc, kWith);
       check(saved.ok && saved.partsWritten == 3,
             "npaint: a document with comps saves, as the same three parts as without them");

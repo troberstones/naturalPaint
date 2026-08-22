@@ -15,20 +15,12 @@ bool runLayerMultiSelectTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
   // PLAN.md §1.5. Everything except part J is pure -- the selection model, the
   // translate, align/distribute, links, labels and the panel filter reach no
-  // file, no encoder and no GPU -- so the same answers are correct in both
-  // configurations. Part J's `.npaint` round trip is the one that differs, and
-  // the OFF build's answer is asserted rather than compiled away.
-  std::printf("[selftest] layer multi-select: NP_USE_OIIO=%s -- every assertion but part J has "
-              "the same correct answer in both configurations; part J's `.npaint` round trip "
-              "is the only one that differs and the OFF answer is asserted, not skipped\n",
-              kOiioBuild ? "ON" : "OFF");
+  // file, no encoder and no GPU. Part J is the `.npaint` round trip.
+  std::printf(
+      "[selftest] layer multi-select: everything but part J reaches no file, no encoder "
+      "and no GPU; part J is the `.npaint` round trip\n");
 
   // ======================================================================
   // The two verbs PRD C12 names that this step REFUSES, printed rather than
@@ -789,26 +781,14 @@ bool runLayerMultiSelectTest() {
     addLayer(doc, 1, makeRgbLayer("Over"));
     writeRgb(doc, 1, 3, 4, {0.0f, 0.0f, 0.5f, 0.5f});
     const NpaintSaveResult bare = saveNpaint(doc, kBare);
-    check(bare.ok == kOiioBuild && (kOiioBuild || contains(bare.error, "NP_USE_OIIO")),
-          kOiioBuild ? "npaint: the unlabelled, unlinked fixture saves"
-                     : "npaint: the OFF build refuses the save naming the build option, exactly "
-                       "as it does for every other attribute");
+    check(bare.ok, "npaint: the unlabelled, unlinked fixture saves");
 
     Document marked = doc;
     applyLayerSetOp(marked, LayerSetCommand::LabelViolet, makeLayerSelection({0}));
     applyLayerSetOp(marked, LayerSetCommand::LinkLayers, makeLayerSelection({0, 1}));
     marked.layers[1].colorLabel = "teal";  // a name this build has no swatch for
 
-    if (!kOiioBuild) {
-      const NpaintSaveResult refused = saveNpaint(marked, kMarked);
-      check(!refused.ok && contains(refused.error, "NP_USE_OIIO") &&
-                contains(refused.error, ".npaint"),
-            "npaint: with labels and links, the OFF build refuses the save by name -- there is "
-            "no second writer and there must not be (PRD I7/I4)");
-      std::printf("  NP_USE_OIIO=OFF: labels and links are fully live in memory in this build "
-                  "and every assertion above holds; what is absent is the `.npaint` writer, so "
-                  "nothing about them degrades silently.\n");
-    } else {
+    {
       const NpaintSaveResult saved = saveNpaint(marked, kMarked);
       check(saved.ok, "npaint: a document with a label and a link saves");
       const NpaintLoadResult back = loadNpaint(kMarked);

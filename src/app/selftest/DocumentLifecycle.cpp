@@ -16,16 +16,6 @@ bool runDocumentLifecycleTest() {
     return s.find(needle) != std::string::npos;
   };
 
-  // PLAN.md §1.5 again: one constant, every assertion stating the correct
-  // answer for the configuration it is in, nothing compiled out. Half of this
-  // section is pure path and list arithmetic that behaves identically in both
-  // builds; the other half is the file operations, which are `.npaint`
-  // operations and therefore refuse by name without OpenImageIO.
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
 
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -451,12 +441,6 @@ bool runDocumentLifecycleTest() {
   }
 
   // --- The file-backed operations -----------------------------------------
-  //
-  // From here on the answers differ by build, because `.npaint` is an OIIO
-  // feature. Every refusal below is io/NpaintFile's own -- this module adds
-  // no second vocabulary -- so the OFF build's assertions check that the
-  // refusal arrives intact through each lifecycle entry point rather than
-  // that a new message was written.
   {
     const std::string basePath = inDir("doc.npaint");
     OpenDocument doc;
@@ -466,24 +450,9 @@ bool runDocumentLifecycleTest() {
 
     RecentDocuments recent;
     const DocumentOpResult saved = saveDocumentAs(doc, basePath, {}, &recent);
-    check(saved.ok == kOiioBuild, "Save As writes a .npaint exactly in the build that has one");
-    if (!kOiioBuild) {
-      check(contains(saved.error, ".npaint") && contains(saved.error, "NP_USE_OIIO"),
-            "...and without OpenImageIO it refuses with io/NpaintFile's own named refusal");
-      check(doc.path.empty() && recent.entries().empty(),
-            "a refused Save As rebinds nothing and records nothing in Open Recent");
-      const DocumentOpResult revertNoFile = revertDocument(doc, {true});
-      check(!revertNoFile.ok && contains(revertNoFile.error, "never been saved"),
-            "revert on a document that was never saved refuses by name in this build too");
-      const DocumentOpResult incNoPath = saveDocumentIncremental(doc);
-      check(!incNoPath.ok && contains(incNoPath.error, "no version number to increment"),
-            "save incremental refuses a document with no path, naming Save As");
-      const DocumentOpResult copyRefused = saveDocumentCopy(doc, inDir("copy.npaint"));
-      check(!copyRefused.ok && contains(copyRefused.error, "NP_USE_OIIO"),
-            "save a copy refuses through the same named refusal");
-    }
+    check(saved.ok, "Save As writes a .npaint");
 
-    if (kOiioBuild) {
+    {
       check(doc.path == basePath && !doc.isDirty(),
             "Save As rebinds the document to the new path and clears the dirty state");
       check(recent.entries().size() == 1 &&

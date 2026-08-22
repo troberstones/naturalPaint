@@ -73,16 +73,6 @@ bool runCowTileTest() {
     std::printf("  %-58s %s\n", what, cond ? "pass" : "FAIL");
     if (!cond) ok = false;
   };
-  auto contains = [](const std::string& s, const char* needle) {
-    return s.find(needle) != std::string::npos;
-  };
-
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   using Clock = std::chrono::steady_clock;
   auto seconds = [](Clock::time_point a, Clock::time_point b) {
     return std::chrono::duration<double>(b - a).count();
@@ -862,134 +852,128 @@ bool runCowTileTest() {
     const NpaintSaveResult sharedSave = saveNpaint(doc, kShared);
     const NpaintSaveResult deepSave = saveNpaint(deep, kDeep);
 
-    if (kOiioBuild) {
-      check(sharedSave.ok && deepSave.ok, "npaint: both the shared and the deep document save");
+    check(sharedSave.ok && deepSave.ok, "npaint: both the shared and the deep document save");
 
-      // --- Comparing two `.npaint` files, and why it has to mask -----------
-      //
-      // Sharing is invisible to the format, which is the property that keeps
-      // step 4's byte-identity claim true, and the only way to show it is to
-      // compare the two files byte for byte. So, stated where the next reader
-      // of this block will hit it:
-      //
-      //   **A `.npaint` is not byte-reproducible across saves, and that is a
-      //   property of OpenEXR rather than a bug here.** OpenEXR stamps a
-      //   `capDate` header attribute -- "YYYY:MM:DD HH:MM:SS", read off the
-      //   wall clock, one per part -- so two saves of the identical document
-      //   that land either side of a second boundary differ in those digits.
-      //   io/NpaintFile could not make them agree without writing the EXR
-      //   header itself.
-      //
-      // The version of this block that shipped counted raw differing bytes with
-      // no masking at all and asserted `differing <= 19`. The assertion always
-      // held, but **the number it printed moved**. Measured 2026-08-21 on an
-      // M4 Max, 240 runs of the OIIO build: 232 printed 0 and **8 printed 3**,
-      // a 3.3% flake rate. The 3 is simply how many digit positions happened to
-      // change at those particular second boundaries; a crossing that rolls a
-      // ten, a minute or an hour over moves more of them, and 9 has been seen
-      // in the wild. Every change in this project is verified by diffing
-      // `--selftest` against a baseline and requiring additions only, so a line
-      // that rewrites itself with no edit behind it is indistinguishable from a
-      // regression -- and cost a real investigation before anyone worked out it
-      // was a clock.
-      //
-      // The fix is to **mask** the capDate fields and then demand *zero*
-      // differing bytes. It is deliberately not "keep counting and raise the
-      // tolerance until the clock fits": a tolerance wide enough to swallow the
-      // stamp is also wide enough to swallow any other nineteen-byte
-      // difference, which is the exact failure this suite exists to catch. The
-      // masked comparison is proven able to still see one, two checks below.
-      //
-      // app/selftest/PigmentBasis.cpp needs the same comparison for its own
-      // byte-identity assertions and shares Support.hpp's maskCapDates() for
-      // it rather than defining a second one: match the pattern, not an
-      // offset, because the offsets move with the header. The narrowness
-      // both share and neither hides: a *layer name* shaped exactly like a
-      // timestamp would be masked too. Nothing in this suite is named that,
-      // and the alternative -- parsing the EXR header to find the real
-      // attribute offsets -- is a second reader of the format inside a test.
-      auto readAll = [](const char* path) {
-        std::ifstream in(path, std::ios::binary);
-        return std::string((std::istreambuf_iterator<char>(in)),
-                           std::istreambuf_iterator<char>());
-      };
-      // Counts rather than returns a bool, because the count is what the
-      // printed line reports and what the non-vacuity check below asserts on.
-      auto maskedDifference = [&](const std::string& a, const std::string& b) {
-        const std::string ma = maskCapDates(a), mb = maskCapDates(b);
-        size_t differing = 0;
-        for (size_t i = 0; i < ma.size() && i < mb.size(); ++i) {
-          if (ma[i] != mb[i]) ++differing;
-        }
-        return differing;
-      };
+    // --- Comparing two `.npaint` files, and why it has to mask -----------
+    //
+    // Sharing is invisible to the format, which is the property that keeps
+    // step 4's byte-identity claim true, and the only way to show it is to
+    // compare the two files byte for byte. So, stated where the next reader
+    // of this block will hit it:
+    //
+    //   **A `.npaint` is not byte-reproducible across saves, and that is a
+    //   property of OpenEXR rather than a bug here.** OpenEXR stamps a
+    //   `capDate` header attribute -- "YYYY:MM:DD HH:MM:SS", read off the
+    //   wall clock, one per part -- so two saves of the identical document
+    //   that land either side of a second boundary differ in those digits.
+    //   io/NpaintFile could not make them agree without writing the EXR
+    //   header itself.
+    //
+    // The version of this block that shipped counted raw differing bytes with
+    // no masking at all and asserted `differing <= 19`. The assertion always
+    // held, but **the number it printed moved**. Measured 2026-08-21 on an
+    // M4 Max, 240 runs of the OIIO build: 232 printed 0 and **8 printed 3**,
+    // a 3.3% flake rate. The 3 is simply how many digit positions happened to
+    // change at those particular second boundaries; a crossing that rolls a
+    // ten, a minute or an hour over moves more of them, and 9 has been seen
+    // in the wild. Every change in this project is verified by diffing
+    // `--selftest` against a baseline and requiring additions only, so a line
+    // that rewrites itself with no edit behind it is indistinguishable from a
+    // regression -- and cost a real investigation before anyone worked out it
+    // was a clock.
+    //
+    // The fix is to **mask** the capDate fields and then demand *zero*
+    // differing bytes. It is deliberately not "keep counting and raise the
+    // tolerance until the clock fits": a tolerance wide enough to swallow the
+    // stamp is also wide enough to swallow any other nineteen-byte
+    // difference, which is the exact failure this suite exists to catch. The
+    // masked comparison is proven able to still see one, two checks below.
+    //
+    // app/selftest/PigmentBasis.cpp needs the same comparison for its own
+    // byte-identity assertions and shares Support.hpp's maskCapDates() for
+    // it rather than defining a second one: match the pattern, not an
+    // offset, because the offsets move with the header. The narrowness
+    // both share and neither hides: a *layer name* shaped exactly like a
+    // timestamp would be masked too. Nothing in this suite is named that,
+    // and the alternative -- parsing the EXR header to find the real
+    // attribute offsets -- is a second reader of the format inside a test.
+    auto readAll = [](const char* path) {
+      std::ifstream in(path, std::ios::binary);
+      return std::string((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+    };
+    // Counts rather than returns a bool, because the count is what the
+    // printed line reports and what the non-vacuity check below asserts on.
+    auto maskedDifference = [&](const std::string& a, const std::string& b) {
+      const std::string ma = maskCapDates(a), mb = maskCapDates(b);
+      size_t differing = 0;
+      for (size_t i = 0; i < ma.size() && i < mb.size(); ++i) {
+        if (ma[i] != mb[i]) ++differing;
+      }
+      return differing;
+    };
 
-      const std::string bytesA = readAll(kShared);
-      const std::string bytesB = readAll(kDeep);
-      check(!bytesA.empty() && bytesA.size() == bytesB.size(),
-            "npaint: the shared and deep saves are the same size");
-      const size_t differing = maskedDifference(bytesA, bytesB);
-      std::printf(
-          "[selftest] cow: shared vs deep `.npaint`, %zu bytes: %zu differ once OpenEXR's "
-          "per-part capDate is masked (a `.npaint` is not byte-reproducible across saves; "
-          "that is OpenEXR, not this loader)\n",
-          bytesA.size(), differing);
-      check(differing == 0,
-            "npaint: the shared save and the deep save are byte-identical once OpenEXR's "
-            "capDate is masked -- tile sharing is invisible to the file format, so step 4's "
-            "byte-identity claim is untouched");
+    const std::string bytesA = readAll(kShared);
+    const std::string bytesB = readAll(kDeep);
+    check(!bytesA.empty() && bytesA.size() == bytesB.size(),
+          "npaint: the shared and deep saves are the same size");
+    const size_t differing = maskedDifference(bytesA, bytesB);
+    std::printf(
+        "[selftest] cow: shared vs deep `.npaint`, %zu bytes: %zu differ once OpenEXR's "
+        "per-part capDate is masked (a `.npaint` is not byte-reproducible across saves; "
+        "that is OpenEXR, not this loader)\n",
+        bytesA.size(), differing);
+    check(differing == 0,
+          "npaint: the shared save and the deep save are byte-identical once OpenEXR's "
+          "capDate is masked -- tile sharing is invisible to the file format, so step 4's "
+          "byte-identity claim is untouched");
 
-      // --- The mask is not vacuous -----------------------------------------
-      //
-      // A masking comparator can be made to pass unconditionally by masking too
-      // much, so it has to be shown still detecting a real difference *of the
-      // width it hides*. Two saves of one document whose only difference is a
-      // nineteen-character layer name -- same length, so the file size cannot
-      // move and nothing but the value changes, PigmentBasis.cpp's own
-      // "mixbox-v2" trick -- must come out nineteen bytes apart, not zero.
-      // Neither name is digits-and-colons, so the mask leaves both alone; EXR
-      // stores header attributes uncompressed, so one changed character in the
-      // name is one changed byte in the file.
-      Document named = doc;
-      named.layers[0].name = "AAAAAAAAAAAAAAAAAAA";  // 19 characters
-      const NpaintSaveResult saveA = saveNpaint(named, kNameA);
-      named.layers[0].name = "BBBBBBBBBBBBBBBBBBB";  // 19, and no byte in common
-      const NpaintSaveResult saveB = saveNpaint(named, kNameB);
-      const std::string namedA = readAll(kNameA), namedB = readAll(kNameB);
-      check(saveA.ok && saveB.ok && !namedA.empty() && namedA.size() == namedB.size(),
-            "npaint: the two 19-character-name saves are the same size");
-      check(maskedDifference(namedA, namedB) == 19,
-            "npaint: and they differ in exactly 19 bytes AFTER masking -- the comparator that "
-            "reports 0 above can still see a difference the width of the capDate stamp, so "
-            "that 0 is a measurement and not an artefact of the mask");
+    // --- The mask is not vacuous -----------------------------------------
+    //
+    // A masking comparator can be made to pass unconditionally by masking too
+    // much, so it has to be shown still detecting a real difference *of the
+    // width it hides*. Two saves of one document whose only difference is a
+    // nineteen-character layer name -- same length, so the file size cannot
+    // move and nothing but the value changes, PigmentBasis.cpp's own
+    // "mixbox-v2" trick -- must come out nineteen bytes apart, not zero.
+    // Neither name is digits-and-colons, so the mask leaves both alone; EXR
+    // stores header attributes uncompressed, so one changed character in the
+    // name is one changed byte in the file.
+    Document named = doc;
+    named.layers[0].name = "AAAAAAAAAAAAAAAAAAA";  // 19 characters
+    const NpaintSaveResult saveA = saveNpaint(named, kNameA);
+    named.layers[0].name = "BBBBBBBBBBBBBBBBBBB";  // 19, and no byte in common
+    const NpaintSaveResult saveB = saveNpaint(named, kNameB);
+    const std::string namedA = readAll(kNameA), namedB = readAll(kNameB);
+    check(saveA.ok && saveB.ok && !namedA.empty() && namedA.size() == namedB.size(),
+          "npaint: the two 19-character-name saves are the same size");
+    check(maskedDifference(namedA, namedB) == 19,
+          "npaint: and they differ in exactly 19 bytes AFTER masking -- the comparator that "
+          "reports 0 above can still see a difference the width of the capDate stamp, so "
+          "that 0 is a measurement and not an artefact of the mask");
 
-      NpaintLoadResult back = loadNpaint(kShared);
-      check(back.ok && back.document.layers.size() == 2,
-            "npaint: the shared document loads back with both layers");
-      const Tile* l0 = back.document.layers[0].rgbTiles->find(TileCoord{0, 0});
-      const Tile* l1 = back.document.layers[1].rgbTiles->find(TileCoord{0, 0});
-      check(l0 != nullptr && l1 != nullptr &&
-                std::memcmp(l0->data(), l1->data(), Tile::kTexelCount * sizeof(uint16_t)) == 0,
-            "npaint: both layers come back with bit-identical pixels -- the content survives "
-            "a save and load unchanged");
-      // Stated as a limitation rather than implied away.
-      check(l0 != l1 && back.document.layers[0].rgbTiles->tileUseCount(TileCoord{0, 0}) == 1,
-            "npaint: but the sharing does NOT survive -- the format stores each part's pixels "
-            "in full and the loader allocates per part, so a reopened document costs what its "
-            "tiles weigh (there is no np: attribute for a shared tile, and inventing one is "
-            "not this step)");
-      // Writing into one loaded layer must therefore still be safe.
-      back.document.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0})
-          .writePixel(PixelCoord{4, 4}, {1.0f, 1.0f, 1.0f, 1.0f});
-      const auto other =
-          back.document.layers[1].rgbTiles->find(TileCoord{0, 0})->readPixel(PixelCoord{4, 4});
-      check(other[0] != 1.0f,
-            "npaint: and writing into one reopened layer leaves the other alone");
-    } else {
-      check(!sharedSave.ok && contains(sharedSave.error, "OpenImageIO") && !deepSave.ok,
-            "npaint: refused by name in the build with no OpenImageIO backend, exactly as "
-            "every other section's `.npaint` block is");
-    }
+    NpaintLoadResult back = loadNpaint(kShared);
+    check(back.ok && back.document.layers.size() == 2,
+          "npaint: the shared document loads back with both layers");
+    const Tile* l0 = back.document.layers[0].rgbTiles->find(TileCoord{0, 0});
+    const Tile* l1 = back.document.layers[1].rgbTiles->find(TileCoord{0, 0});
+    check(l0 != nullptr && l1 != nullptr &&
+              std::memcmp(l0->data(), l1->data(), Tile::kTexelCount * sizeof(uint16_t)) == 0,
+          "npaint: both layers come back with bit-identical pixels -- the content survives "
+          "a save and load unchanged");
+    // Stated as a limitation rather than implied away.
+    check(l0 != l1 && back.document.layers[0].rgbTiles->tileUseCount(TileCoord{0, 0}) == 1,
+          "npaint: but the sharing does NOT survive -- the format stores each part's pixels "
+          "in full and the loader allocates per part, so a reopened document costs what its "
+          "tiles weigh (there is no np: attribute for a shared tile, and inventing one is "
+          "not this step)");
+    // Writing into one loaded layer must therefore still be safe.
+    back.document.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0})
+        .writePixel(PixelCoord{4, 4}, {1.0f, 1.0f, 1.0f, 1.0f});
+    const auto other =
+        back.document.layers[1].rgbTiles->find(TileCoord{0, 0})->readPixel(PixelCoord{4, 4});
+    check(other[0] != 1.0f,
+          "npaint: and writing into one reopened layer leaves the other alone");
 
     for (const char* p : {kShared, kDeep, kNameA, kNameB}) std::remove(p);
     check(std::fopen(kShared, "rb") == nullptr && std::fopen(kDeep, "rb") == nullptr &&

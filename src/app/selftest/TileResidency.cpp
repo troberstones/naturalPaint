@@ -12,24 +12,8 @@ bool runTileResidencyTest() {
     return s.find(needle) != std::string::npos;
   };
 
-  // Which residency strategies this build actually has. A plain constant
-  // rather than an #ifdef around each case, following
-  // runFormatSupportTest()/runNpaintFormatTest()'s precedent and PLAN.md
-  // §1.5's "an unexercised build option is not a seam".
-  //
-  // This section's relationship to that rule is different from step 4's,
-  // though, and the difference is the point: `.npaint` is inherently an OIIO
-  // feature, so its OFF build refuses by name and there is nothing else to
-  // assert. **Residency is not a feature, it is a strategy.** The OFF build
-  // has a complete, correct one -- Eager -- so most of what follows runs
-  // identically in both configurations and asserts the *same* answers, not
-  // merely the correct answer for each build. Only the cached strategy, and
-  // the measurements that exist to judge it, are ON-only.
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
+  // Residency is not a feature, it is a strategy: Eager is complete and
+  // correct on its own, and the cached strategy below it is an addition.
 
   // --- Thresholds, derived from phase 1's measured latency ---------------
   //
@@ -191,37 +175,7 @@ bool runTileResidencyTest() {
   const char* kPngPath = "selftest_residency_untiled.png";
   for (const char* p : {kDocPath, kCopyPath, kTruncPath, kMutPath, kPngPath}) std::remove(p);
 
-  if (!kOiioBuild) {
-    // The refusal, and the fact that it names a real alternative rather than
-    // just a missing build option -- which is the whole difference between
-    // this step and step 4.
-    TileSourceRef ref;
-    ref.path = kDocPath;
-    ref.subimage = 1;
-    LayerResidency cached;
-    std::string error;
-    const bool opened = openCachedLayerResidency(ref, kTileCacheBudgetBytes, &cached, &error);
-    check(!opened, "OFF build: a cached residency cannot be opened");
-    check(contains(error, "NP_USE_OIIO") && contains(error, "-DNP_USE_OIIO=ON") &&
-              contains(error, kDocPath),
-          "OFF build: the refusal names the build option, the cmake line that enables it, "
-          "and the file");
-    check(contains(error, "Eager") && contains(error, "identically"),
-          "OFF build: and names Eager as a COMPLETE alternative -- unlike .npaint, nothing "
-          "is lost here, because PRD I1/I3 require opening and painting a file to behave the "
-          "same in this build");
-    check(cached.mode() == TileResidencyMode::Eager && cached.residentBytes() == 0,
-          "OFF build: a refused open leaves the destination untouched, not half-built");
-
-    TileCacheStats stats;
-    check(!tileCacheStatistics(&stats),
-          "OFF build: there is no cache to report statistics for, and saying so beats "
-          "reporting zeros that look like an empty cache");
-    check(!tileCacheSetBudgetBytes(kTileCacheBudgetBytes),
-          "OFF build: and no budget to set");
-  }
-
-  if (kOiioBuild) {
+  {
     // Save the fixture, then load it back the eager way. That gives both a
     // real tiled file and the reference the cached path is compared against.
     Document fixture = buildFixture();

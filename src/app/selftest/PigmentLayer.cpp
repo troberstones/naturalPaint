@@ -18,11 +18,6 @@ bool runPigmentLayerTest() {
   };
   auto near = [](float a, float b, float tol) { return std::fabs(a - b) <= tol; };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
 
   // --- Tolerances, each derived here rather than borrowed ----------------
   //
@@ -605,15 +600,8 @@ bool runPigmentLayerTest() {
     }
 
     const NpaintSaveResult saved = saveNpaint(doc, kPath);
-    check(saved.ok == kOiioBuild,
-          kOiioBuild ? "npaint: a document with a Pigment layer and an RGB layer saves"
-                     : "npaint: saving is refused in the NP_USE_OIIO=OFF build, which has no "
-                       "`.npaint` writer at all");
-    if (!kOiioBuild) {
-      check(contains(saved.error, "NP_USE_OIIO"),
-            "npaint: and the refusal is io/NpaintFile's own, naming the build option");
-    }
-    if (kOiioBuild && saved.ok) {
+    check(saved.ok, "npaint: a document with a Pigment layer and an RGB layer saves");
+    if (saved.ok) {
       check(saved.partsWritten == 3 && saved.warnings.empty(),
             "npaint: three parts -- the composite plus one per layer -- and nothing about "
             "the save is approximate");

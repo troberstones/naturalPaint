@@ -12,21 +12,11 @@ bool runHistoryPanelTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-  // PLAN.md §1.5: an unexercised build option is not a seam. There is no
-  // `#ifdef` around a single assertion in this section, and there is nothing
-  // for one to guard: app/HistoryPanel reads a `core::History` and returns
-  // strings, so every answer below is the same in both configurations. Said in
-  // the output rather than assumed, so the claim is checkable from a log.
+  // PLAN.md §1.5: an unexercised build option is not a seam. app/HistoryPanel
+  // reads a `core::History` and returns strings, so nothing here reaches a
+  // file, an encoder or the GPU.
   std::printf(
-      "[selftest] history panel: NP_USE_OIIO=%s -- every assertion in this section has the "
-      "same correct answer in both configurations; nothing here reaches a file, an encoder "
-      "or the GPU\n",
-      kOiioBuild ? "ON" : "OFF");
+      "[selftest] history panel: nothing here reaches a file, an encoder or the GPU\n");
 
   using Clock = std::chrono::steady_clock;
   auto seconds = [](Clock::time_point a, Clock::time_point b) {

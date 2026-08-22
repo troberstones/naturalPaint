@@ -18,20 +18,12 @@ bool runControlsLayoutTest() {
     if (!cond) ok = false;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
   // PLAN.md §1.5: an unexercised build option is not a seam. There is no
   // `#ifdef` around a single assertion in this section and nothing for one to
   // guard: app/ControlsLayout is a list of sections and one arithmetic
-  // function, so every answer below is the same in both configurations. Said
-  // in the output rather than assumed, so the claim is checkable from a log.
-  std::printf("[selftest] controls layout: NP_USE_OIIO=%s -- every assertion in this section has "
-              "the same correct answer in both configurations; nothing here reaches a file, an "
-              "encoder, the GPU or ImGui\n",
-              kOiioBuild ? "ON" : "OFF");
+  // function, so nothing here reaches a file, an encoder, the GPU or ImGui.
+  std::printf("[selftest] controls layout: nothing here reaches a file, an encoder, the GPU or "
+              "ImGui\n");
 
   // --- Part A: the order and the default-open set --------------------------
   //

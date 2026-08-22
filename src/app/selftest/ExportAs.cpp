@@ -13,20 +13,8 @@ bool runExportAsTest() {
     return s.find(needle) != std::string::npos;
   };
 
-  // Which backend set was compiled in -- a plain constant rather than an
-  // #ifdef around each case, exactly as runFormatSupportTest()/
-  // runNpaintFormatTest()/runTileResidencyTest() carry it, so both
-  // configurations execute the same assertions and each states the correct
-  // answer for its build. That matters more here than anywhere: the whole
-  // point of the preset behaviour under test is what an NP_USE_OIIO=ON
-  // preset does in an OFF build.
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-  check(oiioBackendCompiledIn() == kOiioBuild,
-        "the capability query and this test agree on which build this is");
+  check(oiioBackendCompiledIn(),
+        "the capability query reports the OIIO backend is compiled in");
 
   // --- Tolerances, derived rather than guessed ---------------------------
   //
@@ -91,9 +79,9 @@ bool runExportAsTest() {
     check(offered(ImageFormat::Png) && offered(ImageFormat::Jpeg) &&
               offered(ImageFormat::Tga) && offered(ImageFormat::Bmp),
           "PRD I1's four formats are offerable in BOTH build configurations");
-    check(offered(ImageFormat::Exr) == kOiioBuild && offered(ImageFormat::Tiff) == kOiioBuild &&
-              offered(ImageFormat::Hdr) == kOiioBuild && offered(ImageFormat::Dpx) == kOiioBuild,
-          "EXR/TIFF/HDR/DPX are offerable exactly when the OIIO backend is compiled in");
+    check(offered(ImageFormat::Exr) && offered(ImageFormat::Tiff) &&
+              offered(ImageFormat::Hdr) && offered(ImageFormat::Dpx),
+          "EXR/TIFF/HDR/DPX are offerable now that the OIIO backend is compiled in");
     check(!offered(ImageFormat::Psd) && !offered(ImageFormat::CameraRaw),
           "the read-only formats are never offered as export targets, in either build");
 
@@ -104,9 +92,8 @@ bool runExportAsTest() {
     check(jpeg.size() == 1 && jpeg[0] == ExportBitDepth::UInt8,
           "JPEG offers 8-bit only, so 16-bit-into-JPEG is unreachable from the dialog");
     const std::vector<ExportBitDepth> exr = offerableExportDepths(ImageFormat::Exr);
-    check(exr.size() == (kOiioBuild ? 2u : 0u) &&
-              (!kOiioBuild ||
-               (exr[0] == ExportBitDepth::Half && exr[1] == ExportBitDepth::Float32)),
+    check(exr.size() == 2u && exr[0] == ExportBitDepth::Half &&
+              exr[1] == ExportBitDepth::Float32,
           "EXR offers half and 32-bit float and NOT 8-bit -- the depth probe's answer, not a "
           "guess about what EXR 'should' do");
     check(offerableExportDepths(ImageFormat::Psd).empty(),
@@ -465,18 +452,13 @@ bool runExportAsTest() {
     req.format = ImageFormat::Exr;
     req.bitDepth = ExportBitDepth::Half;
     why = exportRequestAvailability(req);
-    check(why.empty() == kOiioBuild,
-          "an EXR half request is available exactly in the OIIO build");
-    if (!kOiioBuild)
-      check(contains(why, "NP_USE_OIIO"),
-            "and in the OFF build the reason names the build option that would provide it");
-    if (kOiioBuild) {
-      req.bitDepth = ExportBitDepth::UInt8;
-      why = exportRequestAvailability(req);
-      check(!why.empty() && contains(why, "EXR") && contains(why, "8-bit integer"),
-            "in the ON build an 8-bit EXR is still refused -- the depth probe's answer, which "
-            "is the case OpenImageIO would have silently substituted half for");
-    }
+    check(why.empty(), "an EXR half request is available");
+
+    req.bitDepth = ExportBitDepth::UInt8;
+    why = exportRequestAvailability(req);
+    check(!why.empty() && contains(why, "EXR") && contains(why, "8-bit integer"),
+          "an 8-bit EXR is still refused -- the depth probe's answer, which is the case "
+          "OpenImageIO would have silently substituted half for");
 
     // The resize refusal reaches validation intact.
     ExportRequest big;
@@ -636,13 +618,10 @@ bool runExportAsTest() {
             "the EXR half preset still names EXR half after the round trip -- NEVER silently "
             "replaced by a format this build happens to be able to write");
       const std::string why = exportRequestAvailability(loadedComp->request);
-      check(why.empty() == kOiioBuild,
-            "and it is reported available exactly in the OIIO build");
+      check(why.empty(), "and it is reported available");
       const ExportValidation v =
           validateExportRequest(loadedComp->request, 512, 512, nullptr, nullptr);
-      check(v.ok == kOiioBuild && (v.ok || v.error == why),
-            "applying it validates in the ON build and refuses in the OFF build with that same "
-            "named reason");
+      check(v.ok, "applying it validates");
       check(!v.ok || (v.outWidth == 256 && v.outHeight == 256),
             "and where it does apply, its 50% resize resolves to 256x256");
     }

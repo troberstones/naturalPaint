@@ -17,12 +17,6 @@ bool runLayerStackTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   // --- Tolerances, derived rather than guessed ---------------------------
   //
   // Most of this section asserts at **exactly zero tolerance**, and that is
@@ -663,15 +657,8 @@ bool runLayerStackTest() {
           "round trip: and the in-memory order really is top/bottom/middle before saving");
 
     const NpaintSaveResult saved = saveNpaint(doc, kPath);
-    check(saved.ok == kOiioBuild,
-          kOiioBuild ? "round trip: the reordered three-layer document saves"
-                     : "round trip: saving is refused in the NP_USE_OIIO=OFF build, which has "
-                       "no `.npaint` writer at all");
-    if (!kOiioBuild) {
-      check(contains(saved.error, "NP_USE_OIIO"),
-            "round trip: and the refusal is io/NpaintFile's own, naming the build option");
-    }
-    if (kOiioBuild && saved.ok) {
+    check(saved.ok, "round trip: the reordered three-layer document saves");
+    if (saved.ok) {
       const NpaintLoadResult back = loadNpaint(kPath);
       check(back.ok && back.document.layers.size() == 3,
             "round trip: and reads back with three layers");

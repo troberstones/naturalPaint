@@ -9,12 +9,6 @@ bool runDocumentTextureTest(GpuContext& gpu) {
     if (!cond) ok = false;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   // --- Tolerances, and why most of this section is at exactly zero --------
   //
   // Every fixture colour, coverage and opacity below is **dyadic** (0, 0.125,
@@ -596,9 +590,8 @@ bool runDocumentTextureTest(GpuContext& gpu) {
   // nothing would report it. They now share core/Premultiply, and that is
   // asserted here rather than assumed from the fact that both call it.
   //
-  // The answer is the **same in both NP_USE_OIIO configurations**: the
-  // flattener is format-free -- only io/Export's *encoder* differs by build --
-  // so `kOiioBuild` selects nothing here, and that is itself the claim.
+  // The flattener is format-free -- only io/Export's *encoder* touches a
+  // format -- so nothing here depends on it.
   {
     Document doc = Document::createBlank(24, 11, WorkingSpace{});
     for (int32_t y = 1; y < 10; ++y)
@@ -613,10 +606,8 @@ bool runDocumentTextureTest(GpuContext& gpu) {
       worst = std::max(worst, std::fabs(flat.pixels[i] - halfToFloat(halves[i])));
     check(sameSize && worst <= kUnpremultiplyTol,
           "agreement: io/Export's flatten and the screen upload give the same colour");
-    std::printf("    largest disagreement %.3g (bound %.3g); NP_USE_OIIO=%s, and the "
-                "flattener is format-free so the answer is the same either way\n",
-                static_cast<double>(worst), static_cast<double>(kUnpremultiplyTol),
-                kOiioBuild ? "ON" : "OFF");
+    std::printf("    largest disagreement %.3g (bound %.3g)\n", static_cast<double>(worst),
+                static_cast<double>(kUnpremultiplyTol));
   }
 
   std::printf("[selftest] document texture %s\n", ok ? "PASS" : "FAIL");

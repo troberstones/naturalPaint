@@ -9,12 +9,6 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
     if (!cond) ok = false;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   // --- Why almost every assertion here is `memcmp` and not a tolerance -----
   //
   // The claim this section exists to make is **bit-identity**, not agreement:
@@ -644,9 +638,8 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
                 100.0 * static_cast<double>(dt.totalUploadedTexels()) /
                     static_cast<double>(dt.uploads() * 512ull * 512ull));
     std::printf("    canvas-proportional memory held for a 512x512 document: %.2f MiB (the f16 "
-                "mirror plus the float scratch); NP_USE_OIIO=%s changes none of it\n",
-                static_cast<double>(dt.residentBytes()) / (1024.0 * 1024.0),
-                kOiioBuild ? "ON" : "OFF");
+                "mirror plus the float scratch)\n",
+                static_cast<double>(dt.residentBytes()) / (1024.0 * 1024.0));
     dt.release();
     check(dt.residentBytes() == 0,
           "gpu: release() drops the mirror -- no claim about a texture that is gone");

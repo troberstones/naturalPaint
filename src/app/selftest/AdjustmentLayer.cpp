@@ -12,12 +12,6 @@ bool runAdjustmentLayerTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   // --- Tolerances, and why nearly everything here is at exactly zero -----
   //
   // **The fixtures are chosen so that the whole chain is exact**, which is a
@@ -709,11 +703,9 @@ bool runAdjustmentLayerTest() {
     // The stack-free file first: it is the reference for the property that
     // makes this format change safe.
     const NpaintSaveResult bare = saveNpaint(doc, kBare);
-    check(bare.ok == kOiioBuild && (kOiioBuild || contains(bare.error, "NP_USE_OIIO")),
-          kOiioBuild ? "npaint: an RGB layer plus a stack-free Adjustment layer saves -- the "
-                       "kind io/NpaintFile refused outright until this step"
-                     : "npaint: saving is refused in the NP_USE_OIIO=OFF build, naming the "
-                       "build option, exactly as it is for every other kind");
+    check(bare.ok,
+          "npaint: an RGB layer plus a stack-free Adjustment layer saves -- the "
+          "kind io/NpaintFile refused outright until this step");
 
     // Now give both layers a stack, including one entry this build cannot
     // interpret, so the round trip has to carry an unknown op through a FILE
@@ -734,139 +726,125 @@ bool runAdjustmentLayerTest() {
     addLayerMask(doc, 1);
     writeMask(doc, 1, 5, 6, 0.25f);
 
-    if (kOiioBuild) {
-      const NpaintSaveResult saved = saveNpaint(doc, kPath);
-      check(saved.ok && saved.partsWritten == 3 && saved.warnings.empty(),
-            "npaint: it saves as three parts with NOTHING approximate about it -- until this "
-            "step every non-empty op stack produced a warning naming what the file could not "
-            "hold");
-      const NpaintLoadResult back = loadNpaint(kPath);
-      check(back.ok && back.warnings.empty() && back.document.layers.size() == 2,
-            "npaint: and it loads back clean, with both layers");
-      if (back.ok && back.document.layers.size() == 2) {
-        check(serializeOpStack(back.document.layers[0].ops) == serializeOpStack(doc.layers[0].ops) &&
-                  back.document.layers[0].ops.size() == 2,
-              "npaint: the RGB layer's two-entry stack -- an Exposure and a three-point Curves "
-              "-- round-trips, so `np:ops` is not an Adjustment-only feature");
-        check(back.document.layers[1].kind == LayerKind::Adjustment &&
-                  !back.document.layers[1].rgbTiles.has_value() &&
-                  !back.document.layers[1].pigmentTiles.has_value(),
-              "npaint: the Adjustment layer comes back as an Adjustment layer holding no "
-              "pixel storage of any kind");
-        check(back.document.layers[1].ops.size() == 2 &&
-                  back.document.layers[1].ops.at(1).opClass == OpClass::Unknown &&
-                  back.document.layers[1].ops.at(1).unrecognised ==
-                      doc.layers[1].ops.at(1).unrecognised,
-              "npaint: including the entry whose op class this build has no name for -- its "
-              "bytes survive a full save/load through OpenEXR, in position, PRD I10 at the "
-              "entry level rather than at the attribute level");
-        check(back.document.layers[1].mask.has_value() &&
-                  back.document.layers[1].mask->occupiedTileCount() == 1,
-              "npaint: and its mask, in the one channel EXR requires the part to have at all "
-              "(a zero-channel part is refused by this OpenImageIO with \"Missing or empty "
-              "channel list in header\" -- measured)");
-        check(sameImage(flattenDocumentToLinear(doc),
-                        flattenDocumentToLinear(back.document)),
-              "npaint: the reloaded document composites BYTE-IDENTICALLY to the saved one, "
-              "which is the whole point -- an adjustment layer whose stack did not survive "
-              "would be a layer with no content left");
-      }
-
-      // np:mask on an Adjustment part: the one rule this format has nowhere
-      // else, because the channel's presence cannot carry the distinction.
-      Document noMask = doc;
-      removeLayerMask(noMask, 1);
-      const NpaintSaveResult noMaskSaved = saveNpaint(noMask, kAgain);
-      const NpaintLoadResult noMaskBack = loadNpaint(kAgain);
-      check(noMaskSaved.ok && noMaskBack.ok && noMaskBack.document.layers.size() == 2 &&
-                !noMaskBack.document.layers[1].mask.has_value(),
-            "npaint: an Adjustment layer with NO mask loads back with `Layer::mask` "
-            "disengaged, although its part still carries a `mask` channel -- np:mask says "
-            "which, since presence cannot");
-
-      // The property the whole change rests on: a document with no op stacks
-      // produces exactly the bytes it produced before this step.
-      Document stripped = doc;
-      stripped.layers[0].ops = OpStack{};
-      stripped.layers[1].ops = OpStack{};
-      removeLayerMask(stripped, 1);
-      std::remove(kAgain);
-      const NpaintSaveResult again = saveNpaint(stripped, kAgain);
-      check(again.ok && !bytesWithoutCapDate(kBare).empty() &&
-                bytesWithoutCapDate(kBare) == bytesWithoutCapDate(kAgain),
-            "npaint: emptying every op stack gives back a file BYTE-IDENTICAL to the one "
-            "written before they existed (OpenImageIO's capDate masked, which HEAD's own two "
-            "runs differ in too) -- np:ops is written only for a non-empty stack");
-      check(bytesWithoutCapDate(kPath).size() > bytesWithoutCapDate(kBare).size(),
-            "npaint: and the file WITH stacks really is bigger, so the check above is not "
-            "passing because nothing was ever written");
-
-      // PRD I10 for an `np:ops` this build cannot parse: written through the
-      // carry, refused by the reader with a named warning, and put back
-      // unchanged on the next save.
-      Document carried = Document::createBlank(128, 128, WorkingSpace{});
-      writeRgb(carried, 0, 1, 1, {0.5f, 0.5f, 0.5f, 1.0f});
-      NpaintCarry inject;
-      inject.layerAttributes.resize(1);
-      NpaintAttribute future;
-      future.name = "np:ops";
-      future.type = NpaintAttribute::Type::String;
-      future.stringValue = "npops2:cafe";
-      inject.layerAttributes[0].push_back(future);
-      std::remove(kAgain);
-      const NpaintSaveResult futureSave = saveNpaint(carried, kAgain, {}, &inject);
-      const NpaintLoadResult futureBack = loadNpaint(kAgain);
-      bool warnedByName = false;
-      for (const std::string& w : futureBack.warnings)
-        if (contains(w, "npops2:") && contains(w, "npops1:")) warnedByName = true;
-      check(futureSave.ok && futureBack.ok && warnedByName &&
-                futureBack.document.layers.size() == 1 &&
-                futureBack.document.layers[0].ops.size() == 0,
-            "npaint: an np:ops this build cannot decode -- a v2 tag -- is warned about by "
-            "name and the layer opens with no stack rather than with a guess");
-      bool carriedBack = false;
-      if (futureBack.carry.layerAttributes.size() == 1)
-        for (const NpaintAttribute& a : futureBack.carry.layerAttributes[0])
-          if (a.name == "np:ops" && a.stringValue == "npops2:cafe") carriedBack = true;
-      check(carriedBack,
-            "npaint: and it is CARRIED rather than dropped, so the next save writes it back "
-            "unchanged -- an op stack is the one attribute whose loss would empty a whole "
-            "layer, which is exactly what PRD I10 exists to prevent");
-      std::remove(kPath);
-      const NpaintSaveResult rewritten = saveNpaint(futureBack.document, kPath, {},
-                                                    &futureBack.carry);
-      const NpaintLoadResult reread = loadNpaint(kPath);
-      bool stillThere = false;
-      if (reread.ok && reread.carry.layerAttributes.size() == 1)
-        for (const NpaintAttribute& a : reread.carry.layerAttributes[0])
-          if (a.name == "np:ops" && a.stringValue == "npops2:cafe") stillThere = true;
-      check(rewritten.ok && stillThere,
-            "npaint: proven by writing it back out and reading it again, not by inspecting the "
-            "carry and assuming");
-
-      // The malformed-document refusal for this kind, the mirror of the ones
-      // step 3 added for RGB and Pigment.
-      Document malformed = Document::createBlank(128, 128, WorkingSpace{});
-      malformed.layers[0] = makeAdjustmentLayer("bad");
-      malformed.layers[0].rgbTiles.emplace();
-      const NpaintSaveResult refused = saveNpaint(malformed, kPath);
-      check(!refused.ok && contains(refused.error, "Adjustment") &&
-                contains(refused.error, "holds no pixels"),
-            "npaint: an Adjustment layer carrying pixel tiles is refused by index, name and "
-            "kind -- its part has no channel to put them in, so writing would drop them");
-    } else {
-      // The NP_USE_OIIO=OFF build still exercises everything that is not the
-      // backend, which is PLAN.md §1.5's "an unexercised build option is not a
-      // seam" applied to the refusals rather than to the option.
-      Document malformed = Document::createBlank(128, 128, WorkingSpace{});
-      malformed.layers[0] = makeAdjustmentLayer("bad");
-      malformed.layers[0].rgbTiles.emplace();
-      const NpaintSaveResult refused = saveNpaint(malformed, kPath);
-      check(!refused.ok && contains(refused.error, "Adjustment") &&
-                contains(refused.error, "holds no pixels"),
-            "npaint: the malformed-Adjustment refusal is checked BEFORE the backend gate, so "
-            "it reads identically in the build with no OpenImageIO in it");
+    const NpaintSaveResult saved = saveNpaint(doc, kPath);
+    check(saved.ok && saved.partsWritten == 3 && saved.warnings.empty(),
+          "npaint: it saves as three parts with NOTHING approximate about it -- until this "
+          "step every non-empty op stack produced a warning naming what the file could not "
+          "hold");
+    const NpaintLoadResult back = loadNpaint(kPath);
+    check(back.ok && back.warnings.empty() && back.document.layers.size() == 2,
+          "npaint: and it loads back clean, with both layers");
+    if (back.ok && back.document.layers.size() == 2) {
+      check(serializeOpStack(back.document.layers[0].ops) == serializeOpStack(doc.layers[0].ops) &&
+                back.document.layers[0].ops.size() == 2,
+            "npaint: the RGB layer's two-entry stack -- an Exposure and a three-point Curves "
+            "-- round-trips, so `np:ops` is not an Adjustment-only feature");
+      check(back.document.layers[1].kind == LayerKind::Adjustment &&
+                !back.document.layers[1].rgbTiles.has_value() &&
+                !back.document.layers[1].pigmentTiles.has_value(),
+            "npaint: the Adjustment layer comes back as an Adjustment layer holding no "
+            "pixel storage of any kind");
+      check(back.document.layers[1].ops.size() == 2 &&
+                back.document.layers[1].ops.at(1).opClass == OpClass::Unknown &&
+                back.document.layers[1].ops.at(1).unrecognised ==
+                    doc.layers[1].ops.at(1).unrecognised,
+            "npaint: including the entry whose op class this build has no name for -- its "
+            "bytes survive a full save/load through OpenEXR, in position, PRD I10 at the "
+            "entry level rather than at the attribute level");
+      check(back.document.layers[1].mask.has_value() &&
+                back.document.layers[1].mask->occupiedTileCount() == 1,
+            "npaint: and its mask, in the one channel EXR requires the part to have at all "
+            "(a zero-channel part is refused by this OpenImageIO with \"Missing or empty "
+            "channel list in header\" -- measured)");
+      check(sameImage(flattenDocumentToLinear(doc),
+                      flattenDocumentToLinear(back.document)),
+            "npaint: the reloaded document composites BYTE-IDENTICALLY to the saved one, "
+            "which is the whole point -- an adjustment layer whose stack did not survive "
+            "would be a layer with no content left");
     }
+
+    // np:mask on an Adjustment part: the one rule this format has nowhere
+    // else, because the channel's presence cannot carry the distinction.
+    Document noMask = doc;
+    removeLayerMask(noMask, 1);
+    const NpaintSaveResult noMaskSaved = saveNpaint(noMask, kAgain);
+    const NpaintLoadResult noMaskBack = loadNpaint(kAgain);
+    check(noMaskSaved.ok && noMaskBack.ok && noMaskBack.document.layers.size() == 2 &&
+              !noMaskBack.document.layers[1].mask.has_value(),
+          "npaint: an Adjustment layer with NO mask loads back with `Layer::mask` "
+          "disengaged, although its part still carries a `mask` channel -- np:mask says "
+          "which, since presence cannot");
+
+    // The property the whole change rests on: a document with no op stacks
+    // produces exactly the bytes it produced before this step.
+    Document stripped = doc;
+    stripped.layers[0].ops = OpStack{};
+    stripped.layers[1].ops = OpStack{};
+    removeLayerMask(stripped, 1);
+    std::remove(kAgain);
+    const NpaintSaveResult again = saveNpaint(stripped, kAgain);
+    check(again.ok && !bytesWithoutCapDate(kBare).empty() &&
+              bytesWithoutCapDate(kBare) == bytesWithoutCapDate(kAgain),
+          "npaint: emptying every op stack gives back a file BYTE-IDENTICAL to the one "
+          "written before they existed (OpenImageIO's capDate masked, which HEAD's own two "
+          "runs differ in too) -- np:ops is written only for a non-empty stack");
+    check(bytesWithoutCapDate(kPath).size() > bytesWithoutCapDate(kBare).size(),
+          "npaint: and the file WITH stacks really is bigger, so the check above is not "
+          "passing because nothing was ever written");
+
+    // PRD I10 for an `np:ops` this build cannot parse: written through the
+    // carry, refused by the reader with a named warning, and put back
+    // unchanged on the next save.
+    Document carried = Document::createBlank(128, 128, WorkingSpace{});
+    writeRgb(carried, 0, 1, 1, {0.5f, 0.5f, 0.5f, 1.0f});
+    NpaintCarry inject;
+    inject.layerAttributes.resize(1);
+    NpaintAttribute future;
+    future.name = "np:ops";
+    future.type = NpaintAttribute::Type::String;
+    future.stringValue = "npops2:cafe";
+    inject.layerAttributes[0].push_back(future);
+    std::remove(kAgain);
+    const NpaintSaveResult futureSave = saveNpaint(carried, kAgain, {}, &inject);
+    const NpaintLoadResult futureBack = loadNpaint(kAgain);
+    bool warnedByName = false;
+    for (const std::string& w : futureBack.warnings)
+      if (contains(w, "npops2:") && contains(w, "npops1:")) warnedByName = true;
+    check(futureSave.ok && futureBack.ok && warnedByName &&
+              futureBack.document.layers.size() == 1 &&
+              futureBack.document.layers[0].ops.size() == 0,
+          "npaint: an np:ops this build cannot decode -- a v2 tag -- is warned about by "
+          "name and the layer opens with no stack rather than with a guess");
+    bool carriedBack = false;
+    if (futureBack.carry.layerAttributes.size() == 1)
+      for (const NpaintAttribute& a : futureBack.carry.layerAttributes[0])
+        if (a.name == "np:ops" && a.stringValue == "npops2:cafe") carriedBack = true;
+    check(carriedBack,
+          "npaint: and it is CARRIED rather than dropped, so the next save writes it back "
+          "unchanged -- an op stack is the one attribute whose loss would empty a whole "
+          "layer, which is exactly what PRD I10 exists to prevent");
+    std::remove(kPath);
+    const NpaintSaveResult rewritten = saveNpaint(futureBack.document, kPath, {},
+                                                  &futureBack.carry);
+    const NpaintLoadResult reread = loadNpaint(kPath);
+    bool stillThere = false;
+    if (reread.ok && reread.carry.layerAttributes.size() == 1)
+      for (const NpaintAttribute& a : reread.carry.layerAttributes[0])
+        if (a.name == "np:ops" && a.stringValue == "npops2:cafe") stillThere = true;
+    check(rewritten.ok && stillThere,
+          "npaint: proven by writing it back out and reading it again, not by inspecting the "
+          "carry and assuming");
+
+    // The malformed-document refusal for this kind, the mirror of the ones
+    // step 3 added for RGB and Pigment.
+    Document malformed = Document::createBlank(128, 128, WorkingSpace{});
+    malformed.layers[0] = makeAdjustmentLayer("bad");
+    malformed.layers[0].rgbTiles.emplace();
+    const NpaintSaveResult refused = saveNpaint(malformed, kPath);
+    check(!refused.ok && contains(refused.error, "Adjustment") &&
+              contains(refused.error, "holds no pixels"),
+          "npaint: an Adjustment layer carrying pixel tiles is refused by index, name and "
+          "kind -- its part has no channel to put them in, so writing would drop them");
 
     for (const char* p : {kPath, kBare, kAgain}) std::remove(p);
     check(std::fopen(kPath, "rb") == nullptr && std::fopen(kBare, "rb") == nullptr &&

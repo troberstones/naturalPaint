@@ -13,12 +13,6 @@ bool runLayerMaskTest() {
   };
   auto near = [](float a, float b, float tol) { return std::fabs(a - b) <= tol; };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   // --- Tolerances, derived for THIS channel rather than borrowed ----------
   //
   //  * **kMaskAbs -- the mask channel's own f16 bound, and it is tighter than
@@ -624,14 +618,7 @@ bool runLayerMaskTest() {
     // step's format change had to keep: adding and removing a mask must leave
     // the bytes exactly where they were.
     const NpaintSaveResult bare = saveNpaint(doc, kBare);
-    check(bare.ok == kOiioBuild,
-          kOiioBuild ? "npaint: a mask-free three-layer document saves"
-                     : "npaint: saving is refused in the NP_USE_OIIO=OFF build, which has no "
-                       "`.npaint` writer at all");
-    if (!kOiioBuild) {
-      check(contains(bare.error, "NP_USE_OIIO"),
-            "npaint: and the refusal is io/NpaintFile's own, naming the build option");
-    }
+    check(bare.ok, "npaint: a mask-free three-layer document saves");
 
     // Masks: a partial one on the Pigment layer, one on the RGB layer with a
     // tile OUTSIDE the layer's own content bounds, and a reveal-all one.
@@ -642,7 +629,7 @@ bool runLayerMaskTest() {
     writeMask(doc, 1, 200, 130, 0.5f);  // tile (1,1); the layer's content is in tile (0,0)
     addLayerMask(doc, 2);               // engaged, zero tiles
 
-    if (kOiioBuild) {
+    {
       const NpaintSaveResult saved = saveNpaint(doc, kPath);
       check(saved.ok && saved.partsWritten == 4 && saved.warnings.empty(),
             "npaint: a document with three masked layers saves as four parts with nothing "

@@ -25,18 +25,9 @@ bool runLayerEditorTest() {
     return s.find(needle) != std::string::npos;
   };
 
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-  // PLAN.md §1.5. Nothing here reaches a file, an encoder or the GPU, so every
-  // assertion below has the same correct answer in both configurations; said
-  // in the output rather than assumed.
-  std::printf("[selftest] layer editor: NP_USE_OIIO=%s -- every assertion in this section has the "
-              "same correct answer in both configurations; nothing here reaches a file, an "
-              "encoder or the GPU\n",
-              kOiioBuild ? "ON" : "OFF");
+  // PLAN.md §1.5. Nothing here reaches a file, an encoder or the GPU.
+  std::printf(
+      "[selftest] layer editor: nothing here reaches a file, an encoder or the GPU\n");
 
   // A small document with real pixels in the bottom layer, so a composite
   // difference is a difference in a picture rather than in a flag.

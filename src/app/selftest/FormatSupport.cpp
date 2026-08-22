@@ -13,18 +13,8 @@ bool runFormatSupportTest() {
     return s.find(needle) != std::string::npos;
   };
 
-  // Which backend set was compiled in. A plain constant rather than an
-  // #ifdef around each case, so both configurations execute the same
-  // assertions and each one states the correct answer for its build -- see
-  // SelfTest.hpp on why compiling this section out of the OFF build would
-  // defeat its purpose.
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-  check(oiioBackendCompiledIn() == kOiioBuild,
-        "the capability module and this test agree on which build this is");
+  check(oiioBackendCompiledIn(),
+        "the capability module reports the OIIO backend is compiled in");
   std::printf("    %s\n", imageBackendSummary().c_str());
 
   // --- Tolerances, derived rather than guessed ---------------------------
@@ -164,34 +154,25 @@ bool runFormatSupportTest() {
       std::snprintf(label, sizeof(label),
                     "%s is readable+writable exactly when the OIIO backend is present",
                     imageFormatName(e.format));
-      check(c.canRead == kOiioBuild && c.canWrite == kOiioBuild, label);
+      check(c.canRead && c.canWrite, label);
       std::snprintf(label, sizeof(label), "%s reports the right backend for this build",
                     imageFormatName(e.format));
-      check(c.backend == (kOiioBuild ? FormatBackend::Oiio : FormatBackend::None), label);
+      check(c.backend == FormatBackend::Oiio, label);
 
       std::snprintf(label, sizeof(label), "%s: the writable depth set matches this build",
                     imageFormatName(e.format));
-      check(c.canWriteDepth(ExportBitDepth::UInt8) == (kOiioBuild && e.uint8) &&
-                c.canWriteDepth(ExportBitDepth::UInt16) == (kOiioBuild && e.uint16) &&
-                c.canWriteDepth(ExportBitDepth::Half) == (kOiioBuild && e.half) &&
-                c.canWriteDepth(ExportBitDepth::Float32) == (kOiioBuild && e.float32),
+      check(c.canWriteDepth(ExportBitDepth::UInt8) == e.uint8 &&
+                c.canWriteDepth(ExportBitDepth::UInt16) == e.uint16 &&
+                c.canWriteDepth(ExportBitDepth::Half) == e.half &&
+                c.canWriteDepth(ExportBitDepth::Float32) == e.float32,
             label);
       std::snprintf(label, sizeof(label), "%s: alpha-channel support matches this build",
                     imageFormatName(e.format));
-      check(c.hasAlpha == (kOiioBuild && e.alpha), label);
+      check(c.hasAlpha == e.alpha, label);
 
-      if (!kOiioBuild) {
-        std::snprintf(label, sizeof(label),
-                      "%s: the OFF build's reason names NP_USE_OIIO, not a bare failure",
-                      imageFormatName(e.format));
-        check(contains(c.unavailableReason, "NP_USE_OIIO") &&
-                  contains(c.unavailableReason, imageFormatName(e.format)),
-              label);
-      } else {
-        std::snprintf(label, sizeof(label), "%s: available, so it carries no failure reason",
-                      imageFormatName(e.format));
-        check(c.unavailableReason.empty(), label);
-      }
+      std::snprintf(label, sizeof(label), "%s: available, so it carries no failure reason",
+                    imageFormatName(e.format));
+      check(c.unavailableReason.empty(), label);
     }
     // HDR having no alpha is not written down anywhere -- it is discovered
     // by OpenImageIO's writer refusing to open a 4-channel image. Called
@@ -204,21 +185,18 @@ bool runFormatSupportTest() {
   // --- PSD: read-only where it exists at all ------------------------------
   {
     const FormatCapability& psd = formatCapability(ImageFormat::Psd);
-    check(psd.canRead == kOiioBuild,
-          "PSD is readable exactly when the OIIO backend is present (flattened read is "
-          "PLAN.md step 2's actual wording)");
+    check(psd.canRead,
+          "PSD is readable (flattened read is PLAN.md step 2's actual wording)");
     check(!psd.canWrite,
-          "PSD is NOT writable in either build -- PSD export is phase 15, and this "
-          "OpenImageIO has no PSD writer at all");
+          "PSD is NOT writable -- PSD export is phase 15, and this OpenImageIO has no PSD "
+          "writer at all");
     const ExportResult psdExport = exportDocument(ramp, ImageFormat::Psd,
                                                   ExportTargetSpace::Rec709Srgb,
                                                   ExportBitDepth::UInt8);
     check(!psdExport.ok && psdExport.bytes.empty(),
           "PSD export is refused and writes no bytes");
-    check(contains(psdExport.error, "PSD") &&
-              (contains(psdExport.error, "phase 15") ||
-               contains(psdExport.error, "NP_USE_OIIO")),
-          "PSD export's refusal names the format and why -- read-only here, or no backend");
+    check(contains(psdExport.error, "PSD") && contains(psdExport.error, "phase 15"),
+          "PSD export's refusal names the format and why");
   }
 
   // --- Camera raw: unsupported in BOTH builds. The I3 assertion. ----------
@@ -229,19 +207,14 @@ bool runFormatSupportTest() {
           "the assertion a hardcoded 'NP_USE_OIIO implies step 2's list' table would fail");
     check(raw.backend == FormatBackend::None, "camera raw reports no backend at all");
     check(!raw.unavailableReason.empty(), "camera raw's refusal carries a reason");
-    if (kOiioBuild) {
-      check(contains(raw.unavailableReason, "LibRaw"),
-            "camera raw's reason names LibRaw's deliberate exclusion from this "
-            "OpenImageIO build");
-      check(contains(raw.unavailableReason, "run time") &&
-                contains(raw.unavailableReason, "'raw'"),
-            "camera raw's reason says the answer came from asking OpenImageIO at run "
-            "time, and names the plugin it looked for");
-    } else {
-      check(contains(raw.unavailableReason, "NP_USE_OIIO"),
-            "camera raw's reason names NP_USE_OIIO in the no-backend build");
-    }
-    check(formatCapability(ImageFormat::Exr).canRead == kOiioBuild &&
+    check(contains(raw.unavailableReason, "LibRaw"),
+          "camera raw's reason names LibRaw's deliberate exclusion from this "
+          "OpenImageIO build");
+    check(contains(raw.unavailableReason, "run time") &&
+              contains(raw.unavailableReason, "'raw'"),
+          "camera raw's reason says the answer came from asking OpenImageIO at run "
+          "time, and names the plugin it looked for");
+    check(formatCapability(ImageFormat::Exr).canRead &&
               !formatCapability(ImageFormat::CameraRaw).canRead,
           "I3: the query distinguishes two OIIO-listed formats from each other -- EXR "
           "present, camera raw absent -- rather than answering per build option");
@@ -262,18 +235,13 @@ bool runFormatSupportTest() {
           "query: all four I1 formats are listed as 8-bit-writable");
     check(contains(u16, "PNG") && !contains(u16, "JPEG"),
           "query: PNG is listed as 16-bit-integer-writable and JPEG is not");
-    check(f32.empty() != kOiioBuild,
-          "query: a 32-bit-float-capable format exists exactly when the OIIO backend does");
-    if (kOiioBuild) {
-      check(h == "EXR",
-            "query: EXR is the ONLY format here that writes half -- TIFF and DPX accept "
-            "the request and write 32-bit float instead, so they are not listed");
-      check(contains(f32, "EXR") && contains(f32, "TIFF") && contains(f32, "HDR") &&
-                contains(f32, "DPX") && !contains(f32, "PNG"),
-            "query: all four OIIO formats write 32-bit float, and none of the I1 four do");
-    } else {
-      check(h.empty(), "query: no format writes half without the OIIO backend");
-    }
+    check(!f32.empty(), "query: a 32-bit-float-capable format exists");
+    check(h == "EXR",
+          "query: EXR is the ONLY format here that writes half -- TIFF and DPX accept "
+          "the request and write 32-bit float instead, so they are not listed");
+    check(contains(f32, "EXR") && contains(f32, "TIFF") && contains(f32, "HDR") &&
+              contains(f32, "DPX") && !contains(f32, "PNG"),
+          "query: all four OIIO formats write 32-bit float, and none of the I1 four do");
   }
 
   // --- PRD B6 for the float depths: refused loudly by an integer format ---
@@ -310,28 +278,15 @@ bool runFormatSupportTest() {
           "the sample type and not the bit count");
   }
 
-  // --- The no-backend build's loud failure --------------------------------
+  // --- EXR export succeeds now that the OIIO backend is compiled in -------
   {
     const ExportResult exr = exportDocument(ramp, ImageFormat::Exr,
                                             ExportTargetSpace::Rec709Linear,
                                             ExportBitDepth::Half);
-    check(exr.ok == kOiioBuild,
-          "EXR export succeeds exactly when the OIIO backend is compiled in");
-    if (!kOiioBuild) {
-      check(contains(exr.error, "EXR") && contains(exr.error, "NP_USE_OIIO") &&
-                contains(exr.error, "-DNP_USE_OIIO=ON"),
-            "no-backend build: the EXR refusal names the format, the build option and the "
-            "exact flag to turn it on");
-      check(contains(exr.error, "PRD I3"),
-            "no-backend build: and says this is PRD I3 working, not a defect");
-    }
+    check(exr.ok, "EXR export succeeds now that the OIIO backend is compiled in");
   }
 
-  // Everything past this point needs a real backend. Guarded by a plain
-  // runtime `if`, not an #ifdef: every call below compiles in both
-  // configurations (the OIIO types never cross into this file), so the OFF
-  // build still type-checks all of it.
-  if (kOiioBuild) {
+  {
     // --- EXR round trip: exactly lossless, and why that is the right claim
     //
     // The chain is: tile (half) -> readPixel (exact) -> flatten's sum of a

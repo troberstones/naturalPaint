@@ -15,17 +15,6 @@ bool runNpaintFormatTest() {
     return s.find(needle) != std::string::npos;
   };
 
-  // Which backend set was compiled in. A plain constant rather than an
-  // #ifdef around each case, following runFormatSupportTest()'s own
-  // precedent and PLAN.md §1.5's "an unexercised build option is not a
-  // seam": every assertion below runs in both configurations and states the
-  // correct answer for the one it is in.
-#if defined(NP_USE_OIIO)
-  constexpr bool kOiioBuild = true;
-#else
-  constexpr bool kOiioBuild = false;
-#endif
-
   // --- Tolerances, derived rather than guessed ---------------------------
   //
   // There is exactly one number here, and most of this section deliberately
@@ -319,31 +308,14 @@ bool runNpaintFormatTest() {
           "mix scanline and tiled parts)");
   }
 
-  // --- The NP_USE_OIIO=OFF refusal, and its converse ---------------------
+  // --- The save entry point succeeds with an OpenEXR writer ---------------
   {
     const NpaintSaveResult r = saveNpaint(fixture, "selftest_npaint_gate.npaint");
-    check(r.ok == kOiioBuild,
-          "the save entry point exists in both builds and succeeds in exactly the one with "
-          "an OpenEXR writer");
-    if (!kOiioBuild) {
-      check(contains(r.error, ".npaint") && contains(r.error, "NP_USE_OIIO=OFF") &&
-                contains(r.error, "-DNP_USE_OIIO=ON") && contains(r.error, "OpenEXR"),
-            "OFF build: the save refusal names .npaint, the build option, and the cmake line "
-            "that enables it");
-      check(contains(r.error, "exportDocumentToFile"),
-            "OFF build: and names the alternative that does work in this build (PRD I1's "
-            "stb-backed formats), per io/Export.cpp's refusal style");
-      const NpaintLoadResult l = loadNpaint("selftest_npaint_gate.npaint");
-      check(!l.ok && contains(l.error, "NP_USE_OIIO=OFF") && contains(l.error, ".npaint"),
-            "OFF build: the load entry point refuses the same way, from the same wording");
-    }
+    check(r.ok, "the save entry point succeeds with an OpenEXR writer");
     std::remove("selftest_npaint_gate.npaint");
   }
 
-  // Everything past this point needs a real backend. A plain runtime `if`,
-  // not an #ifdef: every call below compiles in both configurations, so the
-  // OFF build still type-checks all of it.
-  if (kOiioBuild) {
+  {
     const char* kPath = "selftest_npaint_roundtrip.npaint";
     std::remove(kPath);
 
@@ -545,7 +517,7 @@ bool runNpaintFormatTest() {
   }
 
   // --- PRD I10: unrecognised attributes and parts survive verbatim -------
-  if (kOiioBuild) {
+  {
     const char* kPath = "selftest_npaint_carry.npaint";
     std::remove(kPath);
 
@@ -720,7 +692,7 @@ bool runNpaintFormatTest() {
   }
 
   // --- PRD I8: `.npaint` and `.exr` are the same container ----------------
-  if (kOiioBuild) {
+  {
     const char* kExr = "selftest_npaint_as.exr";
     std::remove(kExr);
     const NpaintSaveResult saved = saveNpaint(fixture, kExr);
