@@ -60,6 +60,24 @@ size_t layerIndexForPanelRow(size_t row, size_t layerCount) noexcept;
 // out-of-range rule.
 size_t panelRowForLayerIndex(size_t layerIndex, size_t layerCount) noexcept;
 
+// Where a layer dropped on top of another row should land, in
+// `core::moveLayer(doc, from, to)`'s own terms -- `to` is a position in the
+// list **as it stood before the move** (core/LayerOps.hpp), which a rotate
+// lands the dragged layer at exactly, so this function only has to name that
+// position and not simulate the rotate.
+//
+// `hoveredIndex` is the model index of the row the pointer is over,
+// `droppedAboveMidpoint` whether the pointer sat in that row's upper half.
+// "Upper half" is a **panel** direction -- visually higher, i.e. further up
+// the stack -- which this file's own reversal makes numerically `+1`, not
+// `-1`: the panel lists top-first while `Document::layers` is bottom-first,
+// so a drop nearer the top of a row asks to land *above* it, at one past its
+// model index. Clamped into `[0, layerCount - 1]` so a drop at either end of
+// the list is never an out-of-range `to` -- dropping above the top row's
+// midpoint saturates at the top rather than requesting a slot past the end.
+size_t layerDropTargetIndex(size_t hoveredIndex, bool droppedAboveMidpoint,
+                            size_t layerCount) noexcept;
+
 // The glyph docs/ui.md §3.2 assigns each kind ("A kind glyph left of the
 // thumbnail"). Returned as a UTF-8 string rather than a char, because every one
 // of them is multi-byte.

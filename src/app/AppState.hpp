@@ -186,6 +186,11 @@ struct AppState {
   // photographing and which stays empty without a folder to resolve against.
   // `controlsScrollTo`'s pattern, one dialog over.
   std::string exportStatesFolder;
+  // --open-layer-properties: holds the LAYERS panel's own gear-button modal
+  // open, so a `--screenshot` can photograph it -- `openExportStatesDialog`'s
+  // justification exactly, one dialog over: it too is opened by a click and
+  // the screenshot path has no input.
+  bool openLayerProperties = false;
   // --controls-all-open <SECTION>: scrolls that header to the top of the
   // column, every frame, so a `--screenshot` can photograph a section that
   // sits below the fold once every section is open. Empty means "do not

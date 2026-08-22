@@ -6,6 +6,7 @@
 #include <iterator>
 #include <system_error>
 
+#include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
 #include "core/Layer.hpp"
 #include "imgui.h"
@@ -84,16 +85,15 @@ ImFont* loadFirst(const GlyphFontCandidate* first, size_t count, float sizePx, s
 const UiFonts& uiFonts() { return g_fonts; }
 
 const std::vector<uint32_t>& requiredUiCodepoints() {
-  // Built from `layerKindGlyph()` itself rather than retyped, so the two can
-  // never drift: the list IS what the panel asks for. Every kind is walked,
-  // including any added later, which is what makes the drift impossible
-  // rather than merely unlikely.
+  // Built from `layerKindGlyph()` and `layerCommandGlyph()` themselves rather
+  // than retyped, so the list can never drift from what the panel actually
+  // asks for. Every kind and every command is walked, including any added
+  // later, which is what makes the drift impossible rather than merely
+  // unlikely.
   static const std::vector<uint32_t> kPoints = [] {
     std::vector<uint32_t> points;
-    for (const LayerKind kind :
-         {LayerKind::Pigment, LayerKind::RGB, LayerKind::Media, LayerKind::Strokes,
-          LayerKind::Adjustment, LayerKind::Text, LayerKind::Flats}) {
-      for (const uint32_t cp : decodeUtf8(layerKindGlyph(kind))) {
+    auto addGlyph = [&points](const char* glyph) {
+      for (const uint32_t cp : decodeUtf8(glyph)) {
         // Below 0x0100 is ImGui's own default range and needs no merge
         // source; including it would ask a second font for glyphs the first
         // already draws, which is exactly what GlyphExcludeRanges exists to
@@ -101,7 +101,21 @@ const std::vector<uint32_t>& requiredUiCodepoints() {
         if (cp >= 0x0100 && std::find(points.begin(), points.end(), cp) == points.end())
           points.push_back(cp);
       }
-    }
+    };
+    for (const LayerKind kind :
+         {LayerKind::Pigment, LayerKind::RGB, LayerKind::Media, LayerKind::Strokes,
+          LayerKind::Adjustment, LayerKind::Text, LayerKind::Flats})
+      addGlyph(layerKindGlyph(kind));
+    // Most of `layerCommandGlyph()`'s results are "" (a command with no
+    // icon), and `addGlyph()` decodes that to nothing -- exactly the no-op
+    // this walk wants for them.
+    for (const LayerCommand command : allLayerCommands()) addGlyph(layerCommandGlyph(command));
+    // Panel chrome that opens a dialog rather than issuing a `LayerCommand` --
+    // there is only one of these today, so a table would be one row. The
+    // "Layer Properties" gear button in ui/MacPaintUI.cpp is the one caller;
+    // if a second one of these ever exists, the two belong in a shared list
+    // the way the kind and command glyphs already are.
+    addGlyph("\xE2\x9A\x99");  // U+2699 gear
     std::sort(points.begin(), points.end());
     return points;
   }();
