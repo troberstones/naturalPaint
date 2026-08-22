@@ -15,34 +15,53 @@ endif()
 option(NP_USE_MIXBOX "Use the Mixbox pigment LUT (CC BY-NC, non-commercial only)" ON)
 
 # OpenImageIO backs EXR/TIFF/HDR/DPX and flattened-PSD read (PLAN.md phase 4
-# step 2). OFF by default, deliberately, and the reasoning is worth stating
-# because it is the opposite of NP_USE_MIXBOX's:
+# step 2). **It is a hard requirement, and it used to be an option that
+# defaulted OFF.** The reversal is deliberate and the reason it was made is
+# worth keeping, because the old argument was a good one that turned out to be
+# answering the wrong question:
 #
-#   * PRD I3 (P0) says format support is a runtime capability query, not a
-#     build-time hard requirement. A default that makes `cmake -S . -B build`
-#     fail on a machine without OpenImageIO would contradict that at the
-#     first step -- so the core has to configure and build with no
-#     OpenImageIO anywhere, and that has to be the path everyone gets for
-#     free.
-#   * PRD I1's PNG/JPEG/TGA/BMP are the "no optional dependency" set and are
-#     stb-backed regardless of this option, so the default build is not a
-#     crippled one; it is a complete implementation of I1.
-#   * find_package(OpenImageIO) will not locate a non-standard install on its
-#     own. This project's OpenImageIO is a deliberately stripped-down local
-#     build (no LibRaw, no ffmpeg, no Python) under ~/.local/openimageio, so
-#     turning the option ON is always accompanied by a CMAKE_PREFIX_PATH
-#     anyway -- an ON default could only ever succeed by accident.
+#   * The old default was justified from PRD I3 (P0) -- "format support is a
+#     runtime capability query, not a build-time hard requirement" -- and that
+#     reasoning is still correct **for foreign formats**. EXR, TIFF, HDR and
+#     DPX genuinely are optional capabilities, and PRD I1's stb-backed
+#     PNG/JPEG/TGA/BMP set genuinely does not need this dependency.
+#   * What the argument missed is that `io/NpaintFile` builds the **native**
+#     document format on multi-part EXR, so the same guard that made foreign
+#     formats optional also made `saveNpaint()` and `loadNpaint()` refuse --
+#     and `app/Journal`'s crash-recovery writer with them. The default build
+#     could not save a document, could not open one, and had no recovery
+#     journal, which is PRD O5-O10 (P0 data safety) absent from the
+#     configuration everybody got by default.
+#   * A foreign format you cannot read is a capability gap. A document you
+#     cannot save is not an application. Those are not the same class of
+#     compromise, and one option was deciding both.
 #
-# Turn it on with:
-#   cmake -S . -B build-oiio -DNP_USE_OIIO=ON \
-#         -DCMAKE_PREFIX_PATH="$HOME/.local/openimageio"
+# So the dependency is now required. `find_package(OpenImageIO REQUIRED)` in
+# src/CMakeLists.txt is the enforcement, and a machine without OpenImageIO now
+# fails at configure time with a message naming the fix rather than producing a
+# binary that silently cannot persist work.
 #
-# PLAN.md §1.5's lesson ("an unexercised build option is not a seam") applies
-# with full force here: BOTH configurations are expected to build and pass
-# --selftest, and --selftest's "format support" section deliberately asserts
-# the *correct* answers for whichever backend set is compiled in rather than
-# compiling itself out of the OFF build.
-option(NP_USE_OIIO "Use OpenImageIO for EXR/TIFF/HDR/DPX and flattened-PSD read" OFF)
+# This project's OpenImageIO is a deliberately stripped-down local build (no
+# LibRaw, no ffmpeg, no Python) under ~/.local/openimageio, which find_package
+# will not locate on its own, so configuring still needs:
+#
+#   cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/.local/openimageio"
+#
+# `NP_USE_OIIO` is still #defined for the compiler, unconditionally, so the
+# ~230 `#if defined(NP_USE_OIIO)` sites across src/ remain true rather than
+# becoming a lie. Their now-unreachable `#else` branches are dead code to be
+# removed as its own change; folding that into this one would have mixed a
+# decision with a 47-file sweep. PLAN.md 1.5's lesson ("an unexercised build
+# option is not a seam") is exactly why the option is being removed rather
+# than merely flipped to ON: an OFF path nobody builds is how NP_USE_MIXBOX
+# became a documented fallback that does not exist.
+if(DEFINED NP_USE_OIIO AND NOT NP_USE_OIIO)
+  message(FATAL_ERROR
+    "NP_USE_OIIO=OFF is no longer supported: OpenImageIO backs the native "
+    ".npaint format and the recovery journal, so a build without it cannot "
+    "save or open a document. Drop the flag and configure with "
+    "-DCMAKE_PREFIX_PATH=\"$ENV{HOME}/.local/openimageio\" instead.")
+endif()
 
 include(cmake/Dependencies.cmake)
 
