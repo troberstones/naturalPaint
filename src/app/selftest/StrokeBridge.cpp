@@ -537,50 +537,50 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
           "enough to diffuse in)");
   }
 
+  // BakeCycleReport::why is a const char*, and every assertion below checks
+  // that a refusal names its cause rather than merely being a refusal.
+  auto because = [](const char* why, const char* fragment) {
+    return why != nullptr && std::string(why).find(fragment) != std::string::npos;
+  };
+
+  // Drives a cycle the way the frame loop does: keep stepping until it
+  // reaches a terminal action. Two back-to-back step() calls are NOT two
+  // frames -- pollPigmentReadback() pumps the instance once and returns, so
+  // the map callback still needs the wall-clock time a real frame's own GPU
+  // work would have covered.
+  //
+  // **Bounded by the clock, not by a step count**, and section 5 above
+  // already had to learn this the hard way: 240 steps complete in
+  // microseconds while the copy takes milliseconds, so a count-bounded loop
+  // gives up before the GPU could possibly have finished and then abandons a
+  // pending map -- which is the still-mapped-buffer abort all over again.
+  // This is the second time that mistake has been made in this file; the
+  // comment in section 5 is why it was recognised in one run rather than
+  // debugged from scratch.
+  struct Driven {
+    BakeCycleReport report;
+    int steps = 0;
+  };
+  auto drive = [&](StrokeBakeCycle& cycle, OpenDocument* doc, PaintMode mode,
+                   uint64_t firstFrame) {
+    using Clock = std::chrono::steady_clock;
+    const auto started = Clock::now();
+    Driven d;
+    while (std::chrono::duration<double>(Clock::now() - started).count() < 5.0) {
+      d.report = cycle.step(gpu, sim, doc, mode, firstFrame + static_cast<uint64_t>(d.steps));
+      ++d.steps;
+      if (d.report.action == BakeCycleReport::Action::Baked ||
+          d.report.action == BakeCycleReport::Action::Refused)
+        break;
+    }
+    return d;
+  };
+
   // ======================================================================
   // 8. The frame sequence: what decides when, and what it refuses to do.
   // ======================================================================
   std::printf("  -- 8. the frame sequence (app/StrokeBake.hpp section 1) --\n");
   {
-    // BakeCycleReport::why is a const char*, and every assertion below checks
-    // that a refusal names its cause rather than merely being a refusal.
-    auto because = [](const char* why, const char* fragment) {
-      return why != nullptr && std::string(why).find(fragment) != std::string::npos;
-    };
-
-    // Drives a cycle the way the frame loop does: keep stepping until it
-    // reaches a terminal action. Two back-to-back step() calls are NOT two
-    // frames -- pollPigmentReadback() pumps the instance once and returns, so
-    // the map callback still needs the wall-clock time a real frame's own GPU
-    // work would have covered.
-    //
-    // **Bounded by the clock, not by a step count**, and section 5 above
-    // already had to learn this the hard way: 240 steps complete in
-    // microseconds while the copy takes milliseconds, so a count-bounded loop
-    // gives up before the GPU could possibly have finished and then abandons a
-    // pending map -- which is the still-mapped-buffer abort all over again.
-    // This is the second time that mistake has been made in this file; the
-    // comment in section 5 is why it was recognised in one run rather than
-    // debugged from scratch.
-    struct Driven {
-      BakeCycleReport report;
-      int steps = 0;
-    };
-    auto drive = [&](StrokeBakeCycle& cycle, OpenDocument* doc, PaintMode mode,
-                     uint64_t firstFrame) {
-      using Clock = std::chrono::steady_clock;
-      const auto started = Clock::now();
-      Driven d;
-      while (std::chrono::duration<double>(Clock::now() - started).count() < 5.0) {
-        d.report = cycle.step(gpu, sim, doc, mode, firstFrame + static_cast<uint64_t>(d.steps));
-        ++d.steps;
-        if (d.report.action == BakeCycleReport::Action::Baked ||
-            d.report.action == BakeCycleReport::Action::Refused)
-          break;
-      }
-      return d;
-    };
-
     // --- 8a. The absorption table ---------------------------------------
     check(absorptionFor(PaintMode::Watercolor).has_value() &&
               *absorptionFor(PaintMode::Watercolor) == kAbsorptionWatercolor,
@@ -673,10 +673,16 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
 
     const Driven drivenBake = drive(cycle, &od, PaintMode::Watercolor, 1);
     const BakeCycleReport second = drivenBake.report;
-    std::printf("  [selftest] cycle: baked after %d further step(s) -> action=%d baked %zu "
-                "tile(s), %zu texel(s), peak %.4f\n",
-                drivenBake.steps + 1, static_cast<int>(second.action), second.bake.tilesWritten,
+    // Two lines, split on purpose. The bake's own numbers are deterministic
+    // and worth diffing between builds; the step count is a poll count over a
+    // wall-clock GPU wait, so it differs every run on the same binary. Marking
+    // it `[measured]` puts it in the category the regression diff already
+    // filters, rather than leaving one line that always looks like a change.
+    std::printf("  [selftest] cycle: action=%d baked %zu tile(s), %zu texel(s), peak %.4f\n",
+                static_cast<int>(second.action), second.bake.tilesWritten,
                 second.bake.texelsWritten, static_cast<double>(second.bake.peakCoverage));
+    std::printf("  [selftest] cycle: [measured] ready after %d further step(s)\n",
+                drivenBake.steps + 1);
     check(second.action == BakeCycleReport::Action::Baked,
           "cycle: a following frame finds the readback ready and bakes it");
     check(second.bake.texelsWritten > 0, "cycle: and it wrote real texels into the layer");
@@ -808,6 +814,129 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
       check(!throttled.readbackInFlight(),
             "cycle: the section leaves no readback mapped behind it -- an abandoned mapping "
             "makes the next wgpuQueueSubmit a validation error that aborts the process");
+    }
+  }
+
+  // ======================================================================
+  // 9. The drying cadence: one stroke is one history entry.
+  // ======================================================================
+  //
+  // Drying is gradual, so one stroke reaches the document in several batches.
+  // Recording each would put three or four rows named "dried paint" in the
+  // panel for one stroke, and undo would walk back through a drying process
+  // the painter never performed as separate acts.
+  //
+  // The fixture stages that on purpose: a stroke in one corner tile settled
+  // until it is DRY, then a second stroke in the opposite corner settled only
+  // briefly so it is still WET. One scan then sees a ready tile and a wet one
+  // simultaneously, which is exactly the state a real wash passes through and
+  // is otherwise very hard to catch.
+  std::printf("  -- 9. one stroke, one history entry --\n");
+  {
+    sim.clearCanvas(gpu);
+    OpenDocument od = makeBlankOpenDocument(static_cast<int32_t>(sim.width()),
+                                            static_cast<int32_t>(sim.height()),
+                                            WorkingSpace{}, "cadence");
+    recordLayerEdit(od, addLayer(od.document, od.document.layers.size(),
+                                 makePigmentLayer("wash")));
+    od.activeLayer = od.document.layers.size() - 1;
+
+    SimParams p{};
+    p.brushRadius = 14.0f;
+    p.brushWater = 1.4f;
+    p.brushPigment = 0.9f;
+    stroke(gpu, sim, p, 30.0f, 30.0f, 90.0f, 90.0f, 8);   // tile (0,0)
+    settle(gpu, sim, p, 240);                              // ...dry
+    stroke(gpu, sim, p, 300.0f, 300.0f, 350.0f, 350.0f, 8);  // tile (2,2)
+    settle(gpu, sim, p, 4);                                // ...still wet
+
+    StrokeBakeCycle cycle;
+    const size_t entriesBefore = od.history.entries().size();
+
+    const Driven b1 = drive(cycle, &od, PaintMode::Watercolor, 0);
+    check(b1.report.action == BakeCycleReport::Action::Baked,
+          "cadence: the dry corner bakes while the other corner is still wet");
+    check(!b1.report.coalesced,
+          "cadence: the first batch of an episode APPENDS -- there is nothing yet to extend");
+    check(od.history.entries().size() == entriesBefore + 1,
+          "cadence: so history gained exactly one entry");
+    const uint64_t episodeSerial = od.history.entries().back().serial;
+
+    // A scan while the far corner is still wet must NOT close the episode.
+    const BakeCycleReport wet =
+        cycle.step(gpu, sim, &od, PaintMode::Watercolor, StrokeBakeCycle::kScanIntervalFrames);
+    std::printf("  [selftest] cadence: mid-episode scan -> wetHeld=%zu (%s), episode %s\n",
+                wet.wetHeld, wet.why, cycle.inDryingEpisode() ? "still open" : "CLOSED");
+    check(wet.wetHeld > 0 && cycle.inDryingEpisode(),
+          "cadence: a scan that still finds wet paint keeps the episode OPEN -- more of this "
+          "stroke is on its way and it must extend the same entry");
+
+    // Now let the second corner dry and bake it into the SAME entry.
+    settle(gpu, sim, p, 240);
+    const Driven b2 = drive(cycle, &od, PaintMode::Watercolor,
+                            2 * StrokeBakeCycle::kScanIntervalFrames);
+    check(b2.report.action == BakeCycleReport::Action::Baked,
+          "cadence: the second corner bakes once it has dried");
+    check(b2.report.coalesced,
+          "cadence: and it EXTENDS the episode's entry instead of appending a second one");
+    check(od.history.entries().size() == entriesBefore + 1,
+          "cadence: history still holds exactly one entry for the whole drying -- this is the "
+          "assertion the section exists for");
+    check(od.history.entries().back().serial == episodeSerial,
+          "cadence: the same entry, by serial -- the panel's row never changed identity");
+
+    // The document really did grow across the two batches, so the amend
+    // carried content rather than merely relabelling.
+    const Layer* washed = activeLayerOf(od);
+    check(washed != nullptr && washed->pigmentTiles.has_value() &&
+              washed->pigmentTiles->occupiedTileCount() >= 2,
+          "cadence: and the layer holds tiles from BOTH corners -- one entry, all the paint");
+
+    // The episode ends when the canvas goes quiet, and the NEXT stroke is a
+    // new act. Without this the entry would be extended forever.
+    const BakeCycleReport quiet = cycle.step(gpu, sim, &od, PaintMode::Watercolor,
+                                             4 * StrokeBakeCycle::kScanIntervalFrames);
+    check(because(quiet.why, "nothing to bake") && !cycle.inDryingEpisode(),
+          "cadence: a scan over a quiet canvas CLOSES the episode -- the only moment a stroke "
+          "can be called finished is when nothing is still coming");
+
+    stroke(gpu, sim, p, 160.0f, 160.0f, 224.0f, 224.0f, 8);
+    settle(gpu, sim, p, 240);
+    const Driven b3 = drive(cycle, &od, PaintMode::Watercolor,
+                            6 * StrokeBakeCycle::kScanIntervalFrames);
+    check(b3.report.action == BakeCycleReport::Action::Baked && !b3.report.coalesced,
+          "cadence: a stroke painted after the canvas dried appends its OWN entry");
+    check(od.history.entries().size() == entriesBefore + 2,
+          "cadence: two strokes, two entries -- the coalescing is scoped to an episode and "
+          "does not swallow everything that follows");
+
+    // An unrelated edit between batches must break the chain: the top entry is
+    // no longer this episode's, and folding paint into a stranger's edit would
+    // make undo remove a layer and a wash together.
+    {
+      StrokeBakeCycle other;
+      sim.clearCanvas(gpu);
+      stroke(gpu, sim, p, 30.0f, 30.0f, 90.0f, 90.0f, 8);
+      settle(gpu, sim, p, 240);
+      drive(other, &od, PaintMode::Watercolor, 0);
+      const uint64_t mine = od.history.entries().back().serial;
+
+      recordLayerEdit(od, addLayer(od.document, od.document.layers.size(),
+                                   makePigmentLayer("someone else's edit")));
+      check(od.history.entries().back().serial != mine,
+            "cadence: an unrelated edit lands on top of the episode's entry");
+
+      sim.clearCanvas(gpu);
+      stroke(gpu, sim, p, 300.0f, 300.0f, 350.0f, 350.0f, 8);
+      settle(gpu, sim, p, 240);
+      const size_t before = od.history.entries().size();
+      const Driven after = drive(other, &od, PaintMode::Watercolor, 100);
+      check(after.report.action == BakeCycleReport::Action::Baked && !after.report.coalesced,
+            "cadence: the next batch APPENDS rather than amending -- the serial check caught "
+            "that the top entry is not this episode's any more");
+      check(od.history.entries().size() == before + 1,
+            "cadence: so the stranger's edit is left exactly as it was, and undo does not "
+            "remove a layer and a wash in one step");
     }
   }
 

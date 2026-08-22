@@ -117,6 +117,22 @@ DocumentId allocateDocumentId() {
 
 // --- OpenDocument ---------------------------------------------------------
 
+bool OpenDocument::amendEdit(std::string label, EditKind kind) {
+  // History decides whether this is amendable at all; if it refuses, nothing
+  // else here may happen either, or the revision would move for an edit that
+  // no history entry records.
+  if (!history.amend(label, document)) return false;
+
+  // The revision still moves. It is what ui/DocumentTexture caches on, and the
+  // document really did change -- another batch of tiles arrived. What does
+  // NOT happen is a second `unsavedEdits` label: the list is for PRD I11's
+  // "name what is unsaved" sentence, and one act should be named once however
+  // many instalments it arrives in.
+  ++revision;
+  if (kind == EditKind::Structural) ++structuralRevision;
+  return true;
+}
+
 void OpenDocument::recordEdit(std::string label, EditKind kind) {
   ++revision;
   if (kind == EditKind::Structural) ++structuralRevision;

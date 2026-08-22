@@ -157,13 +157,30 @@ BakeCycleReport StrokeBakeCycle::step(GpuContext& gpu, PaintSim& sim, OpenDocume
     sim.clearBakedTiles(gpu, inFlight_);
     sim.endPigmentReadback();
 
-    // recordEdit() is what moves `OpenDocument::revision`, and DocumentTexture
-    // caches on it -- without this the freshly baked tiles would sit in the
-    // document and never reach the screen. Content rather than Structural:
-    // this is paint, so app/Journal writes on its timer rather than within the
-    // frame (ADR-0008). It also appends a history entry, which is where the
-    // one-bake-one-entry limitation in the header comes from.
-    doc->recordEdit("dried paint", EditKind::Content);
+    // One of these moves `OpenDocument::revision`, and DocumentTexture caches
+    // on it -- without that the freshly baked tiles would sit in the document
+    // and never reach the screen. Content rather than Structural: this is
+    // paint, so app/Journal writes on its timer rather than within the frame
+    // (ADR-0008).
+    //
+    // Which one depends on whether this batch continues a drying episode. The
+    // check is "is the top entry still the one I created?", asked by serial
+    // rather than by index, because an eviction or an unrelated edit in
+    // between must start a new entry rather than silently rewrite someone
+    // else's. amendEdit() refuses on its own if the cursor has moved -- the
+    // user undid something mid-drying -- and the fallback below is then to
+    // record, which is right: after an undo, this batch really is a new act.
+    const std::vector<HistoryEntry>& entries = doc->history.entries();
+    const bool continues = episodeSerial_ != 0 && !entries.empty() &&
+                           entries.back().serial == episodeSerial_;
+    if (continues && doc->amendEdit("dried paint", EditKind::Content)) {
+      report.coalesced = true;
+    } else {
+      doc->recordEdit("dried paint", EditKind::Content);
+      episodeSerial_ = doc->history.entries().empty()
+                           ? 0
+                           : doc->history.entries().back().serial;
+    }
 
     report.action = BakeCycleReport::Action::Baked;
     report.tiles = inFlight_.size();
@@ -188,7 +205,18 @@ BakeCycleReport StrokeBakeCycle::step(GpuContext& gpu, PaintSim& sim, OpenDocume
   const DryTileScan scan = selectDryTiles(occupancy, sim.tileCountX(), sim.tileCountY());
   report.wetHeld = scan.wetHeld;
   if (scan.ready.empty()) {
-    report.why = (scan.wetHeld > 0) ? "paint is still wet" : "nothing to bake";
+    if (scan.wetHeld > 0) {
+      // Still drying. The episode stays open precisely here: more of this
+      // stroke is on its way, and the next batch must extend the same entry.
+      report.why = "paint is still wet";
+      return report;
+    }
+    // Nothing to bake and nothing wet -- the canvas has gone quiet, so
+    // whatever was drying has finished. This is the only moment a stroke can
+    // be called over, and closing the episode here is what makes the *next*
+    // stroke start a new history entry instead of extending this one forever.
+    episodeSerial_ = 0;
+    report.why = "nothing to bake";
     return report;
   }
 

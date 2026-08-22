@@ -136,6 +136,7 @@ void PingPong::release() {
 bool PaintSim::init(GpuContext& gpu, uint32_t width, uint32_t height,
                          const MixboxLut& lut) {
   instance_ = gpu.instance;
+  queue_ = gpu.queue;
   WGPUSamplerDescriptor sd = {};
   sd.addressModeU = WGPUAddressMode_ClampToEdge;
   sd.addressModeV = WGPUAddressMode_ClampToEdge;
@@ -1487,6 +1488,44 @@ void PaintSim::shutdown() {
   // two-frame readback from the frame loop. endPigmentReadback() is documented
   // as safe in any state, so this needs no guard.
   endPigmentReadback();
+
+  // **Then wait for the queue before destroying anything it might touch.**
+  //
+  // `releaseFields()` destroys the field textures, and work already submitted
+  // against them -- `clearBakedTiles()`'s per-tile writes are the realistic
+  // case, since a bake is the last thing a frame does -- is not necessarily
+  // finished. Destroying underneath it makes the NEXT wgpuQueueSubmit a
+  // validation error that aborts the process, and the message points at the
+  // texture rather than at the shutdown that pulled it:
+  //
+  //   Caused by: Texture with 'suspended latent*mass' label has been destroyed
+  //
+  // Like the drain above this is a teardown path, so blocking is the right
+  // trade. It also cannot be skipped when a caller "knows" nothing is
+  // pending -- that knowledge is exactly what changed when the frame sequence
+  // started baking from the loop.
+  if (queue_ != nullptr && instance_ != nullptr) {
+    // An empty submit first, and it is not a no-op: `wgpuQueueWriteTexture`
+    // STAGES its upload and the staging belt is flushed by the next submit.
+    // `clearBakedTiles()` is exactly that -- eight writes per baked tile -- and
+    // a bake is the last thing a frame does, so at shutdown those writes are
+    // routinely still pending rather than submitted. Waiting on submitted work
+    // alone does not cover them: they are not submitted yet, and destroying the
+    // textures underneath them makes the next submit fail with the message
+    // above. Submitting nothing flushes the belt so the wait below can see it.
+    wgpuQueueSubmit(queue_, 0, nullptr);
+
+    struct DoneState { bool done = false; } state;
+    WGPUQueueWorkDoneCallbackInfo ci = {};
+    ci.mode = WGPUCallbackMode_AllowProcessEvents;
+    ci.userdata1 = &state;
+    ci.callback = [](WGPUQueueWorkDoneStatus, void* ud1, void*) {
+      static_cast<DoneState*>(ud1)->done = true;
+    };
+    wgpuQueueOnSubmittedWorkDone(queue_, ci);
+    while (!state.done) wgpuInstanceProcessEvents(instance_);
+  }
+
   releaseFields();
   if (linear_) { wgpuSamplerRelease(linear_); linear_ = nullptr; }
   if (uniform_) { wgpuBufferDestroy(uniform_); wgpuBufferRelease(uniform_); uniform_ = nullptr; }

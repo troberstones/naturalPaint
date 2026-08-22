@@ -435,6 +435,32 @@ class History {
   // caller that never established one.
   void record(std::string label, const Document& doc);
 
+  // Replaces the entry the cursor is sitting on, **keeping its serial**, when
+  // that entry is the last one. Returns false and changes nothing otherwise.
+  //
+  // For one user action that reaches the document in several instalments. The
+  // case it was built for is the stroke bridge: a wash dries tile by tile over
+  // several seconds, and `app/StrokeBakeCycle` writes each batch into the
+  // layer as it dries. Recording each batch would put three or four entries
+  // named "dried paint" in the panel for one stroke, and undo would walk back
+  // through a drying process the painter never performed as separate acts.
+  // Amending keeps the top entry equal to the document after every batch, so
+  // undo at any moment during the drying goes to before the stroke -- which is
+  // the only state the user can name.
+  //
+  // **The serial is kept deliberately.** `app/HistoryPanel` keys its rows by
+  // serial precisely so a row means the same thing across a mutation (step 8
+  // proved index-keying installs the wrong state after an eviction), and an
+  // amended entry is the same act with more of it done. A new serial would
+  // make the row appear to be a different edit each time a tile dried.
+  //
+  // Refusing when the cursor is not at the end is the load-bearing guard: an
+  // amend part-way through the list would silently rewrite history the user
+  // has already undone past. The caller's own check -- "is the top entry still
+  // the one my episode created?" -- is the other half, and this cannot make it
+  // for them, because only they know which act is theirs.
+  bool amend(std::string label, const Document& doc);
+
   // --- Traversal: one primitive, and two names for it ---------------------
 
   // Moves the cursor to `index` and returns that entry's document, or nullptr

@@ -1017,6 +1017,61 @@ bool runHistoryTest() {
           "npaint: every scratch file this section wrote is removed");
   }
 
+  // ======================================================================
+  // amend(): one act that arrives in instalments
+  // ======================================================================
+  //
+  // Built for the stroke bridge -- a wash dries tile by tile, so one stroke
+  // reaches the document several times -- but the semantics are History's, so
+  // they are asserted here rather than beside the caller. The cadence itself
+  // (which batches belong to one episode) is app/StrokeBake's, and is asserted
+  // in the stroke bridge section.
+  std::printf("  -- amend: extending the entry at the cursor --\n");
+  {
+    Document d0 = Document::createBlank(256, 256, WorkingSpace{});
+    History h;
+
+    check(!h.amend("nothing", d0),
+          "amend: an empty history refuses -- there is no entry to extend");
+    check(h.entries().empty(), "amend: and the refusal created nothing");
+
+    h.record("first", d0);
+    const uint64_t firstSerial = h.entries().back().serial;
+    Document d1 = d0;
+    d1.layers.push_back(makePigmentLayer("added by the amend"));
+
+    check(h.amend("first, more of it", d1), "amend: the entry at the cursor is extended");
+    check(h.entries().size() == 1,
+          "amend: the entry COUNT does not move -- that is the whole point, one act stays "
+          "one row in the panel");
+    check(h.entries().back().serial == firstSerial,
+          "amend: and it keeps its SERIAL -- app/HistoryPanel keys rows by serial precisely so "
+          "a row means the same thing across a mutation, and a new serial would make one "
+          "drying stroke look like a different edit every time a tile finished");
+    check(h.entries().back().label == "first, more of it",
+          "amend: the label is replaced, so a caller can name the fuller act");
+    check(h.entries().back().document.layers.size() == d1.layers.size(),
+          "amend: and the stored document is the amended one, not the original");
+
+    // The guard that matters: the cursor has moved, so the top entry is no
+    // longer the caller's to extend.
+    h.record("second", d0);
+    check(h.entries().size() == 2, "amend: a following record() appends normally");
+    const uint64_t secondSerial = h.entries().back().serial;
+    check(secondSerial != firstSerial, "amend: which gets its own serial");
+
+    check(h.undo() != nullptr, "amend: undo moves the cursor off the end");
+    Document d2 = d0;
+    d2.layers.push_back(makePigmentLayer("must not land"));
+    check(!h.amend("should refuse", d2),
+          "amend: REFUSES when the cursor is not at the end -- amending part-way through the "
+          "list would silently rewrite history the user has already undone past");
+    check(h.entries().size() == 2 && h.entries().back().serial == secondSerial &&
+              h.entries().back().label == "second",
+          "amend: and the refusal changed nothing at all -- not the count, not the serial, "
+          "not the label");
+  }
+
   std::printf("[selftest] history %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

@@ -179,6 +179,10 @@ struct BakeCycleReport {
   size_t wetHeld = 0;
   BakeResult bake;
   const char* why = "";
+  // True when this bake extended the drying episode's existing history entry
+  // rather than appending a new one. False on the first bake of an episode,
+  // and false if the entry could not be extended -- see `episodeSerial_`.
+  bool coalesced = false;
 };
 
 // The state machine. Holds the tile list between the submit frame and the bake
@@ -205,10 +209,35 @@ class StrokeBakeCycle {
 
   bool readbackInFlight() const { return !inFlight_.empty(); }
 
+  // True while a drying episode is open -- at least one batch has been baked
+  // and the canvas has not yet gone completely quiet.
+  bool inDryingEpisode() const { return episodeSerial_ != 0; }
+
  private:
   std::vector<PaintSim::BridgeTile> inFlight_;
   uint64_t lastScanFrame_ = 0;
   bool scanned_ = false;
+
+  // --- The drying episode, and why one exists -----------------------------
+  //
+  // Drying is gradual: a wash goes dry tile by tile over seconds, so one
+  // stroke reaches the document in several batches. Recording each batch would
+  // put three or four entries named "dried paint" in the History panel for one
+  // stroke, and undo would walk back through a drying process the painter
+  // never performed as separate acts.
+  //
+  // So the first batch records, and every later batch of the same episode
+  // *amends* that entry. The serial is the identity: `core/History::amend()`
+  // keeps it, so comparing it against the top entry answers "is that still my
+  // entry, or has something else been recorded since?" -- and if something
+  // else has, this episode starts a new entry rather than folding its work
+  // into a stranger's. Zero means no episode is open.
+  //
+  // The episode ends when a scan finds the canvas completely quiet: nothing
+  // ready to bake and nothing still wet. That is the only moment at which the
+  // stroke can be said to be finished, because until then more of it is still
+  // coming.
+  uint64_t episodeSerial_ = 0;
 };
 
 }  // namespace np

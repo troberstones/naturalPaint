@@ -325,6 +325,22 @@ struct OpenDocument {
   // written.
   void recordEdit(std::string label, EditKind kind = EditKind::Structural);
 
+  // Extends the edit already at the top of history instead of appending a new
+  // one, for **one act that reaches the document in several instalments**.
+  // Returns false, changing nothing at all, when there is no top entry of the
+  // caller's to extend -- see `core/History::amend()`, which owns that rule.
+  //
+  // The revision still moves, because the document really did change and
+  // ui/DocumentTexture caches on it. `unsavedEdits` deliberately does not gain
+  // a second label: that list answers "name what is unsaved" (PRD I11), and
+  // one act should be named once however many instalments it arrives in.
+  //
+  // The caller owns the harder half. This cannot tell whether the top entry is
+  // *theirs*, only that one exists -- so a caller that amends without checking
+  // will fold its work into somebody else's edit. app/StrokeBake's cycle keeps
+  // the serial it created and compares, which is the pattern to copy.
+  bool amendEdit(std::string label, EditKind kind = EditKind::Structural);
+
   // One sentence naming exactly what is unsaved, for PRD I11 refusals and for
   // the UI. Empty when the document is clean.
   std::string unsavedWorkSummary() const;

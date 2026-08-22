@@ -531,6 +531,7 @@ class PaintSim {
   // changing every caller to serve one of them. See its implementation for
   // what it has to pump and why.
   WGPUInstance instance_ = nullptr;
+  WGPUQueue queue_ = nullptr;
   size_t readbackBytes_ = 0;
   std::vector<BridgeTile> readbackTiles_;
   const float* readbackMapped_ = nullptr;

@@ -88,6 +88,26 @@ void History::record(std::string label, const Document& doc) {
   enforceBudget();
 }
 
+bool History::amend(std::string label, const Document& doc) {
+  // Empty, or the cursor is somewhere the user has undone back to. Either way
+  // there is no "top entry that is mine" to extend -- see the header for why
+  // this is a refusal rather than a fallback to record().
+  if (entries_.empty() || cursor_ + 1 != entries_.size()) return false;
+
+  HistoryEntry& top = entries_.back();
+  const uint64_t serial = top.serial;  // kept: same act, more of it done
+  top.label = std::move(label);
+  top.document = doc;
+  top.serial = serial;
+
+  // The document grew, so the entry's byte count did too. record() enforces
+  // after every append for the same reason: an amended entry that pushed the
+  // history over budget would otherwise sit there until the *next* unrelated
+  // edit happened to notice.
+  enforceBudget();
+  return true;
+}
+
 // --- Traversal ------------------------------------------------------------
 
 const Document* History::jumpTo(size_t index) {
