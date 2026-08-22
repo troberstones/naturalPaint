@@ -242,3 +242,15 @@ target_compile_options(naturalPaint PRIVATE
   -Werror=unused-variable
   -Werror=unused-but-set-variable
 )
+
+# goldentool -- the comparison half of the golden-image regression harness
+# (see tools/golden/run_golden.sh and src/tools/GoldenTool.cpp). Deliberately
+# its own executable, not folded into `naturalPaint`: it never touches
+# GPU/SDL/ImGui, only PNG bytes already on disk, so it has no reason to link
+# any of that and every reason not to -- a comparison tool that could fail to
+# build for a GPU/windowing reason would be a strange failure mode for
+# something whose whole job is being trustworthy after the app already ran.
+add_executable(goldentool tools/GoldenTool.cpp)
+target_include_directories(goldentool SYSTEM PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party
+)
