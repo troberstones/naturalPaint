@@ -198,6 +198,21 @@ RGB sampleMean(const std::vector<uint8_t>& px, uint32_t w, uint32_t cx,
           static_cast<float>(b / n)};
 }
 
+std::string maskCapDates(std::string bytes) {
+  auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
+  for (size_t i = 0; i + 19 <= bytes.size(); ++i) {
+    const char* p = bytes.data() + i;
+    if (isDigit(p[0]) && isDigit(p[1]) && isDigit(p[2]) && isDigit(p[3]) && p[4] == ':' &&
+        isDigit(p[5]) && isDigit(p[6]) && p[7] == ':' && isDigit(p[8]) && isDigit(p[9]) &&
+        p[10] == ' ' && isDigit(p[11]) && isDigit(p[12]) && p[13] == ':' && isDigit(p[14]) &&
+        isDigit(p[15]) && p[16] == ':' && isDigit(p[17]) && isDigit(p[18])) {
+      bytes.replace(i, 19, "0000:00:00 00:00:00");
+      i += 18;
+    }
+  }
+  return bytes;
+}
+
 // stb_image_write's write_to_func callback: append `size` bytes to the
 // std::vector<uint8_t> passed as `context`. Used by runImageDecodeTest() to
 // generate fixtures entirely in memory (no scratch files).

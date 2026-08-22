@@ -132,6 +132,16 @@ RGB sampleMean(const std::vector<uint8_t>& px, uint32_t w, uint32_t cx,
 
 void appendToVector(void* context, void* data, int size);
 
+// Masks OpenEXR's per-part `capDate` header attribute ("YYYY:MM:DD HH:MM:SS",
+// read off the wall clock at save time) out of a `.npaint` file's raw bytes,
+// by pattern rather than by offset -- the offsets move with the header. Used
+// by CowTile.cpp and PigmentBasis.cpp before comparing two saves byte for
+// byte: a `.npaint` is not byte-reproducible across saves purely because of
+// this stamp, and masking it is how both sections still assert
+// byte-identity on everything else. See CowTile.cpp's runCowTileTest() for
+// the full account of why the mask exists and why it matches by pattern.
+std::string maskCapDates(std::string bytes);
+
 // ---- GPU scaffolding (app/SelfTest.cpp's second anonymous namespace, plus
 // the padded readback that sat just above runDocumentTextureTest()) --------
 

@@ -901,33 +901,17 @@ bool runCowTileTest() {
       // masked comparison is proven able to still see one, two checks below.
       //
       // app/selftest/PigmentBasis.cpp needs the same comparison for its own
-      // byte-identity assertions and this is its algorithm rather than a second
-      // one: match the pattern, not an offset, because the offsets move with
-      // the header. (The two copies should share one helper the day one file
-      // owns both; PigmentBasis.cpp is another section's file today.) The
-      // narrowness both share and neither hides: a *layer name* shaped exactly
-      // like a timestamp would be masked too. Nothing in this suite is named
-      // that, and the alternative -- parsing the EXR header to find the real
+      // byte-identity assertions and shares Support.hpp's maskCapDates() for
+      // it rather than defining a second one: match the pattern, not an
+      // offset, because the offsets move with the header. The narrowness
+      // both share and neither hides: a *layer name* shaped exactly like a
+      // timestamp would be masked too. Nothing in this suite is named that,
+      // and the alternative -- parsing the EXR header to find the real
       // attribute offsets -- is a second reader of the format inside a test.
       auto readAll = [](const char* path) {
         std::ifstream in(path, std::ios::binary);
         return std::string((std::istreambuf_iterator<char>(in)),
                            std::istreambuf_iterator<char>());
-      };
-      auto maskCapDates = [](std::string bytes) {
-        auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
-        for (size_t i = 0; i + 19 <= bytes.size(); ++i) {
-          const char* p = bytes.data() + i;
-          if (isDigit(p[0]) && isDigit(p[1]) && isDigit(p[2]) && isDigit(p[3]) && p[4] == ':' &&
-              isDigit(p[5]) && isDigit(p[6]) && p[7] == ':' && isDigit(p[8]) && isDigit(p[9]) &&
-              p[10] == ' ' && isDigit(p[11]) && isDigit(p[12]) && p[13] == ':' &&
-              isDigit(p[14]) && isDigit(p[15]) && p[16] == ':' && isDigit(p[17]) &&
-              isDigit(p[18])) {
-            bytes.replace(i, 19, "0000:00:00 00:00:00");
-            i += 18;
-          }
-        }
-        return bytes;
       };
       // Counts rather than returns a bool, because the count is what the
       // printed line reports and what the non-vacuity check below asserts on.
