@@ -23,27 +23,12 @@
 #include "io/OpSerial.hpp"
 
 // io/OiioBackend is the only translation unit that may include an
-// OpenImageIO header, so this file reaches it the same guarded way
-// io/Export.cpp and io/Capabilities.cpp already do. With NP_USE_OIIO=OFF the
-// include disappears, the two entry points below take their refusal branch,
-// and nothing in this file names an OpenImageIO symbol.
-#if defined(NP_USE_OIIO)
+// OpenImageIO header, so this file reaches it the same way io/Export.cpp
+// and io/Capabilities.cpp already do.
 #include "io/OiioBackend.hpp"
-#endif
 
 namespace np {
 namespace {
-
-// On the `[[maybe_unused]]` markers below. saveNpaint()/loadNpaint() are a
-// single `#if !defined(NP_USE_OIIO)` refusal against a full body, so with
-// NP_USE_OIIO=OFF every part-building and part-unpacking helper in this
-// namespace loses its only caller and is genuinely dead in that configuration
-// -- by design, not by oversight: PRD I4's native format IS a multi-part tiled
-// EXR, and there is no second implementation to fall back on. The attribute
-// says so per symbol rather than switching the guard off for the whole file,
-// so a helper added here later and never called still fails the build (see the
-// -Werror=unused-* block in src/CMakeLists.txt). Nothing here is #ifdef'd out:
-// PLAN.md §1.5 -- both configurations compile every one of these.
 
 // --- Attribute names, in one place ---------------------------------------
 //
@@ -184,7 +169,6 @@ constexpr const char* kMaskChannelName = "mask";
 // positional check below, because its unpacker is a memcpy per tile row that
 // depends on exactly that order and byte-identity with what this module wrote
 // before masks existed is measured rather than argued.
-[[maybe_unused]]
 std::optional<std::vector<size_t>> channelIndicesByName(const NpaintRawPart& part,
                                                         const std::vector<std::string>& names) {
   std::vector<size_t> idx;
@@ -210,13 +194,11 @@ std::vector<std::string> pigmentChannelNames(bool withMask) {
   return names;
 }
 
-[[maybe_unused]]
 bool isDocumentAttributeRecognised(const std::string& name) {
   return name == kAttrVersion || name == kAttrBasis || name == kAttrTileSize ||
          name == kAttrComps;
 }
 
-[[maybe_unused]]
 bool isLayerAttributeRecognised(const std::string& name) {
   return name == kAttrKind || name == kAttrName || name == kAttrBlend ||
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
@@ -224,7 +206,6 @@ bool isLayerAttributeRecognised(const std::string& name) {
          name == kAttrClipped || name == kAttrLabel || name == kAttrLink;
 }
 
-[[maybe_unused]]
 NpaintAttribute stringAttr(const char* name, std::string value) {
   NpaintAttribute a;
   a.name = name;
@@ -232,7 +213,6 @@ NpaintAttribute stringAttr(const char* name, std::string value) {
   a.stringValue = std::move(value);
   return a;
 }
-[[maybe_unused]]
 NpaintAttribute intAttr(const char* name, int32_t value) {
   NpaintAttribute a;
   a.name = name;
@@ -240,7 +220,6 @@ NpaintAttribute intAttr(const char* name, int32_t value) {
   a.intValue = value;
   return a;
 }
-[[maybe_unused]]
 NpaintAttribute floatAttr(const char* name, float value) {
   NpaintAttribute a;
   a.name = name;
@@ -249,7 +228,6 @@ NpaintAttribute floatAttr(const char* name, float value) {
   return a;
 }
 
-[[maybe_unused]]
 const NpaintAttribute* findAttr(const std::vector<NpaintAttribute>& attrs, const char* name) {
   for (const NpaintAttribute& a : attrs) {
     if (a.name == name) return &a;
@@ -263,7 +241,6 @@ const NpaintAttribute* findAttr(const std::vector<NpaintAttribute>& attrs, const
 // `name` on every part in a multi-part file. Layer names are not unique --
 // two layers may both be 'Layer 1' -- so the part name is a stable synthetic
 // id (`L0001`) and the user-facing name lives in `np:name`."
-[[maybe_unused]]
 std::string layerPartName(size_t oneBasedIndex) {
   char buf[16];
   std::snprintf(buf, sizeof(buf), "L%04zu", oneBasedIndex);
@@ -274,7 +251,6 @@ std::string layerPartName(size_t oneBasedIndex) {
 // produces. Used by the reader to decide whether a part is even a candidate
 // for becoming a Layer -- the far stricter channel/type/attribute test comes
 // after.
-[[maybe_unused]]
 bool isLayerPartName(const std::string& name) {
   if (name.size() < 2 || name[0] != 'L') return false;
   for (size_t i = 1; i < name.size(); ++i) {
@@ -428,7 +404,6 @@ void writeMaskChannel(const MaskTileStore& mask, int32_t tileX0, int32_t tileY0,
 // one, because the general one would have cost the mask-free case its memcpy
 // and this module's byte-identity claim for mask-free documents is measured
 // against HEAD rather than argued.
-[[maybe_unused]]
 NpaintRawPart buildLayerPart(const Layer& layer, const std::string& partName) {
   const MaskTileStore* mask = layer.mask.has_value() ? &*layer.mask : nullptr;
 
@@ -512,7 +487,6 @@ NpaintRawPart buildLayerPart(const Layer& layer, const std::string& partName) {
 // The op stack is not persisted (see the header's deferral list), so baking a
 // grade into a layer part would put a look in the file that the reloaded
 // document could not reproduce or undo.
-[[maybe_unused]]
 NpaintRawPart buildPigmentLayerPart(const Layer& layer, const std::string& partName) {
   const MaskTileStore* mask = layer.mask.has_value() ? &*layer.mask : nullptr;
 
@@ -598,7 +572,6 @@ NpaintRawPart buildPigmentLayerPart(const Layer& layer, const std::string& partN
 // The unmasked case fills the channel with `kRevealWord`, which is what the
 // reader would read for an absent tile anyway, so the two agree whatever
 // `np:mask` says.
-[[maybe_unused]]
 NpaintRawPart buildAdjustmentLayerPart(const Layer& layer, const std::string& partName) {
   const MaskTileStore* mask = layer.mask.has_value() ? &*layer.mask : nullptr;
 
@@ -634,7 +607,6 @@ NpaintRawPart buildAdjustmentLayerPart(const Layer& layer, const std::string& pa
 
 // The exact inverse. `part` has already been checked to be R/G/B/A HALF with
 // a tile-aligned data window.
-[[maybe_unused]]
 void unpackLayerPart(const NpaintRawPart& part, TileStore* tiles) {
   const int32_t tileX0 = part.x / kTileSize;
   const int32_t tileY0 = part.y / kTileSize;
@@ -684,7 +656,6 @@ void unpackLayerPart(const NpaintRawPart& part, TileStore* tiles) {
 // equivalence with what this module wrote before masks existed.
 //
 // `idx` is where R, G, B and A sit, by name.
-[[maybe_unused]]
 void unpackLayerPartStrided(const NpaintRawPart& part, const std::vector<size_t>& idx,
                             TileStore* tiles) {
   const int32_t tileX0 = part.x / kTileSize;
@@ -744,7 +715,6 @@ void unpackLayerPartStrided(const NpaintRawPart& part, const std::vector<size_t>
 //  3. **The count comes back so the caller can warn by name.** A silent clamp
 //     of data the user did not author is exactly what PRD I11 forbids, and a
 //     mask is the one channel where a bad value can make a whole layer vanish.
-[[maybe_unused]]
 size_t unpackMaskChannel(const NpaintRawPart& part, size_t maskIdx, MaskTileStore* tiles) {
   const int32_t tileX0 = part.x / kTileSize;
   const int32_t tileY0 = part.y / kTileSize;
@@ -789,7 +759,6 @@ size_t unpackMaskChannel(const NpaintRawPart& part, size_t maskIdx, MaskTileStor
 // normalisation is `A B G R pig.c0 ... res.B res.G res.R`, and positional
 // indexing would swap the residual's red and blue with no symptom until
 // someone compared colours.
-[[maybe_unused]]
 void unpackPigmentLayerPart(const NpaintRawPart& part, const std::vector<size_t>& idx,
                             PigmentTileStore* tiles) {
   const int32_t tileX0 = part.x / kTileSize;
@@ -867,7 +836,6 @@ void unpackPigmentLayerPart(const NpaintRawPart& part, const std::vector<size_t>
 // the caller is told precisely what about it is approximate"). The layer
 // part's `np:blend` string still goes to disk untouched (PRD I10), so nothing
 // is lost -- only part 0's preview of it is provisional.
-[[maybe_unused]]
 NpaintRawPart buildCompositePart(const Document& doc, std::vector<std::string>* warningsOut) {
   NpaintRawPart part;
   part.name = kCompositePartName;
@@ -898,7 +866,6 @@ NpaintRawPart buildCompositePart(const Document& doc, std::vector<std::string>* 
 
 // Part 0 back to io/ImageDecode's DecodedImage contract (straight alpha,
 // linear float RGBA). Inspection only -- see NpaintLoadResult::composite.
-[[maybe_unused]]
 DecodedImage decodeCompositePart(const NpaintRawPart& part) {
   DecodedImage img;
   const size_t channels = part.channelNames.size();
@@ -933,24 +900,6 @@ DecodedImage decodeCompositePart(const NpaintRawPart& part) {
     std::copy(v, v + 4, img.pixels.begin() + static_cast<ptrdiff_t>(i * 4));
   }
   return img;
-}
-
-// The one place the NP_USE_OIIO=OFF refusal is worded, so save and load say
-// the same thing about the same cause. PRD I11's discipline and
-// io/Export.cpp's house style: name the thing, name the reason, name the
-// alternative.
-[[maybe_unused]] std::string noBackendError(const char* verb) {
-  return std::string("`.npaint` ") + verb +
-         " requires OpenImageIO, and this binary was built without it (NP_USE_OIIO=OFF), so it "
-         "contains no OpenEXR reader or writer at all. The native document format is a "
-         "multi-part tiled OpenEXR file (docs/document-format.md; PRD I4) and there is "
-         "deliberately no fallback: writing some other container under a `.npaint` name would "
-         "produce a file this application could not read back, and reading one is impossible "
-         "without an EXR parser. Rebuild with:  cmake -S . -B build-oiio -DNP_USE_OIIO=ON "
-         "-DCMAKE_PREFIX_PATH=\"$HOME/.local/openimageio\"  . To move pixels in or out of this "
-         "build instead, io/Export's exportDocumentToFile() writes PNG/JPEG/TGA/BMP with no "
-         "optional dependency (PRD I1) -- flattened, without layers, metadata or above-white "
-         "highlights.";
 }
 
 }  // namespace
@@ -1004,14 +953,10 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
 
   // --- Validate the request first ---------------------------------------
   //
-  // Deliberately before the backend gate below, so that a malformed request
-  // is refused identically in both build configurations. A caller who fixes
-  // the refusal this reports has fixed it everywhere; a caller told only
-  // "this build has no OpenImageIO" would fix that, rebuild, and hit the
-  // real problem second. It also means --selftest exercises every PRD I11
-  // refusal in the NP_USE_OIIO=OFF build too -- PLAN.md §1.5's "an
-  // unexercised build option is not a seam", applied to the refusals rather
-  // than to the option.
+  // Deliberately before anything touches OpenImageIO, so a malformed request
+  // is refused for its own reason rather than folded into whatever error the
+  // backend happens to produce once it gets there. --selftest exercises
+  // every PRD I11 refusal directly because of this ordering.
   if (doc.width <= 0 || doc.height <= 0) {
     return fail("save refused: the document has no canvas (" + std::to_string(doc.width) + "x" +
                 std::to_string(doc.height) +
@@ -1220,10 +1165,6 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     }
   }
 
-#if !defined(NP_USE_OIIO)
-  (void)path;
-  return fail(noBackendError("save"));
-#else
   // --- Assemble the parts ------------------------------------------------
   OiioExrWriteRequest request;
   request.path = path;
@@ -1441,16 +1382,10 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
   result.ok = true;
   result.partsWritten = static_cast<int32_t>(request.parts.size());
   return result;
-#endif
 }
 
 NpaintLoadResult loadNpaint(const std::string& path) {
   NpaintLoadResult result;
-#if !defined(NP_USE_OIIO)
-  (void)path;
-  result.error = noBackendError("load");
-  return result;
-#else
   const OiioExrReadResult read = oiioReadMultiPartExr(path);
   if (!read.ok) {
     result.error = read.error;
@@ -1882,7 +1817,6 @@ NpaintLoadResult loadNpaint(const std::string& path) {
   }
   result.ok = true;
   return result;
-#endif
 }
 
 }  // namespace np

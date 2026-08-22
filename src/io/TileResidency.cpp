@@ -5,46 +5,19 @@
 #include <cstring>
 #include <utility>
 
-// Same guarded include io/NpaintFile.cpp, io/Export.cpp and io/Capabilities.cpp
-// all use: this translation unit is compiled in BOTH configurations, and
-// io/OiioBackend.cpp -- the only one allowed an OpenImageIO header -- is added
-// to the target only under NP_USE_OIIO.
-#if defined(NP_USE_OIIO)
+// Same include io/NpaintFile.cpp, io/Export.cpp and io/Capabilities.cpp all
+// use: OpenImageIO is a required dependency, and io/OiioBackend.cpp -- the
+// only translation unit allowed an OpenImageIO header -- is unconditionally
+// part of the target.
 #include "io/OiioBackend.hpp"
-#endif
 
 namespace np {
 namespace {
-
-#if defined(NP_USE_OIIO)
-constexpr bool kOiioBackend = true;
-#else
-constexpr bool kOiioBackend = false;
-#endif
-
-// The refusal the OFF build gives. Unlike io/NpaintFile's, this one has a
-// real alternative to name, because eager residency is not a degraded mode:
-// it is what every document in this build uses, and PRD I1/I3 require that
-// opening and painting a file work identically here.
-std::string noBackendRefusal(const std::string& path) {
-  return "cached tile residency for '" + path +
-         "' is unavailable: this build was compiled with NP_USE_OIIO=OFF, and OpenImageIO's "
-         "ImageCache is what serves unmodified tiles on demand. Rebuild with `cmake -S . -B "
-         "build -DNP_USE_OIIO=ON -DCMAKE_PREFIX_PATH=\"$HOME/.local/openimageio\"` to enable "
-         "it. Nothing is lost by not doing so: TileResidencyMode::Eager reads the whole "
-         "source at open and is the residency strategy this build uses for every document, "
-         "so opening a file and painting on it behaves identically here (PRD I1, I3).";
-}
 
 // Whether `value` is a multiple of `kTileSize` -- the alignment io/NpaintFile
 // already requires of any part it turns into a layer, restated here because
 // this module accepts sources io/NpaintFile never saw (a tiled TIFF, a plain
 // tiled EXR).
-// `[[maybe_unused]]`: its only caller is inside this file's
-// `#if defined(NP_USE_OIIO)` open path, so with NP_USE_OIIO=OFF it is dead by
-// design. Marked per symbol rather than exempting the file from
-// src/CMakeLists.txt's -Werror=unused-* guard.
-[[maybe_unused]]
 bool tileAligned(int32_t value) { return floorMod(value, kTileSize) == 0; }
 
 }  // namespace
@@ -113,19 +86,9 @@ bool LayerResidency::backingFileUnchanged(std::string* errorOut) const {
 bool LayerResidency::fetchClean(TileCoord coord, Tile* out, std::string* errorOut) {
   if (mode_ != TileResidencyMode::Cached || !sourceCovers(coord)) return false;
   if (!backingFileUnchanged(errorOut)) return false;
-#if defined(NP_USE_OIIO)
   const PixelCoord origin = tileOrigin(coord);
   return oiioTileCacheFetchHalfRgba(source_.path, source_.subimage, source_.miplevel, origin.x,
                                     origin.y, out->data(), errorOut);
-#else
-  // Unreachable: mode_ can only be Cached if openCachedLayerResidency()
-  // succeeded, and it cannot succeed in this build. Kept as a refusal rather
-  // than an assert so the OFF build has no path that returns pixels it did
-  // not read.
-  (void)out;
-  if (errorOut) *errorOut = noBackendRefusal(source_.path);
-  return false;
-#endif
 }
 
 TileFetch LayerResidency::readTile(TileCoord coord) {
@@ -205,9 +168,6 @@ bool openCachedLayerResidency(const TileSourceRef& source, size_t budgetBytes,
   };
   if (!out) return fail("cached residency open failed: null destination.");
 
-  if (!kOiioBackend) return fail(noBackendRefusal(source.path));
-
-#if defined(NP_USE_OIIO)
   const OiioTileCacheOpen opened =
       oiioTileCacheOpen(source.path, source.subimage, source.miplevel, budgetBytes);
   if (!opened.ok) {
@@ -282,10 +242,6 @@ bool openCachedLayerResidency(const TileSourceRef& source, size_t budgetBytes,
 #endif
   *out = std::move(residency);
   return true;
-#else
-  (void)budgetBytes;
-  return false;  // unreachable: the !kOiioBackend branch above already returned
-#endif
 }
 
 // --- Document-to-file link ------------------------------------------------
@@ -311,7 +267,6 @@ std::optional<TileSourceRef> npaintLayerTileSource(const std::string& path,
 // --- Process-wide cache statistics ----------------------------------------
 
 bool tileCacheStatistics(TileCacheStats* out) {
-#if defined(NP_USE_OIIO)
   if (!out) return false;
   OiioTileCacheStats stats;
   if (!oiioTileCacheStatistics(&stats)) return false;
@@ -322,27 +277,10 @@ bool tileCacheStatistics(TileCacheStats* out) {
   out->tilesPeak = stats.tilesPeak;
   out->budgetBytes = stats.budgetBytes;
   return true;
-#else
-  (void)out;
-  return false;
-#endif
 }
 
-void tileCacheInvalidate(const std::string& path) {
-#if defined(NP_USE_OIIO)
-  oiioTileCacheInvalidate(path);
-#else
-  (void)path;
-#endif
-}
+void tileCacheInvalidate(const std::string& path) { oiioTileCacheInvalidate(path); }
 
-bool tileCacheSetBudgetBytes(size_t budgetBytes) {
-#if defined(NP_USE_OIIO)
-  return oiioTileCacheSetBudget(budgetBytes);
-#else
-  (void)budgetBytes;
-  return false;
-#endif
-}
+bool tileCacheSetBudgetBytes(size_t budgetBytes) { return oiioTileCacheSetBudget(budgetBytes); }
 
 }  // namespace np

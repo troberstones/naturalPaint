@@ -15,9 +15,7 @@
 #include "core/TileStore.hpp"
 #include "io/Capabilities.hpp"
 
-#if defined(NP_USE_OIIO)
 #include "io/OiioBackend.hpp"
-#endif
 
 // NOTE on STB_IMAGE_WRITE_IMPLEMENTATION: this file is the one translation
 // unit that defines it, so this is where stb_image_write.h's function bodies
@@ -54,13 +52,7 @@ namespace {
 // only, per the OpenEXR spec; see io/Export.hpp's Alpha section for the
 // measured reason this is our job rather than OpenImageIO's, and
 // io/OiioBackend.cpp for the un-association on the way back in.
-// [[maybe_unused]] rather than wrapped in `#if defined(NP_USE_OIIO)`: the
-// only caller is inside the OpenImageIO branch below, so an OFF build would
-// warn under -Wall, but the rule this states is about the codebase's alpha
-// conventions and is worth reading in either configuration.
-[[maybe_unused]] bool formatWantsAssociatedAlpha(ImageFormat format) {
-  return format == ImageFormat::Exr;
-}
+bool formatWantsAssociatedAlpha(ImageFormat format) { return format == ImageFormat::Exr; }
 
 // JPEG quality passed to stb_image_write. Not an export parameter: PRD I5
 // asks for target colour space and bit depth to be explicit, and PLAN.md
@@ -241,8 +233,8 @@ std::string exportRefusalReason(ImageFormat format, ExportTargetSpace targetSpac
 
   // --- Can this build write this format at all? (PRD I3) -----------------
   //
-  // Asked, never assumed: the answer depends on NP_USE_OIIO *and* on which
-  // plugins the linked OpenImageIO actually has. The refusal quotes the
+  // Asked, never assumed: the answer depends on which plugins the linked
+  // OpenImageIO actually has. The refusal quotes the
   // capability query's own reason, so a caller learns whether the format is
   // read-only here, or its backend absent, or its plugin missing -- rather
   // than receiving a bare "unsupported".
@@ -295,12 +287,8 @@ std::string exportRefusalReason(ImageFormat format, ExportTargetSpace targetSpac
         "forbids. Formats this build can write at %s: %s.",
         exportBitDepthName(bitDepth), imageFormatName(format), imageFormatName(format), maxBits,
         writable.empty() ? "none" : writable.c_str(), maxBits, exportBitDepthName(bitDepth),
-        elsewhere.empty()
-            ? (oiioBackendCompiledIn()
-                   ? "none -- no format available in this build writes at that depth"
-                   : "none -- the EXR/TIFF/HDR/DPX writers that would are behind NP_USE_OIIO, "
-                     "which was OFF when this binary was configured")
-            : elsewhere.c_str());
+        elsewhere.empty() ? "none -- no format available in this build writes at that depth"
+                          : elsewhere.c_str());
     return buf;
   }
 
@@ -356,11 +344,10 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
   //
   // Kept as a wholly separate branch from the stb path below rather than
   // merged into it. PRD I1's four formats therefore take byte-for-byte the
-  // same code in a NP_USE_OIIO=ON build as in an OFF one -- there is no
-  // shared "which encoder" branch that could regress them, which is what
-  // makes "I1 needs no optional dependency" checkable rather than asserted.
+  // same code regardless of what OpenImageIO does -- there is no shared
+  // "which encoder" branch that could regress them, which is what makes "I1
+  // needs no optional dependency" checkable rather than asserted.
   if (caps.backend == FormatBackend::Oiio) {
-#if defined(NP_USE_OIIO)
     const int channels = caps.hasAlpha ? 4 : 3;
     const bool isFloat = exportBitDepthIsFloat(bitDepth);
     const bool associate = formatWantsAssociatedAlpha(format);
@@ -390,13 +377,6 @@ ExportResult encodeLinearImage(const DecodedImage& img, const WorkingSpace& sour
     }
     result.ok = true;
     return result;
-#else
-    // Unreachable: with NP_USE_OIIO off, io/Capabilities never reports an
-    // Oiio backend, so caps.canWrite above already refused. Present so this
-    // file compiles identically in both configurations rather than hiding
-    // the whole branch behind a preprocessor conditional.
-    return failure("export refused: the OpenImageIO backend is not present in this build.");
-#endif
   }
 
   if (bitDepth == ExportBitDepth::UInt16) {

@@ -2,9 +2,7 @@
 
 #include <string>
 
-#if defined(NP_USE_OIIO)
 #include "io/OiioBackend.hpp"
-#endif
 
 namespace np {
 namespace {
@@ -22,13 +20,13 @@ namespace {
 // behaviour is unchanged by construction rather than by re-derivation.
 //
 // **PNG/JPEG/TGA/BMP are deliberately NOT routed through OpenImageIO even
-// when it is available.** OpenImageIO can write all four, so this was a real
-// fork. Keeping stb is the choice that makes PRD I1 ("read and write PNG,
-// JPEG, TGA, BMP with no optional dependency") a structural property instead
-// of a claim: these four take byte-for-byte the same code path in both build
-// configurations, so there is no possible way for the NP_USE_OIIO=ON build
-// to regress them, and --selftest's existing export section is testing the
-// same encoder in both. The cost is that a 32-bit-float PNG is not offered
+// though it is linked into every build.** OpenImageIO can write all four, so
+// this was a real fork. Keeping stb is the choice that makes PRD I1 ("read
+// and write PNG, JPEG, TGA, BMP with no optional dependency") a structural
+// property instead of a claim: these four take byte-for-byte the same code
+// path regardless of what OpenImageIO does, so nothing OpenImageIO does can
+// regress them, and --selftest's existing export section is testing that
+// same stb encoder directly. The cost is that a 32-bit-float PNG is not offered
 // (OpenImageIO would not write one either -- probed: its PNG writer
 // substitutes uint8 for FLOAT) and that OpenImageIO's slightly different
 // PNG/JPEG tuning is not available. Both are trivial next to a P0 guarantee
@@ -63,26 +61,9 @@ FormatCapability stbCapability(const StbCapability& s) {
   return cap;
 }
 
-#if !defined(NP_USE_OIIO)
-// The NP_USE_OIIO=OFF answer. One sentence per thing the reader needs: what
-// is missing, why (a build decision, not a failure), that this is PRD I3
-// working rather than breaking, and what to do about it. Deliberately names
-// the CMake option literally, because "EXR is unsupported" without it sends
-// someone hunting through source for a format table that does not exist.
-std::string offBuildReason(ImageFormat format) {
-  return std::string(imageFormatName(format)) +
-         " is provided by io/OiioBackend, which is not part of this binary: NP_USE_OIIO was "
-         "OFF when it was configured, so no OpenImageIO reader or writer is linked in and "
-         "nothing here can read or write " +
-         imageFormatName(format) +
-         ". This is PRD I3 (\"the core builds and runs without OIIO\") working as intended, "
-         "not a defect. Reconfigure with -DNP_USE_OIIO=ON (and a CMAKE_PREFIX_PATH pointing "
-         "at an OpenImageIO install) to enable it.";
-}
-#else
-// The NP_USE_OIIO=ON answer for a format the *linked* OpenImageIO turns out
-// not to have. This is the case a build-time-only capability table gets
-// wrong, so the message says out loud where the answer came from.
+// The answer for a format the *linked* OpenImageIO turns out not to have.
+// This is the case a build-time-only capability table gets wrong, so the
+// message says out loud where the answer came from.
 std::string missingPluginReason(ImageFormat format) {
   std::string reason = std::string(imageFormatName(format)) +
                        " is not available in this build: the linked OpenImageIO (version " +
@@ -96,18 +77,16 @@ std::string missingPluginReason(ImageFormat format) {
         "was built without LibRaw, to keep LibRaw and its transitive dependency weight out of "
         "the build. PRD I2 (camera raw, P1) therefore remains open here, and PLAN.md Phase 4 "
         "step 2's \"camera raw\" is the one item on its list this build does not provide. "
-        "Note where this answer comes from: OpenImageIO was asked at run time. NP_USE_OIIO "
-        "being ON does not imply any particular plugin set, which is exactly why PRD I3 "
+        "Note where this answer comes from: OpenImageIO was asked at run time. OpenImageIO "
+        "being linked does not imply any particular plugin set, which is exactly why PRD I3 "
         "specifies a runtime capability query.";
   }
   return reason;
 }
-#endif
 
 FormatCapability oiioCapability(ImageFormat format) {
   FormatCapability cap;
   cap.format = format;
-#if defined(NP_USE_OIIO)
   const OiioFormatProbe probe = oiioProbeFormat(format);
   cap.canRead = probe.canRead;
   cap.canWrite = probe.canWrite;
@@ -115,10 +94,6 @@ FormatCapability oiioCapability(ImageFormat format) {
   cap.writableDepths = probe.writableDepths;
   cap.backend = (cap.canRead || cap.canWrite) ? FormatBackend::Oiio : FormatBackend::None;
   if (!cap.canRead && !cap.canWrite) cap.unavailableReason = missingPluginReason(format);
-#else
-  cap.backend = FormatBackend::None;
-  cap.unavailableReason = offBuildReason(format);
-#endif
   return cap;
 }
 
@@ -163,22 +138,11 @@ std::string formatsThatCanWriteDepth(ExportBitDepth depth) {
   return list;
 }
 
-bool oiioBackendCompiledIn() {
-#if defined(NP_USE_OIIO)
-  return true;
-#else
-  return false;
-#endif
-}
+bool oiioBackendCompiledIn() { return true; }
 
 std::string imageBackendSummary() {
-#if defined(NP_USE_OIIO)
   return "image backends: stb (PNG/JPEG/TGA/BMP) + OpenImageIO " + oiioVersionString() +
          " [" + oiioFormatList() + "]";
-#else
-  return "image backends: stb (PNG/JPEG/TGA/BMP) only -- built with NP_USE_OIIO=OFF, so no "
-         "OpenImageIO reader or writer is linked in";
-#endif
 }
 
 }  // namespace np

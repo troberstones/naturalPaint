@@ -265,13 +265,7 @@ uint64_t uintFor(const std::vector<std::pair<std::string, std::string>>& kv, con
 
 // --- Availability ----------------------------------------------------------
 
-bool journalAvailable() {
-#if defined(NP_USE_OIIO)
-  return true;
-#else
-  return false;
-#endif
-}
+bool journalAvailable() { return true; }
 
 std::string journalUnavailableReason() {
   if (journalAvailable()) return {};
@@ -481,8 +475,7 @@ bool JournalSession::writeEntry(const OpenDocument& doc, std::string* errorOut,
   // rewrites, and the alternative to this line is a comment asserting that no
   // future caller will ever open a residency on a recovery file -- which is
   // exactly the thing a recovery path for a large document would want to do.
-  // The call is a no-op when no cache exists, and always in the
-  // NP_USE_OIIO=OFF build, so being right costs nothing.
+  // The call is a no-op when no cache exists, so being right costs nothing.
   tileCacheInvalidate(modelPath);
 
   std::string sidecar = kEntryHeader;

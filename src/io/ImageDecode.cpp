@@ -3,9 +3,7 @@
 #include "color/Space.hpp"
 #include "stb_image.h"
 
-#if defined(NP_USE_OIIO)
 #include "io/OiioBackend.hpp"
-#endif
 
 // NOTE on STB_IMAGE_IMPLEMENTATION: paint/Palette.cpp is the one translation
 // unit that defines STB_IMAGE_IMPLEMENTATION (it needed the Mixbox LUT PNG
@@ -105,14 +103,13 @@ DecodedImage decodeFromMemoryImpl(const uint8_t* data, size_t size, std::string*
 
 DecodedImage decodeImageLinear(const uint8_t* fileData, size_t fileSize, std::string* errorOut) {
   // stb first, always. PRD I1's four formats therefore decode through
-  // exactly the same code in a NP_USE_OIIO=ON build as in an OFF one --
-  // OpenImageIO is a *fallback*, never an interception, so it cannot change
-  // what an already-supported file decodes to. (io/Capabilities.cpp's
+  // exactly the same code regardless of what OpenImageIO does -- OpenImageIO
+  // is a *fallback*, never an interception, so it cannot change what an
+  // already-supported file decodes to. (io/Capabilities.cpp's
   // kStbCapabilities comment makes the same argument for the write side.)
   DecodedImage viaStb = decodeFromMemoryImpl(fileData, fileSize, errorOut);
   if (viaStb.valid()) return viaStb;
 
-#if defined(NP_USE_OIIO)
   // PLAN.md Phase 4 step 2's read half. Everything stb declines and the
   // linked OpenImageIO accepts -- EXR, TIFF, HDR, DPX, flattened PSD --
   // arrives here, which is why openImageAsDocument() and placeImageAsLayer()
@@ -128,7 +125,6 @@ DecodedImage decodeImageLinear(const uint8_t* fileData, size_t fileSize, std::st
   // Both declined: report both reasons, not just stb's, so "why won't this
   // open" is answerable from the message alone.
   if (errorOut) *errorOut += " (OpenImageIO also declined it: " + oiioError + ")";
-#endif
 
   return viaStb;
 }

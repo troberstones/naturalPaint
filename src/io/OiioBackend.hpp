@@ -11,16 +11,13 @@
 #include "io/NpaintFile.hpp"
 
 // io/OiioBackend (PLAN.md "Phase 4 -- Write it out", step 2: "`io/OiioBackend`
-// behind `NP_USE_OIIO` -- EXR, TIFF, HDR, DPX, flattened PSD, camera raw").
+// -- EXR, TIFF, HDR, DPX, flattened PSD, camera raw").
 //
 // The OpenImageIO-backed read and write path. Everything in this header is
-// declared unconditionally and *defined* only in OiioBackend.cpp, which
-// src/CMakeLists.txt compiles into the target only when NP_USE_OIIO is ON.
-// With it OFF this header is never included by anything (io/Capabilities.cpp
-// and io/Export.cpp both guard their `#include` with `#if defined(NP_USE_OIIO)`)
-// and the binary contains no OpenImageIO symbol at all -- PRD I3's "the core
-// builds and runs without OIIO", enforced by the link step rather than by
-// convention.
+// declared here and *defined* only in OiioBackend.cpp, which
+// src/CMakeLists.txt unconditionally compiles into the target: OpenImageIO
+// is a required dependency (`find_package(OpenImageIO REQUIRED)`), so every
+// build links it and every caller below is live.
 //
 // **No OpenImageIO header is included here.** Every type crossing this
 // boundary is `std`, `np::DecodedImage`, `np::ImageFormat` or one of
@@ -169,7 +166,7 @@ DecodedImage oiioDecodeToLinear(const uint8_t* fileData, std::size_t fileSize,
 // io/NpaintFile's structs, and they make no decision about what a part
 // means. Every format decision -- which parts are layers, which attributes
 // are recognised, what part 0 contains, which compressors are allowed --
-// lives in io/NpaintFile.cpp, which compiles in both build configurations.
+// lives in io/NpaintFile.cpp, which never includes an OpenImageIO header.
 // The split is the same one the rest of this header already keeps: the OIIO
 // translation unit knows OpenImageIO, and nothing else does.
 //
@@ -237,7 +234,7 @@ OiioExrReadResult oiioReadMultiPartExr(const std::string& path);
 // PLAN.md Phase 4 step 5. Same split as the multi-part functions above: these
 // are deliberately dumb, and every policy decision -- which sources may be
 // cached at all, what a fetch failure means, when a tile stops being clean --
-// lives in io/TileResidency.cpp, which compiles in both build configurations.
+// lives in io/TileResidency.cpp, which never includes an OpenImageIO header.
 //
 // The cache is process-wide and **created lazily, on the first call to
 // oiioTileCacheOpen()**, not at load or at static-initialisation time.
