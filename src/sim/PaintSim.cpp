@@ -27,7 +27,7 @@ uint32_t texelBytes(WGPUTextureFormat f) {
 uint32_t groups(uint32_t n) { return (n + kWorkgroup - 1) / kWorkgroup; }
 
 WGPUTexture makeField(WGPUDevice device, uint32_t w, uint32_t h, const char* label,
-                      WGPUTextureFormat format) {
+                      WGPUTextureFormat format, WGPUTextureUsage extraUsage = 0) {
   WGPUTextureDescriptor d = {};
   d.label = sv(label);
   d.dimension = WGPUTextureDimension_2D;
@@ -36,17 +36,21 @@ WGPUTexture makeField(WGPUDevice device, uint32_t w, uint32_t h, const char* lab
   d.mipLevelCount = 1;
   d.sampleCount = 1;
   // RenderAttachment is only there so the field can be zeroed with a cheap
-  // clear-only render pass instead of an 8 MB upload per texture.
+  // clear-only render pass instead of an 8 MB upload per texture. `extraUsage`
+  // defaults to nothing for exactly that reason -- CopyDst (needed only by
+  // PaintSim::clearBakedTiles()'s partial-tile writes) is opted into per field
+  // below, not added here for every field that has no use for it.
   d.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_StorageBinding |
-            WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+            WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc | extraUsage;
   return wgpuDeviceCreateTexture(device, &d);
 }
 
 void makePingPong(WGPUDevice device, PingPong& f, uint32_t w, uint32_t h,
-                  const char* label, WGPUTextureFormat format) {
+                  const char* label, WGPUTextureFormat format,
+                  WGPUTextureUsage extraUsage = 0) {
   f.format = format;
   for (int i = 0; i < 2; ++i) {
-    f.tex[i] = makeField(device, w, h, label, format);
+    f.tex[i] = makeField(device, w, h, label, format, extraUsage);
     f.view[i] = wgpuTextureCreateView(f.tex[i], nullptr);
   }
   f.cur = 0;
@@ -207,10 +211,18 @@ void PaintSim::allocFields(GpuContext& gpu, uint32_t w, uint32_t h) {
   height_ = h;
 
   makePingPong(gpu.device, water_, w, h, "water(u,v,p,M)", kWaterFormat);
-  makePingPong(gpu.device, pigC_, w, h, "suspended latent*mass", kPigmentFormat);
-  makePingPong(gpu.device, pigR_, w, h, "suspended residual*mass", kPigmentFormat);
-  makePingPong(gpu.device, depC_, w, h, "deposited latent*mass", kPigmentFormat);
-  makePingPong(gpu.device, depR_, w, h, "deposited residual*mass", kPigmentFormat);
+  // CopyDst: PaintSim::clearBakedTiles() writes a zeroed tile straight into
+  // these four via wgpuQueueWriteTexture -- the bake's own counterpart
+  // (app/StrokeBake reads exactly these four), and the only reason any
+  // field here needs upload capability at all.
+  makePingPong(gpu.device, pigC_, w, h, "suspended latent*mass", kPigmentFormat,
+              WGPUTextureUsage_CopyDst);
+  makePingPong(gpu.device, pigR_, w, h, "suspended residual*mass", kPigmentFormat,
+              WGPUTextureUsage_CopyDst);
+  makePingPong(gpu.device, depC_, w, h, "deposited latent*mass", kPigmentFormat,
+              WGPUTextureUsage_CopyDst);
+  makePingPong(gpu.device, depR_, w, h, "deposited residual*mass", kPigmentFormat,
+              WGPUTextureUsage_CopyDst);
   makePingPong(gpu.device, sat_, w, h, "capillary saturation", kWaterFormat);
   makePingPong(gpu.device, aux_, w, h, "divergence + pressure correction", kWaterFormat);
 
@@ -1243,6 +1255,40 @@ void PaintSim::endPigmentReadback() {
   readbackDone_ = 0;
   readbackOk_ = false;
   readbackState_ = PigmentReadback::Idle;
+}
+
+bool PaintSim::clearBakedTiles(GpuContext& gpu, const std::vector<BridgeTile>& tiles) {
+  if (tiles.empty()) return true;
+  for (const BridgeTile& t : tiles)
+    if (t.x >= tileCountX() || t.y >= tileCountY()) return false;
+
+  // One zero-filled tile's worth of a pigment field, held for the process
+  // lifetime: this runs once per bake, never the frame loop, so there is no
+  // cost worth amortising further, and a fresh allocation every call would
+  // only complicate what is otherwise a direct upload.
+  static const std::vector<float> kZeroTile(
+      static_cast<size_t>(kBridgeTile) * kBridgeTile * 4, 0.0f);
+
+  WGPUTexelCopyBufferLayout layout = {};
+  layout.offset = 0;
+  layout.bytesPerRow = kBridgeTile * static_cast<uint32_t>(sizeof(float)) * 4u;
+  layout.rowsPerImage = kBridgeTile;
+  const WGPUExtent3D extent = {kBridgeTile, kBridgeTile, 1};
+
+  for (PingPong* f : {&depC_, &depR_, &pigC_, &pigR_}) {
+    WGPUTexelCopyTextureInfo dst = {};
+    dst.mipLevel = 0;
+    dst.aspect = WGPUTextureAspect_All;
+    for (int half = 0; half < 2; ++half) {
+      dst.texture = f->tex[half];
+      for (const BridgeTile& t : tiles) {
+        dst.origin = {t.x * kBridgeTile, t.y * kBridgeTile, 0};
+        wgpuQueueWriteTexture(gpu.queue, &dst, kZeroTile.data(),
+                              kZeroTile.size() * sizeof(float), &layout, &extent);
+      }
+    }
+  }
+  return true;
 }
 
 bool PaintSim::readTileOccupancy(GpuContext& gpu, std::vector<TileOccupancy>& out) {

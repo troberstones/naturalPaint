@@ -290,6 +290,31 @@ class PaintSim {
   // automatically on failure, so a caller can ask what went wrong first.
   void endPigmentReadback();
 
+  // The bake's other half. `app/StrokeBake::bakePigmentTiles()` reads
+  // depC_/depR_ (deposited) and writes their contents into a layer's tiles;
+  // this zeros exactly what a bake moved -- depC_/depR_, and pigC_/pigR_
+  // (suspended) alongside them, in BOTH ping-pong halves so the clear
+  // survives the next flip(). Suspended is included even though bake never
+  // reads it: StrokeBake.hpp documents that a forced bake-while-wet "silently
+  // drops whatever is still suspended," and if this left pigC_/pigR_ alone,
+  // that dropped paint would keep rendering here while the document had no
+  // record of it -- a ghost the bake already promised not to keep.
+  //
+  // water_/sat_ are deliberately untouched: TileOccupancy's own contract is
+  // that a tile is bake-ready once wetness has gone to zero, so on a normal
+  // bake they are already at rest, and on a forced bake the paper being
+  // genuinely still damp there is a true fact this call has no business
+  // erasing.
+  //
+  // Returns false and clears nothing if any tile is out of range, matching
+  // beginPigmentReadback()'s validation -- a caller that named a tile
+  // outside the field has a bug worth surfacing, not silently ignoring one
+  // tile out of several. An empty list is a harmless no-op (true, nothing
+  // to do) rather than a refusal: unlike a readback, "clear whatever the
+  // last bake touched" is a legitimate call to make when that bake touched
+  // nothing.
+  bool clearBakedTiles(GpuContext& gpu, const std::vector<BridgeTile>& tiles);
+
   // Runs the reduction and reads the result back, BLOCKING. That is the right
   // call for this payload and only for this payload: it is a few hundred bytes
   // and sits at the transfer floor (measured 0.129 ms median), where a tile
@@ -311,6 +336,9 @@ class PaintSim {
   bool readbackField(GpuContext& gpu, WGPUTexture tex, WGPUTextureFormat format,
                      std::vector<float>& out);
   WGPUTexture depCTexForDiag() const { return depC_.srcTex(); }
+  WGPUTexture depRTexForDiag() const { return depR_.srcTex(); }
+  WGPUTexture pigCTexForDiag() const { return pigC_.srcTex(); }
+  WGPUTexture pigRTexForDiag() const { return pigR_.srcTex(); }
 
   // For ImGui::Image.
   WGPUTextureView canvasView() const { return canvasView_; }

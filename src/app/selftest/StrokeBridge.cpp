@@ -411,6 +411,132 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
     sim.endPigmentReadback();
   }
 
+  // ======================================================================
+  // 7. clearBakedTiles: the sim stops holding what the document now does.
+  // ======================================================================
+  //
+  // §6 baked a tile into `layer` by reading depC_/depR_ and left the sim
+  // untouched. If nothing clears it, the sim keeps carrying that same mass
+  // -- and, in the forced-bake-while-wet case StrokeBake.hpp documents,
+  // whatever pigC_/pigR_ mass the bake silently dropped too -- so a caller
+  // that later draws the document over the sim canvas would composite a
+  // partial-coverage edge texel twice. Checked directly against depC_/depR_/
+  // pigC_/pigR_ (via the *ForDiag() accessors §2/§4/§5 already use for the
+  // same reason) rather than through the composited canvas: canvas_ is a
+  // cached render target that only updates when frame()'s composite pass
+  // runs, so reading it right after a GPU texture write and nothing else
+  // would just prove the cache is stale, not that the clear happened.
+  std::printf("  -- 7. clearBakedTiles: the sim stops holding what the document now does --\n");
+  {
+    // Recomputed independently rather than reusing §6's `at`: §6 ends by
+    // issuing and then ending a readback of its own, which clears
+    // readbackTiles_ -- bridgeTileAt(0) would answer for that call, not for
+    // the tile actually baked, if this block trusted it instead.
+    std::vector<PaintSim::TileOccupancy> occ;
+    check(sim.readTileOccupancy(gpu, occ), "bridge: occupancy read back for §7's target tile");
+    size_t best = 0;
+    for (size_t t = 1; t < occ.size(); ++t)
+      if (occ[t].mass > occ[best].mass) best = t;
+    const PaintSim::BridgeTile at{static_cast<uint32_t>(best % 3), static_cast<uint32_t>(best / 3)};
+    const uint32_t tx0 = at.x * PaintSim::kBridgeTile, ty0 = at.y * PaintSim::kBridgeTile;
+
+    // Every mass channel (.w, index 3) inside the tile, across all four
+    // fields at once -- the largest of the four is what matters: clearing
+    // is only proven when NONE of them still carries paint there.
+    auto tileMaxMass = [&](GpuContext& g, WGPUTexture depCTex, WGPUTexture depRTex,
+                           WGPUTexture pigCTex, WGPUTexture pigRTex) -> float {
+      float worst = 0.0f;
+      for (WGPUTexture tex : {depCTex, depRTex, pigCTex, pigRTex}) {
+        std::vector<float> field;
+        if (!sim.readbackField(g, tex, WGPUTextureFormat_RGBA32Float, field)) continue;
+        for (uint32_t y = ty0; y < ty0 + PaintSim::kBridgeTile; ++y)
+          for (uint32_t x = tx0; x < tx0 + PaintSim::kBridgeTile; ++x)
+            worst = std::max(worst, field[(static_cast<size_t>(y) * kW + x) * 4 + 3]);
+      }
+      return worst;
+    };
+    // Everything OUTSIDE the tile, for depC_ alone: it is what the bake
+    // reads and what section 2's cross-check already trusts, so it stands
+    // in for "did this touch anything it should not have" without paying
+    // for all four fields' full-canvas readback three more times.
+    auto outsideTileIdentical = [&](const std::vector<float>& a, const std::vector<float>& b) {
+      for (uint32_t y = 0; y < kH; ++y)
+        for (uint32_t x = 0; x < kW; ++x) {
+          if (y >= ty0 && y < ty0 + PaintSim::kBridgeTile && x >= tx0 &&
+              x < tx0 + PaintSim::kBridgeTile)
+            continue;
+          const size_t i = (static_cast<size_t>(y) * kW + x) * 4;
+          for (int c = 0; c < 4; ++c)
+            if (a[i + static_cast<size_t>(c)] != b[i + static_cast<size_t>(c)]) return false;
+        }
+      return true;
+    };
+
+    std::vector<float> depCBefore;
+    check(sim.readbackField(gpu, sim.depCTexForDiag(), WGPUTextureFormat_RGBA32Float, depCBefore),
+          "bridge: depC_ readback before clearing");
+    const float massBefore =
+        tileMaxMass(gpu, sim.depCTexForDiag(), sim.depRTexForDiag(), sim.pigCTexForDiag(),
+                    sim.pigRTexForDiag());
+    check(massBefore > 1e-4f,
+          "bridge: before clearing, the baked tile still carries mass -- there really is "
+          "something for this call to clear");
+
+    check(!sim.clearBakedTiles(gpu, {{99, 0}}),
+          "bridge: clearBakedTiles refuses a tile outside the canvas, same as beginPigmentReadback");
+    check(sim.clearBakedTiles(gpu, {}), "bridge: an empty tile list is a no-op, not a refusal");
+
+    std::vector<float> depCUnaffected;
+    check(sim.readbackField(gpu, sim.depCTexForDiag(), WGPUTextureFormat_RGBA32Float,
+                            depCUnaffected),
+          "bridge: depC_ readback after the refused call and the no-op");
+    check(depCUnaffected == depCBefore,
+          "bridge: neither the refused call nor the no-op changed a single texel");
+
+    check(sim.clearBakedTiles(gpu, {at}), "bridge: clearBakedTiles accepted the real tile");
+
+    const float massAfter =
+        tileMaxMass(gpu, sim.depCTexForDiag(), sim.depRTexForDiag(), sim.pigCTexForDiag(),
+                    sim.pigRTexForDiag());
+    std::printf("  [selftest] bridge: tile (%u,%u) peak mass across depC/depR/pigC/pigR -- "
+                "%.4f before clearing, %.2e after\n",
+                at.x, at.y, static_cast<double>(massBefore), static_cast<double>(massAfter));
+    check(massAfter == 0.0f,
+          "bridge: after clearing, every mass channel in the tile is exactly zero -- an upload, "
+          "not an approximation");
+
+    std::vector<float> depCAfter;
+    check(sim.readbackField(gpu, sim.depCTexForDiag(), WGPUTextureFormat_RGBA32Float, depCAfter),
+          "bridge: depC_ readback after clearing, for the outside-tile comparison");
+    check(outsideTileIdentical(depCAfter, depCBefore),
+          "bridge: and every depC_ texel outside that one tile is untouched, bit for bit");
+
+    // Force a flip. frame() runs `substeps` physics steps and each one flips
+    // depC_/depR_/pigC_/pigR_'s parity once, so the default substeps == 2
+    // returns to the SAME half it started on -- an even count would let a
+    // half that was never actually cleared go untested. One substep moves
+    // the parity exactly once: if clearBakedTiles() had only zeroed whichever
+    // half was current when it ran, this is where the old paint reappears.
+    // *ForDiag() always answers for `.srcTex()` = the current half, so this
+    // read is automatically looking at the OTHER texture object than every
+    // read above it.
+    sim.substeps = 1;
+    SimParams p{};
+    settle(gpu, sim, p, 1);
+    sim.substeps = 2;
+
+    const float massAfterFlip =
+        tileMaxMass(gpu, sim.depCTexForDiag(), sim.depRTexForDiag(), sim.pigCTexForDiag(),
+                    sim.pigRTexForDiag());
+    std::printf("  [selftest] bridge: same tile's peak mass after a forced flip -- %.2e\n",
+                static_cast<double>(massAfterFlip));
+    check(massAfterFlip < 1e-4f,
+          "bridge: the clear survives a flip -- both ping-pong halves were zeroed, not just "
+          "the one that was current when clearBakedTiles() ran (a physics step ran to force "
+          "the flip, hence a floor rather than an exact zero: nothing painted stands close "
+          "enough to diffuse in)");
+  }
+
   sim.shutdown();
   std::printf("[selftest] stroke bridge %s\n", ok ? "PASS" : "FAIL");
   return ok;
