@@ -1,10 +1,8 @@
 #pragma once
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 #include "app/AppState.hpp"
-#include "core/Document.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 #include "gfx/Context.hpp"
@@ -12,20 +10,22 @@
 
 #include "imgui.h"
 
-// ui/NaturalPaintUI (PLAN.md "Phase 2 -- See a file", step 8: "Tiled viewport
-// draw"). A read-only proof of the tile pipeline -- core::Document -> one GPU
-// texture per occupied core::Tile -> screen -- deliberately NOT wired into
-// the interactive painting canvas: src/ui/MacPaintUI.cpp/.hpp keeps drawing
-// PaintSim's single dense canvasView() exactly as it does today, completely
-// unchanged and running independently of this module. This module doesn't
-// know about PaintSim, brushes, tools, or anything else app/AppState.hpp
-// carries beyond the one type it deliberately reuses (CanvasView, for pan/
-// zoom) -- it only knows how to put a Document's tiles on screen.
+// ui/NaturalPaintUI -- the CPU-side mip pyramid for core::Tile (PLAN.md
+// "Phase 2 -- See a file", step 9: "Mip pyramid for tiles, so a 25% zoom
+// evaluates at a matching level") plus tileScreenRect(), the tile-to-screen
+// placement geometry step 8 introduced alongside it.
 //
-// Whether/when a live PaintSim's state ever gets "baked to tiles" so this
-// module could show *live* painting is a separate, undecided architecture
-// question (DESIGN-imaging.md) -- this step leaves that alone entirely; the
-// Document handed to setDocument() is treated as immutable.
+// This header used to also declare TiledDocumentView, step 8's ("Tiled
+// viewport draw") read-only proof of the tile pipeline -- core::Document ->
+// one GPU texture per occupied core::Tile -> screen -- deliberately never
+// wired into the interactive painting canvas (src/ui/MacPaintUI.cpp/.hpp
+// kept drawing PaintSim's single dense canvasView() throughout). ui/
+// DocumentTexture went on to become the production Document -> GPU-texture
+// path; TiledDocumentView was confirmed unreachable from the live
+// application and removed. What remains below has no dependency on that
+// class and stays live: SelfTest.hpp's runMipPyramidTest() (app/selftest/
+// MipPyramid.cpp) exercises it directly, uploading its own GPU tile via
+// uploadTileMips() below rather than through a viewer class.
 //
 // Naming note (docs/ui.md §6): this module is naturalPaint's own -- not a
 // port of the source wireframe's internal "Atelier" codename, which was
@@ -36,10 +36,10 @@ namespace np {
 // Mip pyramid (PLAN.md "Phase 2 -- See a file", step 9: "Mip pyramid for
 // tiles, so a 25% zoom evaluates at a matching level"). Deliberately kept
 // out of core/ entirely -- see this file's own header comment on why -- and
-// generated fresh, CPU-side, every time setDocument() uploads a tile,
+// generated fresh, CPU-side, every time uploadTileMips() uploads a tile,
 // exactly like the RGBA16Float upload step 8 already does. Nothing here is
 // written back into core::Tile/core::TileStore/the Document; it is purely an
-// upload-time detail of this read-only viewer.
+// upload-time detail.
 //
 // kTileSize (core/Tile.hpp) is 128 = 2^7, so the natural power-of-two chain
 // is 128, 64, 32, 16, 8, 4, 2, 1 -- 8 levels, mip 0 (full res) through mip 7
@@ -61,7 +61,7 @@ static_assert(kMipLevelCount == 8,
 // `float` rather than packed half floats. Kept as plain float throughout
 // buildMipChain() (see below) rather than round-tripping through half at
 // every level; packing to half happens once, at upload time, in
-// TiledDocumentView::setDocument().
+// uploadTileMips().
 struct MipLevel {
   int32_t size = 0;
   std::vector<float> texels;
@@ -81,7 +81,7 @@ struct MipLevel {
 // unpremultiplying, averaging, and re-premultiplying, without straight
 // alpha's dark-fringing hazard at translucent edges -- exactly the standard
 // benefit premultiplied alpha exists for. Pure CPU, no GPU handle involved,
-// so this is directly unit-testable from --selftest (see SelfTest.cpp's
+// so this is directly unit-testable from --selftest (see SelfTest.hpp's
 // mip-pyramid test).
 std::vector<MipLevel> buildMipChain(const Tile& tile);
 
@@ -90,24 +90,23 @@ std::vector<MipLevel> buildMipChain(const Tile& tile);
 // (25%) the matching resolution is 128*0.25=32px, i.e. mip level 2
 // (128 -> 64 -> 32) -- PLAN.md's own literal example. General formula:
 // level = clamp(floor(-log2(zoom)), 0, kMipLevelCount-1). Pure math, no GPU
-// or ImGui context needed, so directly unit-testable; draw() below is the
-// one call site that actually uses it.
+// or ImGui context needed, so directly unit-testable; runMipPyramidTest()
+// (app/selftest/MipPyramid.cpp) is the one call site that picks a GPU
+// texture view by its result.
 int mipLevelForZoom(float zoom) noexcept;
 
-// One uploaded tile's GPU resources. `texture` owns the full mip chain's
-// storage (mipLevelCount == kMipLevelCount); `view` spans every level
-// (mirrors step 8's original all-levels view, still used where a specific
-// level doesn't matter, e.g. the --selftest blit that always reads level 0
-// explicitly). `levelViews[i]` is a single-level view scoped to exactly mip
-// level i (baseMipLevel=i, mipLevelCount=1) -- draw() below binds one of
-// these, picked by mipLevelForZoom(), instead of relying on the GPU/ImGui's
-// own automatic LOD selection (not obviously correct for an externally
-// supplied WebGPU texture view, and not deterministic/testable the way an
-// explicit single-level bind is). Built once in setDocument(), alongside the
-// mip upload -- no new GPU objects are created per frame.
+// One uploaded tile's GPU resources, returned by uploadTileMips() below.
+// `texture` owns the full mip chain's storage (mipLevelCount ==
+// kMipLevelCount). `levelViews[i]` is a single-level view scoped to exactly
+// mip level i (baseMipLevel=i, mipLevelCount=1) -- one per level, so a
+// caller can bind the level mipLevelForZoom() picks explicitly, instead of
+// relying on the GPU's own automatic LOD selection (not obviously correct
+// for an externally supplied WebGPU texture view, and not deterministic/
+// testable the way an explicit single-level bind is). No all-levels view:
+// nothing left in this codebase samples a GpuTile through automatic LOD, so
+// there is nothing for one to serve.
 struct GpuTile {
   WGPUTexture texture = nullptr;
-  WGPUTextureView view = nullptr;
   std::vector<WGPUTextureView> levelViews;
 };
 
@@ -133,89 +132,30 @@ struct TileScreenRect {
 // instead of a single texture's corner.
 TileScreenRect tileScreenRect(TileCoord coord, const CanvasView& view, ImVec2 canvasOrigin);
 
-// Mirrors MacPaintUI.cpp's canvas wheel-zoom block (~line 514-521), ported to
-// operate on a caller-supplied CanvasView instead of reaching into AppState.
-// This module has no opinion on brushes/tools/hover state, so *whether* to
-// call this (e.g. only while the canvas region is hovered) stays the
-// caller's decision, same as MacPaintUI's own call site gates it on
-// `hovered`. `originOffset` is `(origin - canvasPos)` in MacPaintUI's own
-// variable names: the screen-space offset (centring + pan) the drawn content
-// currently sits at, which is what the ported formula anchors the zoom to.
-// A no-op when `wheelDelta == 0`.
-void zoomOnWheel(CanvasView& view, float wheelDelta, ImVec2 originOffset);
+// Builds the full mip chain for `tile` (buildMipChain() above) and uploads
+// it to a fresh mipLevelCount == kMipLevelCount RGBA16Float GPU texture (one
+// wgpuQueueWriteTexture call per level, each at its own mipLevel in
+// WGPUTexelCopyTextureInfo), then builds GpuTile::levelViews -- one
+// single-level WGPUTextureView per level, for a caller to pick from by zoom
+// via mipLevelForZoom(). All of this happens once, synchronously, when
+// called. The caller owns the result and must eventually pass it to
+// releaseGpuTile() below.
+//
+// The one caller today is runMipPyramidTest() (app/selftest/MipPyramid.cpp),
+// proving the mip-level pick actually changes which GPU texture data a
+// render reads; this used to be TiledDocumentView::setDocument()'s per-tile
+// upload step, factored out here once that read-only viewer class was
+// confirmed unreachable from the live application and removed -- the upload
+// logic itself owed nothing to the class that used to wrap it.
+GpuTile uploadTileMips(GpuContext& gpu, const Tile& tile);
 
-// Mirrors MacPaintUI.cpp's canvas drag-to-pan block (~line 523-530), ported
-// to operate on a caller-supplied CanvasView. Which gesture counts as "pan"
-// (which mouse button, which tool) is policy this module deliberately
-// doesn't own -- callers apply this only once they've decided a pan gesture
-// is in progress, same as MacPaintUI's own `panning` bool gates its call.
-void applyPan(CanvasView& view, ImVec2 dragDelta);
-
-// Uploads and draws one Document's RGB layer as a set of independent
-// per-tile GPU textures (PLAN.md step 8), each carrying a full mip chain
-// (PLAN.md step 9). Not a live-painting surface: setDocument() uploads once
-// and the tiles are then treated as immutable -- there is no per-frame
-// re-upload and no write path back into the Document. Read-only on purpose;
-// see this header's own top comment.
-class TiledDocumentView {
- public:
-  // Releases any previously uploaded tiles, then uploads one mip-enabled
-  // RGBA16Float GPU texture per occupied tile of `doc`'s first RGB-kind
-  // layer with populated `rgbTiles` (core/Layer.hpp: "populated only when
-  // kind == RGB"). A Document with no such layer, or whose RGB layer has
-  // zero occupied tiles, leaves this holding nothing -- draw() below then
-  // emits nothing, not a crash.
-  //
-  // For each occupied tile, builds the full mip chain via buildMipChain()
-  // above and uploads every level (one wgpuQueueWriteTexture call per level,
-  // each at its own mipLevel in WGPUTexelCopyTextureInfo) into a single
-  // texture whose mipLevelCount spans the whole chain, then creates
-  // GpuTile::levelViews -- one single-level WGPUTextureView per level, for
-  // draw() to pick from by zoom. All of this happens once, synchronously --
-  // not deferred, not re-run or re-generated per frame. Correct because this
-  // step's Document is opened once and never mutated (no live painting into
-  // it here -- see this header's top comment for why that bridge is out of
-  // scope); a future step that does support live edits into a Document would
-  // need its own invalidation/re-upload path, not a change to this one.
-  void setDocument(GpuContext& gpu, const Document& doc);
-
-  // Releases every uploaded tile's texture + view and forgets them. Safe to
-  // call repeatedly (idempotent) and safe on an instance that never held any
-  // tiles. setDocument() already calls this itself before uploading a new
-  // document's tiles, so callers only need this directly when retiring the
-  // viewport for good.
-  //
-  // No GpuContext parameter -- matching PingPong::release() (sim/
-  // PaintSim.hpp) and PaintSim::releaseFields()'s convention over the
-  // instructions' example `release(GpuContext&)`: wgpuTextureDestroy/Release
-  // and wgpuTextureViewRelease need only the handles being released, not the
-  // device that created them, and that's the pattern already established
-  // for canvas_/canvasView_ in sim/PaintSim.cpp.
-  void release();
-
-  // One ImDrawList::AddImage per uploaded tile, positioned via
-  // tileScreenRect() above -- the only piece of this module that actually
-  // needs a live ImGui context (an ImDrawList to draw into). `canvasOrigin`
-  // plays the same role as MacPaintUI's `canvasPos`. A null `drawList`, or
-  // an instance holding no tiles, is a safe no-op.
-  //
-  // Binds each tile's GpuTile::levelViews[mipLevelForZoom(view.zoom)] --
-  // one explicit, single-level view chosen deterministically from the
-  // current zoom -- rather than the all-levels `view` and the GPU/ImGui
-  // backend's own automatic LOD selection (PLAN.md step 9).
-  void draw(ImDrawList* drawList, const CanvasView& view, ImVec2 canvasOrigin) const;
-
-  size_t tileCount() const { return tiles_.size(); }
-
-  // Direct access to the uploaded tiles, keyed by TileCoord -- for
-  // --selftest, which drives its own offscreen render/readback straight off
-  // each tile's WGPUTextureView (see SelfTest.cpp's runTiledViewportTest)
-  // rather than through ImGui's renderer, per this header's own note on
-  // draw() being the one piece that needs a live ImGui context.
-  const std::unordered_map<TileCoord, GpuTile>& tiles() const { return tiles_; }
-
- private:
-  std::unordered_map<TileCoord, GpuTile> tiles_;
-};
+// Releases `tile`'s texture and every per-level view, then zeroes the
+// struct. No GpuContext parameter -- matching PingPong::release() (sim/
+// PaintSim.hpp) and color::releaseLut3D()'s (color/LutBake.hpp) own
+// convention: wgpuTextureDestroy/Release and wgpuTextureViewRelease need
+// only the handles being released, not the device that created them. Safe
+// to call repeatedly (idempotent) and safe on a default-constructed
+// GpuTile.
+void releaseGpuTile(GpuTile& tile);
 
 }  // namespace np

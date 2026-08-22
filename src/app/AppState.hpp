@@ -54,9 +54,9 @@ struct BrushState {
 // field, grayscale, that does reach into GPU state at all).
 //
 // zoom/panX/panY keep their original meaning unchanged (NaturalPaintUI.cpp's
-// tileScreenRect()/zoomOnWheel()/applyPan() -- a separate, read-only tiled
-// viewer that has no need for mirror/rotate -- read only these three fields
-// and are untouched by this step). mirrorX/mirrorY/rotation are composed
+// tileScreenRect() -- pure tile-to-screen placement geometry with no need
+// for mirror/rotate -- reads only these three fields and is untouched by
+// this step). mirrorX/mirrorY/rotation are composed
 // together with zoom/pan into one affine transform by app/ViewTransform.hpp;
 // see that header and ui/MacPaintUI.cpp's canvas block for where pen input
 // maps back through that transform's actual analytic inverse, per

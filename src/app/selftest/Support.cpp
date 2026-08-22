@@ -9,16 +9,12 @@ namespace np {
 namespace {
 
 // Embedded WGSL for a tiny textured-quad blit, used only by
-// runTiledViewportTest() below to place one uploaded tile at a known screen
-// rect and read the result back -- NOT part of ui/NaturalPaintUI's production
-// API, which draws exclusively via ImDrawList::AddImage
-// (TiledDocumentView::draw()). AddImage's own rendering goes through ImGui's
-// WebGPU backend, which needs a live ImGui context/frame to drive; this
-// module's actual position math and GPU upload don't need any of that, so
-// this shader lets --selftest exercise them directly against a real
-// offscreen WebGPU render target instead -- the same rigor every other piece
-// of this project's pipeline is held to (PaintSim's own readbackCanvas/
-// readbackField).
+// runMipPyramidTest() below to place a GPU-uploaded tile mip level at a
+// known screen rect and read the result back -- this offscreen path exists
+// purely so --selftest can exercise ui/NaturalPaintUI's mip-selection GPU
+// proof headlessly, without a live ImGui context/frame, with the same rigor
+// every other piece of this project's pipeline is held to (PaintSim's own
+// readbackCanvas/readbackField).
 //
 // `vs` maps the unit square [0,1]^2 (via vertex_index, two triangles) onto
 // [P.rectMin, P.rectMax] in pixel space, then to NDC against P.targetSize --
@@ -29,15 +25,12 @@ namespace {
 // blending to reason about when picking sample points below.
 //
 // `fs` derives the texel grid from textureDimensions(tileTex) rather than a
-// hardcoded 128, so this same shader works whether `tileTex` is bound to a
-// tile's all-levels view (level 0's own dimensions, 128x128, same as
-// before -- runTiledViewportTest() below reads that view's level 0
-// explicitly) or one of GpuTile::levelViews' single-level views (that
-// level's own, smaller dimensions -- runMipPyramidTest()'s mip-selection
-// proof below). A texture_2d view scoped to exactly one mip level reports
-// that level's size as textureDimensions' result, which is exactly what
-// this needs and why NaturalPaintUI's draw() binds a single-level view per
-// PLAN.md step 9 rather than relying on automatic LOD selection.
+// hardcoded 128, so this same shader works against any of
+// GpuTile::levelViews' single-level views -- each reports its own,
+// level-specific dimensions as textureDimensions' result (a texture_2d view
+// scoped to exactly one mip level reports that level's own size), which is
+// exactly what runMipPyramidTest()'s explicit per-level binding (PLAN.md
+// step 9) needs, rather than relying on automatic LOD selection.
 constexpr const char* kBlitShaderSrc = R"(
 struct BlitParams {
   rectMin : vec2<f32>,
@@ -398,16 +391,16 @@ bool readbackRGBA16F3D(GpuContext& gpu, WGPUTexture tex, uint32_t size, std::vec
   return ok;
 }
 
-// Shared by runTiledViewportTest() and runMipPyramidTest() (PLAN.md step 9):
-// given an already-built blit `pipeline` (caller owns/releases it --
-// building it is the one step each call site still does itself, so each
-// keeps its own "shader compiles"/"pipeline builds" check() lines), draws
-// `tileView` at `rect` into a fresh `targetSize` x `targetSize` RGBA16Float
-// offscreen target -- the exact placement TiledDocumentView::draw() would
-// use for that tile -- and reads the result back to `outPixels` via
-// readbackRGBA16F(). Everything this function itself creates (the uniform
-// buffer, bind group, and render target) is released before returning;
-// `pipeline` and `tileView` are the caller's.
+// Used by runMipPyramidTest() (PLAN.md step 9): given an already-built blit
+// `pipeline` (caller owns/releases it -- building it is a step the call
+// site still does itself, keeping its own "shader compiles"/"pipeline
+// builds" check() lines), draws `tileView` at `rect` into a fresh
+// `targetSize` x `targetSize` RGBA16Float offscreen target -- the same
+// screen placement tileScreenRect() computes for that tile -- and reads the
+// result back to `outPixels` via readbackRGBA16F(). Everything this
+// function itself creates (the uniform buffer, bind group, and render
+// target) is released before returning; `pipeline` and `tileView` are the
+// caller's.
 bool blitPipelineRenderAndReadback(GpuContext& gpu, WGPURenderPipeline pipeline,
                                    WGPUTextureView tileView, TileScreenRect rect,
                                    uint32_t targetSize, std::vector<float>& outPixels) {

@@ -119,8 +119,8 @@ inline constexpr int32_t kMaxCurvePointsPerChannel = 16;
 // for a GPU-texture-owning value in this codebase: raw handles, released
 // explicitly via releaseLut3D() below -- the same "release() is a free
 // function/method the owner calls, not a destructor" discipline
-// TiledDocumentView::release() and PingPong::release() (sim/PaintSim.hpp)
-// already follow.
+// releaseGpuTile() and PingPong::release() (sim/PaintSim.hpp) already
+// follow.
 struct Lut3D {
   WGPUTexture texture = nullptr;
   WGPUTextureView view = nullptr;
@@ -128,11 +128,10 @@ struct Lut3D {
 };
 
 // Releases `lut`'s texture and view (if any) and zeroes the struct. No
-// GpuContext parameter, matching PingPong::release()/TiledDocumentView::
-// release()'s own convention: wgpuTextureDestroy/Release and
-// wgpuTextureViewRelease need only the handles being released, not the
-// device that created them. Safe to call on an already-released or
-// default-constructed Lut3D.
+// GpuContext parameter, matching PingPong::release()/releaseGpuTile()'s own
+// convention: wgpuTextureDestroy/Release and wgpuTextureViewRelease need
+// only the handles being released, not the device that created them. Safe
+// to call on an already-released or default-constructed Lut3D.
 void releaseLut3D(Lut3D& lut);
 
 // Bakes `ops`, in order, onto a fresh kLutSize^3 rgba16float 3-D LUT and

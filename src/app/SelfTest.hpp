@@ -230,32 +230,9 @@ bool runImageIOTest();
 // completely unchanged rather than partially inserting a broken layer.
 bool runPlaceImageAsLayerTest();
 
-// Headless check on ui/NaturalPaintUI (PLAN.md Phase 2 step 8, "Tiled
-// viewport draw"): a read-only proof of the tile pipeline, Document -> one
-// GPU texture per occupied tile -> screen, independent of the interactive
-// painting canvas. Needs `gpu` (a real device/queue) but no PaintSim -- this
-// module never touches the solver.
-//
-// Confirms: a Document with no RGB layer, and a freshly-createBlank()'d one
-// (an RGB layer with zero occupied tiles), both upload zero tiles and
-// TiledDocumentView::draw() no-ops safely on both, even given a null
-// ImDrawList (the one call in this module that needs a live ImGui context --
-// deliberately not exercised here, see below); tileScreenRect() matches a
-// hand-computed expectation for a known TileCoord/CanvasView/canvasOrigin,
-// independent of anything GPU-side; and -- the assertion that actually
-// proves the pipeline, not just its parts -- opening a small known-pixel PNG
-// fixture, uploading its one tile, then driving a small dedicated offscreen
-// WebGPU render pass (not ImGui's renderer -- see SelfTest.cpp for why) that
-// places the uploaded tile texture at tileScreenRect()'s own computed rect,
-// reads the render target back to CPU the same way PaintSim::readbackField()
-// does, and checks known source-image corner colours land at the expected
-// screen pixels, with untouched tile area and the area outside the tile's
-// quad both reading back transparent black.
-bool runTiledViewportTest(GpuContext& gpu);
-
 // Headless check on ui/NaturalPaintUI's mip pyramid (PLAN.md Phase 2 step 9:
 // "Mip pyramid for tiles, so a 25% zoom evaluates at a matching level").
-// Three things, in order:
+// Four things, in order:
 //
 //  (a) CPU-only, no GPU: buildMipChain() run on a hand-built core::Tile
 //      whose R channel holds a known 4x4 ramp. Mip level 1's four corner
@@ -270,17 +247,31 @@ bool runTiledViewportTest(GpuContext& gpu);
 //      32px level, mip 2) and zoom=1.0 -> level 0, plus clamping at both
 //      extremes (very high zoom stays at level 0; very low zoom clamps at
 //      the smallest level rather than going out of range).
-//  (c) End-to-end, needs `gpu`: a known, non-uniform (finest-period
-//      checkerboard) tile is uploaded via TiledDocumentView::setDocument(),
-//      then drawn at zoom=0.25 through the same offscreen blit-and-readback
-//      technique runTiledViewportTest() uses (a shared helper, extended
-//      rather than duplicated), binding the level-2 view mipLevelForZoom()
-//      selects. The read-back pixels are checked against level 2's known
-//      uniform downsampled colour, and -- rendering the identical screen
-//      rect from level 0's own view for contrast -- checked to differ from
-//      what level 0 alone would have produced. This is the assertion that
-//      actually proves level selection is wired into the real GPU draw
-//      path, not just computed and ignored.
+//  (c) CPU-only, no GPU: tileScreenRect() matches a hand-computed
+//      expectation for a known TileCoord/CanvasView/canvasOrigin. This
+//      assertion originally lived in runTiledViewportTest(), the headless
+//      check on ui/NaturalPaintUI's TiledDocumentView (PLAN.md Phase 2 step
+//      8, "Tiled viewport draw") -- a read-only proof of Document -> one GPU
+//      texture per occupied tile -> screen, deliberately never wired into
+//      the interactive painting canvas. TiledDocumentView was confirmed
+//      unreachable from the live application (ui/DocumentTexture became the
+//      production Document -> GPU-texture path) and removed along with that
+//      test; tileScreenRect() itself owed nothing to the class, so its own
+//      correctness check moved here rather than disappearing with it.
+//  (d) End-to-end, needs `gpu`: a known, non-uniform (finest-period
+//      checkerboard) core::Tile is uploaded via uploadTileMips() (ui/
+//      NaturalPaintUI.hpp), then rendered at zoom=0.25 through a small
+//      dedicated offscreen WebGPU render pass (app/selftest/Support.cpp's
+//      blitPipelineRenderAndReadback(), not ImGui's renderer -- this module
+//      needs no live ImGui context), placed at tileScreenRect()'s own
+//      computed rect and read back to CPU the same way
+//      PaintSim::readbackField() does, binding the level-2 view
+//      mipLevelForZoom() selects. The read-back pixels are checked against
+//      level 2's known uniform downsampled colour, and -- rendering the
+//      identical screen rect from level 0's own view for contrast --
+//      checked to differ from what level 0 alone would have produced. This
+//      is the assertion that actually proves level selection is wired into
+//      a real GPU draw, not just computed and ignored.
 bool runMipPyramidTest(GpuContext& gpu);
 
 // Headless, GPU-free check on core/Probe (PLAN.md Phase 2 step 10: "Pixel

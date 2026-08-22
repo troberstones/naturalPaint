@@ -370,9 +370,9 @@ class PaintSim {
   //
   // *** Deliberate, narrow target: the live simulation canvas, not
   // core::Document *** -- this fork (grade sim::PaintSim's canvas_ vs.
-  // grade a core::Document/TiledDocumentView) was presented explicitly
-  // and decided in favour of the live canvas; do not redirect this to
-  // core::Document without a fresh product decision. There is no live-
+  // grade a core::Document, e.g. via ui::DocumentTexture) was presented
+  // explicitly and decided in favour of the live canvas; do not redirect
+  // this to core::Document without a fresh product decision. There is no live-
   // canvas-to-Document bridge in this codebase yet (see
   // AppState.hpp's CanvasView::grade / AppState::opStack comments, and
   // every prior Phase-2 step's Findings entries that hit the identical

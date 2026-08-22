@@ -87,11 +87,12 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
     // CopyDst for the upload; TextureBinding so ImGui can sample it; CopySrc
     // for the same "so --selftest can read this back" reason
     // sim/PaintSim.cpp's canvas target carries it. No mip chain: unlike
-    // ui/NaturalPaintUI's TiledDocumentView, which builds one per 128-texel
-    // tile to serve a zoomed-out tiled viewport, this is a single
-    // canvas-sized quad drawn at the view's own zoom, and a mip chain would
-    // be rebuilt on every edit for a level that is sampled only when the
-    // whole document is minified past 1:2.
+    // ui/NaturalPaintUI's per-tile mip pyramid (buildMipChain()/
+    // uploadTileMips(), used by app/selftest/MipPyramid.cpp), which builds
+    // one per 128-texel tile to serve a zoomed-out tiled viewer, this is a
+    // single canvas-sized quad drawn at the view's own zoom, and a mip
+    // chain would be rebuilt on every edit for a level that is sampled only
+    // when the whole document is minified past 1:2.
     td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst |
                WGPUTextureUsage_CopySrc;
     texture_ = wgpuDeviceCreateTexture(gpu.device, &td);

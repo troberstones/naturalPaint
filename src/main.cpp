@@ -1240,15 +1240,11 @@ int main(int argc, char** argv) {
     // brand-new one. Also headless and GPU-free -- pure CPU, no PaintSim
     // involvement.
     const bool placeImageAsLayerOk = np::runPlaceImageAsLayerTest();
-    // Phase 2 step 8: ui/NaturalPaintUI -- Document -> per-tile GPU texture
-    // -> screen, a read-only proof of the tile pipeline independent of the
-    // interactive painting canvas. Needs `gpu` for a real device/queue, but
-    // no PaintSim -- this module never touches the solver.
-    const bool tiledViewportOk = np::runTiledViewportTest(gpu);
     // Phase 2 step 9: ui/NaturalPaintUI's mip pyramid -- CPU-side box-filter
-    // downsample correctness, the zoom->level formula, and an end-to-end
-    // GPU proof that draw()'s level pick actually changes which texels
-    // render. Needs `gpu` for the end-to-end part only -- see SelfTest.hpp.
+    // downsample correctness, the zoom->level formula, a pure-geometry
+    // check on tileScreenRect(), and an end-to-end GPU proof that mip-level
+    // selection actually changes which texels render. Needs `gpu` for the
+    // end-to-end part only -- see SelfTest.hpp.
     const bool mipPyramidOk = np::runMipPyramidTest(gpu);
     // Phase 2 step 10 (narrow, Document-level slice; PRD Q10): core/Probe's
     // probePixel() -- linear + display readout, NxN sample-size averaging,
@@ -1630,7 +1626,7 @@ int main(int argc, char** argv) {
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
-                    tiledViewportOk && mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
+                    mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&

@@ -56,7 +56,7 @@
 //
 // The format is also the one `core::Tile` already stores in
 // (DESIGN-imaging.md §2), and the same one ui/NaturalPaintUI's
-// `TiledDocumentView` uploads, so nothing here invents a third convention.
+// `uploadTileMips()` uploads, so nothing here invents a third convention.
 //
 // --- 2. Straight alpha, not premultiplied ---------------------------------
 //

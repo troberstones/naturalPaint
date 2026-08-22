@@ -58,8 +58,8 @@ bool runLutBakeTest(GpuContext& gpu) {
 
   // Hand-picked interior grid cells spanning low/mid/high shaper domain --
   // six samples, not the full 32768-cell sweep, matching this codebase's
-  // existing GPU-test style (runTiledViewportTest()/runMipPyramidTest()'s
-  // own hand-picked corner/known-pixel checks rather than exhaustive scans).
+  // existing GPU-test style (runMipPyramidTest()'s own hand-picked corner/
+  // known-pixel checks rather than exhaustive scans).
   const std::vector<std::array<int, 3>> sampleCells = {
       {4, 4, 4}, {8, 16, 24}, {16, 16, 16}, {24, 8, 16}, {28, 28, 28}, {2, 20, 10},
   };

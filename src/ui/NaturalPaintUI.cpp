@@ -15,7 +15,7 @@ std::vector<MipLevel> buildMipChain(const Tile& tile) {
 
   // Level 0: the tile's own full-resolution data, decoded from half to
   // float via readPixel() -- everything downstream stays in float, only
-  // packed back to half at upload time (TiledDocumentView::setDocument()).
+  // packed back to half at upload time (uploadTileMips()).
   MipLevel level0;
   level0.size = kTileSize;
   level0.texels.resize(static_cast<size_t>(kTileSize) * static_cast<size_t>(kTileSize) * 4);
@@ -72,10 +72,11 @@ std::vector<MipLevel> buildMipChain(const Tile& tile) {
 
 int mipLevelForZoom(float zoom) noexcept {
   constexpr int kMaxLevel = kMipLevelCount - 1;
-  // zoom<=0 is degenerate input (not a real CanvasView state -- zoomOnWheel()
-  // itself clamps to [0.1, 8.0]), and NaN>0.0f is false, so this one
-  // condition also catches NaN -- both treated as "as zoomed-out as
-  // possible" rather than evaluating log2 of a non-positive number.
+  // zoom<=0 is degenerate input (not a real CanvasView state -- MacPaintUI's
+  // own wheel-zoom handling clamps zoom to [0.1, 8.0]), and NaN>0.0f is
+  // false, so this one condition also catches NaN -- both treated as "as
+  // zoomed-out as possible" rather than evaluating log2 of a non-positive
+  // number.
   if (!(zoom > 0.0f)) return kMaxLevel;
   const float raw = std::floor(-std::log2(zoom));
   if (!std::isfinite(raw)) return kMaxLevel;
@@ -90,127 +91,80 @@ TileScreenRect tileScreenRect(TileCoord coord, const CanvasView& view, ImVec2 ca
   return TileScreenRect{screenPos, ImVec2(screenPos.x + sizePx, screenPos.y + sizePx)};
 }
 
-void zoomOnWheel(CanvasView& view, float wheelDelta, ImVec2 originOffset) {
-  if (wheelDelta == 0.0f) return;
-  const float old = view.zoom;
-  view.zoom = std::clamp(view.zoom * (1.0f + wheelDelta * 0.12f), 0.1f, 8.0f);
-  const float k = view.zoom / old;
-  view.panX = (view.panX + originOffset.x) * k - originOffset.x;
-  view.panY = (view.panY + originOffset.y) * k - originOffset.y;
+GpuTile uploadTileMips(GpuContext& gpu, const Tile& tile) {
+  // PLAN.md step 9: build the full mip chain CPU-side (see buildMipChain()
+  // above) before touching the GPU at all -- this is the same ephemeral,
+  // upload-time-only detail step 8's single-level upload already was, just
+  // now with kMipLevelCount levels instead of one.
+  const std::vector<MipLevel> mips = buildMipChain(tile);
+
+  WGPUTextureDescriptor td = {};
+  td.label = sv("tile mip chain");
+  td.dimension = WGPUTextureDimension_2D;
+  td.size = {static_cast<uint32_t>(kTileSize), static_cast<uint32_t>(kTileSize), 1};
+  // Same format core::Tile already stores in (DESIGN-imaging.md §2), so
+  // level 0's upload below is a direct byte-for-byte copy -- no conversion,
+  // matching sim/PaintSim.cpp's makeField() pattern for a texture that needs
+  // no render-target/storage usage, just an upload target the GPU can
+  // sample.
+  td.format = WGPUTextureFormat_RGBA16Float;
+  td.mipLevelCount = static_cast<uint32_t>(mips.size());
+  td.sampleCount = 1;
+  td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+  WGPUTexture tex = wgpuDeviceCreateTexture(gpu.device, &td);
+
+  // One wgpuQueueWriteTexture call per level, each at its own mipLevel and
+  // its own (smaller) byte size -- still uploaded once, synchronously, here,
+  // not regenerated or re-uploaded per frame.
+  std::vector<uint16_t> packed;  // scratch, reused/resized across levels
+  for (size_t level = 0; level < mips.size(); ++level) {
+    const MipLevel& ml = mips[level];
+    packed.resize(ml.texels.size());
+    for (size_t i = 0; i < ml.texels.size(); ++i) packed[i] = floatToHalf(ml.texels[i]);
+
+    WGPUTexelCopyTextureInfo dst = {};
+    dst.texture = tex;
+    dst.mipLevel = static_cast<uint32_t>(level);
+    dst.aspect = WGPUTextureAspect_All;
+
+    WGPUTexelCopyBufferLayout layout = {};
+    layout.bytesPerRow = static_cast<uint32_t>(ml.size) * Tile::kChannels * sizeof(uint16_t);
+    layout.rowsPerImage = static_cast<uint32_t>(ml.size);
+
+    const WGPUExtent3D extent = {static_cast<uint32_t>(ml.size), static_cast<uint32_t>(ml.size),
+                                 1};
+    wgpuQueueWriteTexture(gpu.queue, &dst, packed.data(), packed.size() * sizeof(uint16_t),
+                          &layout, &extent);
+  }
+
+  GpuTile gt;
+  gt.texture = tex;
+  gt.levelViews.resize(mips.size());
+  for (size_t level = 0; level < mips.size(); ++level) {
+    WGPUTextureViewDescriptor vd = {};
+    vd.label = sv("tile mip level");
+    vd.format = WGPUTextureFormat_RGBA16Float;
+    vd.dimension = WGPUTextureViewDimension_2D;
+    vd.baseMipLevel = static_cast<uint32_t>(level);
+    vd.mipLevelCount = 1;
+    vd.baseArrayLayer = 0;
+    vd.arrayLayerCount = 1;
+    vd.aspect = WGPUTextureAspect_All;
+    gt.levelViews[level] = wgpuTextureCreateView(tex, &vd);
+  }
+  return gt;
 }
 
-void applyPan(CanvasView& view, ImVec2 dragDelta) {
-  view.panX += dragDelta.x;
-  view.panY += dragDelta.y;
-}
-
-void TiledDocumentView::setDocument(GpuContext& gpu, const Document& doc) {
-  release();
-
-  const Layer* rgbLayer = nullptr;
-  for (const Layer& layer : doc.layers) {
-    if (layer.kind == LayerKind::RGB && layer.rgbTiles) {
-      rgbLayer = &layer;
-      break;
-    }
+void releaseGpuTile(GpuTile& tile) {
+  for (WGPUTextureView v : tile.levelViews) {
+    if (v) wgpuTextureViewRelease(v);
   }
-  if (!rgbLayer) return;
-
-  for (const auto& [coord, tile] : *rgbLayer->rgbTiles) {
-    // PLAN.md step 9: build the full mip chain CPU-side (see buildMipChain()
-    // above) before touching the GPU at all -- this is the same ephemeral,
-    // upload-time-only detail step 8's single-level upload already was, just
-    // now with kMipLevelCount levels instead of one.
-    const std::vector<MipLevel> mips = buildMipChain(tile);
-
-    WGPUTextureDescriptor td = {};
-    td.label = sv("tiled-viewport tile");
-    td.dimension = WGPUTextureDimension_2D;
-    td.size = {static_cast<uint32_t>(kTileSize), static_cast<uint32_t>(kTileSize), 1};
-    // Same format core::Tile already stores in (DESIGN-imaging.md §2), so
-    // level 0's upload below is a direct byte-for-byte copy -- no
-    // conversion, matching sim/PaintSim.cpp's makeField() pattern for a
-    // texture that needs no render-target/storage usage, just an upload
-    // target ImGui can sample.
-    td.format = WGPUTextureFormat_RGBA16Float;
-    td.mipLevelCount = static_cast<uint32_t>(mips.size());
-    td.sampleCount = 1;
-    td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-    WGPUTexture tex = wgpuDeviceCreateTexture(gpu.device, &td);
-
-    // One wgpuQueueWriteTexture call per level, each at its own mipLevel and
-    // its own (smaller) byte size -- still uploaded once, synchronously,
-    // here in setDocument(), not regenerated or re-uploaded per frame.
-    std::vector<uint16_t> packed;  // scratch, reused/resized across levels
-    for (size_t level = 0; level < mips.size(); ++level) {
-      const MipLevel& ml = mips[level];
-      packed.resize(ml.texels.size());
-      for (size_t i = 0; i < ml.texels.size(); ++i) packed[i] = floatToHalf(ml.texels[i]);
-
-      WGPUTexelCopyTextureInfo dst = {};
-      dst.texture = tex;
-      dst.mipLevel = static_cast<uint32_t>(level);
-      dst.aspect = WGPUTextureAspect_All;
-
-      WGPUTexelCopyBufferLayout layout = {};
-      layout.bytesPerRow = static_cast<uint32_t>(ml.size) * Tile::kChannels * sizeof(uint16_t);
-      layout.rowsPerImage = static_cast<uint32_t>(ml.size);
-
-      const WGPUExtent3D extent = {static_cast<uint32_t>(ml.size), static_cast<uint32_t>(ml.size),
-                                   1};
-      wgpuQueueWriteTexture(gpu.queue, &dst, packed.data(), packed.size() * sizeof(uint16_t),
-                            &layout, &extent);
-    }
-
-    GpuTile gt;
-    gt.texture = tex;
-    gt.view = wgpuTextureCreateView(tex, nullptr);  // all levels -- see GpuTile's own comment
-    gt.levelViews.resize(mips.size());
-    for (size_t level = 0; level < mips.size(); ++level) {
-      WGPUTextureViewDescriptor vd = {};
-      vd.label = sv("tiled-viewport tile mip level");
-      vd.format = WGPUTextureFormat_RGBA16Float;
-      vd.dimension = WGPUTextureViewDimension_2D;
-      vd.baseMipLevel = static_cast<uint32_t>(level);
-      vd.mipLevelCount = 1;
-      vd.baseArrayLayer = 0;
-      vd.arrayLayerCount = 1;
-      vd.aspect = WGPUTextureAspect_All;
-      gt.levelViews[level] = wgpuTextureCreateView(tex, &vd);
-    }
-    tiles_.emplace(coord, std::move(gt));
+  tile.levelViews.clear();
+  if (tile.texture) {
+    wgpuTextureDestroy(tile.texture);
+    wgpuTextureRelease(tile.texture);
   }
-}
-
-void TiledDocumentView::release() {
-  for (auto& [coord, tile] : tiles_) {
-    for (WGPUTextureView v : tile.levelViews) {
-      if (v) wgpuTextureViewRelease(v);
-    }
-    if (tile.view) wgpuTextureViewRelease(tile.view);
-    if (tile.texture) {
-      wgpuTextureDestroy(tile.texture);
-      wgpuTextureRelease(tile.texture);
-    }
-  }
-  tiles_.clear();
-}
-
-void TiledDocumentView::draw(ImDrawList* drawList, const CanvasView& view,
-                             ImVec2 canvasOrigin) const {
-  if (!drawList) return;
-  const int level = mipLevelForZoom(view.zoom);
-  for (const auto& [coord, tile] : tiles_) {
-    const TileScreenRect rect = tileScreenRect(coord, view, canvasOrigin);
-    // An explicit, single-level view for the zoom-matched mip -- not the
-    // all-levels `tile.view` -- so this never depends on the GPU/ImGui
-    // backend's own (unverified) automatic LOD selection. `level` is always
-    // in [0, kMipLevelCount-1] and levelViews always has exactly
-    // kMipLevelCount entries per tile (setDocument() builds both from the
-    // same mips vector), so this index is always valid.
-    WGPUTextureView v = tile.levelViews[static_cast<size_t>(level)];
-    drawList->AddImage((ImTextureID)(intptr_t)v, rect.min, rect.max);
-  }
+  tile.texture = nullptr;
 }
 
 }  // namespace np

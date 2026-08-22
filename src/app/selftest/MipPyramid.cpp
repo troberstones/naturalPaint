@@ -5,11 +5,11 @@ namespace np {
 // PLAN.md Phase 2 step 9 ("Mip pyramid for tiles, so a 25% zoom evaluates at
 // a matching level"). See SelfTest.hpp for the full breakdown; in short:
 // CPU-only downsample correctness for buildMipChain() (no GPU), CPU-only
-// level-selection formula checks for mipLevelForZoom() (no GPU), and an
-// end-to-end GPU proof that draw()'s own level pick actually changes which
-// texels land on screen -- extending runTiledViewportTest()'s own offscreen
-// blit-and-readback technique (immediately above) rather than duplicating
-// it from scratch.
+// level-selection formula checks for mipLevelForZoom() (no GPU), a pure-
+// geometry check on tileScreenRect(), and an end-to-end GPU proof that mip-
+// level selection actually changes which texels land on screen, via
+// app/selftest/Support.cpp's shared offscreen blit-and-readback helper
+// (blitPipelineRenderAndReadback()).
 bool runMipPyramidTest(GpuContext& gpu) {
   bool ok = true;
   auto check = [&](bool cond, const char* what) {
@@ -85,15 +85,37 @@ bool runMipPyramidTest(GpuContext& gpu) {
         "mipLevelForZoom: extreme zoom-out clamps at the smallest level rather than going out "
         "of range");
 
+  // --- tileScreenRect(): pure geometry, checked against a hand-computed
+  // expectation independent of anything GPU-side. This assertion used to
+  // live in the now-removed runTiledViewportTest() (ui/NaturalPaintUI's
+  // TiledDocumentView, confirmed unreachable from the live application);
+  // tileScreenRect() itself owed nothing to that class and stays live here
+  // (it positions the offscreen render just below), so its own correctness
+  // check moved rather than disappeared -------------------------------
+  {
+    CanvasView view;
+    view.zoom = 2.0f;
+    view.panX = 5.0f;
+    view.panY = -3.0f;
+    const ImVec2 canvasOrigin(10.0f, 20.0f);
+    const TileScreenRect rect = tileScreenRect(TileCoord{0, 0}, view, canvasOrigin);
+    // screenPos = canvasOrigin + tileOrigin({0,0})*zoom + (panX,panY)
+    //           = (10,20) + (0,0)*2 + (5,-3) = (15,17); size = 128*2 = 256.
+    check(near(rect.min.x, 15.0f, 1e-3f) && near(rect.min.y, 17.0f, 1e-3f) &&
+              near(rect.max.x, 271.0f, 1e-3f) && near(rect.max.y, 273.0f, 1e-3f),
+          "tileScreenRect: matches canvasOrigin + tileOrigin*zoom + pan, tile size "
+          "kTileSize*zoom");
+  }
+
   // --- end-to-end: a known, non-uniform (checkerboard) tile -> uploaded
-  // mip chain -> the level draw() would pick for a given zoom -> an
+  // mip chain -> the level mipLevelForZoom() picks for a given zoom -> an
   // offscreen render placed at tileScreenRect()'s own rect -> read back and
   // confirm the pixels match the *downsampled* level's known value, not
   // level 0's -- the check that actually proves level selection is wired
-  // into the real GPU draw path, not just computed and ignored -----------
+  // into a real GPU draw, not just computed and ignored -----------
   {
-    Document doc = Document::createBlank(kTileSize, kTileSize, WorkingSpace{});
-    Tile& tile = doc.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+    Tile tile;  // a lone, unattached core::Tile -- uploadTileMips() needs no
+                // Document/TileStore around it, just tile data
     // Finest-period checkerboard, opaque red/green. Any 2x2 box-filter
     // average of it is *exactly* uniform (0.5, 0.5, 0, 1) -- true of every
     // block, so mip level 1 and every level after it reads back that one
@@ -108,121 +130,114 @@ bool runMipPyramidTest(GpuContext& gpu) {
       }
     }
 
-    TiledDocumentView tv;
-    tv.setDocument(gpu, doc);
-    check(tv.tileCount() == 1, "runMipPyramidTest: checkerboard fixture uploads exactly one tile");
-    const auto it = tv.tiles().find(TileCoord{0, 0});
-    check(it != tv.tiles().end(), "runMipPyramidTest: the uploaded tile is at TileCoord{0,0}");
+    GpuTile gt = uploadTileMips(gpu, tile);
+    check(gt.levelViews.size() == static_cast<size_t>(kMipLevelCount),
+          "runMipPyramidTest: the uploaded tile carries one per-level view for each of the 8 "
+          "mip levels");
 
-    if (it != tv.tiles().end()) {
-      check(it->second.levelViews.size() == static_cast<size_t>(kMipLevelCount),
-            "runMipPyramidTest: the uploaded tile carries one per-level view for each of the 8 "
-            "mip levels");
+    // PLAN.md's own literal example: 25% zoom -> the 32px level.
+    constexpr float kZoom = 0.25f;
+    const int level = mipLevelForZoom(kZoom);
+    check(level == 2,
+          "runMipPyramidTest: zoom=0.25 selects level 2 -- exactly the level a real draw call "
+          "would compute for this zoom");
 
-      // PLAN.md's own literal example: 25% zoom -> the 32px level.
-      constexpr float kZoom = 0.25f;
-      const int level = mipLevelForZoom(kZoom);
-      check(level == 2,
-            "runMipPyramidTest: zoom=0.25 selects level 2 -- exactly the level draw() itself "
-            "would compute for this zoom");
+    if (level >= 0 && static_cast<size_t>(level) < gt.levelViews.size()) {
+      CanvasView view;
+      view.zoom = kZoom;
+      const ImVec2 canvasOrigin(10.0f, 20.0f);
+      const TileScreenRect rect = tileScreenRect(TileCoord{0, 0}, view, canvasOrigin);
 
-      if (level >= 0 && static_cast<size_t>(level) < it->second.levelViews.size()) {
-        CanvasView view;
-        view.zoom = kZoom;
-        const ImVec2 canvasOrigin(10.0f, 20.0f);
-        const TileScreenRect rect = tileScreenRect(TileCoord{0, 0}, view, canvasOrigin);
+      WGPUShaderModule shaderMod = compileBlitShader(gpu);
+      check(shaderMod != nullptr, "runMipPyramidTest: blit shader compiles");
 
-        WGPUShaderModule shaderMod = compileBlitShader(gpu);
-        check(shaderMod != nullptr, "runMipPyramidTest: blit shader compiles");
+      if (shaderMod) {
+        WGPUColorTargetState target = {};
+        target.format = WGPUTextureFormat_RGBA16Float;
+        target.writeMask = WGPUColorWriteMask_All;
 
-        if (shaderMod) {
-          WGPUColorTargetState target = {};
-          target.format = WGPUTextureFormat_RGBA16Float;
-          target.writeMask = WGPUColorWriteMask_All;
+        WGPUFragmentState fs = {};
+        fs.module = shaderMod;
+        fs.entryPoint = sv("fs");
+        fs.targetCount = 1;
+        fs.targets = &target;
 
-          WGPUFragmentState fs = {};
-          fs.module = shaderMod;
-          fs.entryPoint = sv("fs");
-          fs.targetCount = 1;
-          fs.targets = &target;
+        WGPURenderPipelineDescriptor rd = {};
+        rd.label = sv("mip-pyramid-selftest-blit");
+        rd.vertex.module = shaderMod;
+        rd.vertex.entryPoint = sv("vs");
+        rd.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+        rd.primitive.frontFace = WGPUFrontFace_CCW;
+        rd.primitive.cullMode = WGPUCullMode_None;
+        rd.multisample.count = 1;
+        rd.multisample.mask = 0xFFFFFFFF;
+        rd.fragment = &fs;
+        WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(gpu.device, &rd);
+        wgpuShaderModuleRelease(shaderMod);
+        check(pipeline != nullptr, "runMipPyramidTest: blit render pipeline builds");
 
-          WGPURenderPipelineDescriptor rd = {};
-          rd.label = sv("mip-pyramid-selftest-blit");
-          rd.vertex.module = shaderMod;
-          rd.vertex.entryPoint = sv("vs");
-          rd.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-          rd.primitive.frontFace = WGPUFrontFace_CCW;
-          rd.primitive.cullMode = WGPUCullMode_None;
-          rd.multisample.count = 1;
-          rd.multisample.mask = 0xFFFFFFFF;
-          rd.fragment = &fs;
-          WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(gpu.device, &rd);
-          wgpuShaderModuleRelease(shaderMod);
-          check(pipeline != nullptr, "runMipPyramidTest: blit render pipeline builds");
+        if (pipeline) {
+          constexpr uint32_t kTargetSize = 64;  // comfortably covers rect (32x32 at zoom=0.25)
+          auto sampleAt = [&](const std::vector<float>& px, uint32_t x, uint32_t y) {
+            const size_t i = (static_cast<size_t>(y) * kTargetSize + x) * 4;
+            return std::array<float, 4>{px[i], px[i + 1], px[i + 2], px[i + 3]};
+          };
+          auto pixNear = [&](std::array<float, 4> a, std::array<float, 4> b, const char* what) {
+            check(near(a[0], b[0], kTol) && near(a[1], b[1], kTol) && near(a[2], b[2], kTol) &&
+                      near(a[3], b[3], kTol),
+                  what);
+          };
+          const uint32_t sx = static_cast<uint32_t>(rect.min.x) + 2;
+          const uint32_t sy = static_cast<uint32_t>(rect.min.y) + 2;
 
-          if (pipeline) {
-            constexpr uint32_t kTargetSize = 64;  // comfortably covers rect (32x32 at zoom=0.25)
-            auto sampleAt = [&](const std::vector<float>& px, uint32_t x, uint32_t y) {
-              const size_t i = (static_cast<size_t>(y) * kTargetSize + x) * 4;
-              return std::array<float, 4>{px[i], px[i + 1], px[i + 2], px[i + 3]};
-            };
-            auto pixNear = [&](std::array<float, 4> a, std::array<float, 4> b, const char* what) {
-              check(near(a[0], b[0], kTol) && near(a[1], b[1], kTol) && near(a[2], b[2], kTol) &&
-                        near(a[3], b[3], kTol),
-                    what);
-            };
-            const uint32_t sx = static_cast<uint32_t>(rect.min.x) + 2;
-            const uint32_t sy = static_cast<uint32_t>(rect.min.y) + 2;
-
-            std::vector<float> levelPixels;
-            const bool levelReadOk = blitPipelineRenderAndReadback(
-                gpu, pipeline, it->second.levelViews[static_cast<size_t>(level)], rect,
-                kTargetSize, levelPixels);
-            check(levelReadOk, "runMipPyramidTest: offscreen render of the level-2 view reads "
-                               "back");
-            if (levelReadOk) {
-              pixNear(sampleAt(levelPixels, sx, sy), {0.5f, 0.5f, 0.0f, 1.0f},
-                     "runMipPyramidTest: rendered pixels match level 2's known downsampled "
-                     "colour (uniform 0.5/0.5/0/1), proving level selection reached the real "
-                     "GPU draw path");
-            }
-
-            // Contrast check: the exact same screen rect, rendered from
-            // level 0's own single-level view instead, reads back a pure
-            // checkerboard colour at this texel -- never the level-2 grey
-            // -- so the level-2 result above is not a value level 0 could
-            // have produced by coincidence. textureLoad is a point sample
-            // (no bilinear filtering), so whichever texel the pixel-centre
-            // arithmetic actually lands on, the value it reads is always
-            // *exactly* pure red or pure green, never a blend -- checked as
-            // "one of the two", not a specific one, so this doesn't depend
-            // on hand-tracking sub-pixel/texel-index arithmetic through the
-            // vertex shader's interpolation.
-            std::vector<float> level0Pixels;
-            const bool level0ReadOk = blitPipelineRenderAndReadback(
-                gpu, pipeline, it->second.levelViews[0], rect, kTargetSize, level0Pixels);
-            check(level0ReadOk,
-                  "runMipPyramidTest: offscreen render of level 0's own view reads back "
-                  "(contrast check)");
-            if (level0ReadOk) {
-              const std::array<float, 4> px = sampleAt(level0Pixels, sx, sy);
-              const bool isPureCheckerColor =
-                  (near(px[0], 1.0f, kTol) && near(px[1], 0.0f, kTol)) ||
-                  (near(px[0], 0.0f, kTol) && near(px[1], 1.0f, kTol));
-              check(isPureCheckerColor && near(px[2], 0.0f, kTol) && near(px[3], 1.0f, kTol),
-                    "runMipPyramidTest: the same screen rect rendered from level 0 instead "
-                    "reads a pure checkerboard colour (red or green), not level 2's grey -- "
-                    "the level-2 result above genuinely differs from level 0, not "
-                    "coincidentally equal");
-            }
-
-            wgpuRenderPipelineRelease(pipeline);
+          std::vector<float> levelPixels;
+          const bool levelReadOk = blitPipelineRenderAndReadback(
+              gpu, pipeline, gt.levelViews[static_cast<size_t>(level)], rect, kTargetSize,
+              levelPixels);
+          check(levelReadOk, "runMipPyramidTest: offscreen render of the level-2 view reads "
+                             "back");
+          if (levelReadOk) {
+            pixNear(sampleAt(levelPixels, sx, sy), {0.5f, 0.5f, 0.0f, 1.0f},
+                   "runMipPyramidTest: rendered pixels match level 2's known downsampled "
+                   "colour (uniform 0.5/0.5/0/1), proving level selection reached a real "
+                   "GPU draw");
           }
+
+          // Contrast check: the exact same screen rect, rendered from
+          // level 0's own single-level view instead, reads back a pure
+          // checkerboard colour at this texel -- never the level-2 grey
+          // -- so the level-2 result above is not a value level 0 could
+          // have produced by coincidence. textureLoad is a point sample
+          // (no bilinear filtering), so whichever texel the pixel-centre
+          // arithmetic actually lands on, the value it reads is always
+          // *exactly* pure red or pure green, never a blend -- checked as
+          // "one of the two", not a specific one, so this doesn't depend
+          // on hand-tracking sub-pixel/texel-index arithmetic through the
+          // vertex shader's interpolation.
+          std::vector<float> level0Pixels;
+          const bool level0ReadOk = blitPipelineRenderAndReadback(
+              gpu, pipeline, gt.levelViews[0], rect, kTargetSize, level0Pixels);
+          check(level0ReadOk,
+                "runMipPyramidTest: offscreen render of level 0's own view reads back "
+                "(contrast check)");
+          if (level0ReadOk) {
+            const std::array<float, 4> px = sampleAt(level0Pixels, sx, sy);
+            const bool isPureCheckerColor =
+                (near(px[0], 1.0f, kTol) && near(px[1], 0.0f, kTol)) ||
+                (near(px[0], 0.0f, kTol) && near(px[1], 1.0f, kTol));
+            check(isPureCheckerColor && near(px[2], 0.0f, kTol) && near(px[3], 1.0f, kTol),
+                  "runMipPyramidTest: the same screen rect rendered from level 0 instead "
+                  "reads a pure checkerboard colour (red or green), not level 2's grey -- "
+                  "the level-2 result above genuinely differs from level 0, not "
+                  "coincidentally equal");
+          }
+
+          wgpuRenderPipelineRelease(pipeline);
         }
       }
     }
 
-    tv.release();
+    releaseGpuTile(gt);
   }
 
   std::printf("[selftest] mip pyramid %s\n", ok ? "PASS" : "FAIL");

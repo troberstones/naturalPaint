@@ -78,7 +78,6 @@ add_executable(naturalPaint
   app/selftest/Support.cpp
   app/selftest/TileResidency.cpp
   app/selftest/TileStore.cpp
-  app/selftest/TiledViewport.cpp
   app/selftest/ViewTransform.cpp
   app/Snapping.cpp
   app/StrokeBake.cpp
