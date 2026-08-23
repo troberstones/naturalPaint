@@ -58,12 +58,15 @@
 #
 #     `tools`' crop moved (sidequest/lucide-toolbox's single-column palette
 #     rebuild, docs/ui.md section 2) and was re-measured at its new geometry
-#     rather than assumed to inherit the old crop's zero: `measure 6` against
-#     the new 85x270 (22 950 px) region gave 5 pairwise comparisons, all
-#     0 mismatched px, max channel diff 0 -- still exact-zero, because it is
-#     still static chrome with no animation or GPU simulation behind it, the
-#     same property that makes toolbar/canvas exact. Threshold stays 0 on
-#     both criteria.
+#     rather than assumed to inherit the old crop's zero -- twice, in fact:
+#     once at kToolPaletteW=44 (85x270), and again at the corrected
+#     kToolPaletteW=64 (130x270, wide enough to still clear the palette's
+#     right edge plus its scrollbar at the new width). `measure 6` against
+#     the current 130x270 (35 100 px) region gave 5 pairwise comparisons,
+#     all 0 mismatched px, max channel diff 0 -- still exact-zero, because
+#     it is still static chrome with no animation or GPU simulation behind
+#     it, the same property that makes toolbar/canvas exact. Threshold
+#     stays 0 on both criteria.
 #   layers: magnitude 96, changed-px 64. The magnitude figure is derived
 #     from the 90-frame measurement's worst observed max channel diff (25),
 #     roughly 4x that as headroom against a residual animation-timing tail
@@ -142,22 +145,29 @@ view_names=(toolbar layers canvas tools)
 view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo")
 # `toolbar`'s height and `canvas`'s x moved -- **their reference PNGs did
 # not**. sidequest/lucide-toolbox's single-column palette narrowed
-# `kToolPaletteW` from 104 to 44 (docs/ui.md section 2), which moves
-# `ui/AtelierLayout.cpp`'s `canvasX` (= palette width + one rule) 60 logical
-# px to the left -- 120 physical px at this machine's 2x screenshot scale
-# (measured: `goldentool diff` against the untouched reference is exact-zero
-# at a 120px x-shift and at no other integer offset). Two of the four crops
-# reached into geometry that moved:
+# `kToolPaletteW` from 104 to 64 (docs/ui.md section 2 -- 64, not the 44 an
+# earlier revision of this branch shipped: that number missed that
+# `ImGuiStyle::WindowPadding` is 8px *per side* and left no room at all for
+# the tool grid's permanently-visible scrollbar, and rendered every icon
+# clipped in half; see ui/AtelierLayout.hpp's kToolPaletteW for the full
+# account), which moves `ui/AtelierLayout.cpp`'s `canvasX` (= palette width +
+# one rule) 40 logical px to the left -- 80 physical px at this machine's 2x
+# screenshot scale (measured: `goldentool diff` against the untouched
+# reference is exact-zero at an 80px x-shift and at no other integer offset).
+# Two of the four crops reached into geometry that moved:
 #   * `canvas` sat at x=1024, deep enough into the canvas region that the
-#     120px shift is entirely inside the visible paint gradient -- shifted
-#     to x=904 to look at the *same document pixels* again. Re-derived by
-#     bisection against the untouched tests/golden/canvas.png, not guessed.
+#     80px shift is entirely inside the visible paint gradient -- shifted to
+#     x=944 to look at the *same document pixels* again. Re-derived by
+#     bisection against the untouched tests/golden/canvas.png, not guessed
+#     (and re-derived a second time, from x=904, when kToolPaletteW's own
+#     value corrected from 44 to 64).
 #   * `toolbar` sat at y=77..252 (h=175), and rows 244-252 dipped into the
 #     tool palette's new top edge (single-column now, so its first cell is a
 #     different tool than the old grid's) -- trimmed to h=166 so the crop
-#     stays inside the options bar, which the palette-width change does not
-#     touch. 167 is the exact boundary (measured the same way); 166 leaves a
-#     1px margin.
+#     stays inside the options bar, which the palette-*width* change does
+#     not touch (confirmed unchanged by the kToolPaletteW 44->64 correction:
+#     167 is still the exact boundary, because it depends only on the title/
+#     tab-strip/options-bar heights above the palette, not its width).
 #
 # `canvas.png` was **not** touched -- `cmp` against `git show
 # HEAD:tests/golden/canvas.png` confirms it is still byte-identical to
@@ -175,9 +185,9 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # exact-zero against that trim. `tools.png` is the only reference this
 # branch actually re-renders from a live capture, because the tool palette
 # is the only thing it redesigns.
-view_crop_x=(0    1916 904  0)
+view_crop_x=(0    1916 944  0)
 view_crop_y=(77   1075 973  228)
-view_crop_w=(1400 640  384  85)
+view_crop_w=(1400 640  384  130)
 view_crop_h=(166  190  256  270)
 view_frames=(90 90 90 90)
 view_threshold=(0 96 0 0)

@@ -1,6 +1,8 @@
 #pragma once
 #include <cstddef>
 
+#include "ui/AtelierTheme.hpp"  // kWindowPaddingX, kScrollbarSize -- see kToolPaletteW below
+
 // ui/AtelierLayout -- docs/ui.md section 2's window layout, as arithmetic.
 //
 // The ASCII diagram in that section is dimensioned, and those dimensions are
@@ -11,11 +13,15 @@
 // column and a 62 px swatch strip along the bottom that the design does not
 // have at all.
 //
-// Deliberately free of ImGui: the geometry is the part worth testing, and a
-// test that needs a window, a device and a font atlas to check that four bands
-// tile a rectangle is a test nobody runs. `--selftest` computes layouts at
-// several window sizes and asserts they tile exactly, with no ImGui context
-// anywhere near it.
+// Deliberately free of ImGui itself: the geometry is the part worth testing,
+// and a test that needs a window, a device and a font atlas to check that
+// four bands tile a rectangle is a test nobody runs. `--selftest` computes
+// layouts at several window sizes and asserts they tile exactly, with no
+// ImGui context anywhere near it. It depends on ui/AtelierTheme.hpp, which
+// is under the same rule (`#include <cstdint>` and nothing else) -- that is
+// what lets kToolPaletteW below reference the *actual* WindowPadding/
+// ScrollbarSize the live ImGuiStyle uses, rather than a second, hand-copied
+// pair of literals.
 namespace np {
 
 struct AtelierRect {
@@ -27,8 +33,8 @@ struct AtelierRect {
 };
 
 // docs/ui.md section 2. The trailing numbers in the diagram are heights; the
-// two under it (44, 322) are the column widths -- kToolPaletteW is defined
-// just below, next to the arithmetic that produces its 44.
+// two under it (64, 322) are the column widths -- kToolPaletteW is defined
+// just below, next to the arithmetic that produces its 64.
 constexpr float kTitleBarH   = 36.0f;
 constexpr float kTabStripH   = 34.0f;
 constexpr float kOptionsBarH = 46.0f;
@@ -41,18 +47,50 @@ constexpr float kRightColumnW = 322.0f;
 // new number). Lucide's icons are asked for at 15px (this build's own
 // spec line, ui/Fonts.hpp's kToolIconSizePx); 36px gives that glyph a
 // comfortable click target -- close to Photoshop's own single-column tool
-// rail -- and 8px of it is the palette's left/right padding, split evenly,
-// the same accounting the old 2-wide comment used for its own 4px.
+// rail.
 //
 // A single column this narrow cannot show 27 cells plus the FG swatch in
 // the ~900px the mid row leaves at the design's own 1024px window height
 // (27 * 36 = 972, before separators and the swatch), so the palette
-// **scrolls** -- docs/ui.md section 2 already said it would, for exactly
-// this reason, before there were enough tools to require it.
+// **scrolls, permanently** -- not "occasionally, on a short window": 27
+// cells at 36px is taller than every window size app/selftest/
+// AtelierChrome.cpp's own layout test tries, so the vertical scrollbar is
+// always on screen and its width is not optional headroom, it is part of
+// what the palette has to fit inside.
+//
+// **`kToolPaletteW` has to be wide enough for a whole cell to survive
+// `ImGui::BeginChild()`'s own padding and that permanent scrollbar**, not
+// merely wide enough that `kToolCellSize` is textually smaller than the
+// outer window rect -- the version of this file that shipped
+// `kToolPaletteW = kToolCellSize + 8` satisfied exactly that weaker,
+// wrong claim (an outer-rect check with an 8px fudge that was actually
+// *half* of one side's WindowPadding) while the real content region was
+// `36 - 2*8 - 12 = 4px`, and every icon rendered clipped to a sliver --
+// found by a screenshot, not by the static_assert below, because that
+// static_assert was checking the outer rect too.
+//
+//     content width = paletteW - 2*WindowPadding.x - ScrollbarSize
+//                    = paletteW - 2*kWindowPaddingX - kScrollbarSize
+//
+// kWindowPaddingX and kScrollbarSize (ui/AtelierTheme.hpp) are what
+// `ui/AtelierTheme.cpp`'s `applyAtelierTheme()` actually assigns to
+// `ImGuiStyle::WindowPadding`/`::ScrollbarSize` -- the same two numbers,
+// not a second pair of literals that could drift from them -- so this
+// formula is the one Dear ImGui's own layout code is, in fact, applying to
+// every window this build creates, including the palette's.
+//
+// 64 is chosen, not derived, specifically so the static_assert below is a
+// real check rather than an identity: it is the smallest round number that
+// clears the minimum (36 + 2*8 + 12 = 64 exactly, so there is no slack left
+// to spend on anything else, which is honest about how tight a
+// single-column palette at this cell size actually is).
 constexpr float kToolCellSize = 36.0f;
-constexpr float kToolPaletteW = kToolCellSize + 8.0f;
-static_assert(kToolCellSize <= kToolPaletteW,
-              "docs/ui.md section 2: a single-column cell has to fit the palette it sits in");
+constexpr float kToolPaletteW = 64.0f;
+static_assert(kToolPaletteW >= kToolCellSize + 2.0f * kWindowPaddingX + kScrollbarSize,
+              "docs/ui.md section 2: a tool cell has to fit the palette's *content* region "
+              "-- width minus WindowPadding on both sides minus the permanently-visible "
+              "scrollbar -- not merely the outer window rect. See this constant's own "
+              "comment for the screenshot-only regression that the weaker check let ship.");
 
 // The six regions of docs/ui.md section 2, plus the rules between them.
 //

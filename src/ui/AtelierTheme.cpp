@@ -56,11 +56,16 @@ void applyAtelierTheme() {
   s.PopupBorderSize = kDividerThickness;
   s.TabBorderSize = 0.0f;
 
-  s.WindowPadding = ImVec2(8, 8);
+  // kWindowPaddingX/kScrollbarSize (this file's own header) are the same two
+  // numbers a window's content-width arithmetic reads elsewhere
+  // (ui/AtelierLayout.hpp's kToolPaletteW) -- not a second, coincidentally-
+  // equal pair of literals. See that header's comment for the defect that
+  // duplication produced once.
+  s.WindowPadding = ImVec2(kWindowPaddingX, 8);
   s.FramePadding = ImVec2(8, 5);
   s.ItemSpacing = ImVec2(6, 6);
   s.ItemInnerSpacing = ImVec2(6, 4);
-  s.ScrollbarSize = 12.0f;
+  s.ScrollbarSize = kScrollbarSize;
   s.GrabMinSize = 10.0f;
 
   ImVec4* c = s.Colors;

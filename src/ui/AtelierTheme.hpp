@@ -64,6 +64,27 @@ static_assert(kOnAccent == kChromeDeep, "on-accent foreground is the chrome-deep
 constexpr float kRuleThickness    = 2.0f;
 constexpr float kDividerThickness = 1.0f;
 
+// `ImGuiStyle::WindowPadding` and `::ScrollbarSize`, named and shared here
+// rather than left as literals inside `applyAtelierTheme()`'s body and
+// duplicated as a second literal wherever a window's *content* width has to
+// be computed ahead of time. That duplication is a real defect this project
+// shipped once already: `ui/AtelierLayout.hpp`'s tool-palette width was
+// sized as `kToolCellSize + 8`, which is `kToolCellSize` plus *half* of
+// `WindowPadding` (8px is per side, 16px total) and none of `ScrollbarSize`
+// -- a 36px icon drawn into a palette whose real content region was 16px
+// wide, sliced in half, caught by a screenshot rather than by anything that
+// runs in `--selftest`. `applyAtelierTheme()` now assigns
+// `ImGuiStyle::WindowPadding`/`::ScrollbarSize` *from* these two constants
+// rather than from separate literals, so the two cannot drift apart again by
+// construction; `ui/AtelierLayout.hpp`'s `kToolPaletteW` is checked against
+// them by a `static_assert`, and `app/selftest/AtelierChrome.cpp` checks the
+// same thing again against a live `ImGuiStyle` and a real
+// `BeginChild()`/`GetContentRegionAvail()`, because a hand-derived formula
+// agreeing with itself is not evidence that Dear ImGui's own layout code
+// agrees with it too.
+constexpr float kWindowPaddingX = 8.0f;
+constexpr float kScrollbarSize  = 12.0f;
+
 // The canvas surround -- and the one token that is deliberately NOT taken
 // from the design.
 //

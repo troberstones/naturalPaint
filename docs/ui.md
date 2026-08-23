@@ -62,9 +62,17 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 > it as a **single column** of ~26/27 tools, grouped by thin rules, with the selected tool
 > drawn on the accent colour and Lucide glyphs at 15px, one per tool. The diagram and the
 > prose below are updated to match; ui/AtelierLayout.hpp's `kToolPaletteW`/`kToolCellSize`
-> carry the arithmetic (36px cells, 44px palette) and `--selftest`'s atelier-chrome
-> section asserts the new number against this diagram, the same way it always asserted
-> the old one.
+> carry the arithmetic (36px cells, 64px palette -- a cell plus `ImGuiStyle::WindowPadding`
+> on both sides plus the tool grid's permanently-visible scrollbar, not merely "a cell plus
+> a little") and `--selftest`'s atelier-chrome section asserts the new number against this
+> diagram, the same way it always asserted the old one -- including, now, against a *live*
+> `ImGui::GetContentRegionAvail()` inside a real scrolling child, not only against a
+> hand-derived formula for what one should be. An earlier revision of this branch shipped
+> `kToolPaletteW = kToolCellSize + 8`, which is a cell plus *half* of one side's
+> `WindowPadding` and none of the scrollbar's width -- every icon rendered clipped in
+> half, found by a screenshot rather than by that revision's own (vacuous)
+> `static_assert`. See ui/AtelierLayout.hpp's `kToolPaletteW` for the fix and
+> ui/AtelierTheme.hpp for the shared constants that make it hold.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -83,7 +91,7 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 ├───┴──────────────────────────────────────────────┴──────────┤
 │ 64% │ 2048×1536 · LIN16 │ 214 MB / 512 MB │ Clone source…  │ 26
 └────────────────────────────────────────────────────────────┘
-  44                                                    322
+  64                                                    322
 ```
 
 Tool cells are **36px in a single column** — the design's own layout, close to

@@ -2,6 +2,7 @@
 
 #include "app/AppState.hpp"
 #include "color/Space.hpp"
+#include "imgui.h"
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
@@ -174,13 +175,16 @@ bool runAtelierChromeTest() {
     check(b.titleBar.h == kTitleBarH && kTitleBarH == 36.0f, "title bar is 36 px");
     check(b.optionsBar.h == kOptionsBarH && kOptionsBarH == 46.0f, "options bar is 46 px");
     check(b.statusBar.h == kStatusBarH && kStatusBarH == 26.0f, "status bar is 26 px");
-    // 44 px, not the outgoing chrome's 104: the supplied design redraws the
+    // 64 px, not the outgoing chrome's 104: the supplied design redraws the
     // palette as a single column (ui/AtelierLayout.hpp's own comment on
-    // kToolPaletteW has the arithmetic), so this checks against the *named
-    // constant* rather than a second copy of the literal -- docs/ui.md
-    // section 2 is where 44 is recorded as the number this build chose.
-    check(b.toolPalette.w == kToolPaletteW && kToolPaletteW == 44.0f,
-          "the tool palette is 44 px wide (a single column, docs/ui.md section 2)");
+    // kToolPaletteW has the arithmetic -- a cell plus WindowPadding on both
+    // sides plus the permanently-visible scrollbar, not the weaker "+8"
+    // that once shipped a palette whose real content region clipped every
+    // icon in half), so this checks against the *named constant* rather
+    // than a second copy of the literal -- docs/ui.md section 2 is where 64
+    // is recorded as the number this build chose.
+    check(b.toolPalette.w == kToolPaletteW && kToolPaletteW == 64.0f,
+          "the tool palette is 64 px wide (a single column, docs/ui.md section 2)");
     check(b.rightColumn.w == 322.0f, "the right column is 322 px wide");
     check(b.statusBar.bottom() == kH, "the status bar sits flush with the bottom edge");
     check(b.rightColumn.right() == kW, "the right column sits flush with the right edge");
@@ -407,6 +411,106 @@ bool runAtelierChromeTest() {
       check(codepointsMatch,
             "every icon name's codepoint matches third_party/lucide/codepoints.json exactly");
     }
+  }
+
+  // --- Part G: the palette's real, live content width ----------------------
+  //
+  // Part C's band-tiling arithmetic and ui/AtelierLayout.hpp's own
+  // static_assert both check `kToolPaletteW` against a *hand-derived*
+  // formula for what `ImGuiStyle::WindowPadding`/`::ScrollbarSize` leave
+  // behind -- and a formula agreeing with itself is not evidence that Dear
+  // ImGui's actual layout code agrees with it too. That gap is exactly how
+  // the previous version of this file shipped a palette whose cells
+  // rendered clipped in half: every number-only check passed, because none
+  // of them asked Dear ImGui what `GetContentRegionAvail()` actually is.
+  //
+  // So this one does: a real `ImGuiContext`, `applyAtelierTheme()`'s real
+  // style, a real window sized to `kToolPaletteW`, and a real
+  // `BeginChild()` forced to overflow (a 2000px dummy in a 100px child) so
+  // its vertical scrollbar is unambiguously on -- the same permanent state
+  // ui/MacPaintUI.cpp's tool grid is in with 27 cells (this constant's own
+  // comment says why it is permanent, not occasional). No swapchain and no
+  // real renderer backend -- layout (unlike rasterisation) needs neither,
+  // and `app/selftest/Fonts.cpp`'s Part C/D already establish that a
+  // headless `ImGuiContext` is fine for questions this suite can ask
+  // without a window -- but `NewFrame()` is used here for the first time in
+  // this suite, and it needs two things neither of those sections needed:
+  // `ImGuiBackendFlags_RendererHasTextures` (told this build's new dynamic
+  // font/texture system that *something* will rasterise glyphs on demand,
+  // since nothing here ever will -- omitting it is a hard
+  // `[imgui-error]`/SIGSEGV, found by running this section under `script`
+  // rather than a plain redirect, because a redirected run's stdout buffer
+  // never reached disk before the crash) and at least one font actually
+  // added to the atlas (`AddFontDefault()` -- `installUiFonts()` is not
+  // called here on purpose, so this section's answer is about the palette's
+  // geometry alone, not entangled with which system font happened to load).
+  {
+    ImGuiContext* previous = ImGui::GetCurrentContext();
+    ImGuiContext* context = ImGui::CreateContext();
+    ImGui::SetCurrentContext(context);
+    applyAtelierTheme();
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(400.0f, 400.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+    io.Fonts->AddFontDefault();
+    // main.cpp's own reason applies here too: "the layout is fixed; don't
+    // persist window state" -- without this, a fresh ImGuiContext's default
+    // ini path writes an `imgui.ini` into whatever the test binary's current
+    // working directory happens to be, a side effect this section has no
+    // business having.
+    io.IniFilename = nullptr;
+
+    // **Two frames, not one, and the first measurement is thrown away.**
+    // Found by deliberately breaking `s.ScrollbarSize` (set it to a
+    // hardcoded 30 instead of reading `kScrollbarSize`, simulating the
+    // exact drift this section exists to catch) and watching the
+    // measurement below stay at 48 either way: a *new* child window does
+    // not yet know it will overflow while its first frame's content is
+    // still being submitted, so `GetContentRegionAvail()` mid-frame-1
+    // reports as if no scrollbar will appear at all, and only reserves the
+    // scrollbar's width starting the frame *after* the overflow was
+    // observed -- an ImGui behaviour, not a defect in this test, but one
+    // that made frame 1 blind to exactly the number this section is
+    // supposed to verify. `ui/MacPaintUI.cpp`'s real palette runs at 60+
+    // fps, so it is always well past frame 1 -- the screenshot that found
+    // the original clipping bug was frame 90. Frame 2's measurement is
+    // what actually moved when `kScrollbarSize` was perturbed (confirmed
+    // the same way: 12 -> 30 changed the frame-2 number, not the frame-1
+    // one), which is the proof this loop is asking the question it claims
+    // to.
+    float contentWidth = -1.0f;
+    for (int frame = 0; frame < 2; ++frame) {
+      ImGui::NewFrame();
+      ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+      ImGui::SetNextWindowSize(ImVec2(kToolPaletteW, 200.0f));
+      if (ImGui::Begin("##paletteContentWidthProbe", nullptr,
+                       ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                           ImGuiWindowFlags_NoScrollbar)) {
+        // 100px child, 2000px of content -- more overflow than any real
+        // window size could absorb, so the scrollbar is on regardless of
+        // the host machine's font metrics or DPI.
+        if (ImGui::BeginChild("##paletteGridProbe", ImVec2(0.0f, 100.0f))) {
+          ImGui::Dummy(ImVec2(1.0f, 2000.0f));
+          if (frame == 1) contentWidth = ImGui::GetContentRegionAvail().x;
+        }
+        ImGui::EndChild();
+      }
+      ImGui::End();
+      ImGui::EndFrame();
+    }
+
+    std::printf("  [measured] live GetContentRegionAvail().x inside the scrolling tool grid "
+                "= %.1f px (kToolCellSize = %.1f)\n",
+                contentWidth, kToolCellSize);
+    check(contentWidth >= kToolCellSize,
+          "a real ImGui window/child at kToolPaletteW leaves room for a whole tool cell, "
+          "scrollbar included -- not just kToolCellSize <= kToolPaletteW on paper");
+
+    ImGui::DestroyContext(context);
+    ImGui::SetCurrentContext(previous);
   }
 
   std::printf("[selftest] atelier chrome %s\n", ok ? "PASS" : "FAIL");
