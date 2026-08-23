@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <optional>
 
 #include "core/Pigment.hpp"
 #include "core/TileStore.hpp"
@@ -194,6 +195,37 @@ bool selectionSelectsNothing(const Selection& selection) noexcept;
 // Empty or inverted rectangles produce a selection with no tiles, which is
 // `selectionSelectsNothing()` -- not an error, and not "select everything".
 Selection selectRectangle(float x0, float y0, float x1, float y1);
+
+// The tightest document-texel rectangle containing every selected texel, or
+// `std::nullopt` when nothing is selected. `x1`/`y1` are exclusive, so an
+// empty rectangle and a one-texel one are distinguishable.
+//
+// For DRAWING the selection. It is the true bounds, which is exact for a
+// rectangular marquee and merely a bounding box for anything else -- so when
+// lasso and wand land (PRD E3) and PRD E6's marching ants have to trace a real
+// boundary, this is not the function that will do it. Named here rather than
+// discovered then.
+//
+// O(selected tiles x texels), so a caller that draws every frame should cache
+// the answer and recompute it when the selection changes rather than calling
+// this from a render loop.
+struct SelectionBounds {
+  int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  int32_t width() const noexcept { return x1 - x0; }
+  int32_t height() const noexcept { return y1 - y0; }
+};
+std::optional<SelectionBounds> selectionBounds(const Selection& selection);
+
+// A selection covering the whole of a `width` x `height` document -- what
+// Select All makes.
+//
+// Deliberately a real selection rather than `std::nullopt`, even though the
+// two behave identically for every edit (both mean "no restriction"). The
+// difference is that the user asked for one and must be able to see it: PRD
+// E6's marching ants need a boundary to draw, and "Deselect" needs something
+// to remove. So Select All and Deselect are distinguishable states that do the
+// same thing to pixels, which is exactly how every editor behaves.
+Selection selectAll(int32_t width, int32_t height);
 
 // --- Editing through a selection ------------------------------------------
 

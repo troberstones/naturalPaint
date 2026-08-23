@@ -5,13 +5,14 @@
 # screen-recording permission, exact rendered pixels -- see that header for
 # why). This script is the missing other half: it drives the app through a
 # handful of known, scripted UI states via its existing --demo-document /
-# --ui-layer-demo / --pigment-stroke-demo CLI flags, crops each capture down
+# --ui-layer-demo / --pigment-stroke-demo / --marquee-demo CLI flags, crops
+# each capture down
 # to one small region, and compares it against a reference image committed
 # under tests/golden/ with src/tools/GoldenTool.cpp.
 #
 # Written against bash 3.2 (macOS's /bin/bash) deliberately -- no namerefs,
-# no associative arrays -- so views are three parallel indexed arrays below
-# rather than one table keyed by name.
+# no associative arrays -- so views are parallel indexed arrays below rather
+# than one table keyed by name.
 #
 # NOT run by --selftest, and not wired into any CI (this project has none).
 # It needs a real window and a real GPU adapter, which --selftest's headless
@@ -105,21 +106,42 @@ measure_n="${2:-10}"
 #     --pigment-stroke-demo (PLAN.md's own Phase 5 verify sentence: latent
 #     Mix of blue over yellow gives green). Canvas: real simulated paint
 #     content, not just a static composited rectangle.
-view_names=(toolbar layers canvas)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo")
-view_crop_x=(0    1916 1024)
-view_crop_y=(77   1075 973)
-view_crop_w=(1400 640  384)
-view_crop_h=(175  190  256)
-view_frames=(90 90 90)
-view_threshold=(0 96 0)
+#   tools  -- the whole 2-column tool palette under --demo-document
+#     --marquee-demo, with Rectangle Marquee selected so both the glyph and
+#     the selected-button treatment are in frame. Every tool's icon is drawn
+#     by hand into an ImDrawList (ui/MacPaintUI's drawToolIcon), so a tool
+#     added without a glyph renders as a bare square and nothing else in this
+#     project notices -- which is exactly what happened when Tool::Marquee
+#     landed. This view is the thing that would have noticed.
+#
+#     **The marching ants are deliberately NOT a golden view**, though
+#     --marquee-demo draws them a few hundred pixels to the right of this
+#     crop. Their dash phase advances on `ImGui::GetTime()` -- wall clock, so
+#     the ants are at a different phase at frame 90 on every launch, by
+#     design (they crawl at the same speed at 30 fps and 120). A tolerance
+#     wide enough to admit an arbitrary phase would admit almost any change
+#     to that boundary, so it would be a test in name only. The ants are
+#     verified by screenshot instead, and the palette -- which is static -- is
+#     what gets locked at byte equality.
+view_names=(toolbar layers canvas tools)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo")
+view_crop_x=(0    1916 1024 8)
+view_crop_y=(77   1075 973  250)
+view_crop_w=(1400 640  384  216)
+view_crop_h=(175  190  256  450)
+view_frames=(90 90 90 90)
+view_threshold=(0 96 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # toolbar/canvas are 0 because their magnitude threshold is 0 -- there the
 # two criteria say the same thing. `layers` is 64: the 90-frame measurement's
 # worst observed count was 14 changed px of 121 600, so this is ~4.5x that,
 # and still 1400x below the 92 516 px that the diffuse-shift test moved.
-view_max_changed_px=(0 64 0)
+# `tools` is 0 for the same reason as toolbar/canvas: it is static chrome
+# with no animation and no simulation behind it, so anything but byte
+# equality is a real change. Confirmed by `measure`, not assumed -- see the
+# note in cmd_measure on what that mode is for.
+view_max_changed_px=(0 64 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

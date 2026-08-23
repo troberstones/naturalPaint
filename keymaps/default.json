@@ -16,6 +16,15 @@
     { "key": "R", "mods": ["Shift"], "action": "reset_rotation" },
     { "key": "Y", "mods": ["Cmd"], "action": "toggle_grayscale" },
 
+    { "key": "A", "mods": ["Cmd"], "action": "select_all" },
+    { "key": "D", "mods": ["Cmd"], "action": "deselect" },
+    { "key": "C", "mods": ["Cmd"], "action": "copy" },
+    { "key": "C", "mods": ["Cmd", "Shift"], "action": "copy_merged" },
+    { "key": "X", "mods": ["Cmd"], "action": "cut" },
+    { "key": "V", "mods": ["Cmd"], "action": "paste" },
+    { "key": "Backspace", "action": "delete_selection" },
+    { "key": "Delete", "action": "delete_selection" },
+
     { "key": ";", "mods": ["Cmd"], "action": "toggle_guides" },
     { "key": ";", "mods": ["Cmd", "Shift"], "action": "toggle_snapping" },
     { "key": "'", "mods": ["Cmd"], "action": "toggle_grid" },

@@ -10,6 +10,7 @@
 #include "core/Document.hpp"
 #include "core/History.hpp"
 #include "core/LayerOps.hpp"
+#include "core/SelectionMask.hpp"
 #include "io/NpaintFile.hpp"
 #include "io/TileResidency.hpp"
 
@@ -202,6 +203,24 @@ struct OpenDocument {
   DocumentId id = 0;
 
   Document document;
+
+  // The active selection, or `std::nullopt` for "no restriction" (see
+  // core/SelectionMask.hpp -- absent is NOT "select nothing").
+  //
+  // On the OpenDocument rather than inside `Document`, deliberately. A
+  // selection is per-document but it is **session state, not document data**:
+  // io/NpaintFile does not save it (PRD E11, "a selection can be saved into
+  // the document and restored", is P1 and not built), and putting it in
+  // `Document` would put it in `History`'s snapshots -- so every undo would
+  // restore a marquee along with the pixels, and drawing a marquee would be an
+  // undoable act. Neither is what an editor does.
+  std::optional<Selection> selection;
+
+  // Bumped whenever `selection` changes. ui/MacPaintUI caches the selection's
+  // drawn bounds against this, and PaintSim's GPU coverage upload is keyed on
+  // it too -- both are expensive enough that "has it changed?" needs an O(1)
+  // answer.
+  uint64_t selectionRevision = 0;
 
   // PRD I10's carry bag, kept beside the document exactly as
   // io/NpaintFile.hpp requires ("loadNpaint() returns one, saveNpaint()

@@ -125,6 +125,7 @@ const char* toolName(Tool t) {
     case Tool::Water:      return "Water";
     case Tool::DryBrush:   return "Dry Brush";
     case Tool::Eyedropper: return "Eyedropper";
+    case Tool::Marquee:    return "Rectangle Marquee";
     case Tool::Hand:       return "Hand";
     case Tool::Zoom:       return "Zoom";
     case Tool::Count:      break;

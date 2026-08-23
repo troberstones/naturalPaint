@@ -972,6 +972,7 @@ int main(int argc, char** argv) {
   size_t compsDemoRestore = 0;
   bool compsDemoDrop = false;
   bool uiLayerDemo = false;
+  bool marqueeDemo = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
@@ -1045,6 +1046,14 @@ int main(int argc, char** argv) {
         compsDemoDrop = true;
         ++i;
       }
+    } else if (a == "--marquee-demo") {
+      // Phase 7: installs a rectangular selection so the marching ants and
+      // the selected region can be photographed (app/Screenshot). There is no
+      // other way to get a selection on screen without a human dragging one,
+      // and a feature that can only be verified by a human is one that
+      // silently rots -- the same argument app/Screenshot.hpp makes for
+      // photographing the swapchain at all.
+      marqueeDemo = true;
     } else if (a == "--ui-layer-demo") {
       // UI detour step 3: build a stack through the layer editor's own
       // commands. See runUiLayerDemo(). `noclip` runs the same script without
@@ -1791,6 +1800,18 @@ int main(int argc, char** argv) {
   if (uiLayerDemo) {
     if (np::OpenDocument* od = st.documents.active()) runUiLayerDemo(*od, uiLayerDemoClip);
   }
+  if (marqueeDemo) {
+    if (np::OpenDocument* od = st.documents.active()) {
+      // Inset from the canvas edges on all four sides so every side of the
+      // boundary is visible against paper, and deliberately NOT tile-aligned
+      // (the canvas is 1024 and the tiles are 128) so the drawn rectangle is
+      // the selection's true bounds rather than a tile grid.
+      od->selection = np::selectRectangle(180.0f, 150.0f, 700.0f, 560.0f);
+      ++od->selectionRevision;
+      st.brush.tool = np::Tool::Marquee;
+      std::printf("[marquee-demo] selection installed: 180,150 -> 700,560\n");
+    }
+  }
   // After both fixtures, deliberately: a merge is applied to whatever stack
   // the flags before it built, which is what makes the before/after pair a
   // pair.
@@ -1917,10 +1938,11 @@ int main(int argc, char** argv) {
         // discrete key-down); MacPaintUI.cpp's canvas block reads that key's
         // live held-state directly instead. See that file's comment at its
         // `rotateHeld` local for the full reasoning. `⌘⌥0` "zoom to
-        // selection" (PRD Q1) is also deliberately absent -- there is no
-        // selection/mask concept anywhere in this codebase yet (that's
-        // phase 7, PRD E1); binding it now would mean inventing fake
-        // selection state just to give the key something to do.
+        // selection" (PRD Q1) is still absent, but the reason has changed
+        // and is restated rather than left standing untrue: selection state
+        // now EXISTS (core/SelectionMask; ⌘A/⌘D/⌘C/⌘X/⌘V are bound just
+        // below). What is missing is the view maths to frame an arbitrary
+        // rectangle, which belongs with the other view commands.
         else if (action == "fit_window") st.requestFitWindow = true;
         else if (action == "zoom_100") st.requestZoom100 = true;
         else if (action == "zoom_in") st.requestZoomIn = true;
@@ -1929,6 +1951,16 @@ int main(int argc, char** argv) {
         else if (action == "mirror_y") st.view.mirrorY = !st.view.mirrorY;
         else if (action == "reset_rotation") st.view.rotation = 0.0f;
         else if (action == "toggle_grayscale") st.view.grayscale = !st.view.grayscale;
+        // PLAN.md Phase 7 (PRD E1-E3, M1-M5). Request flags for the same
+        // reason the zoom commands are: acting on a selection needs the
+        // active OpenDocument and the sim, which are drawUI()'s to reach.
+        else if (action == "select_all") st.requestSelectAll = true;
+        else if (action == "deselect") st.requestDeselect = true;
+        else if (action == "copy") st.requestCopy = true;
+        else if (action == "copy_merged") st.requestCopyMerged = true;
+        else if (action == "cut") st.requestCut = true;
+        else if (action == "paste") st.requestPaste = true;
+        else if (action == "delete_selection") st.requestDeleteSelection = true;
         // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping",
         // PRD Q5-Q7): guides/snapping/grid toggles, matching
         // docs/shortcuts.md section 3's Cmd+; / Cmd+Shift+; / Cmd+'.

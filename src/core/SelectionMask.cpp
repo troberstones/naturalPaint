@@ -76,6 +76,37 @@ Selection selectRectangle(float x0, float y0, float x1, float y1) {
   return out;
 }
 
+std::optional<SelectionBounds> selectionBounds(const Selection& selection) {
+  bool any = false;
+  SelectionBounds b;
+  for (const auto& [coord, tile] : selection.tiles) {
+    const PixelCoord origin = tileOrigin(coord);
+    for (int32_t ly = 0; ly < kTileSize; ++ly) {
+      for (int32_t lx = 0; lx < kTileSize; ++lx) {
+        if (tile.coverageAt(PixelCoord{lx, ly}) <= 0.0f) continue;
+        const int32_t x = origin.x + lx;
+        const int32_t y = origin.y + ly;
+        if (!any) {
+          b.x0 = x; b.y0 = y; b.x1 = x + 1; b.y1 = y + 1;
+          any = true;
+          continue;
+        }
+        b.x0 = std::min(b.x0, x);
+        b.y0 = std::min(b.y0, y);
+        b.x1 = std::max(b.x1, x + 1);
+        b.y1 = std::max(b.y1, y + 1);
+      }
+    }
+  }
+  if (!any) return std::nullopt;
+  return b;
+}
+
+Selection selectAll(int32_t width, int32_t height) {
+  if (width <= 0 || height <= 0) return Selection{};
+  return selectRectangle(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
+}
+
 size_t clearThroughSelection(TileStore& tiles, const Selection* selection) {
   size_t changed = 0;
 

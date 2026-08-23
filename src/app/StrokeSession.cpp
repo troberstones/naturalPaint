@@ -23,6 +23,7 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     case Tool::Water:
       return StrokeRoute::PaintSim;
     case Tool::Eyedropper:
+    case Tool::Marquee:
     case Tool::Hand:
     case Tool::Zoom:
     case Tool::Count:
@@ -44,6 +45,7 @@ const char* strokeEditLabel(Tool tool) noexcept {
     case Tool::DryBrush: return "dry brush stroke";
     case Tool::Water: return "water stroke";
     case Tool::Eyedropper:
+    case Tool::Marquee:
     case Tool::Hand:
     case Tool::Zoom:
     case Tool::Count:

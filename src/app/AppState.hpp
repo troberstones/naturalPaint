@@ -7,6 +7,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
 #include "app/StrokeBake.hpp"
+#include "core/Clipboard.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "paint/Palette.hpp"
@@ -22,6 +23,10 @@ enum class Tool {
   Water,       // pre-wet the paper, no pigment
   DryBrush,    // little water, hard edge, pigment sits on the tooth
   Eyedropper,
+  // PRD E3's rectangle. The only selection tool that exists; lasso, polygon
+  // lasso, ellipse and magic wand are the rest of E3 (P1) and are absent
+  // rather than stubbed, the same way this enum already omits text.
+  Marquee,
   Hand,
   Zoom,
   Count
@@ -123,6 +128,49 @@ struct AppState {
   BrushState brush;
   CanvasView view;
   SimParams sim;
+
+  // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
+  //
+  // Request flags rather than direct action, for the reason the zoom commands
+  // already are: the key event arrives in main.cpp's SDL loop, and acting on a
+  // selection needs the active OpenDocument and the sim, which are drawUI()'s
+  // to reach. One place decides what a command means.
+  bool requestSelectAll = false;
+  bool requestDeselect = false;
+  bool requestCopy = false;
+  bool requestCopyMerged = false;
+  bool requestCut = false;
+  bool requestPaste = false;
+  bool requestDeleteSelection = false;
+
+  // The application's one clipboard (PRD M5). Holds copy-on-write tile
+  // references, so an idle clipboard after a full-document copy costs
+  // refcounts rather than the 68 MB a flattened 4K buffer would -- which is
+  // why it can simply live here rather than needing a purge command.
+  Clipboard clipboard;
+
+  // --- Marquee drag, in document texel space ------------------------------
+  //
+  // Live only between mouse-down and mouse-up on the canvas with Tool::Marquee
+  // selected. The selection itself lives on the OpenDocument (it is per
+  // document, not per app); this is just the rubber band.
+  bool marqueeDragging = false;
+  float marqueeX0 = 0.0f, marqueeY0 = 0.0f;
+  float marqueeX1 = 0.0f, marqueeY1 = 0.0f;
+
+  // Cached bounds of the active document's selection, for drawing. Recomputed
+  // only when the selection changes -- `selectionBounds()` walks every
+  // selected texel, which is not something to do per frame. `selectionRevision`
+  // is what says it is stale.
+  //
+  // Keyed on the document id as well as the revision, and that is not
+  // belt-and-braces: revisions start at 0 per document, so two open tabs sit
+  // at the same revision most of the time. Keying on the revision alone would
+  // draw one tab's ants over the other's canvas whenever the two numbers
+  // happened to agree, which is the common case rather than the rare one.
+  std::optional<SelectionBounds> selectionBoundsCache;
+  DocumentId cachedSelectionDoc = 0;
+  uint64_t cachedSelectionRevision = 0;
 
   // Stroke, in canvas texel space.
   float lastX = 0.0f, lastY = 0.0f;

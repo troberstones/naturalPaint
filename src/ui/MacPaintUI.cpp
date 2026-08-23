@@ -344,6 +344,25 @@ void drawToolIcon(ImDrawList* dl, Tool t, ImVec2 c, float s, ImU32 col) {
       dl->AddTriangleFilled(tip[0], tip[1], tip[2], col);
       break;
     }
+    case Tool::Marquee: {
+      // A dashed rectangle -- the marching ants themselves, at rest. Drawn as
+      // eight segments rather than an AddRect with a stroke pattern because
+      // ImDrawList has no dash support, and the same eight-segment shape is
+      // what drawMarchingAnts() animates on the canvas.
+      const float x0 = c.x - s * 0.36f, x1 = c.x + s * 0.36f;
+      const float y0 = c.y - s * 0.30f, y1 = c.y + s * 0.30f;
+      const float dx = (x1 - x0) / 5.0f;
+      const float dy = (y1 - y0) / 3.0f;
+      for (int i = 0; i < 5; i += 2) {
+        dl->AddLine(ImVec2(x0 + dx * i, y0), ImVec2(x0 + dx * (i + 1), y0), col, th);
+        dl->AddLine(ImVec2(x0 + dx * i, y1), ImVec2(x0 + dx * (i + 1), y1), col, th);
+      }
+      for (int i = 0; i < 3; i += 2) {
+        dl->AddLine(ImVec2(x0, y0 + dy * i), ImVec2(x0, y0 + dy * (i + 1)), col, th);
+        dl->AddLine(ImVec2(x1, y0 + dy * i), ImVec2(x1, y0 + dy * (i + 1)), col, th);
+      }
+      break;
+    }
     case Tool::Hand: {
       dl->AddRectFilled(ImVec2(c.x - s * 0.26f, c.y - s * 0.06f),
                         ImVec2(c.x + s * 0.26f, c.y + s * 0.40f), col);
@@ -577,6 +596,52 @@ void drawGridOverlay(ImDrawList* dl, const ViewTransform& xform, float texW, flo
     const Vec2 a = xform.toScreen(Vec2{0.0f, y});
     const Vec2 b = xform.toScreen(Vec2{texW, y});
     dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), col, 1.0f);
+  }
+}
+
+// PRD E6's marching ants, for an axis-aligned rectangle in document texel
+// space.
+//
+// Two passes rather than one: a solid dark line, then a light dashed line over
+// it with the gaps left open. That is what makes the boundary legible on both
+// a white canvas and dark paint -- a single-colour outline disappears against
+// one or the other, which is the reason real editors animate two tones rather
+// than drawing one dotted line.
+//
+// The phase advances with wall-clock time, so the ants crawl. `ImGui::GetTime()`
+// rather than a frame counter, so the speed is the same whether the app is
+// running at 30 or 120 fps.
+//
+// **Rectangles only.** The selection store is general (sparse coverage), but
+// the only constructor is `selectRectangle()`, so a rectangle is the only
+// boundary there is to draw. When lasso and wand land (PRD E3) this will need
+// a real boundary trace rather than a bounding box, and the bounding box would
+// then be actively wrong rather than merely approximate. Named here so that is
+// a known cost and not a surprise.
+void drawMarchingAnts(ImDrawList* dl, const ViewTransform& xform, float x0, float y0,
+                      float x1, float y1) {
+  const Vec2 c[4] = {xform.toScreen(Vec2{x0, y0}), xform.toScreen(Vec2{x1, y0}),
+                     xform.toScreen(Vec2{x1, y1}), xform.toScreen(Vec2{x0, y1})};
+  constexpr ImU32 kDark = IM_COL32(0, 0, 0, 190);
+  constexpr ImU32 kLight = IM_COL32(255, 255, 255, 230);
+  constexpr float kDash = 6.0f;
+  const float phase = static_cast<float>(std::fmod(ImGui::GetTime() * 18.0, kDash * 2.0));
+
+  for (int i = 0; i < 4; ++i) {
+    const ImVec2 a(c[i].x, c[i].y);
+    const ImVec2 b(c[(i + 1) % 4].x, c[(i + 1) % 4].y);
+    dl->AddLine(a, b, kDark, 1.0f);
+    const float dx = b.x - a.x, dy = b.y - a.y;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len <= 0.0f) continue;
+    const float ux = dx / len, uy = dy / len;
+    for (float t = -phase; t < len; t += kDash * 2.0f) {
+      const float s = std::max(t, 0.0f);
+      const float e = std::min(t + kDash, len);
+      if (e <= s) continue;
+      dl->AddLine(ImVec2(a.x + ux * s, a.y + uy * s), ImVec2(a.x + ux * e, a.y + uy * e),
+                  kLight, 1.0f);
+    }
   }
 }
 
@@ -2048,6 +2113,19 @@ void installHistoryCursor(OpenDocument& od, const HistoryPanelClick& r) {
   od.document = *r.document;
   ++od.revision;
   ++od.structuralRevision;
+}
+
+// One place that installs a selection, so the three things that must move
+// together cannot drift apart: the selection itself, the revision that tells
+// the cached bounds and the GPU coverage they are stale, and nothing else.
+//
+// A selection is deliberately NOT a history edit (see OpenDocument::selection
+// on why it lives outside `Document`): drawing a marquee is not an act to be
+// undone, and an undo that restored a marquee along with the pixels would
+// surprise anyone who has used an editor.
+void installSelection(OpenDocument& od, std::optional<Selection> selection) {
+  od.selection = std::move(selection);
+  ++od.selectionRevision;
 }
 
 // Undo-while-wet. The solver keeps a stroke that has not finished drying, and
@@ -4083,6 +4161,136 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.view.panY += d.y;
     }
 
+    // --- selection and clipboard commands (PRD M1-M5) ----------------------
+    //
+    // Serviced here rather than in main.cpp's key handler because every one of
+    // them needs the active OpenDocument, and several need the sim.
+    {
+      OpenDocument* od = st.documents.active();
+      Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
+
+      if (st.requestSelectAll && od != nullptr)
+        installSelection(*od, selectAll(od->document.width, od->document.height));
+      if (st.requestDeselect && od != nullptr) installSelection(*od, std::nullopt);
+
+      const Selection* sel =
+          (od != nullptr && od->selection.has_value()) ? &*od->selection : nullptr;
+
+      if (st.requestCopy && target != nullptr)
+        st.clipboard = copyThroughSelection(*target, sel);
+      if (st.requestCopyMerged && od != nullptr)
+        st.clipboard = copyMergedThroughSelection(od->document, sel);
+      if (st.requestCut && target != nullptr) {
+        Clipboard taken = cutThroughSelection(*target, sel);
+        // Only an actual cut is an edit. A refusal -- a locked layer, or a
+        // selection covering nothing -- must not put a history entry in for
+        // an act that changed no pixel.
+        if (!taken.empty()) {
+          st.clipboard = std::move(taken);
+          od->recordEdit("cut", EditKind::Content);
+        }
+      }
+      if (st.requestPaste && od != nullptr && !st.clipboard.empty()) {
+        // Above the active layer, which is where every editor puts it.
+        const size_t at = std::min(od->activeLayer + 1, od->document.layers.size());
+        if (pasteAsLayer(od->document, st.clipboard, at).has_value()) {
+          od->activeLayer = at;
+          od->recordEdit("paste", EditKind::Structural);
+        }
+      }
+      if (st.requestDeleteSelection && target != nullptr && !target->locked) {
+        size_t changed = 0;
+        if (target->rgbTiles.has_value())
+          changed += clearThroughSelection(*target->rgbTiles, sel);
+        if (target->pigmentTiles.has_value())
+          changed += clearThroughSelection(*target->pigmentTiles, sel);
+        if (changed > 0) od->recordEdit("clear selection", EditKind::Content);
+      }
+
+      st.requestSelectAll = false;
+      st.requestDeselect = false;
+      st.requestCopy = false;
+      st.requestCopyMerged = false;
+      st.requestCut = false;
+      st.requestPaste = false;
+      st.requestDeleteSelection = false;
+
+      // --- keep the cached bounds and the GPU coverage in step -------------
+      //
+      // Both are expensive enough to want an "has it changed?" test rather
+      // than a per-frame rebuild: selectionBounds() walks every selected
+      // texel, and setSelection() uploads a canvas-sized texture. The
+      // revision is that test.
+      //
+      // The sim upload is inside the same branch deliberately. It must ALSO
+      // happen when a sim is constructed mid-session, which is why the
+      // condition includes a sim that has not been told yet.
+      if (od != nullptr) {
+        const bool stale = od->selectionRevision != st.cachedSelectionRevision ||
+                           od->id != st.cachedSelectionDoc;
+        const bool simUninformed =
+            sim && od->selection.has_value() != sim->hasSelection();
+        if (stale || simUninformed) {
+          st.selectionBoundsCache = od->selection.has_value()
+                                        ? selectionBounds(*od->selection)
+                                        : std::nullopt;
+          if (sim) {
+            sim->setSelection(gpu, od->selection.has_value() ? &*od->selection : nullptr);
+          }
+          st.cachedSelectionRevision = od->selectionRevision;
+          st.cachedSelectionDoc = od->id;
+        }
+      }
+    }
+
+    // --- marquee (PRD E3's rectangle) --------------------------------------
+    //
+    // Rubber-banded in document texel space, committed on release. The
+    // selection is only built once, at mouse-up, rather than every frame of
+    // the drag: selectRectangle() allocates tiles, and rebuilding it 60 times
+    // a second to draw a rectangle the drawing code can draw from two corners
+    // anyway would be work for nothing.
+    if (st.brush.tool == Tool::Marquee && !panning && !rotating &&
+        !st.pendingGuide.has_value()) {
+      if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        st.marqueeDragging = true;
+        st.marqueeX0 = tx;
+        st.marqueeY0 = ty;
+        st.marqueeX1 = tx;
+        st.marqueeY1 = ty;
+      }
+      if (st.marqueeDragging) {
+        st.marqueeX1 = tx;
+        st.marqueeY1 = ty;
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+          st.marqueeDragging = false;
+          OpenDocument* od = st.documents.active();
+          if (od != nullptr) {
+            // Clamped to the canvas: a drag that leaves the window would
+            // otherwise select texels the document does not have, and every
+            // consumer would then walk tiles that hold nothing.
+            const float x0 = std::clamp(std::min(st.marqueeX0, st.marqueeX1), 0.0f, texW);
+            const float y0 = std::clamp(std::min(st.marqueeY0, st.marqueeY1), 0.0f, texH);
+            const float x1 = std::clamp(std::max(st.marqueeX0, st.marqueeX1), 0.0f, texW);
+            const float y1 = std::clamp(std::max(st.marqueeY0, st.marqueeY1), 0.0f, texH);
+            // A click with no drag DESELECTS, which is what a marquee does in
+            // every editor. Committing the degenerate rectangle instead would
+            // leave an engaged selection covering nothing -- technically
+            // correct (core/SelectionMask distinguishes the two) and, as a
+            // response to a stray click, indistinguishable from the
+            // application having broken.
+            if (x1 - x0 < 1.0f || y1 - y0 < 1.0f) {
+              installSelection(*od, std::nullopt);
+            } else {
+              installSelection(*od, selectRectangle(x0, y0, x1, y1));
+            }
+          }
+        }
+      }
+    } else {
+      st.marqueeDragging = false;
+    }
+
     // --- stroke ---
     const bool paintTool = st.brush.tool == Tool::Brush ||
                            st.brush.tool == Tool::Water ||
@@ -4259,6 +4467,25 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // immediately rather than lagging a frame behind. ---
     if (st.showGrid) drawGridOverlay(dl, xform, texW, texH, st.gridSpacing, st.gridSubdivisions,
                                      st.view.zoom);
+
+    // --- the selection, and the marquee being dragged (PRD E6) ------------
+    //
+    // After the grid so it sits on top: the selection is the thing the user is
+    // currently acting on, and a grid line crossing the ants would read as
+    // part of the boundary.
+    if (st.marqueeDragging) {
+      // The live rubber band, drawn from the drag corners rather than from a
+      // Selection -- there is no Selection yet, and building one per frame to
+      // draw a rectangle would allocate tiles 60 times a second.
+      drawMarchingAnts(dl, xform, std::min(st.marqueeX0, st.marqueeX1),
+                       std::min(st.marqueeY0, st.marqueeY1),
+                       std::max(st.marqueeX0, st.marqueeX1),
+                       std::max(st.marqueeY0, st.marqueeY1));
+    } else if (st.selectionBoundsCache.has_value()) {
+      const SelectionBounds& b = *st.selectionBoundsCache;
+      drawMarchingAnts(dl, xform, static_cast<float>(b.x0), static_cast<float>(b.y0),
+                       static_cast<float>(b.x1), static_cast<float>(b.y1));
+    }
 
     if (st.showGuides) {
       constexpr ImU32 kGuideCol = IM_COL32(70, 190, 230, 200);

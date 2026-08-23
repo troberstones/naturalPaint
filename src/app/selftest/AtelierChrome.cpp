@@ -309,8 +309,8 @@ bool runAtelierChromeTest() {
     check(namesOk, "every tool has a distinct non-empty name");
     // The tripwire that makes the walk above complete rather than merely long,
     // the same shape app/selftest/Fonts.cpp uses for LayerKind.
-    check(std::string(toolName(static_cast<Tool>(6))) == "?",
-          "Tool still has exactly 6 values, so the walk above covers all of them");
+    check(std::string(toolName(static_cast<Tool>(7))) == "?",
+          "Tool still has exactly 7 values, so the walk above covers all of them");
   }
 
   std::printf("[selftest] atelier chrome %s\n", ok ? "PASS" : "FAIL");
