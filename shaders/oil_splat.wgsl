@@ -10,6 +10,8 @@
 @group(0) @binding(0) var<uniform> P : SimParams;
 @group(0) @binding(1) var waterSrc : texture_2d<f32>;
 @group(0) @binding(2) var waterDst : texture_storage_2d<rgba16float, write>;
+// Selection coverage, r8unorm, canvas-sized. Always bound; see splat.wgsl.
+@group(0) @binding(3) var selection : texture_2d<f32>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
@@ -22,7 +24,12 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   if (P.brushActive != 0u) {
     let d = distToSegment(vec2<f32>(p), P.brushA, P.brushB);
     let edge = mix(P.brushRadius, P.brushRadius * 0.15, P.brushHardness);
-    let falloff = 1.0 - smoothstep(P.brushRadius - edge, P.brushRadius, d);
+    // PRD E1: every deposit respects the active selection -- oil included. This
+    // is the brush CONTACT term rather than a pigment quantity, so gating it
+    // here keeps an unselected texel from being pressed into at all, which is
+    // the oil equivalent of depositing nothing.
+    let coverage = textureLoad(selection, p, 0).r;
+    let falloff = (1.0 - smoothstep(P.brushRadius - edge, P.brushRadius, d)) * coverage;
     // ac in Algorithm 1 is the volume *penetrated*, not the whole cell, so a
     // light touch can still lay paint onto a thickly covered canvas.
     contact = P.penetration * falloff;

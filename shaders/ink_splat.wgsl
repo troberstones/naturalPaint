@@ -14,6 +14,8 @@
 @group(0) @binding(5) var lbmCDst  : texture_storage_2d<rgba32float, write>;
 @group(0) @binding(6) var pigCDst  : texture_storage_2d<rgba32float, write>;
 @group(0) @binding(7) var pigRDst  : texture_storage_2d<rgba32float, write>;
+// Selection coverage, r8unorm, canvas-sized. Always bound; see splat.wgsl.
+@group(0) @binding(8) var selection : texture_2d<f32>;
 
 const BASE_MASK : f32 = 0.1;
 
@@ -29,7 +31,13 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   if (P.brushActive != 0u) {
     let d = distToSegment(vec2<f32>(p), P.brushA, P.brushB);
     let edge = mix(P.brushRadius, P.brushRadius * 0.15, P.brushHardness);
-    let falloff = 1.0 - smoothstep(P.brushRadius - edge, P.brushRadius, d);
+    // PRD E1: every deposit respects the active selection. Multiplying the
+    // falloff gates water and pigment together with one term, and the
+    // `falloff > 0.0` test below then skips an unselected texel for free.
+    // Coverage is WEIGHTED, not thresholded -- a half-selected texel takes
+    // half a dab, which is what makes a feathered selection feather.
+    let coverage = textureLoad(selection, p, 0).r;
+    let falloff = (1.0 - smoothstep(P.brushRadius - edge, P.brushRadius, d)) * coverage;
 
     if (falloff > 0.0) {
       let rho = textureLoad(waterSrc, p, 0).z;

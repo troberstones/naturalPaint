@@ -202,6 +202,26 @@ class PaintSim {
   void depositDab(GpuContext& gpu, const SimParams& params, float x, float y,
                   const Selection* selection = nullptr);
 
+  // Uploads `selection`'s coverage to the GPU, where the splat passes read it.
+  // **`nullptr` fills the texture with 1.0**, which is what makes "no
+  // selection" cost the shaders nothing: there is no uniform flag and no
+  // branch, because an all-1.0 coverage multiplies deposition by identity.
+  // That also keeps the shader's arithmetic identical in both states, so the
+  // no-selection path cannot drift away from the selected one.
+  //
+  // Canvas-sized rather than sparse, because the GPU wants one texture, not a
+  // tile map: 1 byte a texel is 1 MiB at 1024^2, against ~8 MiB for a single
+  // one of this sim's seven ping-pong f16/f32 field pairs. core/SelectionMask
+  // stays sparse on the CPU side; this is the flattened view of it.
+  //
+  // Not called per frame. Call it when the selection changes -- the coverage
+  // sits in the texture until it does.
+  void setSelection(GpuContext& gpu, const Selection* selection);
+
+  // Whether the last setSelection() installed a real selection rather than
+  // clearing to all-1.0. For a UI that wants to say so, and for --selftest.
+  bool hasSelection() const noexcept { return selectionActive_; }
+
   // Blocking copy of the canvas to RGBA8 host memory. Used by --selftest; slow
   // by design (it stalls the queue), so keep it out of the frame loop.
   bool readbackCanvas(GpuContext& gpu, std::vector<uint8_t>& out);
@@ -476,6 +496,16 @@ class PaintSim {
   static constexpr uint32_t kBrushGrid = 64;
   WGPUTexture paper_ = nullptr;
   WGPUTextureView paperView_ = nullptr;
+
+  // PRD E1's gate. Canvas-sized r8unorm coverage, ALWAYS allocated and always
+  // bound to the three splat passes -- see setSelection() for why there is no
+  // "no selection" branch anywhere. The view is fixed for the sim's lifetime,
+  // so it does not participate in bindGroup()'s parity key (which exists for
+  // ping-pong halves); uploading new coverage into the same texture leaves
+  // every cached bind group valid.
+  WGPUTexture selection_ = nullptr;
+  WGPUTextureView selectionView_ = nullptr;
+  bool selectionActive_ = false;
   WGPUTexture canvas_ = nullptr;
   WGPUTextureView canvasView_ = nullptr;
   // Grayscale preview target -- same size/format as canvas_, populated only

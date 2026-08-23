@@ -10,6 +10,10 @@
 @group(0) @binding(4) var waterDst : texture_storage_2d<rgba16float, write>;
 @group(0) @binding(5) var pigCDst  : texture_storage_2d<rgba32float, write>;
 @group(0) @binding(6) var pigRDst  : texture_storage_2d<rgba32float, write>;
+// Selection coverage, r8unorm, canvas-sized. **Always bound**: when no
+// selection is active PaintSim fills it with 255, so this shader has no
+// branch and no special case (core/SelectionMask.hpp: absent means 1.0).
+@group(0) @binding(7) var selection : texture_2d<f32>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
@@ -24,7 +28,13 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let d = distToSegment(vec2<f32>(p), P.brushA, P.brushB);
     // Soft edge; hardness 1 gives a crisp disc, 0 a wide falloff.
     let edge = mix(P.brushRadius, P.brushRadius * 0.15, P.brushHardness);
-    let falloff = 1.0 - smoothstep(P.brushRadius - edge, P.brushRadius, d);
+    // PRD E1: every deposit respects the active selection. Multiplying the
+    // falloff gates water and pigment together with one term, and the
+    // `falloff > 0.0` test below then skips an unselected texel for free.
+    // Coverage is WEIGHTED, not thresholded -- a half-selected texel takes
+    // half a dab, which is what makes a feathered selection feather.
+    let coverage = textureLoad(selection, p, 0).r;
+    let falloff = (1.0 - smoothstep(P.brushRadius - edge, P.brushRadius, d)) * coverage;
 
     if (falloff > 0.0) {
       // Wet-area mask M and standing water.

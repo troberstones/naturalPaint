@@ -1,7 +1,6 @@
 #pragma once
 #include <array>
 #include <cstdint>
-#include <optional>
 
 #include "core/TileStore.hpp"
 

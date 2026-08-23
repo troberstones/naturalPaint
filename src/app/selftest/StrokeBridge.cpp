@@ -1077,6 +1077,162 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
     sim.clearCanvas(gpu);
   }
 
+  // 11. PRD E1: the selection gates the deposit, on the GPU.
+  //
+  // core/SelectionMask holds the coverage and app/selftest/Selection.cpp
+  // proves the store; this is the other half -- that a dab actually lands only
+  // where the selection allows. The three splat shaders multiply their falloff
+  // by a coverage texture PaintSim keeps canvas-sized, and the whole design
+  // rests on that texture reading 1.0 when there is no selection, so the
+  // no-selection case is not a branch that could rot.
+  {
+    SimParams p{};
+    p.brushRadius = 14.0f;
+    p.brushWater = 1.4f;
+    p.brushPigment = 0.9f;
+
+    const uint32_t tx = sim.tileCountX();
+    auto massAt = [&](const std::vector<PaintSim::TileOccupancy>& occ, uint32_t x, uint32_t y) {
+      return occ[static_cast<size_t>(y) * tx + x].mass;
+    };
+
+    // A selection covering exactly tile (1,1): document texels [128,256).
+    const Selection onlyMiddle = selectRectangle(128.0f, 128.0f, 256.0f, 256.0f);
+    sim.clearCanvas(gpu);
+    sim.setSelection(gpu, &onlyMiddle);
+    check(sim.hasSelection(),
+          "e1: the sim reports a selection installed -- distinct from the all-1.0 default it "
+          "was holding a moment ago");
+
+    // ONE dab and NO physics frame. That is the whole care taken here: the
+    // `stroke()` helper runs sim.frame() after every dab, and the fluid solver
+    // then advects what was deposited across the boundary -- so a stroke-based
+    // test measures deposit AND transport together and cannot say which one
+    // the gate acted on. A bare depositDab() isolates the deposit, which is
+    // what PRD E1 governs. (The transport question is measured below, and it
+    // is a real one.)
+    //
+    // The dab straddles the boundary on purpose: radius 14 at x=252 covers
+    // [238, 266], and tile (1,1) ends at 256. Note the canvas is 384 wide, so
+    // the r8unorm upload row is padded from 384 to 512 bytes; if that padding
+    // were wrong, a dab this close to a tile edge is where it would show.
+    auto dabAt = [&](float x, float y) {
+      p.brushAx = x; p.brushAy = y;
+      p.brushBx = x; p.brushBy = y;
+      p.brushActive = 1;
+      sim.depositDab(gpu, p, x, y);
+      p.brushActive = 0;
+    };
+    dabAt(252.0f, 180.0f);
+    std::vector<PaintSim::TileOccupancy> gated;
+    check(sim.readTileOccupancy(gpu, gated), "e1: (fixture) occupancy reads back");
+    const float insideGated = massAt(gated, 1, 1);
+    const float outsideGated = massAt(gated, 2, 1);
+    std::printf("  [selftest] e1: gated dab -- inside tile mass %.5f, outside tile mass %.5f\n",
+                static_cast<double>(insideGated), static_cast<double>(outsideGated));
+    check(insideGated > kBakeMassFloor,
+          "e1: the dab lands INSIDE the selection, so it was not simply refused outright");
+    check(outsideGated == 0.0f,
+          "e1: and EXACTLY ZERO lands outside it -- the part of the same dab that crossed "
+          "the boundary deposited nothing at all, which is PRD E1 for a deposit");
+
+    // The control. Without it, "outside is zero" could equally mean the dab
+    // never reached that tile, and the assertion above would pass with the
+    // gate deleted entirely.
+    sim.clearCanvas(gpu);
+    sim.setSelection(gpu, nullptr);
+    check(!sim.hasSelection(), "e1: clearing the selection reports no selection");
+    dabAt(252.0f, 180.0f);
+    std::vector<PaintSim::TileOccupancy> ungated;
+    check(sim.readTileOccupancy(gpu, ungated), "e1: (fixture) occupancy reads back");
+    const float outsideUngated = massAt(ungated, 2, 1);
+    std::printf("  [selftest] e1: same dab, no selection -- outside tile mass %.5f\n",
+                static_cast<double>(outsideUngated));
+    check(outsideUngated > kBakeMassFloor,
+          "e1: THE CONTROL -- the identical dab with no selection DOES reach the outside "
+          "tile, so the zero above was the gate and not the dab falling short");
+    check(massAt(ungated, 1, 1) > kBakeMassFloor,
+          "e1: and the inside tile still gets paint, so clearing the selection removed a "
+          "restriction rather than the deposit");
+
+    // Weighted, not thresholded. A uniformly half-covered selection must
+    // deposit about half as much -- the property that makes a feathered
+    // selection feather instead of producing a hard edge one texel in.
+    Selection half;
+    for (int32_t ly = 0; ly < kTileSize; ++ly)
+      for (int32_t lx = 0; lx < kTileSize; ++lx)
+        half.tiles.getOrCreate(TileCoord{1, 1}).writeCoverage(PixelCoord{lx, ly}, 0.5f);
+
+    sim.clearCanvas(gpu);
+    sim.setSelection(gpu, nullptr);
+    stroke(gpu, sim, p, 180.0f, 180.0f, 200.0f, 200.0f, 6);
+    std::vector<PaintSim::TileOccupancy> fullOcc;
+    sim.readTileOccupancy(gpu, fullOcc);
+    const float fullMass = massAt(fullOcc, 1, 1);
+
+    sim.clearCanvas(gpu);
+    sim.setSelection(gpu, &half);
+    stroke(gpu, sim, p, 180.0f, 180.0f, 200.0f, 200.0f, 6);
+    std::vector<PaintSim::TileOccupancy> halfOcc;
+    sim.readTileOccupancy(gpu, halfOcc);
+    const float halfMass = massAt(halfOcc, 1, 1);
+
+    const double ratio = fullMass > 0.0f ? static_cast<double>(halfMass) / fullMass : 0.0;
+    std::printf("  [selftest] e1: [measured] full-coverage mass %.5f, half-coverage %.5f "
+                "(ratio %.4f)\n",
+                static_cast<double>(fullMass), static_cast<double>(halfMass), ratio);
+    check(halfMass > kBakeMassFloor && halfMass < fullMass,
+          "e1: half coverage deposits LESS than full but more than nothing -- coverage is "
+          "weighted, not thresholded, which is what makes a feather a feather");
+    // Deliberately a loose band rather than ~0.5 exactly. The occupancy figure
+    // is a max over the tile of `deposited + suspended*pigment`, and the water
+    // film the same dab lays down feeds back into how much pigment settles, so
+    // halving the deposition term does not halve this reduction linearly. The
+    // band is wide enough not to encode that coupling and narrow enough to
+    // fail if the gate were binary (which would give a ratio of 1.0 or 0.0).
+    check(ratio > 0.20 && ratio < 0.80,
+          "e1: and the reduction is in the 0.2-0.8 band a halved deposit produces here -- a "
+          "binary gate would read 1.0 or 0.0, and both are excluded");
+
+    // --- What the gate does NOT do, measured rather than assumed ---------
+    //
+    // PRD E1 says "every deposit and every op respects the active selection".
+    // Fluid transport is neither: once pigment is in the film, advection,
+    // capillary flow and pressure projection move it, and none of those passes
+    // consults the selection. So paint deposited just inside a boundary WILL
+    // spread across it as the wash develops.
+    //
+    // This is a real product question, not a bug in the gate -- Photoshop's
+    // marquee clips hard because nothing in Photoshop flows -- and it is
+    // asserted here so the behaviour is a recorded decision rather than a
+    // surprise. Confining transport as well would mean gating advection,
+    // capillary flow and projection, which is a much larger change than the
+    // three splat shaders this commit touches.
+    sim.clearCanvas(gpu);
+    sim.setSelection(gpu, &onlyMiddle);
+    stroke(gpu, sim, p, 160.0f, 160.0f, 340.0f, 160.0f, 12);
+    std::vector<PaintSim::TileOccupancy> flowed;
+    sim.readTileOccupancy(gpu, flowed);
+    sim.clearCanvas(gpu);
+    sim.setSelection(gpu, nullptr);
+    stroke(gpu, sim, p, 160.0f, 160.0f, 340.0f, 160.0f, 12);
+    std::vector<PaintSim::TileOccupancy> flowedFree;
+    sim.readTileOccupancy(gpu, flowedFree);
+    std::printf("  [selftest] e1: [measured] 12-frame stroke across the boundary -- outside "
+                "tile %.5f gated vs %.5f ungated\n",
+                static_cast<double>(massAt(flowed, 2, 1)),
+                static_cast<double>(massAt(flowedFree, 2, 1)));
+    check(massAt(flowed, 2, 1) > 0.0f,
+          "e1: paint DOES cross the boundary once the solver runs -- transport is not gated, "
+          "only deposition is, and this records that rather than leaving it to be found");
+    check(massAt(flowed, 2, 1) < massAt(flowedFree, 2, 1),
+          "e1: but markedly less than ungated, so what crossed is what flowed there, not "
+          "what was painted there");
+
+    sim.setSelection(gpu, nullptr);
+    sim.clearCanvas(gpu);
+  }
+
   sim.shutdown();
   std::printf("[selftest] stroke bridge %s\n", ok ? "PASS" : "FAIL");
   return ok;

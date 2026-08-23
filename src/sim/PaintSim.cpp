@@ -191,6 +191,9 @@ void PaintSim::releaseFields() {
   occupancyBytes_ = 0;
   if (paperView_) { wgpuTextureViewRelease(paperView_); paperView_ = nullptr; }
   if (paper_) { wgpuTextureDestroy(paper_); wgpuTextureRelease(paper_); paper_ = nullptr; }
+  if (selectionView_) { wgpuTextureViewRelease(selectionView_); selectionView_ = nullptr; }
+  if (selection_) { wgpuTextureDestroy(selection_); wgpuTextureRelease(selection_); selection_ = nullptr; }
+  selectionActive_ = false;
   if (canvasView_) { wgpuTextureViewRelease(canvasView_); canvasView_ = nullptr; }
   if (canvas_) { wgpuTextureDestroy(canvas_); wgpuTextureRelease(canvas_); canvas_ = nullptr; }
   if (grayscaleView_) { wgpuTextureViewRelease(grayscaleView_); grayscaleView_ = nullptr; }
@@ -253,6 +256,27 @@ void PaintSim::allocFields(GpuContext& gpu, uint32_t w, uint32_t h) {
   }
 
   paper_ = makeField(gpu.device, w, h, "paper(h,c)", kWaterFormat);
+
+  // PRD E1's selection coverage. Its own descriptor rather than makeField():
+  // r8unorm needs neither StorageBinding nor RenderAttachment (nothing writes
+  // it from a shader), and it DOES need CopyDst, which makeField() opts into
+  // per field precisely so it is not handed out by default.
+  {
+    WGPUTextureDescriptor d = {};
+    d.label = sv("selection coverage");
+    d.dimension = WGPUTextureDimension_2D;
+    d.size = {w, h, 1};
+    d.format = WGPUTextureFormat_R8Unorm;
+    d.mipLevelCount = 1;
+    d.sampleCount = 1;
+    d.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    selection_ = wgpuDeviceCreateTexture(gpu.device, &d);
+    selectionView_ = wgpuTextureCreateView(selection_, nullptr);
+  }
+  // Fills with 1.0. A freshly allocated texture is undefined, and an undefined
+  // selection coverage is a canvas that may refuse paint at random -- so this
+  // is not an optimisation to skip, it is the initial state.
+  setSelection(gpu, nullptr);
   paperView_ = wgpuTextureCreateView(paper_, nullptr);
 
   WGPUTextureDescriptor cd = {};
@@ -717,7 +741,8 @@ void PaintSim::frame(GpuContext& gpu, const SimParams& paramsIn,
   // No pressure solve at all; oil does not flow on its own, it goes where the
   // brush pushes it.
   else if (mode_ == PaintMode::Oil) {
-    run(kOilSplat, {ub, texEntry(1, water_.src()), texEntry(2, water_.dst())});
+    run(kOilSplat, {ub, texEntry(1, water_.src()), texEntry(2, water_.dst()),
+                    texEntry(3, selectionView_)});
     water_.flip();
 
     for (int s2 = 0; s2 < steps; ++s2) {
@@ -866,13 +891,14 @@ void PaintSim::depositDab(GpuContext& gpu, const SimParams& paramsIn, float x, f
   if (mode_ == PaintMode::Watercolor) {
     run(kSplat, {ub, texEntry(1, water_.src()), texEntry(2, pigC_.src()),
                  texEntry(3, pigR_.src()), texEntry(4, water_.dst()),
-                 texEntry(5, pigC_.dst()), texEntry(6, pigR_.dst())});
+                 texEntry(5, pigC_.dst()), texEntry(6, pigR_.dst()),
+                 texEntry(7, selectionView_)});
     water_.flip(); pigC_.flip(); pigR_.flip();
   } else {  // Ink
     run(kInkSplat, {ub, texEntry(1, water_.src()), texEntry(2, lbmC_.src()),
                     texEntry(3, pigC_.src()), texEntry(4, pigR_.src()),
                     texEntry(5, lbmC_.dst()), texEntry(6, pigC_.dst()),
-                    texEntry(7, pigR_.dst())});
+                    texEntry(7, pigR_.dst()), texEntry(8, selectionView_)});
     lbmC_.flip(); pigC_.flip(); pigR_.flip();
   }
 
@@ -883,6 +909,59 @@ void PaintSim::depositDab(GpuContext& gpu, const SimParams& paramsIn, float x, f
   wgpuQueueSubmit(gpu.queue, 1, &cmd);
   wgpuCommandBufferRelease(cmd);
   wgpuCommandEncoderRelease(enc);
+}
+
+void PaintSim::setSelection(GpuContext& gpu, const Selection* selection) {
+  if (selection_ == nullptr) return;  // no fields allocated yet
+
+  // **bytesPerRow must be a multiple of 256**, and for r8unorm the natural row
+  // is `width_` bytes -- which is a multiple of 256 only by luck. Every other
+  // upload in this file happens to satisfy it (clearBakedTiles writes 128-texel
+  // rows of 16 bytes = 2048), so the constraint has never bitten here before.
+  // The staging buffer is padded to the aligned stride and the tail of each row
+  // is simply never read by the GPU.
+  const uint32_t bytesPerRow = ((width_ + 255u) / 256u) * 256u;
+  std::vector<uint8_t> staging(static_cast<size_t>(bytesPerRow) * height_,
+                               selection == nullptr ? uint8_t{255} : uint8_t{0});
+
+  if (selection != nullptr) {
+    // Walk the selection's OWN tiles rather than the canvas: a marquee touches
+    // a handful of tiles on a document with hundreds, and everything it does
+    // not touch is already 0 from the fill above -- which is the correct
+    // "outside the selection" value (core/SelectionMask.hpp's inverted
+    // default). This is the sparse store paying for itself at the seam where
+    // it has to become dense.
+    for (const auto& [coord, tile] : selection->tiles) {
+      const PixelCoord origin = tileOrigin(coord);
+      for (int32_t ly = 0; ly < kTileSize; ++ly) {
+        const int32_t docY = origin.y + ly;
+        if (docY < 0 || docY >= static_cast<int32_t>(height_)) continue;
+        uint8_t* row = staging.data() + static_cast<size_t>(docY) * bytesPerRow;
+        for (int32_t lx = 0; lx < kTileSize; ++lx) {
+          const int32_t docX = origin.x + lx;
+          if (docX < 0 || docX >= static_cast<int32_t>(width_)) continue;
+          // Straight from the stored byte: the CPU store and this texture are
+          // both uint8 coverage, so there is no conversion and therefore no
+          // way for the two to disagree about a partially selected texel.
+          row[docX] = tile.data()[static_cast<size_t>(ly) * kTileSize + lx];
+        }
+      }
+    }
+  }
+
+  WGPUTexelCopyTextureInfo dst = {};
+  dst.texture = selection_;
+  dst.mipLevel = 0;
+  dst.origin = {0, 0, 0};
+  dst.aspect = WGPUTextureAspect_All;
+  WGPUTexelCopyBufferLayout layout = {};
+  layout.offset = 0;
+  layout.bytesPerRow = bytesPerRow;
+  layout.rowsPerImage = height_;
+  const WGPUExtent3D extent = {width_, height_, 1};
+  wgpuQueueWriteTexture(gpu.queue, &dst, staging.data(), staging.size(), &layout, &extent);
+
+  selectionActive_ = selection != nullptr;
 }
 
 // PRD Q3 / PLAN.md Phase 2 step 11: desaturate canvasView_ into
