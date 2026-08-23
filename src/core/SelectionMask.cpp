@@ -137,4 +137,44 @@ size_t clearThroughSelection(TileStore& tiles, const Selection* selection) {
   return changed;
 }
 
+size_t clearThroughSelection(PigmentTileStore& tiles, const Selection* selection) {
+  size_t changed = 0;
+
+  std::vector<TileCoord> coords;
+  coords.reserve(tiles.occupiedTileCount());
+  for (const auto& [coord, tile] : tiles) {
+    (void)tile;
+    coords.push_back(coord);
+  }
+
+  for (const TileCoord coord : coords) {
+    const SelectionTile* selTile =
+        selection != nullptr ? selection->tiles.find(coord) : nullptr;
+    if (selection != nullptr && selTile == nullptr) continue;
+
+    PigmentTile* dst = tiles.findForWrite(coord);
+    if (dst == nullptr) continue;
+
+    for (int32_t ly = 0; ly < kTileSize; ++ly) {
+      for (int32_t lx = 0; lx < kTileSize; ++lx) {
+        const PixelCoord local{lx, ly};
+        const float cov =
+            selection == nullptr ? 1.0f : selectionTileCoverage(selTile, local);
+        if (cov <= 0.0f) continue;
+
+        PigmentTexel t = dst->readTexel(local);
+        const float keep = 1.0f - cov;
+        const float mass = t.mass * keep;
+        if (mass == t.mass) continue;
+        // Mass only. The latent is the pigment's identity and does not fade
+        // with its quantity -- PRD F10, and the header says why at length.
+        t.mass = mass;
+        dst->writeTexel(local, t);
+        ++changed;
+      }
+    }
+  }
+  return changed;
+}
+
 }  // namespace np

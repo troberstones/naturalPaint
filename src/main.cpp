@@ -1283,6 +1283,11 @@ int main(int argc, char** argv) {
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
     // arithmetic, no PaintSim involvement.
     const bool selectionOk = np::runSelectionTest();
+    // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
+    // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
+    // two different coverage-weighting rules RGB and Pigment tiles take. Also
+    // headless and GPU-free.
+    const bool clipboardOk = np::runClipboardTest();
     // Phase 3 step 5 ("core/OpStack -- ordered ops, dirty tracking, run
     // detection for the collapse"): OpStack's add/remove/reorder/setEnabled/
     // setOp mutators and version() bumping, plus detectRuns()'s maximal-run
@@ -1632,7 +1637,7 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && selectionOk && opStackOk && lutBakeOk && applyPassOk &&
+                    histogramOk && pointOpsOk && selectionOk && clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&

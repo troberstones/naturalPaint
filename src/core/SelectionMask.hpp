@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 
+#include "core/Pigment.hpp"
 #include "core/TileStore.hpp"
 
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2;
@@ -97,6 +98,18 @@ class SelectionTile {
   bool selectsNothing() const noexcept {
     for (const uint8_t v : texels_) {
       if (v != 0) return false;
+    }
+    return true;
+  }
+
+  // True when every texel is fully selected. The test a copy uses to decide it
+  // can SHARE the source tile rather than weighting it texel by texel (PRD
+  // M5), so this is the difference between a 4K copy costing a refcount and
+  // costing 68 MB. Exact equality with 255, deliberately: 254 would weight
+  // the tile by 0.996 and a shared tile would then be quietly wrong.
+  bool selectsAll() const noexcept {
+    for (const uint8_t v : texels_) {
+      if (v != 255) return false;
     }
     return true;
   }
@@ -202,5 +215,20 @@ Selection selectRectangle(float x0, float y0, float x1, float y1);
 // tell "cleared nothing because the selection was empty" from "cleared nothing
 // because the layer already was".
 size_t clearThroughSelection(TileStore& tiles, const Selection* selection);
+
+// The Pigment-layer form, and **the weighting rule is a different shape**.
+//
+// core/Pigment.hpp stores a texel as a STRAIGHT latent plus a `mass` that is
+// the alpha analogue; core/Composite projects the pair as
+// `(latentToRgb(latent) * mass, mass)`. So clearing through coverage scales
+// **mass alone and leaves the latent untouched** -- which is not an analogy
+// but PRD F10's own rule for the eraser, stated there in those words.
+//
+// Scaling the latent as well, by reflex from the RGB path above, would drag
+// the pigment's identity toward zero as it faded: a half-erased red would
+// stop being red rather than becoming less of it. That is the pigment
+// equivalent of the fringe the premultiplied path avoids, and it is why these
+// are two functions rather than one template.
+size_t clearThroughSelection(PigmentTileStore& tiles, const Selection* selection);
 
 }  // namespace np

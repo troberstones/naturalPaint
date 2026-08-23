@@ -24,6 +24,7 @@ add_executable(naturalPaint
   app/selftest/ApplyPass.cpp
   app/selftest/BaseLayerAlpha.cpp
   app/selftest/Blend.cpp
+  app/selftest/Clipboard.cpp
   app/selftest/ClippingMask.cpp
   app/selftest/ColorSpace.cpp
   app/selftest/ControlsLayout.cpp
@@ -90,6 +91,7 @@ add_executable(naturalPaint
   color/Shaper.cpp
   color/Space.cpp
   core/Blend.cpp
+  core/Clipboard.cpp
   core/Composite.cpp
   core/DirtyTiles.cpp
   core/Half.cpp

@@ -415,6 +415,23 @@ bool runPointOpsTest();
 // side so neither can drift onto the other.
 bool runSelectionTest();
 
+// core/Clipboard (PLAN.md "Phase 7 -- Select and paste"; PRD M1, M3, M4, M5,
+// M8). Headless and GPU-free.
+//
+// Two claims carry the section. **PRD M5** -- the clipboard is a copy-on-write
+// tile reference, not a flattened buffer; the PRD calls that Lightweight
+// rather than a convenience and names the number (a 4K copy is 68 MB, which
+// PRD A5 forbids holding invisibly). So the section measures the split: tiles
+// a selection covers whole are shared, and only the tiles its edge crosses
+// cost bytes. **The two weighting rules** -- an RGB texel is premultiplied so
+// coverage scales all four channels, while a Pigment texel is a straight
+// latent plus a mass that is the alpha analogue, so coverage scales MASS
+// ALONE (PRD F10). The pigment assertions check the latent is bit-unchanged
+// at partial coverage, because scaling it by reflex from the RGB path is the
+// natural mistake and turns a half-copied red into something that is no
+// longer red.
+bool runClipboardTest();
+
 // Headless, GPU-free check on core/OpStack (PLAN.md Phase 3 step 5:
 // "ordered ops, dirty tracking, run detection for the collapse"). Pure CPU
 // bookkeeping plus calls into the already-tested ops/PointOps functions --

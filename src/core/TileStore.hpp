@@ -388,6 +388,28 @@ class TileStoreOf {
     return it->second.get();
   }
 
+  // Shares `src`'s tile at `coord` into this store WITHOUT copying it: both
+  // stores end up pointing at the same tile, and the first write through
+  // either one unshares it. Returns false when `src` holds no such tile.
+  //
+  // This is the selective form of the copy constructor, which shares
+  // everything. It exists for PRD M5, which requires the clipboard to hold "a
+  // copy-on-write tile reference, **not** a flattened buffer" and calls that a
+  // Lightweight requirement rather than a convenience -- a 4K full-document
+  // copy is 68 MB at rgba16float, and PRD A5 forbids holding that invisibly.
+  // A clipboard cannot use the copy constructor, because it takes only the
+  // tiles a selection covers.
+  //
+  // Safe by construction rather than by care at the call site: `unshare()` is
+  // the single barrier every write path already goes through, and it triggers
+  // on `use_count() > 1` -- which is exactly what this creates.
+  bool shareTileFrom(const TileStoreOf& src, TileCoord coord) {
+    const auto it = src.tiles_.find(coord);
+    if (it == src.tiles_.end()) return false;
+    tiles_[coord] = it->second;  // shared_ptr copy: one refcount increment
+    return true;
+  }
+
   // How many tiles are actually allocated right now.
   size_t occupiedTileCount() const noexcept { return tiles_.size(); }
 
