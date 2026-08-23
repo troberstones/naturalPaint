@@ -256,6 +256,87 @@ bool runClipboardTest() {
           "M4: and an out-of-range source index refuses rather than reading past the stack");
   }
 
+  // --- 8. PRD M2: copy merged composites the visible stack ---------------
+  {
+    // Opaque red under half-transparent green, so the composite is neither
+    // layer's own colour and a test that accidentally read one layer instead
+    // of the merge would fail rather than pass by coincidence.
+    //   over: (0, 0.5, 0, 0.5) + (1, 0, 0, 1) * (1 - 0.5) = (0.5, 0.5, 0, 1)
+    Document doc = Document::createBlank(256, 256, WorkingSpace{});
+    Tile& base = doc.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+    for (int32_t y = 0; y < kTileSize; ++y)
+      for (int32_t x = 0; x < kTileSize; ++x)
+        base.writePixel(PixelCoord{x, y}, {1.0f, 0.0f, 0.0f, 1.0f});
+
+    Layer top = makeRgbLayer("green veil");
+    top.rgbTiles = TileStore{};
+    Tile& veil = top.rgbTiles->getOrCreate(TileCoord{0, 0});
+    for (int32_t y = 0; y < kTileSize; ++y)
+      for (int32_t x = 0; x < kTileSize; ++x)
+        veil.writePixel(PixelCoord{x, y}, {0.0f, 0.5f, 0.0f, 0.5f});
+    addLayer(doc, doc.layers.size(), std::move(top));
+
+    const Clipboard merged = copyMergedThroughSelection(doc, nullptr);
+    check(!merged.empty() && merged.kind == LayerKind::RGB,
+          "M2: copy merged yields an RGB payload -- a composite is a picture, whatever the "
+          "stack was made of");
+    const Tile* mt = merged.rgbTiles->find(TileCoord{0, 0});
+    const std::array<float, 4> px = mt->readPixel(PixelCoord{4, 4});
+    std::printf("  [selftest] clipboard: merged texel rgba(%.4f, %.4f, %.4f, %.4f) -- neither "
+                "layer alone is (0.5, 0.5, 0, 1)\n",
+                static_cast<double>(px[0]), static_cast<double>(px[1]),
+                static_cast<double>(px[2]), static_cast<double>(px[3]));
+    check(near(px[0], 0.5f, 2e-3f) && near(px[1], 0.5f, 2e-3f) && near(px[3], 1.0f, 2e-3f),
+          "M2: and it is the COMPOSITE of both layers -- red alone would be (1,0,0,1) and the "
+          "veil alone (0,0.5,0,0.5), so reading either one instead of merging fails here");
+
+    // The visible stack, not the whole stack.
+    doc.layers[1].visible = false;
+    const Clipboard hidden = copyMergedThroughSelection(doc, nullptr);
+    const std::array<float, 4> justRed =
+        hidden.rgbTiles->find(TileCoord{0, 0})->readPixel(PixelCoord{4, 4});
+    check(near(justRed[0], 1.0f, 2e-3f) && near(justRed[1], 0.0f, 2e-3f),
+          "M2: hiding the veil changes the merge back to bare red -- it composites the VISIBLE "
+          "stack, so an invisible layer contributes nothing");
+    doc.layers[1].visible = true;
+
+    // The property inherent to a merge, stated in the header and checked here
+    // so it is a recorded decision rather than a surprise on the status bar.
+    check(merged.sharedTileCount() == 0 && merged.exclusiveBytes() > 0,
+          "M2/M5: a merged copy shares NOTHING and costs real bytes -- unavoidably, because "
+          "the pixels it holds did not exist anywhere until it composited them. This is the "
+          "one copy in this file that cannot be a reference");
+
+    // Coverage still applies.
+    const Selection sel = selectRectangle(0.5f, 0.0f, 64.0f, 64.0f);
+    const Clipboard part = copyMergedThroughSelection(doc, &sel);
+    const std::array<float, 4> edge =
+        part.rgbTiles->find(TileCoord{0, 0})->readPixel(PixelCoord{0, 0});
+    check(near(edge[3], 0.5f, 2.0f / 255.0f),
+          "M2: a merged copy is coverage-weighted like any other -- the half-covered texel "
+          "arrives half-present");
+    check(part.rgbTiles->find(TileCoord{1, 1}) == nullptr,
+          "M2: and it only produces the tiles the selection touches, rather than flattening "
+          "the whole canvas into the clipboard");
+
+    // A merge of pigment loses the latents, by definition. Stated as an
+    // assertion because "copy" and "copy merged" being different in this way
+    // is exactly the kind of thing a caller would otherwise assume away.
+    Document pig = Document::createBlank(256, 256, WorkingSpace{});
+    pig.layers[0] = makePigmentLayer("paint");
+    PigmentTexel t;
+    t.latent.c[0] = 0.25f; t.latent.c[1] = 0.5f; t.latent.c[2] = 0.75f; t.mass = 1.0f;
+    PigmentTile& pt = pig.layers[0].pigmentTiles->getOrCreate(TileCoord{0, 0});
+    for (int32_t y = 0; y < kTileSize; ++y)
+      for (int32_t x = 0; x < kTileSize; ++x) pt.writeTexel(PixelCoord{x, y}, t);
+    const Clipboard pigMerged = copyMergedThroughSelection(pig, nullptr);
+    check(!pigMerged.empty() && pigMerged.kind == LayerKind::RGB &&
+              !pigMerged.pigmentTiles.has_value(),
+          "M2: merging a PIGMENT stack gives RGB and no latents -- a composite of paint is a "
+          "picture of it. PRD M8's 'latents survive' is copyThroughSelection's promise, not "
+          "this one's, and a caller who needs them must copy the layer instead");
+  }
+
   std::printf("[selftest] clipboard %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

@@ -2,6 +2,8 @@
 
 #include <vector>
 
+#include "io/Export.hpp"
+
 namespace np {
 namespace {
 
@@ -158,6 +160,68 @@ std::optional<size_t> pasteAsLayer(Document& doc, const Clipboard& clip, size_t 
   const LayerOpResult r = addLayer(doc, atIndex, std::move(layer));
   if (!r.ok) return std::nullopt;
   return r.index;
+}
+
+Clipboard copyMergedThroughSelection(const Document& doc, const Selection* selection,
+                                     std::vector<std::string>* warningsOut) {
+  Clipboard clip;
+  clip.kind = LayerKind::RGB;
+  clip.sourceName = "Merged";
+
+  const DecodedImage flat = flattenDocumentToLinear(doc, warningsOut);
+  if (!flat.valid()) return clip;
+
+  TileStore out;
+  const int32_t tilesX = (doc.width + kTileSize - 1) / kTileSize;
+  const int32_t tilesY = (doc.height + kTileSize - 1) / kTileSize;
+
+  for (int32_t ty = 0; ty < tilesY; ++ty) {
+    for (int32_t tx = 0; tx < tilesX; ++tx) {
+      const TileCoord coord{tx, ty};
+      if (!touches(selection, coord)) continue;
+      const SelectionTile* selTile =
+          selection != nullptr ? selection->tiles.find(coord) : nullptr;
+
+      const PixelCoord origin = tileOrigin(coord);
+      // Built into a local and only kept if something landed in it, so a
+      // selected-but-empty region of the canvas does not allocate a tile of
+      // transparent black. The sparseness rule the rest of this file follows.
+      Tile tile;
+      bool any = false;
+
+      for (int32_t ly = 0; ly < kTileSize; ++ly) {
+        const int32_t docY = origin.y + ly;
+        if (docY < 0 || docY >= doc.height) continue;
+        for (int32_t lx = 0; lx < kTileSize; ++lx) {
+          const int32_t docX = origin.x + lx;
+          if (docX < 0 || docX >= doc.width) continue;
+
+          const PixelCoord local{lx, ly};
+          const float cov =
+              selection == nullptr ? 1.0f : selectionTileCoverage(selTile, local);
+          if (cov <= 0.0f) continue;
+
+          const size_t i =
+              (static_cast<size_t>(docY) * flat.width + static_cast<size_t>(docX)) * 4;
+          const float a = flat.pixels[i + 3];
+          // flattenDocumentToLinear() hands back STRAIGHT alpha (io/Export.hpp
+          // says so by name) and core::Tile stores PREMULTIPLIED. Premultiply
+          // here, then weight -- rather than weighting the straight value and
+          // premultiplying after, which is the same arithmetic but reads as
+          // though coverage were a colour term. Coverage acts on presence.
+          const float w = a * cov;
+          if (w <= 0.0f && cov >= 1.0f) continue;
+          tile.writePixel(local, {flat.pixels[i + 0] * w, flat.pixels[i + 1] * w,
+                                  flat.pixels[i + 2] * w, w});
+          if (w > 0.0f) any = true;
+        }
+      }
+      if (any) out.getOrCreate(coord) = tile;
+    }
+  }
+
+  if (out.occupiedTileCount() > 0) clip.rgbTiles = std::move(out);
+  return clip;
 }
 
 std::optional<size_t> selectionToNewLayer(Document& doc, size_t srcIndex,

@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
@@ -117,6 +118,31 @@ Clipboard cutThroughSelection(Layer& layer, const Selection* selection);
 // The tiles are shared with the clipboard, not copied, so pasting the same
 // payload five times costs five refcounts until one of them is painted on.
 std::optional<size_t> pasteAsLayer(Document& doc, const Clipboard& clip, size_t atIndex);
+
+// PRD M2's copy merged: composites the visible stack and takes what the
+// selection covers.
+//
+// **This is the one copy that cannot be a reference, and that is inherent
+// rather than a shortcut.** Everywhere else in this file a fully covered tile
+// is shared with the source (PRD M5), because the pixels already exist
+// somewhere. A merged copy's pixels did not exist until it composited them, so
+// there is nothing to share and every tile it produces costs bytes. A caller
+// showing PRD M5's status-bar figure will see copy-merged cost real memory
+// where a plain copy costs none, and that is the truth rather than a
+// regression.
+//
+// **The result is always an RGB layer, even when the stack was all Pigment.**
+// Compositing projects latents through `latentToRgb()`, so a merged copy of a
+// pigment stack is a picture of that paint, not the paint. PRD M8's "pigment
+// latents survive" applies to `copyThroughSelection()`, which takes a layer's
+// own tiles; it cannot apply here, because a composite of two pigment layers
+// has no single latent to preserve. Copy the layer rather than the merge when
+// the latents are what matters.
+//
+// `warningsOut`, when non-null, receives core/Composite's blend warnings --
+// appended, never cleared, the same contract io/Export's flatten uses.
+Clipboard copyMergedThroughSelection(const Document& doc, const Selection* selection,
+                                     std::vector<std::string>* warningsOut = nullptr);
 
 // PRD M4's "selection -> new layer": copy the selected part of `srcIndex` and
 // paste it directly above as its own layer, in one act. Returns the new
