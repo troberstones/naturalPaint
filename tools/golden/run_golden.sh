@@ -209,8 +209,28 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #     the -40 the 64 -> 44 shrink predicts: x=903 and x=905 both land at
 #     ~41% mismatched, so x=904 is a real, sharp, single-integer minimum,
 #     the same shape the 944 correction found. Unlike that one, x=904's
-#     minimum was not exact-zero -- see `view_threshold`'s comment below for
-#     the measured residual and why this crop's threshold is no longer 0.
+#     minimum was not exact-zero at first, and the reason turned out to be
+#     worth chasing rather than absorbing into a wider threshold: the
+#     residual was 656 px of 98 304 at max channel diff 16, and rendering
+#     the diff showed it was **one ring** -- the brush cursor overlay, which
+#     follows the pointer in canvas space and therefore moved when the
+#     palette narrowed and the canvas band grew. The paint itself, which is
+#     the only thing this view exists to test (PLAN.md Phase 5's "latent Mix
+#     of blue over yellow gives green"), was byte-identical the whole time.
+#
+#     So the crop drops the top 64 rows -- y 973 -> 1037, h 256 -> 192 --
+#     which puts the ring outside the frame and restores EXACT equality
+#     (measured: 0 of 73 728 px, and deterministic across 6 spaced launches).
+#     `canvas.png` is trimmed by the identical sub-rect rather than
+#     re-captured, exactly as `toolbar.png` was, so every pixel it holds is
+#     still a previously-approved pixel.
+#
+#     **This is why the threshold stays 0 rather than moving to 64/2624.**
+#     A magnitude-64, 2624-px budget would have permanently admitted any
+#     regression up to four times the size of the artifact it was bought to
+#     tolerate -- on the one view whose whole job is proving the pigment
+#     solver still mixes correctly. A cursor ring in frame is a crop bug,
+#     not a tolerance requirement.
 #   * `toolbar` sat at y=77..252 (h=175) originally, and rows 244-252 dipped
 #     into the tool palette's new top edge (single-column now, so its first
 #     cell is a different tool than the old grid's) -- trimmed to h=166 so
@@ -220,10 +240,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #     on the title/tab-strip/options-bar heights above the palette, never on
 #     the palette's width).
 #
-# `canvas.png` was **not** touched by either move -- `cmp` against `git show
-# HEAD:tests/golden/canvas.png` confirms it is still byte-identical to
-# sidequest/lucide-toolbox's base commit (72fd411); only its crop *x* moved,
-# to look at the same document pixels from each new canvas origin.
+# `canvas.png` was re-written once, at the cursor-ring fix above, and like
+# `toolbar.png` it was trimmed rather than re-captured: it is exactly
+# `crop(72fd411:tests/golden/canvas.png, 0, 64, 384, 192)`, which anyone can
+# reproduce and diff. Its crop *x* also moved (1024 -> 944 -> 904) to look at
+# the same document pixels from each new canvas origin.
 #
 # `toolbar.png` **was** re-written once, at the first move, but not
 # re-captured: the 8 affected rows could not be avoided at h=175 by
@@ -238,11 +259,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # live capture, because the tool palette is the only thing it redesigns --
 # re-rendered again for this revision's geometry, the same way.
 view_crop_x=(0    1916 904  0)
-view_crop_y=(77   1075 973  228)
+view_crop_y=(77   1075 1037 228)
 view_crop_w=(1400 640  384  90)
-view_crop_h=(166  190  256  270)
+view_crop_h=(166  190  192  270)
 view_frames=(90 90 90 90)
-view_threshold=(0 96 64 0)
+view_threshold=(0 96 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `toolbar`/`tools` are 0 because their magnitude threshold is 0 -- there
@@ -258,7 +279,7 @@ view_threshold=(0 96 64 0)
 # simulation behind it, so anything but byte equality is a real change.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(0 64 2624 0)
+view_max_changed_px=(0 64 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on
