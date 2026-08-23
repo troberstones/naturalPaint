@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cfloat>
 #include <cstdlib>
 #include <array>
 #include <memory>
@@ -2052,6 +2053,38 @@ int main(int argc, char** argv) {
         // canvas rather than on the frame the demo happens to stop moving.
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, step < kPenDemoSteps);
       }
+    }
+
+    // --- the screenshot path takes no mouse ---------------------------------
+    //
+    // **`--screenshot` photographs a real window, and a real window is under
+    // wherever the operator's physical pointer happens to be sitting.** The
+    // SDL backend feeds that position to ImGui every frame, so hover states --
+    // a tab's close button lighting up, a row tinting, the brush cursor ring
+    // following the pointer across the canvas -- land in the capture or not
+    // depending on something no test controls.
+    //
+    // Measured, not theorised: with this suppression absent, the `toolbar`
+    // golden view matched exactly in five of six launches and differed in the
+    // sixth by 4 px at max channel diff 23, the pixels reading *lighter*
+    // (rgb(54,52,51) against rgb(38,36,35)) -- an ImGui hover tint on the tab
+    // strip, roughly a one-in-six failure on a view whose threshold is exact
+    // equality. The same cause put a brush cursor ring in the `canvas` view's
+    // frame, which cost that view its exact-zero threshold until the ring was
+    // cropped out.
+    //
+    // `(-FLT_MAX, -FLT_MAX)` is ImGui's own documented "no mouse anywhere"
+    // sentinel (imgui.h, `AddMousePosEvent`), so this is not a hack position
+    // off the edge of a particular window size -- it is the value that means
+    // the pointer is nowhere.
+    //
+    // Deliberately NOT applied when a demo is driving the pointer itself:
+    // `--pen-demo` exists precisely to inject positions, and neutralising the
+    // mouse after it queued one would erase the input under test. The guard is
+    // the flag rather than "did anything call AddMousePosEvent this frame",
+    // because the former is checkable and the latter is not.
+    if (screenshotPath != nullptr && !penDemo) {
+      ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
 
     ImGui::NewFrame();

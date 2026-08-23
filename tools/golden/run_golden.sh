@@ -259,7 +259,26 @@ view_crop_y=(77   1075 1037 220 700)
 view_crop_w=(1400 640  384  100 400)
 view_crop_h=(166  190  192  350 350)
 view_frames=(90 90 90 90 90)
-view_threshold=(0 96 0 0 0)
+# `toolbar` is (48, 16) rather than exact, and the number is measured rather
+# than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
+# result -- either 0 px or exactly 4 px, at the same four pixels every time:
+# a single 1-px-wide, 4-px-tall vertical run at (88, 33..36), which is one
+# glyph stem edge in the tab strip's "Untitled" label. Three of seven pairs
+# differed; it is a coin flip, not a rare event, so this view CANNOT hold an
+# exact threshold and every run of it was a ~50% chance of a false failure.
+#
+# Cause is text rasterisation, not layout and not hover: the differing
+# pixels are one column of an anti-aliased glyph edge, and neutralising the
+# pointer entirely (see main.cpp's screenshot mouse suppression) did not
+# change the rate. `canvas` keeps its exact threshold precisely because it
+# contains no text at all, which is why it is worth keeping exact.
+#
+# 48 is ~2x the observed magnitude (23) and 16 is 4x the observed count (4),
+# the same shape of margin `layers` uses over its own measurement. The
+# changed-px half is doing the real work: a diffuse regression moves
+# thousands of pixels, so 16 keeps this view sensitive to everything except
+# the one glyph edge it has to tolerate.
+view_threshold=(48 96 0 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `toolbar`/`tools`/`canvas`/`flyout` are all 0 because their magnitude
@@ -271,7 +290,7 @@ view_threshold=(0 96 0 0 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(0 64 0 0 0)
+view_max_changed_px=(16 64 0 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on
