@@ -158,6 +158,15 @@ target_compile_definitions(naturalPaint PRIVATE
   NP_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders"
   NP_MIXBOX_LUT="${CMAKE_SOURCE_DIR}/third_party/mixbox/shaders/mixbox_lut.png"
   NP_KEYMAP_DIR="${CMAKE_SOURCE_DIR}/keymaps"
+  # ui/Fonts.cpp's installToolIconFont() -- the tool palette's Lucide icons
+  # (docs/ui.md section 2). Same convention as the three paths above: a
+  # vendored/source-tree asset read at runtime rather than compiled in, so
+  # third_party/lucide/lucide.ttf can be swapped without a rebuild.
+  NP_LUCIDE_TTF="${CMAKE_SOURCE_DIR}/third_party/lucide/lucide.ttf"
+  # app/selftest/AtelierChrome.cpp's own icon-name-to-codepoint verification
+  # -- "every name you use MUST exist in codepoints.json" checked against the
+  # vendored file itself at test time, not merely at authoring time.
+  NP_LUCIDE_CODEPOINTS_JSON="${CMAKE_SOURCE_DIR}/third_party/lucide/codepoints.json"
 )
 
 if(NP_USE_MIXBOX)

@@ -3,6 +3,7 @@
 #include "app/LayerEditor.hpp"
 #include "core/Layer.hpp"
 #include "imgui.h"
+#include "ui/AtelierChrome.hpp"
 #include "ui/Fonts.hpp"
 
 namespace np {
@@ -119,6 +120,49 @@ bool runFontsTest() {
               loaded.ok ? ("merged " + loaded.path).c_str() : loaded.error.c_str());
   check(loaded.ok, "a glyph source loaded and covers every required codepoint");
   check(loaded.missing.empty(), "no required codepoint is left undrawable");
+
+  // -- D. and the tool palette's Lucide merge draws too --------------------
+  //
+  // This section's own top comment says why: nine sections once asserted a
+  // return value and never a pixel, and the bug that taught this suite the
+  // difference would have sailed straight through a test that only checked
+  // ui/AtelierChrome.cpp's `toolIconCodepoint()` table. installToolIconFont()
+  // must run after installUiFonts() (it merges onto the Fonts[0] that call
+  // creates), which is exactly the order this section already has them in.
+  std::printf("  -- D. the tool palette's Lucide merge, checked the same way --\n");
+  const ToolIconLoadResult iconLoaded = installToolIconFont(toolIconCodepoints());
+  std::printf("    [measured] %s\n",
+              iconLoaded.ok ? ("merged " + iconLoaded.path).c_str() : iconLoaded.error.c_str());
+  check(iconLoaded.ok, "the vendored Lucide font loaded and covers every tool-icon codepoint");
+  check(iconLoaded.missing.empty(), "no tool-icon codepoint is left undrawable");
+
+  // The check above asks the pointer installToolIconFont() itself merged
+  // onto -- which is exactly the check that let a real bug through once
+  // (see ui/Fonts.cpp's installToolIconFont() comment on `config.DstFont`):
+  // that merge briefly landed on the *mono* face rather than on
+  // `uiFonts().text`, and asking the wrong-but-self-consistent pointer
+  // whether it covered its own merge said "yes" while ui/MacPaintUI.cpp's
+  // `drawToolGlyph()` -- which asks `uiFonts().text` specifically, because
+  // that is the font every cell is actually drawn with -- got nothing and
+  // silently fell back to hand-drawn vectors. So this asks the *real* call
+  // site's question a second time, independently.
+  bool textFaceHasIcons = true;
+  if (uiFonts().text != nullptr) {
+    ImFontBaked* textBaked = uiFonts().text->GetFontBaked(kToolIconSizePx);
+    if (textBaked == nullptr) {
+      textFaceHasIcons = false;
+    } else {
+      for (const uint32_t cp : toolIconCodepoints())
+        if (textBaked->FindGlyphNoFallback(static_cast<ImWchar>(cp)) == nullptr)
+          textFaceHasIcons = false;
+    }
+  } else {
+    textFaceHasIcons = false;
+  }
+  check(textFaceHasIcons,
+        "uiFonts().text itself -- what ui/MacPaintUI.cpp's drawToolGlyph() actually reads -- "
+        "draws every tool-icon codepoint, not just whatever installToolIconFont() merged onto");
+
   ImGui::DestroyContext(context);
   ImGui::SetCurrentContext(previous);
 

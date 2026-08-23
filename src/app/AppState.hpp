@@ -15,20 +15,64 @@
 
 namespace np {
 
-// Only tools that actually do something are listed. Lasso, marquee and text
-// belong to the MacPaint chrome but have no meaning yet for a fluid canvas, so
-// they are deliberately absent rather than present and dead.
+// docs/ui.md section 2's tool palette has ~26 cells (27 counting Water and
+// DryBrush, which the wireframe never drew -- see below), and this enum has
+// one value per cell so the palette, app/StrokeSession's routing table and
+// the --selftest tripwires all agree on a single canonical list rather than
+// three that can quietly drift apart.
+//
+// **Only the first seven -- Brush through Zoom -- do anything.** They are
+// what this build's canvas, StrokeSession and strokeRouteFor() have real
+// behaviour for. The other twenty exist purely so the palette can show a
+// name, an icon and a keyboard-shortcut slot for a tool that is not built
+// yet: ui/MacPaintUI.cpp's palette draws every one of them visibly disabled
+// (dimmed, unclickable, tooltip says so), and app/StrokeSession.cpp's
+// strokeRouteFor() routes all twenty to StrokeRoute::None. Each earns real
+// behaviour on its own PRD id and phase, per docs/ui.md section 4's table --
+// which is also where MEASURE and SLICE's earlier "Dropped" disposition is
+// reversed: the palette keeps them for now, and per the user's own words,
+// "we'll prune the unneeded tools in the future as the capabilities settle
+// in." That table's own callout says a disposition changed without a
+// reason recorded is how GRAD, FILL and MEASURE went missing from the PRD
+// for a whole revision before -- this comment is the reason, recorded.
+//
+// Water and DryBrush predate this palette (this build's two watercolour
+// brush variants) and are not in the wireframe's ~26 at all; they sit in
+// group 3 beside Brush in the palette's display order because that is where
+// a user reaching for "the wet one" or "the dry one" would look for them --
+// beside the brush they are variants of, not filed among tools with no
+// relationship to painting at all.
 enum class Tool {
+  // --- the seven with real behaviour --------------------------------------
   Brush,       // water + pigment
   Water,       // pre-wet the paper, no pigment
   DryBrush,    // little water, hard edge, pigment sits on the tooth
   Eyedropper,
-  // PRD E3's rectangle. The only selection tool that exists; lasso, polygon
-  // lasso, ellipse and magic wand are the rest of E3 (P1) and are absent
-  // rather than stubbed, the same way this enum already omits text.
-  Marquee,
+  Marquee,     // PRD E3's rectangle -- the only selection tool with a selection behind it
   Hand,
   Zoom,
+  // --- docs/ui.md section 2's remaining palette cells: name/icon/slot only,
+  // see this enum's own comment above for what "only" means here -----------
+  Move,
+  Lasso,
+  PolygonLasso,
+  MagicWand,
+  Crop,
+  Measure,
+  Frame,
+  CloneStamp,
+  Eraser,
+  PaintBucket,
+  Gradient,
+  Pencil,
+  Smudge,
+  Dodge,
+  Burn,
+  Pen,
+  Curve,
+  Text,
+  Shape,
+  Slice,
   Count
 };
 

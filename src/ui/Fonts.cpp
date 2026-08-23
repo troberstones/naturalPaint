@@ -168,6 +168,26 @@ std::vector<uint32_t> decodeUtf8(std::string_view utf8) {
   return out;
 }
 
+std::string encodeUtf8(uint32_t codepoint) {
+  std::string out;
+  if (codepoint <= 0x7Fu) {
+    out += static_cast<char>(codepoint);
+  } else if (codepoint <= 0x7FFu) {
+    out += static_cast<char>(0xC0u | (codepoint >> 6));
+    out += static_cast<char>(0x80u | (codepoint & 0x3Fu));
+  } else if (codepoint <= 0xFFFFu) {
+    out += static_cast<char>(0xE0u | (codepoint >> 12));
+    out += static_cast<char>(0x80u | ((codepoint >> 6) & 0x3Fu));
+    out += static_cast<char>(0x80u | (codepoint & 0x3Fu));
+  } else {
+    out += static_cast<char>(0xF0u | (codepoint >> 18));
+    out += static_cast<char>(0x80u | ((codepoint >> 12) & 0x3Fu));
+    out += static_cast<char>(0x80u | ((codepoint >> 6) & 0x3Fu));
+    out += static_cast<char>(0x80u | (codepoint & 0x3Fu));
+  }
+  return out;
+}
+
 FontLoadResult installUiFonts(float sizePx) {
   FontLoadResult result;
   ImFontAtlas* atlas = ImGui::GetIO().Fonts;
@@ -282,6 +302,112 @@ FontLoadResult installUiFonts(float sizePx) {
 
   result.ok = true;
   return result;
+}
+
+ToolIconLoadResult installToolIconFont(const std::vector<uint32_t>& codepoints) {
+  ToolIconLoadResult result;
+  if (codepoints.empty()) {
+    result.ok = true;
+    return result;
+  }
+
+  // Merging onto `g_fonts.text` mirrors `installUiFonts()`'s own contract
+  // ("the text face goes in FIRST... MergeMode merges into the previous
+  // font"): there has to be a Fonts[0] to merge onto, and `g_fonts.text` is
+  // how this file remembers which one that was.
+  if (g_fonts.text == nullptr) {
+    result.error =
+        "ui/Fonts: installToolIconFont() ran before installUiFonts() -- there is no text face "
+        "in Fonts[0] yet to merge the Lucide icons onto.";
+    return result;
+  }
+
+#ifndef NP_LUCIDE_TTF
+  result.error =
+      "ui/Fonts: NP_LUCIDE_TTF was not defined at compile time (see src/CMakeLists.txt) -- the "
+      "tool palette will fall back to drawToolIcon()'s hand-drawn vectors.";
+  return result;
+#else
+  std::error_code ec;
+  if (!std::filesystem::exists(NP_LUCIDE_TTF, ec)) {
+    result.error = std::string("ui/Fonts: vendored Lucide font missing at " NP_LUCIDE_TTF
+                               " -- the tool palette will fall back to drawToolIcon()'s "
+                               "hand-drawn vectors.");
+    return result;
+  }
+
+  // *LEGACY* GlyphRanges, one pair per codepoint rather than a spanning
+  // range -- installUiFonts()'s own `ranges` above explains why in full;
+  // the short version is that a span from the lowest icon used (U+E063) to
+  // the highest (U+E5xx) would ask the rasterizer for roughly 1300
+  // codepoints nothing in this project's icon table wants.
+  static std::vector<ImWchar> ranges;
+  if (ranges.empty()) {
+    for (const uint32_t cp : codepoints) {
+      ranges.push_back(static_cast<ImWchar>(cp));
+      ranges.push_back(static_cast<ImWchar>(cp));
+    }
+    ranges.push_back(0);
+  }
+
+  ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+  ImFontConfig config;
+  config.MergeMode = true;  // add to the text face, do not replace it
+  // **Not `Fonts.back()`.** MergeMode's default target is "the last font
+  // added to the atlas" (imgui_draw.cpp), which by the time this runs is
+  // `installUiFonts()`'s *mono* face -- that call adds text, then merges the
+  // layer-kind glyphs onto it (still Fonts.back() at that point), and only
+  // *then* appends mono as a genuinely new, unmerged font, which becomes the
+  // new Fonts.back(). Leaving this on the default put the Lucide merge on
+  // the wrong font: `drawToolGlyph()` asks `uiFonts().text` whether a
+  // codepoint exists, this merge answered the *mono* face instead, and every
+  // cell drew its drawToolIcon() fallback -- caught by photographing the
+  // palette, exactly the class of bug this project's ui/Fonts.cpp says a
+  // return-value check cannot catch. `DstFont` is what `AddFont()` actually
+  // reads ("font = font_cfg_in->DstFont ? font_cfg_in->DstFont :
+  // Fonts.back()"), so setting it points the merge at `g_fonts.text`
+  // directly, independent of what else has been added to the atlas since.
+  config.DstFont = g_fonts.text;
+  config.PixelSnapH = false;  // Lucide is a vector face -- see loadFirst()'s own reasoning
+  config.GlyphRanges = ranges.data();
+  ImFont* merged = atlas->AddFontFromFileTTF(NP_LUCIDE_TTF, kToolIconSizePx, &config);
+  if (merged == nullptr) {
+    result.error = "ui/Fonts: " NP_LUCIDE_TTF
+                   " exists but ImGui refused it -- the tool palette will fall back to "
+                   "drawToolIcon()'s hand-drawn vectors.";
+    return result;
+  }
+  result.path = NP_LUCIDE_TTF;
+
+  // Loaded is not the same as covers -- installUiFonts()'s own lesson,
+  // repeated here because it is a second, independent merge and a second,
+  // independent chance to be wrong about what it drew. Baked at
+  // kToolIconSizePx specifically: this is the merge whose entire point is
+  // that its size is fixed, so this is the one size worth asking about.
+  ImFontBaked* baked = merged->GetFontBaked(kToolIconSizePx);
+  if (baked != nullptr)
+    for (const uint32_t cp : codepoints)
+      if (baked->FindGlyphNoFallback(static_cast<ImWchar>(cp)) == nullptr)
+        result.missing.push_back(cp);
+
+  if (!result.missing.empty()) {
+    std::string list;
+    for (const uint32_t cp : result.missing) {
+      char buffer[16];
+      std::snprintf(buffer, sizeof(buffer), "U+%04X", cp);
+      if (!list.empty()) list += ", ";
+      list += buffer;
+    }
+    result.error = "ui/Fonts: merged " + result.path + " but it cannot draw " +
+                   std::to_string(result.missing.size()) + " of " +
+                   std::to_string(codepoints.size()) + " tool-icon codepoints (" + list +
+                   "); those cells fall back to drawToolIcon().";
+    return result;
+  }
+
+  result.ok = true;
+  return result;
+#endif
 }
 
 }  // namespace np

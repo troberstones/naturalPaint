@@ -174,14 +174,20 @@ bool runAtelierChromeTest() {
     check(b.titleBar.h == kTitleBarH && kTitleBarH == 36.0f, "title bar is 36 px");
     check(b.optionsBar.h == kOptionsBarH && kOptionsBarH == 46.0f, "options bar is 46 px");
     check(b.statusBar.h == kStatusBarH && kStatusBarH == 26.0f, "status bar is 26 px");
-    check(b.toolPalette.w == 104.0f, "the tool palette is 104 px wide");
+    // 44 px, not the outgoing chrome's 104: the supplied design redraws the
+    // palette as a single column (ui/AtelierLayout.hpp's own comment on
+    // kToolPaletteW has the arithmetic), so this checks against the *named
+    // constant* rather than a second copy of the literal -- docs/ui.md
+    // section 2 is where 44 is recorded as the number this build chose.
+    check(b.toolPalette.w == kToolPaletteW && kToolPaletteW == 44.0f,
+          "the tool palette is 44 px wide (a single column, docs/ui.md section 2)");
     check(b.rightColumn.w == 322.0f, "the right column is 322 px wide");
     check(b.statusBar.bottom() == kH, "the status bar sits flush with the bottom edge");
     check(b.rightColumn.right() == kW, "the right column sits flush with the right edge");
 
     // The canvas is the remainder, and this is the arithmetic spelled out:
     // three 2px rules vertically (title, options, status) and two horizontally.
-    check(b.canvas.w == kW - 104.0f - 322.0f - 2.0f * kRuleThickness,
+    check(b.canvas.w == kW - kToolPaletteW - 322.0f - 2.0f * kRuleThickness,
           "the canvas is what the two columns and their rules leave");
     check(b.canvas.h == kH - kTitleBarH - kOptionsBarH - kStatusBarH - 3.0f * kRuleThickness,
           "and what the three horizontal bands and their rules leave");
@@ -308,9 +314,99 @@ bool runAtelierChromeTest() {
     }
     check(namesOk, "every tool has a distinct non-empty name");
     // The tripwire that makes the walk above complete rather than merely long,
-    // the same shape app/selftest/Fonts.cpp uses for LayerKind.
-    check(std::string(toolName(static_cast<Tool>(7))) == "?",
-          "Tool still has exactly 7 values, so the walk above covers all of them");
+    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 27, not the
+    // 7 this used to be: the palette rebuild added twenty Tool values for
+    // cells that are not built yet (app/AppState.hpp's own comment says
+    // why), and this walk has to cover all twenty-seven or it is not proving
+    // what it claims to.
+    check(std::string(toolName(static_cast<Tool>(27))) == "?",
+          "Tool still has exactly 27 values, so the walk above covers all of them");
+  }
+
+  // --- Part F: the tool palette's icons ------------------------------------
+  {
+    // Exactly the seven this build actually paints with -- listed here as
+    // its own table, independent of ui/AtelierChrome.cpp's kToolMeta, so a
+    // row in that table getting its `implemented` flag wrong is something
+    // this check can actually catch rather than agreeing with itself.
+    const Tool kImplementedTools[] = {Tool::Brush,      Tool::Water, Tool::DryBrush,
+                                      Tool::Eyedropper, Tool::Marquee, Tool::Hand, Tool::Zoom};
+    bool implementedOk = true;
+    for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+      const Tool t = static_cast<Tool>(i);
+      const bool shouldBe =
+          std::find(std::begin(kImplementedTools), std::end(kImplementedTools), t) !=
+          std::end(kImplementedTools);
+      if (toolImplemented(t) != shouldBe) implementedOk = false;
+    }
+    check(implementedOk,
+          "toolImplemented() is true for exactly the seven tools with real behaviour");
+
+    // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
+    // sorted union of all of them plus the "More" cell's own ellipsis --
+    // walked the same way requiredUiCodepoints() walks LayerKind, so a tool
+    // whose codepoint is missing from the merge list is a bug this section
+    // finds instead of a screenshot finding it.
+    bool everyIconListed = true;
+    const std::vector<uint32_t>& merged = toolIconCodepoints();
+    for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+      const Tool t = static_cast<Tool>(i);
+      const uint32_t cp = toolIconCodepoint(t);
+      if (cp == 0u ||
+          std::find(merged.begin(), merged.end(), cp) == merged.end())
+        everyIconListed = false;
+    }
+    check(everyIconListed && std::find(merged.begin(), merged.end(), kMoreIconCodepoint) != merged.end(),
+          "every tool's icon codepoint, plus the More cell's, is in toolIconCodepoints()");
+
+    // "Every name you use MUST exist in codepoints.json -- verify each one
+    // programmatically, do not guess" -- this is that verification, run
+    // against the vendored file itself rather than trusted from the table
+    // that names it. Not a JSON parser: codepoints.json is a flat
+    // `{"name": number, ...}` object (checked -- no nesting, no arrays, no
+    // escaped quotes in a key), so a `"name":` substring search followed by
+    // a decimal-digit scan is the whole of what reading it needs, the same
+    // "hand-roll the small thing rather than take a dependency" call
+    // app/Keymap.cpp's own comment makes for a schema one size up from this.
+    std::FILE* f = std::fopen(NP_LUCIDE_CODEPOINTS_JSON, "rb");
+    if (f == nullptr) {
+      check(false, "third_party/lucide/codepoints.json opens (path: " NP_LUCIDE_CODEPOINTS_JSON ")");
+    } else {
+      std::fseek(f, 0, SEEK_END);
+      const long size = std::ftell(f);
+      std::fseek(f, 0, SEEK_SET);
+      std::string json(static_cast<size_t>(size), '\0');
+      const size_t got = std::fread(json.data(), 1, json.size(), f);
+      std::fclose(f);
+      check(got == json.size(), "codepoints.json read in full");
+
+      const auto lookup = [&](const std::string& name) -> long {
+        const std::string needle = "\"" + name + "\":";
+        const size_t pos = json.find(needle);
+        if (pos == std::string::npos) return -1;
+        size_t p = pos + needle.size();
+        while (p < json.size() && json[p] == ' ') ++p;
+        size_t end = p;
+        while (end < json.size() && json[end] >= '0' && json[end] <= '9') ++end;
+        if (end == p) return -1;
+        return std::stol(json.substr(p, end - p));
+      };
+
+      bool codepointsMatch = true;
+      for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+        const Tool t = static_cast<Tool>(i);
+        const long want = lookup(toolIconName(t));
+        if (want < 0 || static_cast<uint32_t>(want) != toolIconCodepoint(t)) {
+          codepointsMatch = false;
+          std::printf("    %-20s codepoints.json says %ld, toolIconCodepoint() says %u\n",
+                      toolIconName(t), want, toolIconCodepoint(t));
+        }
+      }
+      const long moreWant = lookup("ellipsis");
+      if (moreWant < 0 || static_cast<uint32_t>(moreWant) != kMoreIconCodepoint) codepointsMatch = false;
+      check(codepointsMatch,
+            "every icon name's codepoint matches third_party/lucide/codepoints.json exactly");
+    }
   }
 
   std::printf("[selftest] atelier chrome %s\n", ok ? "PASS" : "FAIL");

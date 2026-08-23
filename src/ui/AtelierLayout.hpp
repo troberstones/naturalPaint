@@ -27,22 +27,32 @@ struct AtelierRect {
 };
 
 // docs/ui.md section 2. The trailing numbers in the diagram are heights; the
-// two under it (104, 322) are the column widths.
+// two under it (44, 322) are the column widths -- kToolPaletteW is defined
+// just below, next to the arithmetic that produces its 44.
 constexpr float kTitleBarH   = 36.0f;
 constexpr float kTabStripH   = 34.0f;
 constexpr float kOptionsBarH = 46.0f;
 constexpr float kStatusBarH  = 26.0f;
-constexpr float kToolPaletteW = 104.0f;
 constexpr float kRightColumnW = 322.0f;
 
-// "Tool cells are 50px in a 2-wide grid -- generous desktop targets, and the
-// palette scrolls, so the tool count is not layout-constrained." 2 x 50 = 100
-// leaves 4 px, which is the palette's own padding rather than a gap the cells
-// have to absorb.
-constexpr float kToolCellSize = 50.0f;
-constexpr int   kToolGridCols = 2;
-static_assert(kToolGridCols * kToolCellSize <= kToolPaletteW,
-              "docs/ui.md section 2: a 2-wide grid of 50px cells has to fit the 104px palette");
+// The supplied design redraws docs/ui.md section 2's palette as a **single
+// column** of ~26 tools (was "50px in a 2-wide grid" -- docs/ui.md's own
+// text is updated to match, and this comment is the arithmetic behind the
+// new number). Lucide's icons are asked for at 15px (this build's own
+// spec line, ui/Fonts.hpp's kToolIconSizePx); 36px gives that glyph a
+// comfortable click target -- close to Photoshop's own single-column tool
+// rail -- and 8px of it is the palette's left/right padding, split evenly,
+// the same accounting the old 2-wide comment used for its own 4px.
+//
+// A single column this narrow cannot show 27 cells plus the FG swatch in
+// the ~900px the mid row leaves at the design's own 1024px window height
+// (27 * 36 = 972, before separators and the swatch), so the palette
+// **scrolls** -- docs/ui.md section 2 already said it would, for exactly
+// this reason, before there were enough tools to require it.
+constexpr float kToolCellSize = 36.0f;
+constexpr float kToolPaletteW = kToolCellSize + 8.0f;
+static_assert(kToolCellSize <= kToolPaletteW,
+              "docs/ui.md section 2: a single-column cell has to fit the palette it sits in");
 
 // The six regions of docs/ui.md section 2, plus the rules between them.
 //

@@ -55,6 +55,15 @@
 #     byte-for-byte compare is enough here, so goldentool's channel-aware
 #     diff is used at threshold 0 rather than reaching for a perceptual
 #     comparator this measurement gives no reason to need.
+#
+#     `tools`' crop moved (sidequest/lucide-toolbox's single-column palette
+#     rebuild, docs/ui.md section 2) and was re-measured at its new geometry
+#     rather than assumed to inherit the old crop's zero: `measure 6` against
+#     the new 85x270 (22 950 px) region gave 5 pairwise comparisons, all
+#     0 mismatched px, max channel diff 0 -- still exact-zero, because it is
+#     still static chrome with no animation or GPU simulation behind it, the
+#     same property that makes toolbar/canvas exact. Threshold stays 0 on
+#     both criteria.
 #   layers: magnitude 96, changed-px 64. The magnitude figure is derived
 #     from the 90-frame measurement's worst observed max channel diff (25),
 #     roughly 4x that as headroom against a residual animation-timing tail
@@ -106,13 +115,19 @@ measure_n="${2:-10}"
 #     --pigment-stroke-demo (PLAN.md's own Phase 5 verify sentence: latent
 #     Mix of blue over yellow gives green). Canvas: real simulated paint
 #     content, not just a static composited rectangle.
-#   tools  -- the whole 2-column tool palette under --demo-document
+#   tools  -- the top of the single-column tool palette under --demo-document
 #     --marquee-demo, with Rectangle Marquee selected so both the glyph and
-#     the selected-button treatment are in frame. Every tool's icon is drawn
-#     by hand into an ImDrawList (ui/MacPaintUI's drawToolIcon), so a tool
-#     added without a glyph renders as a bare square and nothing else in this
-#     project notices -- which is exactly what happened when Tool::Marquee
-#     landed. This view is the thing that would have noticed.
+#     the selected-button treatment are in frame (crop covers Move, Marquee,
+#     Lasso and part of Polygon Lasso -- sidequest/lucide-toolbox redrew the
+#     palette from a 2-wide grid to this single column; see docs/ui.md
+#     section 2). Icons are merged Lucide glyphs now
+#     (ui/Fonts.cpp's installToolIconFont()), not hand-drawn ImDrawList
+#     vectors, but the same lesson the old comment named still holds: a tool
+#     whose icon fails to merge/draw renders as a bare square (or, as a real
+#     bug during this rebuild briefly did, falls back to the wrong drawing
+#     entirely -- see ui/Fonts.cpp's installToolIconFont() comment on
+#     `config.DstFont`) and nothing else in this project notices. This view
+#     is what would have caught it.
 #
 #     **The marching ants are deliberately NOT a golden view**, though
 #     --marquee-demo draws them a few hundred pixels to the right of this
@@ -125,10 +140,45 @@ measure_n="${2:-10}"
 #     what gets locked at byte equality.
 view_names=(toolbar layers canvas tools)
 view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo")
-view_crop_x=(0    1916 1024 8)
-view_crop_y=(77   1075 973  250)
-view_crop_w=(1400 640  384  216)
-view_crop_h=(175  190  256  450)
+# `toolbar`'s height and `canvas`'s x moved -- **their reference PNGs did
+# not**. sidequest/lucide-toolbox's single-column palette narrowed
+# `kToolPaletteW` from 104 to 44 (docs/ui.md section 2), which moves
+# `ui/AtelierLayout.cpp`'s `canvasX` (= palette width + one rule) 60 logical
+# px to the left -- 120 physical px at this machine's 2x screenshot scale
+# (measured: `goldentool diff` against the untouched reference is exact-zero
+# at a 120px x-shift and at no other integer offset). Two of the four crops
+# reached into geometry that moved:
+#   * `canvas` sat at x=1024, deep enough into the canvas region that the
+#     120px shift is entirely inside the visible paint gradient -- shifted
+#     to x=904 to look at the *same document pixels* again. Re-derived by
+#     bisection against the untouched tests/golden/canvas.png, not guessed.
+#   * `toolbar` sat at y=77..252 (h=175), and rows 244-252 dipped into the
+#     tool palette's new top edge (single-column now, so its first cell is a
+#     different tool than the old grid's) -- trimmed to h=166 so the crop
+#     stays inside the options bar, which the palette-width change does not
+#     touch. 167 is the exact boundary (measured the same way); 166 leaves a
+#     1px margin.
+#
+# `canvas.png` was **not** touched -- `cmp` against `git show
+# HEAD:tests/golden/canvas.png` confirms it is still byte-identical to
+# sidequest/lucide-toolbox's base commit (72fd411); only its crop *x* moved,
+# to look at the same document pixels from the new canvas origin.
+#
+# `toolbar.png` **was** re-written, but not re-captured: the 8 affected rows
+# could not be avoided at h=175 by repositioning alone (they show tool-
+# palette content that no longer exists in that form anywhere on screen, by
+# design), so the only way to keep every remaining pixel provably identical
+# to what was already approved was to crop *the reference file itself* down
+# to the unaffected h=166 -- `goldentool crop` of the old, approved
+# toolbar.png, not a fresh run of the app. Verified rather than assumed: a
+# fresh capture at the new geometry, cropped to the same h=166, diffs
+# exact-zero against that trim. `tools.png` is the only reference this
+# branch actually re-renders from a live capture, because the tool palette
+# is the only thing it redesigns.
+view_crop_x=(0    1916 904  0)
+view_crop_y=(77   1075 973  228)
+view_crop_w=(1400 640  384  85)
+view_crop_h=(166  190  256  270)
 view_frames=(90 90 90 90)
 view_threshold=(0 96 0 0)
 # The second criterion: how many pixels may differ at all, whatever their

@@ -26,6 +26,31 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     case Tool::Marquee:
     case Tool::Hand:
     case Tool::Zoom:
+    // The twenty palette cells app/AppState.hpp's Tool comment says exist for
+    // their name/icon/slot only -- none of them is built, so none of them can
+    // route anywhere but here. Listed rather than caught by a `default:` so
+    // that a real implementation moves its tool out of this list instead of
+    // silently keeping the fallback -Wswitch would no longer force a look at.
+    case Tool::Move:
+    case Tool::Lasso:
+    case Tool::PolygonLasso:
+    case Tool::MagicWand:
+    case Tool::Crop:
+    case Tool::Measure:
+    case Tool::Frame:
+    case Tool::CloneStamp:
+    case Tool::Eraser:
+    case Tool::PaintBucket:
+    case Tool::Gradient:
+    case Tool::Pencil:
+    case Tool::Smudge:
+    case Tool::Dodge:
+    case Tool::Burn:
+    case Tool::Pen:
+    case Tool::Curve:
+    case Tool::Text:
+    case Tool::Shape:
+    case Tool::Slice:
     case Tool::Count:
       return StrokeRoute::None;
   }
@@ -48,6 +73,30 @@ const char* strokeEditLabel(Tool tool) noexcept {
     case Tool::Marquee:
     case Tool::Hand:
     case Tool::Zoom:
+    // Same twenty-tool list as strokeRouteFor() above, and the same reason
+    // it is spelled out rather than a `default:` -- none of these can begin
+    // a stroke (strokeRouteFor() refuses them all), so none of them needs a
+    // label of its own; they fall through to the generic one below.
+    case Tool::Move:
+    case Tool::Lasso:
+    case Tool::PolygonLasso:
+    case Tool::MagicWand:
+    case Tool::Crop:
+    case Tool::Measure:
+    case Tool::Frame:
+    case Tool::CloneStamp:
+    case Tool::Eraser:
+    case Tool::PaintBucket:
+    case Tool::Gradient:
+    case Tool::Pencil:
+    case Tool::Smudge:
+    case Tool::Dodge:
+    case Tool::Burn:
+    case Tool::Pen:
+    case Tool::Curve:
+    case Tool::Text:
+    case Tool::Shape:
+    case Tool::Slice:
     case Tool::Count:
       break;
   }

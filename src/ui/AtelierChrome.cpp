@@ -1,5 +1,6 @@
 #include "ui/AtelierChrome.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <type_traits>
@@ -119,18 +120,106 @@ std::string atelierViewStateMarkers(const CanvasView& view) {
   return out;
 }
 
-const char* toolName(Tool t) {
-  switch (t) {
-    case Tool::Brush:      return "Brush";
-    case Tool::Water:      return "Water";
-    case Tool::DryBrush:   return "Dry Brush";
-    case Tool::Eyedropper: return "Eyedropper";
-    case Tool::Marquee:    return "Rectangle Marquee";
-    case Tool::Hand:       return "Hand";
-    case Tool::Zoom:       return "Zoom";
-    case Tool::Count:      break;
+namespace {
+
+// One row per Tool value, **in the enum's declaration order** -- the
+// static_assert right after the table is what makes that a fact rather than
+// a convention: add a value to `enum class Tool` without a row here and the
+// build stops, instead of every one of toolName()/toolImplemented()/
+// toolIconCodepoint()/toolShortcutLabel() quietly returning the same wrong
+// answer for it the way four separate switches each missing a case would.
+//
+// `shortcut` is docs/shortcuts.md section 1's reserved letter, spelled out
+// as "Shift+X" rather than the design's own "⇧X" glyph: this build's merged
+// font holds only the Lucide codepoints below plus whatever
+// requiredUiCodepoints() lists (ui/Fonts.cpp), and adding one more codepoint
+// for a single tooltip character is not worth the merge-range entry when
+// plain ASCII already says the same thing unambiguously.
+struct ToolMeta {
+  const char* name;
+  const char* lucideName;
+  uint32_t codepoint;
+  const char* shortcut;  // "" when docs/shortcuts.md reserves none yet
+  bool implemented;
+};
+
+constexpr ToolMeta kToolMeta[] = {
+    // --- the seven with real behaviour --------------------------------
+    {"Brush", "brush", 57811u, "B", true},
+    {"Water", "droplet", 57524u, "", true},
+    {"Dry Brush", "paintbrush-2", 58088u, "", true},
+    {"Eyedropper", "pipette", 57659u, "I", true},
+    {"Rectangle Marquee", "square-dashed", 57803u, "M", true},
+    {"Hand", "hand", 57815u, "H", true},
+    {"Zoom", "zoom-in", 57782u, "Z", true},
+    // --- the twenty name/icon/slot-only cells (app/AppState.hpp) -------
+    {"Move", "move", 57633u, "V", false},
+    {"Lasso", "lasso", 57806u, "L", false},
+    {"Polygon Lasso", "pentagon", 58667u, "Shift+L", false},
+    {"Magic Wand", "wand-sparkles", 58199u, "W", false},
+    {"Crop", "crop", 57515u, "C", false},
+    {"Measure", "ruler", 57675u, "", false},
+    {"Frame", "frame", 58001u, "", false},
+    {"Clone Stamp", "stamp", 58299u, "S", false},
+    {"Eraser", "eraser", 57999u, "E", false},
+    {"Paint Bucket", "paint-bucket", 58086u, "Shift+G", false},
+    {"Gradient", "blend", 58780u, "G", false},
+    {"Pencil", "pencil", 57849u, "", false},
+    {"Smudge", "droplets", 57525u, "N", false},
+    {"Dodge", "sun", 57720u, "O", false},
+    {"Burn", "moon", 57630u, "Shift+O", false},
+    {"Pen", "pen-tool", 57649u, "P", false},
+    {"Curve", "spline", 58251u, "Shift+P", false},
+    {"Text", "type", 57752u, "T", false},
+    {"Shape", "shapes", 58547u, "", false},
+    {"Slice", "slice", 58096u, "", false},
+};
+static_assert(std::size(kToolMeta) == static_cast<size_t>(Tool::Count),
+              "one ToolMeta row per Tool value, in app/AppState.hpp's declaration order");
+
+constexpr ToolMeta kUnknownTool{"?", "", 0u, "", false};
+
+// `t` past the table (Tool::Count, or any other stray cast) reads as the
+// unknown row -- the same "?" contract the old per-field switches gave
+// `toolName()`, and what app/selftest/AtelierChrome.cpp's tripwire checks.
+const ToolMeta& metaFor(Tool t) noexcept {
+  const size_t i = static_cast<size_t>(t);
+  return i < std::size(kToolMeta) ? kToolMeta[i] : kUnknownTool;
+}
+
+}  // namespace
+
+const char* toolName(Tool t) { return metaFor(t).name; }
+bool toolImplemented(Tool t) noexcept { return metaFor(t).implemented; }
+const char* toolIconName(Tool t) noexcept { return metaFor(t).lucideName; }
+uint32_t toolIconCodepoint(Tool t) noexcept { return metaFor(t).codepoint; }
+
+const std::vector<uint32_t>& toolIconCodepoints() {
+  static const std::vector<uint32_t> kPoints = [] {
+    std::vector<uint32_t> points;
+    for (const ToolMeta& m : kToolMeta)
+      if (m.codepoint != 0u &&
+          std::find(points.begin(), points.end(), m.codepoint) == points.end())
+        points.push_back(m.codepoint);
+    points.push_back(kMoreIconCodepoint);
+    std::sort(points.begin(), points.end());
+    return points;
+  }();
+  return kPoints;
+}
+
+std::string toolShortcutLabel(Tool t) { return metaFor(t).shortcut; }
+
+std::string toolTooltip(Tool t) {
+  std::string s = toolName(t);
+  s += " Tool";
+  const std::string shortcut = toolShortcutLabel(t);
+  if (!shortcut.empty()) {
+    s += "  ";
+    s += shortcut;
   }
-  return "?";
+  if (!toolImplemented(t)) s += "\nNot built yet.";
+  return s;
 }
 
 void drawAtelierRules(const AtelierBands& bands) {

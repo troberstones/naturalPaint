@@ -44,6 +44,7 @@
 #include "ui/Fonts.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/MacPaintUI.hpp"
+#include "ui/AtelierChrome.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
 
@@ -1696,6 +1697,18 @@ int main(int argc, char** argv) {
                 np::requiredUiCodepoints().size());
   else
     std::printf("[fonts] %s\n", fontResult.error.c_str());
+
+  // The tool palette's Lucide icons (docs/ui.md section 2: "Toolbox uses
+  // Lucide icons at 15px, one per tool"). A second, independent merge from
+  // the layer-kind one above -- see ui/Fonts.hpp's installToolIconFont() for
+  // why it cannot just reuse that call -- so it gets its own report line
+  // rather than being folded into fontResult's.
+  const np::ToolIconLoadResult iconResult = np::installToolIconFont(np::toolIconCodepoints());
+  if (iconResult.ok)
+    std::printf("[fonts] merged %s for %zu tool-palette icons\n", iconResult.path.c_str(),
+                np::toolIconCodepoints().size());
+  else
+    std::printf("[fonts] %s\n", iconResult.error.c_str());
 
   ImGui_ImplSDL3_InitForOther(window);
   ImGui_ImplWGPU_InitInfo wgpuInit;

@@ -56,6 +56,16 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 
 ## 2. Layout
 
+> ⚠️ **The palette went from a wireframe to a supplied design mid-project, and this
+> section now describes that design, not the wireframe.** The wireframe's own palette was
+> "50px [cells] in a 2-wide grid"; the supplied design (sidequest/lucide-toolbox) redraws
+> it as a **single column** of ~26/27 tools, grouped by thin rules, with the selected tool
+> drawn on the accent colour and Lucide glyphs at 15px, one per tool. The diagram and the
+> prose below are updated to match; ui/AtelierLayout.hpp's `kToolPaletteW`/`kToolCellSize`
+> carry the arithmetic (36px cells, 44px palette) and `--selftest`'s atelier-chrome
+> section asserts the new number against this diagram, the same way it always asserted
+> the old one.
+
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ naturalPaint │ File Edit … Help        undo redo ⟲ panels  │ 36
@@ -63,25 +73,90 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 │ ▨ study-plate-04.npaint ●│ retouch-ref.tif 64% │ … │ +  ⫿⫿ ⊞ │ 34
 ├────────────────────────────────────────────────────────────┤
 │ ■BRUSH│ PRESET ▣ Round Bristle 03 │ SIZE ── 48px │ HARD …  │ 46
-├──────┬──────────────────────────────────────┬──────────────┤
-│ tool │                                      │ COLOR        │
-│ 2×n  │            canvas + rulers           │ BRUSH SET.   │
-│ grid │                        ┌───────────┐ │ LAYERS       │
-│      │                        │ NAVIGATOR │ │ CHANNELS     │
-│ FG/BG│                        └───────────┘ │              │
-├──────┴──────────────────────────────────────┴──────────────┤
+├───┬──────────────────────────────────────────────┬──────────┤
+│ ▤ │                                              │ COLOR    │
+│ 1 │                                              │ BRUSH SET│
+│ col│           canvas + rulers                   │ LAYERS   │
+│   │                        ┌───────────┐         │ CHANNELS │
+│   │                        │ NAVIGATOR │         │          │
+│FG │                        └───────────┘         │          │
+├───┴──────────────────────────────────────────────┴──────────┤
 │ 64% │ 2048×1536 · LIN16 │ 214 MB / 512 MB │ Clone source…  │ 26
 └────────────────────────────────────────────────────────────┘
-  104                                              322
+  44                                                    322
 ```
 
-Tool cells are 50px in a 2-wide grid — generous desktop targets, and the palette
-scrolls, so the tool count is not layout-constrained.
+Tool cells are **36px in a single column** — the design's own layout, close to
+Photoshop's own single-column tool rail; 15px Lucide glyphs sit comfortably inside that
+with room for a click target. The palette **scrolls**: a single column of ~27 cells plus
+the FG swatch does not fit the ~900px the mid row leaves at the design's own 1024px
+window height, so `ui/MacPaintUI.cpp`'s palette puts the tool grid in its own scrolling
+child window and keeps the FG swatch pinned below it, outside that child, so scrolling
+the tools can never carry the swatch away with them.
 
-Every cell shows its **shortcut letter** on hover and in its tooltip, and the palette
-**switches to the flatting set when a Flats layer is active** — those tools are scoped to
-that layer kind rather than holding global keys. Default keymap and its reasoning:
-[shortcuts.md](shortcuts.md).
+The palette is drawn in **five groups, separated by thin rules**, top to bottom: selection
+& sampling; retouch & fill; paint; vector & text; navigation. Only **seven of the ~27
+cells do anything** — see §4a below for the full list and why the rest are drawn
+disabled rather than omitted.
+
+Every cell shows its **shortcut letter** on hover and in its tooltip when
+[shortcuts.md](shortcuts.md) section 1 reserves one for it — this is the letter that
+tooltip shows, not a claim the key is wired to a tool switch yet; `keymaps/default.json`
+does not bind any tool-select key today, and wiring that is separate, later work. The
+palette also **switches to the flatting set when a Flats layer is active** — those tools
+are scoped to that layer kind rather than holding global keys.
+
+### 2a. Icons: Lucide, one per tool, 15px
+
+"Toolbox uses Lucide icons at 15px, one per tool; if a tool has no matching Lucide glyph,
+use the closest and list the substitutions" was the design's own spec line. The icon font
+is vendored at `third_party/lucide/` (ISC-licensed) and merged into the UI's font atlas by
+`ui/Fonts.cpp`'s `installToolIconFont()` — a second, independent merge from the one that
+already exists for the layer-kind glyphs (`installUiFonts()`), because the icon size is
+fixed at 15px regardless of the UI's own text size, which is the spec's own line and not a
+preference.
+
+Every name below was checked against `third_party/lucide/codepoints.json` — not just at
+authoring time but at `--selftest` time too (`app/selftest/AtelierChrome.cpp`'s "Part F"
+reads the vendored JSON directly and compares every codepoint this table claims against
+what the file actually says).
+
+| tool | Lucide icon | match | substitution reason |
+|---|---|---|---|
+| Move | `move` | exact | — |
+| Rectangle Marquee | `square-dashed` | close | Lucide has no dedicated marquee icon; a dashed square is the standard visual convention for a rectangular-selection tool. |
+| Lasso | `lasso` | exact | — |
+| Polygon Lasso | `pentagon` | substitution | no polygon-lasso icon exists; a pentagon is the clearest available stand-in for "select along straight polygon edges." |
+| Magic Wand | `wand-sparkles` | substitution | no magic-wand icon exists; the sparkle wand is Lucide's closest "magic selection" glyph. |
+| Crop | `crop` | exact | — |
+| Eyedropper | `pipette` | exact | Lucide's own eyedropper/colour-sampler glyph is literally named `pipette`. |
+| Measure | `ruler` | close | Photoshop itself calls this the Ruler tool; no dedicated "measure" icon exists or is needed. |
+| Frame / Artboard | `frame` | exact | — |
+| Clone Stamp | `stamp` | substitution | no clone-stamp icon exists; a rubber stamp is the closest available glyph for "copies a source elsewhere." |
+| Eraser | `eraser` | exact | — |
+| Paint Bucket | `paint-bucket` | exact | — |
+| Gradient | `blend` | substitution | no gradient icon exists in Lucide; `blend` is its closest existing glyph for a gradual colour transition. |
+| Brush | `brush` | exact | — |
+| Water | `droplet` | substitution | not in the wireframe's ~26 at all (see §4a); a single water drop is the clearest stand-in for "pre-wet, no pigment." |
+| Dry Brush | `paintbrush-2` | substitution | not in the wireframe's ~26 either; the alternate paintbrush glyph distinguishes it from Brush without inventing a "dryness" motif Lucide does not have. |
+| Pencil | `pencil` | exact | — |
+| Smudge | `droplets` | substitution | no smudge/smear/blur icon exists in Lucide; multiple droplets is the closest available metaphor for wet blending. |
+| Dodge | `sun` | substitution | no dodge icon exists; sun is Photoshop's own metaphor for lightening exposure. |
+| Burn | `moon` | substitution | paired with Dodge/sun; moon/night is the closest available darkening metaphor. |
+| Pen | `pen-tool` | exact | — |
+| Curve | `spline` | close | `spline` is the vector-curve-authoring concept Curve stands for. |
+| Text | `type` | exact | — |
+| Shape | `shapes` | exact | — |
+| Slice | `slice` | exact | — |
+| Hand | `hand` | exact | — |
+| Zoom | `zoom-in` | close | Lucide has `zoom-in`/`zoom-out` but no neutral "zoom" glyph; `zoom-in` matches the tool's own default cursor. |
+| More ("…") | `ellipsis` | exact | Not a `Tool` — the overflow cell at the foot of the palette; see §4a. |
+
+15 of these 28 are exact Lucide matches; 4 are close-enough renamings that need no
+substitution note (Rectangle Marquee, Measure, Curve, Zoom); 9 are genuine substitutions
+with no matching Lucide concept at all (Polygon Lasso, Magic Wand, Clone Stamp, Gradient,
+Water, Dry Brush, Smudge, Dodge, Burn). Sun/moon for Dodge/Burn is Photoshop's own
+lighten/darken metaphor, not an invented one.
 
 ---
 
@@ -187,17 +262,37 @@ scope**, which changes the PRD's non-goals.
 | FILL | PRD **D25, D26**, phase 6 — the paint bucket with tolerance is distinct from Fill-with-colour. |
 | **PEN, CURVE, + PATHS tab** | New subsystem. Phase 13. |
 | **TEXT** | Was a documented non-goal. Now phase 14. |
-| MEASURE | **Dropped.** The pixel probe and the rulers cover what it was for. |
-| SLICE | Web-export slicing. Dropped — no plausible use in visdev or texture work, and it is the one tool here with no constituency. |
+| MEASURE | **Un-dropped** (sidequest/lucide-toolbox). This row used to say "**Dropped.** The pixel probe and the rulers cover what it was for." The supplied palette design draws Measure as its own cell regardless of that judgement, and the user's own words on reversing it: **"the palette keeps them for now, and we'll prune the unneeded tools in the future as the capabilities settle in."** No PRD id assigned yet — drawn disabled (§4a) until one is. |
+| SLICE | **Un-dropped** (sidequest/lucide-toolbox), same reversal and the same words as MEASURE above. This row used to say "Web-export slicing. Dropped — no plausible use in visdev or texture work, and it is the one tool here with no constituency." That judgement about its usefulness is not retracted, only the disposition is: the palette draws its cell either way, and a cell that exists gets a name rather than a silent gap. No PRD id assigned yet — drawn disabled (§4a) until one is. |
 
 > **This table used to say "Fold into existing phases" for six tools, and four of them then
 > never became requirements.** That is how GRAD, FILL and MEASURE went missing for a
 > revision. Accepting scope in a UI document is not the same as specifying it — every row
-> here now names its requirement or says it was dropped.
+> here now names its requirement or says it was dropped. **The MEASURE/SLICE reversal
+> above is the same lesson applied to a "Dropped" row: it is edited in place, with the old
+> text kept and the reason for the change recorded, rather than the disposition being
+> silently flipped.**
 
 The palette also needs two tools the wireframe did not draw: the **eraser** (PRD F9,
 [ADR-0007](adr/0007-erase-is-mass-reduction-not-a-colour.md)) and the **eyedropper**
 (PRD Q10).
+
+### 4a. What the palette actually does today
+
+Of the 27 `Tool` values the palette draws a cell for (`app/AppState.hpp`), **seven have
+real behaviour**: Brush, Water, Dry Brush, Eyedropper, Rectangle Marquee, Hand, Zoom. The
+other twenty — every tool named in the table above whose phase has not arrived yet, plus
+Move, Lasso, Polygon Lasso, Magic Wand, Frame, Clone Stamp, Paint Bucket, Pencil, Smudge —
+exist in the palette **for their name, icon and keyboard-shortcut slot only**.
+`ui/MacPaintUI.cpp`'s `toolButton()` draws every one of them visibly disabled: dimmed
+icon, no hover highlight, not clickable, and a tooltip that says "Not built yet." rather
+than merely doing nothing on a click. **No dead button looks live.**
+
+Water and Dry Brush are this build's own watercolour brush variants and were never in the
+wireframe's ~26 tools at all (§2a's icon table says which Lucide glyph each substitutes).
+The palette places them in the paint group beside Brush, where a painter reaching for
+"the wet one" or "the dry one" would look, rather than leaving them off the palette or
+filing them somewhere unrelated to painting.
 
 ### Paths compose better than expected
 

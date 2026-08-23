@@ -85,6 +85,17 @@ const std::vector<uint32_t>& requiredUiCodepoints();
 // because the caller is a display path.
 std::vector<uint32_t> decodeUtf8(std::string_view utf8);
 
+// codepoint -> UTF-8. decodeUtf8()'s inverse, and the piece the tool palette
+// needs: third_party/lucide/codepoints.json hands out a PUA codepoint per
+// icon (ui/AtelierChrome.hpp's `toolIconCodepoint()`), and ImGui's `AddText`
+// draws bytes, not numbers. Every codepoint this project's icon table uses
+// is in the Private Use Area (U+E000-U+F8FF), which is always a 3-byte
+// sequence -- but this encodes the general case anyway, the same way
+// decodeUtf8() decodes the general case rather than special-casing 3 bytes,
+// because a codepoint that is not is a wrong answer nobody would notice from
+// the length alone.
+std::string encodeUtf8(uint32_t codepoint);
+
 // The UI type ramp (docs/ui.md section 1): "Type is Archivo (400 / 600 / 800)
 // with `ui-monospace` for all numerics and caps labels".
 //
@@ -143,5 +154,52 @@ struct FontLoadResult {
 // still about the *glyphs*: a UI drawn in the fallback face is ugly, a UI that
 // cannot draw a layer's kind is wrong.
 FontLoadResult installUiFonts(float sizePx);
+
+// -------------------------------------------------------- tool palette icons
+//
+// docs/ui.md section 2's single-column tool palette (ui/AtelierChrome.hpp's
+// `toolIconCodepoint()` names which Lucide glyph each tool wants), rendered
+// as merged font glyphs -- "Toolbox uses Lucide icons at 15px, one per tool"
+// -- the same MERGED shape `installUiFonts()` already established for the
+// layer-kind glyphs above, but kept as its own function and its own merge
+// call for one reason: **the icon size is fixed at 15px regardless of the
+// UI's own text size**, which is the spec's own line, not a preference. Two
+// merges at two different `SizePixels` onto the same `Fonts[0]` is exactly
+// what `ImFontConfig::MergeMode`'s own doc comment describes ("combine
+// multiple inputs font into one ImFont"), so this does not need a font of
+// its own -- it needs its own persistent `GlyphRanges` (this project's own
+// convention: one pair per codepoint, not a spanning range that would pull
+// in the ~1400 codepoints between the lowest and highest icon used) and its
+// own coverage check, because the layer-kind merge's `missing` list has
+// nothing to say about whether the icon merge succeeded.
+constexpr float kToolIconSizePx = 15.0f;
+
+struct ToolIconLoadResult {
+  // True when the vendored Lucide font loaded AND covers every codepoint
+  // asked for.
+  bool ok = false;
+  // The file that was merged (third_party/lucide/lucide.ttf's resolved
+  // path), empty when it did not load.
+  std::string path;
+  // Non-empty exactly when !ok.
+  std::string error;
+  // Requested codepoints the merged font still cannot draw. Empty when ok.
+  std::vector<uint32_t> missing;
+};
+
+// Merges third_party/lucide/lucide.ttf onto the text face `installUiFonts()`
+// already put in `Fonts[0]` -- **must run after that call**, since there is
+// no `Fonts[0]` to merge onto before it. `codepoints` is normally
+// `toolIconCodepoints()` (ui/AtelierChrome.hpp); passed in rather than read
+// directly so this file stays free of the `Tool` enum it would otherwise
+// need to depend on for one call site.
+//
+// A missing or unloadable vendored font is reported, exactly as
+// `installUiFonts()` reports a missing system font, and is not fatal:
+// ui/MacPaintUI.cpp's `toolButton()` falls back to `drawToolIcon()`'s
+// hand-drawn vectors for the seven tools that have one, and draws a bare cell
+// (box, border, tooltip, no pictograph) for the rest -- a degraded palette,
+// never a crash.
+ToolIconLoadResult installToolIconFont(const std::vector<uint32_t>& codepoints);
 
 }  // namespace np

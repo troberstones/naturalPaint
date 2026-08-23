@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "app/AppState.hpp"
 #include "core/Document.hpp"
@@ -77,6 +78,61 @@ std::string atelierViewStateMarkers(const CanvasView& view);
 // tooltips name every tool, and two copies of a name table is how a tool ends
 // up called two things.
 const char* toolName(Tool t);
+
+// -------------------------------------------------------- palette metadata
+//
+// docs/ui.md section 2's ~26/27-cell palette needs, per tool: a name (above),
+// whether it does anything (app/AppState.hpp's Tool comment: only the first
+// seven do), a Lucide icon to draw, and the keyboard-shortcut letter its
+// tooltip shows. One table backs all four rather than four switches that
+// could disagree with each other about which tools exist.
+
+// True for exactly the seven Tool values this build has real behaviour for.
+// Everything else is a palette cell that exists for its name/icon/slot only,
+// per app/AppState.hpp's own comment -- ui/MacPaintUI.cpp's toolButton()
+// reads this to decide whether a cell is clickable at all.
+bool toolImplemented(Tool t) noexcept;
+
+// The Lucide icon a tool's cell draws: its name (third_party/lucide/, for
+// documentation and debugging) and its PUA codepoint
+// (third_party/lucide/codepoints.json) -- verified programmatically against
+// that file rather than guessed; the commit message and docs/ui.md's
+// substitution table say which of these are exact matches and which are the
+// closest available substitute, and why. 0 for a tool with no icon (there is
+// none today; every row in the table has one).
+const char* toolIconName(Tool t) noexcept;
+uint32_t toolIconCodepoint(Tool t) noexcept;
+
+// Every codepoint toolIconCodepoint() can return, deduplicated and ascending,
+// plus the "More" overflow cell's own ellipsis glyph (that cell is not a
+// Tool -- see ui/MacPaintUI.cpp). This is what ui/Fonts's
+// installToolIconFont() merges: built by walking every real Tool value, so a
+// tool added without an icon shows up as a gap in this list rather than
+// silently drawing nothing forever.
+const std::vector<uint32_t>& toolIconCodepoints();
+
+// The "..." overflow cell's own Lucide glyph (`ellipsis`). Not a Tool -- see
+// ui/MacPaintUI.cpp's palette loop for why it is drawn separately -- but its
+// codepoint has to be in toolIconCodepoints() for the same reason every
+// tool's does, so it is named here rather than as a magic number at the one
+// call site that draws it.
+constexpr uint32_t kMoreIconCodepoint = 57526u;  // "ellipsis"
+
+// docs/shortcuts.md section 1's reserved letter for a tool ("B", "Shift+L"),
+// or an empty string when no letter is reserved yet. **This is not a
+// working shortcut** -- keymaps/default.json does not bind any tool-select
+// key today (see main.cpp's key-down dispatch: every binding it resolves is
+// a command, never a tool switch), so this is what a tooltip *shows*, not a
+// promise that pressing the key does anything. Wiring that dispatch is a
+// separate, later change.
+std::string toolShortcutLabel(Tool t);
+
+// The tooltip a palette cell shows on hover, matching the design's own
+// "Brush Tool  B" -- name, "Tool", and the shortcut letter when one is
+// reserved -- with "Not built yet." appended for the twenty cells
+// toolImplemented() says are not, so a disabled cell never merely looks
+// inert; it says so.
+std::string toolTooltip(Tool t);
 
 // -------------------------------------------------------------- draw parts
 

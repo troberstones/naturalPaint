@@ -33,22 +33,23 @@
 #include "io/ExportStates.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
+#include "ui/Fonts.hpp"
 
 namespace np {
 namespace {
 
-// The three layout constants this file used to invent are now docs/ui.md
-// section 2's, in ui/AtelierLayout: a 104 px palette of 50 px cells (this file
-// had 78 px and 30 px) and a 322 px right column (this file had 300 px, itself
-// widened from 268 px by UI detour step 3 to stop the longest label clipping
-// -- 322 keeps that fix and takes the design's number).
+// The layout constants this file used to invent are now docs/ui.md section
+// 2's, in ui/AtelierLayout: a 44 px single-column palette of 36 px cells
+// (this file had a 78 px 2-wide-grid palette of 30 px cells before the
+// supplied design's single column) and a 322 px right column (this file had
+// 300 px, itself widened from 268 px by UI detour step 3 to stop the longest
+// label clipping -- 322 keeps that fix and takes the design's number).
 //
 // `kSwatchStripH` is gone with the band it measured: the design has no
 // full-width swatch strip along the bottom of the window. That row is where
 // the status bar goes, and the pigment well it held has moved into the COLOR
 // section of the right-hand column, which is where docs/ui.md section 3.3 puts
 // colour selection.
-constexpr float kToolCol = static_cast<float>(kToolGridCols);
 constexpr float kToolSize = kToolCellSize;
 constexpr float kControlsW = kRightColumnW;
 // Peak gravity, in the same cells-per-step units as the rest of the velocity field.
@@ -383,33 +384,138 @@ void drawToolIcon(ImDrawList* dl, Tool t, ImVec2 c, float s, ImU32 col) {
   }
 }
 
+// Draws one Lucide glyph, centred at `c`, at the spec's fixed 15px
+// (ui/Fonts.hpp's kToolIconSizePx) -- independent of whatever size the
+// ambient UI text face is running at, which `AddText(ImFont*, size, ...)`
+// gives for free by taking the size as an argument rather than reading it
+// off a pushed font. Returns false (drawing nothing) when the codepoint is 0
+// or the merged font cannot draw it, which is the caller's cue to fall back
+// to drawToolIcon()'s hand-drawn vectors -- see ui/Fonts.cpp's
+// installToolIconFont() for why that can happen on a machine where the
+// vendored TTF somehow failed to load.
+bool drawToolGlyph(ImDrawList* dl, uint32_t codepoint, ImVec2 c, ImU32 col) {
+  ImFont* font = uiFonts().text;
+  if (font == nullptr || codepoint == 0u) return false;
+  ImFontBaked* baked = font->GetFontBaked(kToolIconSizePx);
+  if (baked == nullptr || baked->FindGlyphNoFallback(static_cast<ImWchar>(codepoint)) == nullptr)
+    return false;
+  const std::string glyph = encodeUtf8(codepoint);
+  const ImVec2 ts = font->CalcTextSizeA(kToolIconSizePx, FLT_MAX, 0.0f, glyph.c_str());
+  dl->AddText(font, kToolIconSizePx, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), col,
+              glyph.c_str());
+  return true;
+}
+
+// One cell of docs/ui.md section 2's single-column palette. `t` is always
+// drawn -- the ~20 cells toolImplemented() says are not built yet are not
+// skipped, they are drawn **inert**: dimmed, un-clickable (InvisibleButton
+// still reports a click; this simply never acts on it), and never take the
+// accent "selected" fill, because `st.brush.tool` can never equal one of
+// them if nothing ever assigns it. Only the tooltip differs in kind rather
+// than degree -- toolTooltip() appends "Not built yet." -- so a user who
+// hovers finds out why the cell did nothing, rather than assuming it is
+// broken.
 bool toolButton(AppState& st, Tool t) {
   ImGui::PushID(static_cast<int>(t));
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(kToolSize, kToolSize);
-  const bool clicked = ImGui::InvisibleButton("##tool", size);
-  const bool selected = st.brush.tool == t;
+  const bool implemented = toolImplemented(t);
+  const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
+  const bool clicked = clickedRaw && implemented;
+  const bool selected = implemented && st.brush.tool == t;
   const bool hovered = ImGui::IsItemHovered();
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImU32 bg = selected ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
-                            : (hovered ? ImGui::GetColorU32(ImGuiCol_ButtonHovered)
-                                       : ImGui::GetColorU32(ImGuiCol_Button));
+  const ImU32 bg = selected                    ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
+                    : (hovered && implemented)  ? ImGui::GetColorU32(ImGuiCol_ButtonHovered)
+                                                : ImGui::GetColorU32(ImGuiCol_Button);
   dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), bg);
   dl->AddRect(p, ImVec2(p.x + size.x, p.y + size.y),
               ImGui::GetColorU32(ImGuiCol_Border));
 
-  // Selected tools invert, the way MacPaint's did.
+  // Selected tools invert, the way MacPaint's did. A not-built-yet tool is
+  // never selected (see above), so its icon is always the dimmed, halved-
+  // alpha secondary-text colour -- the one visual cue that survives even a
+  // screenshot with no cursor in it: "this cell is present but off."
   const ImU32 fg = selected ? IM_COL32(20, 22, 24, 255)
-                            : ImGui::GetColorU32(ImGuiCol_Text);
-  drawToolIcon(dl, t, ImVec2(p.x + size.x * 0.5f, p.y + size.y * 0.5f),
-               size.x * 0.62f, fg);
+                   : implemented
+                       ? ImGui::GetColorU32(ImGuiCol_Text)
+                       : (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110);
+  const ImVec2 c(p.x + size.x * 0.5f, p.y + size.y * 0.5f);
+  if (!drawToolGlyph(dl, toolIconCodepoint(t), c, fg))
+    drawToolIcon(dl, t, c, size.x * 0.62f, fg);  // graceful fallback -- see drawToolGlyph()'s comment
 
-  if (hovered) ImGui::SetTooltip("%s", toolName(t));
+  if (hovered) {
+    const std::string tip = toolTooltip(t);
+    ImGui::SetTooltip("%s", tip.c_str());
+  }
   if (clicked) st.brush.tool = t;
   ImGui::PopID();
   return clicked;
 }
+
+// The "..." overflow cell that ends docs/ui.md section 2's palette (group 5:
+// Hand, Zoom, More). It is not a Tool -- there is no overflow menu behind it
+// yet, so like every not-built-yet cell above it draws inert, but unlike
+// them it has no `st.brush.tool` value to compare against and no
+// toolTooltip() to borrow, hence its own small function rather than a
+// twenty-first entry manufactured in `enum class Tool` for one disabled
+// button.
+void moreToolsButton() {
+  ImGui::PushID("more");
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const ImVec2 size(kToolSize, kToolSize);
+  ImGui::InvisibleButton("##more", size);
+  const bool hovered = ImGui::IsItemHovered();
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), ImGui::GetColorU32(ImGuiCol_Button));
+  dl->AddRect(p, ImVec2(p.x + size.x, p.y + size.y), ImGui::GetColorU32(ImGuiCol_Border));
+
+  const ImU32 fg = (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110);
+  const ImVec2 c(p.x + size.x * 0.5f, p.y + size.y * 0.5f);
+  if (!drawToolGlyph(dl, kMoreIconCodepoint, c, fg)) {
+    // literal-dots fallback: no vector for this one in drawToolIcon(), and
+    // three periods need no glyph at all to read as "more".
+    dl->AddText(ImVec2(c.x - 8.0f, c.y - ImGui::GetTextLineHeight() * 0.5f), fg, "...");
+  }
+  if (hovered) ImGui::SetTooltip("More tools\nNot built yet -- no overflow menu exists yet.");
+  ImGui::PopID();
+}
+
+// docs/ui.md section 2's palette groups, top to bottom, exactly as the
+// supplied design orders them -- separate from `enum class Tool`'s own
+// declaration order (app/AppState.hpp), which groups by "does it do
+// anything" instead of by where a painter would look for it. One array is
+// the single place display order can drift from the design; two arrays
+// (or a switch and an array) would be two places for that to happen.
+struct PaletteCell {
+  Tool tool;
+  bool ruleAfter;  // docs/ui.md section 1's 1px internal divider, below this cell
+};
+
+constexpr PaletteCell kPaletteOrder[] = {
+    // group 1 -- selection & sampling
+    {Tool::Move, false},        {Tool::Marquee, false},   {Tool::Lasso, false},
+    {Tool::PolygonLasso, false}, {Tool::MagicWand, false}, {Tool::Crop, false},
+    {Tool::Eyedropper, false},  {Tool::Measure, true},
+    // group 2 -- retouch & fill
+    {Tool::Frame, false},   {Tool::CloneStamp, false}, {Tool::Eraser, false},
+    {Tool::PaintBucket, false}, {Tool::Gradient, true},
+    // group 3 -- paint. Water and DryBrush are not among the wireframe's ~26
+    // at all -- app/AppState.hpp's Tool comment says why they sit here,
+    // beside the brush they are variants of.
+    {Tool::Brush, false}, {Tool::Water, false}, {Tool::DryBrush, false},
+    {Tool::Pencil, false}, {Tool::Smudge, false}, {Tool::Dodge, false},
+    {Tool::Burn, true},
+    // group 4 -- vector & text
+    {Tool::Pen, false}, {Tool::Curve, false}, {Tool::Text, false},
+    {Tool::Shape, false}, {Tool::Slice, true},
+    // group 5 -- navigation. The "..." overflow cell that ends this group is
+    // drawn by moreToolsButton(), right after this array's loop -- it is not
+    // a Tool, so it cannot be a row of this table.
+    {Tool::Hand, false}, {Tool::Zoom, false},
+};
 
 // Tilt is a direction and a steepness, so it gets a pad you drag rather than two
 // numbers. The dot is where the low corner of the board is; distance from centre
@@ -3703,15 +3809,41 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   ImGui::SetNextWindowPos(ImVec2(bands.toolPalette.x, bands.toolPalette.y));
   ImGui::SetNextWindowSize(ImVec2(bands.toolPalette.w, bands.toolPalette.h));
   if (ImGui::Begin("##tools", nullptr, fixedFlags)) {
-    for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
-      if (i % 2 != 0) ImGui::SameLine();
-      toolButton(st, static_cast<Tool>(i));
+    // Room for the swatch below (its own side, plus the "FG" caption and a
+    // little padding -- 34px is the same accounting the two-wide grid this
+    // replaced used for the identical purpose). What is left is the grid's.
+    const float swatchSide = kToolSize - 8.0f;
+    const float swatchAreaH = swatchSide + 34.0f;
+    const float gridH = std::max(0.0f, bands.toolPalette.h - swatchAreaH);
+
+    // The grid scrolls -- docs/ui.md section 2: "the palette scrolls, so the
+    // tool count is not layout-constrained", true now in a way it never
+    // needed to be at 7 tools (27 cells * 36px alone already exceeds the
+    // design's own 1024px window height, see ui/AtelierLayout.hpp). The
+    // *outer* window above does not scroll: `ImGuiWindowFlags_NoScrollbar`
+    // is still in `fixedFlags`, and that is what keeps the FG swatch below
+    // pinned to the bottom of the band regardless of how far the grid is
+    // scrolled -- it lives in the outer window's content, after this
+    // child's fixed-height reservation, not inside the scrolling child
+    // itself.
+    if (ImGui::BeginChild("##toolgrid", ImVec2(0.0f, gridH))) {
+      for (const PaletteCell& cell : kPaletteOrder) {
+        toolButton(st, cell.tool);
+        if (cell.ruleAfter) {
+          ImDrawList* dl = ImGui::GetWindowDrawList();
+          const ImVec2 rp = ImGui::GetCursorScreenPos();
+          dl->AddRectFilled(rp, ImVec2(rp.x + kToolSize, rp.y + kDividerThickness),
+                            atelierToken(kDivider));
+          ImGui::Dummy(ImVec2(kToolSize, kDividerThickness));
+        }
+      }
+      moreToolsButton();
     }
+    ImGui::EndChild();
 
     // The foreground swatch, at the bottom of the palette where docs/ui.md
-    // section 2's diagram puts `FG/BG` -- pinned there rather than left to
-    // follow the tool grid, because the design's palette scrolls and the
-    // swatch does not scroll with it.
+    // section 2's diagram puts `FG/BG` -- drawn after EndChild() precisely so
+    // it is *not* part of the scrolling grid above and cannot move with it.
     //
     // **FG only, no BG.** The pair is Photoshop's, and the second half of it
     // means something only once something fills with it: Fill-with-colour is
@@ -3719,9 +3851,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // build reads a background colour. A second well that no operation
     // consumes would be the `PRESET` dropdown problem again -- chrome
     // promising a feature that is not behind it.
-    const float swatchSide = kToolCol * kToolSize - 8.0f;
-    const float swatchTop = bands.toolPalette.h - swatchSide - 34.0f;
-    if (swatchTop > ImGui::GetCursorPosY()) ImGui::SetCursorPosY(swatchTop);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const auto& pig = defaultPalette()[st.brush.pigment];
