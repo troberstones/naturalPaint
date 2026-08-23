@@ -61,18 +61,29 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 > "50px [cells] in a 2-wide grid"; the supplied design (sidequest/lucide-toolbox) redraws
 > it as a **single column** of ~26/27 tools, grouped by thin rules, with the selected tool
 > drawn on the accent colour and Lucide glyphs at 15px, one per tool. The diagram and the
-> prose below are updated to match; ui/AtelierLayout.hpp's `kToolPaletteW`/`kToolCellSize`
-> carry the arithmetic (36px cells, 64px palette -- a cell plus `ImGuiStyle::WindowPadding`
-> on both sides plus the tool grid's permanently-visible scrollbar, not merely "a cell plus
-> a little") and `--selftest`'s atelier-chrome section asserts the new number against this
-> diagram, the same way it always asserted the old one -- including, now, against a *live*
-> `ImGui::GetContentRegionAvail()` inside a real scrolling child, not only against a
-> hand-derived formula for what one should be. An earlier revision of this branch shipped
-> `kToolPaletteW = kToolCellSize + 8`, which is a cell plus *half* of one side's
-> `WindowPadding` and none of the scrollbar's width -- every icon rendered clipped in
-> half, found by a screenshot rather than by that revision's own (vacuous)
-> `static_assert`. See ui/AtelierLayout.hpp's `kToolPaletteW` for the fix and
-> ui/AtelierTheme.hpp for the shared constants that make it hold.
+> prose below are updated to match, and have now been updated a second time for a direct
+> user correction: *"make the toolbar fit without scrolling so we don't have a scroll bar.
+> the buttons are too large."* ui/AtelierLayout.hpp's `kToolPaletteW`/`kToolCellMax`/
+> `kToolCellMin`/`atelierToolCellSize()` carry the current arithmetic -- a **44px palette**
+> holding a **cell size computed fresh every frame** from the window's actual height,
+> shrinking from 28px down to a 18px floor before the column ever reaches for a scrollbar,
+> and reaching for one (silently, wheel-only, never drawn) only in the one case shrinking
+> cannot rescue: a window shorter than roughly 670px. `--selftest`'s atelier-chrome section
+> asserts all of this against a *live* `ImGui::GetContentRegionAvail()`, not only against a
+> hand-derived formula for what one should be, and against a table of representative window
+> heights for the shrink-to-fit arithmetic itself.
+>
+> This is the **second** revision of this number. The first, `kToolPaletteW = kToolCellSize
+> + 8` (a fixed 36px cell), was a cell plus *half* of one side's `WindowPadding` and none of
+> a scrollbar's width -- every icon rendered clipped in half, found by a screenshot rather
+> than by that revision's own (vacuous) `static_assert`. The fix for *that* bug was a fixed
+> 36px cell in a **64px** palette (room for the cell, both sides' padding, and a then-
+> permanent scrollbar) -- correct, but it satisfied "every cell fits inside the palette"
+> while failing the actual design brief, which is a single column that shows all of itself
+> without scrolling. This revision replaces the fixed cell with the shrink-to-fit one
+> above, which is what let the palette narrow back to 44px and drop the scrollbar
+> entirely. See ui/AtelierLayout.hpp's `kToolPaletteW`/`kToolCellMax`/`kToolCellMin` for the
+> full arithmetic and ui/AtelierTheme.hpp for the shared constants that make it hold.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -91,16 +102,28 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 ├───┴──────────────────────────────────────────────┴──────────┤
 │ 64% │ 2048×1536 · LIN16 │ 214 MB / 512 MB │ Clone source…  │ 26
 └────────────────────────────────────────────────────────────┘
-  64                                                    322
+  44                                                    322
 ```
 
-Tool cells are **36px in a single column** — the design's own layout, close to
-Photoshop's own single-column tool rail; 15px Lucide glyphs sit comfortably inside that
-with room for a click target. The palette **scrolls**: a single column of ~27 cells plus
-the FG swatch does not fit the ~900px the mid row leaves at the design's own 1024px
-window height, so `ui/MacPaintUI.cpp`'s palette puts the tool grid in its own scrolling
-child window and keeps the FG swatch pinned below it, outside that child, so scrolling
-the tools can never carry the swatch away with them.
+Tool cells are **15px Lucide glyphs in a single column**, sized to fill whatever the
+window leaves them — the design's own layout, close to Photoshop's own single-column tool
+rail. The cell size is **not fixed**: `ui/AtelierLayout.hpp`'s `atelierToolCellSize()`
+computes it fresh every frame from the palette band's live height, as large as 28px in a
+roomy window and shrinking (never below an 18px floor, which still leaves a 15px glyph
+~1.5px of margin per side) as the window gets shorter, so that all ~28 cells (27 tools
+plus the "…" overflow cell) plus the FG swatch fit **without a scrollbar** at essentially
+any window height a user is likely to run at. `ui/MacPaintUI.cpp`'s palette draws the tool
+grid in a child window with `ImGuiWindowFlags_NoScrollbar` and keeps the FG swatch pinned
+below it, outside that child, at a size derived from the *maximum* cell size (28px) rather
+than the live one — the swatch does not resize as the window resizes.
+
+**The honest limit.** Below roughly a 670px window (28 cells at the 18px floor, plus the
+separator rules and the swatch strip, worked back through the layout's band arithmetic),
+the column genuinely cannot fit even at its smallest legible cell size. This build does not
+clip the grid or hide any tool in that case: the child keeps `ImGuiWindowFlags_NoScrollbar`
+(no bar drawn, no width reserved for one) but Dear ImGui's mouse wheel still scrolls inside
+a `NoScrollbar` child, so every cell stays reachable — just not all visible at once — on a
+window shorter than the design was built to fit.
 
 The palette is drawn in **five groups, separated by thin rules**, top to bottom: selection
 & sampling; retouch & fill; paint; vector & text; navigation. Only **seven of the ~27

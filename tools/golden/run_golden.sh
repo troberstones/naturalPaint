@@ -49,24 +49,61 @@
 # last-bit rounding flip shrinks but never guarantees zero in finite frames.
 #
 # So thresholds below are per-view and measured, not guessed:
-#   toolbar, canvas: 0 (exact byte equality). Zero non-zero comparisons in
-#     every trial run at this repo's HEAD -- 24 at 30 frames plus 9 more at
-#     90 frames each, 66 total pairwise comparisons, 0 non-zero. A raw
-#     byte-for-byte compare is enough here, so goldentool's channel-aware
-#     diff is used at threshold 0 rather than reaching for a perceptual
-#     comparator this measurement gives no reason to need.
+#   toolbar, tools: 0 (exact byte equality). Static chrome, no animation and
+#     no simulation behind either one, and zero non-zero comparisons across
+#     every trial run measured against them (`toolbar`: 24 at 30 frames plus
+#     9 more at 90 frames each at earlier crops, 66 total pairwise
+#     comparisons, 0 non-zero -- unaffected by this revision, see below).
 #
-#     `tools`' crop moved (sidequest/lucide-toolbox's single-column palette
-#     rebuild, docs/ui.md section 2) and was re-measured at its new geometry
-#     rather than assumed to inherit the old crop's zero -- twice, in fact:
-#     once at kToolPaletteW=44 (85x270), and again at the corrected
-#     kToolPaletteW=64 (130x270, wide enough to still clear the palette's
-#     right edge plus its scrollbar at the new width). `measure 6` against
-#     the current 130x270 (35 100 px) region gave 5 pairwise comparisons,
-#     all 0 mismatched px, max channel diff 0 -- still exact-zero, because
-#     it is still static chrome with no animation or GPU simulation behind
-#     it, the same property that makes toolbar/canvas exact. Threshold
-#     stays 0 on both criteria.
+#     `tools`' crop has moved three times now, each time re-measured at its
+#     new geometry rather than assumed to inherit the old crop's zero:
+#     kToolPaletteW=44 (85x270, the revision that turned out to clip every
+#     icon in half -- see ui/AtelierLayout.hpp's kToolPaletteW comment), the
+#     corrected kToolPaletteW=64 (130x270, wide enough to clear the
+#     palette's right edge plus its then-permanent scrollbar), and now this
+#     revision's 90x270 at kToolPaletteW=44 again -- a *different* 44 than
+#     the first one, because the user's own correction ("make the toolbar
+#     fit without scrolling ... the buttons are too large") replaced the
+#     fixed 36px cell with one computed per frame
+#     (ui/AtelierLayout.hpp's atelierToolCellSize()) and removed the
+#     scrollbar the 130 was partly sized around, so kToolPaletteW's
+#     arithmetic changed even though its numeric value happens to
+#     coincide with the buggy revision's. 90, not 44 exactly, for the same
+#     "clear the right edge" reasoning as before -- a few px of the
+#     canvas's own left edge past the palette's rule, so a regression that
+#     widened the palette without updating this crop would still be inside
+#     frame rather than silently cropped away. Measured across 5 separately-
+#     launched captures (not `measure`'s own loop -- run by hand, each
+#     launch spaced a second apart to rule out the load-sensitive artifact
+#     `canvas` below ran into) against the current 90x270 (24 300 px)
+#     region: 0 mismatched px, max channel diff 0, every time -- still
+#     exact-zero. Threshold stays 0 on both criteria.
+#   canvas: magnitude 64, changed-px 2624 -- no longer 0. `canvas`'s own
+#     reference PNG is untouched (still the same bytes as
+#     sidequest/lucide-toolbox's base commit 72fd411), but its crop *x* moved
+#     again when kToolPaletteW returned to 44 (904, re-derived by bisection
+#     the same way the two earlier corrections were -- x=903 and x=905 both
+#     land at ~41% mismatched, x=904 alone drops to a small residual, the
+#     same sharp single-integer minimum the 64px correction found at 944).
+#     Unlike that earlier round trip, though, this one measured a small,
+#     *stable* residual at its minimum rather than exact zero: 656 of 98 304
+#     px (0.67%), max channel diff 16, reproduced identically across 6
+#     separately-launched captures once each launch was given a couple of
+#     seconds' clearance (back-to-back launches under a second apart showed
+#     the same 656-or-0 alternate unpredictably -- a load artifact of rapid
+#     relaunching, not of the geometry, and not what any real invocation of
+#     this script does). The residual itself does not move with load, only
+#     the false zeros do, which is what makes it a real property of the
+#     x=904 crop rather than noise: this machine's actual framebuffer scale
+#     is not a clean 2x of the requested window size (measured directly:
+#     2560x1580 physical for a requested 1480x940 logical, i.e. dpr
+#     x1.7297/y1.6809, not x2/y2), so an integer *logical* shift in
+#     `kToolPaletteW` does not land the crop on the same sub-physical-pixel
+#     phase the strokes were antialiased at originally -- a handful of
+#     stroke-edge pixels resample slightly differently as a result. 64
+#     (4x the measured max channel diff of 16) and 2624 (4x the measured
+#     656 changed px) follow `layers`' own precedent below for how much
+#     headroom a measured-not-guessed floor gets.
 #   layers: magnitude 96, changed-px 64. The magnitude figure is derived
 #     from the 90-frame measurement's worst observed max channel diff (25),
 #     roughly 4x that as headroom against a residual animation-timing tail
@@ -143,65 +180,85 @@ measure_n="${2:-10}"
 #     what gets locked at byte equality.
 view_names=(toolbar layers canvas tools)
 view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo")
-# `toolbar`'s height and `canvas`'s x moved -- **their reference PNGs did
-# not**. sidequest/lucide-toolbox's single-column palette narrowed
-# `kToolPaletteW` from 104 to 64 (docs/ui.md section 2 -- 64, not the 44 an
-# earlier revision of this branch shipped: that number missed that
-# `ImGuiStyle::WindowPadding` is 8px *per side* and left no room at all for
-# the tool grid's permanently-visible scrollbar, and rendered every icon
-# clipped in half; see ui/AtelierLayout.hpp's kToolPaletteW for the full
-# account), which moves `ui/AtelierLayout.cpp`'s `canvasX` (= palette width +
-# one rule) 40 logical px to the left -- 80 physical px at this machine's 2x
-# screenshot scale (measured: `goldentool diff` against the untouched
-# reference is exact-zero at an 80px x-shift and at no other integer offset).
-# Two of the four crops reached into geometry that moved:
-#   * `canvas` sat at x=1024, deep enough into the canvas region that the
-#     80px shift is entirely inside the visible paint gradient -- shifted to
-#     x=944 to look at the *same document pixels* again. Re-derived by
-#     bisection against the untouched tests/golden/canvas.png, not guessed
-#     (and re-derived a second time, from x=904, when kToolPaletteW's own
-#     value corrected from 44 to 64).
-#   * `toolbar` sat at y=77..252 (h=175), and rows 244-252 dipped into the
-#     tool palette's new top edge (single-column now, so its first cell is a
-#     different tool than the old grid's) -- trimmed to h=166 so the crop
-#     stays inside the options bar, which the palette-*width* change does
-#     not touch (confirmed unchanged by the kToolPaletteW 44->64 correction:
-#     167 is still the exact boundary, because it depends only on the title/
-#     tab-strip/options-bar heights above the palette, not its width).
+# `toolbar`'s height and `canvas`'s x have each moved twice now -- **their
+# reference PNGs have not**. sidequest/lucide-toolbox's single-column
+# palette first narrowed `kToolPaletteW` from 104 to 64 (docs/ui.md section
+# 2 -- 64, not the 44 an earlier revision of this branch shipped: that
+# number missed that `ImGuiStyle::WindowPadding` is 8px *per side* and left
+# no room at all for the tool grid's then-permanently-visible scrollbar, and
+# rendered every icon clipped in half; see ui/AtelierLayout.hpp's
+# kToolPaletteW for the full account), which moved `ui/AtelierLayout.cpp`'s
+# `canvasX` (= palette width + one rule) 40 logical px to the left -- 80
+# physical px (measured: `goldentool diff` against the untouched reference
+# was exact-zero at an 80px x-shift and at no other integer offset).
 #
-# `canvas.png` was **not** touched -- `cmp` against `git show
+# It then moved a second time in the *other* direction: the user's own
+# correction ("make the toolbar fit without scrolling ... the buttons are
+# too large") replaced the fixed 36px cell with one computed per frame
+# (ui/AtelierLayout.hpp's atelierToolCellSize()) and dropped the scrollbar
+# entirely, which let `kToolPaletteW` shrink back to 44 -- the same numeral
+# the clipping-bug revision used, but for a different, no-longer-buggy
+# reason (see that constant's own comment). `canvasX` moved back too.
+#
+#   * `canvas` sat at x=1024 originally, deep enough into the canvas region
+#     that an 80px shift is entirely inside the visible paint gradient --
+#     shifted to x=944 for the 64px palette, and now to x=904 for the
+#     shrink-to-fit 44px palette. Both were re-derived by bisection against
+#     the untouched tests/golden/canvas.png, not guessed, and not assumed to
+#     be the mirror image of each other even though 944 -> 904 is exactly
+#     the -40 the 64 -> 44 shrink predicts: x=903 and x=905 both land at
+#     ~41% mismatched, so x=904 is a real, sharp, single-integer minimum,
+#     the same shape the 944 correction found. Unlike that one, x=904's
+#     minimum was not exact-zero -- see `view_threshold`'s comment below for
+#     the measured residual and why this crop's threshold is no longer 0.
+#   * `toolbar` sat at y=77..252 (h=175) originally, and rows 244-252 dipped
+#     into the tool palette's new top edge (single-column now, so its first
+#     cell is a different tool than the old grid's) -- trimmed to h=166 so
+#     the crop stays inside the options bar, which no palette-*width* change
+#     touches (confirmed unchanged both times: 167 is still the exact
+#     boundary at kToolPaletteW=64 and again at 44, because it depends only
+#     on the title/tab-strip/options-bar heights above the palette, never on
+#     the palette's width).
+#
+# `canvas.png` was **not** touched by either move -- `cmp` against `git show
 # HEAD:tests/golden/canvas.png` confirms it is still byte-identical to
 # sidequest/lucide-toolbox's base commit (72fd411); only its crop *x* moved,
-# to look at the same document pixels from the new canvas origin.
+# to look at the same document pixels from each new canvas origin.
 #
-# `toolbar.png` **was** re-written, but not re-captured: the 8 affected rows
-# could not be avoided at h=175 by repositioning alone (they show tool-
-# palette content that no longer exists in that form anywhere on screen, by
-# design), so the only way to keep every remaining pixel provably identical
-# to what was already approved was to crop *the reference file itself* down
-# to the unaffected h=166 -- `goldentool crop` of the old, approved
-# toolbar.png, not a fresh run of the app. Verified rather than assumed: a
-# fresh capture at the new geometry, cropped to the same h=166, diffs
-# exact-zero against that trim. `tools.png` is the only reference this
-# branch actually re-renders from a live capture, because the tool palette
-# is the only thing it redesigns.
-view_crop_x=(0    1916 944  0)
+# `toolbar.png` **was** re-written once, at the first move, but not
+# re-captured: the 8 affected rows could not be avoided at h=175 by
+# repositioning alone (they show tool-palette content that no longer exists
+# in that form anywhere on screen, by design), so the only way to keep every
+# remaining pixel provably identical to what was already approved was to
+# crop *the reference file itself* down to the unaffected h=166 --
+# `goldentool crop` of the old, approved toolbar.png, not a fresh run of the
+# app. Verified rather than assumed, both times: a fresh capture at each new
+# geometry, cropped to the same h=166, diffs exact-zero against that trim.
+# `tools.png` is the only reference this branch has ever re-rendered from a
+# live capture, because the tool palette is the only thing it redesigns --
+# re-rendered again for this revision's geometry, the same way.
+view_crop_x=(0    1916 904  0)
 view_crop_y=(77   1075 973  228)
-view_crop_w=(1400 640  384  130)
+view_crop_w=(1400 640  384  90)
 view_crop_h=(166  190  256  270)
 view_frames=(90 90 90 90)
-view_threshold=(0 96 0 0)
+view_threshold=(0 96 64 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
-# toolbar/canvas are 0 because their magnitude threshold is 0 -- there the
-# two criteria say the same thing. `layers` is 64: the 90-frame measurement's
-# worst observed count was 14 changed px of 121 600, so this is ~4.5x that,
-# and still 1400x below the 92 516 px that the diffuse-shift test moved.
-# `tools` is 0 for the same reason as toolbar/canvas: it is static chrome
-# with no animation and no simulation behind it, so anything but byte
-# equality is a real change. Confirmed by `measure`, not assumed -- see the
+# `toolbar`/`tools` are 0 because their magnitude threshold is 0 -- there
+# the two criteria say the same thing. `layers` is 64: the 90-frame
+# measurement's worst observed count was 14 changed px of 121 600, so this
+# is ~4.5x that, and still 1400x below the 92 516 px that the diffuse-shift
+# test moved. `canvas` is 2624 (4x the measured 656) for the reason given in
+# the header comment above `view_names` -- a stable, reproducible sub-pixel
+# residual from x=904 not landing on the same physical-pixel phase as the
+# original crop, confirmed by repeated spaced-out launches, not the
+# load-sensitive false zeros rapid relaunching produced. `tools` is 0 for
+# the same reason as `toolbar`: it is static chrome with no animation and no
+# simulation behind it, so anything but byte equality is a real change.
+# Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(0 64 0 0)
+view_max_changed_px=(0 64 2624 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

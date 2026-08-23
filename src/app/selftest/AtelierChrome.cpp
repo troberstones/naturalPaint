@@ -175,16 +175,21 @@ bool runAtelierChromeTest() {
     check(b.titleBar.h == kTitleBarH && kTitleBarH == 36.0f, "title bar is 36 px");
     check(b.optionsBar.h == kOptionsBarH && kOptionsBarH == 46.0f, "options bar is 46 px");
     check(b.statusBar.h == kStatusBarH && kStatusBarH == 26.0f, "status bar is 26 px");
-    // 64 px, not the outgoing chrome's 104: the supplied design redraws the
-    // palette as a single column (ui/AtelierLayout.hpp's own comment on
-    // kToolPaletteW has the arithmetic -- a cell plus WindowPadding on both
-    // sides plus the permanently-visible scrollbar, not the weaker "+8"
-    // that once shipped a palette whose real content region clipped every
-    // icon in half), so this checks against the *named constant* rather
-    // than a second copy of the literal -- docs/ui.md section 2 is where 64
-    // is recorded as the number this build chose.
-    check(b.toolPalette.w == kToolPaletteW && kToolPaletteW == 64.0f,
-          "the tool palette is 64 px wide (a single column, docs/ui.md section 2)");
+    // 44 px, not the outgoing chrome's 104, and not the 64 the previous
+    // revision of this file used either. That 64 fixed the clipping bug (a
+    // 36px cell plus WindowPadding on both sides plus a permanently-visible
+    // ScrollbarSize) but was still sized for a *fixed* cell; the user's own
+    // correction -- "make the toolbar fit without scrolling ... the buttons
+    // are too large" -- replaced the fixed cell with one computed per frame
+    // (ui/AtelierLayout.hpp's atelierToolCellSize()) and removed the
+    // scrollbar the 64 was partly paying for. `kToolPaletteW` now needs room
+    // for exactly one cell at its largest (kToolCellMax = 28) plus
+    // WindowPadding on both sides (8 * 2 = 16) and nothing else: 28 + 16 =
+    // 44. Checked against the *named constant* rather than a second copy of
+    // the literal -- docs/ui.md section 2 is where 44 is recorded as the
+    // number this build chose.
+    check(b.toolPalette.w == kToolPaletteW && kToolPaletteW == 44.0f,
+          "the tool palette is 44 px wide (a single column, docs/ui.md section 2)");
     check(b.rightColumn.w == 322.0f, "the right column is 322 px wide");
     check(b.statusBar.bottom() == kH, "the status bar sits flush with the bottom edge");
     check(b.rightColumn.right() == kW, "the right column sits flush with the right edge");
@@ -417,33 +422,47 @@ bool runAtelierChromeTest() {
   //
   // Part C's band-tiling arithmetic and ui/AtelierLayout.hpp's own
   // static_assert both check `kToolPaletteW` against a *hand-derived*
-  // formula for what `ImGuiStyle::WindowPadding`/`::ScrollbarSize` leave
-  // behind -- and a formula agreeing with itself is not evidence that Dear
-  // ImGui's actual layout code agrees with it too. That gap is exactly how
-  // the previous version of this file shipped a palette whose cells
-  // rendered clipped in half: every number-only check passed, because none
-  // of them asked Dear ImGui what `GetContentRegionAvail()` actually is.
+  // formula for what `ImGuiStyle::WindowPadding` leaves behind -- and a
+  // formula agreeing with itself is not evidence that Dear ImGui's actual
+  // layout code agrees with it too. That gap is exactly how the previous
+  // revision of this file shipped a palette whose cells rendered clipped in
+  // half: every number-only check passed, because none of them asked Dear
+  // ImGui what `GetContentRegionAvail()` actually is.
   //
-  // So this one does: a real `ImGuiContext`, `applyAtelierTheme()`'s real
-  // style, a real window sized to `kToolPaletteW`, and a real
-  // `BeginChild()` forced to overflow (a 2000px dummy in a 100px child) so
-  // its vertical scrollbar is unambiguously on -- the same permanent state
-  // ui/MacPaintUI.cpp's tool grid is in with 27 cells (this constant's own
-  // comment says why it is permanent, not occasional). No swapchain and no
-  // real renderer backend -- layout (unlike rasterisation) needs neither,
-  // and `app/selftest/Fonts.cpp`'s Part C/D already establish that a
-  // headless `ImGuiContext` is fine for questions this suite can ask
-  // without a window -- but `NewFrame()` is used here for the first time in
-  // this suite, and it needs two things neither of those sections needed:
-  // `ImGuiBackendFlags_RendererHasTextures` (told this build's new dynamic
-  // font/texture system that *something* will rasterise glyphs on demand,
-  // since nothing here ever will -- omitting it is a hard
-  // `[imgui-error]`/SIGSEGV, found by running this section under `script`
-  // rather than a plain redirect, because a redirected run's stdout buffer
-  // never reached disk before the crash) and at least one font actually
-  // added to the atlas (`AddFontDefault()` -- `installUiFonts()` is not
-  // called here on purpose, so this section's answer is about the palette's
-  // geometry alone, not entangled with which system font happened to load).
+  // The question this section asks changed with the user's own correction
+  // ("make the toolbar fit without scrolling ... the buttons are too
+  // large"). It used to be "does a *scrolling* child still leave room for a
+  // whole cell." Now that the grid child carries
+  // `ImGuiWindowFlags_NoScrollbar` (ui/MacPaintUI.cpp) and shrinks its cells
+  // to fit instead of scrolling in the steady state, the dangerous
+  // regression is different: **a scrollbar silently coming back**, which
+  // would eat `kScrollbarSize` of the content region this file's own
+  // `kToolPaletteW` no longer budgets for, clipping every cell exactly the
+  // way the original bug did. So this section forces the same 2000px
+  // overflow the previous revision used -- not because the real grid is
+  // expected to overflow (it should not, in the steady state), but because
+  // forcing overflow is what would flip a scrollbar back on if the
+  // `NoScrollbar` flag were ever accidentally dropped from that
+  // `BeginChild()` call. A passing check here means: even when the content
+  // overflows, `NoScrollbar` really does suppress the width reservation, so
+  // `kToolPaletteW`'s 44 = 28 + 2*8 arithmetic is measuring what Dear ImGui
+  // actually hands back, not just what the formula says it should.
+  //
+  // No swapchain and no real renderer backend -- layout (unlike
+  // rasterisation) needs neither, and `app/selftest/Fonts.cpp`'s Part C/D
+  // already establish that a headless `ImGuiContext` is fine for questions
+  // this suite can ask without a window -- but `NewFrame()` is used here for
+  // the first time in this suite, and it needs two things neither of those
+  // sections needed: `ImGuiBackendFlags_RendererHasTextures` (told this
+  // build's new dynamic font/texture system that *something* will
+  // rasterise glyphs on demand, since nothing here ever will -- omitting it
+  // is a hard `[imgui-error]`/SIGSEGV, found by running this section under
+  // `script` rather than a plain redirect, because a redirected run's
+  // stdout buffer never reached disk before the crash) and at least one
+  // font actually added to the atlas (`AddFontDefault()` --
+  // `installUiFonts()` is not called here on purpose, so this section's
+  // answer is about the palette's geometry alone, not entangled with which
+  // system font happened to load).
   {
     ImGuiContext* previous = ImGui::GetCurrentContext();
     ImGuiContext* context = ImGui::CreateContext();
@@ -462,24 +481,20 @@ bool runAtelierChromeTest() {
     // business having.
     io.IniFilename = nullptr;
 
-    // **Two frames, not one, and the first measurement is thrown away.**
-    // Found by deliberately breaking `s.ScrollbarSize` (set it to a
-    // hardcoded 30 instead of reading `kScrollbarSize`, simulating the
-    // exact drift this section exists to catch) and watching the
-    // measurement below stay at 48 either way: a *new* child window does
-    // not yet know it will overflow while its first frame's content is
-    // still being submitted, so `GetContentRegionAvail()` mid-frame-1
-    // reports as if no scrollbar will appear at all, and only reserves the
-    // scrollbar's width starting the frame *after* the overflow was
-    // observed -- an ImGui behaviour, not a defect in this test, but one
-    // that made frame 1 blind to exactly the number this section is
-    // supposed to verify. `ui/MacPaintUI.cpp`'s real palette runs at 60+
-    // fps, so it is always well past frame 1 -- the screenshot that found
-    // the original clipping bug was frame 90. Frame 2's measurement is
-    // what actually moved when `kScrollbarSize` was perturbed (confirmed
-    // the same way: 12 -> 30 changed the frame-2 number, not the frame-1
-    // one), which is the proof this loop is asking the question it claims
-    // to.
+    // Two frames, not one, and the first measurement is thrown away -- kept
+    // from the previous revision even though `NoScrollbar` makes the effect
+    // it was guarding against impossible in the *passing* case. It still
+    // matters for the *failing* case this section exists to catch: a child
+    // window does not know it will overflow while its first frame's content
+    // is still being submitted, so `GetContentRegionAvail()` mid-frame-1
+    // reads as if no scrollbar exists regardless of whether one would
+    // eventually appear. If `ImGuiWindowFlags_NoScrollbar` were ever
+    // accidentally dropped from the real `BeginChild()` call, frame 1 of
+    // *this* probe would misreport the width as fine even though frame 2
+    // would not -- so throwing frame 1 away is what makes this section able
+    // to notice that regression rather than being blind to it the same way
+    // frame 1 is. `ui/MacPaintUI.cpp`'s real palette runs at 60+ fps, so it
+    // is always well past frame 1 regardless.
     float contentWidth = -1.0f;
     for (int frame = 0; frame < 2; ++frame) {
       ImGui::NewFrame();
@@ -490,9 +505,15 @@ bool runAtelierChromeTest() {
                            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                            ImGuiWindowFlags_NoScrollbar)) {
         // 100px child, 2000px of content -- more overflow than any real
-        // window size could absorb, so the scrollbar is on regardless of
-        // the host machine's font metrics or DPI.
-        if (ImGui::BeginChild("##paletteGridProbe", ImVec2(0.0f, 100.0f))) {
+        // window size could absorb, so a child *without* NoScrollbar would
+        // unambiguously turn its scrollbar on regardless of the host
+        // machine's font metrics or DPI. This child carries
+        // `ImGuiWindowFlags_NoScrollbar`, matching ui/MacPaintUI.cpp's real
+        // "##toolgrid" child exactly, so what this measures is whether that
+        // flag really does suppress the width reservation even under forced
+        // overflow -- not whether the grid happens not to overflow today.
+        if (ImGui::BeginChild("##paletteGridProbe", ImVec2(0.0f, 100.0f), 0,
+                              ImGuiWindowFlags_NoScrollbar)) {
           ImGui::Dummy(ImVec2(1.0f, 2000.0f));
           if (frame == 1) contentWidth = ImGui::GetContentRegionAvail().x;
         }
@@ -502,15 +523,98 @@ bool runAtelierChromeTest() {
       ImGui::EndFrame();
     }
 
-    std::printf("  [measured] live GetContentRegionAvail().x inside the scrolling tool grid "
-                "= %.1f px (kToolCellSize = %.1f)\n",
-                contentWidth, kToolCellSize);
-    check(contentWidth >= kToolCellSize,
-          "a real ImGui window/child at kToolPaletteW leaves room for a whole tool cell, "
-          "scrollbar included -- not just kToolCellSize <= kToolPaletteW on paper");
+    std::printf("  [measured] live GetContentRegionAvail().x inside the (forced-overflow, "
+                "NoScrollbar) tool grid = %.1f px (kToolCellMax = %.1f)\n",
+                contentWidth, kToolCellMax);
+    // Exact equality, not >=: with no scrollbar to eat width, the content
+    // region of a kToolPaletteW-wide window is kToolPaletteW minus
+    // WindowPadding on both sides, full stop -- kToolPaletteW's own
+    // static_assert (ui/AtelierLayout.hpp) says that difference is exactly
+    // kToolCellMax. A small tolerance guards only against float rounding
+    // through the two NewFrame()s, not against any real ambiguity in what
+    // the answer should be.
+    check(std::fabs(contentWidth - kToolCellMax) < 0.01f,
+          "a real ImGui window/child at kToolPaletteW, forced to overflow, still leaves "
+          "exactly kToolCellMax of content width -- NoScrollbar is truly suppressing the "
+          "scrollbar reservation, not merely hiding the bar while still reserving its width");
 
     ImGui::DestroyContext(context);
     ImGui::SetCurrentContext(previous);
+  }
+
+  // --- Part H: the tool cell shrinks to fit, or honestly gives up ----------
+  //
+  // Part G asked whether the *width* Dear ImGui hands back matches
+  // kToolPaletteW's arithmetic. This asks the matching question about the
+  // *height* side: does atelierToolCellSize() actually pack kToolCellCount
+  // cells plus kToolSeparatorsH of separator rules into the grid band at a
+  // representative spread of window heights, the way ui/MacPaintUI.cpp's
+  // palette draw relies on it to -- or, below the "honest limit"
+  // ui/AtelierLayout.hpp's own comment names, does it at least clamp to
+  // kToolCellMin instead of shrinking past legibility.
+  //
+  // Each expected cell size below is hand-derived from the same arithmetic
+  // atelierToolCellSize() implements (paletteH -> gridH -> floor/clamp),
+  // written out again independently here rather than obtained by calling
+  // the function and comparing it to itself -- the same reason Part C
+  // recomputes the canvas's expected width from kW/kToolPaletteW/322/rules
+  // instead of trusting atelierLayout()'s own answer. 940 and 790 are the
+  // coordinator-supplied examples for a roomy and a middling window;
+  // 600 is the one that lands below the honest limit, and its raw
+  // (unclamped) quotient is exactly 14.0 -- one case where the *floor* of
+  // the division is not what ships, only the *clamp* of it is, which is
+  // worth a named case rather than leaving it to be discovered by whichever
+  // one of these two happens to be wrong.
+  {
+    const struct {
+      float winH;
+      float wantCell;
+      const char* note;
+    } kCases[] = {
+        {940.0f, 26.0f, "roomy: shrinks a little below kToolCellMax (28), still fits"},
+        {790.0f, 20.0f, "middling: shrinks further, still fits"},
+        {600.0f, kToolCellMin,
+         "below the honest limit: the unclamped quotient is exactly 14.0, "
+         "but kToolCellMin (18) wins the clamp -- the grid does not fully "
+         "fit here, and NoScrollbar's wheel-only fallback carries the rest"},
+    };
+    bool fitsOk = true;
+    for (const auto& c : kCases) {
+      // showTabStrip=true: the case this build actually runs in once any
+      // document is open, and the case the coordinator's own worked
+      // examples (940/790/600) were computed against.
+      const AtelierBands b = atelierLayout(0.0f, 0.0f, 1280.0f, c.winH, /*showTabStrip=*/true);
+      const float got = atelierToolCellSize(b.toolPalette.h);
+      if (std::fabs(got - c.wantCell) > 0.01f) {
+        fitsOk = false;
+        std::printf("    at window h=%.0f: atelierToolCellSize() = %.1f, want %.1f (%s)\n",
+                    c.winH, got, c.wantCell, c.note);
+      }
+      if (got < kToolCellMin - 0.01f || got > kToolCellMax + 0.01f) {
+        fitsOk = false;
+        std::printf("    at window h=%.0f: %.1f is outside [kToolCellMin, kToolCellMax]\n",
+                    c.winH, got);
+      }
+      // The cell size either packs the whole grid into the band Dear ImGui
+      // actually gave it, or -- only once the clamp has already hit its
+      // floor, i.e. shrinking further was not an option this build allows
+      // -- it does not, and that shortfall is the disclosed, wheel-only
+      // fallback, not a silently broken fit.
+      const float used = got * static_cast<float>(kToolCellCount) + kToolSeparatorsH;
+      const float gridH = b.toolPalette.h - kToolSwatchAreaH;
+      const bool fits = used <= gridH + 0.01f;
+      const bool honestlyClamped = std::fabs(got - kToolCellMin) < 0.01f;
+      if (!fits && !honestlyClamped) {
+        fitsOk = false;
+        std::printf("    at window h=%.0f: %d cells at %.1fpx (%.1fpx used) overflow the "
+                    "%.1fpx grid band without being clamped to kToolCellMin\n",
+                    c.winH, kToolCellCount, got, used, gridH);
+      }
+    }
+    check(fitsOk,
+          "atelierToolCellSize() packs kToolCellCount cells into the grid band at a roomy "
+          "and a middling window height, and honestly clamps to kToolCellMin rather than "
+          "overflowing when even that cannot fit");
   }
 
   std::printf("[selftest] atelier chrome %s\n", ok ? "PASS" : "FAIL");

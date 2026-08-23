@@ -17,6 +17,17 @@ AtelierRect hRule(float x, float w, float& cursor) {
 
 }  // namespace
 
+float atelierToolCellSize(float paletteH) noexcept {
+  const float gridH = paletteH - kToolSwatchAreaH;
+  // `floor`, not round: a cell one pixel *smaller* than the exact fit still
+  // fits with a pixel to spare, and a cell one pixel *larger* is the
+  // clipping bug this file's own kToolPaletteW comment already tells the
+  // story of, in a new place.
+  const float raw = std::floor((gridH - kToolSeparatorsH) /
+                               static_cast<float>(kToolCellCount));
+  return std::clamp(raw, kToolCellMin, kToolCellMax);
+}
+
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip) {
   AtelierBands b;
 

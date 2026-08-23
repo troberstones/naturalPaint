@@ -85,6 +85,14 @@ constexpr float kDividerThickness = 1.0f;
 constexpr float kWindowPaddingX = 8.0f;
 constexpr float kScrollbarSize  = 12.0f;
 
+// `ui/AtelierLayout.hpp`'s `kToolPaletteW` no longer subtracts
+// `kScrollbarSize` -- the tool grid's `BeginChild()` carries
+// `ImGuiWindowFlags_NoScrollbar` (see that file's kToolPaletteW comment for
+// the fuller account), so there is no scrollbar reserving width inside the
+// palette to account for any more. `kScrollbarSize` is still real and still
+// assigned to `ImGuiStyle::ScrollbarSize` below: other scrolling regions in
+// this chrome (the controls column) still draw one.
+
 // The canvas surround -- and the one token that is deliberately NOT taken
 // from the design.
 //

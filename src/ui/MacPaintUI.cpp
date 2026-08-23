@@ -39,18 +39,29 @@ namespace np {
 namespace {
 
 // The layout constants this file used to invent are now docs/ui.md section
-// 2's, in ui/AtelierLayout: a 44 px single-column palette of 36 px cells
-// (this file had a 78 px 2-wide-grid palette of 30 px cells before the
-// supplied design's single column) and a 322 px right column (this file had
-// 300 px, itself widened from 268 px by UI detour step 3 to stop the longest
-// label clipping -- 322 keeps that fix and takes the design's number).
+// 2's, in ui/AtelierLayout: a 44 px single-column palette (this file had a
+// 78 px 2-wide-grid palette of 30 px cells before the supplied design's
+// single column) and a 322 px right column (this file had 300 px, itself
+// widened from 268 px by UI detour step 3 to stop the longest label clipping
+// -- 322 keeps that fix and takes the design's number).
+//
+// There is no file-scope `kToolSize` any more. The user's correction ("make
+// the toolbar fit without scrolling ... the buttons are too large") replaced
+// the fixed 36px cell with one computed per frame from the palette band's
+// live height (`atelierToolCellSize()`, ui/AtelierLayout.hpp/.cpp) -- a
+// value that can legitimately differ between two calls in the same frame if
+// the window was just resized is not a `constexpr`, and stashing it in a
+// file-static mutable instead is exactly the shape of the bug that caused
+// the clipping regression this replaces: a per-frame value masquerading as
+// a constant. `toolButton()` and `moreToolsButton()` below now take the
+// cell size as an explicit parameter, computed once per palette draw and
+// threaded through, so there is nowhere for a stale size to hide.
 //
 // `kSwatchStripH` is gone with the band it measured: the design has no
 // full-width swatch strip along the bottom of the window. That row is where
 // the status bar goes, and the pigment well it held has moved into the COLOR
 // section of the right-hand column, which is where docs/ui.md section 3.3 puts
 // colour selection.
-constexpr float kToolSize = kToolCellSize;
 constexpr float kControlsW = kRightColumnW;
 // Peak gravity, in the same cells-per-step units as the rest of the velocity field.
 constexpr float kMaxTilt = 0.50f;
@@ -415,10 +426,10 @@ bool drawToolGlyph(ImDrawList* dl, uint32_t codepoint, ImVec2 c, ImU32 col) {
 // than degree -- toolTooltip() appends "Not built yet." -- so a user who
 // hovers finds out why the cell did nothing, rather than assuming it is
 // broken.
-bool toolButton(AppState& st, Tool t) {
+bool toolButton(AppState& st, Tool t, float cellSize) {
   ImGui::PushID(static_cast<int>(t));
   const ImVec2 p = ImGui::GetCursorScreenPos();
-  const ImVec2 size(kToolSize, kToolSize);
+  const ImVec2 size(cellSize, cellSize);
   const bool implemented = toolImplemented(t);
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
   const bool clicked = clickedRaw && implemented;
@@ -461,10 +472,10 @@ bool toolButton(AppState& st, Tool t) {
 // toolTooltip() to borrow, hence its own small function rather than a
 // twenty-first entry manufactured in `enum class Tool` for one disabled
 // button.
-void moreToolsButton() {
+void moreToolsButton(float cellSize) {
   ImGui::PushID("more");
   const ImVec2 p = ImGui::GetCursorScreenPos();
-  const ImVec2 size(kToolSize, kToolSize);
+  const ImVec2 size(cellSize, cellSize);
   ImGui::InvisibleButton("##more", size);
   const bool hovered = ImGui::IsItemHovered();
 
@@ -3809,41 +3820,65 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   ImGui::SetNextWindowPos(ImVec2(bands.toolPalette.x, bands.toolPalette.y));
   ImGui::SetNextWindowSize(ImVec2(bands.toolPalette.w, bands.toolPalette.h));
   if (ImGui::Begin("##tools", nullptr, fixedFlags)) {
-    // Room for the swatch below (its own side, plus the "FG" caption and a
-    // little padding -- 34px is the same accounting the two-wide grid this
-    // replaced used for the identical purpose). What is left is the grid's.
-    const float swatchSide = kToolSize - 8.0f;
-    const float swatchAreaH = swatchSide + 34.0f;
-    const float gridH = std::max(0.0f, bands.toolPalette.h - swatchAreaH);
+    // The cell size is computed fresh every frame from the band's live
+    // height -- see ui/AtelierLayout.hpp's atelierToolCellSize() and the
+    // comment on the (now-removed) file-scope kToolSize above for why this
+    // is a local, not a cached member or a file-static. `kToolSwatchAreaH`
+    // is the same constant atelierToolCellSize() itself subtracts before
+    // dividing by kToolCellCount, so the grid drawn here and the grid
+    // atelierToolCellSize() sized itself for agree by construction rather
+    // than by two call sites happening to compute the same arithmetic twice.
+    const float cellSize = atelierToolCellSize(bands.toolPalette.h);
+    const float swatchSide = kToolCellMax - 8.0f;
+    const float gridH = std::max(0.0f, bands.toolPalette.h - kToolSwatchAreaH);
 
-    // The grid scrolls -- docs/ui.md section 2: "the palette scrolls, so the
-    // tool count is not layout-constrained", true now in a way it never
-    // needed to be at 7 tools (27 cells * 36px alone already exceeds the
-    // design's own 1024px window height, see ui/AtelierLayout.hpp). The
-    // *outer* window above does not scroll: `ImGuiWindowFlags_NoScrollbar`
-    // is still in `fixedFlags`, and that is what keeps the FG swatch below
-    // pinned to the bottom of the band regardless of how far the grid is
-    // scrolled -- it lives in the outer window's content, after this
-    // child's fixed-height reservation, not inside the scrolling child
-    // itself.
-    if (ImGui::BeginChild("##toolgrid", ImVec2(0.0f, gridH))) {
+    // ItemSpacing is 6px everywhere else in the chrome (ui/AtelierTheme.cpp)
+    // but the grid's own cell size already accounts for every pixel between
+    // the title bar's rule and the swatch above -- 6px of spacing *between*
+    // 28 cells is 27 gaps the shrink-to-fit arithmetic above never saw, and
+    // this is exactly the "buttons are too large" the user pointed at: the
+    // cells themselves were not the (only) problem, the gaps between them
+    // were. Zeroed here, scoped to just this child, rather than globally --
+    // the rest of the chrome still wants its 6px.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+
+    // The grid no longer scrolls in the steady state -- the whole point of
+    // atelierToolCellSize() is to shrink cells until all 28 fit. It keeps
+    // `ImGuiWindowFlags_NoScrollbar` anyway, for the one case shrinking
+    // cannot rescue (windows shorter than ui/AtelierLayout.hpp's "honest
+    // limit" comment describes, roughly 670px): Dear ImGui's mouse wheel
+    // still scrolls a `NoScrollbar` child, so every cell stays reachable,
+    // it is only the bar itself -- and the width it would otherwise reserve
+    // -- that this suppresses. The *outer* window above does not scroll
+    // either (`ImGuiWindowFlags_NoScrollbar` is in `fixedFlags`), which is
+    // what keeps the FG swatch below pinned to the bottom of the band
+    // regardless of how far the grid has wheel-scrolled -- it lives in the
+    // outer window's content, after this child's fixed-height reservation,
+    // not inside the scrolling child itself.
+    if (ImGui::BeginChild("##toolgrid", ImVec2(0.0f, gridH), 0,
+                          ImGuiWindowFlags_NoScrollbar)) {
       for (const PaletteCell& cell : kPaletteOrder) {
-        toolButton(st, cell.tool);
+        toolButton(st, cell.tool, cellSize);
         if (cell.ruleAfter) {
           ImDrawList* dl = ImGui::GetWindowDrawList();
           const ImVec2 rp = ImGui::GetCursorScreenPos();
-          dl->AddRectFilled(rp, ImVec2(rp.x + kToolSize, rp.y + kDividerThickness),
+          dl->AddRectFilled(rp, ImVec2(rp.x + cellSize, rp.y + kDividerThickness),
                             atelierToken(kDivider));
-          ImGui::Dummy(ImVec2(kToolSize, kDividerThickness));
+          ImGui::Dummy(ImVec2(cellSize, kDividerThickness));
         }
       }
-      moreToolsButton();
+      moreToolsButton(cellSize);
     }
     ImGui::EndChild();
+    ImGui::PopStyleVar();  // ItemSpacing, pushed above BeginChild()
 
     // The foreground swatch, at the bottom of the palette where docs/ui.md
     // section 2's diagram puts `FG/BG` -- drawn after EndChild() precisely so
     // it is *not* part of the scrolling grid above and cannot move with it.
+    // Its side is pinned to `kToolCellMax`, not the live `cellSize`, so it
+    // does not resize or reflow as the window resizes -- see
+    // ui/AtelierLayout.hpp's kToolSwatchAreaH comment for why that anchoring
+    // also breaks a circular dependency in the height arithmetic above.
     //
     // **FG only, no BG.** The pair is Photoshop's, and the second half of it
     // means something only once something fills with it: Fill-with-colour is

@@ -33,64 +33,107 @@ struct AtelierRect {
 };
 
 // docs/ui.md section 2. The trailing numbers in the diagram are heights; the
-// two under it (64, 322) are the column widths -- kToolPaletteW is defined
-// just below, next to the arithmetic that produces its 64.
+// two under it (44, 322) are the column widths -- kToolPaletteW is defined
+// just below, next to the arithmetic that produces its 44.
 constexpr float kTitleBarH   = 36.0f;
 constexpr float kTabStripH   = 34.0f;
 constexpr float kOptionsBarH = 46.0f;
 constexpr float kStatusBarH  = 26.0f;
 constexpr float kRightColumnW = 322.0f;
 
-// The supplied design redraws docs/ui.md section 2's palette as a **single
-// column** of ~26 tools (was "50px in a 2-wide grid" -- docs/ui.md's own
-// text is updated to match, and this comment is the arithmetic behind the
-// new number). Lucide's icons are asked for at 15px (this build's own
-// spec line, ui/Fonts.hpp's kToolIconSizePx); 36px gives that glyph a
-// comfortable click target -- close to Photoshop's own single-column tool
-// rail.
+// **The user's own correction, stated plainly: "make the toolbar fit
+// without scrolling ... the buttons are too large."** A fixed 36px cell
+// with a permanently-visible scrollbar (this file's own previous revision)
+// satisfied the letter of "every cell fits inside the palette" while
+// failing the actual design brief, which is a single column that shows all
+// of itself. This revision replaces the fixed cell with one computed **per
+// frame**, from the palette band's actual height, clamped to a legible
+// range -- so the palette shrinks its cells before it ever reaches for a
+// scrollbar, and only reaches for one (silently, wheel-only, never drawn)
+// in the one case shrinking cannot rescue: see kToolCellMin's own comment.
 //
-// A single column this narrow cannot show 27 cells plus the FG swatch in
-// the ~900px the mid row leaves at the design's own 1024px window height
-// (27 * 36 = 972, before separators and the swatch), so the palette
-// **scrolls, permanently** -- not "occasionally, on a short window": 27
-// cells at 36px is taller than every window size app/selftest/
-// AtelierChrome.cpp's own layout test tries, so the vertical scrollbar is
-// always on screen and its width is not optional headroom, it is part of
-// what the palette has to fit inside.
+// docs/ui.md section 2 keeps naming a single column of Lucide icons at
+// 15px; what changes here is only how tall each cell is allowed to be
+// around that fixed glyph size.
+constexpr float kToolCellMax = 28.0f;  // the size a roomy window gets
+constexpr float kToolCellMin = 18.0f;  // the floor -- a 15px glyph needs at
+                                       // least this much cell to keep ~1.5px
+                                       // of breathing room on every side
+// 27 `Tool` values (app/AppState.hpp) + the "More" overflow cell
+// (ui/MacPaintUI.cpp's `moreToolsButton()`, not a `Tool`) = 28 cells, always
+// -- named here rather than left as a bare `28` in the arithmetic below, so
+// a future palette entry changes one number instead of two disagreeing
+// ones.
+constexpr int kToolCellCount = 28;
+// The palette's four group-separator rules (docs/ui.md section 2's groups:
+// selection/sampling, retouch/fill, paint, vector/text -- a fifth group,
+// navigation, closes the column and needs no rule after it), each
+// `kDividerThickness` (1px) tall.
+constexpr float kToolSeparatorsH = 4.0f;
+
+// The palette's own arithmetic can't feed the FG swatch's reservation
+// *and* be fed by it -- computing the tool grid's height needs to know how
+// much room the swatch below it takes, but the swatch's own size (this
+// file's earlier revision) was `kToolSize - 8`, and `kToolSize` is exactly
+// the number the grid computation is trying to produce. Anchoring the
+// swatch reservation to `kToolCellMax` instead of the live cell size
+// breaks that circularity, and buys the swatch a second property the user
+// asked for implicitly by asking for a stable, non-scrolling palette: **it
+// does not resize or reflow as the window resizes**, because its size is a
+// compile-time constant now, not a function of the live layout.
 //
-// **`kToolPaletteW` has to be wide enough for a whole cell to survive
-// `ImGui::BeginChild()`'s own padding and that permanent scrollbar**, not
-// merely wide enough that `kToolCellSize` is textually smaller than the
-// outer window rect -- the version of this file that shipped
-// `kToolPaletteW = kToolCellSize + 8` satisfied exactly that weaker,
-// wrong claim (an outer-rect check with an 8px fudge that was actually
-// *half* of one side's WindowPadding) while the real content region was
-// `36 - 2*8 - 12 = 4px`, and every icon rendered clipped to a sliver --
-// found by a screenshot, not by the static_assert below, because that
-// static_assert was checking the outer rect too.
+//     swatchAreaH = (kToolCellMax - 8) + 34 = 54
 //
-//     content width = paletteW - 2*WindowPadding.x - ScrollbarSize
-//                    = paletteW - 2*kWindowPaddingX - kScrollbarSize
+// `kToolCellMax - 8` is the swatch's own side (8px of margin, split evenly,
+// the same accounting every earlier revision of this constant used); `34`
+// is room for its "FG" caption and the padding around it.
+constexpr float kToolSwatchAreaH = kToolCellMax - 8.0f + 34.0f;  // 54
+
+// `kToolPaletteW` needs room for exactly one cell at its *largest*
+// (`kToolCellMax`) plus `ImGuiStyle::WindowPadding` on both sides --
+// **and nothing for a scrollbar**, because there no longer is one: the
+// tool grid's `BeginChild()` now carries `ImGuiWindowFlags_NoScrollbar`
+// (ui/MacPaintUI.cpp), which this file's earlier revision argued at length
+// was permanently necessary and is now the opposite of true. A window that
+// cannot show every cell at `kToolCellMin` still scrolls -- the mouse
+// wheel keeps working inside a `NoScrollbar` child, it is only the bar
+// itself that stops being drawn and stops reserving width -- but that is
+// the honest, disclosed fallback for a window too short to hold the
+// design (see the cell-size computation below), not the steady state this
+// width is sized for.
 //
-// kWindowPaddingX and kScrollbarSize (ui/AtelierTheme.hpp) are what
-// `ui/AtelierTheme.cpp`'s `applyAtelierTheme()` actually assigns to
-// `ImGuiStyle::WindowPadding`/`::ScrollbarSize` -- the same two numbers,
-// not a second pair of literals that could drift from them -- so this
-// formula is the one Dear ImGui's own layout code is, in fact, applying to
-// every window this build creates, including the palette's.
+// kWindowPaddingX (ui/AtelierTheme.hpp) is what `applyAtelierTheme()`
+// actually assigns to `ImGuiStyle::WindowPadding.x` -- not a second,
+// hand-copied literal that could drift from it (ui/AtelierTheme.hpp's own
+// comment is the fuller account of why that pairing matters).
+constexpr float kToolPaletteW = kToolCellMax + 2.0f * kWindowPaddingX;  // 44
+static_assert(kToolPaletteW - 2.0f * kWindowPaddingX >= kToolCellMax,
+              "docs/ui.md section 2: the palette's content region -- width minus "
+              "WindowPadding on both sides, no scrollbar to subtract now that the grid "
+              "shrinks instead of scrolling -- has to fit the largest cell the layout "
+              "below can produce.");
+
+// The tool grid's actual, per-frame cell size: as large as `kToolCellMax`
+// when the window is roomy, shrinking to fit `kToolCellCount` cells (plus
+// `kToolSeparatorsH` of separator rules) into whatever the palette band
+// leaves after `kToolSwatchAreaH`, floored at `kToolCellMin` rather than
+// shrinking indefinitely.
 //
-// 64 is chosen, not derived, specifically so the static_assert below is a
-// real check rather than an identity: it is the smallest round number that
-// clears the minimum (36 + 2*8 + 12 = 64 exactly, so there is no slack left
-// to spend on anything else, which is honest about how tight a
-// single-column palette at this cell size actually is).
-constexpr float kToolCellSize = 36.0f;
-constexpr float kToolPaletteW = 64.0f;
-static_assert(kToolPaletteW >= kToolCellSize + 2.0f * kWindowPaddingX + kScrollbarSize,
-              "docs/ui.md section 2: a tool cell has to fit the palette's *content* region "
-              "-- width minus WindowPadding on both sides minus the permanently-visible "
-              "scrollbar -- not merely the outer window rect. See this constant's own "
-              "comment for the screenshot-only regression that the weaker check let ship.");
+// Pure arithmetic, free of ImGui like the rest of this file, so
+// `--selftest` can assert it fits at a table of window heights without a
+// window -- see app/selftest/AtelierChrome.cpp's Part G/H.
+//
+// **The honest limit.** Below roughly a 670px window (28 cells *
+// kToolCellMin + kToolSeparatorsH + kToolSwatchAreaH, worked back through
+// atelierLayout()'s band arithmetic), the grid genuinely cannot fit even
+// at the smallest legible cell size -- clamping stops the cells from
+// shrinking past legibility, it does not stop the window from being too
+// short. ui/MacPaintUI.cpp does not clip the grid or hide any tool in that
+// case: the child keeps `ImGuiWindowFlags_NoScrollbar` (no bar drawn, no
+// width reserved for one) but Dear ImGui's mouse-wheel scroll still works
+// inside a `NoScrollbar` child, so every cell stays reachable, just not
+// simultaneously visible, on a window this short.
+float atelierToolCellSize(float paletteH) noexcept;
 
 // The six regions of docs/ui.md section 2, plus the rules between them.
 //
