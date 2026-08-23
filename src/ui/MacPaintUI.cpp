@@ -494,39 +494,171 @@ void moreToolsButton(float cellSize) {
   ImGui::PopID();
 }
 
-// docs/ui.md section 2's palette groups, top to bottom, exactly as the
-// supplied design orders them -- separate from `enum class Tool`'s own
-// declaration order (app/AppState.hpp), which groups by "does it do
-// anything" instead of by where a painter would look for it. One array is
-// the single place display order can drift from the design; two arrays
-// (or a switch and an array) would be two places for that to happen.
-struct PaletteCell {
-  Tool tool;
-  bool ruleAfter;  // docs/ui.md section 1's 1px internal divider, below this cell
-};
+// docs/ui.md section 2's palette, nested into Photoshop-style flyout
+// groups (ui/AtelierChrome.hpp's `kToolGroups`) rather than one cell per
+// `Tool` -- the user's own instruction: "nest similar tools into a flyout
+// to conserve space like photoshop." Display order and the four
+// design-group rules both live in that table now (it is metadata, free of
+// ImGui, the same split `kToolMeta` draws); what follows here is only how
+// a group's cell and its flyout are drawn.
 
-constexpr PaletteCell kPaletteOrder[] = {
-    // group 1 -- selection & sampling
-    {Tool::Move, false},        {Tool::Marquee, false},   {Tool::Lasso, false},
-    {Tool::PolygonLasso, false}, {Tool::MagicWand, false}, {Tool::Crop, false},
-    {Tool::Eyedropper, false},  {Tool::Measure, true},
-    // group 2 -- retouch & fill
-    {Tool::Frame, false},   {Tool::CloneStamp, false}, {Tool::Eraser, false},
-    {Tool::PaintBucket, false}, {Tool::Gradient, true},
-    // group 3 -- paint. Water and DryBrush are not among the wireframe's ~26
-    // at all -- app/AppState.hpp's Tool comment says why they sit here,
-    // beside the brush they are variants of.
-    {Tool::Brush, false}, {Tool::Water, false}, {Tool::DryBrush, false},
-    {Tool::Pencil, false}, {Tool::Smudge, false}, {Tool::Dodge, false},
-    {Tool::Burn, true},
-    // group 4 -- vector & text
-    {Tool::Pen, false}, {Tool::Curve, false}, {Tool::Text, false},
-    {Tool::Shape, false}, {Tool::Slice, true},
-    // group 5 -- navigation. The "..." overflow cell that ends this group is
-    // drawn by moreToolsButton(), right after this array's loop -- it is not
-    // a Tool, so it cannot be a row of this table.
-    {Tool::Hand, false}, {Tool::Zoom, false},
-};
+// Photoshop's own press-and-hold window is roughly a third of a second --
+// long enough that a quick click-to-select never accidentally opens the
+// flyout, short enough that a deliberate hold does not feel laggy.
+constexpr float kFlyoutHoldSeconds = 0.35f;
+
+// A flyout row's height and the icon gutter it reserves on the left --
+// fixed regardless of the live palette cell size (`cellSize`), the same
+// way Photoshop's own flyout menus do not grow or shrink with toolbar
+// zoom. Row *width* is not fixed here -- see toolGroupButton() for why it
+// is computed per popup instead.
+constexpr float kFlyoutRowH = 24.0f;
+constexpr float kFlyoutIconGutter = 24.0f;
+constexpr float kFlyoutPadX = 10.0f;
+
+// One row of a group's flyout: icon + name, Photoshop's own flyout
+// layout. Hand-drawn like toolButton() rather than an ImGui::Selectable
+// with a glyph embedded in its text label, so it renders through the
+// exact same drawToolGlyph()/kToolIconSizePx path the palette cells
+// themselves use -- a merged Lucide glyph is only proven
+// (app/selftest/Fonts.cpp's Part D) to bake at kToolIconSizePx; drawing it
+// via plain text at whatever font size ImGui's popup happens to be using
+// would be a different, unproven bake.
+//
+// Returns true on click regardless of toolImplemented() -- toolButton()'s
+// own clickedRaw/clicked split, so the caller (not this function) decides
+// what a click on a not-yet-built member means.
+bool toolFlyoutRow(Tool member, bool isCurrent, float rowW) {
+  const bool implemented = toolImplemented(member);
+  ImGui::PushID(static_cast<int>(member));
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const ImVec2 size(rowW, kFlyoutRowH);
+  const bool clicked = ImGui::InvisibleButton("##row", size);
+  const bool hovered = ImGui::IsItemHovered();
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  if (isCurrent || hovered) {
+    dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y),
+                      isCurrent ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
+                                : ImGui::GetColorU32(ImGuiCol_ButtonHovered));
+  }
+
+  // The exact fg-colour rule toolButton() uses -- dimmed for a not-built
+  // tool, inverted for the current pick, plain text otherwise -- repeated
+  // here rather than factored out, because toolButton() computes it inline
+  // from state (selected/hovered/implemented) this function does not share
+  // (a flyout row is never "selected" in toolButton()'s sense; `isCurrent`
+  // is a different, group-local idea).
+  const ImU32 fg = !implemented
+                       ? (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110)
+                   : isCurrent ? IM_COL32(20, 22, 24, 255)
+                               : ImGui::GetColorU32(ImGuiCol_Text);
+  const ImVec2 iconCenter(p.x + kFlyoutIconGutter * 0.5f, p.y + size.y * 0.5f);
+  if (!drawToolGlyph(dl, toolIconCodepoint(member), iconCenter, fg))
+    drawToolIcon(dl, member, iconCenter, kFlyoutIconGutter * 0.31f, fg);
+
+  const std::string label = toolName(member);
+  const ImVec2 textPos(p.x + kFlyoutIconGutter, p.y + (size.y - ImGui::GetTextLineHeight()) * 0.5f);
+  dl->AddText(textPos, fg, label.c_str());
+
+  if (hovered) {
+    const std::string tip = toolTooltip(member);
+    ImGui::SetTooltip("%s", tip.c_str());
+  }
+  ImGui::PopID();
+  return clicked;
+}
+
+// One cell of the palette's nested flyout groups. Draws exactly one
+// `Tool` -- the group's *current* member, read from
+// `st.toolGroupCurrent[groupIndex]` -- through the existing toolButton(),
+// so every rule that function already enforces (disabled dimming,
+// accent-only-if-selected, "Not built yet." tooltip, the
+// drawToolGlyph()/drawToolIcon() fallback) applies to a grouped cell
+// exactly as it does to an ungrouped one, with no duplicated logic. What
+// this function adds on top of a single tool is only what a *group*
+// needs: a small corner triangle when it has more than one member, and
+// the flyout itself, opened by right-click (BeginPopupContextItem(), the
+// established pattern this file already uses for the LAYERS row context
+// menu) or a ~350ms press-and-hold.
+//
+// `forceOpen` is --flyout-demo's hook (AppState::openToolFlyoutDemo) --
+// see that field's own comment for why a screenshot needs it.
+void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpen) {
+  // Lazily sized and filled on first use -- AppState::toolGroupCurrent's
+  // own comment says why this header cannot size it in advance.
+  if (st.toolGroupCurrent.size() != static_cast<size_t>(kToolGroupCount)) {
+    st.toolGroupCurrent.resize(static_cast<size_t>(kToolGroupCount));
+    for (int g = 0; g < kToolGroupCount; ++g)
+      st.toolGroupCurrent[static_cast<size_t>(g)] = toolGroupDefaultMember(g);
+  }
+
+  const ToolGroup& group = kToolGroups[groupIndex];
+  Tool& current = st.toolGroupCurrent[static_cast<size_t>(groupIndex)];
+
+  ImGui::PushID(groupIndex);
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  toolButton(st, current, cellSize);
+  // toolButton() leaves its own InvisibleButton as ImGui's "last item" --
+  // exactly what BeginPopupContextItem() below needs to detect a
+  // right-click, and what IsItemActive()/MouseDownDuration need for
+  // press-and-hold.
+
+  if (group.memberCount > 1) {
+    // Bottom-right corner triangle -- Photoshop's own "this cell hides
+    // more" mark. Small enough not to compete with the glyph beside it;
+    // drawn last, over the cell's own bottom-right corner.
+    //
+    // Colour follows the same selected/not split toolButton() itself
+    // draws its icon with -- ImGuiCol_Border (the first colour tried here)
+    // reads at nearly the same luminance as the cell's own idle
+    // background and border, which made the badge functionally invisible
+    // on a screenshot rather than merely subtle. kTextPrimary against the
+    // idle/hovered background and the dark on-accent ink against the
+    // selected one both hold real contrast in both states.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const bool selected = toolImplemented(current) && st.brush.tool == current;
+    const ImU32 triColor = selected ? IM_COL32(20, 22, 24, 255) : atelierToken(kTextPrimary);
+    const float s = std::max(5.0f, cellSize * 0.28f);
+    const ImVec2 corner(p.x + cellSize, p.y + cellSize);
+    dl->AddTriangleFilled(ImVec2(corner.x - s, corner.y), corner,
+                          ImVec2(corner.x, corner.y - s), triColor);
+
+    // Anchored to the cell's right edge, per the design brief -- only
+    // takes effect the frame the popup opens (ImGui ignores
+    // SetNextWindowPos on a popup already open), so this does not fight a
+    // user who has since scrolled or dragged it.
+    ImGui::SetNextWindowPos(ImVec2(p.x + cellSize + 4.0f, p.y));
+
+    const bool heldLongEnough =
+        ImGui::IsItemActive() &&
+        ImGui::GetIO().MouseDownDuration[ImGuiMouseButton_Left] > kFlyoutHoldSeconds;
+    if (heldLongEnough || forceOpen) ImGui::OpenPopup("##toolFlyout");
+
+    if (ImGui::BeginPopupContextItem("##toolFlyout")) {
+      // Width fits the longest member name in *this* group, not a
+      // guessed constant -- group 10 (Brush/Pencil/Water/DryBrush) and
+      // group 1 (Move/Frame) do not need the same width, and a fixed one
+      // wide enough for the longest name in the whole table would waste
+      // space on every shorter group's flyout.
+      float rowW = 60.0f;
+      for (int m = 0; m < group.memberCount; ++m)
+        rowW = std::max(rowW, ImGui::CalcTextSize(toolName(group.members[m])).x);
+      rowW += kFlyoutIconGutter + kFlyoutPadX;
+
+      for (int m = 0; m < group.memberCount; ++m) {
+        const Tool member = group.members[m];
+        if (toolFlyoutRow(member, member == current, rowW)) {
+          current = member;                                     // display state always updates
+          if (toolImplemented(member)) st.brush.tool = member;  // selection only if real
+          ImGui::CloseCurrentPopup();
+        }
+      }
+      ImGui::EndPopup();
+    }
+  }
+  ImGui::PopID();
+}
 
 // Tilt is a direction and a steepness, so it gets a pad you drag rather than two
 // numbers. The dot is where the low corner of the board is; distance from centre
@@ -3857,9 +3989,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // not inside the scrolling child itself.
     if (ImGui::BeginChild("##toolgrid", ImVec2(0.0f, gridH), 0,
                           ImGuiWindowFlags_NoScrollbar)) {
-      for (const PaletteCell& cell : kPaletteOrder) {
-        toolButton(st, cell.tool, cellSize);
-        if (cell.ruleAfter) {
+      // --flyout-demo names a *tool*, not a slot index -- matched by
+      // toolGroupIndex() so a reordering of ui/AtelierChrome.hpp's
+      // kToolGroups cannot silently point the demo at the wrong group.
+      const int brushGroup = toolGroupIndex(Tool::Brush);
+      for (int g = 0; g < kToolGroupCount; ++g) {
+        toolGroupButton(st, g, cellSize, st.openToolFlyoutDemo && g == brushGroup);
+        if (kToolGroups[g].ruleAfter) {
           ImDrawList* dl = ImGui::GetWindowDrawList();
           const ImVec2 rp = ImGui::GetCursorScreenPos();
           dl->AddRectFilled(rp, ImVec2(rp.x + cellSize, rp.y + kDividerThickness),

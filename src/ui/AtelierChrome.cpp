@@ -222,6 +222,20 @@ std::string toolTooltip(Tool t) {
   return s;
 }
 
+int toolGroupIndex(Tool t) noexcept {
+  for (int g = 0; g < kToolGroupCount; ++g)
+    for (int m = 0; m < kToolGroups[g].memberCount; ++m)
+      if (kToolGroups[g].members[m] == t) return g;
+  return -1;
+}
+
+Tool toolGroupDefaultMember(int groupIndex) noexcept {
+  const ToolGroup& group = kToolGroups[groupIndex];
+  for (int m = 0; m < group.memberCount; ++m)
+    if (toolImplemented(group.members[m])) return group.members[m];
+  return group.members[0];
+}
+
 void drawAtelierRules(const AtelierBands& bands) {
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   for (size_t i = 0; i < bands.ruleCount; ++i) {

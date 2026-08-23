@@ -175,21 +175,23 @@ bool runAtelierChromeTest() {
     check(b.titleBar.h == kTitleBarH && kTitleBarH == 36.0f, "title bar is 36 px");
     check(b.optionsBar.h == kOptionsBarH && kOptionsBarH == 46.0f, "options bar is 46 px");
     check(b.statusBar.h == kStatusBarH && kStatusBarH == 26.0f, "status bar is 26 px");
-    // 44 px, not the outgoing chrome's 104, and not the 64 the previous
-    // revision of this file used either. That 64 fixed the clipping bug (a
-    // 36px cell plus WindowPadding on both sides plus a permanently-visible
-    // ScrollbarSize) but was still sized for a *fixed* cell; the user's own
-    // correction -- "make the toolbar fit without scrolling ... the buttons
-    // are too large" -- replaced the fixed cell with one computed per frame
-    // (ui/AtelierLayout.hpp's atelierToolCellSize()) and removed the
-    // scrollbar the 64 was partly paying for. `kToolPaletteW` now needs room
-    // for exactly one cell at its largest (kToolCellMax = 28) plus
-    // WindowPadding on both sides (8 * 2 = 16) and nothing else: 28 + 16 =
-    // 44. Checked against the *named constant* rather than a second copy of
-    // the literal -- docs/ui.md section 2 is where 44 is recorded as the
-    // number this build chose.
-    check(b.toolPalette.w == kToolPaletteW && kToolPaletteW == 44.0f,
-          "the tool palette is 44 px wide (a single column, docs/ui.md section 2)");
+    // 52 px, not the outgoing chrome's 104, not the 64 that fixed the
+    // clipping bug, and not the 44 that replaced it once cells started
+    // shrinking to fit instead of scrolling. This is the fourth number:
+    // "nest similar tools into a flyout to conserve space like photoshop"
+    // (the user's own words) collapsed the palette from 28 slots (27
+    // `Tool`s + "More") to 18 (17 Photoshop-style groups + "More" --
+    // ui/AtelierChrome.hpp's `kToolGroups`, proven complete by Part F2
+    // below), which bought back enough room to raise `kToolCellMax` from
+    // 28 to 36 -- this file's very first revision's number -- instead of
+    // spending the savings on an even smaller floor. `kToolPaletteW` needs
+    // room for exactly one cell at its largest (kToolCellMax = 36) plus
+    // WindowPadding on both sides (8 * 2 = 16) and nothing else: 36 + 16 =
+    // 52. Checked against the *named constant* rather than a second copy
+    // of the literal -- docs/ui.md section 2 is where 52 is recorded as
+    // the number this build chose.
+    check(b.toolPalette.w == kToolPaletteW && kToolPaletteW == 52.0f,
+          "the tool palette is 52 px wide (a single column, docs/ui.md section 2)");
     check(b.rightColumn.w == 322.0f, "the right column is 322 px wide");
     check(b.statusBar.bottom() == kH, "the status bar sits flush with the bottom edge");
     check(b.rightColumn.right() == kW, "the right column sits flush with the right edge");
@@ -418,6 +420,82 @@ bool runAtelierChromeTest() {
     }
   }
 
+  // --- Part F2: the flyout groups are complete ------------------------------
+  //
+  // "nest similar tools into a flyout to conserve space like photoshop"
+  // replaced one palette cell per `Tool` with one cell per group
+  // (ui/AtelierChrome.hpp's `kToolGroups`), which trades away the
+  // exhaustiveness `-Wswitch` used to buy for free: a `switch` over
+  // `Tool::Count` cannot compile with a case missing, but a plain array of
+  // groups can be missing a `Tool` and compile perfectly -- the tool would
+  // just never appear in any flyout, silently unreachable from the
+  // palette. This is the check that stands in for the compiler once the
+  // exhaustiveness is a runtime table instead of a switch, walking
+  // 0..Tool::Count the same way Part E's own distinct-name walk does.
+  {
+    // **Completeness**: every Tool value is in exactly one group, exactly
+    // once -- not zero (unreachable from the palette), not two (ambiguous
+    // which slot "owns" it, and toolGroupIndex() would silently return
+    // whichever group's loop reached it first).
+    bool completeOk = true;
+    for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+      const Tool t = static_cast<Tool>(i);
+      int occurrences = 0;
+      for (int g = 0; g < kToolGroupCount; ++g)
+        for (int m = 0; m < kToolGroups[g].memberCount; ++m)
+          if (kToolGroups[g].members[m] == t) ++occurrences;
+      if (occurrences != 1) {
+        completeOk = false;
+        std::printf("    %-16s appears in %d group(s), want exactly 1\n", toolName(t),
+                    occurrences);
+      }
+      // toolGroupIndex() is the same fact through the function under test
+      // rather than through this loop's own tally -- both have to agree,
+      // or the function itself has a bug this tally alone would not catch.
+      if (occurrences == 1 && toolGroupIndex(t) < 0) completeOk = false;
+    }
+    check(completeOk, "every Tool value is in exactly one ui/AtelierChrome.hpp kToolGroups slot");
+
+    // Every member listed by every group actually exists as a real `Tool`
+    // (catches a copy-paste that duplicated a member into the wrong slot's
+    // array without the compiler noticing -- `Tool members[4]` accepts any
+    // `Tool`, including one that belongs to a different group already).
+    // Folded into the same completeness fact above: a member duplicated
+    // across two groups already fails the `occurrences != 1` check, so
+    // this loop is really re-deriving kToolGroupCount * memberCount ==
+    // Tool::Count as an independent cross-check on the tally.
+    int totalMembers = 0;
+    for (int g = 0; g < kToolGroupCount; ++g) totalMembers += kToolGroups[g].memberCount;
+    check(totalMembers == static_cast<int>(Tool::Count),
+          "the groups' member counts sum to exactly Tool::Count (27), not more or fewer");
+
+    // **Default member**: the first toolImplemented() member when a group
+    // has one, else its first member -- Photoshop's own rule (a group
+    // opens on whichever tool actually does something), checked against
+    // an independent re-derivation rather than by calling
+    // toolGroupDefaultMember() and trusting its own answer.
+    bool defaultOk = true;
+    for (int g = 0; g < kToolGroupCount; ++g) {
+      const ToolGroup& group = kToolGroups[g];
+      Tool want = group.members[0];
+      for (int m = 0; m < group.memberCount; ++m) {
+        if (toolImplemented(group.members[m])) {
+          want = group.members[m];
+          break;
+        }
+      }
+      const Tool got = toolGroupDefaultMember(g);
+      if (got != want) {
+        defaultOk = false;
+        std::printf("    group %d: toolGroupDefaultMember() = %s, want %s\n", g, toolName(got),
+                    toolName(want));
+      }
+    }
+    check(defaultOk,
+          "toolGroupDefaultMember() is each group's first implemented member, or its first "
+          "member when none of them are implemented yet");
+  }
+
   // --- Part G: the palette's real, live content width ----------------------
   //
   // Part C's band-tiling arithmetic and ui/AtelierLayout.hpp's own
@@ -559,24 +637,28 @@ bool runAtelierChromeTest() {
   // the function and comparing it to itself -- the same reason Part C
   // recomputes the canvas's expected width from kW/kToolPaletteW/322/rules
   // instead of trusting atelierLayout()'s own answer. 940 and 790 are the
-  // coordinator-supplied examples for a roomy and a middling window;
-  // 600 is the one that lands below the honest limit, and its raw
-  // (unclamped) quotient is exactly 14.0 -- one case where the *floor* of
-  // the division is not what ships, only the *clamp* of it is, which is
-  // worth a named case rather than leaving it to be discovered by whichever
-  // one of these two happens to be wrong.
+  // same roomy/middling window heights the 28-cell design used, recomputed
+  // for kToolCellCount=18 (940 now clamps at kToolCellMax=36 rather than
+  // shrinking to 26 the way 28 cells forced it to; 790 lands at 31, not
+  // 20). 530 is the one below this revision's honest limit (~540px, down
+  // from ~670px now that nesting nearly halved the cell count) -- its raw
+  // (unclamped) quotient is floor(314/18)=17.4, one case where the *floor*
+  // of the division is not what ships, only the *clamp* to kToolCellMin
+  // is, and where the packed total (18*18+4=328) genuinely exceeds the
+  // 318px grid band this window leaves, which is exactly the disclosed
+  // fallback rather than a bug this check should paper over.
   {
     const struct {
       float winH;
       float wantCell;
       const char* note;
     } kCases[] = {
-        {940.0f, 26.0f, "roomy: shrinks a little below kToolCellMax (28), still fits"},
-        {790.0f, 20.0f, "middling: shrinks further, still fits"},
-        {600.0f, kToolCellMin,
-         "below the honest limit: the unclamped quotient is exactly 14.0, "
-         "but kToolCellMin (18) wins the clamp -- the grid does not fully "
-         "fit here, and NoScrollbar's wheel-only fallback carries the rest"},
+        {940.0f, kToolCellMax, "roomy: clamps at kToolCellMax (36) with room to spare"},
+        {790.0f, 31.0f, "middling: shrinks below kToolCellMax, still fits exactly"},
+        {530.0f, kToolCellMin,
+         "below the honest limit: the unclamped quotient is 17.4, but "
+         "kToolCellMin (18) wins the clamp -- the grid does not fully fit "
+         "here, and NoScrollbar's wheel-only fallback carries the rest"},
     };
     bool fitsOk = true;
     for (const auto& c : kCases) {

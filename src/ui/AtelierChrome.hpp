@@ -134,6 +134,87 @@ std::string toolShortcutLabel(Tool t);
 // inert; it says so.
 std::string toolTooltip(Tool t);
 
+// ---------------------------------------------------------- tool groups
+//
+// "nest similar tools into a flyout to conserve space like photoshop" --
+// the user's own words, and Photoshop's own grouping is what `kToolGroups`
+// below is copied from, mapped onto this build's `Tool` enum: one visible
+// palette cell per group, showing whichever member was last used, marked
+// with a small corner triangle when the group has more than one member,
+// and a flyout (ui/MacPaintUI.cpp's `toolGroupButton()`) listing the rest
+// on right-click or press-and-hold. This is metadata, not UI -- the same
+// split `kToolMeta` above draws between "what a cell shows" (free of
+// ImGui, tested by `--selftest` without a window) and "how it is drawn"
+// (ui/MacPaintUI.cpp).
+//
+// 17 groups, sized to the widest one (the paint group: Brush, Pencil,
+// Water, DryBrush) rather than a `std::vector` per group, so the whole
+// table is a `constexpr` array like `kToolMeta` -- no heap, no
+// initialization order to reason about, and `--selftest` can walk it at
+// compile-observed size.
+constexpr int kMaxToolGroupMembers = 4;
+struct ToolGroup {
+  Tool members[kMaxToolGroupMembers];
+  int memberCount;
+  // A thin rule below this slot, closing one of docs/ui.md section 2's
+  // five design groups (selection/sampling, retouch/fill, paint,
+  // vector/text, navigation) -- the same four boundaries
+  // ui/MacPaintUI.cpp's retired `kPaletteOrder` used to mark per-`Tool`,
+  // now marked per-*slot* since nesting changed which `Tool`s share a
+  // slot without changing where the design's own rules fall.
+  bool ruleAfter;
+};
+
+// Display order matches the user's own table exactly (Move+Frame,
+// Marquee, Lasso+PolygonLasso, MagicWand, Crop+Slice, Eyedropper+Measure,
+// CloneStamp, Eraser, Gradient+PaintBucket, Brush+Pencil+Water+DryBrush,
+// Smudge, Dodge+Burn, Pen+Curve, Text, Shape, Hand, Zoom) -- derived from
+// Photoshop's real tool groups, not arbitrary, which is why a group of one
+// today (MagicWand, CloneStamp, Eraser, Smudge, Text, Shape, Hand, Zoom)
+// still gets its own slot rather than being folded into a neighbour: those
+// are where not-yet-built variants land once they exist, per the user's
+// own instruction to "keep the pairings even where a group currently has
+// one member."
+constexpr ToolGroup kToolGroups[] = {
+    {{Tool::Move, Tool::Frame}, 2, false},
+    {{Tool::Marquee}, 1, false},
+    {{Tool::Lasso, Tool::PolygonLasso}, 2, false},
+    {{Tool::MagicWand}, 1, false},
+    {{Tool::Crop, Tool::Slice}, 2, false},
+    {{Tool::Eyedropper, Tool::Measure}, 2, true},
+    {{Tool::CloneStamp}, 1, false},
+    {{Tool::Eraser}, 1, false},
+    {{Tool::Gradient, Tool::PaintBucket}, 2, true},
+    {{Tool::Brush, Tool::Pencil, Tool::Water, Tool::DryBrush}, 4, false},
+    {{Tool::Smudge}, 1, false},
+    {{Tool::Dodge, Tool::Burn}, 2, true},
+    {{Tool::Pen, Tool::Curve}, 2, false},
+    {{Tool::Text}, 1, false},
+    {{Tool::Shape}, 1, true},
+    {{Tool::Hand}, 1, false},
+    {{Tool::Zoom}, 1, false},
+};
+constexpr int kToolGroupCount = static_cast<int>(std::size(kToolGroups));
+
+// Which group `t` belongs to, as an index into `kToolGroups`, or -1 if
+// none does. `--selftest`'s completeness check (app/selftest/AtelierChrome.cpp)
+// is what proves this is never -1 for a real `Tool` -- a tool added to the
+// enum but to no group would otherwise be silently unreachable from the
+// palette, the exact failure mode a flyout table (as opposed to a switch
+// covering `Tool::Count`) can have without `-Wswitch` catching it.
+int toolGroupIndex(Tool t) noexcept;
+
+// A group's *fixed* display default: the first `toolImplemented()` member
+// if the group has one, else its first member -- independent of any
+// runtime "last used" state (that lives on `AppState::toolGroupCurrent`,
+// ui/MacPaintUI.cpp), so `--selftest` can assert it from the table alone,
+// the same way it already asserts `toolImplemented()` itself without a
+// window. Photoshop's own rule: a group opens on whichever tool actually
+// does something, not on group[0], so a user's first encounter with (say)
+// the paint group shows Brush -- not Pencil, which happens to list first
+// in Photoshop's own UI order but has no behaviour in this build yet.
+Tool toolGroupDefaultMember(int groupIndex) noexcept;
+
 // -------------------------------------------------------------- draw parts
 
 // A docs/ui.md section 1 token as a packed ImGui colour. The tokens themselves

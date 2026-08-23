@@ -974,6 +974,7 @@ int main(int argc, char** argv) {
   bool compsDemoDrop = false;
   bool uiLayerDemo = false;
   bool marqueeDemo = false;
+  bool flyoutDemo = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
@@ -1055,6 +1056,14 @@ int main(int argc, char** argv) {
       // silently rots -- the same argument app/Screenshot.hpp makes for
       // photographing the swapchain at all.
       marqueeDemo = true;
+    } else if (a == "--flyout-demo") {
+      // sidequest/lucide-toolbox, the nested-flyout revision: holds the
+      // Brush group's flyout open (four members, Brush/Pencil implemented-
+      // and-not-implemented mixed with Water/DryBrush, the best subject the
+      // user's own instruction names) so --screenshot can photograph it --
+      // a flyout opens on right-click or a ~350ms press-and-hold, and the
+      // screenshot path has neither. See AppState::openToolFlyoutDemo.
+      flyoutDemo = true;
     } else if (a == "--ui-layer-demo") {
       // UI detour step 3: build a stack through the layer editor's own
       // commands. See runUiLayerDemo(). `noclip` runs the same script without
@@ -1806,6 +1815,7 @@ int main(int argc, char** argv) {
   // fixture above has run.
   st.controlsAllOpen = controlsAllOpen;
   st.openLayerMenu = openLayerMenu;
+  st.openToolFlyoutDemo = flyoutDemo;
   st.openExportStatesDialog = openExportStates;
   st.openLayerProperties = openLayerProperties;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
@@ -1825,6 +1835,8 @@ int main(int argc, char** argv) {
       std::printf("[marquee-demo] selection installed: 180,150 -> 700,560\n");
     }
   }
+  if (flyoutDemo)
+    std::printf("[flyout-demo] Brush group's flyout held open (right-click/press-hold demo)\n");
   // After both fixtures, deliberately: a merge is applied to whatever stack
   // the flags before it built, which is what makes the before/after pair a
   // pair.

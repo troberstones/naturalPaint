@@ -73,17 +73,26 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 > hand-derived formula for what one should be, and against a table of representative window
 > heights for the shrink-to-fit arithmetic itself.
 >
-> This is the **second** revision of this number. The first, `kToolPaletteW = kToolCellSize
-> + 8` (a fixed 36px cell), was a cell plus *half* of one side's `WindowPadding` and none of
-> a scrollbar's width -- every icon rendered clipped in half, found by a screenshot rather
-> than by that revision's own (vacuous) `static_assert`. The fix for *that* bug was a fixed
-> 36px cell in a **64px** palette (room for the cell, both sides' padding, and a then-
-> permanent scrollbar) -- correct, but it satisfied "every cell fits inside the palette"
-> while failing the actual design brief, which is a single column that shows all of itself
-> without scrolling. This revision replaces the fixed cell with the shrink-to-fit one
-> above, which is what let the palette narrow back to 44px and drop the scrollbar
-> entirely. See ui/AtelierLayout.hpp's `kToolPaletteW`/`kToolCellMax`/`kToolCellMin` for the
-> full arithmetic and ui/AtelierTheme.hpp for the shared constants that make it hold.
+> This is the **third** revision of this number. The first,
+> `kToolPaletteW = kToolCellSize + 8` (a fixed 36px cell), was a cell plus *half* of one
+> side's `WindowPadding` and none of a scrollbar's width -- every icon rendered clipped in
+> half, found by a screenshot rather than by that revision's own (vacuous) `static_assert`.
+> The fix for *that* bug was a fixed 36px cell in a **64px** palette (room for the cell,
+> both sides' padding, and a then-permanent scrollbar) -- correct, but it satisfied "every
+> cell fits inside the palette" while failing the actual design brief, which is a single
+> column that shows all of itself without scrolling. The second revision replaced the fixed
+> cell with the shrink-to-fit one described above, which let the palette narrow to 44px and
+> drop the scrollbar entirely -- but with 28 cells still to fit, most windows still landed
+> on a 20-26px cell, which is what prompted the user's *next* instruction: **"nest similar
+> tools into a flyout to conserve space like photoshop."** ui/AtelierChrome.hpp's
+> `kToolGroups` collapses the 27 `Tool` values plus the "More" cell from 28 palette slots to
+> 18 -- one cell per Photoshop-style group, each showing whichever member was last used,
+> with a small corner triangle marking a group of more than one and a flyout listing the
+> rest -- and the room that frees up is spent raising `kToolCellMax` back to 36, this file's
+> very first revision's number, rather than shrinking further than it has to. The palette is
+> **52px** now. See ui/AtelierLayout.hpp's `kToolPaletteW`/`kToolCellMax`/`kToolCellMin` for
+> the full arithmetic, ui/AtelierChrome.hpp's `kToolGroups` for the grouping table, and
+> ui/AtelierTheme.hpp for the shared constants that make the width arithmetic hold.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -102,33 +111,50 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 ├───┴──────────────────────────────────────────────┴──────────┤
 │ 64% │ 2048×1536 · LIN16 │ 214 MB / 512 MB │ Clone source…  │ 26
 └────────────────────────────────────────────────────────────┘
-  44                                                    322
+  52                                                    322
 ```
 
-Tool cells are **15px Lucide glyphs in a single column**, sized to fill whatever the
-window leaves them — the design's own layout, close to Photoshop's own single-column tool
-rail. The cell size is **not fixed**: `ui/AtelierLayout.hpp`'s `atelierToolCellSize()`
-computes it fresh every frame from the palette band's live height, as large as 28px in a
-roomy window and shrinking (never below an 18px floor, which still leaves a 15px glyph
-~1.5px of margin per side) as the window gets shorter, so that all ~28 cells (27 tools
-plus the "…" overflow cell) plus the FG swatch fit **without a scrollbar** at essentially
-any window height a user is likely to run at. `ui/MacPaintUI.cpp`'s palette draws the tool
-grid in a child window with `ImGuiWindowFlags_NoScrollbar` and keeps the FG swatch pinned
-below it, outside that child, at a size derived from the *maximum* cell size (28px) rather
-than the live one — the swatch does not resize as the window resizes.
+Tool cells are **15px Lucide glyphs in a single column of nested flyout groups** —
+Photoshop's own "one cell per tool family" convention, and close to Photoshop's own
+single-column tool rail. **One cell per group, not per tool**: `ui/AtelierChrome.hpp`'s
+`kToolGroups` maps this build's 27 `Tool` values onto 17 groups (derived from Photoshop's
+own real tool groupings, not arbitrary — Move+Artboard, Lasso+Polygonal Lasso,
+Crop+Slice, Eyedropper+Ruler, Gradient+Paint Bucket, Brush+Pencil (+this build's own Water
+and Dry Brush variants), Dodge+Burn, Pen+Curvature Pen, and nine groups of one member —
+see that table for the exact membership and display order), plus the "…" overflow cell:
+18 palette cells in all. A cell shows whichever member of its group was last used, marked
+with a small corner triangle when the group has more than one member; right-click or a
+~350ms press-and-hold opens a flyout listing the rest, icon and name, the same disabled
+treatment (dimmed, "Not built yet.") as the palette itself for a member that is not
+implemented. Picking a member from the flyout makes it the group's displayed tool and, if
+it is implemented, the active one.
 
-**The honest limit.** Below roughly a 670px window (28 cells at the 18px floor, plus the
-separator rules and the swatch strip, worked back through the layout's band arithmetic),
-the column genuinely cannot fit even at its smallest legible cell size. This build does not
+The cell size is **not fixed**: `ui/AtelierLayout.hpp`'s `atelierToolCellSize()` computes
+it fresh every frame from the palette band's live height, as large as 36px in a roomy
+window and shrinking (never below an 18px floor, which still leaves a 15px glyph ~1.5px of
+margin per side) as the window gets shorter, so that all 18 cells plus the FG swatch fit
+**without a scrollbar** at essentially any window height a user is likely to run at.
+`ui/MacPaintUI.cpp`'s palette draws the tool grid in a child window with
+`ImGuiWindowFlags_NoScrollbar` and keeps the FG swatch pinned below it, outside that
+child, at a size derived from the *maximum* cell size (36px) rather than the live one —
+the swatch does not resize as the window resizes.
+
+**The honest limit.** Below roughly a 540px window (18 cells at the 18px floor, plus the
+separator rules and the swatch strip, worked back through the layout's band arithmetic —
+well below the 28-cell design's ~670px, since nesting nearly halved the cell count), the
+column genuinely cannot fit even at its smallest legible cell size. This build does not
 clip the grid or hide any tool in that case: the child keeps `ImGuiWindowFlags_NoScrollbar`
 (no bar drawn, no width reserved for one) but Dear ImGui's mouse wheel still scrolls inside
 a `NoScrollbar` child, so every cell stays reachable — just not all visible at once — on a
 window shorter than the design was built to fit.
 
 The palette is drawn in **five groups, separated by thin rules**, top to bottom: selection
-& sampling; retouch & fill; paint; vector & text; navigation. Only **seven of the ~27
-cells do anything** — see §4a below for the full list and why the rest are drawn
-disabled rather than omitted.
+& sampling; retouch & fill; paint; vector & text; navigation — the same five the flat,
+28-cell layout used, just carried over onto the 17 flyout-group slots instead of onto
+individual tools (see `ui/AtelierChrome.hpp`'s `kToolGroups`, whose `ruleAfter` flag marks
+the same four boundaries on different slots). Only **seven of the ~27 tools do
+anything** — see §4a below for the full list and why the rest are drawn disabled, in the
+palette or in a flyout, rather than omitted.
 
 Every cell shows its **shortcut letter** on hover and in its tooltip when
 [shortcuts.md](shortcuts.md) section 1 reserves one for it — this is the letter that
@@ -188,6 +214,48 @@ substitution note (Rectangle Marquee, Measure, Curve, Zoom); 9 are genuine subst
 with no matching Lucide concept at all (Polygon Lasso, Magic Wand, Clone Stamp, Gradient,
 Water, Dry Brush, Smudge, Dodge, Burn). Sun/moon for Dodge/Burn is Photoshop's own
 lighten/darken metaphor, not an invented one.
+
+### 2b. Flyout groups: what each cell shows by default
+
+Every icon above is still each *tool's* own — nesting did not change what glyph a tool
+draws, only how many cells the palette needs to hold them all. What changed is which icon
+a group's single palette cell shows before anyone touches its flyout: **the group's first
+`toolImplemented()` member, or its first member if none of them are implemented yet**
+(`ui/AtelierChrome.hpp`'s `toolGroupDefaultMember()`, checked by `--selftest` against an
+independent re-derivation, not by asking that function to agree with itself). Photoshop's
+own rule — a group opens on whichever tool actually does something — which is also why
+every one of this build's seven working tools already happens to be group member 1 in the
+table below, not a coincidence: Water and Dry Brush were placed beside Brush for exactly
+this reason (§4a), and the rest of the table follows the same instinct.
+
+| slot | group members (display order) | shown by default |
+|---|---|---|
+| 1 | Move, Frame | Move |
+| 2 | Marquee | Marquee — implemented |
+| 3 | Lasso, Polygon Lasso | Lasso |
+| 4 | Magic Wand | Magic Wand |
+| 5 | Crop, Slice | Crop |
+| 6 | Eyedropper, Measure | Eyedropper — implemented |
+| 7 | Clone Stamp | Clone Stamp |
+| 8 | Eraser | Eraser |
+| 9 | Gradient, Paint Bucket | Gradient |
+| 10 | Brush, Pencil, Water, Dry Brush | Brush — implemented |
+| 11 | Smudge | Smudge |
+| 12 | Dodge, Burn | Dodge |
+| 13 | Pen, Curve | Pen |
+| 14 | Text | Text |
+| 15 | Shape | Shape |
+| 16 | Hand | Hand — implemented |
+| 17 | Zoom | Zoom — implemented |
+
+Then the "…" More cell, unchanged — 17 groups + 1 = 18 palette cells, down from 28.
+
+Groups of one member today (Magic Wand, Clone Stamp, Eraser, Smudge, Text, Shape, Hand,
+Zoom) still get their own slot rather than folding into a neighbour — per the user's own
+instruction, "keep the pairings even where a group currently has one member," because
+these are exactly where this build's not-yet-built variants will land as later phases add
+them (a second selection-brush tool beside Magic Wand, for instance), without another
+palette rebuild to make room.
 
 ---
 
@@ -310,14 +378,17 @@ The palette also needs two tools the wireframe did not draw: the **eraser** (PRD
 
 ### 4a. What the palette actually does today
 
-Of the 27 `Tool` values the palette draws a cell for (`app/AppState.hpp`), **seven have
-real behaviour**: Brush, Water, Dry Brush, Eyedropper, Rectangle Marquee, Hand, Zoom. The
-other twenty — every tool named in the table above whose phase has not arrived yet, plus
-Move, Lasso, Polygon Lasso, Magic Wand, Frame, Clone Stamp, Paint Bucket, Pencil, Smudge —
-exist in the palette **for their name, icon and keyboard-shortcut slot only**.
-`ui/MacPaintUI.cpp`'s `toolButton()` draws every one of them visibly disabled: dimmed
-icon, no hover highlight, not clickable, and a tooltip that says "Not built yet." rather
-than merely doing nothing on a click. **No dead button looks live.**
+Of the 27 `Tool` values (`app/AppState.hpp`) — reachable either directly, as the icon a
+palette cell shows, or through a flyout for every group with more than one member (§2b) —
+**seven have real behaviour**: Brush, Water, Dry Brush, Eyedropper, Rectangle Marquee,
+Hand, Zoom. The other twenty — every tool named in the table above whose phase has not
+arrived yet, plus Move, Lasso, Polygon Lasso, Magic Wand, Frame, Clone Stamp, Paint Bucket,
+Pencil, Smudge — exist **for their name, icon and keyboard-shortcut slot only**.
+`ui/MacPaintUI.cpp`'s `toolButton()` draws every one of them visibly disabled, whether it
+is the member currently showing on a group's own cell or one listed inside that group's
+flyout: dimmed icon, no hover highlight, not clickable, and a tooltip that says "Not built
+yet." rather than merely doing nothing on a click. **No dead button looks live**, in the
+palette or in a flyout.
 
 Water and Dry Brush are this build's own watercolour brush variants and were never in the
 wireframe's ~26 tools at all (§2a's icon table says which Lucide glyph each substitutes).

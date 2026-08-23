@@ -173,6 +173,45 @@ struct AppState {
   CanvasView view;
   SimParams sim;
 
+  // Photoshop-style tool-group memory (docs/ui.md section 2, "nest similar
+  // tools into a flyout"): which member of each palette group slot the
+  // user most recently picked, so a flyout cell shows the tool a painter
+  // actually reached for last time rather than resetting to the group's
+  // fixed default the moment `brush.tool` moves to an unrelated tool.
+  // Indexed by a group's position in ui/AtelierChrome.hpp's `kToolGroups`,
+  // not by `Tool` -- there is one slot of memory per *group*, which is the
+  // whole point of a flyout.
+  //
+  // A `Tool` per group, not a bool or an index into `brush.tool` itself,
+  // because most of a group's members are not `toolImplemented()`
+  // (this file's own `Tool` comment): picking one from a flyout usually
+  // does NOT move `brush.tool` at all (the same "no-op if unimplemented"
+  // rule every disabled palette cell already follows), yet the cell still
+  // has to keep showing what was picked -- `brush.tool` alone cannot
+  // represent that.
+  //
+  // Empty until the palette's first frame, not sized here: this header
+  // cannot know ui/AtelierChrome.hpp's group count or table without a
+  // circular include (that header already includes this one for `Tool`),
+  // so ui/MacPaintUI.cpp's `toolGroupButton()` resizes and fills it, once,
+  // the first time it draws -- the same lazy-init shape
+  // `recentDocumentsLoaded` below uses for a different reason. This is
+  // session state by this struct's own rule further down (survives
+  // switching tools and reopening a flyout, the way `brush.tool` itself
+  // does), not the transient widget state that rule keeps off this struct
+  // -- "which popup is open" would be the latter; "which tool a group's
+  // flyout last landed on" is closer to `brush.tool` itself.
+  std::vector<Tool> toolGroupCurrent;
+
+  // --flyout-demo: holds the Brush group's flyout open (ui/MacPaintUI.cpp's
+  // `toolGroupButton()`, matched by `toolGroupIndex(Tool::Brush)` rather
+  // than a hardcoded slot index, so a reordering of `kToolGroups` cannot
+  // silently point this at the wrong group) so `--screenshot` can
+  // photograph it -- `openLayerMenu`'s justification exactly, one popup
+  // over: a flyout opens on right-click or a ~350ms press-and-hold, and
+  // the screenshot path has neither.
+  bool openToolFlyoutDemo = false;
+
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //
   // Request flags rather than direct action, for the reason the zoom commands
