@@ -579,6 +579,7 @@ bool runGradientTest() {
           "keep their creation order and the hard edge between them does not flip");
   }
 
+  std::printf("[selftest] gradient %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 

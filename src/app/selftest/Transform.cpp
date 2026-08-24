@@ -911,6 +911,7 @@ bool runTransformTest() {
           "entry point, rather than read past");
   }
 
+  std::printf("[selftest] transform %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 
