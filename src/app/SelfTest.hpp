@@ -433,6 +433,25 @@ bool runGradientTest();
 // side so neither can drift onto the other.
 bool runSelectionTest();
 
+// ops/FloodFill (PLAN.md "Phase 6" paint bucket + "Phase 7" magic wand; PRD
+// D25, D26, E2, E3). Headless and GPU-free.
+//
+// The wand and the bucket are one algorithm, so they are one module and one
+// section. Four decisions carry it. **The tolerance is measured on
+// display-encoded values, not linear ones** -- the section measures the 18x
+// asymmetry that makes a linear tolerance unusable (the same tolerance spans
+// 0.0144 of linear light above black and 0.2621 below white), because the
+// failure it prevents is a tool that feels unpredictable rather than one that
+// produces a wrong pixel. **The coverage is antialiased** (PRD E2, P0) and the
+// ramp's width is derived from the coarsest step of the rgba16float source
+// against the 256 levels of the uint8 coverage store -- the section re-runs
+// that measurement rather than trusting the constant. **The ramp weights the
+// boundary and never moves it**: the same texels are reached with antialiasing
+// on and off. And **the bucket has no second opinion**: filling through the
+// wand's own selection is asserted to move exactly the texels the wand
+// selected, which is what fails if a second tolerance implementation ever grows
+// inside the fill.
+bool runFloodFillTest();
 // core/SelectionShapes (PRD E3's ellipse, lasso and polygon lasso). Headless
 // and GPU-free.
 //

@@ -1311,6 +1311,12 @@ int main(int argc, char** argv) {
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
     // arithmetic, no PaintSim involvement.
     const bool selectionOk = np::runSelectionTest();
+    // ops/FloodFill (PLAN.md "Phase 6" paint bucket + "Phase 7" magic wand;
+    // PRD D25, D26, E2, E3): the display-encoded tolerance metric, the derived
+    // antialiased coverage ramp, the scanline traversal that pages through the
+    // tile store, and the fill that goes through the selection the wand
+    // produces. Also headless and GPU-free.
+    const bool floodFillOk = np::runFloodFillTest();
     // core/SelectionShapes (PRD E3): the ellipse, lasso and polygon lasso, and
     // the exact-area claim behind all three. Headless, pure CPU.
     const bool selectionShapesOk = np::runSelectionShapesTest();
@@ -1668,7 +1674,9 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && gradientOk && selectionOk && selectionShapesOk && clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
+                    histogramOk && pointOpsOk && gradientOk && selectionOk &&
+                    selectionShapesOk && floodFillOk &&
+                    clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&

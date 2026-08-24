@@ -41,6 +41,7 @@ add_executable(naturalPaint
   app/selftest/ExportAs.cpp
   app/selftest/ExportStates.cpp
   app/selftest/FieldAllocation.cpp
+  app/selftest/FloodFill.cpp
   app/selftest/Fonts.cpp
   app/selftest/AtelierChrome.cpp
   app/selftest/ActiveLayer.cpp
@@ -124,6 +125,7 @@ add_executable(naturalPaint
   io/NpaintFile.cpp
   io/OpSerial.cpp
   io/TileResidency.cpp
+  ops/FloodFill.cpp
   ops/Gradient.cpp
   ops/PointOps.cpp
   ops/Resample.cpp
