@@ -419,6 +419,30 @@ bool runPointOpsTest();
 // the pure red that interpolating premultiplied values returns half way
 // through a red-to-transparent-blue fade.
 bool runGradientTest();
+// ops/Roi, ops/Blur, ops/Feather (PLAN.md "Phase 6 -- Filter and transform
+// it"; DESIGN-imaging.md "Class B"; PRD E4). Headless and GPU-free -- pure CPU
+// tile arithmetic.
+//
+// Phase 6's spine, and two hazards carry the section. **The tile seam**: a
+// blur that reads only its own tile is exactly right in the middle of every
+// tile and wrong by roughly half of full scale on a grid of lines every 128
+// texels, so the section asserts that a blur split across a tile boundary is
+// bit-identical to the same blur computed in one call, and then computes the
+// broken tile-local version on purpose to prove that assertion is sensitive
+// rather than merely satisfied. **The ROI direction**: `roiBackward` and
+// `roiForward` return the same rectangle for every symmetric kernel, so a
+// stack of blurs cannot tell them apart -- they are checked on an asymmetric
+// op instead, before the op that needs the distinction exists.
+//
+// Also here: the accumulator decision measured live (an f16 accumulator's
+// error on a 1601-tap kernel, against this build's f32 one and against the f16
+// store's own rounding), DC preservation, separability against a direct 2-D
+// convolution, the linear-light and premultiplied-alpha domain checks, box
+// blur's flat kernel and its full-width divisor -- and PRD E4's feather,
+// including the property that put feather in the filter track: a selection's
+// absent tile means 0.0, so a feather must write coverage into tiles the input
+// never had.
+bool runBlurTest();
 
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's

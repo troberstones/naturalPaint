@@ -24,6 +24,7 @@ add_executable(naturalPaint
   app/selftest/ApplyPass.cpp
   app/selftest/BaseLayerAlpha.cpp
   app/selftest/Blend.cpp
+  app/selftest/Blur.cpp
   app/selftest/Clipboard.cpp
   app/selftest/ClippingMask.cpp
   app/selftest/ColorSpace.cpp
@@ -126,10 +127,13 @@ add_executable(naturalPaint
   io/NpaintFile.cpp
   io/OpSerial.cpp
   io/TileResidency.cpp
+  ops/Blur.cpp
+  ops/Feather.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
   ops/PointOps.cpp
   ops/Resample.cpp
+  ops/Roi.cpp
   ops/Transform.cpp
   paint/Palette.cpp
   sim/PaintSim.cpp

@@ -1306,6 +1306,12 @@ int main(int argc, char** argv) {
     // loop. The op only; the editor and presets are not built. Also headless
     // and GPU-free -- pure CPU tile arithmetic, no PaintSim involvement.
     const bool gradientOk = np::runGradientTest();
+    // PLAN.md "Phase 6 -- Filter and transform it" (DESIGN-imaging.md class B;
+    // PRD E4): ops/Roi's backwards ROI propagation, ops/Blur's separable
+    // Gaussian and box over a TileStore -- including the tile-seam property,
+    // asserted bit-for-bit and then proved sensitive against the tile-local
+    // blur it rejects -- and ops/Feather. Also headless and GPU-free.
+    const bool blurOk = np::runBlurTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -1682,7 +1688,7 @@ int main(int argc, char** argv) {
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && gradientOk && selectionOk &&
                     selectionShapesOk && floodFillOk && clipboardOk && opStackOk &&
-                    lutBakeOk && applyPassOk && transformOk &&
+                    lutBakeOk && applyPassOk && transformOk && blurOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
