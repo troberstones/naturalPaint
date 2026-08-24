@@ -9,6 +9,7 @@
 #include "app/StrokeBake.hpp"
 #include "core/Clipboard.hpp"
 #include "core/SelectionOps.hpp"
+#include "core/SelectionShapes.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "paint/Palette.hpp"
@@ -49,7 +50,13 @@ enum class Tool {
   Water,       // pre-wet the paper, no pigment
   DryBrush,    // little water, hard edge, pigment sits on the tooth
   Eyedropper,
-  Marquee,     // PRD E3's rectangle -- the only selection tool with a selection behind it
+  Marquee,     // PRD E3's rectangle
+  // PRD E3's ellipse. A separate Tool value rather than a mode on Marquee,
+  // because docs/shortcuts.md section 1 reserves `M` for "Marquee -- rectangle
+  // | ellipse": the two are flyout siblings, and a flyout member IS a Tool
+  // value in ui/AtelierChrome's kToolGroups. A mode flag would need its own
+  // parallel routing everywhere Tool is switched on, for no gain.
+  EllipseMarquee,
   Hand,
   Zoom,
   // --- docs/ui.md section 2's remaining palette cells: name/icon/slot only,
@@ -255,6 +262,23 @@ struct AppState {
   // at mouse-up would conflate the two gestures; sampling at mouse-down keeps
   // "which boolean" and "what shape" as independent questions.
   SelectionCombine marqueeCombine = SelectionCombine::Replace;
+
+  // The lasso's path, in document texel space, shared by both lasso tools
+  // (PRD E3) because core/SelectionShapes rasterises them with one function --
+  // a freehand lasso is a polygon with a vertex per pointer sample and a
+  // polygon lasso is one with a vertex per click, and nothing downstream needs
+  // to know which produced it.
+  //
+  // Freehand points are only appended when the pointer has actually MOVED at
+  // least a texel. A stationary pointer at 120 Hz would otherwise pile up
+  // thousands of coincident vertices, and every one of them becomes a
+  // zero-length edge the rasteriser walks.
+  std::vector<SelectionPoint> lassoPoints;
+
+  // Polygon lasso only: the gesture spans many clicks, so unlike every other
+  // selection tool it is not bounded by one mouse-down/up pair and needs a
+  // flag of its own to say "a path is open".
+  bool polygonLassoActive = false;
 
   // Cached bounds of the active document's selection, for drawing. Recomputed
   // only when the selection changes -- `selectionBounds()` walks every

@@ -144,19 +144,20 @@ struct ToolMeta {
 };
 
 constexpr ToolMeta kToolMeta[] = {
-    // --- the seven with real behaviour --------------------------------
+    // --- the tools with real behaviour --------------------------------
     {"Brush", "brush", 57811u, "B", true},
     {"Water", "droplet", 57524u, "", true},
     {"Dry Brush", "paintbrush-2", 58088u, "", true},
     {"Eyedropper", "pipette", 57659u, "I", true},
     {"Rectangle Marquee", "square-dashed", 57803u, "M", true},
+    {"Elliptical Marquee", "circle-dashed", 58544u, "Shift+M", true},
     {"Hand", "hand", 57815u, "H", true},
     {"Zoom", "zoom-in", 57782u, "Z", true},
-    // --- the twenty name/icon/slot-only cells (app/AppState.hpp) -------
+    // --- the name/icon/slot-only cells (app/AppState.hpp) -------------
     {"Move", "move", 57633u, "V", false},
-    {"Lasso", "lasso", 57806u, "L", false},
-    {"Polygon Lasso", "pentagon", 58667u, "Shift+L", false},
-    {"Magic Wand", "wand-sparkles", 58199u, "W", false},
+    {"Lasso", "lasso", 57806u, "L", true},
+    {"Polygon Lasso", "pentagon", 58667u, "Shift+L", true},
+    {"Magic Wand", "wand-sparkles", 58199u, "W", true},
     {"Crop", "crop", 57515u, "C", false},
     {"Measure", "ruler", 57675u, "", false},
     {"Frame", "frame", 58001u, "", false},

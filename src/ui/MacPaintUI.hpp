@@ -103,4 +103,21 @@ void setCompsPanelRestoreSummary(std::string summary);
 // `setLayersPanelSelection()`'s comment exists to prevent.
 void setSplitArrangement(AtelierSplit mode);
 
+// Where all five of PRD E3's selection tools end: the shape just drawn,
+// combined with what was installed through the PRD E7 modifier the gesture
+// latched (`AppState::marqueeCombine`), installed once.
+//
+// **Exposed for --selftest, and that is the whole reason it is in this
+// header.** The three rules it encodes are about user *intent* rather than
+// arithmetic -- what an empty gesture means, and what a refinement of nothing
+// means -- and each is the kind of rule that inverts without producing a wrong
+// pixel anywhere. Inside the mouse handler no test could reach them; the
+// alternative was five copies none of which could be checked.
+//
+// `drawn` absent means the gesture produced NO SHAPE (a click with no drag, a
+// two-point lasso, a wand on a layer it cannot read). That is distinct from a
+// shape covering nothing, and the two get different answers.
+void commitDrawnSelection(AppState& st, OpenDocument& od,
+                          const std::optional<Selection>& drawn);
+
 }  // namespace np

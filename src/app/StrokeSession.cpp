@@ -24,6 +24,7 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
       return StrokeRoute::PaintSim;
     case Tool::Eyedropper:
     case Tool::Marquee:
+    case Tool::EllipseMarquee:
     case Tool::Hand:
     case Tool::Zoom:
     // The twenty palette cells app/AppState.hpp's Tool comment says exist for
@@ -71,6 +72,7 @@ const char* strokeEditLabel(Tool tool) noexcept {
     case Tool::Water: return "water stroke";
     case Tool::Eyedropper:
     case Tool::Marquee:
+    case Tool::EllipseMarquee:
     case Tool::Hand:
     case Tool::Zoom:
     // Same twenty-tool list as strokeRouteFor() above, and the same reason

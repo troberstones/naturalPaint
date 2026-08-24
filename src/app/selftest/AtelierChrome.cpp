@@ -325,23 +325,35 @@ bool runAtelierChromeTest() {
     }
     check(namesOk, "every tool has a distinct non-empty name");
     // The tripwire that makes the walk above complete rather than merely long,
-    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 27, not the
-    // 7 this used to be: the palette rebuild added twenty Tool values for
-    // cells that are not built yet (app/AppState.hpp's own comment says
-    // why), and this walk has to cover all twenty-seven or it is not proving
-    // what it claims to.
-    check(std::string(toolName(static_cast<Tool>(27))) == "?",
-          "Tool still has exactly 27 values, so the walk above covers all of them");
+    // the same shape app/selftest/Fonts.cpp uses for LayerKind. 28 now, from
+    // 27, from an original 7: the palette rebuild added twenty slot-only
+    // cells, and PRD E3's elliptical marquee then added one more. It is a
+    // separate Tool value rather than a mode on Marquee because
+    // docs/shortcuts.md reserves `M` for "rectangle | ellipse" and a flyout
+    // member IS a Tool value (ui/AtelierChrome's kToolGroups).
+    check(std::string(toolName(static_cast<Tool>(28))) == "?",
+          "Tool still has exactly 28 values, so the walk above covers all of them");
   }
 
   // --- Part F: the tool palette's icons ------------------------------------
   {
-    // Exactly the seven this build actually paints with -- listed here as
-    // its own table, independent of ui/AtelierChrome.cpp's kToolMeta, so a
-    // row in that table getting its `implemented` flag wrong is something
-    // this check can actually catch rather than agreeing with itself.
-    const Tool kImplementedTools[] = {Tool::Brush,      Tool::Water, Tool::DryBrush,
-                                      Tool::Eyedropper, Tool::Marquee, Tool::Hand, Tool::Zoom};
+    // Exactly the tools this build actually acts with -- listed here as its
+    // own table, independent of ui/AtelierChrome.cpp's kToolMeta, so a row in
+    // that table getting its `implemented` flag wrong is something this check
+    // can actually catch rather than agreeing with itself.
+    //
+    // Eleven now, from seven: PRD E3's remaining selection tools landed
+    // together, because they all end in the same place -- a Selection built,
+    // combined through the ⇧/⌥ modifiers (PRD E7) and installed. Note that
+    // "implemented" means the tool DOES something, not that its op exists:
+    // ops/Gradient and ops/FloodFill's bucket half are both built and tested,
+    // and both stay false here until a drag reaches them.
+    const Tool kImplementedTools[] = {Tool::Brush,      Tool::Water,
+                                      Tool::DryBrush,   Tool::Eyedropper,
+                                      Tool::Marquee,    Tool::EllipseMarquee,
+                                      Tool::Lasso,      Tool::PolygonLasso,
+                                      Tool::MagicWand,  Tool::Hand,
+                                      Tool::Zoom};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -351,7 +363,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the seven tools with real behaviour");
+          "toolImplemented() is true for exactly the eleven tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --

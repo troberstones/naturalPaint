@@ -278,11 +278,28 @@ view_frames=(90 90 90 90 90)
 # changed-px half is doing the real work: a diffuse regression moves
 # thousands of pixels, so 16 keeps this view sensitive to everything except
 # the one glyph edge it has to tolerate.
-view_threshold=(48 96 0 0 0)
+#
+# **`flyout` carries toolbar's numbers, and that is not laziness -- it is the
+# same artifact.** This view was blessed at (0, 0) when it landed, on the
+# rule that the palette views contain no text. That rule was wrong about this
+# one: the flyout popup lists its members BY NAME ("Brush", "Pencil",
+# "Water", "Dry Brush"), so it is a text view wearing a palette view's
+# threshold, and it had been passing on luck. Measured 2026-08-24 over eight
+# runs: 0-3 changed px at magnitude 5 run-to-run, and one 1-px difference at
+# magnitude 18 against a freshly written reference. Same font, same glyph-edge
+# rasterisation, same cause as `toolbar` -- so it gets the same bound rather
+# than a second number invented for it. `canvas` and `tools` stay exact
+# because they genuinely contain no text, and `tools` was re-measured at
+# exactly 0 after the palette grew to 28 cells.
+view_threshold=(48 96 0 0 48)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
-# `toolbar`/`tools`/`canvas`/`flyout` are all 0 because their magnitude
-# threshold is 0 too -- there the two criteria say the same thing. `canvas`
+# `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
+# the two criteria say the same thing, and both were re-measured at exactly 0
+# on 2026-08-24. `flyout` is 16, matching `toolbar` for the reason given
+# above its own magnitude entry: 16 is over 5x its worst observed count of 3,
+# and still leaves the view sensitive to any regression that moves more than
+# 0.01% of it. `canvas`
 # is not the 2624 an earlier revision of this file used; see the header
 # comment above `view_names` for why that was a mistake, corrected. `layers`
 # is the one real non-zero budget: 64, from the 90-frame measurement's worst
@@ -290,7 +307,7 @@ view_threshold=(48 96 0 0 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 0)
+view_max_changed_px=(16 64 0 0 16)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

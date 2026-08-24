@@ -1326,6 +1326,9 @@ int main(int argc, char** argv) {
     // core/SelectionShapes (PRD E3): the ellipse, lasso and polygon lasso, and
     // the exact-area claim behind all three. Headless, pure CPU.
     const bool selectionShapesOk = np::runSelectionShapesTest();
+    // ui/MacPaintUI's commitDrawnSelection(): the intent rules all five of
+    // PRD E3's selection tools funnel through. Headless, pure CPU.
+    const bool selectionToolsOk = np::runSelectionToolsTest();
     // PLAN.md "Phase 6 -- Filter and transform it" (PRD D14-D17): ops/Transform's
     // 3x3 matrix stack composed BEFORE resampling, the exact no-resample paths
     // for flips and quarter turns, the five reconstruction kernels, the
@@ -1687,7 +1690,7 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && gradientOk && selectionOk &&
-                    selectionShapesOk && floodFillOk && clipboardOk && opStackOk &&
+                    selectionShapesOk && selectionToolsOk && floodFillOk && clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && blurOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&

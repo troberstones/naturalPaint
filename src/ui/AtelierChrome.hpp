@@ -177,7 +177,7 @@ struct ToolGroup {
 // one member."
 constexpr ToolGroup kToolGroups[] = {
     {{Tool::Move, Tool::Frame}, 2, false},
-    {{Tool::Marquee}, 1, false},
+    {{Tool::Marquee, Tool::EllipseMarquee}, 2, false},
     {{Tool::Lasso, Tool::PolygonLasso}, 2, false},
     {{Tool::MagicWand}, 1, false},
     {{Tool::Crop, Tool::Slice}, 2, false},

@@ -30,6 +30,7 @@
 #include "core/LayerOps.hpp"
 #include "imgui.h"
 #include "io/ExportAs.hpp"
+#include "ops/FloodFill.hpp"
 #include "io/ExportStates.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
@@ -2384,6 +2385,54 @@ void installSelection(OpenDocument& od, std::optional<Selection> selection) {
   ++od.selectionRevision;
 }
 
+// Where every one of PRD E3's five selection tools ends: the shape it drew,
+// combined with what was already installed through the PRD E7 modifier the
+// gesture latched, installed once.
+//
+// `drawn` absent means **the gesture produced no shape** -- a click with no
+// drag, a lasso of two points, a wand on a layer it cannot read. That is not
+// the same as a shape covering nothing, and the two get different answers
+// below.
+//
+// Three rules live here, and the reason they are in one function rather than
+// repeated per tool is that each is a rule about *user intent* that would be
+// easy to get subtly different in five places:
+//
+//  1. **An empty gesture with no modifier deselects.** That is what clicking
+//     off a marquee means in every editor.
+//
+//  2. **An empty gesture WITH a modifier does nothing at all.** A miss while
+//     Shift-adding is a miss, not an instruction to throw away the selection
+//     being built up. Losing a careful multi-gesture selection to one twitchy
+//     click is the most annoying way this feature can be got wrong.
+//
+//  3. **Subtract and Intersect against no selection are refused**, not
+//     evaluated. Both would produce an *engaged* selection covering nothing --
+//     core/SelectionMask.hpp's "why is nothing happening when I paint" -- from
+//     a gesture the user meant as a refinement of something that was not there.
+// Declared in ui/MacPaintUI.hpp rather than kept file-local, so --selftest
+// can reach the three intent rules below. That header says why they are
+// worth reaching.
+}  // namespace
+
+void commitDrawnSelection(AppState& st, OpenDocument& od,
+                          const std::optional<Selection>& drawn) {
+  if (!drawn.has_value()) {
+    if (st.marqueeCombine == SelectionCombine::Replace) installSelection(od, std::nullopt);
+    return;
+  }
+  if (!od.selection.has_value()) {
+    if (st.marqueeCombine == SelectionCombine::Replace ||
+        st.marqueeCombine == SelectionCombine::Add) {
+      installSelection(od, *drawn);
+    }
+    return;
+  }
+  installSelection(od, combineSelections(*od.selection, *drawn, st.marqueeCombine));
+}
+
+namespace {
+
 // Undo-while-wet. The solver keeps a stroke that has not finished drying, and
 // a cursor move replaces the document without touching the solver -- so paint
 // the document has never seen stays on screen over a state the user undid to,
@@ -4571,80 +4620,184 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
-    // --- marquee (PRD E3's rectangle) --------------------------------------
+    // --- the selection tools (PRD E3) -------------------------------------
     //
-    // Rubber-banded in document texel space, committed on release. The
-    // selection is only built once, at mouse-up, rather than every frame of
-    // the drag: selectRectangle() allocates tiles, and rebuilding it 60 times
-    // a second to draw a rectangle the drawing code can draw from two corners
-    // anyway would be work for nothing.
-    if (st.brush.tool == Tool::Marquee && !panning && !rotating &&
-        !st.pendingGuide.has_value()) {
-      if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        st.marqueeDragging = true;
-        st.marqueeX0 = tx;
-        st.marqueeY0 = ty;
-        st.marqueeX1 = tx;
-        st.marqueeY1 = ty;
-        // PRD E7's booleans, on the modifiers every editor uses: Shift adds,
-        // Option subtracts, both intersect. Latched here and not re-read at
-        // mouse-up -- app/AppState.hpp's `marqueeCombine` says why.
-        const ImGuiIO& mods = ImGui::GetIO();
+    // Five tools, one ending. Rectangle and ellipse rubber-band a drag; the
+    // lasso follows the pointer; the polygon lasso accumulates clicks; the
+    // wand takes a single click and floods. What they produce is always a
+    // `Selection`, and it always leaves through `commitDrawnSelection()`
+    // below, so the PRD E7 boolean modifiers and the empty-gesture rules are
+    // written once rather than five times and cannot drift apart.
+    //
+    // The shape is built ONCE, at the end of the gesture, never per frame:
+    // every constructor in core/SelectionShapes allocates tiles, and
+    // rebuilding one 120 times a second to draw an outline the draw code can
+    // trace from its own points would be work for nothing.
+    const bool selectionTool =
+        st.brush.tool == Tool::Marquee || st.brush.tool == Tool::EllipseMarquee ||
+        st.brush.tool == Tool::Lasso || st.brush.tool == Tool::PolygonLasso ||
+        st.brush.tool == Tool::MagicWand;
+
+    if (selectionTool && !panning && !rotating && !st.pendingGuide.has_value()) {
+      const ImGuiIO& mods = ImGui::GetIO();
+      const bool clicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+      OpenDocument* od = st.documents.active();
+
+      // Latched at mouse-down for every tool, for the reason
+      // app/AppState.hpp's `marqueeCombine` gives: Shift is also the
+      // constrain modifier, so "which boolean" is a question asked once, at
+      // the start, and not re-read from a hand that moved during the drag.
+      // The polygon lasso latches on its FIRST click only -- the modifier
+      // held on the third click of a five-click path is not a new answer to
+      // the same question.
+      if (clicked && (!st.polygonLassoActive || st.brush.tool != Tool::PolygonLasso)) {
         st.marqueeCombine = selectionCombineFromModifiers(mods.KeyShift, mods.KeyAlt);
       }
-      if (st.marqueeDragging) {
-        st.marqueeX1 = tx;
-        st.marqueeY1 = ty;
-        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-          st.marqueeDragging = false;
-          OpenDocument* od = st.documents.active();
-          if (od != nullptr) {
-            // Clamped to the canvas: a drag that leaves the window would
-            // otherwise select texels the document does not have, and every
-            // consumer would then walk tiles that hold nothing.
-            const float x0 = std::clamp(std::min(st.marqueeX0, st.marqueeX1), 0.0f, texW);
-            const float y0 = std::clamp(std::min(st.marqueeY0, st.marqueeY1), 0.0f, texH);
-            const float x1 = std::clamp(std::max(st.marqueeX0, st.marqueeX1), 0.0f, texW);
-            const float y1 = std::clamp(std::max(st.marqueeY0, st.marqueeY1), 0.0f, texH);
-            // A click with no drag DESELECTS, which is what a marquee does in
-            // every editor. Committing the degenerate rectangle instead would
-            // leave an engaged selection covering nothing -- technically
-            // correct (core/SelectionMask distinguishes the two) and, as a
-            // response to a stray click, indistinguishable from the
-            // application having broken.
-            //
-            // **With a boolean modifier held, the same stray click does
-            // nothing at all.** A miss while Shift-adding is a miss, not an
-            // instruction to throw away the selection being built up -- and
-            // losing a careful multi-drag selection to one twitchy click is
-            // the single most annoying way this feature can be got wrong.
-            if (x1 - x0 < 1.0f || y1 - y0 < 1.0f) {
-              if (st.marqueeCombine == SelectionCombine::Replace) {
-                installSelection(*od, std::nullopt);
-              }
-            } else {
-              const Selection drawn = selectRectangle(x0, y0, x1, y1);
-              if (!od->selection.has_value()) {
-                // Nothing installed to combine with. Add (and Replace) commit
-                // the new shape; Subtract and Intersect are refused rather
-                // than evaluated against an empty base, because both would
-                // produce an *engaged* selection covering nothing -- the
-                // "why is nothing happening when I paint" state, arrived at
-                // by a gesture the user meant as a refinement.
-                if (st.marqueeCombine == SelectionCombine::Replace ||
-                    st.marqueeCombine == SelectionCombine::Add) {
-                  installSelection(*od, drawn);
+
+      switch (st.brush.tool) {
+        case Tool::Marquee:
+        case Tool::EllipseMarquee: {
+          if (clicked) {
+            st.marqueeDragging = true;
+            st.marqueeX0 = tx;
+            st.marqueeY0 = ty;
+          }
+          if (st.marqueeDragging) {
+            st.marqueeX1 = tx;
+            st.marqueeY1 = ty;
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+              st.marqueeDragging = false;
+              if (od != nullptr) {
+                // Clamped to the canvas: a drag that left the window would
+                // otherwise select texels the document does not have, and
+                // every consumer would then walk tiles holding nothing.
+                const float x0 = std::clamp(std::min(st.marqueeX0, st.marqueeX1), 0.0f, texW);
+                const float y0 = std::clamp(std::min(st.marqueeY0, st.marqueeY1), 0.0f, texH);
+                const float x1 = std::clamp(std::max(st.marqueeX0, st.marqueeX1), 0.0f, texW);
+                const float y1 = std::clamp(std::max(st.marqueeY0, st.marqueeY1), 0.0f, texH);
+                std::optional<Selection> drawn;
+                if (x1 - x0 >= 1.0f && y1 - y0 >= 1.0f) {
+                  drawn = st.brush.tool == Tool::Marquee
+                              ? selectRectangle(x0, y0, x1, y1)
+                              // The drag's bounding box is the ellipse's
+                              // bounding box, which is how every editor reads
+                              // an ellipse drag -- centre and radii, not two
+                              // points on the curve.
+                              : selectEllipse((x0 + x1) * 0.5f, (y0 + y1) * 0.5f,
+                                              (x1 - x0) * 0.5f, (y1 - y0) * 0.5f);
                 }
-              } else {
-                installSelection(*od, combineSelections(*od->selection, drawn,
-                                                        st.marqueeCombine));
+                commitDrawnSelection(st, *od, drawn);
               }
             }
           }
+          break;
         }
+
+        case Tool::Lasso: {
+          if (clicked) {
+            st.marqueeDragging = true;
+            st.lassoPoints.clear();
+            st.lassoPoints.push_back(SelectionPoint{tx, ty});
+          }
+          if (st.marqueeDragging) {
+            // One vertex per texel of travel, not one per frame. See
+            // app/AppState.hpp's `lassoPoints`: coincident vertices become
+            // zero-length edges the rasteriser still has to walk.
+            const SelectionPoint& last = st.lassoPoints.back();
+            if (std::fabs(tx - last.x) >= 1.0f || std::fabs(ty - last.y) >= 1.0f) {
+              st.lassoPoints.push_back(SelectionPoint{tx, ty});
+            }
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+              st.marqueeDragging = false;
+              if (od != nullptr) {
+                std::optional<Selection> drawn;
+                // The path closes itself -- selectPolygon() joins last to
+                // first -- so a lasso released away from where it started is
+                // completed with a straight line, which is what every editor
+                // does rather than refusing the gesture.
+                if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
+                commitDrawnSelection(st, *od, drawn);
+              }
+              st.lassoPoints.clear();
+            }
+          }
+          break;
+        }
+
+        case Tool::PolygonLasso: {
+          if (clicked) {
+            if (!st.polygonLassoActive) {
+              st.polygonLassoActive = true;
+              st.lassoPoints.clear();
+            }
+            st.lassoPoints.push_back(SelectionPoint{tx, ty});
+          }
+          // Closing the path: a double-click, or Enter. Both are offered
+          // because a double-click is the discoverable gesture and Enter is
+          // the one a user with a full path and a shaky hand wants -- a
+          // stray single click at the end of a careful twenty-vertex path
+          // would otherwise add a twenty-first.
+          const bool closeIt = st.polygonLassoActive &&
+                               ((hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) ||
+                                ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                                ImGui::IsKeyPressed(ImGuiKey_KeypadEnter));
+          if (closeIt) {
+            st.polygonLassoActive = false;
+            if (od != nullptr) {
+              std::optional<Selection> drawn;
+              if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
+              commitDrawnSelection(st, *od, drawn);
+            }
+            st.lassoPoints.clear();
+          }
+          // Escape abandons the path WITHOUT touching the selection. An
+          // unfinished gesture is not a request to deselect, and this is the
+          // only selection tool that can be half-made.
+          if (st.polygonLassoActive && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            st.polygonLassoActive = false;
+            st.lassoPoints.clear();
+          }
+          break;
+        }
+
+        case Tool::MagicWand: {
+          if (clicked && od != nullptr && tx >= 0 && ty >= 0 && tx < texW && ty < texH) {
+            const Layer* target = activeLayerOf(*od);
+            // The wand reads RGB tiles. A Pigment layer's latents are not an
+            // RGB neighbourhood and ops/FloodFill says so in its own header;
+            // rather than flood something that is not there, the click is
+            // refused and the selection is left exactly as it was.
+            if (target != nullptr && target->rgbTiles.has_value()) {
+              FloodFillParams params;
+              // Global mode on Option -- "fill all similar" (PRD D25) is the
+              // same predicate without the connectivity walk. It shares the
+              // modifier with Subtract deliberately: the wand's Option-click
+              // subtracts a GLOBAL region, which is the combination a user
+              // reaching for either one actually wants.
+              params.reach = mods.KeyAlt ? FloodFillReach::Global : FloodFillReach::Contiguous;
+              commitDrawnSelection(
+                  st, *od,
+                  floodFillSelection(*target->rgbTiles,
+                                     PixelCoord{static_cast<int32_t>(tx),
+                                                static_cast<int32_t>(ty)},
+                                     od->document.width, od->document.height, params));
+            }
+          }
+          break;
+        }
+
+        default:
+          break;
       }
     } else {
       st.marqueeDragging = false;
+      // Switching away from the polygon lasso mid-path abandons it. Leaving
+      // it live would resume a stale path on return, with vertices the user
+      // has long forgotten placing.
+      if (st.polygonLassoActive) {
+        st.polygonLassoActive = false;
+        st.lassoPoints.clear();
+      }
     }
 
     // --- stroke ---

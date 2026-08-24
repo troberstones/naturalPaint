@@ -485,6 +485,15 @@ bool runFloodFillTest();
 // error is the store's own 1/255 quantisation. Every tolerance in that section
 // is stated as a multiple of that step and was measured before it was written.
 bool runSelectionShapesTest();
+
+// The intent rules behind PRD E3's five selection tools -- ui/MacPaintUI's
+// commitDrawnSelection(). Headless and GPU-free.
+//
+// Not arithmetic: what an empty gesture MEANS, and what refining an absent
+// selection means. Each rule picks between two plausible behaviours and
+// neither produces a wrong pixel, so nothing else in this suite -- and no
+// golden image -- can catch one written backwards.
+bool runSelectionToolsTest();
 // ops/Transform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14, D15,
 // D16, D17). Headless and GPU-free -- pure CPU resampling.
 //
