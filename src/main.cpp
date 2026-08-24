@@ -1298,6 +1298,12 @@ int main(int argc, char** argv) {
     // plus the un-premultiply/re-premultiply wrapper bracketing them.
     // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool pointOpsOk = np::runPointOpsTest();
+    // PLAN.md "Phase 6 -- Filter and transform it" (DESIGN-imaging.md class B;
+    // PRD E4): ops/Roi's backwards ROI propagation, ops/Blur's separable
+    // Gaussian and box over a TileStore -- including the tile-seam property,
+    // asserted bit-for-bit and then proved sensitive against the tile-local
+    // blur it rejects -- and ops/Feather. Also headless and GPU-free.
+    const bool blurOk = np::runBlurTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -1657,7 +1663,7 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && selectionOk && clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
+                    histogramOk && pointOpsOk && blurOk && selectionOk && clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
