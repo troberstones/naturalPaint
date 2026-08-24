@@ -216,6 +216,29 @@ struct OpenDocument {
   // undoable act. Neither is what an editor does.
   std::optional<Selection> selection;
 
+  // The selection that was thrown away most recently, for Reselect (⌘⇧D,
+  // already promised by docs/shortcuts.md).
+  //
+  // Only ever written when an *engaged* selection is replaced by absence --
+  // that is, by a deselect. It deliberately does not record every replacement:
+  // Reselect exists to undo an accidental Deselect, and a version that also
+  // remembered "the rectangle before this rectangle" would make a second press
+  // walk backwards through a drawing session, which is what history is for.
+  //
+  // Session state like `selection` itself, and for the same reason -- it must
+  // not reach `Document`, or a marquee becomes an undoable act.
+  //
+  // **Two costs, both named rather than left to be found.** The field adds 48
+  // bytes to every OpenDocument, which is why --selftest's per-tab record line
+  // reads 592 B and not 544 B. And it *retains* the coverage it holds: the
+  // assignment is a copy-on-write store copy, so it costs refcounts and not a
+  // deep copy (core/TileStore.hpp), but the tiles themselves stay alive until
+  // the next Deselect replaces them. Select All then Deselect on a 4K document
+  // therefore leaves 1024 tiles -- 16 MiB -- resident against a Reselect that
+  // may never come. That is the honest price of the command; if it ever needs
+  // to be reclaimed, the place to do it is here and not in the tile store.
+  std::optional<Selection> lastDeselected;
+
   // Bumped whenever `selection` changes. ui/MacPaintUI caches the selection's
   // drawn bounds against this, and PaintSim's GPU coverage upload is keyed on
   // it too -- both are expensive enough that "has it changed?" needs an O(1)

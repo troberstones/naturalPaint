@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "core/SelectionMask.hpp"
+#include "core/SelectionOps.hpp"
 
 namespace np {
 
@@ -235,6 +236,196 @@ bool runSelectionTest() {
       const Tile* original = tiles.find(TileCoord{0, 0});
       check(original != nullptr && original->readPixel(PixelCoord{0, 0})[3] == 1.0f,
             "clear: and the ORIGINAL store still has its paint -- copy-on-write held");
+    }
+  }
+
+  // --- 6. Boolean combination (PRD E7) and invert (PRD E4) ----------------
+  //
+  // core/SelectionOps. The rules are a *choice* between defensible bounds on
+  // an unknowable overlap, so what is checked here is the three algebraic
+  // properties that choice was made for -- not the arithmetic, which would
+  // just be the implementation retyped.
+  {
+    // The modifier table, all four rows. Cheap to assert and expensive to get
+    // wrong: an inverted row does not crash, it throws away the selection the
+    // user was extending.
+    check(selectionCombineFromModifiers(false, false) == SelectionCombine::Replace &&
+              selectionCombineFromModifiers(true, false) == SelectionCombine::Add &&
+              selectionCombineFromModifiers(false, true) == SelectionCombine::Subtract &&
+              selectionCombineFromModifiers(true, true) == SelectionCombine::Intersect,
+          "combine: the modifier table is Shift=add, Option=subtract, both=intersect, "
+          "neither=replace -- the convention every editor shares, asserted because hands "
+          "know it better than eyes do");
+
+    // Two overlapping rectangles, on integer edges so every texel is fully in
+    // or fully out and the set-theoretic answers are exact. The antialiased
+    // case gets its own checks below.
+    const Selection a = selectRectangle(0.0f, 0.0f, 10.0f, 10.0f);
+    const Selection b = selectRectangle(5.0f, 5.0f, 15.0f, 15.0f);
+    const PixelCoord onlyA{1, 1}, both{7, 7}, onlyB{12, 12}, neither{20, 20};
+
+    const Selection added = combineSelections(a, b, SelectionCombine::Add);
+    check(selectionCoverageAt(&added, onlyA) == 1.0f &&
+              selectionCoverageAt(&added, both) == 1.0f &&
+              selectionCoverageAt(&added, onlyB) == 1.0f &&
+              selectionCoverageAt(&added, neither) == 0.0f,
+          "combine: Add is the union -- Shift-drag keeps what was there and adds what "
+          "was drawn");
+
+    const Selection subtracted = combineSelections(a, b, SelectionCombine::Subtract);
+    check(selectionCoverageAt(&subtracted, onlyA) == 1.0f &&
+              selectionCoverageAt(&subtracted, both) == 0.0f &&
+              selectionCoverageAt(&subtracted, onlyB) == 0.0f,
+          "combine: Subtract removes the NEW shape from the old one -- Option-drag, and "
+          "not the reverse");
+
+    const Selection intersected = combineSelections(a, b, SelectionCombine::Intersect);
+    check(selectionCoverageAt(&intersected, onlyA) == 0.0f &&
+              selectionCoverageAt(&intersected, both) == 1.0f &&
+              selectionCoverageAt(&intersected, onlyB) == 0.0f,
+          "combine: Intersect keeps only the overlap -- Shift+Option");
+
+    const Selection replaced = combineSelections(a, b, SelectionCombine::Replace);
+    check(selectionCoverageAt(&replaced, onlyA) == 0.0f &&
+              selectionCoverageAt(&replaced, onlyB) == 1.0f,
+          "combine: Replace discards the base entirely, so an unmodified drag is not a "
+          "special case at the call site");
+
+    // Property 1: idempotence. The reason Add is max() and not a saturating
+    // sum -- repeating a gesture must not harden an antialiased edge. Checked
+    // on a FRACTIONAL rectangle, because that is the only place the two rules
+    // differ at all.
+    {
+      const Selection frac = selectRectangle(0.25f, 0.25f, 4.75f, 4.75f);
+      const Selection twice = combineSelections(frac, frac, SelectionCombine::Add);
+      const float before = selectionCoverageAt(&frac, PixelCoord{0, 0});
+      const float after = selectionCoverageAt(&twice, PixelCoord{0, 0});
+      check(before > 0.0f && before < 1.0f && after == before,
+            "combine: adding the SAME selection twice changes nothing -- an edge texel at "
+            "partial coverage stays there, so repeating a Shift-drag does not quietly "
+            "harden the antialiasing");
+    }
+
+    // Property 2: the De Morgan identity core/SelectionOps.hpp claims in
+    // prose. Subtract is defined as intersect-with-complement, and this is
+    // what stops it drifting into an independently-invented third formula.
+    {
+      const Selection viaSubtract = combineSelections(a, b, SelectionCombine::Subtract);
+      const Selection notB = invertSelection(b, 32, 32);
+      const Selection viaIntersect =
+          combineSelections(a, notB, SelectionCombine::Intersect);
+      bool identical = true;
+      for (int32_t y = 0; y < 20 && identical; ++y) {
+        for (int32_t x = 0; x < 20; ++x) {
+          if (selectionCoverageAt(&viaSubtract, PixelCoord{x, y}) !=
+              selectionCoverageAt(&viaIntersect, PixelCoord{x, y})) {
+            identical = false;
+            break;
+          }
+        }
+      }
+      check(identical,
+            "combine: subtract(a,b) is EXACTLY intersect(a, invert(b)) -- the De Morgan "
+            "closure the header claims, asserted rather than trusted");
+    }
+
+    // Property 3: associativity, so a chain of adds does not depend on the
+    // order the user happened to draw them in.
+    {
+      const Selection c = selectRectangle(12.0f, 0.0f, 20.0f, 8.0f);
+      const Selection left = combineSelections(
+          combineSelections(a, b, SelectionCombine::Add), c, SelectionCombine::Add);
+      const Selection right = combineSelections(
+          a, combineSelections(b, c, SelectionCombine::Add), SelectionCombine::Add);
+      bool identical = true;
+      for (int32_t y = 0; y < 24 && identical; ++y) {
+        for (int32_t x = 0; x < 24; ++x) {
+          if (selectionCoverageAt(&left, PixelCoord{x, y}) !=
+              selectionCoverageAt(&right, PixelCoord{x, y})) {
+            identical = false;
+            break;
+          }
+        }
+      }
+      check(identical, "combine: Add is associative -- three drags in any order agree");
+    }
+
+    // Antialiasing survives a boolean rather than being rounded to in-or-out,
+    // which is the whole of PRD E2 applied to PRD E7.
+    {
+      const Selection soft = selectRectangle(0.0f, 0.0f, 4.5f, 8.0f);
+      const Selection full = selectRectangle(0.0f, 0.0f, 8.0f, 8.0f);
+      const Selection kept = combineSelections(full, soft, SelectionCombine::Intersect);
+      check(near(selectionCoverageAt(&kept, PixelCoord{4, 2}), 0.5f, 1.0f / 255.0f),
+            "combine: a half-covered edge texel is still half-covered after an intersect "
+            "-- booleans preserve coverage, they do not quantise it");
+    }
+
+    // Sparsity, which is the other half of the design. Subtract and intersect
+    // can drive a whole tile to zero, and core/SelectionMask's invariant is
+    // that no stored tile is entirely zero.
+    {
+      const Selection far1 = selectRectangle(0.0f, 0.0f, 8.0f, 8.0f);
+      const Selection far2 = selectRectangle(600.0f, 600.0f, 640.0f, 640.0f);
+      const Selection none = combineSelections(far1, far2, SelectionCombine::Intersect);
+      check(none.tiles.occupiedTileCount() == 0,
+            "combine: intersecting two disjoint selections stores NO tiles -- not tiles "
+            "full of zeros");
+      check(selectionSelectsNothing(none),
+            "combine: and the result is 'engaged, selects nothing', which is the honest "
+            "answer rather than 'no restriction'");
+
+      const Selection wiped = combineSelections(far1, far1, SelectionCombine::Subtract);
+      check(wiped.tiles.occupiedTileCount() == 0,
+            "combine: subtracting a selection from itself drops the tile rather than "
+            "leaving 16 KiB of 'not selected' resident");
+
+      // Add must not touch tiles neither input has.
+      const Selection joined = combineSelections(far1, far2, SelectionCombine::Add);
+      check(joined.tiles.occupiedTileCount() == far1.tiles.occupiedTileCount() +
+                                                    far2.tiles.occupiedTileCount(),
+            "combine: Add allocates exactly the union of the two tile sets, and nothing "
+            "in the empty space between them");
+    }
+
+    // Invert (PRD E4).
+    {
+      const Selection quarter = selectRectangle(0.0f, 0.0f, 100.0f, 100.0f);
+      const Selection inv = invertSelection(quarter, 200, 200);
+      check(selectionCoverageAt(&inv, PixelCoord{50, 50}) == 0.0f &&
+                selectionCoverageAt(&inv, PixelCoord{150, 150}) == 1.0f,
+            "invert: what was selected is not, and what was not is");
+      check(selectionCoverageAt(&inv, PixelCoord{250, 250}) == 0.0f,
+            "invert: and OUTSIDE the document stays unselected -- the complement is taken "
+            "within the given bounds, not over the infinite plane");
+
+      const Selection back = invertSelection(inv, 200, 200);
+      bool roundTrip = true;
+      for (int32_t y = 0; y < 200 && roundTrip; y += 7) {
+        for (int32_t x = 0; x < 200; x += 7) {
+          if (selectionCoverageAt(&back, PixelCoord{x, y}) !=
+              selectionCoverageAt(&quarter, PixelCoord{x, y})) {
+            roundTrip = false;
+            break;
+          }
+        }
+      }
+      check(roundTrip, "invert: inverting twice returns the original exactly");
+
+      // A document whose size is not a multiple of the 128-texel tile: the
+      // margin inside the edge tiles must NOT come back selected.
+      const Selection ragged = invertSelection(Selection{}, 200, 130);
+      check(selectionCoverageAt(&ragged, PixelCoord{199, 129}) == 1.0f &&
+                selectionCoverageAt(&ragged, PixelCoord{200, 129}) == 0.0f &&
+                selectionCoverageAt(&ragged, PixelCoord{199, 130}) == 0.0f,
+            "invert: on a document that is not a whole number of tiles, the margin inside "
+            "the edge tiles is unselected -- coverage stops at the document, not at the "
+            "tile boundary");
+
+      const Selection everything = selectAll(64, 64);
+      check(selectionSelectsNothing(invertSelection(everything, 64, 64)),
+            "invert: the complement of Select All selects nothing -- engaged and empty, "
+            "which is why the UI refuses to invert when there is no selection at all");
     }
   }
 

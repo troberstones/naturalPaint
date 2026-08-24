@@ -18,6 +18,8 @@
 
     { "key": "A", "mods": ["Cmd"], "action": "select_all" },
     { "key": "D", "mods": ["Cmd"], "action": "deselect" },
+    { "key": "D", "mods": ["Cmd", "Shift"], "action": "reselect" },
+    { "key": "I", "mods": ["Cmd", "Shift"], "action": "invert_selection" },
     { "key": "C", "mods": ["Cmd"], "action": "copy" },
     { "key": "C", "mods": ["Cmd", "Shift"], "action": "copy_merged" },
     { "key": "X", "mods": ["Cmd"], "action": "cut" },

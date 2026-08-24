@@ -2373,6 +2373,13 @@ void installHistoryCursor(OpenDocument& od, const HistoryPanelClick& r) {
 // undone, and an undo that restored a marquee along with the pixels would
 // surprise anyone who has used an editor.
 void installSelection(OpenDocument& od, std::optional<Selection> selection) {
+  // Remember what a deselect threw away, so Reselect has something to restore.
+  // Only this transition -- engaged to absent -- is recorded; see
+  // `OpenDocument::lastDeselected` on why replacing one shape with another is
+  // deliberately not.
+  if (!selection.has_value() && od.selection.has_value()) {
+    od.lastDeselected = od.selection;
+  }
   od.selection = std::move(selection);
   ++od.selectionRevision;
 }
@@ -4472,6 +4479,25 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (st.requestSelectAll && od != nullptr)
         installSelection(*od, selectAll(od->document.width, od->document.height));
       if (st.requestDeselect && od != nullptr) installSelection(*od, std::nullopt);
+      // Reselect (⌘⇧D): restore what the last Deselect threw away. A no-op
+      // when nothing has been deselected this session, rather than an error --
+      // the command is unreachable from a menu that has not been built yet, so
+      // its only route in is a key that may well have been pressed by mistake.
+      if (st.requestReselect && od != nullptr && od->lastDeselected.has_value())
+        installSelection(*od, od->lastDeselected);
+      // Inverse (⌘⇧I), PRD E4.
+      //
+      // **Deliberately a no-op when nothing is selected**, though the algebra
+      // would happily answer. Absent means "no restriction", so its honest
+      // complement is a selection covering nothing -- and installing that in
+      // response to one keystroke would leave the document refusing every
+      // edit, with marching ants nowhere to show why. That is precisely the
+      // state core/SelectionMask.hpp names as "why is nothing happening when I
+      // paint", and it is not somewhere a single keypress should be able to
+      // put someone.
+      if (st.requestInvertSelection && od != nullptr && od->selection.has_value())
+        installSelection(*od, invertSelection(*od->selection, od->document.width,
+                                              od->document.height));
 
       const Selection* sel =
           (od != nullptr && od->selection.has_value()) ? &*od->selection : nullptr;
@@ -4509,6 +4535,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
       st.requestSelectAll = false;
       st.requestDeselect = false;
+      st.requestReselect = false;
+      st.requestInvertSelection = false;
       st.requestCopy = false;
       st.requestCopyMerged = false;
       st.requestCut = false;
@@ -4558,6 +4586,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         st.marqueeY0 = ty;
         st.marqueeX1 = tx;
         st.marqueeY1 = ty;
+        // PRD E7's booleans, on the modifiers every editor uses: Shift adds,
+        // Option subtracts, both intersect. Latched here and not re-read at
+        // mouse-up -- app/AppState.hpp's `marqueeCombine` says why.
+        const ImGuiIO& mods = ImGui::GetIO();
+        st.marqueeCombine = selectionCombineFromModifiers(mods.KeyShift, mods.KeyAlt);
       }
       if (st.marqueeDragging) {
         st.marqueeX1 = tx;
@@ -4579,10 +4612,33 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // correct (core/SelectionMask distinguishes the two) and, as a
             // response to a stray click, indistinguishable from the
             // application having broken.
+            //
+            // **With a boolean modifier held, the same stray click does
+            // nothing at all.** A miss while Shift-adding is a miss, not an
+            // instruction to throw away the selection being built up -- and
+            // losing a careful multi-drag selection to one twitchy click is
+            // the single most annoying way this feature can be got wrong.
             if (x1 - x0 < 1.0f || y1 - y0 < 1.0f) {
-              installSelection(*od, std::nullopt);
+              if (st.marqueeCombine == SelectionCombine::Replace) {
+                installSelection(*od, std::nullopt);
+              }
             } else {
-              installSelection(*od, selectRectangle(x0, y0, x1, y1));
+              const Selection drawn = selectRectangle(x0, y0, x1, y1);
+              if (!od->selection.has_value()) {
+                // Nothing installed to combine with. Add (and Replace) commit
+                // the new shape; Subtract and Intersect are refused rather
+                // than evaluated against an empty base, because both would
+                // produce an *engaged* selection covering nothing -- the
+                // "why is nothing happening when I paint" state, arrived at
+                // by a gesture the user meant as a refinement.
+                if (st.marqueeCombine == SelectionCombine::Replace ||
+                    st.marqueeCombine == SelectionCombine::Add) {
+                  installSelection(*od, drawn);
+                }
+              } else {
+                installSelection(*od, combineSelections(*od->selection, drawn,
+                                                        st.marqueeCombine));
+              }
             }
           }
         }

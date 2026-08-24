@@ -147,6 +147,7 @@ The standard set. Listed so the gaps are visible, not because any of it is surpr
 | `⌘⇧V` | paste in place |
 | `⌘A` / `⌘D` / `⌘⇧D` | select all / deselect / reselect |
 | `⌘⇧I` | inverse selection |
+| `⇧`-drag / `⌥`-drag / `⇧⌥`-drag | add to / subtract from / intersect with the selection (PRD E7) |
 | `⌥⌫` / `⌘⌫` | fill with foreground / background |
 | `⌫` | clear |
 | `⌘J` | duplicate layer, or selection to a new layer |
@@ -161,6 +162,19 @@ The standard set. Listed so the gaps are visible, not because any of it is surpr
 | `⌘⌥⇧K` | keymap editor |
 | `Esc` | cancel the current operation |
 | `Enter` | commit the current operation |
+
+> **The selection modifier is read at mouse-DOWN and not re-read during the drag.** This
+> matters because `⇧` carries two meanings on the same gesture: held *before* the drag
+> starts it picks the boolean, held *during* one it is the constrain-to-square modifier.
+> Sampling at mouse-up would conflate them. **Constrain-to-square is not built yet** — only
+> the boolean half of `⇧` does anything today, and `⇧`-drag therefore always adds.
+>
+> A modified drag that ends where it began does **nothing**, where an unmodified one
+> deselects. Losing a carefully built-up multi-drag selection to one twitchy click while
+> `⇧`-adding is the most annoying way this can be got wrong, so it is ruled out explicitly.
+> With no selection engaged, `⌥` and `⇧⌥` drags are refused rather than evaluated against
+> an empty base — both would otherwise produce an *engaged* selection covering nothing,
+> which is the state where painting silently does nothing.
 
 ---
 

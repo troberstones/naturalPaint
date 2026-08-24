@@ -1982,6 +1982,8 @@ int main(int argc, char** argv) {
         // active OpenDocument and the sim, which are drawUI()'s to reach.
         else if (action == "select_all") st.requestSelectAll = true;
         else if (action == "deselect") st.requestDeselect = true;
+        else if (action == "reselect") st.requestReselect = true;
+        else if (action == "invert_selection") st.requestInvertSelection = true;
         else if (action == "copy") st.requestCopy = true;
         else if (action == "copy_merged") st.requestCopyMerged = true;
         else if (action == "cut") st.requestCut = true;

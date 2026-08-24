@@ -107,6 +107,7 @@ add_executable(naturalPaint
   core/PigmentBake.cpp
   core/Probe.cpp
   core/SelectionMask.cpp
+  core/SelectionOps.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp
   io/Capabilities.cpp

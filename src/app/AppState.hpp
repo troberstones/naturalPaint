@@ -8,6 +8,7 @@
 #include "app/Journal.hpp"
 #include "app/StrokeBake.hpp"
 #include "core/Clipboard.hpp"
+#include "core/SelectionOps.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "paint/Palette.hpp"
@@ -220,6 +221,8 @@ struct AppState {
   // to reach. One place decides what a command means.
   bool requestSelectAll = false;
   bool requestDeselect = false;
+  bool requestReselect = false;
+  bool requestInvertSelection = false;
   bool requestCopy = false;
   bool requestCopyMerged = false;
   bool requestCut = false;
@@ -240,6 +243,18 @@ struct AppState {
   bool marqueeDragging = false;
   float marqueeX0 = 0.0f, marqueeY0 = 0.0f;
   float marqueeX1 = 0.0f, marqueeY1 = 0.0f;
+
+  // How this drag will combine with the selection already installed (PRD E7).
+  //
+  // **Latched at mouse-down and not re-read during the drag**, which is the
+  // convention every editor uses and is worth stating because the obvious
+  // implementation -- reading the modifiers at mouse-up, where the selection
+  // is actually built -- is wrong in a way that is easy to miss. Shift is also
+  // the constrain-to-square modifier, so a user who presses it mid-drag is
+  // asking for a square, not asking to convert a Replace into an Add. Sampling
+  // at mouse-up would conflate the two gestures; sampling at mouse-down keeps
+  // "which boolean" and "what shape" as independent questions.
+  SelectionCombine marqueeCombine = SelectionCombine::Replace;
 
   // Cached bounds of the active document's selection, for drawing. Recomputed
   // only when the selection changes -- `selectionBounds()` walks every
