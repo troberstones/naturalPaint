@@ -415,6 +415,16 @@ bool runPointOpsTest();
 // side so neither can drift onto the other.
 bool runSelectionTest();
 
+// core/SelectionShapes (PRD E3's ellipse, lasso and polygon lasso). Headless
+// and GPU-free.
+//
+// The claim it defends is EXACTNESS. Both shapes compute true covered area --
+// the ellipse by closed-form integration, the polygon by clipping the texels
+// its boundary crosses -- rather than counting samples, so the only permitted
+// error is the store's own 1/255 quantisation. Every tolerance in that section
+// is stated as a multiple of that step and was measured before it was written.
+bool runSelectionShapesTest();
+
 // core/Clipboard (PLAN.md "Phase 7 -- Select and paste"; PRD M1, M3, M4, M5,
 // M8). Headless and GPU-free.
 //
