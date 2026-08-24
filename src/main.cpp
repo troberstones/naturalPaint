@@ -1320,6 +1320,12 @@ int main(int argc, char** argv) {
     // core/SelectionShapes (PRD E3): the ellipse, lasso and polygon lasso, and
     // the exact-area claim behind all three. Headless, pure CPU.
     const bool selectionShapesOk = np::runSelectionShapesTest();
+    // PLAN.md "Phase 6 -- Filter and transform it" (PRD D14-D17): ops/Transform's
+    // 3x3 matrix stack composed BEFORE resampling, the exact no-resample paths
+    // for flips and quarter turns, the five reconstruction kernels, the
+    // area-average prefilter a downscale must run first, and crop/canvas
+    // size/image size. Also headless and GPU-free -- pure CPU resampling.
+    const bool transformOk = np::runTransformTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -1675,8 +1681,8 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && gradientOk && selectionOk &&
-                    selectionShapesOk && floodFillOk &&
-                    clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
+                    selectionShapesOk && floodFillOk && clipboardOk && opStackOk &&
+                    lutBakeOk && applyPassOk && transformOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
