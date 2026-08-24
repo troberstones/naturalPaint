@@ -45,6 +45,7 @@ add_executable(naturalPaint
   app/selftest/AtelierChrome.cpp
   app/selftest/ActiveLayer.cpp
   app/selftest/FormatSupport.cpp
+  app/selftest/Gradient.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Histogram.cpp
   app/selftest/History.cpp
@@ -121,6 +122,7 @@ add_executable(naturalPaint
   io/NpaintFile.cpp
   io/OpSerial.cpp
   io/TileResidency.cpp
+  ops/Gradient.cpp
   ops/PointOps.cpp
   ops/Resample.cpp
   paint/Palette.cpp

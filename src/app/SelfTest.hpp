@@ -402,6 +402,24 @@ bool runHistogramTest();
 //    matches manual hand computation, not just each op individually.
 bool runPointOpsTest();
 
+// ops/Gradient (PLAN.md "Phase 6 -- Filter and transform it"; PRD D24, and the
+// gradient half of D26). The op only -- no editor, no presets. Headless and
+// GPU-free, pure CPU tile arithmetic.
+//
+// Five claims carry it. The three geometries put their stops where the
+// geometry says (including that an ANGULAR sweep runs clockwise on screen,
+// because document space is y-down); coverage WEIGHTS rather than gates, so a
+// partially selected texel comes out proportionally weaker instead of stair-
+// stepped; a null Selection means EVERYWHERE, asserted through
+// renderGradient()'s own hoisted loop as core/SelectionMask.hpp demands and
+// not only through selectionCoverageAt(); colour stops and opacity stops are
+// independently positioned, so an opacity stop does not silently knot the
+// colour ramp; and interpolation is on STRAIGHT colour in LINEAR light,
+// checked against the specific wrong answers -- sRGB's 0.214041 midpoint, and
+// the pure red that interpolating premultiplied values returns half way
+// through a red-to-transparent-blue fade.
+bool runGradientTest();
+
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
 // coverage-weighted clear. Headless and GPU-free -- pure CPU tile arithmetic.

@@ -1298,6 +1298,14 @@ int main(int argc, char** argv) {
     // plus the un-premultiply/re-premultiply wrapper bracketing them.
     // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool pointOpsOk = np::runPointOpsTest();
+    // Phase 6 (ops/Gradient; PRD D24 and the gradient half of D26): linear,
+    // radial and angular geometries, the independently-positioned colour and
+    // opacity stop lists, straight-colour interpolation in linear light, and
+    // the coverage-weighted render through an optional selection -- including
+    // the null-selection-means-everywhere case through the op's own hoisted
+    // loop. The op only; the editor and presets are not built. Also headless
+    // and GPU-free -- pure CPU tile arithmetic, no PaintSim involvement.
+    const bool gradientOk = np::runGradientTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -1657,7 +1665,7 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && selectionOk && clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
+                    histogramOk && pointOpsOk && gradientOk && selectionOk && clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
