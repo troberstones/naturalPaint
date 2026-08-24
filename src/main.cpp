@@ -1303,6 +1303,12 @@ int main(int argc, char** argv) {
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
     // arithmetic, no PaintSim involvement.
     const bool selectionOk = np::runSelectionTest();
+    // PLAN.md "Phase 6 -- Filter and transform it" (PRD D14-D17): ops/Transform's
+    // 3x3 matrix stack composed BEFORE resampling, the exact no-resample paths
+    // for flips and quarter turns, the five reconstruction kernels, the
+    // area-average prefilter a downscale must run first, and crop/canvas
+    // size/image size. Also headless and GPU-free -- pure CPU resampling.
+    const bool transformOk = np::runTransformTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -1657,7 +1663,7 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && selectionOk && clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
+                    histogramOk && pointOpsOk && selectionOk && transformOk && clipboardOk && opStackOk && lutBakeOk && applyPassOk &&
                     curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&

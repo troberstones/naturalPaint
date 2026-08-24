@@ -415,6 +415,42 @@ bool runPointOpsTest();
 // side so neither can drift onto the other.
 bool runSelectionTest();
 
+// ops/Transform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14, D15,
+// D16, D17). Headless and GPU-free -- pure CPU resampling.
+//
+// Three of the section's claims are ones a golden image cannot make:
+//
+//  - **D15 is bit equality.** A flip is a relabelling of the pixel grid, so
+//    "close enough" is exactly the filtered implementation the requirement
+//    forbids. Flips and quarter turns are compared with memcmp at zero
+//    tolerance, including four turns of a NON-square image through the
+//    transposed extent, and the composition flip . rot90 is checked to stay on
+//    the exact path so two lossless edits cannot stack into a lossy one.
+//  - **D16 is a claim about a process.** Three stacked rotations composed into
+//    one matrix land in the same place as three applied in turn -- no
+//    geometric test separates them, and the section measures that agreement
+//    (3.1e-5 px) before relying on it. It then rotates 60 degrees and back
+//    along both routes and compares each against the ORIGINAL: the composed
+//    route (2 resamples) measures ~1.46x less RMS error than the stacked one
+//    (4 resamples), and an 8-deep stack widens that to ~1.87x while the
+//    composed cost stays flat.
+//  - **D17's downscale clause is about what is NOT in the output.** 1-pixel
+//    stripes reduced 256 -> 35: prefiltered, the result is flat to sd 0.035;
+//    unfiltered it swings at sd 0.35, loses the true mean on a period-3
+//    pattern, and rings into negative linear light. The reduction is
+//    deliberately not a power of two -- at an exact 8x the broken path
+//    accidentally passes, and the section measures that too so the choice of
+//    ratio is visible rather than arbitrary.
+//
+// Also here: the five kernels at their defining radii; a constant opaque field
+// surviving all five across the whole image *including the border*, which is
+// the assertion that caught an edge policy leaving opaque images translucent;
+// premultiplied-versus-straight averaging measured as a whole channel of
+// difference; crop and canvas size proven to be bit-exact index copies; the
+// four-corner homography solve and its refusal of a degenerate quad; and the
+// tile-store bridge's allocation behaviour in both directions.
+bool runTransformTest();
+
 // core/Clipboard (PLAN.md "Phase 7 -- Select and paste"; PRD M1, M3, M4, M5,
 // M8). Headless and GPU-free.
 //

@@ -80,6 +80,7 @@ add_executable(naturalPaint
   app/selftest/Support.cpp
   app/selftest/TileResidency.cpp
   app/selftest/TileStore.cpp
+  app/selftest/Transform.cpp
   app/selftest/ViewTransform.cpp
   app/Snapping.cpp
   app/StrokeBake.cpp
@@ -123,6 +124,7 @@ add_executable(naturalPaint
   io/TileResidency.cpp
   ops/PointOps.cpp
   ops/Resample.cpp
+  ops/Transform.cpp
   paint/Palette.cpp
   sim/PaintSim.cpp
   ui/DocumentTexture.cpp
