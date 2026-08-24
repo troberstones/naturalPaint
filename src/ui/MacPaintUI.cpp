@@ -4110,8 +4110,26 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // them; what is here is the loop.
   ImGui::SetNextWindowPos(ImVec2(bands.rightColumn.x, bands.rightColumn.y));
   ImGui::SetNextWindowSize(ImVec2(bands.rightColumn.w, bands.rightColumn.h));
+  // `NoScrollWithMouse` takes the wheel away from Dear ImGui for this window
+  // ONLY, so the step below is the whole behaviour rather than an addition to
+  // ImGui's own -- without it both would fire and one notch would scroll
+  // 65 px further than intended. The scrollbar itself stays (the flag only
+  // suppresses wheel handling, not the bar or dragging it).
   if (ImGui::Begin("##controls", nullptr,
-                   fixedFlags & ~ImGuiWindowFlags_NoScrollbar)) {
+                   (fixedFlags & ~ImGuiWindowFlags_NoScrollbar) |
+                       ImGuiWindowFlags_NoScrollWithMouse)) {
+    // Taken before the sections are emitted, because `GetScrollMaxY()` is only
+    // meaningful once this frame's content has been laid out -- so the wheel
+    // read here applies to the scroll range the PREVIOUS frame established,
+    // which is the range the user was looking at when they turned the wheel.
+    const float wheel = ImGui::GetIO().MouseWheel;
+    if (wheel != 0.0f && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+        ImGui::GetScrollMaxY() > 0.0f) {
+      const float step =
+          controlsWheelScrollStep(ImGui::GetWindowHeight(), ImGui::GetFontSize());
+      ImGui::SetScrollY(std::clamp(ImGui::GetScrollY() - wheel * step, 0.0f,
+                                   ImGui::GetScrollMaxY()));
+    }
     for (const ControlsSectionSpec& spec : controlsSections()) {
       // The board is a shallow-water idea: only the watercolour solver reads
       // `tiltX/tiltY`, and the section was inside the WATER branch before this
@@ -5129,15 +5147,28 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     ImGui::PopStyleVar();
 
     // Which pane is focused, marked the way the active tab is marked: a 2 px
-    // accent rule along its leading edge. On the foreground list so neither
-    // pane's window can overdraw it -- the same reason drawAtelierRules() is
-    // there.
+    // accent rule along its leading edge.
+    //
+    // **This one genuinely needs the foreground list, unlike the band rules.**
+    // It sits ON the pane window's own top edge rather than in a gap beside
+    // it (ui/AtelierLayout gives the band rules their own gaps, which is what
+    // let drawAtelierRules() move to the background list), so drawn behind,
+    // the pane would simply cover it.
+    //
+    // The cost is the same one the band rules just shed: a popup overlapping
+    // the top 2 px of the focused pane gets an accent line across it. Left as
+    // is deliberately -- it is 2 px on one edge in a mode that is not the
+    // default, where the band rules were full-height lines through every
+    // flyout in the default layout. Drawing it into the pane's own draw list
+    // is the real fix and needs the call moved inside that Begin/End pair.
     const AtelierRect f = panes.pane[paneDocs.focusedPane];
     ImGui::GetForegroundDrawList()->AddRectFilled(
         ImVec2(f.x, f.y), ImVec2(f.right(), f.y + kRuleThickness), atelierToken(kAccent));
     // The rule between the panes, in the same grey every other region rule
-    // uses.
-    ImGui::GetForegroundDrawList()->AddRectFilled(
+    // uses -- and on the background list with them, because it is in a gap
+    // for the same reason they are: `panes.divider` is carved out of the
+    // canvas width, and neither pane's window is positioned over it.
+    ImGui::GetBackgroundDrawList()->AddRectFilled(
         ImVec2(panes.divider.x, panes.divider.y),
         ImVec2(panes.divider.right(), panes.divider.bottom()), atelierToken(kRule));
   }

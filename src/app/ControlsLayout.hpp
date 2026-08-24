@@ -181,4 +181,30 @@ struct LabelledControlLayout {
 // first frame that has drawn every control once.
 LabelledControlLayout layoutLabelledControl(float& column, float labelPx, float availPx);
 
+// How far one mouse-wheel unit scrolls the right-hand controls column.
+//
+// Dear ImGui's own answer is `5 * fontSize` -- five lines, 65 px at this
+// build's 13 px UI font -- and it is the right answer for a window of prose.
+// It is the wrong one here. The controls column is a stack of collapsing
+// SECTIONS (`controlsSections()`), so the unit a user navigates it in is a
+// section, not a line: at 65 px a notch, crossing a fully expanded column
+// takes dozens of them, which is the "slow scrolling" this function exists to
+// fix.
+//
+// A quarter of the visible height per notch, which is the settings-panel
+// convention, and bounded at both ends rather than left to run free:
+//
+//  - **Never slower than ImGui's own step.** On a short column a quarter page
+//    can be less than five lines, and scrolling must not get *worse* than the
+//    default it replaces.
+//  - **Never more than two thirds of the view**, which is ImGui's own
+//    `max_step` rule (imgui.cpp's mouse-wheel block) reused rather than
+//    reinvented. A notch that scrolls past a whole screenful loses the
+//    reader's place completely.
+//
+// Proportional rather than a fixed pixel count deliberately: the column's
+// height is the window's, and a constant tuned on a tall display would be a
+// page and a half on a short one.
+float controlsWheelScrollStep(float innerHeightPx, float fontSizePx) noexcept;
+
 }  // namespace np

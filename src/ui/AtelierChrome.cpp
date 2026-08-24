@@ -238,7 +238,24 @@ Tool toolGroupDefaultMember(int groupIndex) noexcept {
 }
 
 void drawAtelierRules(const AtelierBands& bands) {
-  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  // **Background list, not foreground, and the difference is visible.**
+  //
+  // These were on the foreground list to stop a neighbouring band's window
+  // overdrawing a 2 px rule down to 1 px. But ImGui renders the foreground
+  // list after EVERY window -- popups included -- so each rule painted a pale
+  // line straight across any menu or tool flyout that crossed it. The tool
+  // palette's own rule runs the full height of the mid band, so the flyout
+  // (which opens directly beside the palette) got two of them through it every
+  // time.
+  //
+  // The overdraw the foreground list was defending against cannot happen:
+  // ui/AtelierLayout gives every rule its OWN gap rather than laying it over a
+  // band. `hRule()` consumes the cursor as it emits, and the mid band's canvas
+  // starts at `leftRule.right()` and stops at `rightRule.x` -- so no window is
+  // ever positioned over a rule's rect, and a list drawn behind the windows
+  // shows through the gaps exactly as intended. The rules keep their full
+  // thickness and popups now draw over them, which is the correct order.
+  ImDrawList* dl = ImGui::GetBackgroundDrawList();
   for (size_t i = 0; i < bands.ruleCount; ++i) {
     const AtelierRect& r = bands.rules[i];
     dl->AddRectFilled(ImVec2(r.x, r.y), ImVec2(r.right(), r.bottom()), atelierToken(kRule));

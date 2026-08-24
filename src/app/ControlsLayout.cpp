@@ -56,4 +56,20 @@ LabelledControlLayout layoutLabelledControl(float& column, float labelPx, float 
   return out;
 }
 
+float controlsWheelScrollStep(float innerHeightPx, float fontSizePx) noexcept {
+  // Degenerate inputs get ImGui's own answer rather than a zero step: a
+  // column measured at zero height during a layout pass must not silently
+  // become unscrollable.
+  const float imguiStep = 5.0f * (fontSizePx > 0.0f ? fontSizePx : 13.0f);
+  if (!(innerHeightPx > 0.0f)) return imguiStep;
+
+  const float quarterPage = innerHeightPx * 0.25f;
+  const float ceiling = innerHeightPx * 0.67f;  // imgui.cpp's own max_step
+  // Order matters at very short heights, where the ceiling can fall BELOW
+  // ImGui's step: the floor is applied last so "never slower than the default"
+  // wins over "never more than two thirds". A window that short cannot show a
+  // section anyway, and the default is the behaviour a user already expects.
+  return std::max(std::min(std::max(quarterPage, imguiStep), ceiling), imguiStep);
+}
+
 }  // namespace np

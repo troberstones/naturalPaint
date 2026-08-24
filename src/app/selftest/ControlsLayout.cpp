@@ -307,6 +307,47 @@ bool runControlsLayoutTest() {
     }
   }
 
+  // --- the right column's wheel step ---------------------------------------
+  //
+  // The "slow scrolling" fix. Dear ImGui scrolls five lines a notch, which at
+  // this build's 13 px font is 65 px -- right for prose, wrong for a column of
+  // collapsing sections, where a fully expanded stack takes dozens of notches
+  // to cross.
+  {
+    constexpr float kFont = 13.0f;
+    constexpr float kImGuiStep = 5.0f * kFont;  // 65 px, what this replaces
+
+    check(controlsWheelScrollStep(900.0f, kFont) == 225.0f,
+          "scroll: a 900 px column steps a quarter page (225 px) per notch, not ImGui's "
+          "five lines -- the column is navigated by section, not by line");
+
+    // The floor. On a short column a quarter page is less than five lines, and
+    // the replacement must never be SLOWER than the default it replaced.
+    check(controlsWheelScrollStep(200.0f, kFont) == kImGuiStep,
+          "scroll: a short column falls back to ImGui's own five-line step rather than "
+          "going slower than the default this replaced");
+
+    // The ceiling, which is ImGui's own max_step rule rather than a new one.
+    // Checked where it actually binds -- a height whose 0.67 is below the
+    // quarter-page-vs-floor winner.
+    const float tiny = controlsWheelScrollStep(80.0f, kFont);
+    check(tiny >= kImGuiStep,
+          "scroll: and even where the two-thirds ceiling would bind below the floor, the "
+          "floor wins -- a window that short cannot show a section anyway");
+
+    check(controlsWheelScrollStep(0.0f, kFont) == kImGuiStep &&
+              controlsWheelScrollStep(-5.0f, kFont) == kImGuiStep &&
+              controlsWheelScrollStep(900.0f, 0.0f) > 0.0f,
+          "scroll: a zero or negative height, or a zero font size, still yields a usable "
+          "step -- a column measured mid-layout must not become unscrollable");
+
+    // Proportional, not a tuned constant: the whole reason it takes a height.
+    check(controlsWheelScrollStep(1800.0f, kFont) ==
+              2.0f * controlsWheelScrollStep(900.0f, kFont),
+          "scroll: the step scales with the column, so a constant tuned on a tall display "
+          "is not a page and a half on a short one");
+  }
+
   std::printf("[selftest] controls layout %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
