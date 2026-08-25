@@ -45,6 +45,7 @@
 #include "sim/PaintSim.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/CanvasQuad.hpp"
+#include "ui/MacNativeMenu.hpp"
 #include "ui/MacPaintUI.hpp"
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierLayout.hpp"
@@ -1156,6 +1157,27 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // ---- the native menu bar (ui/MacNativeMenu, ui/MenuModel) ---------------
+  //
+  // A no-op off Apple, where the ImGui menu bar in the title band is the whole
+  // story and stays exactly as it was.
+  //
+  // **Here, and not one line earlier.** SDL builds the standard macOS
+  // application menu inside `SDL_Init(SDL_INIT_VIDEO)` above, and it does so in
+  // the same branch where it installs its own `NSApplication` subclass -- the
+  // subclass whose `terminate:` override is the only reason ⌘Q becomes an
+  // `SDL_EVENT_QUIT`, and therefore the only reason ⌘Q reaches
+  // `AppState::requestQuit` and the unsaved-work guard below rather than
+  // killing the process outright. Touching `NSApp` before SDL does would
+  // realise a plain `NSApplication` instead, SDL's branch would never run, and
+  // ⌘Q would silently discard every open document. ui/MacNativeMenu.mm's header
+  // comment has the citation.
+  //
+  // It is also after `SDL_CreateWindow()`, which is not required by anything
+  // but keeps the whole of the platform's window setup in one place and means
+  // a failed window is never behind a menu bar advertising commands for it.
+  np::installNativeMenuBar();
+
   np::GpuContext gpu;
   if (!gpu.init(window)) return 1;
 
@@ -1808,6 +1830,14 @@ int main(int argc, char** argv) {
     // with no caller outside this suite, and a quit that never asked a single
     // document whether it was dirty.
     const bool quitGuardOk = np::runQuitGuardTest();
+    // ui/MenuModel: the menu bar as data, so that a native macOS menu and the
+    // ImGui one can be two renderings of ONE set of actions rather than two
+    // copies of them. Headless -- no window, no GPU, no ImGui context, no
+    // NSApplication. Its sharpest assertion is a sibling of the one above:
+    // performing the model's Quit sets `requestQuit` and leaves `quit` alone,
+    // so a backend wired to Cocoa's `terminate:` -- which would route straight
+    // past the guard runQuitGuardTest() covers -- cannot pass.
+    const bool menuModelOk = np::runMenuModelTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1836,7 +1866,7 @@ int main(int argc, char** argv) {
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
-                    quitGuardOk;
+                    quitGuardOk && menuModelOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

@@ -42,6 +42,8 @@
 #include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/MacNativeMenu.hpp"
+#include "ui/MenuModel.hpp"
 #include "ui/ToolCursor.hpp"
 
 namespace np {
@@ -5023,139 +5025,493 @@ void drawRecoveryDialog(AppState& st) {
   ImGui::EndPopup();
 }
 
-// The File menu's document half. Split out of drawUI's menu bar block only
-// because it is long, not because it is separable.
-void drawDocumentMenuItems(AppState& st, uint32_t canvasW, uint32_t canvasH) {
-  // Lazy, first time the File menu is opened: PRD A2 and ADR-0001 both say a
-  // file nobody asked for costs nothing, and --selftest's idle-RSS assertion
-  // is sampled before this can run.
+// ---------------------------------------------------------------------------
+// The menu bar's ImGui backend (ui/MenuModel.hpp)
+// ---------------------------------------------------------------------------
+//
+// What used to be here was `drawDocumentMenuItems()` plus a 200-line
+// `BeginMainMenuBar()` block, and between them they held forty-one
+// `ImGui::MenuItem()` call sites that each *declared* an item and *performed*
+// its action in the body of an `if`. ui/MenuModel.hpp's header comment carries
+// the full argument for why that had to come apart; the short form is that a
+// native `NSMenu` is built once, out of band, and calls back with no `if` to
+// be the body of -- so an AppKit backend written against the old shape would
+// have had to contain a second copy of every action.
+//
+// What is left in this file is a *backend*: `menuContextFromState()` reads the
+// live application into ui/MenuModel.hpp's pure snapshot, `drawMenuNodes()`
+// draws the tree that comes back, and neither of them contains an action.
+// Every click -- from this bar or from the native one -- ends in
+// `performMenuAction()` at the bottom of this section.
+
+// `View > Add Guide...` used to call `ImGui::OpenPopup()` inline from inside
+// `BeginMenu()`, and got away with it only because "AddGuidePopup" is
+// identified by a global string ID rather than by one on the menu's own ID
+// stack. It would not get away with it under a native menu bar, whose callback
+// fires on the AppKit main thread with no ImGui frame in progress at all. So
+// it joins `Export As...` and `Export Comps...` on the one-flag-per-frame
+// route those two already took, for the reason those two already had --
+// ui/MenuModel.hpp records all three as `MenuEffect::Deferred`.
+bool g_addGuideRequested = false;
+
+MenuFamilyEntry familyEntry(std::string label, bool enabled, bool checked,
+                            bool separatorAfter = false, std::string tooltip = {}) {
+  MenuFamilyEntry e;
+  e.label = std::move(label);
+  e.tooltip = std::move(tooltip);
+  e.enabled = enabled;
+  e.checked = checked;
+  e.separatorAfter = separatorAfter;
+  return e;
+}
+
+// The live application, as the pure snapshot `buildMenuModel()` consumes.
+//
+// **The six families are resolved here, not there.** ui/MenuModel.hpp explains
+// why at length: a `const Document*` parked on the context would be a dangling
+// pointer the first time a user closed a document with a native menu open, and
+// the native backend genuinely does read this state after the frame that
+// produced it has ended. So availability is asked of `app/LayerEditor` and
+// `core/LayerSetOps` -- the modules that own the rule -- inside the frame, and
+// only the answers travel.
+MenuContext menuContextFromState(AppState& st) {
+  MenuContext ctx;
+
+  // **This load used to be lazy, and it cannot be any more.** It sat at the
+  // top of `drawDocumentMenuItems()` and therefore ran the first time the File
+  // menu was *opened*, on the argument (PRD A2, ADR-0001) that a file nobody
+  // asked for costs nothing.
+  //
+  // A native menu bar has no such moment. It is on screen from launch, and it
+  // is built out of band, so `Open Recent` has to know whether it has entries
+  // before the user has expressed any interest in the File menu at all. The
+  // choice was between eager on both platforms and a lazy path that exists
+  // only on one -- and a load that happens at a different time on macOS than
+  // on Linux is the kind of difference that makes a bug reproduce on one
+  // machine and not the other.
+  //
+  // The cost is one small file read on the first UI frame. It is deliberately
+  // NOT moved to startup: `--selftest` never calls drawUI(), so the idle-RSS
+  // assertion (PLAN.md 1.4 / ADR-0001 bullet 5) is still sampled on a process
+  // that has never touched this file.
   if (!st.recentDocumentsLoaded) {
     st.recentDocumentsLoaded = true;
     st.recentDocuments.loadFromFile(defaultRecentDocumentsPath());
   }
 
-  OpenDocument* doc = st.documents.active();
-  const bool hasDoc = doc != nullptr;
-  const bool hasPath = hasDoc && doc->hasPath();
+  const OpenDocument* doc = st.documents.active();
+  ctx.hasDocument = doc != nullptr;
+  ctx.hasPath = ctx.hasDocument && doc->hasPath();
 
-  if (ImGui::MenuItem("New Document")) {
-    st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
-                                           static_cast<int32_t>(canvasH), WorkingSpace{}));
-    g_docStatus.clear();
-  }
-  if (ImGui::MenuItem("Open...")) {
-    g_docPathAction = DocPathAction::Open;
-    g_docPathRequested = true;
-  }
-  if (ImGui::BeginMenu("Open Recent", !st.recentDocuments.entries().empty())) {
+  // --- Open Recent --------------------------------------------------------
+  // A missing entry is shown, greyed, with the reason in its tooltip -- never
+  // dropped behind the user's back (app/DocumentLifecycle.hpp argues why).
+  {
     const std::vector<RecentDocument>& entries = st.recentDocuments.entries();
-    for (size_t i = 0; i < entries.size(); ++i) {
-      // A missing entry is shown, greyed, with the reason -- never dropped
-      // behind the user's back. app/DocumentLifecycle.hpp argues why.
+    for (const RecentDocument& entry : entries) {
       std::string why;
-      const bool missing = recentDocumentMissing(entries[i].path, &why);
-      if (missing) ImGui::BeginDisabled();
-      if (ImGui::MenuItem(entries[i].displayName.c_str()) && !missing) {
-        OpenDocument opened;
-        const DocumentOpResult r = openRecentDocument(st.recentDocuments, i, &opened);
-        if (r.ok) {
-          st.documents.add(std::move(opened));
-          std::string saveErr;
-          st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+      const bool missing = recentDocumentMissing(entry.path, &why);
+      ctx.recentDocuments.push_back(
+          familyEntry(entry.displayName, !missing, false, false, missing ? why : entry.path));
+    }
+  }
+
+  // --- Layer --------------------------------------------------------------
+  if (doc != nullptr) {
+    const Document& d = doc->document;
+    const size_t selected = doc->activeLayer;
+    ctx.activeLayerTitle = selected < d.layers.size()
+                               ? layerRowTitle(d.layers[selected], selected)
+                               : std::string("(no layer selected)");
+
+    for (const LayerCommand command : allLayerCommands()) {
+      // The three toggles show the selected layer's current state as a check
+      // mark, which is what makes "Toggle Visibility" honest about which way
+      // it is about to go.
+      bool checked = false;
+      if (selected < d.layers.size()) {
+        if (command == LayerCommand::ToggleVisible) checked = d.layers[selected].visible;
+        if (command == LayerCommand::ToggleLocked) checked = d.layers[selected].locked;
+        if (command == LayerCommand::ToggleClipped) checked = d.layers[selected].clipped;
+      }
+      // Grouped as the panel groups them: creation, then the whole-layer
+      // operations, then the mask, then the flags.
+      const bool rule = command == LayerCommand::NewAdjustmentLayer ||
+                        command == LayerCommand::MoveLayerDown ||
+                        command == LayerCommand::RemoveMask ||
+                        command == LayerCommand::ToggleClipped;
+      ctx.layerCommands.push_back(familyEntry(layerCommandLabel(command),
+                                              layerCommandAvailable(d, command, selected),
+                                              checked, rule));
+    }
+
+    // The LAYERS panel's "Multi-selection" section walks the identical list,
+    // so the two views cannot come to offer different sets.
+    const LayerSelection visible = restrictSelectionToFilter(d, g_layers.selection, g_layers.filter);
+    ctx.layerSelectionNote = std::to_string(g_layers.selection.size()) + " layer(s) selected" +
+                             (visible.size() != g_layers.selection.size()
+                                  ? ", some hidden by the filter"
+                                  : "");
+    for (const LayerSetCommand command : allLayerSetCommands()) {
+      const bool rule = command == LayerSetCommand::MoveLayersDown ||
+                        command == LayerSetCommand::UnclipLayers ||
+                        command == LayerSetCommand::UnlinkLayers ||
+                        command == LayerSetCommand::LabelGrey ||
+                        command == LayerSetCommand::AlignSelectionBottom ||
+                        command == LayerSetCommand::AlignCanvasBottom;
+      ctx.layerSetCommands.push_back(familyEntry(
+          layerSetCommandLabel(command), layerSetCommandAvailable(d, command, visible), false,
+          rule));
+    }
+  }
+
+  // --- Medium / Goodies ---------------------------------------------------
+  for (int i = 0; i < static_cast<int>(PaintMode::Count); ++i) {
+    const PaintMode m = static_cast<PaintMode>(i);
+    ctx.paintModes.push_back(familyEntry(paintModeName(m), true, st.mode == m));
+  }
+  for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+    const Tool t = static_cast<Tool>(i);
+    ctx.tools.push_back(familyEntry(toolName(t), true, st.brush.tool == t));
+  }
+  ctx.paused = st.paused;
+
+  // --- View ---------------------------------------------------------------
+  ctx.mirrorX = st.view.mirrorX;
+  ctx.mirrorY = st.view.mirrorY;
+  ctx.grayscale = st.view.grayscale;
+  ctx.showRulers = st.showRulers;
+  ctx.showNavigator = st.showNavigator;
+  ctx.showGuides = st.showGuides;
+  ctx.showGrid = st.showGrid;
+  ctx.snappingEnabled = st.snappingEnabled;
+  ctx.hasGuides = !st.guides.empty();
+
+  // --- Window -------------------------------------------------------------
+  ctx.showDemo = st.showDemo;
+  for (size_t i = 0; i < st.documents.count(); ++i) {
+    const OpenDocument* d = st.documents.at(i);
+    ctx.openDocuments.push_back(familyEntry(documentDisplayName(*d) + (d->isDirty() ? " *" : ""),
+                                            true, i == st.documents.activeIndex(), false,
+                                            d->isDirty() ? d->unsavedWorkSummary() : std::string()));
+  }
+
+  ctx.nativeAppMenuPresent = nativeMenuBarInstalled();
+  return ctx;
+}
+
+// Draw one level of the tree. Recursive, because the tree is.
+void drawMenuNodes(AppState& st, const std::vector<MenuNode>& nodes, uint32_t canvasW,
+                   uint32_t canvasH) {
+  for (const MenuNode& n : nodes) {
+    switch (n.kind) {
+      case MenuNodeKind::Separator:
+        ImGui::Separator();
+        break;
+      case MenuNodeKind::Note:
+        ImGui::TextDisabled("%s", n.label.c_str());
+        break;
+      case MenuNodeKind::Submenu:
+        if (ImGui::BeginMenu(n.label.c_str(), n.enabled)) {
+          drawMenuNodes(st, n.children, canvasW, canvasH);
+          ImGui::EndMenu();
         }
-        g_docStatus = r.ok ? "Opened " + r.path : r.error;
+        break;
+      case MenuNodeKind::Command:
+      case MenuNodeKind::Check: {
+        // `PushID(param)` rather than the `"##doc0"` suffix the Window menu
+        // used to bake into its labels. Two open documents with the same
+        // display name would otherwise share an ImGui ID and the second would
+        // be unclickable -- and a label carrying an ImGui ID hack inside it is
+        // a label the native backend would have to know to strip.
+        ImGui::PushID(n.param);
+        const char* shortcut = n.shortcutText.empty() ? nullptr : n.shortcutText.c_str();
+        if (ImGui::MenuItem(n.label.c_str(), shortcut, n.checked, n.enabled))
+          performMenuAction(st, n.action, n.param, canvasW, canvasH);
+        // Hover text is carried on the node rather than written at the call
+        // site, so the explanation a greyed item owes the user survives into
+        // whichever backend is drawing. `AllowWhenDisabled` for the disabled
+        // ones is the whole point: "Import Image..." is greyed precisely when
+        // it has something to explain.
+        if (!n.tooltip.empty() &&
+            ImGui::IsItemHovered(n.enabled ? ImGuiHoveredFlags_None
+                                           : ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("%s", n.tooltip.c_str());
+        ImGui::PopID();
+        break;
       }
-      if (missing) {
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-          ImGui::SetTooltip("%s", why.c_str());
-      } else if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", entries[i].path.c_str());
-      }
     }
-    ImGui::Separator();
-    if (ImGui::MenuItem("Clear Menu")) {
-      st.recentDocuments.clear();
-      std::string saveErr;
-      st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
-    }
-    ImGui::EndMenu();
-  }
-
-  // PLAN.md Phase 2 step 13 / app/ImportImage. Beside Open rather than beside
-  // Export, because it is the other half of the same idea: Open turns a file
-  // into a document, Import puts a file *into* the document already open, as a
-  // new RGB layer on top. `placeImageAsLayer()` has done that correctly since
-  // step 13 and had no caller outside --selftest until this line.
-  //
-  // Disabled with no open document, and the tooltip says which of the two
-  // commands the user wanted -- a greyed item with no explanation is how a user
-  // concludes the feature is missing rather than inapplicable.
-  if (ImGui::MenuItem("Import Image...", nullptr, false, hasDoc)) {
-    g_docPathAction = DocPathAction::ImportImage;
-    g_docPathRequested = true;
-  }
-  if (!hasDoc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip(
-        "Import adds an image to an open document. With nothing open, use Open... instead, "
-        "which turns the image into a document of its own.");
-
-  ImGui::Separator();
-  if (ImGui::MenuItem("Save", nullptr, false, hasPath)) {
-    const DocumentOpResult r = saveDocument(*doc, {}, &st.recentDocuments);
-    if (r.ok) {
-      std::string saveErr;
-      st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
-    }
-    g_docStatus = r.ok ? "Saved " + r.path : r.error;
-  }
-  if (ImGui::MenuItem("Save As...", nullptr, false, hasDoc)) {
-    g_docPathAction = DocPathAction::SaveAs;
-    g_docPathRequested = true;
-  }
-  if (ImGui::MenuItem("Save a Copy...", nullptr, false, hasDoc)) {
-    g_docPathAction = DocPathAction::SaveCopy;
-    g_docPathRequested = true;
-  }
-  if (ImGui::MenuItem("Save Incremental", nullptr, false, hasPath)) {
-    const DocumentOpResult r = saveDocumentIncremental(*doc, {}, &st.recentDocuments);
-    if (r.ok) {
-      std::string saveErr;
-      st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
-    }
-    g_docStatus = r.ok ? "Saved " + r.path : r.error;
-  }
-
-  ImGui::Separator();
-  // PLAN.md Phase 4 step 9 / PRD O8. Always enabled, even with nothing to
-  // offer: "are there unfinished sessions?" is a question a user who has just
-  // had a crash will ask, and a greyed-out item answers it ambiguously. The
-  // list is re-scanned rather than reused, so a session another instance
-  // finished since launch is not offered from a stale snapshot.
-  if (ImGui::MenuItem("Recover Documents...")) {
-    st.recovery = discoverRecoverySessions();
-    g_recoveryRequested = true;
-  }
-
-  ImGui::Separator();
-  if (ImGui::MenuItem("Revert", nullptr, false, hasPath)) g_revertConfirmRequested = true;
-  if (ImGui::MenuItem("Duplicate Document", nullptr, false, hasDoc)) {
-    st.documents.add(duplicateDocument(*doc));
-    g_docStatus = "Duplicated (unbound -- Save As gives it a file of its own).";
-  }
-  if (ImGui::MenuItem("Close Document", nullptr, false, hasDoc)) {
-    // The same entry point the tab strip's close box uses
-    // (app/CloseDecision.hpp): a clean document closes on this click, a dirty
-    // one raises Save / Don't Save / Cancel. This used to call
-    // `documents.close(..., false, ...)` and leave the refusal in the status
-    // line -- the menu's half of the defect the tab strip made obvious.
-    const CloseOutcome outcome =
-        requestDocumentClose(st.documents, st.documents.activeIndex(), st.pendingClose);
-    if (!outcome.status.empty()) g_docStatus = outcome.status;
   }
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// **The one place a menu action is performed.**
+// ---------------------------------------------------------------------------
+//
+// Declared in ui/MenuModel.hpp and defined here rather than there, on purpose.
+// Roughly half of these bodies poke this file's own file-local dialog state --
+// `g_exportAsRequested`, `g_docPathAction`, `g_docStatus`, `g_recoveryRequested`,
+// `g_revertConfirmRequested`, `g_addGuideRequested`, `g_layers` -- and the
+// alternative was to promote nine anonymous-namespace globals into `AppState`
+// so that a header could see them. That is a much larger and much riskier
+// change than declaring one function, and it would have moved dialog
+// bookkeeping into the application state for no reason except a header's
+// convenience.
+//
+// Defined **after** the anonymous namespace closes so it has external linkage
+// (ui/MacNativeMenu.mm and app/selftest/MenuModel.cpp both call it) while still
+// seeing every one of those file-local names, which are declared above it in
+// the same translation unit.
+//
+// Every body here is the body of the `if (ImGui::MenuItem(...))` it replaced,
+// moved verbatim. Nothing was rewritten on the way; the point of the exercise
+// was to change *where* the actions live, not what they do.
+//
+// **Safe to call outside an ImGui frame.** That is a requirement, not an
+// observation: a native menu's callback fires on the AppKit main thread from
+// inside SDL's Cocoa pump, with no frame in progress. Every action that opens
+// a modal sets a flag instead of calling `ImGui::OpenPopup()`, which
+// ui/MenuModel.hpp records as `MenuEffect::Deferred` and which
+// app/selftest/MenuModel.cpp asserts is true of all nine of them.
+void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canvasW,
+                       uint32_t canvasH) {
+  OpenDocument* doc = st.documents.active();
+
+  switch (action) {
+    // --- File -------------------------------------------------------------
+    case MenuAction::NewCanvas:
+      st.requestClear = true;
+      break;
+
+    case MenuAction::NewDocument:
+      st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
+                                             static_cast<int32_t>(canvasH), WorkingSpace{}));
+      g_docStatus.clear();
+      break;
+
+    case MenuAction::Open:
+      g_docPathAction = DocPathAction::Open;
+      g_docPathRequested = true;
+      break;
+
+    case MenuAction::OpenRecentEntry: {
+      const std::vector<RecentDocument>& entries = st.recentDocuments.entries();
+      if (param < 0 || static_cast<size_t>(param) >= entries.size()) break;
+      // The model already greys a missing entry out, and both backends honour
+      // that. This re-checks anyway, and the reason is specific to the native
+      // bar: an `NSMenu` is built once and then *sits there*, so the file can
+      // be moved or deleted between the menu being built and the user picking
+      // the row. The ImGui bar could not reach this branch; the native one
+      // can, and the honest answer is the reason rather than a silent no-op.
+      std::string why;
+      if (recentDocumentMissing(entries[static_cast<size_t>(param)].path, &why)) {
+        g_docStatus = why;
+        break;
+      }
+      OpenDocument opened;
+      const DocumentOpResult r =
+          openRecentDocument(st.recentDocuments, static_cast<size_t>(param), &opened);
+      if (r.ok) {
+        st.documents.add(std::move(opened));
+        std::string saveErr;
+        st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+      }
+      g_docStatus = r.ok ? "Opened " + r.path : r.error;
+      break;
+    }
+
+    case MenuAction::ClearRecentMenu: {
+      st.recentDocuments.clear();
+      std::string saveErr;
+      st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+      break;
+    }
+
+    case MenuAction::ImportImage:
+      g_docPathAction = DocPathAction::ImportImage;
+      g_docPathRequested = true;
+      break;
+
+    case MenuAction::Save: {
+      if (doc == nullptr) break;
+      const DocumentOpResult r = saveDocument(*doc, {}, &st.recentDocuments);
+      if (r.ok) {
+        std::string saveErr;
+        st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+      }
+      g_docStatus = r.ok ? "Saved " + r.path : r.error;
+      break;
+    }
+
+    case MenuAction::SaveAs:
+      g_docPathAction = DocPathAction::SaveAs;
+      g_docPathRequested = true;
+      break;
+
+    case MenuAction::SaveCopy:
+      g_docPathAction = DocPathAction::SaveCopy;
+      g_docPathRequested = true;
+      break;
+
+    case MenuAction::SaveIncremental: {
+      if (doc == nullptr) break;
+      const DocumentOpResult r = saveDocumentIncremental(*doc, {}, &st.recentDocuments);
+      if (r.ok) {
+        std::string saveErr;
+        st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+      }
+      g_docStatus = r.ok ? "Saved " + r.path : r.error;
+      break;
+    }
+
+    case MenuAction::RecoverDocuments:
+      // The list is re-scanned rather than reused, so a session another
+      // instance finished since launch is not offered from a stale snapshot.
+      st.recovery = discoverRecoverySessions();
+      g_recoveryRequested = true;
+      break;
+
+    case MenuAction::Revert:
+      g_revertConfirmRequested = true;
+      break;
+
+    case MenuAction::DuplicateDocument:
+      if (doc == nullptr) break;
+      st.documents.add(duplicateDocument(*doc));
+      g_docStatus = "Duplicated (unbound -- Save As gives it a file of its own).";
+      break;
+
+    case MenuAction::CloseDocument: {
+      if (doc == nullptr) break;
+      // The same entry point the tab strip's close box uses
+      // (app/CloseDecision.hpp): a clean document closes on this click, a
+      // dirty one raises Save / Don't Save / Cancel.
+      const CloseOutcome outcome =
+          requestDocumentClose(st.documents, st.documents.activeIndex(), st.pendingClose);
+      if (!outcome.status.empty()) g_docStatus = outcome.status;
+      break;
+    }
+
+    case MenuAction::ExportAs:
+      g_exportAsRequested = true;
+      break;
+
+    case MenuAction::ExportStates:
+      g_exportStatesRequested = true;
+      break;
+
+    // **`requestQuit`, not `quit`.**
+    //
+    // This one line is the whole reason ui/MenuModel.hpp has a `MenuEffect`
+    // enum. `AppState::quit` stops the frame loop outright, with nothing in
+    // the way; `AppState::requestQuit` is answered by main.cpp's guard against
+    // every open document (app/QuitSequence) -- Save / Don't Save / Cancel,
+    // once per dirty document. This item used to set `quit` directly and
+    // therefore threw away every unsaved document without a word, and also
+    // deleted the recovery journal's copy of them on the way past, because a
+    // clean shutdown removes the scratch directory (PRD O8).
+    //
+    // A native backend has a quieter way to make the identical mistake:
+    // wiring the item to Cocoa's `@selector(terminate:)`. See
+    // `MenuItemSpec::mayUseSystemSelector` and the Part D assertions in
+    // app/selftest/MenuModel.cpp, which exist so that neither form of it can
+    // be reintroduced without the suite going red.
+    case MenuAction::Quit:
+      st.requestQuit = true;
+      break;
+
+    // --- Edit -------------------------------------------------------------
+    case MenuAction::ClearCanvas:
+      st.requestClear = true;
+      break;
+
+    // --- Layer ------------------------------------------------------------
+    case MenuAction::LayerCommandItem: {
+      const std::vector<LayerCommand>& commands = allLayerCommands();
+      if (param < 0 || static_cast<size_t>(param) >= commands.size()) break;
+      runLayerCommand(st, commands[static_cast<size_t>(param)]);
+      break;
+    }
+
+    case MenuAction::LayerSetCommandItem: {
+      const std::vector<LayerSetCommand>& commands = allLayerSetCommands();
+      if (param < 0 || static_cast<size_t>(param) >= commands.size()) break;
+      runLayerSetCommand(st, commands[static_cast<size_t>(param)]);
+      break;
+    }
+
+    // --- Medium / Goodies -------------------------------------------------
+    case MenuAction::PaintModeItem: {
+      if (param < 0 || param >= static_cast<int>(PaintMode::Count)) break;
+      const PaintMode m = static_cast<PaintMode>(param);
+      // Guarded, not unconditional: `requestMode` clears the canvas, and
+      // picking the mode that is already current must not.
+      if (st.mode != m) {
+        st.mode = m;
+        st.requestMode = true;
+      }
+      break;
+    }
+
+    case MenuAction::ToolItem:
+      if (param < 0 || param >= static_cast<int>(Tool::Count)) break;
+      st.brush.tool = static_cast<Tool>(param);
+      break;
+
+    case MenuAction::PauseSolver:
+      st.paused = !st.paused;
+      break;
+
+    case MenuAction::ReloadShaders:
+      st.requestReload = true;
+      break;
+
+    // --- View -------------------------------------------------------------
+    case MenuAction::FitToWindow: st.requestFitWindow = true; break;
+    case MenuAction::Zoom100:     st.requestZoom100 = true;   break;
+    case MenuAction::ZoomIn:      st.requestZoomIn = true;    break;
+    case MenuAction::ZoomOut:     st.requestZoomOut = true;   break;
+
+    case MenuAction::MirrorX:          st.view.mirrorX = !st.view.mirrorX;       break;
+    case MenuAction::MirrorY:          st.view.mirrorY = !st.view.mirrorY;       break;
+    case MenuAction::ResetRotation:    st.view.rotation = 0.0f;                  break;
+    case MenuAction::GrayscalePreview: st.view.grayscale = !st.view.grayscale;   break;
+    case MenuAction::Rulers:           st.showRulers = !st.showRulers;           break;
+    case MenuAction::Navigator:        st.showNavigator = !st.showNavigator;     break;
+    case MenuAction::Guides:           st.showGuides = !st.showGuides;           break;
+    case MenuAction::Grid:             st.showGrid = !st.showGrid;               break;
+    case MenuAction::Snap:             st.snappingEnabled = !st.snappingEnabled; break;
+
+    case MenuAction::AddGuide:
+      g_addGuideRequested = true;
+      break;
+
+    case MenuAction::ClearGuides:
+      st.guides.clear();
+      break;
+
+    // --- Window -----------------------------------------------------------
+    case MenuAction::ImGuiDemo:
+      st.showDemo = !st.showDemo;
+      break;
+
+    case MenuAction::ActivateDocument:
+      if (param < 0 || static_cast<size_t>(param) >= st.documents.count()) break;
+      st.documents.setActive(static_cast<size_t>(param));
+      break;
+
+    // Not a silent default: a `MenuAction` added to the enum without a body
+    // here is a menu item that draws, highlights, clicks and does absolutely
+    // nothing -- which is the single worst failure a menu can have, because it
+    // is indistinguishable to the user from the feature being broken. Listing
+    // the two non-actions explicitly means the compiler names the omission.
+    case MenuAction::None:
+    case MenuAction::Count:
+      break;
+  }
+}
 
 void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
            const MixboxLut& lut, uint32_t canvasW, uint32_t canvasH) {
@@ -5164,6 +5520,31 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // that sets it is reachable only on some frames, so a reset that lived beside
   // it would let a crosshair outlive the pointer being over the canvas.
   g_canvasCursor.reset();
+
+  // Next, and before anything reads the state those actions write: whatever
+  // the native menu bar collected since the last frame.
+  //
+  // A native menu's callback arrives on the AppKit main thread from inside
+  // SDL's Cocoa pump -- the same thread as this loop, but at a moment when
+  // there is no ImGui frame, no `AppState&` in scope and no canvas size to
+  // hand `NewDocument`. So the native backend performs nothing; it enqueues an
+  // id, and this is where the id is turned into the action, through the same
+  // `performMenuAction()` the ImGui bar below calls directly.
+  //
+  // **Drained here, at the top, rather than at the end of the frame.** A menu
+  // pick that toggles `showGuides` or switches the active document has to be
+  // visible in the frame the user sees next, not the one after -- a native
+  // menu that appeared to need two clicks would be indistinguishable from one
+  // that had dropped the first.
+  //
+  // Empty every frame on every platform without a native bar, and empty on
+  // almost every frame with one; the loop costs one mutex acquisition.
+  {
+    MenuAction queued = MenuAction::None;
+    int queuedParam = 0;
+    while (dequeueMenuAction(&queued, &queuedParam))
+      performMenuAction(st, queued, queuedParam, canvasW, canvasH);
+  }
 
   const ImGuiViewport* vp = ImGui::GetMainViewport();
 
@@ -5175,6 +5556,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // exactly the `BeginMainMenuBar()` call that reads it and popped
   // immediately, leaving every *menu item* at its normal size. The band is
   // 36 px because the design says 36 px; the items are then centred in it.
+  // ---- the menu model (ui/MenuModel) --------------------------------------
+  //
+  // Built, published and handed to the native backend **before**
+  // `BeginMainMenuBar()`, and deliberately outside the `if (menuBarOpen)`
+  // below. `BeginMainMenuBar()` can return false -- a viewport too short to
+  // hold the bar is enough -- and on the frames where it does, the ImGui bar
+  // has nothing to draw but the *native* bar still exists and still has to be
+  // told what the menus are. Publishing from inside that branch would leave
+  // the menu at the top of the screen frozen on whatever it last saw.
+  //
+  // `menuContextFromState()` reads the live application, `buildMenuModel()`
+  // shapes the tree, `drawMenuNodes()` (inside, below) draws it, and
+  // `performMenuAction()` is the only thing that acts. ui/MenuModel.hpp's
+  // header comment carries the argument for the split.
+  const std::vector<MenuNode> menus = buildMenuModel(menuContextFromState(st));
+  publishMenuModel(menus);
+  updateNativeMenuBar();
+
   const float titleBarPad = (kTitleBarH - ImGui::GetFontSize()) * 0.5f;
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                       ImVec2(ImGui::GetStyle().FramePadding.x, titleBarPad));
@@ -5191,199 +5590,51 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     ImGui::TextUnformatted("naturalPaint");
     ImGui::SameLine(0.0f, 14.0f);
 
-    if (ImGui::BeginMenu("File")) {
-      // "New" is the *canvas* command it has always been -- it clears the
-      // solver texture. "New Document" below is a different thing entirely,
-      // and the two are deliberately not merged: the canvas is not a
-      // document in this build, and a menu that implied otherwise would be
-      // the first place the gap got papered over.
-      if (ImGui::MenuItem("New Canvas", "Cmd+N")) st.requestClear = true;
-      ImGui::Separator();
-      // PLAN.md Phase 4 step 8 / PRD I18.
-      drawDocumentMenuItems(st, canvasW, canvasH);
-      ImGui::Separator();
-      // PLAN.md Phase 4 step 7 / PRD I15. No shortcut string: docs/shortcuts.md
-      // has not assigned one and keymaps/default.json binds no action for it,
-      // so advertising a chord that resolves to nothing would be worse than
-      // menu-only -- the same call the Rulers item below already makes.
-      // Sets a flag rather than calling ImGui::OpenPopup() here: a modal
-      // opened from inside BeginMenu() would be opened against the menu's own
-      // ID stack, and drawExportAsDialog() below runs outside it.
-      if (ImGui::MenuItem("Export As...")) g_exportAsRequested = true;
-      // PLAN.md Phase 5 step 13 / PRD I16, I17. Next to Export As because it
-      // is Export As run in a loop over document states -- same presets, same
-      // four settings, same encoder -- and the flag rather than
-      // ImGui::OpenPopup() for the same ID-stack reason as above.
-      if (ImGui::MenuItem("Export Comps / Layers To Files..."))
-        g_exportStatesRequested = true;
-      ImGui::Separator();
-      // `requestQuit`, not `quit`: main.cpp answers it against the open
-      // documents (app/QuitSequence). This item used to set `quit` directly and
-      // therefore threw away every unsaved document without a word.
-      if (ImGui::MenuItem("Quit", "Cmd+Q")) st.requestQuit = true;
-      ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Edit")) {
-      if (ImGui::MenuItem("Clear Canvas", "Cmd+K")) st.requestClear = true;
-      ImGui::EndMenu();
-    }
-    // UI detour step 3. The whole menu is `app::allLayerCommands()` walked in
-    // order: a command added to that list without a menu entry is impossible,
-    // which is the failure this step exists to fix (five built features with
-    // no entry point at all). No shortcut strings -- docs/shortcuts.md assigns
-    // none of these and keymaps/default.json binds no action for them, so
-    // advertising a chord that resolves to nothing would be worse than
-    // menu-only, the same call File > Export As... already makes.
-    // --open-layer-menu: the same id BeginMenu() below opens on a click, so
-    // the menu can be photographed. See AppState::openLayerMenu.
-    if (st.openLayerMenu) ImGui::OpenPopup("Layer");
-    if (ImGui::BeginMenu("Layer")) {
-      const OpenDocument* od = st.documents.active();
-      if (od == nullptr) {
-        ImGui::TextDisabled("(no document open)");
-      } else {
-        const Document& doc = od->document;
-        const size_t selected = od->activeLayer;
-        // The row every one of these acts on, named rather than assumed: the
-        // menu bar is a long way from the panel and "which layer is this
-        // about" is otherwise invisible from here.
-        ImGui::TextDisabled("%s", selected < doc.layers.size()
-                                      ? layerRowTitle(doc.layers[selected], selected).c_str()
-                                      : "(no layer selected)");
-        ImGui::Separator();
-        for (const LayerCommand command : allLayerCommands()) {
-          // The three toggles show the selected layer's current state as a
-          // check mark, which is what makes "Toggle Visibility" honest about
-          // which way it is about to go.
-          bool checked = false;
-          if (selected < doc.layers.size()) {
-            if (command == LayerCommand::ToggleVisible) checked = doc.layers[selected].visible;
-            if (command == LayerCommand::ToggleLocked) checked = doc.layers[selected].locked;
-            if (command == LayerCommand::ToggleClipped) checked = doc.layers[selected].clipped;
-          }
-          if (ImGui::MenuItem(layerCommandLabel(command), nullptr, checked,
-                              layerCommandAvailable(doc, command, selected)))
-            runLayerCommand(st, command);
-          // Grouped as the panel groups them: creation, then the whole-layer
-          // operations, then the mask, then the flags.
-          if (command == LayerCommand::NewAdjustmentLayer ||
-              command == LayerCommand::MoveLayerDown || command == LayerCommand::RemoveMask ||
-              command == LayerCommand::ToggleClipped)
-            ImGui::Separator();
-        }
-        ImGui::Separator();
-        // PLAN.md Phase 5 step 11 / PRD C12, C13, C15. The same construction as
-        // the loop above, over `core::allLayerSetCommands()`: a set command
-        // added to that enum without a menu entry is impossible, and the LAYERS
-        // panel's "Multi-selection" section walks the identical list, so the two
-        // views cannot come to offer different sets.
-        if (ImGui::BeginMenu("Selection")) {
-          const LayerSelection visible =
-              restrictSelectionToFilter(doc, g_layers.selection, g_layers.filter);
-          ImGui::TextDisabled("%zu layer(s) selected%s", g_layers.selection.size(),
-                              visible.size() != g_layers.selection.size()
-                                  ? ", some hidden by the filter"
-                                  : "");
-          ImGui::Separator();
-          for (const LayerSetCommand command : allLayerSetCommands()) {
-            if (ImGui::MenuItem(layerSetCommandLabel(command), nullptr, false,
-                                layerSetCommandAvailable(doc, command, visible)))
-              runLayerSetCommand(st, command);
-            if (command == LayerSetCommand::MoveLayersDown ||
-                command == LayerSetCommand::UnclipLayers ||
-                command == LayerSetCommand::UnlinkLayers ||
-                command == LayerSetCommand::LabelGrey ||
-                command == LayerSetCommand::AlignSelectionBottom ||
-                command == LayerSetCommand::AlignCanvasBottom)
-              ImGui::Separator();
-          }
+    // ---- the menus, from ui/MenuModel ------------------------------------
+    //
+    // Seven `BeginMenu()` blocks and forty-one `ImGui::MenuItem()` call sites
+    // used to be written out here, each of them declaring an item and
+    // performing its action in the body of an `if`. What is left is a backend
+    // that draws a tree built above, and it contains no action at all.
+    //
+    // **On macOS the menus are drawn once, at the top of the screen, and not
+    // here.** The alternative -- draw them in both bars -- was rejected on
+    // sight: two menu bars a centimetre apart, both live, both showing File,
+    // is not a thing any Mac application does, and a user who found a
+    // discrepancy between them would have no way to know which one was
+    // authoritative.
+    //
+    // **The band itself stays**, and does not collapse to nothing. It is
+    // reserved by `atelierLayout()` (ui/AtelierLayout.cpp, `b.titleBar`,
+    // `kTitleBarH` = 36 px from docs/ui.md section 2) and it carries four
+    // things that are not menus and have nowhere else to go: the naturalPaint
+    // wordmark, the one-line document status, the Undo and Redo buttons the
+    // design puts at the right of this band, and the frame rate. Reclaiming
+    // the 36 px would delete Undo and Redo from the chrome to remove a strip
+    // that is not actually dead -- so what macOS reclaims is the *menus'*
+    // share of the band, and the band keeps doing its other job.
+    if (!nativeMenuBarInstalled()) {
+      for (const MenuNode& menu : menus) {
+        // --open-layer-menu: the same id `BeginMenu()` below opens on a click,
+        // so the menu can be photographed. See AppState::openLayerMenu. It
+        // stays a special case here rather than becoming a field on the model,
+        // because it is a screenshot fixture and not a property of the menu --
+        // an NSMenu has no equivalent and should not be given one.
+        //
+        // **Which means the fixture does nothing once the native bar is
+        // installed**, and that is stated rather than hidden: a native menu
+        // opens in the system bar, outside this process's window, and
+        // `app/Screenshot` photographs the window. The flag is still accepted
+        // and still works on Linux and Windows. `tools/golden/run_golden.sh`
+        // does not use it -- its five views are --demo-document,
+        // --ui-layer-demo, --pigment-stroke-demo, --marquee-demo and
+        // --flyout-demo -- so no golden capture depends on it.
+        if (st.openLayerMenu && menu.label == "Layer") ImGui::OpenPopup("Layer");
+        if (ImGui::BeginMenu(menu.label.c_str(), menu.enabled)) {
+          drawMenuNodes(st, menu.children, canvasW, canvasH);
           ImGui::EndMenu();
         }
-        ImGui::Separator();
-        ImGui::TextDisabled("refusals appear in the LAYERS panel");
       }
-      ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Medium")) {
-      for (int i = 0; i < static_cast<int>(PaintMode::Count); ++i) {
-        const PaintMode m = static_cast<PaintMode>(i);
-        if (ImGui::MenuItem(paintModeName(m), nullptr, st.mode == m) && st.mode != m) {
-          st.mode = m;
-          st.requestMode = true;
-        }
-      }
-      ImGui::Separator();
-      ImGui::TextDisabled("switching clears the canvas");
-      ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Goodies")) {
-      for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
-        const Tool t = static_cast<Tool>(i);
-        if (ImGui::MenuItem(toolName(t), nullptr, st.brush.tool == t))
-          st.brush.tool = t;
-      }
-      ImGui::Separator();
-      ImGui::MenuItem("Pause solver", "Space", &st.paused);
-      if (ImGui::MenuItem("Reload shaders", "Cmd+R")) st.requestReload = true;
-      ImGui::EndMenu();
-    }
-    // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4): menu-item mirror
-    // of the same keymap actions main.cpp's SDL_EVENT_KEY_DOWN dispatch
-    // resolves (keymaps/default.json) -- both paths end up setting the same
-    // AppState fields, so there is exactly one place ("view" state consumed
-    // in this file's canvas block below) that actually acts on any of them.
-    if (ImGui::BeginMenu("View")) {
-      if (ImGui::MenuItem("Fit to Window", "Cmd+0")) st.requestFitWindow = true;
-      if (ImGui::MenuItem("100%", "Cmd+1")) st.requestZoom100 = true;
-      if (ImGui::MenuItem("Zoom In", "Cmd+=")) st.requestZoomIn = true;
-      if (ImGui::MenuItem("Zoom Out", "Cmd+-")) st.requestZoomOut = true;
-      ImGui::Separator();
-      ImGui::MenuItem("Mirror Left/Right", "F", &st.view.mirrorX);
-      ImGui::MenuItem("Mirror Up/Down", "Shift+F", &st.view.mirrorY);
-      if (ImGui::MenuItem("Reset Rotation", "Shift+R")) st.view.rotation = 0.0f;
-      ImGui::Separator();
-      ImGui::MenuItem("Grayscale Preview", "Cmd+Y", &st.view.grayscale);
-      ImGui::Separator();
-      // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD
-      // Q5-Q7). Rulers is deliberately the one item here with no shortcut
-      // string -- docs/shortcuts.md assigns it Cmd+R, but that chord is
-      // already bound to reload_shaders (see main.cpp's dispatch comment
-      // for the full reasoning). Menu-only until that spec conflict is
-      // resolved by a product decision, not by this step picking a
-      // different key on its own initiative.
-      ImGui::MenuItem("Rulers", nullptr, &st.showRulers);
-      // docs/ui.md section 2's NAVIGATOR. No shortcut, for the same reason
-      // Rulers has none: keymaps/default.json binds no action for it, and
-      // advertising a chord that resolves to nothing is worse than none.
-      ImGui::MenuItem("Navigator", nullptr, &st.showNavigator);
-      ImGui::MenuItem("Guides", "Cmd+;", &st.showGuides);
-      if (ImGui::MenuItem("Add Guide...")) ImGui::OpenPopup("AddGuidePopup");
-      if (ImGui::MenuItem("Clear Guides", nullptr, false, !st.guides.empty()))
-        st.guides.clear();
-      ImGui::MenuItem("Grid", "Cmd+'", &st.showGrid);
-      ImGui::MenuItem("Snap", "Cmd+Shift+;", &st.snappingEnabled);
-      ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Window")) {
-      ImGui::MenuItem("ImGui demo", nullptr, &st.showDemo);
-      ImGui::Separator();
-      // The open documents, and which one the lifecycle commands act on.
-      // Phase 5 step 14's tab strip is this list drawn differently, not a
-      // different list (app/DocumentLifecycle.hpp).
-      if (st.documents.empty()) {
-        ImGui::TextDisabled("(no documents open)");
-      } else {
-        for (size_t i = 0; i < st.documents.count(); ++i) {
-          const OpenDocument* d = st.documents.at(i);
-          const std::string label =
-              documentDisplayName(*d) + (d->isDirty() ? " *" : "") + "##doc" + std::to_string(i);
-          if (ImGui::MenuItem(label.c_str(), nullptr, i == st.documents.activeIndex()))
-            st.documents.setActive(i);
-          if (ImGui::IsItemHovered() && d->isDirty())
-            ImGui::SetTooltip("%s", d->unsavedWorkSummary().c_str());
-        }
-      }
-      ImGui::EndMenu();
     }
 
     // The active document's name used to be here, with a `*` dirty marker,
@@ -5447,11 +5698,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
   // PLAN.md Phase 2 step 12, PRD Q5: "guide at a numeric or percentage
   // position" via a small popup opened from the View menu's "Add Guide..."
-  // item above (ImGui::OpenPopup("AddGuidePopup")) -- doesn't need to be
-  // elaborate, just a position field and an orientation choice. Defined
-  // here, outside BeginMainMenuBar/EndMainMenuBar (popups are identified by
-  // a global string ID, not nested inside the ID stack of whatever widget
-  // opened them), so it renders regardless of which menu is currently open.
+  // item -- doesn't need to be elaborate, just a position field and an
+  // orientation choice. Defined here, outside BeginMainMenuBar/EndMainMenuBar
+  // (popups are identified by a global string ID, not nested inside the ID
+  // stack of whatever widget opened them), so it renders regardless of which
+  // menu is currently open.
+  //
+  // The `OpenPopup()` used to be the menu item's own body, and it is a flag
+  // now (`MenuAction::AddGuide` -> `g_addGuideRequested`, ui/MenuModel.hpp's
+  // `MenuEffect::Deferred`). The global string ID is what let the old
+  // arrangement work at all; it would not have survived a native menu bar,
+  // whose callback runs on the AppKit main thread with no ImGui frame in
+  // progress -- `OpenPopup()` from there writes to a context that is not
+  // between NewFrame() and Render(). Export As and Export Comps had already
+  // taken this route for the neighbouring ID-stack reason; this is the third.
+  if (g_addGuideRequested) {
+    g_addGuideRequested = false;
+    ImGui::OpenPopup("AddGuidePopup");
+  }
   if (ImGui::BeginPopup("AddGuidePopup")) {
     static int orientationIdx = 0;  // 0 = Horizontal, 1 = Vertical
     static char posBuf[32] = "50%";
