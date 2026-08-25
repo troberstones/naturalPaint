@@ -12,6 +12,7 @@
 #include "sim/PaintSim.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/DocumentTexture.hpp"
+#include "ui/MenuModel.hpp"
 // For `SDL_SystemCursor`, the return type of `canvasCursorRequest()` below.
 // ui/ToolCursor is the module that owns what the cursor means; this header only
 // carries one of its values across.
@@ -158,6 +159,49 @@ void setSplitArrangement(AtelierSplit mode);
 // shape covering nothing, and the two get different answers.
 void commitDrawnSelection(AppState& st, OpenDocument& od,
                           const std::optional<Selection>& drawn);
+
+// **The one place a history cursor actually moves**, direction `-1` for undo
+// and `+1` for redo (D1, docs/reachability-audit.md). Settles wet paint
+// first when `sim` is non-null (app/StrokeBake.hpp section 4 -- an undo must
+// not leave paint on screen that no state in the history actually holds),
+// then moves `od.history`'s cursor and installs the document at the new
+// position. The HISTORY panel's buttons, the title bar's, the Edit menu's
+// Undo/Redo and ⌘Z/⇧⌘Z (via `AppState::requestUndo`/`requestRedo`) all call
+// this and nothing else, so none of the four can drift from what the others
+// do.
+//
+// **Exposed for --selftest, and that is the whole reason it is in this
+// header** -- `commitDrawnSelection()`'s comment above says why the pattern
+// exists. With `sim` left null (the default-constructed, idle state
+// ADR-0001 already assumes) this settles nothing and only moves the cursor,
+// which is exactly what a headless test needs to assert that undo and redo
+// reach the same implementation: the observable state a `History` ends up
+// in, not which function's name appears in a call stack.
+//
+// Callers are expected to have already checked `History::canUndo()` /
+// `canRedo()`; this does not re-check.
+void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
+                       OpenDocument& od, int direction);
+
+// The Goodies menu's tool family, exactly as `menuContextFromState()` builds
+// `MenuContext::tools` (A4, docs/reachability-audit.md). Factored out of that
+// function into its own name for two reasons: it is the one piece of
+// `menuContextFromState()` that has no `AppState&` dependency beyond the
+// current tool, and it is the piece that had the bug -- `enabled` was
+// unconditionally `true`, so all 27 tools were selectable from this menu
+// while `toolButton()` (ui/AtelierChrome.cpp) correctly gated the same list
+// one panel over. `toolImplemented()` is the single predicate both now share.
+//
+// **Exposed for --selftest, and that is the whole reason it is in this
+// header.** `menuContextFromState()` itself is not: its first call loads
+// `st.recentDocuments` from the user's real preferences file
+// (app/DocumentLifecycle.hpp), which is exactly the file `--selftest` must
+// never touch (`RecentDocuments`'s own header says why). This function reads
+// nothing and touches no disk, so `app/selftest/MenuBasics.cpp` can call it
+// directly to prove the Goodies menu enables exactly the implemented tools --
+// counted against `toolImplemented()`, never a literal number, so the
+// assertion stays true as tools ship.
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current);
 
 // The foreground colour as STRAIGHT LINEAR RGBA -- what the paint bucket (PRD
 // D25/D26) and the gradient (D24) both need, and what neither can be handed

@@ -367,4 +367,14 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
   return out;
 }
 
+// D4: see this function's declaration in the header for the full argument.
+// The rule is deliberately this simple -- one character, no lookahead into
+// the rest of `argv` -- because every flag that needs more than that (a
+// following value, an optional trailing word) is matched by its own exact
+// spelling in main()'s loop BEFORE this predicate is ever consulted for that
+// argument.
+bool looksLikePositionalArgument(std::string_view arg) noexcept {
+  return !arg.empty() && arg[0] != '-';
+}
+
 }  // namespace np

@@ -16,6 +16,9 @@
     { "key": "R", "mods": ["Shift"], "action": "reset_rotation" },
     { "key": "Y", "mods": ["Cmd"], "action": "toggle_grayscale" },
 
+    { "key": "Z", "mods": ["Cmd"], "action": "undo" },
+    { "key": "Z", "mods": ["Cmd", "Shift"], "action": "redo" },
+
     { "key": "A", "mods": ["Cmd"], "action": "select_all" },
     { "key": "D", "mods": ["Cmd"], "action": "deselect" },
     { "key": "D", "mods": ["Cmd", "Shift"], "action": "reselect" },
