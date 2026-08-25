@@ -1439,6 +1439,10 @@ int main(int argc, char** argv) {
     // the container framing and the parameter mapping, including what an
     // import could NOT bring across. Headless and GPU-free.
     const bool abrBrushesOk = np::runAbrBrushesTest();
+    // app/BrushLibraryFile: the preferences file for imported `.abr` libraries,
+    // the row cache that makes launch pay nothing for them, and unload.
+    // Headless and GPU-free.
+    const bool brushLibraryFileOk = np::runBrushLibraryFileTest();
     // Phase 4 step 1 ("Export path -- encode from working space to a chosen
     // target space and bit depth, explicitly, never silently"; PRD B6, I5,
     // I1): io/Export's flatten -> un-premultiply -> encode -> quantize ->
@@ -1823,7 +1827,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dabPreviewOk && abrBrushesOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dabPreviewOk && abrBrushesOk && brushLibraryFileOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

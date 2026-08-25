@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "app/BrushLibraryFile.hpp"
+#include "app/BrushRowIcon.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CompPanel.hpp"
 #include "app/ControlsLayout.hpp"
@@ -3171,71 +3173,362 @@ void drawLinkEditor(AppState& st) {
 // the preset on the way out -- would mean a brush silently becoming whatever
 // it was last nudged into, which is the failure mode that makes people stop
 // trusting a library.
-void drawBrushLibrarySection(AppState& st) {
+//
+// **Imported `.abr` libraries (app/BrushLibraryFile.hpp) are drawn by exactly
+// the same row code as the built-ins**, under a header carrying the file's
+// name, its status and its remove button. That the two kinds of row are one
+// code path is the point: a remembered library's rows are drawn from seven
+// cached numbers with its `.abr` unread, and if they were drawn by a second,
+// simpler path the difference between "loaded" and "not loaded yet" would show
+// up as a visual difference the user has to learn to read.
+//
+// The three things this pane owns that the model beneath it cannot:
+//
+//   1. **The `+`**, which opens the one typed-path modal this build has (see
+//      `requestBrushLibraryImport()` below).
+//   2. **The click that is a first use.** `useLibrary()` is called before
+//      `lib.active` moves, and `lib.active` moves only on success -- so the
+//      pane cannot reach a state where a row is selected and its parameters
+//      have not been read. app/BrushLibraryFile.hpp §5.
+//   3. **Saying so when that read fails.** A failed load leaves the row where
+//      it is, names the file in the line under the list, and offers Retry and
+//      Remove. Not a silent no-op, which is what a row that just does nothing
+//      when clicked would be.
+//
+// Every mutation is deferred to after the row loop. `useLibrary()` and
+// `unload()` both rewrite `lib.presets`, and the loop is walking a snapshot
+// of it -- acting in place would leave the rest of this frame's rows reading
+// indices into a vector that had moved under them.
+
+// The pane's own status line: what the last import, use or unload said. Widget
+// state, so a file-local global rather than a field on AppState, exactly as
+// `g_docStatus` is -- and separate from `g_docStatus` because a brush message
+// must not be wiped by the next document operation, nor wipe one.
+std::string g_brushLibraryStatus;
+// The per-brush report io/AbrBrushes produced for the last library read (PRD
+// G9), shown behind a disclosure rather than in the status line: it is one
+// line per brush that lost something, and a twelve-brush pack can produce
+// twelve of them.
+std::vector<std::string> g_brushLibraryNotes;
+
+// Defined with the document dialogs further down this file (search
+// `DocPathAction`). Declared here because the BRUSH LIBRARY pane is drawn
+// above that block and **must not grow a path-entry UI of its own** -- there
+// is exactly one typed-path modal in this build and this is how a third caller
+// reaches it.
+void requestBrushLibraryImport();
+
+// The hover preview, and the whole of this pane's answer to "cache an icon".
+//
+// One `DabPreviewCache` and one `DabPreviewTexture` for the entire list, not
+// one per row, because **only one row is hovered at a time**. The comment this
+// replaced weighed a per-row thumbnail and rejected it on exactly this ground
+// -- "N images means either N GPU textures or one atlas plus a per-row UV
+// rect" -- and that objection still stands for a thumbnail *in* every row. It
+// does not stand for one image beside the row the pointer is on.
+//
+// The rows themselves keep the bar, and that part of the old decision is
+// unchanged and still right: at 18 px a hardness-0.12 dab is an indistinct
+// smudge while the bar still says "long and thin" legibly.
+//
+// What makes this worth the two globals is imported brushes. "Round Bristle
+// 03" is a name whose brush you already know; "Kyle's Inker 7" is not, and a
+// pack arrives twelve of those at a time. **And the preview draws from the
+// cached row, so it works on a library whose `.abr` has not been read** --
+// which is the feature: you can see what a brush looks like before paying to
+// load the pack it is in.
+DabPreviewCache g_rowPreview;
+DabPreviewTexture g_rowPreviewTexture;
+
+// One row of the list. Everything except the click handling, which differs
+// between a loaded preset and a cached one and is done by the caller.
+void drawBrushRowGlyph(const BrushRow& row, bool isActive, bool dimmed) {
+  // The tip's proportions, at a glance: a bar whose length tracks the radius
+  // and whose height tracks roundness. It is deliberately an obvious
+  // abstraction rather than a fake dab, so it cannot be mistaken for one --
+  // the real dab is the hover preview above.
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  constexpr float kSwatchW = 40.0f, kSwatchH = 18.0f;
+  const float frac = std::clamp(row.radius / 60.0f, 0.08f, 1.0f);
+  const float h = std::max(2.0f, kSwatchH * row.roundness);
+  dl->AddRectFilled(ImVec2(o.x, o.y + (kSwatchH - h) * 0.5f),
+                    ImVec2(o.x + kSwatchW * frac, o.y + (kSwatchH + h) * 0.5f),
+                    atelierToken(isActive ? kAccent : (dimmed ? kDivider : kTextSecondary)));
+  ImGui::Dummy(ImVec2(kSwatchW, kSwatchH));
+  ImGui::SameLine();
+}
+
+// The hovered row's dab, in a tooltip, over the text that names the brush.
+void drawBrushRowTooltip(AppState& st, GpuContext& gpu, const MixboxLut& lut,
+                         const BrushPaneRow& r, const BrushLibrary& lib, bool edited) {
+  const bool loaded = r.presetIndex != kNoPresetIndex;
+  // A loaded preset previews its real pressure family, through the same
+  // `dabPreviewTipsFor()` the BRUSH EDITOR uses; a cached row previews at
+  // neutral dynamics, because its dynamics are exactly the half that has not
+  // been read (app/BrushLibraryFile.hpp §4).
+  const std::array<BrushTip, kDabPreviewCells> tips =
+      loaded ? brushPresetIconTips(lib.presets[r.presetIndex], st.brush, lut)
+             : brushRowIconTips(r.row, st.brush, lut);
+  const DabPreviewImage& img = g_rowPreview.imageFor(tips);
+  const WGPUTextureView view = g_rowPreviewTexture.viewFor(gpu, img, g_rowPreview.generation());
+
+  ImGui::BeginTooltip();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  const float w = static_cast<float>(img.width);
+  const float h = static_cast<float>(img.height);
+  if (view != nullptr) {
+    dl->AddImage(reinterpret_cast<ImTextureID>(view), o, ImVec2(o.x + w, o.y + h));
+  } else {
+    // No adapter, or a texture that could not be made. Say so with a filled
+    // rectangle rather than a gap, for drawTipPreview()'s reason: a gap reads
+    // as "this brush deposits nothing".
+    dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), atelierToken(kChromeDeep));
+  }
+  dl->AddRect(o, ImVec2(o.x + w, o.y + h), atelierToken(kDivider), 0.0f, 0, kDividerThickness);
+  ImGui::Dummy(ImVec2(w, h));
+
+  ImGui::Text("%s", r.row.name.c_str());
+  ImGui::TextDisabled("radius %.0f px, spacing %.2f r, %u link%s", r.row.radius, r.row.spacing,
+                      r.row.linkCount, r.row.linkCount == 1 ? "" : "s");
+  if (!loaded) {
+    // The honest limit, said where it is noticed rather than only in a header.
+    if (r.row.linkCount > 0)
+      ImGui::TextDisabled(
+          "Not loaded yet -- shown without its %u dynamics. Click to read the library.",
+          r.row.linkCount);
+    else
+      ImGui::TextDisabled("Not loaded yet. Click to read the library.");
+  }
+  if (loaded && r.presetIndex == lib.active && edited)
+    ImGui::TextDisabled("Edited -- picking another brush discards it.");
+  ImGui::EndTooltip();
+}
+
+// Write the preferences file, and say so only when it fails.
+//
+// Called after anything that changes what should come back next launch. The
+// cost is a few hundred bytes rewritten; `RecentDocuments` is saved on the
+// same footing after every document operation, and this file is smaller.
+//
+// **Not called when there is nothing to remember.** A user who never imports a
+// library should not have this application create a settings file, let alone a
+// settings directory, because they clicked a built-in brush.
+void saveBrushLibraries(AppState& st) {
+  if (st.brushLibraries.libraries().empty()) return;
+  std::string err;
+  if (!st.brushLibraries.saveToFile(defaultBrushLibraryFilePath(), st.brush.brushLibrary, &err))
+    g_brushLibraryStatus = err;
+}
+
+void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   BrushLibrary& lib = st.brush.brushLibrary;
   const bool edited = brushIsEdited(st.brush);
 
-  for (size_t i = 0; i < lib.presets.size(); ++i) {
-    const BrushPreset& p = lib.presets[i];
-    ImGui::PushID(static_cast<int>(i));
-    const bool isActive = i == lib.active;
+  // **The preferences, on the first frame this pane is drawn -- and nothing
+  // else.** `recentDocumentsLoaded` above does the same for the same reason
+  // (PRD A2, ADR-0001: a file nobody asked for costs nothing). This reads a
+  // few hundred bytes of text and `stat()`s each remembered library; it opens
+  // no `.abr`.
+  if (!st.brushLibrariesLoaded) {
+    st.brushLibrariesLoaded = true;
+    std::string err;
+    if (!st.brushLibraries.loadFromFile(defaultBrushLibraryFilePath(), lib, &err) &&
+        !err.empty())
+      g_brushLibraryStatus = err;
+  }
 
-    // The tip's proportions, at a glance: a bar whose length tracks the
-    // radius and whose height tracks roundness. It is deliberately an obvious
-    // abstraction rather than a fake dab, so it cannot be mistaken for one.
-    //
-    // **It stays a bar even though there is now a real dab rasteriser**
-    // (`app/DabPreview`, drawn by the BRUSH EDITOR one section below), and
-    // that is a decision rather than an omission:
-    //
-    //   * At row height a real dab is *less* informative than the bar. The
-    //     `Flat Wash` preset is hardness 0.12 -- at 18 px its falloff occupies
-    //     about two texels and it renders as an indistinct smudge, while the
-    //     bar still says "long and thin" legibly. A thumbnail that is too
-    //     small to read is not a preview, it is texture.
-    //   * The question this pane answers is "which brush", and the answer is
-    //     the name. The question "what does this brush do" is answered one
-    //     section down, by the preview, against the *live* brush -- and
-    //     picking a row calls `applyPresetToBrush()`, so it updates in the
-    //     same frame the row is clicked.
-    //   * The cost of the alternative, stated so it can be weighed rather
-    //     than guessed at: one rasterisation per preset per invalidation.
-    //     Per-preset that is `radius x radius`-bounded work over a 24 px
-    //     thumbnail -- 576 texels, ~2.3k for the four shipped presets, which
-    //     is nothing. What is *not* nothing is the machinery around it: N
-    //     images means either N GPU textures or one atlas plus a per-row UV
-    //     rect, and a per-preset cache keyed on the preset's own fields
-    //     (which are not a `BrushTip` -- a preset has no pigment, so a
-    //     thumbnail would have to invent a colour for it). That is a second
-    //     cache and a second key for a row a user glances at.
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 o = ImGui::GetCursorScreenPos();
-    constexpr float kSwatchW = 40.0f, kSwatchH = 18.0f;
-    const float frac = std::clamp(p.radius / 60.0f, 0.08f, 1.0f);
-    const float h = std::max(2.0f, kSwatchH * p.roundness);
-    dl->AddRectFilled(ImVec2(o.x, o.y + (kSwatchH - h) * 0.5f),
-                      ImVec2(o.x + kSwatchW * frac, o.y + (kSwatchH + h) * 0.5f),
-                      atelierToken(isActive ? kAccent : kTextSecondary));
-    ImGui::Dummy(ImVec2(kSwatchW, kSwatchH));
+  // --- The `+` ------------------------------------------------------------
+  //
+  // At the top of the pane rather than on the CollapsingHeader itself: the
+  // header is emitted by the generic section loop below, and putting a button
+  // in it would mean either a per-section exception in that loop or a button
+  // on every section. One row here costs the same 18 px and belongs to this
+  // pane alone.
+  if (ImGui::SmallButton("+")) requestBrushLibraryImport();
+  ImGui::SameLine();
+  ImGui::TextDisabled("Import a Photoshop .abr library");
+  if (ImGui::IsItemHovered() || ImGui::IsItemClicked())
+    ImGui::SetTooltip(
+        "Imports the brush PARAMETERS -- size, spacing, roundness, angle and the whole\n"
+        "dynamics graph. Sampled bitmap tips are not imported: those brushes will behave\n"
+        "like the originals and paint with this application's round tip. The import says\n"
+        "which ones.");
+  ImGui::Separator();
+
+  const std::vector<BrushPaneRow> rows = st.brushLibraries.paneRows(lib);
+
+  // Deferred, because both of these rewrite `lib.presets` and the loop below
+  // is walking a snapshot of it.
+  size_t clickedRow = static_cast<size_t>(-1);
+  uint32_t unloadRequest = 0;
+  uint32_t retryRequest = 0;
+
+  const uint32_t pendingLib = st.brushLibraries.pendingActiveLibrary();
+  const size_t pendingRow = st.brushLibraries.pendingActiveRow();
+
+  const auto drawRow = [&](const BrushPaneRow& r, size_t index) {
+    ImGui::PushID(static_cast<int>(index));
+    const bool loaded = r.presetIndex != kNoPresetIndex;
+    const bool isActive = loaded && r.presetIndex == lib.active;
+    const bool broken = r.status == BrushLibraryStatus::Missing ||
+                        r.status == BrushLibraryStatus::Failed;
+    drawBrushRowGlyph(r.row, isActive, !loaded);
+
+    // The marker for "this is the brush you were on when you quit", which §5
+    // of app/BrushLibraryFile.hpp deliberately does NOT restore -- restoring it
+    // would mean reading a `.abr` during startup. A dot is enough to find the
+    // row again; anything louder would read as an error.
+    std::string label = r.row.name;
+    if (r.libraryId != 0 && r.libraryId == pendingLib && r.rowIndex == pendingRow)
+      label = "\xc2\xb7 " + label;
+
+    if (broken) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    else if (!loaded) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(
+                                                atelierToken(kTextSecondary)));
+    if (ImGui::Selectable(label.c_str(), isActive)) clickedRow = index;
+    if (broken || !loaded) ImGui::PopStyleColor();
+
+    if (ImGui::IsItemHovered()) drawBrushRowTooltip(st, gpu, lut, r, lib, edited);
+    ImGui::PopID();
+  };
+
+  // Built-ins and anything Duplicate made, first and unheaded: they are what
+  // the pane has always listed and they belong to no file.
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (rows[i].libraryId == 0) drawRow(rows[i], i);
+
+  // Then one group per imported library.
+  for (const RememberedLibrary& entry : st.brushLibraries.libraries()) {
+    ImGui::PushID(static_cast<int>(entry.id) + 0x40000);
+    ImGui::Separator();
+    pushAtelierMono();
+    ImGui::TextUnformatted(entry.displayName().c_str());
+    popAtelierMono();
     ImGui::SameLine();
+    ImGui::TextDisabled("%zu | %s", entry.rows.size(), brushLibraryStatusName(entry.status));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entry.path.c_str());
 
-    if (ImGui::Selectable(p.name.c_str(), isActive)) {
-      if (i != lib.active) {
-        lib.active = i;
-        applyPresetToBrush(p, st.brush);
-      }
-    }
-    if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("%s\nradius %.0f px, spacing %.2f r, %zu link%s%s", p.name.c_str(),
-                        p.radius, p.spacing, p.links.links.size(),
-                        p.links.links.size() == 1 ? "" : "s",
-                        (isActive && edited) ? "\n\nEdited -- picking another brush discards it."
-                                             : "");
+    ImGui::SameLine();
+    // Remove, at the right of the group's own header, so it is unambiguous
+    // *which* library it removes -- a Remove button in the pane's footer would
+    // act on whatever happened to be selected.
+    if (ImGui::SmallButton("Remove")) unloadRequest = entry.id;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Removes this library's brushes and forgets it. Brushes you made\n"
+                        "with Duplicate are yours and stay.");
+    if (entry.status == BrushLibraryStatus::Missing ||
+        entry.status == BrushLibraryStatus::Failed) {
+      ImGui::SameLine();
+      // The recovery path for a library whose file has gone. Clicking any of
+      // its rows retries too; this exists so the action is visible without
+      // having to guess that a click would do anything.
+      if (ImGui::SmallButton("Retry")) retryRequest = entry.id;
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+      ImGui::TextWrapped("%s", entry.failure.c_str());
+      ImGui::PopStyleColor();
+    } else if (entry.status == BrushLibraryStatus::Stale) {
+      ImGui::TextDisabled("The file has changed since these were listed; picking one re-reads it.");
     }
     ImGui::PopID();
+
+    for (size_t i = 0; i < rows.size(); ++i)
+      if (rows[i].libraryId == entry.id) drawRow(rows[i], i);
+  }
+
+  // --- The deferred mutations --------------------------------------------
+
+  if (clickedRow < rows.size()) {
+    const BrushPaneRow r = rows[clickedRow];
+    if (r.presetIndex != kNoPresetIndex) {
+      if (r.presetIndex != lib.active) {
+        lib.active = r.presetIndex;
+        applyPresetToBrush(lib.presets[r.presetIndex], st.brush);
+        st.brushLibraries.clearPendingActive();
+        saveBrushLibraries(st);
+      }
+    } else {
+      // **First use** (app/BrushLibraryFile.hpp §5). The load happens first and
+      // `lib.active` moves only if it succeeded, which is what makes "a row is
+      // selected but its parameters have not loaded" unreachable.
+      const BrushLibraryLoadResult loadResult =
+          st.brushLibraries.useLibrary(r.libraryId, lib);
+      g_brushLibraryStatus = loadResult.status;
+      g_brushLibraryNotes = loadResult.notes;
+      if (loadResult.ok) {
+        // Find the row again now that the presets exist. Re-derived rather
+        // than assumed to be at `presets.size() - count + rowIndex`: a re-read
+        // of a changed file can hold a different number of brushes, and
+        // arithmetic that assumed otherwise would select the wrong one.
+        const std::vector<BrushPaneRow> after = st.brushLibraries.paneRows(lib);
+        size_t landed = kNoPresetIndex;
+        size_t lastOfLibrary = kNoPresetIndex;
+        for (const BrushPaneRow& a : after) {
+          if (a.libraryId != r.libraryId || a.presetIndex == kNoPresetIndex) continue;
+          lastOfLibrary = a.presetIndex;
+          if (a.rowIndex == r.rowIndex) landed = a.presetIndex;
+        }
+        if (landed == kNoPresetIndex && lastOfLibrary != kNoPresetIndex) {
+          // The file lost brushes since its rows were cached, and the one that
+          // was clicked is one of them. The last brush of the library is a
+          // real, deliberate landing place; saying nothing and leaving the
+          // selection where it was would look like the click missed.
+          landed = lastOfLibrary;
+          g_brushLibraryStatus +=
+              " -- the brush that was listed here is no longer in the file; selected the "
+              "last one instead.";
+        }
+        if (landed != kNoPresetIndex) {
+          lib.active = landed;
+          applyPresetToBrush(lib.presets[landed], st.brush);
+        }
+        st.brushLibraries.clearPendingActive();
+        saveBrushLibraries(st);
+      }
+      // On a failure: `lib.active` has not moved and `st.brush` has not been
+      // touched, so nothing became something else. `g_brushLibraryStatus`
+      // names the file and the group above now draws Retry beside it.
+    }
+  }
+
+  if (retryRequest != 0) {
+    const BrushLibraryLoadResult r = st.brushLibraries.useLibrary(retryRequest, lib);
+    g_brushLibraryStatus = r.status;
+    g_brushLibraryNotes = r.notes;
+    if (r.ok) saveBrushLibraries(st);
+  }
+
+  if (unloadRequest != 0) {
+    std::string message;
+    st.brushLibraries.unload(unloadRequest, lib, &message);
+    g_brushLibraryStatus = message;
+    g_brushLibraryNotes.clear();
+    // Written unconditionally, including down to an empty list: the whole
+    // point of Remove is that the library does not come back next launch, and
+    // skipping the write when the list empties is how the last unload would
+    // silently fail to stick.
+    std::string err;
+    if (!st.brushLibraries.saveToFile(defaultBrushLibraryFilePath(), lib, &err))
+      g_brushLibraryStatus = err;
   }
 
   ImGui::Separator();
+  if (!g_brushLibraryStatus.empty()) {
+    ImGui::TextWrapped("%s", g_brushLibraryStatus.c_str());
+    if (!g_brushLibraryNotes.empty()) {
+      // PRD G9's report. Collapsed, because it is one line per brush that lost
+      // something and a twelve-brush pack can produce twelve -- but present,
+      // because "the imported brush does less than the original" is exactly
+      // what an import must not do quietly.
+      if (ImGui::TreeNode("What the import could not bring across")) {
+        for (const std::string& note : g_brushLibraryNotes)
+          ImGui::BulletText("%s", note.c_str());
+        ImGui::TreePop();
+      }
+    }
+  }
+
   if (ImGui::Button("Duplicate")) {
     // From the LIVE brush, not from the stored preset: duplicating is the
     // sanctioned way to keep an edit without overwriting what it came from,
@@ -3251,15 +3544,29 @@ void drawBrushLibrarySection(AppState& st) {
   ImGui::SameLine();
   // Never the last one: a library with no rows has nothing to pick, and the
   // live brush would be left pointing at an index that does not exist.
-  ImGui::BeginDisabled(lib.presets.size() <= 1);
+  //
+  // **And never one that belongs to an imported library.** A library's rows
+  // are a cache of what its `.abr` contains; deleting one brush out of a pack
+  // would leave the cache describing a preset list that no longer exists, and
+  // the next launch would bring the brush back from the file anyway -- a
+  // delete that appears to work and silently undoes itself. Remove takes the
+  // whole library; Duplicate is how one brush from it is kept.
+  const bool activeIsImported =
+      lib.active < lib.presets.size() && lib.presets[lib.active].libraryId != 0;
+  ImGui::BeginDisabled(lib.presets.size() <= 1 || activeIsImported);
   if (ImGui::Button("Delete")) {
     if (lib.active < lib.presets.size()) {
       lib.presets.erase(lib.presets.begin() + static_cast<std::ptrdiff_t>(lib.active));
       if (lib.active >= lib.presets.size()) lib.active = lib.presets.size() - 1;
       applyPresetToBrush(lib.presets[lib.active], st.brush);
+      saveBrushLibraries(st);
     }
   }
   ImGui::EndDisabled();
+  if (activeIsImported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip(
+        "This brush belongs to an imported library, which mirrors its file.\n"
+        "Duplicate it to keep a copy of your own, or Remove the whole library.");
 
   if (edited) {
     pushAtelierMono();
@@ -3281,7 +3588,16 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
       ImGui::SameLine();
       ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)), "EDITED");
     }
-    ImGui::BeginDisabled(!edited);
+    // **Save is refused on a brush that belongs to an imported library**, for
+    // drawBrushLibrarySection()'s Delete reason and one more: this build does
+    // not write `.abr` files, so there is nowhere for the edit to go. Kept as
+    // a shadow edit it would survive until the next launch and then be
+    // silently replaced by what the file says -- work lost with no message.
+    // Duplicate takes one click and produces a preset the user owns, which is
+    // where an edit belongs. Revert stays enabled: throwing an edit away needs
+    // no file.
+    const bool fromLibrary = lib.presets[lib.active].libraryId != 0;
+    ImGui::BeginDisabled(!edited || fromLibrary);
     // Save overwrites the preset with what is on screen; Revert throws the
     // edit away. Both are disabled when there is no edit, so neither is a
     // button that does nothing.
@@ -3289,7 +3605,14 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
       lib.presets[lib.active] =
           presetFromBrush(lib.presets[lib.active].name, st.brush);
     }
+    ImGui::EndDisabled();
+    if (fromLibrary && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip(
+          "'%s' came from an imported .abr, and this build does not write .abr files.\n"
+          "Duplicate keeps your version as a brush of your own.",
+          lib.presets[lib.active].name.c_str());
     ImGui::SameLine();
+    ImGui::BeginDisabled(!edited);
     if (ImGui::Button("Revert")) applyPresetToBrush(lib.presets[lib.active], st.brush);
     ImGui::EndDisabled();
     ImGui::Separator();
@@ -4541,7 +4864,15 @@ void drawExportStatesDialog(AppState& st) {
 // thing that has to be replaced when a real panel arrives, for no benefit
 // today. The modal's verb, its pre-fill and the status it leaves behind are
 // the only things that vary by action, and each of those is one line.
-enum class DocPathAction { None, Open, SaveAs, SaveCopy, ImportImage };
+//
+// **`ImportBrushes` is the third caller**, and it is here rather than in the
+// BRUSH LIBRARY pane for exactly the reason `ImportImage` is: the `+` in that
+// pane needs a path from the user, and there is one place in this build that
+// asks for one. It is the odd one out in this enum in that it touches no
+// document at all -- it reads a `.abr` into the application's brush library --
+// which is why `applyDocumentPathAction()` returns from its case rather than
+// falling into the `DocumentOpResult` tail below.
+enum class DocPathAction { None, Open, SaveAs, SaveCopy, ImportImage, ImportBrushes };
 
 bool g_docPathRequested = false;
 DocPathAction g_docPathAction = DocPathAction::None;
@@ -4557,6 +4888,14 @@ std::string g_docStatus;
 // says the thing the modal actually needs to know, and cannot be broken by a
 // future action wording its success differently.
 bool g_docPathActionOk = false;
+
+// Forward-declared up beside the BRUSH LIBRARY pane, which is drawn earlier in
+// this file. Sets the same two globals File > Open does, so the `+` cannot
+// end up with a second modal of its own.
+void requestBrushLibraryImport() {
+  g_docPathAction = DocPathAction::ImportBrushes;
+  g_docPathRequested = true;
+}
 
 void applyDocumentPathAction(AppState& st, DocPathAction action, const std::string& path) {
   OpenDocument* doc = st.documents.active();
@@ -4598,6 +4937,41 @@ void applyDocumentPathAction(AppState& st, DocPathAction action, const std::stri
       // refused save does, rather than dropping the user back to the canvas
       // with the one thing they needed to read sitting one line high beside the
       // menus.
+      g_docPathActionOk = imported.ok;
+      return;
+    }
+    case DocPathAction::ImportBrushes: {
+      // **No document is required**, unlike every other case here: a brush
+      // library belongs to the application, not to a canvas. Importing one
+      // with nothing open is a perfectly reasonable thing to do before
+      // starting a drawing.
+      //
+      // The preferences file may not have been read yet -- it is read on the
+      // first frame the BRUSH LIBRARY pane draws, and this can be reached from
+      // the menu bar with that pane collapsed. Reading it here first is what
+      // stops an import from writing a file that has forgotten every library
+      // the user already had.
+      if (!st.brushLibrariesLoaded) {
+        st.brushLibrariesLoaded = true;
+        std::string loadErr;
+        (void)st.brushLibraries.loadFromFile(defaultBrushLibraryFilePath(),
+                                             st.brush.brushLibrary, &loadErr);
+      }
+      const BrushLibraryLoadResult imported =
+          st.brushLibraries.importFile(path, st.brush.brushLibrary);
+      g_docStatus = imported.status;
+      g_brushLibraryStatus = imported.status;
+      g_brushLibraryNotes = imported.notes;
+      if (imported.ok) {
+        std::string saveErr;
+        if (!st.brushLibraries.saveToFile(defaultBrushLibraryFilePath(), st.brush.brushLibrary,
+                                          &saveErr))
+          g_docStatus += "\n! " + saveErr;
+      }
+      // Same contract as the image import above: a refusal keeps the dialog up
+      // with the reason under the text field rather than dropping the user
+      // back to the canvas with the one thing they needed to read sitting one
+      // line high beside the menus.
       g_docPathActionOk = imported.ok;
       return;
     }
@@ -4793,7 +5167,8 @@ void drawDocumentDialogs(AppState& st) {
     // the open document's own `.npaint` path as the image to import is not a
     // useful starting point, and one careless Return away from a refusal that
     // names the wrong mistake. It starts empty instead.
-    if (g_docPathAction == DocPathAction::ImportImage) {
+    if (g_docPathAction == DocPathAction::ImportImage ||
+        g_docPathAction == DocPathAction::ImportBrushes) {
       pathBuf[0] = '\0';
     } else if (const OpenDocument* d = st.documents.active()) {
       std::snprintf(pathBuf, sizeof(pathBuf), "%s", d->path.c_str());
@@ -4801,15 +5176,20 @@ void drawDocumentDialogs(AppState& st) {
     ImGui::OpenPopup("Document path");
   }
   if (ImGui::BeginPopupModal("Document path", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    const char* verb = g_docPathAction == DocPathAction::Open        ? "Open"
-                       : g_docPathAction == DocPathAction::SaveAs    ? "Save As"
-                       : g_docPathAction == DocPathAction::SaveCopy  ? "Save a Copy"
-                                                                    : "Import Image";
+    const char* verb = g_docPathAction == DocPathAction::Open          ? "Open"
+                       : g_docPathAction == DocPathAction::SaveAs      ? "Save As"
+                       : g_docPathAction == DocPathAction::SaveCopy    ? "Save a Copy"
+                       : g_docPathAction == DocPathAction::ImportImage ? "Import Image"
+                                                                      : "Import Brushes";
     ImGui::Text("%s", verb);
     if (g_docPathAction == DocPathAction::SaveCopy)
       ImGui::TextDisabled("Writes elsewhere; this document stays bound to its own file.");
     if (g_docPathAction == DocPathAction::ImportImage)
       ImGui::TextDisabled("Adds the image to this document as a new RGB layer, on top.");
+    if (g_docPathAction == DocPathAction::ImportBrushes)
+      ImGui::TextDisabled(
+          "A Photoshop .abr library. Its brushes join the BRUSH LIBRARY pane and are\n"
+          "remembered for next launch; the file itself is re-read only when one is picked.");
     ImGui::SetNextItemWidth(480.0f);
     ImGui::InputText("Path", pathBuf, sizeof(pathBuf));
     if (ImGui::Button(verb)) {
@@ -5693,7 +6073,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         case ControlsSection::Color:     drawColorSection(st); break;
         // Two panes, because picking a brush and authoring one are
         // different acts (drawBrushLibrarySection()'s own comment).
-        case ControlsSection::BrushLibrary: drawBrushLibrarySection(st); break;
+        // `gpu` and `lut` for the hover preview alone, which is a real
+        // rasterised dab in a real texture -- the same pair, for the same
+        // reason, that the BRUSH EDITOR below takes.
+        case ControlsSection::BrushLibrary: drawBrushLibrarySection(st, gpu, lut); break;
         // `gpu` and `lut` for the TIP PREVIEW alone: the preview is a real
         // rasterised dab in a real texture, so this section needs the device
         // (to upload it) and the LUT (because `brushTipFor()` resolves the

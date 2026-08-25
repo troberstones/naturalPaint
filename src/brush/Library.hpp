@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,35 @@ namespace np {
 // the editor's own cell selection (UI state).
 struct BrushPreset {
   std::string name;
+
+  // Which imported `.abr` library this preset came from, or 0 for the four
+  // built-ins and for anything the user made with Duplicate.
+  //
+  // **An id, not an index and not a path**, and both halves of that are load
+  // bearing (app/BrushLibraryFile.hpp §4):
+  //
+  //   * Not an index into the loaded-library list, because unloading a library
+  //     shifts every later index down by one -- so the presets of the library
+  //     *after* the one that was unloaded would silently start claiming to
+  //     belong to the one before it, and the next unload would delete the
+  //     wrong brushes. An id is minted once per import and never reused within
+  //     a session, so nothing can be mistaken for anything else.
+  //   * Not the source path, which is 60-200 bytes repeated across every
+  //     preset of a pack, has to be rewritten on every relocation, and would
+  //     make two libraries imported from the same file indistinguishable. The
+  //     path lives once, on the library record.
+  //
+  // **0 for a Duplicate is deliberate, not an oversight.** `presetFromBrush()`
+  // leaves this at its default, so duplicating an imported brush produces a
+  // preset the user owns -- and unloading the library it was copied from does
+  // not take the copy with it. That is the only way to keep a brush from a
+  // pack you are about to remove, and --selftest asserts it.
+  //
+  // Deliberately NOT compared by `presetMatches()` below: where a preset came
+  // from is not part of what makes a brush that brush, and the EDITED badge
+  // must not trip because of it.
+  uint32_t libraryId = 0;
+
   float radius = 20.0f;
   float hardness = 0.35f;
   float spacing = 0.25f;
