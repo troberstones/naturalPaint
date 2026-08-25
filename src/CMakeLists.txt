@@ -103,6 +103,7 @@ add_executable(naturalPaint
   app/selftest/SelectionRefine.cpp
   app/selftest/SelectionShapes.cpp
   app/selftest/SelectionTools.cpp
+  app/selftest/SelectMenu.cpp
   app/selftest/Shaper.cpp
   app/selftest/StrokeBridge.cpp
   app/selftest/StrokeSpeed.cpp

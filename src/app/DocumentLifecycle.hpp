@@ -254,6 +254,35 @@ struct OpenDocument {
   // to be reclaimed, the place to do it is here and not in the tile store.
   std::optional<Selection> lastDeselected;
 
+  // PRD E4/E8/E9's five selection-refine operations -- grow, shrink,
+  // feather, colour range, luminance range (docs/reachability-audit.md C5) --
+  // change only `selection`, never a pixel. `recordEdit()` is the wrong route
+  // for them: `core::HistoryEntry` holds nothing but a `core::Document`
+  // (core/History.hpp), by the identical deliberate choice `selection`'s own
+  // comment above makes for the identical reason -- folding a selection into
+  // core::History would make the History panel show a step with no pixel
+  // change, and would make an ordinary pixel Undo silently revert a selection
+  // drawn afterwards, which is precisely the surprise that comment says an
+  // editor must not produce.
+  //
+  // So a refine gets its own undo, in the same shape `lastDeselected` above
+  // already uses for Reselect but as a stack rather than one slot: unlike a
+  // deselect, which undoes one specific gesture, a refine can be applied
+  // repeatedly (grow, then grow again), and each application is a separate,
+  // nameable step the way core::History's own entries are. `ui::
+  // installRefinedSelection()` (ui/MacPaintUI.hpp) is the only function that
+  // pushes here, and `ui::undoLastRefine()` the only one that pops.
+  //
+  // `std::optional` because the state a refine replaces may legitimately be
+  // "no selection": colour range and luminance range need no selection
+  // engaged to run at all (core/SelectionRefine.hpp PRD E9 -- they sample the
+  // layer's pixels, not an existing Selection), so the very first refine
+  // applied to a document with nothing selected pushes `std::nullopt`, and
+  // undoing it must restore that absence exactly rather than inventing an
+  // empty-but-engaged selection, which core/SelectionMask.hpp is explicit is
+  // a different state.
+  std::vector<std::optional<Selection>> refineUndoStack;
+
   // Bumped whenever `selection` changes. ui/MacPaintUI caches the selection's
   // drawn bounds against this, and PaintSim's GPU coverage upload is keyed on
   // it too -- both are expensive enough that "has it changed?" needs an O(1)

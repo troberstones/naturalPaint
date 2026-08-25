@@ -1854,6 +1854,12 @@ int main(int argc, char** argv) {
     // so a backend wired to Cocoa's `terminate:` -- which would route straight
     // past the guard runQuitGuardTest() covers -- cannot pass.
     const bool menuModelOk = np::runMenuModelTest();
+    // The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9): the
+    // dialog-to-engine wiring for grow, shrink, feather, colour range and
+    // luminance range, plus the dedicated undo stack a pure-selection change
+    // needs because core::History cannot hold one. Headless -- no window, no
+    // GPU, no ImGui context.
+    const bool selectMenuOk = np::runSelectMenuTest();
     // app/OpenAnyFile and io/FileKind: File > Open takes any file this build
     // reads, and which reader it goes to is decided from the file's **bytes**
     // rather than its extension -- a `.npaint` is an OpenEXR carrying
@@ -1890,7 +1896,7 @@ int main(int argc, char** argv) {
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
-                    quitGuardOk && menuModelOk && openAnyFileOk;
+                    quitGuardOk && menuModelOk && selectMenuOk && openAnyFileOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

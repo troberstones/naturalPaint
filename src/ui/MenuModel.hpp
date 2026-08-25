@@ -135,6 +135,39 @@ enum class MenuAction : uint16_t {
   LayerCommandItem,     // family: param = index into app::allLayerCommands()
   LayerSetCommandItem,  // family: param = index into core::allLayerSetCommands()
 
+  // --- Select ---------------------------------------------------------------
+  //
+  // docs/reachability-audit.md C5: five engines (PRD E4/E8's grow, shrink and
+  // feather; PRD E9's colour range and luminance range) proven only by
+  // `--selftest`, because there was no Select menu to reach them from. Select
+  // All / Deselect / Reselect / Invert are NOT here -- they are the Edit
+  // menu's (this codebase already dispatches them through
+  // `AppState::requestSelectAll` &c., ui/MacPaintUI.cpp's "selection and
+  // clipboard commands" block), and duplicating them in a second menu would
+  // give a user two places that could disagree about what is selected.
+  //
+  // Each of the five opens a small modal (a radius, or a colour/band plus
+  // tolerance) rather than acting immediately -- unlike Invert, which has
+  // nothing to ask the user and needs no dialog.
+  SelectGrow,
+  SelectShrink,
+  SelectFeather,
+  SelectColourRange,
+  SelectLuminanceRange,
+
+  // Pops one entry off `OpenDocument::refineUndoStack` (app/DocumentLifecycle.hpp).
+  // **Deliberately not routed through core::History's Undo/Redo pair.**
+  // `core::HistoryEntry` holds nothing but a `core::Document`
+  // (core/History.hpp), by the same deliberate choice `OpenDocument::selection`'s
+  // own comment makes for the identical reason: a selection is session state,
+  // not document data, and folding it into the pixel history would make the
+  // History panel show a step with no pixel change, and would make an
+  // ordinary pixel Undo silently revert a selection drawn afterwards. The
+  // five operations above change only the selection, so they get their own
+  // one-entry-per-op undo instead, in the same shape `lastDeselected` already
+  // uses for Reselect.
+  SelectUndoRefine,
+
   // --- Medium / Goodies ---------------------------------------------------
   PaintModeItem,        // family: param = the PaintMode's integer value
   ToolItem,             // family: param = the Tool's integer value
@@ -399,6 +432,28 @@ struct MenuContext {
   std::vector<MenuFamilyEntry> layerCommands;
   std::string layerSelectionNote;    // "2 layer(s) selected, some hidden by the filter"
   std::vector<MenuFamilyEntry> layerSetCommands;
+
+  // --- Select ---------------------------------------------------------------
+  //
+  // Three bools, not a `const Document*` or a `const Selection*` -- this
+  // file's own header explains why (a snapshot the native backend reads
+  // later must not be a pointer into something a user can close first).
+  //
+  // Grow, shrink and feather all take a `const Selection&`
+  // (core/SelectionRefine.hpp, ops/Feather.hpp) -- not a `const Selection*`
+  // -- so there is no way to hand them "no restriction" (`std::nullopt`).
+  // They need an ENGAGED selection to move.
+  bool hasEngagedSelection = false;
+
+  // Colour range and luminance range take a `const TileStore&` -- the active
+  // layer's own pixels -- and no `Selection` at all (PRD E9: "it takes a
+  // colour, not a seed coordinate"). They need an RGB layer to sample, and
+  // need no selection already drawn.
+  bool hasRgbSource = false;
+
+  // `MenuAction::SelectUndoRefine` -- see that enumerator's own comment for
+  // why this is a separate stack from core::History's Undo/Redo.
+  bool hasRefineUndo = false;
 
   // --- Medium / Goodies ---------------------------------------------------
   std::vector<MenuFamilyEntry> paintModes;

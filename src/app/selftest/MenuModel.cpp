@@ -55,6 +55,15 @@ MenuContext richContext() {
   ctx.tools = {row("Brush", true, true), row("Eraser")};
   ctx.openDocuments = {row("wash.npaint", true, true), row("sketch.npaint *")};
   ctx.hasGuides = true;
+  // docs/reachability-audit.md C5: the Select menu (track7/selectmenu). All
+  // three true, matching this function's own "every menu is populated" rule
+  // -- anything less and Grow/Shrink/Feather/Colour Range/Luminance
+  // Range/Undo Refine would be legitimately absent from the reachable set
+  // rather than merely disabled, which is a different failure from the one
+  // section B below is checking for.
+  ctx.hasEngagedSelection = true;
+  ctx.hasRgbSource = true;
+  ctx.hasRefineUndo = true;
   return ctx;
 }
 
@@ -118,14 +127,25 @@ bool runMenuModelTest() {
 
   std::printf("  -- A. the ids: one action, one spec, and no two the same --\n");
 
-  // **41 is the count of `ImGui::MenuItem()` call sites in the block this
-  // model replaced**, counted rather than taken on trust (the brief that
-  // commissioned this said 43). It is pinned because the number is the only
-  // thing standing between "the extraction is complete" and "the extraction
-  // dropped two items nobody has opened that menu since".
-  check(kMenuActionCount == 41,
-        "ids: exactly 41 actions -- one per MenuItem() call site the extraction "
-        "replaced, so an item lost in a later edit fails here");
+  // **41 was the count of `ImGui::MenuItem()` call sites in the block this
+  // model originally replaced**, counted rather than taken on trust (the
+  // brief that commissioned this said 43). It is pinned because the number is
+  // the only thing standing between "the extraction is complete" and "the
+  // extraction dropped two items nobody has opened that menu since".
+  //
+  // **47, not 41, as of docs/reachability-audit.md C5**: track7/selectmenu
+  // added the Select menu's six actions (SelectGrow, SelectShrink,
+  // SelectFeather, SelectColourRange, SelectLuminanceRange,
+  // SelectUndoRefine) atop the original extraction -- a genuinely NEW menu
+  // for engines that had no caller outside `--selftest`, not a second copy of
+  // anything already counted. Any sibling track landing a menu of its own in
+  // the same window (docs/reachability-audit.md C1's Filter, or Select All /
+  // Deselect / Reselect / Invert joining Edit) will need to move this number
+  // again; that is expected, not a regression -- see this section's own
+  // header on why the number is pinned rather than merely printed.
+  check(kMenuActionCount == 41 + 6,
+        "ids: exactly 47 actions -- the original 41-item extraction plus the Select menu's "
+        "six, so an item lost in a later edit (to either) fails here");
 
   {
     std::set<MenuAction> seen;
