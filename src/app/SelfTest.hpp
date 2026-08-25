@@ -984,7 +984,20 @@ bool runAbrBrushesTest();
 // ~/Library/Application Support. Headless and GPU-free.
 bool runBrushLibraryFileTest();
 
-
+// app/UserBrushLibrary: the presets a user made, saved so they are still
+// there tomorrow (PRD G6; reachability-audit.md's A7 -- `BRUSH EDITOR > Save`
+// used to overwrite `lib.presets[lib.active]` in memory and nowhere else).
+// Asserts the round trip a preset actually needs, not the shape of the
+// structs that carry it: a preset with a `BrushLinkSet` comes back with every
+// `Curve` control point at zero tolerance, and a linked preset previews
+// differently from an unlinked one so that round trip cannot be vacuous.
+// Also covers what Save does to a built-in (forks a new preset rather than
+// overwriting one nothing can restore), a durability failure simulated by
+// abandoning a `.tmp` file mid-write, unknown lines from a newer build
+// surviving a save by this one, and that the `.abr` registry (app/
+// BrushLibraryFile) is undisturbed by any of it. `$NP_USER_PRESETS` keeps it
+// out of ~/Library/Application Support. Headless and GPU-free.
+bool runUserBrushLibraryTest();
 
 // Headless, GPU-free check on io/Export (PLAN.md Phase 4 step 1: "Export
 // path -- encode from working space to a chosen target space and bit depth,

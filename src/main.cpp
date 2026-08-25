@@ -1520,6 +1520,11 @@ int main(int argc, char** argv) {
     // the row cache that makes launch pay nothing for them, and unload.
     // Headless and GPU-free.
     const bool brushLibraryFileOk = np::runBrushLibraryFileTest();
+    // app/UserBrushLibrary: the presets a user made, persisted to their own
+    // file (PRD G6, A7) -- the round trip of a full BrushLinkSet, the fork
+    // Save performs on a built-in, and a simulated mid-write crash. Headless
+    // and GPU-free.
+    const bool userBrushLibraryOk = np::runUserBrushLibraryTest();
     // Phase 4 step 1 ("Export path -- encode from working space to a chosen
     // target space and bit depth, explicitly, never silently"; PRD B6, I5,
     // I1): io/Export's flatten -> un-premultiply -> encode -> quantize ->
@@ -1969,7 +1974,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && brushLibraryFileOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

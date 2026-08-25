@@ -57,6 +57,20 @@ struct BrushPreset {
   // must not trip because of it.
   uint32_t libraryId = 0;
 
+  // **True for exactly the four presets `defaultBrushLibrary()` constructs
+  // below, and for nothing else.** app/UserBrushLibrary.hpp needs to tell a
+  // shipped default apart from a preset the user made -- both carry
+  // `libraryId == 0`, so that field alone cannot answer "is this one of mine
+  // to overwrite, or one of the app's to fork from" (PRD G6's Save button).
+  // Not persisted anywhere: it is set here, at construction, by the one
+  // function that builds the four, and every other constructor path
+  // (`presetFromBrush()`, a `.abr` import, a user-presets.txt read) leaves it
+  // at its default `false`, which is the answer every one of those paths
+  // needs. Deliberately absent from `presetMatches()`'s comparison, same as
+  // `libraryId` above: provenance is not part of what makes a brush that
+  // brush, and the EDITED badge must not trip because of it.
+  bool builtin = false;
+
   float radius = 20.0f;
   float hardness = 0.35f;
   float spacing = 0.25f;
