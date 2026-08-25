@@ -1644,6 +1644,17 @@ bool runPigmentLayerTest();
 // configurations.
 bool runPigmentBakeTest();
 
+// track8/solverio, docs/reachability-audit.md's B1: does dried solver paint
+// SAVE? app/selftest/StrokeBridge.cpp already proves the bake reaches a real
+// Pigment layer with one history entry and an exact undo, live on the GPU;
+// this file is the one thing that left untested -- a baked layer run through
+// saveNpaint()/loadNpaint() and compared texel by texel over the whole
+// affected region, plus the one-entry/undo/redo invariants re-checked
+// headless, right next to the round trip they protect. Headless and
+// GPU-free: it calls bakePigmentTileFrom() directly on hand-built solver
+// output rather than driving StrokeBakeCycle through a real PaintSim.
+bool runSolverPersistenceTest();
+
 // The stroke bridge's dirty-and-drying query (PLAN.md roadmap section 11):
 // PaintSim::readTileOccupancy() reduced against a full-field readback of the
 // same fields, so the cheap answer is proven not to under-report the expensive

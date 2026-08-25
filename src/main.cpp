@@ -1263,6 +1263,10 @@ int main(int argc, char** argv) {
     // The solver-to-document mass mapping, the arithmetic half of the
     // stroke bridge. Pure CPU -- it is a claim about numbers.
     const bool pigmentBakeOk = np::runPigmentBakeTest();
+    // docs/reachability-audit.md's B1: does a baked Pigment layer survive
+    // saveNpaint()/loadNpaint()? Pure CPU -- it bakes from hand-built solver
+    // output, same as pigmentBakeOk above, and needs no GPU either.
+    const bool solverPersistenceOk = np::runSolverPersistenceTest();
     const bool strokeBridgeOk = np::runStrokeBridgeTest(gpu);
     // The presentation transfer function, from a linear value in a layer to a
     // byte in a screenshot -- the one edge no section covered, which is why the
@@ -1889,7 +1893,7 @@ int main(int argc, char** argv) {
                     layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
-                    pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
+                    pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
                     quitGuardOk && menuModelOk && openAnyFileOk;
     s->shutdown();
     gpu.shutdown();
