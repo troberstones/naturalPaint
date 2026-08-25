@@ -90,21 +90,34 @@ bool runSolverPersistenceTest() {
   // Two tiles, not one -- "compared texel by texel over the whole affected
   // region, not sampled" needs a region wider than a single tile can prove,
   // since a single-tile bug (a transposed x/y, an off-by-one origin) could
-  // still pass a one-tile test by accident. Every fourth texel is left at
+  // still pass a one-tile test by accident. A regular fraction of texels (a
+  // quarter in the first tile, a fifth in the second -- see below) is left at
   // zero on purpose: bakePigmentTileFrom() must skip texels at or below
   // kBakeMassFloor rather than writing them as (false) transparency, and the
   // round trip through io/ must not manufacture paint where the solver
   // reported none, or erase a floor-texel's neighbours by rounding.
   std::printf("  -- 1. synthetic solver output, the shape a real readback hands the bake --\n");
+  //
+  // **The two tiles differ by their skip MODULUS, not by the seed alone.**
+  // The seed offsets which texels are left at the floor; it cannot change how
+  // many. `(x + y + seed) % 4` walks every residue class exactly as often over
+  // a 128x128 grid whatever the seed is, so seeding alone gives two tiles with
+  // different patterns and identically 12288 populated texels -- and the
+  // assertion below, which exists to make a swapped or transposed tile index
+  // impossible to pass, would then be asserting something the fixture could
+  // never produce. Different moduli make the counts genuinely differ (a
+  // quarter skipped versus a fifth), and `expectedWritten` is counted by this
+  // same loop rather than derived arithmetically, so it stays right whatever
+  // the moduli are.
   constexpr int32_t kN = kTileSize;
-  auto fillSyntheticDeposit = [&](uint32_t seed, std::vector<float>& depC,
+  auto fillSyntheticDeposit = [&](uint32_t seed, uint32_t skipModulus, std::vector<float>& depC,
                                   std::vector<float>& depR, size_t& expectedWritten) {
     depC.assign(static_cast<size_t>(kN) * kN * 4, 0.0f);
     depR.assign(static_cast<size_t>(kN) * kN * 4, 0.0f);
     expectedWritten = 0;
     for (int32_t y = 0; y < kN; ++y) {
       for (int32_t x = 0; x < kN; ++x) {
-        if ((static_cast<uint32_t>(x + y) + seed) % 4 == 0) continue;  // the floor case
+        if ((static_cast<uint32_t>(x + y) + seed) % skipModulus == 0) continue;  // the floor case
         const size_t i = (static_cast<size_t>(y) * kN + x) * 4;
         const float u = static_cast<float>(x) / (kN - 1);
         const float v = static_cast<float>(y) / (kN - 1);
@@ -127,8 +140,8 @@ bool runSolverPersistenceTest() {
 
   std::vector<float> depCA, depRA, depCB, depRB;
   size_t expectedA = 0, expectedB = 0;
-  fillSyntheticDeposit(0, depCA, depRA, expectedA);
-  fillSyntheticDeposit(1, depCB, depRB, expectedB);
+  fillSyntheticDeposit(0, 4, depCA, depRA, expectedA);
+  fillSyntheticDeposit(1, 5, depCB, depRB, expectedB);
   check(expectedA > 0 && expectedB > 0 && expectedA != expectedB,
         "fixture: two tiles with different populated-texel counts -- a transposed tile "
         "index would still pass a test where both tiles look the same");

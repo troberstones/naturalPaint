@@ -11,6 +11,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "app/Memory.hpp"
 #include "app/StrokeSession.hpp"
+#include "app/ZoomAndSize.hpp"
 #include "core/TileStore.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
@@ -216,17 +217,24 @@ bool toolHasCanvasHandler(Tool t) noexcept {
   // every frame -- there is no sensible answer to "is this tool handled" under
   // bad_alloc, and returning `false` would silently un-implement every brush.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
-         toolPansView(t) || toolBeginsStroke(t);
+         toolPansView(t) || toolBeginsStroke(t) || toolZoomsView(t);
 }
 
-const char* toolNoHandlerException(Tool t) noexcept {
-  // **One row. Adding a second requires an argument, not a line.** The header
-  // says why this exists at all; what it must never become is a place to park
-  // a tool whose handler was forgotten.
-  if (t == Tool::Zoom)
-    return "Zoom: implemented=true and a bespoke ToolCursor::Zoom, but no canvas handler -- "
-           "zooming is wheel-and-menu only, and both are tool-independent. Recorded, not "
-           "fixed: building the Zoom tool is its own track. Delete this row the day it lands.";
+const char* toolNoHandlerException(Tool) noexcept {
+  // **Empty, and that is the point: the one row it held has been paid off.**
+  //
+  // It recorded Tool::Zoom -- implemented=true, a bespoke ToolCursor::Zoom,
+  // and no canvas handler -- and said "delete this row the day it lands."
+  // Scrubby zoom landed, `toolZoomsView()` is the sixth gate above, and the
+  // row is gone. The forcing function worked exactly as designed: the
+  // assertion in app/selftest/Eyedropper.cpp fails the moment a recorded
+  // exception acquires a handler, so this could not be left behind to rot
+  // into a lie about what the tool does.
+  //
+  // Kept rather than deleted outright because the mechanism is the valuable
+  // part, not the row: a tool marked implemented with no handler is the
+  // silent no-op the reachability audit was written about, and this is where
+  // a future one has to be argued for in prose before it can ship.
   return nullptr;
 }
 

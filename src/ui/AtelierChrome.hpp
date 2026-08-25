@@ -114,7 +114,8 @@ bool toolImplemented(Tool t) noexcept;
 //
 // This is deliberately **not** a second hand-written table -- that would drift
 // the same way. It is the disjunction of `app/StrokeSession` §6b's four
-// predicates plus `toolWritesRgbPixels()`, and each of those five is *the
+// predicates plus `toolWritesRgbPixels()` and `toolZoomsView()`, and each of
+// those six is *the
 // literal expression the corresponding canvas block is gated on*. Delete a
 // handler and its predicate stops being true; add a tool to a handler and its
 // predicate starts being true. `--selftest`'s `runEyedropperTest()` asserts
@@ -125,17 +126,22 @@ bool toolHasCanvasHandler(Tool t) noexcept;
 // Why `t` is marked implemented while having no canvas handler, or `nullptr`
 // when it is not such a tool.
 //
-// **One row today, and it is a real, live instance of the same defect.**
-// `Tool::Zoom` is `toolImplemented() == true`, gets its own `ToolCursor::Zoom`
-// magnifier, and has no canvas handler: zooming works from the scroll wheel
-// and the View menu, both of which are tool-independent and fire whatever tool
-// is selected, so selecting Zoom and clicking the canvas does nothing.
-// Building it is not this track's job. **Recording it is**, because the
-// difference between a known exception and an accident is whether removing it
-// is forced: the day Zoom's handler lands, `toolHasCanvasHandler(Tool::Zoom)`
-// becomes true, the selftest's "every recorded exception is still an
-// exception" assertion goes red, and this row has to be deleted before the
-// suite is green again. An exception that cannot be quietly forgotten.
+// **Empty today, and it got there the way it was designed to.** The one row
+// this ever held was `Tool::Zoom`: `toolImplemented() == true`, its own
+// `ToolCursor::Zoom` magnifier, and no canvas handler, because zooming was
+// wheel-and-menu only and both are tool-independent -- so selecting Zoom and
+// clicking the canvas did nothing. The row said "delete this the day it
+// lands". Scrubby zoom landed, `toolZoomsView()` became the sixth gate above,
+// `toolHasCanvasHandler(Tool::Zoom)` went true, the selftest's "every recorded
+// exception still has no handler" assertion went red, and the row could not
+// reach a green suite without being removed.
+//
+// That is the whole value of this function and the reason it stays after its
+// last row is gone: it is the difference between a known exception and an
+// accident. A tool marked implemented with no handler is precisely the silent
+// no-op docs/reachability-audit.md was written about, and this is where the
+// next one has to be argued for in prose, with a stated condition for its own
+// deletion, before it can ship.
 const char* toolNoHandlerException(Tool t) noexcept;
 
 // The Lucide icon a tool's cell draws: its name (third_party/lucide/, for

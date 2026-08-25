@@ -4,6 +4,7 @@
 
 #include "app/AppState.hpp"
 #include "app/StrokeSession.hpp"
+#include "app/ZoomAndSize.hpp"
 #include "color/Space.hpp"
 #include "paint/Palette.hpp"
 #include "imgui.h"
@@ -36,8 +37,9 @@ namespace np {
 //      averages the box it says it averages, including at a document edge.
 //   2. A pick lands in a real foreground colour that a real stroke reads.
 //   3. `toolImplemented()` and `toolHasCanvasHandler()` agree for every `Tool`,
-//      with `Tool::Zoom`'s identical live defect recorded as a named exception
-//      that the day it is fixed forces this file to be edited.
+//      with no exceptions left. `Tool::Zoom` used to be one -- the identical
+//      live defect, recorded as a named exception precisely so that fixing it
+//      would force this file to be edited. Scrubby zoom landed and it did.
 // ---------------------------------------------------------------------------
 bool runEyedropperTest() {
   bool ok = true;
@@ -591,15 +593,19 @@ bool runEyedropperTest() {
               toolNoHandlerException(Tool::Eyedropper) == nullptr,
           "tool table: the eyedropper now HAS a handler, through the same predicate the canvas "
           "block is gated on, and needs no exception");
-    check(exceptions == 1 && toolNoHandlerException(Tool::Zoom) != nullptr &&
+    check(exceptions == 0 && toolNoHandlerException(Tool::Zoom) == nullptr &&
               everyExceptionIsImplemented && everyExceptionStillHasNoHandler,
-          "tool table: exactly one recorded exception -- Tool::Zoom, implemented=true with a "
-          "bespoke cursor and no canvas handler, wheel-and-menu only. Recorded deliberately, "
-          "not fixed; delete the row the day the Zoom tool lands and this goes red");
-    check(!toolHasCanvasHandler(Tool::Zoom) && !toolPansView(Tool::Zoom) &&
-              !toolBeginsStroke(Tool::Zoom) && !toolDrawsSelection(Tool::Zoom),
-          "tool table: and Zoom's exception is checked against reality every run rather than "
-          "taken on trust -- none of the five gates admits it");
+          "tool table: NO recorded exceptions remain -- the one that existed was Tool::Zoom, "
+          "and scrubby zoom landing paid it off. The two clauses after the count are kept "
+          "deliberately: they are vacuously true over an empty table today and are what a "
+          "future row would have to satisfy, so deleting them with the row would remove the "
+          "mechanism rather than the debt");
+    check(toolHasCanvasHandler(Tool::Zoom) && toolZoomsView(Tool::Zoom) &&
+              !toolPansView(Tool::Zoom) && !toolBeginsStroke(Tool::Zoom) &&
+              !toolDrawsSelection(Tool::Zoom),
+          "tool table: Zoom is handled through its OWN gate, toolZoomsView(), and through no "
+          "other -- the assertion that would catch scrubby zoom being wired by widening an "
+          "existing predicate (pan, say) rather than adding the sixth one");
 
     // The five predicates are the canvas's own gates, so a few spot answers
     // pin them to the blocks they gate rather than to this file's opinion.

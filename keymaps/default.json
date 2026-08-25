@@ -11,6 +11,8 @@
     { "key": "-", "mods": ["Cmd"], "action": "zoom_out" },
     { "key": "0", "mods": ["Cmd"], "action": "fit_window" },
     { "key": "1", "mods": ["Cmd"], "action": "zoom_100" },
+    { "key": "[", "action": "size_down" },
+    { "key": "]", "action": "size_up" },
     { "key": "F", "action": "mirror_x" },
     { "key": "F", "mods": ["Shift"], "action": "mirror_y" },
     { "key": "R", "mods": ["Shift"], "action": "reset_rotation" },

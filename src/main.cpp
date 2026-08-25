@@ -31,6 +31,7 @@
 #include "app/SelfTest.hpp"
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
+#include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
 #include "color/Space.hpp"
 #include "core/Composite.hpp"
@@ -1963,6 +1964,10 @@ int main(int argc, char** argv) {
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
     // any other) ever constructed a PaintSim.
     const bool idleMemOk = np::runIdleMemoryTest(idleRssBytes);
+    // track8/zoom (PRD Q1, R5): the Zoom tool's click/Alt-click/scrubby-drag
+    // anchor math and the brush-size gesture/bracket-key range, both as pure
+    // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
+    const bool zoomAndSizeOk = np::runZoomAndSizeTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -1989,7 +1994,7 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
-                    saveReadbackOk;
+                    saveReadbackOk && zoomAndSizeOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -2464,6 +2469,21 @@ int main(int argc, char** argv) {
         else if (action == "zoom_100") st.requestZoom100 = true;
         else if (action == "zoom_in") st.requestZoomIn = true;
         else if (action == "zoom_out") st.requestZoomOut = true;
+        // PRD R5 / D3: `[`/`]`, the alternate path to the ⌃⌥-drag gesture
+        // (ui/MacPaintUI.cpp's canvas block). Applied directly, right here,
+        // the same as mirror/reset_rotation/toggle_grayscale just below --
+        // no layout dependency, so no request-flag round trip through the
+        // canvas Begin()/End() block is needed. `bracketStepForRadius()`
+        // reads the CURRENT radius so the step scales with it (PRD's own
+        // words: "a constant is wrong across a 1..200 range"), and
+        // `clampBrushRadius()` is the exact same clamp the gesture uses --
+        // one range, not two.
+        else if (action == "size_down")
+          st.brush.radius = np::clampBrushRadius(
+              st.brush.radius - np::bracketStepForRadius(st.brush.radius));
+        else if (action == "size_up")
+          st.brush.radius = np::clampBrushRadius(
+              st.brush.radius + np::bracketStepForRadius(st.brush.radius));
         else if (action == "mirror_x") st.view.mirrorX = !st.view.mirrorX;
         else if (action == "mirror_y") st.view.mirrorY = !st.view.mirrorY;
         else if (action == "reset_rotation") st.view.rotation = 0.0f;
