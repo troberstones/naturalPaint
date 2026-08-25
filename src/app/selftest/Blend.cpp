@@ -505,7 +505,7 @@ bool runBlendTest() {
     // `over` while the export wrote `multiply` would be a bug nobody could
     // explain.
     ProbeParams all;
-    all.sampleAllLayers = true;
+    all.source = ProbeSource::AllLayers;
     const ProbeSample sample = probePixel(doc, PixelCoord{0, 0}, all);
     check(near(sample.linear[0], 0.25f, kUnpremultiplyTol) &&
               near(sample.linear[2], 0.1875f, kUnpremultiplyTol),

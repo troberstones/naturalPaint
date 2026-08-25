@@ -425,6 +425,62 @@ inline bool pixelOpWritesLayer(const Layer* target) noexcept {
   return pixelOpRefusalFor(target) == PixelOpRefusal::None;
 }
 
+// ==========================================================================
+// 6b. Which tools the canvas actually listens to
+// ==========================================================================
+//
+// **These four predicates exist because a hand-maintained boolean shipped a
+// lie for two whole phases.** `ui/AtelierChrome`'s `kToolMeta` carries an
+// `implemented` flag; `Tool::Eyedropper` had it set to `true` with **no canvas
+// handler anywhere**, and nothing in the build could tell. The palette made
+// the cell clickable and highlighted it *because* of the flag;
+// `toolCursorOnTarget()` withheld the `Refuse` cursor *because* of the flag and
+// handed out a bespoke `ToolCursor::Sample` pointer; and then the click landed
+// in `ui/MacPaintUI.cpp`'s canvas block and nothing consumed it. Every tier of
+// the chrome said live except the one that acts.
+//
+// The fix is not a second hand-written table saying which tools have handlers
+// -- that could drift in exactly the same way. **Each of these predicates is
+// the literal gate the corresponding block in the canvas is written with**, so
+// a tool that stops being handled stops passing the predicate, and the
+// completeness check in `ui/AtelierChrome` (`toolHasCanvasHandler()`) reddens.
+// Two of the five gates already existed and are reused unchanged:
+// `strokeRouteFor()` and `toolWritesRgbPixels()` above.
+
+// Whether `tool` can begin a stroke on *anything*.
+//
+// Asked of `strokeRouteFor()` itself, against the two layer kinds §1 says can
+// take one plus the no-target case, rather than restated as a second table --
+// so a tool whose row in that table changes cannot disagree with this. Not
+// `noexcept`: the two probe Layers it builds hold a `std::string` and an
+// `optional<TileStore>`.
+bool toolBeginsStroke(Tool tool);
+
+// Whether `tool` builds a `Selection` by gesture: the five of PRD E3.
+//
+// This was an inline `selectionTool` bool inside the canvas block, and it is
+// out here so the completeness check reads the same expression the handler is
+// gated on rather than a copy of it.
+bool toolDrawsSelection(Tool tool) noexcept;
+
+// Whether `tool` reads colour off the canvas rather than writing it: the
+// eyedropper, and today nothing else. `Tool::Measure` shares its palette group
+// and its `ToolCursor::Sample` cursor but has no handler and is not
+// `toolImplemented()`, so it is correctly false here.
+bool toolSamplesCanvas(Tool tool) noexcept;
+
+// Whether `tool` moves the view by dragging on the canvas: the hand, and today
+// nothing else.
+//
+// **Not `Tool::Zoom`.** Zoom is `toolImplemented() == true` and has a bespoke
+// `ToolCursor::Zoom`, and zooming works only from the scroll wheel and the View
+// menu -- both of which are tool-independent and fire whatever tool is
+// selected. Selecting the Zoom tool and clicking the canvas does nothing at
+// all. That is the same defect the eyedropper had, still live, and
+// `ui/AtelierChrome`'s completeness check records it as a named exception
+// rather than letting it look like an accident.
+bool toolPansView(Tool tool) noexcept;
+
 // The sentence the options bar shows, in the same shape and the same voice as
 // `ui/MacPaintUI.cpp`'s stroke refusals: what is wrong, which layer it is wrong
 // about **by name**, and -- only when there is one -- what to do about it.
@@ -445,14 +501,67 @@ inline bool pixelOpWritesLayer(const Layer* target) noexcept {
 std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
                                   const char* opName);
 
+// ==========================================================================
+// 7. The foreground colour (PRD Q10, PRD L4)
+// ==========================================================================
+//
+// The foreground colour, in **display-referred sRGB** -- whichever of
+// `BrushState`'s two colour representations `BrushState::colorMode` currently
+// selects.
+//
+// This is the whole of the union, and it is one function rather than a
+// conditional at each call site for the reason this codebase keeps
+// rediscovering: four places derive a colour from the brush (`brushTipFor()`'s
+// `linearRgb`, `brushTipFor()`'s `Latent`, `main.cpp`'s solver uniform,
+// `ui/MacPaintUI`'s `foregroundLinearRgba()`), and a fifth representation
+// arriving with only three of them updated is how a build ends up painting one
+// colour and filling another.
+//
+// **sRGB and not linear**, matching `paint::Pigment::rgb` and
+// `BrushState::rgb` -- see that field's comment for why the encoding is the
+// dangerous part. Callers that write a document part decode; callers that draw
+// a swatch or feed `MixboxLut` do not.
+//
+// An out-of-range `pigment` index in PIGMENT mode yields black, the same answer
+// `foregroundLinearRgba()` gives, rather than reading past the palette.
+std::array<float, 3> foregroundSrgb(const BrushState& brush) noexcept;
+
+// The name to show for the foreground colour: the pigment's own name in
+// PIGMENT mode, or "Custom RGB" in RGB mode.
+//
+// A pigment has a name and an arbitrary triple does not, and a swatch tooltip
+// that went on saying "Ultramarine Blue" after the eyedropper picked a grey off
+// a photograph would be the chrome lying about what the next stroke will lay
+// down -- the exact failure `strokeRouteFor()`'s options-bar indicator exists
+// to prevent, one control over.
+const char* foregroundName(const BrushState& brush) noexcept;
+
+// **The three physical constants always follow `BrushState::pigment`, in both
+// modes**, and this is the one honest asymmetry in the design above.
+//
+// A `Latent` is a colour and can be derived from any RGB triple; density,
+// staining and granulation cannot. They are measurements of a real paint
+// (`paint/Palette.cpp`, Curtis et al. 1997 Table 1), and there is no function
+// from three floats to "how does this settle out of suspension". So an RGB
+// foreground changes what colour the solver deposits and leaves *how it
+// behaves* at whatever pigment is selected -- which is a real limitation and is
+// why the COLOR panel says it in words rather than leaving it to be discovered
+// by a wash that granulates unexpectedly.
+//
+// The alternative, snapping a picked colour to the nearest palette pigment so
+// the constants always match, was rejected: an eyedropper exists to reproduce a
+// colour exactly, and one that silently answered "Burnt Sienna" to a sampled
+// #7f3f00 would be wrong in the one way the tool must never be wrong.
+const Pigment& foregroundPhysicalConstants(const BrushState& brush) noexcept;
+
 // The pen's brush state, as a tip -- the one mapping from what the UI holds to
 // what `brush/Deposit` takes, so the interactive route and `--selftest` cannot
 // disagree about what a given brush deposits.
 //
-// **What the PIGMENT panel's swatch means as a `Latent`**, which is the second
-// half of the missing decision section 4 named. The swatch is a
-// `paint::Pigment` with an sRGB triple and three physical constants, and the
-// answer here is deliberately the narrow one: the colour goes through
+// **What the COLOR panel's foreground means as a `Latent`**, which is the second
+// half of the missing decision section 4 named. In PIGMENT mode the foreground
+// is a `paint::Pigment` with an sRGB triple and three physical constants, and
+// the answer here is deliberately the narrow one: the colour goes through
 // `MixboxLut::rgbToLatent()` and **the three constants do not travel**.
 // Density, staining and granulation are properties the *solver* reads -- they
 // decide how a wash settles, lifts and pools -- and `brush/Deposit` simulates
@@ -466,9 +575,19 @@ std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
 // route uses, and honours `BrushState::pressureSize` / `pressureFlow`
 // independently, so a pen configured one way behaves the same on both routes.
 //
-// Falls back to the pigment's own RGB projected through `latentToRgb()`'s
+// Falls back to the foreground's own RGB projected through `latentToRgb()`'s
 // inverse-free path when `lut` has not loaded -- a build with no LUT still
-// paints, in the pigment's colour, rather than painting nothing.
+// paints, in the foreground's colour, rather than painting nothing.
+//
+// **An RGB foreground reaches a stroke through here, on both layer kinds.**
+// `tip.linearRgb` is `srgbDecode(foregroundSrgb(brush))`, which is what
+// `brush/RgbDeposit` writes, and `tip.pigment` is
+// `rgbToLatent(foregroundSrgb(brush))`, which is what `brush/Deposit` writes --
+// so a picked colour paints an RGB layer exactly and a Pigment layer through
+// the RGB->latent map docs/ui.md §3.3 explicitly permits ("it maps through
+// RGB->latent, with the caveat ... that the decomposition is plausible rather
+// than true"). Neither path needed a new branch: they already went through one
+// sRGB triple, and the change is only *which* triple.
 BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressure);
 
 // The same, against the WHOLE source set rather than pressure alone -- what a

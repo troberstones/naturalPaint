@@ -297,6 +297,47 @@ bool runMipPyramidTest(GpuContext& gpu);
 // rather than crashing or reading garbage.
 bool runProbeTest();
 
+// Headless, GPU-free check on the **eyedropper tool** (PLAN.md Phase 2 step
+// 10's other half -- "the eyedropper, which is the same sampling code writing
+// to the foreground colour instead of a readout"; PRD Q10 and PRD L4, both
+// P0), on the foreground colour it needed before it could exist, and on the
+// tripwire that would have caught its two-phase absence.
+//
+// **Why a second Probe section rather than more of runProbeTest().** That one
+// is about `probePixel()` as a Document query. This one is about everything
+// between a click and a colour: three sample *sources* over a stack built so
+// they must disagree, the box clipping that only shows up in the alpha, the
+// foreground structure a pick writes into, and whether that colour reaches a
+// stroke. The two share a fixture idiom and nothing else.
+//
+// Confirms: `ProbeSource`'s three modes return three different, hand-computed
+// colours over a three-layer stack with the active layer in the middle, one
+// layer hidden and one at 50% opacity -- with the documented asymmetry intact,
+// so a hidden layer is still fully probeable in `CurrentLayer` and contributes
+// exactly nothing to either compositing mode, and `ActiveAndBelow` pointed at
+// the top layer is bit-identical to `AllLayers`; that point/3x3/11x11 samples
+// over a fixture with a linear ramp (which must not move with box size), a
+// spike pattern (which must) and a constant match means computed independently
+// in the test rather than by a second call to the function under test; that a
+// large box at the document's corner and edge averages only the texels
+// actually inside it -- alpha 1.0 on an opaque document, not 36/121 -- while
+// unpainted texels *inside* the document still dilute coverage to exactly 4/9;
+// that every sample size carries Photoshop's own label with both edges spelled
+// out, so "9" cannot be read as either 9 px or 3x3; that a pick lands in
+// `BrushState::rgb` **sRGB-encoded**, is what `foregroundSrgb()` and
+// `foregroundLinearRgba()` return, and is bit-identically what `brushTipFor()`
+// hands the deposit routes -- and genuinely differs from the pigment that was
+// selected before it, so it cannot pass on a tip that ignored the foreground;
+// that picking in PIGMENT mode switches the panel to RGB mode, says so, and
+// leaves the pigment selection (and therefore the three physical constants)
+// alone; that a pick on a transparent texel or with no document open is
+// refused out loud and leaves the foreground untouched; and that
+// `toolImplemented()` equals `toolHasCanvasHandler()` for every `Tool`, with
+// exactly one recorded exception -- `Tool::Zoom`, which has the identical live
+// defect and is asserted every run to still have no handler, so the row must be
+// deleted the day it does.
+bool runEyedropperTest();
+
 // Headless check on the unified view transform (PLAN.md Phase 2 step 11,
 // "View controls" -- PRD Q1-Q4; docs/shortcuts.md section 3's own mandate
 // that mirror and rotation compose into one matrix and pen input maps back

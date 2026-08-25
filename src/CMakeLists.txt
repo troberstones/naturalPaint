@@ -55,6 +55,7 @@ add_executable(naturalPaint
   app/selftest/Export.cpp
   app/selftest/ExportAs.cpp
   app/selftest/ExportStates.cpp
+  app/selftest/Eyedropper.cpp
   app/selftest/FieldAllocation.cpp
   app/selftest/Filters.cpp
   app/selftest/FloodFill.cpp

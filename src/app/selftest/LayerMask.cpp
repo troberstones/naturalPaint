@@ -509,14 +509,14 @@ bool runLayerMaskTest() {
     writeMask(doc, 1, 1, 1, 0.25f);
 
     ProbeParams all;
-    all.sampleAllLayers = true;
+    all.source = ProbeSource::AllLayers;
     const ProbeSample sample = probePixel(doc, PixelCoord{1, 1}, all);
     const std::array<float, 4> flat = pixelOf(flattenDocumentToLinear(doc), 1, 1);
     check(near(sample.linear[0], flat[0], kUnpremultiplyTol) &&
               near(sample.linear[1], flat[1], kUnpremultiplyTol) &&
               near(sample.linear[2], flat[2], kUnpremultiplyTol) &&
               near(sample.linear[3], flat[3], kUnpremultiplyTol),
-          "probe: sampleAllLayers reads a masked layer through the same "
+          "probe: ProbeSource::AllLayers reads a masked layer through the same "
           "`layerMaskCoverageAt()` the flattener's per-tile fast path calls -- an eyedropper "
           "and an export that disagreed would be a bug nobody could explain");
 
@@ -542,7 +542,7 @@ bool runLayerMaskTest() {
           "per-texel lookup and the walk's per-tile hoist could most easily diverge");
 
     ProbeParams own;
-    own.sampleAllLayers = false;
+    own.source = ProbeSource::CurrentLayer;
     own.activeLayerIndex = 1;
     const ProbeSample layerOwn = probePixel(doc, PixelCoord{1, 1}, own);
     check(layerOwn.linear[0] == 0.5f && layerOwn.linear[3] == 1.0f,

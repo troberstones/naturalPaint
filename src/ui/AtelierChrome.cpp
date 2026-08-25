@@ -200,6 +200,36 @@ const ToolMeta& metaFor(Tool t) noexcept {
 
 const char* toolName(Tool t) { return metaFor(t).name; }
 bool toolImplemented(Tool t) noexcept { return metaFor(t).implemented; }
+
+bool toolHasCanvasHandler(Tool t) noexcept {
+  // Five gates, each of them the expression the corresponding block in
+  // `ui/MacPaintUI.cpp`'s canvas is actually written with. Nothing here is a
+  // restatement of "which tools work" -- see the header.
+  //
+  // `toolBeginsStroke()` is not `noexcept` (it builds two probe Layers), and
+  // this function is, so the call is guarded by short-circuit ordering alone
+  // -- which is not enough on its own. It is the last term deliberately: the
+  // four cheap `noexcept` predicates are tested first, so for every tool that
+  // has any other kind of handler the allocating one is never reached. For the
+  // rest, an allocation failure here would `std::terminate` rather than
+  // propagate, which is the correct outcome for a chrome predicate that runs
+  // every frame -- there is no sensible answer to "is this tool handled" under
+  // bad_alloc, and returning `false` would silently un-implement every brush.
+  return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
+         toolPansView(t) || toolBeginsStroke(t);
+}
+
+const char* toolNoHandlerException(Tool t) noexcept {
+  // **One row. Adding a second requires an argument, not a line.** The header
+  // says why this exists at all; what it must never become is a place to park
+  // a tool whose handler was forgotten.
+  if (t == Tool::Zoom)
+    return "Zoom: implemented=true and a bespoke ToolCursor::Zoom, but no canvas handler -- "
+           "zooming is wheel-and-menu only, and both are tool-independent. Recorded, not "
+           "fixed: building the Zoom tool is its own track. Delete this row the day it lands.";
+  return nullptr;
+}
+
 const char* toolIconName(Tool t) noexcept { return metaFor(t).lucideName; }
 uint32_t toolIconCodepoint(Tool t) noexcept { return metaFor(t).codepoint; }
 
@@ -516,6 +546,110 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
   ImGui::Dummy(ImVec2(6.0f, h));
   ImGui::SameLine(0.0f, 8.0f);
   ImGui::TextUnformatted(toolName(st.brush.tool));
+
+  // --- the eyedropper's own two options (PRD Q10, P0) ---------------------
+  //
+  // **The first tool in this band to have options of its own.** Everything
+  // below is the brush's -- SIZE, HARD, LOAD, WET -- and it used to be drawn
+  // for every tool, so selecting the eyedropper showed four brush sliders and
+  // none of the two settings PRD Q10 actually names ("with sample size,
+  // sample-all-layers"). The band's job per docs/ui.md section 2 is "the active
+  // tool and its options", so the active tool's options are what it shows.
+  //
+  // Both controls are combos rather than sliders, and both for the same
+  // reason: neither field is continuous. Sample size is Photoshop's fixed
+  // ladder (`core::kProbeSampleSizes`) and a slider would offer the 46x46
+  // average nobody wants; sample source is three named states.
+  //
+  // **One field, one widget, one range.** This band's LOAD slider states the
+  // rule -- "one field behind two widgets with two ranges is two clamps, and
+  // the narrower one silently truncates what the other set" -- and SIZE, four
+  // lines down, already breaks it (2..90 here against the BRUSH panel's
+  // 1..200). These two are surfaced here and nowhere else, so there is nothing
+  // for a second range to disagree with, and if either ever appears in a second
+  // panel it must offer `kProbeSampleSizes` and `ProbeSource` entire.
+  if (st.brush.tool == Tool::Eyedropper) {
+    bandSeparator();
+    capsLabel("SAMPLE");
+    ImGui::SameLine();
+    // Wide enough for "101 by 101 Average", the longest label in the table --
+    // measured from the string rather than guessed, so a label added to
+    // `kProbeSampleSizeLabels` cannot silently start clipping.
+    ImGui::SetNextItemWidth(
+        ImGui::CalcTextSize("101 by 101 Average").x + ImGui::GetFrameHeight() + 16.0f);
+    pushAtelierMono();
+    int sizeIndex = 0;
+    for (int i = 0; i < kProbeSampleSizeCount; ++i)
+      if (kProbeSampleSizes[i] == st.eyedropper.sampleSize) sizeIndex = i;
+    if (ImGui::BeginCombo("##sampleSize", kProbeSampleSizeLabels[sizeIndex])) {
+      for (int i = 0; i < kProbeSampleSizeCount; ++i) {
+        if (ImGui::Selectable(kProbeSampleSizeLabels[i], i == sizeIndex))
+          st.eyedropper.sampleSize = kProbeSampleSizes[i];
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    capsLabel("SOURCE");
+    ImGui::SameLine();
+    // The three ProbeSource values with the labels Photoshop uses for them,
+    // in stack order (bottom of the stack question to top) rather than enum
+    // order, so the menu reads as a widening scope.
+    struct SourceRow {
+      ProbeSource source;
+      const char* label;
+      const char* tip;
+    };
+    static constexpr SourceRow kSources[] = {
+        {ProbeSource::CurrentLayer, "Current Layer",
+         "The active layer's own stored colour, ignoring its visibility, its opacity and its "
+         "mask -- what is ON the layer, so a hidden layer is still sampleable."},
+        {ProbeSource::ActiveAndBelow, "Current & Below",
+         "The stack composited from the bottom up to and including the active layer, ignoring "
+         "everything above it. Honours visibility and opacity, because it asks what a stack "
+         "SHOWS."},
+        {ProbeSource::AllLayers, "All Layers",
+         "The whole document as it is composited on screen -- the same colour an export "
+         "produces at this pixel."},
+    };
+    int sourceIndex = 0;
+    for (int i = 0; i < 3; ++i)
+      if (kSources[i].source == st.eyedropper.source) sourceIndex = i;
+    ImGui::SetNextItemWidth(
+        ImGui::CalcTextSize("Current & Below").x + ImGui::GetFrameHeight() + 16.0f);
+    pushAtelierMono();
+    if (ImGui::BeginCombo("##sampleSource", kSources[sourceIndex].label)) {
+      for (int i = 0; i < 3; ++i) {
+        if (ImGui::Selectable(kSources[i].label, i == sourceIndex))
+          st.eyedropper.source = kSources[i].source;
+        // The asymmetry between the three modes is a real rule with a real
+        // reason and is invisible from three short labels, so each row carries
+        // it. A user who never opens the tooltip still gets the right answer;
+        // one who wonders why a hidden layer sampled differently in two modes
+        // finds out here instead of by experiment.
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kSources[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+
+    // What the last pick did. It is here rather than in the COLOR panel
+    // because the one thing that needs saying -- that a pick in PIGMENT mode
+    // moved the panel to RGB mode -- is a consequence of *this* tool, and this
+    // band is where this build already puts "what your last gesture with this
+    // tool actually did" (the stroke and fill refusals, below).
+    if (!st.lastPickReport.empty()) {
+      bandSeparator();
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
+      ImGui::TextUnformatted(st.lastPickReport.c_str());
+      ImGui::PopStyleColor();
+    }
+
+    endBand();
+    return;
+  }
 
   bandSeparator();
   capsLabel("SIZE");

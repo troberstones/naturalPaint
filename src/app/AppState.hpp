@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -18,6 +19,7 @@
 #include "core/SelectionShapes.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
+#include "core/Probe.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
 
@@ -94,9 +96,61 @@ enum class Tool {
   Count
 };
 
+// PRD **L4** (P0), docs/ui.md §3.3: "The colour panel has RGB and PIGMENT
+// modes; PIGMENT selects physical constants, not just a colour."
+//
+// Which of the two the foreground colour is currently *being said in*. It is
+// not a panel preference: it decides what `foregroundSrgb()` returns and
+// therefore what every brush, bucket and gradient in the build actually lays
+// down, so it belongs beside the colour it selects between rather than as a
+// file-static in the panel that draws it -- which is exactly where it used to
+// live (`ui/MacPaintUI.cpp`'s `g_colorPigmentMode`, beside a
+// `float g_colorRgb[3]` that **no file in `src/` ever read**; the panel said so
+// out loud: "Not yet connected: no tool reads this colour").
+enum class ColorMode {
+  // The foreground is `BrushState::pigment`, a row of `defaultPalette()`:
+  // a colour **and** three physical constants (density, staining,
+  // granulation). The default, and what a Pigment or Media layer wants.
+  Pigment,
+  // The foreground is `BrushState::rgb`, an arbitrary triple with no physical
+  // constants behind it. What the RGB picker sets, and what the eyedropper
+  // must set -- three floats sampled off a canvas cannot say how a paint
+  // settles or lifts, and inventing values for that would be a lie the user
+  // could not detect.
+  Rgb,
+};
+
 struct BrushState {
   Tool tool = Tool::Brush;
   int pigment = 6;  // Ultramarine Blue
+
+  // Which of the two things above the foreground colour currently is.
+  ColorMode colorMode = ColorMode::Pigment;
+
+  // The arbitrary foreground colour, in **display-referred sRGB**, the same
+  // encoding `paint::Pigment::rgb` is in -- deliberately, so that
+  // `foregroundSrgb()` can return either one and every consumer downstream
+  // does exactly one thing with the result.
+  //
+  // **The encoding is the part that is easy to get wrong and impossible to
+  // see.** This build's working space is linear-light (CONTEXT.md's "Working
+  // space", DESIGN-imaging.md §2) and a document's texels are linear; a
+  // swatch, an ImGui colour picker and `MixboxLut::rgbToLatent()`'s API are
+  // all sRGB. Storing linear here would make the swatch and the picker both
+  // wrong; storing sRGB and forgetting the decode makes every stroke land
+  // about twice as dark as the colour that was chosen -- and both failures
+  // read as "colour management is broken somewhere else" rather than as a
+  // missing one-line conversion. sRGB is the choice because it matches the
+  // palette, so there is one rule for both halves of the union rather than
+  // two: *the foreground is sRGB, and whoever hands it to the document
+  // decodes.* `ui/MacPaintUI`'s `foregroundLinearRgba()` and
+  // `brushTipFor()`'s `tip.linearRgb` are the two places that decode, and
+  // `--selftest` asserts they agree.
+  //
+  // The initial value is `ui/MacPaintUI.cpp`'s retired `g_colorRgb` default,
+  // carried over unchanged so the RGB picker opens where it always did.
+  std::array<float, 3> rgb = {0.10f, 0.12f, 0.45f};
+
   float radius = 20.0f;
   float load = 0.9f;      // pigment concentration
   float wetness = 1.3f;   // water deposited
@@ -248,6 +302,56 @@ struct AppState {
   BrushState brush;
   CanvasView view;
   SimParams sim;
+
+  // PRD **Q10** (P0): "Eyedropper picks into the foreground colour, with
+  // sample size, sample-all-layers, and Option-click while painting."
+  //
+  // The two parameters of a pick, and nothing else -- `core::ProbeParams`'s
+  // third field, `activeLayerIndex`, is not a user setting: it is whichever
+  // layer is active at the moment of the click, read off the OpenDocument.
+  //
+  // **These live on `AppState` and are surfaced in exactly one place**, the
+  // options bar (`ui/AtelierChrome.cpp`). `ui/AtelierChrome.cpp`'s LOAD slider
+  // states the house rule they are obeying: "one field behind two widgets with
+  // two ranges is two clamps, and the narrower one silently truncates what the
+  // other set." SIZE already breaks it (options bar 2-90 against the BRUSH
+  // panel's 1-200) and this is deliberately not a second breakage -- there is
+  // one widget per field, so there is nothing for a second range to disagree
+  // with. If either ever appears in a second panel, both widgets must offer
+  // `core::kProbeSampleSizes` and `ProbeSource` entire, not a subset.
+  //
+  // Session state, surviving a tool switch, the way `brush.tool` itself does.
+  // **Not persisted to disk**, and that is a decision rather than an omission:
+  // `app/BrushLibraryFile.cpp` writes a preferences file and this could have
+  // joined it, but that file's format freezes positional keys forever, and
+  // freezing a key for a two-field tool that has existed for one phase buys a
+  // convenience (an 11x11 sample surviving a restart) at the price of a format
+  // commitment. Photoshop does persist these; when a preferences file exists
+  // that is not the brush-library file, they should go in it.
+  struct EyedropperState {
+    // Edge length -- `core::kProbeSampleSizes`' set, Photoshop's own.
+    int32_t sampleSize = 1;
+    // Which layer(s) a pick reads (`core::ProbeSource`).
+    //
+    // `CurrentLayer` is the default, matching `ProbeParams`'s own default and
+    // Photoshop's. Not `AllLayers`: a painter's first pick is nearly always
+    // "the colour I just put down", and a default that silently composited the
+    // adjustment layers above it would hand back a colour the layer does not
+    // contain and cannot reproduce.
+    ProbeSource source = ProbeSource::CurrentLayer;
+  };
+  EyedropperState eyedropper;
+
+  // What the last eyedropper click did, in one sentence, or empty when there
+  // has not been one. Shown in the options bar.
+  //
+  // It exists because of the one case a swatch alone cannot explain: picking
+  // while the COLOR panel is in PIGMENT mode **switches the panel to RGB
+  // mode**, and a mode that changed under the user without a word is the same
+  // class of defect as a tool that does nothing. `app/StrokeSession`'s
+  // refusal strings are the precedent -- a gesture whose effect is not the
+  // obvious one says so in the band, in the same voice.
+  std::string lastPickReport;
 
   // Photoshop-style tool-group memory (docs/ui.md section 2, "nest similar
   // tools into a flyout"): which member of each palette group slot the
