@@ -56,6 +56,7 @@ add_executable(naturalPaint
   app/selftest/ExportAs.cpp
   app/selftest/ExportStates.cpp
   app/selftest/FieldAllocation.cpp
+  app/selftest/FilterMenu.cpp
   app/selftest/Filters.cpp
   app/selftest/FloodFill.cpp
   app/selftest/Fonts.cpp
@@ -112,6 +113,7 @@ add_executable(naturalPaint
   app/selftest/ToolCursor.cpp
   app/selftest/Transform.cpp
   app/selftest/ViewTransform.cpp
+  app/FilterOps.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp

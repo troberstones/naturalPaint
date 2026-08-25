@@ -24,6 +24,7 @@
 #include "app/CurveEdit.hpp"
 #include "app/DabPreview.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "app/FilterOps.hpp"
 #include "app/HistoryPanel.hpp"
 #include "app/ImportImage.hpp"
 #include "app/Journal.hpp"
@@ -5456,6 +5457,353 @@ void drawRecoveryDialog(AppState& st) {
 }
 
 // ---------------------------------------------------------------------------
+// The Filter menu's four dialogs (docs/reachability-audit.md C1; app/FilterOps
+// does the actual work)
+// ---------------------------------------------------------------------------
+//
+// Same idiom as `drawExportAsDialog()` throughout: a modal opened from a
+// `g_...Requested` flag set by `performMenuAction()` (ui/MenuModel.hpp's
+// `MenuEffect::Deferred` -- a native menu's callback cannot call
+// `ImGui::OpenPopup()` itself), `ImGuiWindowFlags_AlwaysAutoResize`, a
+// verb-named confirm button and a `Cancel` beside it, function-local
+// `static` fields for the dialog's own widget state (this is UI state, not
+// `AppState`'s, per that struct's own ownership rule). None of the four has
+// a live preview: every one of them applies on the confirm button and
+// nothing before it, which keeps this file thin and keeps the only place a
+// pixel actually changes at `app/FilterOps.cpp`'s four `applyX()` functions
+// -- the ones `--selftest` (app/selftest/FilterMenu.cpp) also calls, so the
+// dialog and the test cannot disagree about what confirming one does.
+//
+// **Why there is no in-dialog refusal banner.** The Filter menu's four items
+// are already disabled, with the reason in their tooltip, whenever
+// `ctx.filterLayerUsable` is false (`menuContextFromState()`, `buildMenuModel()`
+// above) -- so an ImGui click cannot open one of these popups on a layer that
+// cannot take it. `applyX()` re-checks anyway (this file's own header
+// explains why: the confirm button fires at least one frame after the menu
+// click that opened the dialog, and the guard belongs where it is relied on).
+// The refusal message is still shown if that re-check ever fires, so a race
+// is reported rather than silently eaten -- it is just not the ordinary path.
+bool g_gaussianBlurRequested = false;
+bool g_sharpenRequested = false;
+bool g_unsharpMaskRequested = false;
+bool g_addNoiseRequested = false;
+
+void drawGaussianBlurDialog(AppState& st) {
+  static float sigma = 8.0f;  // texels; ops/Blur.hpp's own worked examples use this
+  static std::string status;
+
+  if (g_gaussianBlurRequested) {
+    g_gaussianBlurRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Gaussian Blur");
+  }
+  if (!ImGui::BeginPopupModal("Gaussian Blur", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    return;
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Radius (sigma, texels)", &sigma, 0.0f, 250.0f, "%.1f");
+  ImGui::TextDisabled("0 is the identity. ops/Blur.hpp's apron is ceil(4 * sigma) texels.");
+
+  OpenDocument* od = st.documents.active();
+  if (ImGui::Button("Blur") && od != nullptr) {
+    const FilterOpResult r = applyGaussianBlur(*od, sigma);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "gaussian blur");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (radius 0, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+void drawSharpenDialog(AppState& st) {
+  static float strength = 1.0f;  // UnsharpParams::amount; 0 is the identity
+  static std::string status;
+
+  if (g_sharpenRequested) {
+    g_sharpenRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Sharpen");
+  }
+  if (!ImGui::BeginPopupModal("Sharpen", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Strength", &strength, 0.0f, 3.0f, "%.2f");
+  // kSharpenSigma is named rather than offered as a control: ops/Filters.hpp
+  // section 3 argues at length for why 1.0 is the one radius this one-click
+  // filter should have, and a slider here would be the second radius control
+  // the header's own "one-click filter, not an operator" distinction warns
+  // against re-opening. Unsharp Mask, two rows down in this same menu, is
+  // where the radius becomes a dial.
+  ImGui::TextDisabled("Fixed radius (sigma %.1f) -- see Unsharp Mask for a radius control.",
+                      kSharpenSigma);
+
+  OpenDocument* od = st.documents.active();
+  if (ImGui::Button("Sharpen") && od != nullptr) {
+    const FilterOpResult r = applySharpen(*od, strength);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "sharpen");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (strength 0, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+void drawUnsharpMaskDialog(AppState& st) {
+  static UnsharpParams params;  // amount 1, threshold 0, blur.sigma 0 at struct default
+  static float radius = 2.0f;   // params.blur.sigma; kept apart so 0 isn't the opening value
+  static std::string status;
+
+  if (g_unsharpMaskRequested) {
+    g_unsharpMaskRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Unsharp Mask");
+  }
+  if (!ImGui::BeginPopupModal("Unsharp Mask", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    return;
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Amount", &params.amount, 0.0f, 5.0f, "%.2f");
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Radius (sigma, texels)", &radius, 0.1f, 250.0f, "%.1f");
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Threshold", &params.threshold, 0.0f, 0.20f, "%.3f");
+  ImGui::TextDisabled(
+      "Threshold is shaper-domain (ops/Filters.hpp section 2): 0.02 ignores differences "
+      "smaller than 27%% of the local level, at every brightness.");
+
+  params.blur.kind = BlurKind::Gaussian;
+  params.blur.sigma = radius;
+
+  OpenDocument* od = st.documents.active();
+  if (ImGui::Button("Sharpen") && od != nullptr) {
+    const FilterOpResult r = applyUnsharpMask(*od, params);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "unsharp mask");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (amount or radius 0, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+void drawAddNoiseDialog(AppState& st) {
+  static NoiseParams params;  // amount 0, Gaussian, not monochrome, seed 0 at struct default
+  static int distributionIdx = 1;  // 0 = Uniform, 1 = Gaussian -- matches params' own default
+  static std::string status;
+
+  if (g_addNoiseRequested) {
+    g_addNoiseRequested = false;
+    status.clear();
+    // A fresh seed every time the dialog opens: PRD-shaped noise is
+    // reproducible GIVEN a seed (ops/Filters.hpp's "whole reproducibility
+    // contract"), which is a claim about re-running the SAME request, not
+    // about every Add Noise ever looking identical. `--selftest` pins the
+    // reproducibility half directly, by seed, rather than through this UI
+    // convenience.
+    params.seed = static_cast<uint64_t>(ImGui::GetTime() * 1e6) ^ 0x9e3779b97f4a7c15ull;
+    ImGui::OpenPopup("Add Noise");
+  }
+  if (!ImGui::BeginPopupModal("Add Noise", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Amount", &params.amount, 0.0f, 0.5f, "%.3f");
+  ImGui::RadioButton("Uniform", &distributionIdx, 0);
+  ImGui::SameLine();
+  ImGui::RadioButton("Gaussian", &distributionIdx, 1);
+  params.distribution =
+      distributionIdx == 0 ? NoiseDistribution::Uniform : NoiseDistribution::Gaussian;
+  ImGui::Checkbox("Monochrome", &params.monochrome);
+  ImGui::TextDisabled("Amount is shaper-domain (ops/Filters.hpp section 5): 0.05 is a +/-83%% "
+                      "swing in linear light at every brightness above the shadow toe.");
+  ImGui::Text("Seed: %llu", static_cast<unsigned long long>(params.seed));
+  ImGui::SameLine();
+  if (ImGui::Button("New seed"))
+    params.seed = static_cast<uint64_t>(ImGui::GetTime() * 1e6) ^ 0x9e3779b97f4a7c15ull;
+
+  OpenDocument* od = st.documents.active();
+  if (ImGui::Button("Add Noise") && od != nullptr) {
+    const FilterOpResult r = applyAddNoise(*od, params);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "add noise");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (amount 0, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------
+// The Image menu's two dialogs (PRD D17; app/FilterOps again)
+// ---------------------------------------------------------------------------
+//
+// Document-level, so there is no `PixelOpRefusal` here (app/FilterOps.hpp's
+// header argues why) -- the only failure mode is `ops/DocumentTransform`'s
+// own, a zero extent, and it is shown exactly as it comes back rather than
+// translated through a second vocabulary.
+bool g_imageSizeRequested = false;
+bool g_canvasSizeRequested = false;
+
+void drawImageSizeDialog(AppState& st) {
+  static int width = 0;
+  static int height = 0;
+  static int kernelIdx = 2;  // CatmullRom -- ops/Transform.hpp's own default
+  static std::string status;
+  static const ResampleKernel kKernels[] = {ResampleKernel::Nearest, ResampleKernel::Bilinear,
+                                            ResampleKernel::CatmullRom, ResampleKernel::Mitchell,
+                                            ResampleKernel::Lanczos3};
+
+  OpenDocument* od = st.documents.active();
+  if (g_imageSizeRequested) {
+    g_imageSizeRequested = false;
+    status.clear();
+    if (od != nullptr) {
+      width = od->document.width;
+      height = od->document.height;
+    }
+    ImGui::OpenPopup("Image Size");
+  }
+  if (!ImGui::BeginPopupModal("Image Size", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::InputInt("Width", &width);
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::InputInt("Height", &height);
+  constexpr int kKernelCount = sizeof(kKernels) / sizeof(kKernels[0]);
+  if (ImGui::BeginCombo("Resample", resampleKernelName(kKernels[kernelIdx]))) {
+    for (int i = 0; i < kKernelCount; ++i) {
+      if (ImGui::Selectable(resampleKernelName(kKernels[i]), i == kernelIdx)) kernelIdx = i;
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::TextDisabled(
+      "Every layer resamples once, RGB, masks and any Pigment latents alike "
+      "(ops/DocumentTransform.hpp); a Pigment layer's own kernel stays lobe-free "
+      "regardless of this choice.");
+
+  const bool valid = width > 0 && height > 0;
+  if (!valid) ImGui::BeginDisabled();
+  if (ImGui::Button("Resize") && od != nullptr) {
+    const DocumentOpOutcome r =
+        applyImageSize(*od, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                       kKernels[kernelIdx]);
+    status = r.ok ? std::string() : r.error;
+    if (r.ok) ImGui::CloseCurrentPopup();
+  }
+  if (!valid) ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+void drawCanvasSizeDialog(AppState& st) {
+  static int width = 0;
+  static int height = 0;
+  static int anchorIdx = 4;  // Center -- CanvasAnchor's own middle entry
+  static std::string status;
+  static const char* kAnchorGlyph[9] = {"NW", "N", "NE", "W", "*", "E", "SW", "S", "SE"};
+
+  OpenDocument* od = st.documents.active();
+  if (g_canvasSizeRequested) {
+    g_canvasSizeRequested = false;
+    status.clear();
+    if (od != nullptr) {
+      width = od->document.width;
+      height = od->document.height;
+    }
+    ImGui::OpenPopup("Canvas Size");
+  }
+  if (!ImGui::BeginPopupModal("Canvas Size", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::InputInt("Width", &width);
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::InputInt("Height", &height);
+  ImGui::TextUnformatted("Anchor");
+  // The nine-cell grid every canvas-size dialog offers, in the exact row-major
+  // order `ops/Transform.hpp`'s `CanvasAnchor` enumerators are declared in --
+  // so `anchorIdx` IS the enum's integer value and needs no lookup table
+  // between the two.
+  for (int i = 0; i < 9; ++i) {
+    if (i % 3 != 0) ImGui::SameLine();
+    ImGui::PushID(i);
+    if (ImGui::RadioButton(kAnchorGlyph[i], anchorIdx == i)) anchorIdx = i;
+    ImGui::PopID();
+  }
+  ImGui::TextDisabled("Existing pixels keep their values exactly; only the extent changes "
+                      "(ops/Transform.hpp's cropImage(), zero resamples).");
+
+  const bool valid = width > 0 && height > 0;
+  if (!valid) ImGui::BeginDisabled();
+  if (ImGui::Button("Resize") && od != nullptr) {
+    const DocumentOpOutcome r =
+        applyCanvasSize(*od, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                        static_cast<CanvasAnchor>(anchorIdx));
+    status = r.ok ? std::string() : r.error;
+    if (r.ok) ImGui::CloseCurrentPopup();
+  }
+  if (!valid) ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------
 // The menu bar's ImGui backend (ui/MenuModel.hpp)
 // ---------------------------------------------------------------------------
 //
@@ -5624,6 +5972,22 @@ MenuContext menuContextFromState(AppState& st) {
     ctx.openDocuments.push_back(familyEntry(documentDisplayName(*d) + (d->isDirty() ? " *" : ""),
                                             true, i == st.documents.activeIndex(), false,
                                             d->isDirty() ? d->unsavedWorkSummary() : std::string()));
+  }
+
+  // --- Filter / Image ------------------------------------------------
+  //
+  // The identical predicate the paint bucket and the gradient gate on
+  // (~7058 above), resolved here rather than carried as a `Layer*` -- see
+  // ui/MenuModel.hpp's own header on why the context holds no live pointer.
+  // `activeLayerOf()` on a `const OpenDocument*` is unavailable (the
+  // non-const overload only), so this reaches for the mutable one exactly
+  // as the rest of this function already has `doc` for.
+  {
+    Layer* target = doc != nullptr ? activeLayerOf(*st.documents.active()) : nullptr;
+    const PixelOpRefusal reason = pixelOpRefusalFor(target);
+    ctx.filterLayerUsable = reason == PixelOpRefusal::None;
+    if (!ctx.filterLayerUsable)
+      ctx.filterRefusalNote = pixelOpRefusalMessage(reason, target, "filter");
   }
 
   ctx.nativeAppMenuPresent = nativeMenuBarInstalled();
@@ -5932,6 +6296,16 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       st.documents.setActive(static_cast<size_t>(param));
       break;
 
+    // --- Filter -------------------------------------------------------
+    case MenuAction::GaussianBlur: g_gaussianBlurRequested = true; break;
+    case MenuAction::Sharpen:      g_sharpenRequested = true;      break;
+    case MenuAction::UnsharpMask:  g_unsharpMaskRequested = true;  break;
+    case MenuAction::AddNoise:     g_addNoiseRequested = true;     break;
+
+    // --- Image ----------------------------------------------------------
+    case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
+    case MenuAction::CanvasSize: g_canvasSizeRequested = true; break;
+
     // Not a silent default: a `MenuAction` added to the enum without a body
     // here is a menu item that draws, highlights, clicks and does absolutely
     // nothing -- which is the single worst failure a menu can have, because it
@@ -6195,6 +6569,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // again -- and it must be begun here rather than only from the menu,
   // because PRD O8's offer happens on launch, before any menu is touched.
   drawRecoveryDialog(st);
+
+  // docs/reachability-audit.md C1: the Filter menu's four dialogs and the
+  // Image menu's two, out here for the identical ID-stack reason as every
+  // dialog above.
+  drawGaussianBlurDialog(st);
+  drawSharpenDialog(st);
+  drawUnsharpMaskDialog(st);
+  drawAddNoiseDialog(st);
+  drawImageSizeDialog(st);
+  drawCanvasSizeDialog(st);
 
   // ------------------------------------------------------------ the bands
   //

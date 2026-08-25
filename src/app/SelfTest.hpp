@@ -3130,4 +3130,68 @@ bool runMenuModelTest();
 // "a refused Save left the picture untouched" is a claim about a filesystem.
 bool runOpenAnyFileTest();
 
+// **The Filter and Image menus, and app/FilterOps -- the bridge that makes
+// docs/reachability-audit.md's C1 stop being true for six of the ~93 entries
+// it names.** `runBlurTest()` and `runFiltersTest()` already prove the
+// engines; this section proves the WIRING: that a menu click reaches its own
+// engine call with its own dialog's parameters, that the active selection
+// bounds a Filter-menu pixel op the identical way it already bounds the
+// paint bucket (`runBucketRefusalTest()`), that each op is exactly one
+// `core::History` entry whose undo is exact, and that a layer kind
+// `PixelOpRefusal` cannot touch refuses by name and changes nothing. Nothing
+// here restates ops/Blur.hpp's or ops/Filters.hpp's own arithmetic claims.
+//
+// Covered, in order:
+//
+//  - **Reach, and that it is not shared.** Gaussian Blur, Sharpen and Unsharp
+//    Mask all end up inside `unsharpMaskTiles()` (Sharpen legitimately, by
+//    ops/Filters.hpp's own section 3 -- it *is* that call with the radius
+//    fixed), so the assertion that matters is not "which function ran" but
+//    "with which parameters": Sharpen's result is pinned to
+//    `kSharpenSigma` regardless of what Unsharp Mask's own radius field
+//    holds, and Unsharp Mask's radius is pinned to the dialog's field
+//    rather than to Sharpen's fixed one -- the pair a sabotage that dropped
+//    either parameter would flip. Add Noise is checked against its own
+//    seeded reference, `filterRandomUniform()`, so a wrong or default seed
+//    reddens rather than merely differing.
+//  - **The selection**, over the WHOLE excluded region rather than a sample
+//    point: a Gaussian Blur run with a partial marquee engaged leaves every
+//    probed texel outside it bit-for-bit what it was before, checked across
+//    an allocated tile so the claim cannot pass by the tile merely not
+//    existing (`runBucketRefusalTest()` section E's own discipline). A
+//    second run with NO selection touches the whole layer, so "the gate
+//    respects a selection" is distinguished from "the gate always shrinks
+//    the region".
+//  - **History.** Exactly one entry per confirmed dialog, named for the op
+//    (not "brush stroke" or a shared "filter"), and undo restores the
+//    pre-filter tiles exactly -- `memcmp` on the raw half words, the same
+//    standard app/StrokeSession's own stroke-granularity section holds
+//    itself to. An identity request (Gaussian Blur at sigma 0, Add Noise at
+//    amount 0) records NOTHING, the same "an edit that changed nothing must
+//    not create an undo step" rule `runBucketRefusalTest()` proves for the
+//    bucket.
+//  - **The refusal.** A Filter-menu op invoked on a Pigment layer and on a
+//    locked RGB layer both refuse by the SAME `PixelOpRefusal` the bucket
+//    uses, name the layer, and leave every texel -- and the revision --
+//    untouched. Reused rather than reinvented, which the assertion checks
+//    directly: the refusal reason and message for a Filter op and for the
+//    bucket, on the identical layer, agree up to the op's own name.
+//  - **Image Size and Canvas Size.** Each resamples/re-extents through
+//    `ops/DocumentTransform`, records one Structural history entry, and a
+//    1:1 request (same width and height) records none -- the document-level
+//    twin of the pixel-level no-op rule above, checked against
+//    `DocumentTransformResult::previousWidth/Height` rather than against
+//    `ok`, since `ok` is true for a no-op too.
+//  - **Enable predicates, as pure functions of constructed state, no
+//    window**: the Filter menu's four items follow `filterLayerUsable`
+//    exactly as `pixelOpWritesLayer()` says it should for an RGB layer, a
+//    Pigment layer and a locked RGB layer, matching `runMenuModelTest()`'s
+//    own style of asking `buildMenuModel()` rather than a window; the Image
+//    menu's two items follow `hasDocument` alone, with no layer-shaped
+//    refusal to check, per app/FilterOps.hpp's own argument for why a
+//    document-level op does not take one.
+//
+// Headless and GPU-free, like every ops/ section it sits beside.
+bool runFilterMenuTest();
+
 }  // namespace np

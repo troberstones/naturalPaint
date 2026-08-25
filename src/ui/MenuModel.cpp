@@ -117,6 +117,16 @@ const MenuItemSpec* specTable() {
 
     set(MenuAction::ImGuiDemo, "ImGui demo", "");
     family(MenuAction::ActivateDocument);
+
+    // --- Filter -------------------------------------------------------
+    set(MenuAction::GaussianBlur, "Gaussian Blur...", "");
+    set(MenuAction::Sharpen, "Sharpen...", "");
+    set(MenuAction::UnsharpMask, "Unsharp Mask...", "");
+    set(MenuAction::AddNoise, "Add Noise...", "");
+
+    // --- Image ----------------------------------------------------------
+    set(MenuAction::ImageSize, "Image Size...", "");
+    set(MenuAction::CanvasSize, "Canvas Size...", "");
     return true;
   }();
   (void)built;
@@ -281,6 +291,12 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Snap: return "Snap";
     case MenuAction::ImGuiDemo: return "ImGuiDemo";
     case MenuAction::ActivateDocument: return "ActivateDocument";
+    case MenuAction::GaussianBlur: return "GaussianBlur";
+    case MenuAction::Sharpen: return "Sharpen";
+    case MenuAction::UnsharpMask: return "UnsharpMask";
+    case MenuAction::AddNoise: return "AddNoise";
+    case MenuAction::ImageSize: return "ImageSize";
+    case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::Count: break;
   }
   // Not a fallback string: reaching this means an enumerator was added without
@@ -314,6 +330,19 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::SaveAs:
     case MenuAction::SaveCopy:
     case MenuAction::Revert:
+      return MenuEffect::Deferred;
+
+    // The Filter and Image dialogs, for the identical reason: each is an
+    // `ImGui::BeginPopupModal()` a native menu's AppKit-thread callback
+    // cannot open directly. `performMenuAction()` sets a request flag; the
+    // next ImGui frame opens the popup, exactly as `ExportAs` and
+    // `AddGuide` already do above.
+    case MenuAction::GaussianBlur:
+    case MenuAction::Sharpen:
+    case MenuAction::UnsharpMask:
+    case MenuAction::AddNoise:
+    case MenuAction::ImageSize:
+    case MenuAction::CanvasSize:
       return MenuEffect::Deferred;
 
     default:
@@ -441,6 +470,21 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     bar.push_back(std::move(layer));
   }
 
+  // ------------------------------------------------------------------ Image
+  //
+  // PRD D17, through ops/DocumentTransform (docs/reachability-audit.md C1).
+  // Photoshop-style and deliberately small: two of D17's three operations,
+  // both reached through app/FilterOps.hpp's `applyImageSize()` /
+  // `applyCanvasSize()`. Crop and rotate/flip-canvas are not here -- see
+  // `MenuAction::ImageSize`'s own comment in the header for why an unwired
+  // item is left out of the tree rather than added disabled.
+  {
+    MenuNode image = submenu("Image");
+    image.children.push_back(item(MenuAction::ImageSize, ctx.hasDocument));
+    image.children.push_back(item(MenuAction::CanvasSize, ctx.hasDocument));
+    bar.push_back(std::move(image));
+  }
+
   // ---------------------------------------------------------------- Medium
   {
     MenuNode medium = submenu("Medium");
@@ -459,6 +503,37 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     goodies.children.push_back(check(MenuAction::PauseSolver, ctx.paused));
     goodies.children.push_back(item(MenuAction::ReloadShaders));
     bar.push_back(std::move(goodies));
+  }
+
+  // ---------------------------------------------------------------- Filter
+  //
+  // ops/Blur + ops/Filters, through app/FilterOps.hpp (PRD D4/D5;
+  // docs/reachability-audit.md C1). Four items share one enable predicate
+  // and one refusal sentence -- `ctx.filterLayerUsable` /
+  // `ctx.filterRefusalNote` -- because all four ask the identical question
+  // of the active layer ("can it take a pixel op"), the same one the paint
+  // bucket and the gradient already ask via `PixelOpRefusal`.
+  //
+  // Grouped as `ops/Filters.hpp` itself groups them: the blur-based
+  // sharpening pair together, Add Noise set apart -- Sharpen is
+  // `unsharpMaskTiles()` with the radius fixed (that header's own section 3
+  // says so), so it sits beside Unsharp Mask rather than beside Gaussian
+  // Blur, which is a different engine entirely.
+  {
+    MenuNode filter = submenu("Filter");
+    std::vector<MenuNode>& flt = filter.children;
+    auto filterItem = [&](MenuAction action) {
+      MenuNode n = item(action, ctx.filterLayerUsable);
+      if (!ctx.filterLayerUsable) n.tooltip = ctx.filterRefusalNote;
+      return n;
+    };
+    flt.push_back(filterItem(MenuAction::GaussianBlur));
+    flt.push_back(separator());
+    flt.push_back(filterItem(MenuAction::Sharpen));
+    flt.push_back(filterItem(MenuAction::UnsharpMask));
+    flt.push_back(separator());
+    flt.push_back(filterItem(MenuAction::AddNoise));
+    bar.push_back(std::move(filter));
   }
 
   // ------------------------------------------------------------------ View
