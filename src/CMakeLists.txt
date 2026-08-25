@@ -79,6 +79,7 @@ add_executable(naturalPaint
   app/selftest/LayerPanel2a.cpp
   app/selftest/LayerStack.cpp
   app/selftest/LutBake.cpp
+  app/selftest/MenuBasics.cpp
   app/selftest/MenuModel.cpp
   app/selftest/MergeFamily.cpp
   app/selftest/MipPyramid.cpp

@@ -118,14 +118,22 @@ bool runMenuModelTest() {
 
   std::printf("  -- A. the ids: one action, one spec, and no two the same --\n");
 
-  // **41 is the count of `ImGui::MenuItem()` call sites in the block this
+  // **41 was the count of `ImGui::MenuItem()` call sites in the block this
   // model replaced**, counted rather than taken on trust (the brief that
-  // commissioned this said 43). It is pinned because the number is the only
-  // thing standing between "the extraction is complete" and "the extraction
-  // dropped two items nobody has opened that menu since".
-  check(kMenuActionCount == 41,
-        "ids: exactly 41 actions -- one per MenuItem() call site the extraction "
-        "replaced, so an item lost in a later edit fails here");
+  // commissioned this said 43). It stayed pinned because the number was the
+  // only thing standing between "the extraction is complete" and "the
+  // extraction dropped two items nobody has opened that menu since".
+  //
+  // **52 now** -- track7/menubasics (docs/reachability-audit.md D1, D2) added
+  // the eleven Edit-menu actions the audit found written, tested and reachable
+  // by nothing but a key: Undo, Redo, Cut, Copy, Copy Merged, Paste, Delete,
+  // Select All, Deselect, Reselect, Invert Selection. This literal is exactly
+  // as brittle to the NEXT track that adds an action as it was before, and
+  // that brittleness is the point -- see the comment two lines up.
+  check(kMenuActionCount == 52,
+        "ids: exactly 52 actions -- one per MenuItem() call site the extraction "
+        "replaced, plus D1/D2's eleven Edit-menu additions, so an item lost in a "
+        "later edit fails here");
 
   {
     std::set<MenuAction> seen;
@@ -474,8 +482,14 @@ bool runMenuModelTest() {
     check(allCommandModified,
           "keys: every claimed chord carries Command -- a bare-letter key equivalent is "
           "consumed globally, including while the user is typing into a text field");
-    check(claimed == 11,
-          "keys: exactly 11 chords are claimed -- pinned, because claiming one more "
+    // 11 + D1/D2's ten (⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⇧⌘C, ⌘V, ⌘A, ⌘D, ⇧⌘D, ⇧⌘I). Delete
+    // Selection is the deliberate eleventh of the eleven new actions that does
+    // NOT claim one -- `keymaps/default.json` binds it to bare Backspace/
+    // Delete, and the rule two blocks up ("every claimed chord carries
+    // Command") is exactly why it stays unclaimed rather than swallowing the
+    // Delete key out of every text field in the application.
+    check(claimed == 21,
+          "keys: exactly 21 chords are claimed -- pinned, because claiming one more "
           "silently takes that key away from SDL and from keymaps/default.json");
   }
 

@@ -3012,6 +3012,57 @@ bool runCloseDecisionTest();
 // exist is refused by name" cannot be asserted without a filesystem.
 bool runQuitGuardTest();
 
+// **docs/reachability-audit.md, items D1, D2, D4 and A4** -- four small gaps
+// in what the menu bar and the command line actually reach, verified beside
+// (and deliberately not duplicating) `app/selftest/MenuModel.cpp`'s general
+// coverage of the menu model itself.
+//
+// What is asserted:
+//
+//  - **D1, undo/redo exist and agree.** `MenuAction::Undo`/`Redo` are named,
+//    claim ⌘Z / ⇧⌘Z, and those chords resolve in the real
+//    `keymaps/default.json` to `"undo"`/`"redo"` -- the pair `--selftest`
+//    could not check at all before this step, because neither the
+//    enumerator nor the keymap action existed.
+//  - **D1, one implementation.** `ui/MacPaintUI.hpp`'s `moveHistoryCursor()`
+//    -- the function the HISTORY panel's buttons and the title bar's already
+//    call -- actually moves a constructed `History`'s cursor both
+//    directions, and `performMenuAction()` for `Undo`/`Redo` sets the exact
+//    `AppState::requestUndo`/`requestRedo` flags the keymap dispatch in
+//    main.cpp sets for the same two chords (asserted on that observable
+//    flag, not on which function ran).
+//  - **D2, the nine are all present and none is miswired.** Every one of
+//    Cut, Copy, Copy Merged, Paste, Delete, Select All, Deselect, Reselect
+//    and Invert Selection appears in the Edit menu exactly once, and each
+//    one's claimed chord resolves in `keymaps/default.json` to the specific
+//    action name `main.cpp`'s dispatch already uses for that keystroke --
+//    the assertion that reddens if, say, Copy Merged were wired to plain
+//    Copy.
+//  - **D2, the enable predicates.** Paste disabled against an empty
+//    clipboard and enabled against a full one; Cut and Delete disabled on a
+//    locked layer; Deselect and Invert Selection disabled with no selection;
+//    Reselect disabled with nothing to restore -- each a constructed
+//    `MenuContext`, no window, no document.
+//  - **A4, the Goodies menu obeys the palette's own rule.**
+//    `ui/MacPaintUI.hpp`'s `toolMenuFamily()` -- what `menuContextFromState()`
+//    assigns to `MenuContext::tools` -- enables exactly the tools
+//    `toolImplemented()` says are built, counted against that predicate
+//    rather than a literal number, and a disabled entry's tooltip is the
+//    identical "Not built yet." sentence the palette shows.
+//  - **D4, positional routing is a pure predicate.** `app/OpenAnyFile.hpp`'s
+//    `looksLikePositionalArgument()` -- the classification main.cpp's flag
+//    loop now calls instead of carrying its own copy -- accepts a bare
+//    filename and refuses every string this build already recognises as a
+//    flag.
+//
+// Headless throughout: every `MenuContext` and every `OpenDocument` here is
+// hand-built, `moveHistoryCursor()` is called with `sim` left null (the idle
+// state ADR-0001 already assumes, which settles nothing), and nothing reads
+// or writes the user's real recent-documents file --
+// `menuContextFromState()` itself is deliberately NOT called for that reason;
+// `toolMenuFamily()` is the piece of it this section needs.
+bool runMenuBasicsTest();
+
 // **ui/MenuModel -- what the menus ARE, separated from how they are drawn.**
 //
 // The menu bar used to be forty-one `ImGui::MenuItem()` call sites, each of

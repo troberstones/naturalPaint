@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
@@ -167,6 +168,32 @@ struct OpenAnyResult {
 // `recent`, when non-null, records `path` **on a `.npaint` open only** -- see
 // this header's recent-list section.
 OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* recent = nullptr);
+
+// --- The command line -------------------------------------------------------
+
+// D4 (docs/reachability-audit.md): whether a bare `argv[i]` names a file to
+// hand to `openAnyFileAsDocument()` above, rather than one of `main()`'s own
+// `--flag` strings. `naturalPaint foo.npaint` used to open nothing -- the
+// flag loop matched only exact `--flag` spellings and fell through every
+// positional argument with no branch to catch it.
+//
+// Pulled out as a pure predicate rather than left inline in that loop:
+// everything else in `main()`'s argument parsing needs a live `argc`/`argv`
+// cursor to consume a flag's own value (`--screenshot <path> [frames]`), and
+// this is the one decision that does not, so it is the one worth asserting
+// from `--selftest` without constructing an argv. `main.cpp` still owns the
+// collection itself -- it needs `argv[i]`, not a `std::string_view` copied
+// out of one -- but the classification lives here so a later flag added to
+// that loop cannot silently start being read as a filename, or vice versa,
+// without a test noticing.
+//
+// **The rule: not empty, and does not start with `-`.** A name that happens
+// to collide with a recognised flag's exact spelling is read as the flag --
+// every `else if` above this one in `main()`'s loop already claims its own
+// spelling first, and this predicate is only ever consulted for what none of
+// them matched. See this header's own module comment for why a `--`
+// end-of-flags escape hatch is not added here: nothing has asked for one.
+bool looksLikePositionalArgument(std::string_view arg) noexcept;
 
 // --- Drag and drop ---------------------------------------------------------
 

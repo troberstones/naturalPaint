@@ -64,6 +64,39 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Quit, "Quit", "Cmd+Q");
     table[static_cast<size_t>(MenuAction::Quit)].omitWhenNativeAppMenu = true;
 
+    // D1: Undo/Redo did not exist as menu actions, keymap action names, or
+    // enumerators until this step -- see this header's own comment on why
+    // that made ⌘Z unbindable rather than merely unbound. Matches
+    // docs/shortcuts.md section 4 and Photoshop exactly; no deviation to
+    // record.
+    set(MenuAction::Undo, "Undo", "Cmd+Z",
+        MenuKeyEquivalent{'z', kMenuModCmd, "undo"});
+    set(MenuAction::Redo, "Redo", "Cmd+Shift+Z",
+        MenuKeyEquivalent{'z', kMenuModCmd | kMenuModShift, "redo"});
+
+    // D2: the other nine. Chords are `keymaps/default.json`'s own, already
+    // shipped and already resolving through main.cpp's dispatch -- this is
+    // the menu catching up to keys that worked all along, not a new binding.
+    set(MenuAction::Cut, "Cut", "Cmd+X", MenuKeyEquivalent{'x', kMenuModCmd, "cut"});
+    set(MenuAction::Copy, "Copy", "Cmd+C", MenuKeyEquivalent{'c', kMenuModCmd, "copy"});
+    set(MenuAction::CopyMerged, "Copy Merged", "Cmd+Shift+C",
+        MenuKeyEquivalent{'c', kMenuModCmd | kMenuModShift, "copy_merged"});
+    set(MenuAction::Paste, "Paste", "Cmd+V", MenuKeyEquivalent{'v', kMenuModCmd, "paste"});
+    // No key equivalent: `keymaps/default.json` binds Delete Selection to bare
+    // Backspace/Delete, and MenuKeyEquivalent's own rule (this header, above)
+    // is that a chord with no Command modifier must not be claimed here --
+    // claiming Backspace would swallow it out of every text field in the
+    // application, starting with the layer-rename box one panel over.
+    set(MenuAction::DeleteSelection, "Delete", "Delete");
+    set(MenuAction::SelectAll, "Select All", "Cmd+A",
+        MenuKeyEquivalent{'a', kMenuModCmd, "select_all"});
+    set(MenuAction::Deselect, "Deselect", "Cmd+D",
+        MenuKeyEquivalent{'d', kMenuModCmd, "deselect"});
+    set(MenuAction::Reselect, "Reselect", "Cmd+Shift+D",
+        MenuKeyEquivalent{'d', kMenuModCmd | kMenuModShift, "reselect"});
+    set(MenuAction::InvertSelection, "Invert Selection", "Cmd+Shift+I",
+        MenuKeyEquivalent{'i', kMenuModCmd | kMenuModShift, "invert_selection"});
+
     set(MenuAction::ClearCanvas, "Clear Canvas", "Cmd+K",
         MenuKeyEquivalent{'k', kMenuModCmd, "clear_canvas"});
 
@@ -257,6 +290,17 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::ExportAs: return "ExportAs";
     case MenuAction::ExportStates: return "ExportStates";
     case MenuAction::Quit: return "Quit";
+    case MenuAction::Undo: return "Undo";
+    case MenuAction::Redo: return "Redo";
+    case MenuAction::Cut: return "Cut";
+    case MenuAction::Copy: return "Copy";
+    case MenuAction::CopyMerged: return "CopyMerged";
+    case MenuAction::Paste: return "Paste";
+    case MenuAction::DeleteSelection: return "DeleteSelection";
+    case MenuAction::SelectAll: return "SelectAll";
+    case MenuAction::Deselect: return "Deselect";
+    case MenuAction::Reselect: return "Reselect";
+    case MenuAction::InvertSelection: return "InvertSelection";
     case MenuAction::ClearCanvas: return "ClearCanvas";
     case MenuAction::LayerCommandItem: return "LayerCommandItem";
     case MenuAction::LayerSetCommandItem: return "LayerSetCommandItem";
@@ -401,9 +445,35 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
   }
 
   // ------------------------------------------------------------------ Edit
+  //
+  // D1 + D2 of docs/reachability-audit.md: this menu held exactly one item
+  // ("Clear Canvas") while nine fully-wired clipboard/selection commands and
+  // undo/redo were reachable by keyboard only. Ordered the way Photoshop
+  // groups them -- history, then clipboard, then selection -- even though the
+  // selection four (Select All/Deselect/Reselect/Invert) are guests here: see
+  // the `MenuAction` enum's own Edit-section comment (ui/MenuModel.hpp) for
+  // why they are not in a `Select` menu yet. `Clear Canvas` moves to its own
+  // group at the bottom -- it is not a clipboard or selection operation, it
+  // is "start the solver canvas over", and grouping it with Cut/Copy would
+  // suggest a kinship that is not there.
   {
     MenuNode edit = submenu("Edit");
-    edit.children.push_back(item(MenuAction::ClearCanvas));
+    std::vector<MenuNode>& e = edit.children;
+    e.push_back(item(MenuAction::Undo, ctx.canUndo));
+    e.push_back(item(MenuAction::Redo, ctx.canRedo));
+    e.push_back(separator());
+    e.push_back(item(MenuAction::Cut, ctx.hasEditableLayer));
+    e.push_back(item(MenuAction::Copy, ctx.hasActiveLayer));
+    e.push_back(item(MenuAction::CopyMerged, ctx.hasDocument));
+    e.push_back(item(MenuAction::Paste, ctx.hasDocument && ctx.clipboardHasContent));
+    e.push_back(item(MenuAction::DeleteSelection, ctx.hasEditableLayer));
+    e.push_back(separator());
+    e.push_back(item(MenuAction::SelectAll, ctx.hasDocument));
+    e.push_back(item(MenuAction::Deselect, ctx.hasSelection));
+    e.push_back(item(MenuAction::Reselect, ctx.hasLastDeselected));
+    e.push_back(item(MenuAction::InvertSelection, ctx.hasSelection));
+    e.push_back(separator());
+    e.push_back(item(MenuAction::ClearCanvas));
     bar.push_back(std::move(edit));
   }
 

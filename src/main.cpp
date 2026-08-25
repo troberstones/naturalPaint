@@ -1009,6 +1009,31 @@ int main(int argc, char** argv) {
   bool openExportStates = false;
   const char* exportStatesFolder = nullptr;
   bool openLayerProperties = false;
+  // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
+  // nothing, because this loop matched only `--flag` strings and fell
+  // through every positional argument with no `else` to catch it -- silent,
+  // like everything else this audit is about. Collected here rather than
+  // opened on the spot: `openAnyFileAsDocument()` (app/OpenAnyFile.hpp) needs
+  // `st.documents` and `st.recentDocuments`, neither of which exists yet this
+  // early in main() -- the identical reason `--demo-document` and its
+  // siblings above are flags collected here and applied later, next to where
+  // the session's first document is created.
+  //
+  // **Multiple arguments each become their own document/tab**, opened in the
+  // order given. That is the same reading `File > Open...`'s own multi-select
+  // gives, and it is the one that cannot silently discard the second file the
+  // way "use the first, ignore the rest" would -- a user who typed two names
+  // on a command line meant both.
+  //
+  // **A name that collides with a flag is read as the flag.** `naturalPaint
+  // --quit` opens no document named `--quit`; every branch above already
+  // claims its own exact spelling first, and this only ever sees what none of
+  // them matched. A flag string is not a legal path component on any
+  // platform this project ships for without deliberately naming a file that
+  // way, so the existing flags keep first claim on their own spellings rather
+  // than this step inventing a `--` end-of-flags escape hatch nothing has
+  // asked for yet.
+  std::vector<std::string> positionalPaths;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
     if (a == "--selftest") {
@@ -1142,7 +1167,19 @@ int main(int argc, char** argv) {
       // --open-export-states one dialog over: it too is opened by a click and
       // --screenshot has no input. See AppState::openLayerProperties.
       openLayerProperties = true;
+    } else if (np::looksLikePositionalArgument(a)) {
+      // D4: the one case none of the branches above matched -- a bare
+      // filename. See this loop's own comment, just above it, and
+      // `looksLikePositionalArgument()`'s (app/OpenAnyFile.hpp) for why it is
+      // collected here and why a name that collides with a flag is read as
+      // the flag: this predicate is only ever consulted for what none of the
+      // exact-spelling branches above it matched.
+      positionalPaths.emplace_back(a);
     }
+    // An argument that starts with '-' and matches none of the flags above
+    // falls through here unchanged -- pre-existing behaviour this step does
+    // not touch, and out of scope for D4, which is about a bare filename
+    // opening nothing, not about diagnosing an unrecognised flag.
   }
 
   if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -1846,6 +1883,15 @@ int main(int argc, char** argv) {
     // with no caller outside this suite, and a quit that never asked a single
     // document whether it was dirty.
     const bool quitGuardOk = np::runQuitGuardTest();
+    // docs/reachability-audit.md D1, D2, D4, A4: undo/redo reachable by
+    // keyboard and menu (not mouse-only), the Edit menu's nine
+    // clipboard/selection commands correctly wired and correctly
+    // enabled/disabled, the Goodies menu obeying the same disabled-tool
+    // guard the palette does, and a positional command-line argument opening
+    // a document. Headless; deliberately does not call
+    // menuContextFromState() itself, so it never touches the user's real
+    // recent-documents file.
+    const bool menuBasicsOk = np::runMenuBasicsTest();
     // ui/MenuModel: the menu bar as data, so that a native macOS menu and the
     // ImGui one can be two renderings of ONE set of actions rather than two
     // copies of them. Headless -- no window, no GPU, no ImGui context, no
@@ -1890,7 +1936,7 @@ int main(int argc, char** argv) {
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
-                    quitGuardOk && menuModelOk && openAnyFileOk;
+                    quitGuardOk && menuBasicsOk && menuModelOk && openAnyFileOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -2122,6 +2168,55 @@ int main(int argc, char** argv) {
   // remember where a sentence is enough.
   if (splitDemo) buildSplitDemo(st, splitDemoMode);
 
+  // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` on the command
+  // line. After every `--*-demo` fixture rather than interleaved with them,
+  // deliberately -- those flags all act on "the" active document assuming
+  // there is exactly one, and a positional argument opening its own document
+  // partway through that sequence would silently redirect a later fixture at
+  // a file it was never meant to touch. Positional files are the true last
+  // word instead: `DocumentSession::add()` makes the last one opened active,
+  // so a real file given alongside a demo flag wins the tab a human would
+  // expect it to.
+  //
+  // Routed through `openAnyFileAsDocument()` (app/OpenAnyFile.hpp) -- the
+  // SAME function `File > Open...` calls (ui/MacPaintUI.cpp's
+  // `applyDocumentPathAction()`, the `DocPathAction::Open` case) -- so a
+  // `.npaint` or any decodable image opens exactly as it would from the
+  // menu, sniffed from its bytes rather than its extension. There is no
+  // second dispatch path here: this loop is the same three lines that
+  // function's Open case is, because that function itself is file-local to
+  // ui/MacPaintUI.cpp and this is a different translation unit.
+  //
+  // `st.recentDocuments` is loaded explicitly first -- it would otherwise
+  // still be the empty, never-read default `AppState` starts with (the lazy
+  // load normally happens on the first UI frame, in
+  // `menuContextFromState()`, which has not run yet at startup), and saving
+  // an empty-plus-one-entry list over the real one on disk would be a
+  // command-line launch quietly truncating the user's actual recent-file
+  // history to a single line.
+  //
+  // A refusal -- missing file, unreadable, a format this build cannot read --
+  // names the file on stderr and changes nothing else. It must not stop the
+  // application from starting: a typo in a shell script should open an empty
+  // canvas and say why, not make naturalPaint impossible to launch.
+  if (!positionalPaths.empty()) {
+    if (!st.recentDocumentsLoaded) {
+      st.recentDocumentsLoaded = true;
+      st.recentDocuments.loadFromFile(np::defaultRecentDocumentsPath());
+    }
+    for (const std::string& path : positionalPaths) {
+      np::OpenAnyResult opened = np::openAnyFileAsDocument(path, &st.recentDocuments);
+      if (!opened.status.empty()) std::fprintf(stderr, "[open] %s\n", opened.status.c_str());
+      for (const std::string& w : opened.warnings)
+        std::fprintf(stderr, "[open] ! %s\n", w.c_str());
+      if (opened.ok) {
+        st.documents.add(std::move(opened.document));
+        std::string recentSaveError;
+        st.recentDocuments.saveToFile(np::defaultRecentDocumentsPath(), &recentSaveError);
+      }
+    }
+  }
+
   // st.opStack starts empty -- PLAN.md Phase 3 step 8's real op-authoring
   // UI (ui/MacPaintUI.cpp's GRADE section: add/reorder/toggle/delete, plus
   // the curve widget) is how a user populates it now. Earlier, before this
@@ -2332,6 +2427,18 @@ int main(int argc, char** argv) {
         else if (action == "cut") st.requestCut = true;
         else if (action == "paste") st.requestPaste = true;
         else if (action == "delete_selection") st.requestDeleteSelection = true;
+        // D1 (reachability audit): ⌘Z/⇧⌘Z did not exist as keymap actions at
+        // all -- there was no "undo"/"redo" name for `resolve()` to return,
+        // so the chord had nowhere to go even before asking whether anything
+        // consumed it. Same request-flag shape as the selection commands
+        // just above and for the identical reason: undoing has to settle
+        // wet paint first (app/StrokeBake.hpp section 4), which needs the
+        // sim, which main.cpp's key handler does not have a document to aim
+        // it at yet. ui/MacPaintUI.cpp's `moveHistoryCursor()` is the one
+        // place that happens, and the title-bar buttons and the Edit menu's
+        // Undo/Redo call it too -- see AppState::requestUndo's comment.
+        else if (action == "undo") st.requestUndo = true;
+        else if (action == "redo") st.requestRedo = true;
         // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping",
         // PRD Q5-Q7): guides/snapping/grid toggles, matching
         // docs/shortcuts.md section 3's Cmd+; / Cmd+Shift+; / Cmd+'.

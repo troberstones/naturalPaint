@@ -4012,9 +4012,11 @@ namespace {
 // bake can append or amend an entry, so `cursor() - 1` evaluated beforehand
 // is off by one: the user sees "document + wet stroke", the stroke becomes
 // the newest entry, and one undo should land on the document that was under
-// it. Every call site below therefore settles first and reads the cursor
-// second. Row clicks in the panel are identified by *serial* and survive
-// either order, but they go through the same path so there is one rule.
+// it. `moveHistoryCursor()` (defined after this translation unit's anonymous
+// namespaces close, so `--selftest` can reach it) is the one caller and
+// settles first for exactly this reason. Row clicks in the HISTORY panel are
+// identified by *serial* and survive either order, but they go through the
+// same path so there is one rule regardless.
 void settleWetPaintBeforeHistoryMove(AppState& st, std::unique_ptr<PaintSim>& sim,
                                      GpuContext& gpu, OpenDocument& od) {
   // No sim means no solver fields and so nothing wet to settle -- the common
@@ -4033,39 +4035,33 @@ void drawHistorySection(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext
 
   History& h = od->history;
   std::string& lastError = g_historyError;
-  // Settles before the caller computes its target -- see
-  // settleWetPaintBeforeHistoryMove()'s comment on why the order matters.
-  auto settle = [&]() { settleWetPaintBeforeHistoryMove(st, sim, gpu, *od); };
   auto install = [&](const HistoryPanelClick& r) { installHistoryCursor(*od, r); };
 
   const std::vector<HistoryPanelRow> rows = historyPanelRows(h);
   ImGui::TextDisabled("%zu state(s), cursor on %zu", rows.size(),
                       rows.empty() ? 0 : h.cursor() + 1);
 
-  // Undo and Redo go through the panel's own click rather than
-  // `History::undo()` / `redo()`, so there is exactly one path from a widget to
-  // a cursor move and exactly one place a refusal can come from. The two guards
-  // are `canUndo()` / `canRedo()`, so the neighbouring row always exists and
-  // `cursor() - 1` cannot wrap.
+  // Undo and Redo go through `moveHistoryCursor()` -- the same function the
+  // title bar's pair, the Edit menu's Undo/Redo and ⌘Z/⇧⌘Z all call (D1,
+  // docs/reachability-audit.md) -- so there is exactly one path from any of
+  // the four to a cursor move and exactly one place a refusal can come from.
+  // The two guards are `canUndo()` / `canRedo()`, so the neighbouring row
+  // always exists and `cursor() - 1` cannot wrap.
   ImGui::BeginDisabled(!h.canUndo());
-  if (ImGui::SmallButton("Undo")) {
-    settle();
-    install(historyPanelClick(h, historySerialForRow(h, h.cursor() - 1)));
-  }
+  if (ImGui::SmallButton("Undo")) moveHistoryCursor(st, sim, gpu, *od, -1);
   ImGui::EndDisabled();
   ImGui::SameLine();
   ImGui::BeginDisabled(!h.canRedo());
-  // Redo settles too, and the consequence is worth stating: if paint was
-  // applied after an undo, the forced bake records a new entry, which
-  // truncates the redo tail -- so the target computed on the next line
-  // correctly finds no such row and the click refuses by name. That is the
-  // honest answer ("you painted after undoing, so there is nothing to redo")
-  // and it is only reachable because the target is computed AFTER the settle.
-  // Computing it first would install a state the history no longer holds.
-  if (ImGui::SmallButton("Redo")) {
-    settle();
-    install(historyPanelClick(h, historySerialForRow(h, h.cursor() + 1)));
-  }
+  // Redo settles too, inside `moveHistoryCursor()`, and the consequence is
+  // worth stating: if paint was applied after an undo, the forced bake
+  // records a new entry, which truncates the redo tail -- so the target
+  // computed after the settle correctly finds no such row and the move
+  // refuses by name. That is the honest answer ("you painted after undoing,
+  // so there is nothing to redo") and it is only reachable because the
+  // target is computed AFTER the settle, which is why
+  // `settleWetPaintBeforeHistoryMove()`'s own comment insists on that order
+  // and `moveHistoryCursor()` is the only place doing both now.
+  if (ImGui::SmallButton("Redo")) moveHistoryCursor(st, sim, gpu, *od, +1);
   ImGui::EndDisabled();
   ImGui::SameLine();
   if (ImGui::SmallButton("Snapshot"))
@@ -5533,6 +5529,24 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.hasDocument = doc != nullptr;
   ctx.hasPath = ctx.hasDocument && doc->hasPath();
 
+  // --- Edit -----------------------------------------------------------------
+  //
+  // D1 + D2: mirrors the guards at the one place each of these commands is
+  // actually performed -- `moveHistoryCursor()`'s callers for undo/redo, the
+  // request-flag consumption block a few hundred lines down in this file for
+  // the clipboard nine. See ui/MenuModel.hpp's `MenuContext::canUndo` comment
+  // for why that is copied rather than shared.
+  {
+    const Layer* target = doc != nullptr ? activeLayerOf(*doc) : nullptr;
+    ctx.canUndo = doc != nullptr && doc->history.canUndo();
+    ctx.canRedo = doc != nullptr && doc->history.canRedo();
+    ctx.hasActiveLayer = target != nullptr;
+    ctx.hasEditableLayer = target != nullptr && !target->locked;
+    ctx.clipboardHasContent = !st.clipboard.empty();
+    ctx.hasSelection = doc != nullptr && doc->selection.has_value();
+    ctx.hasLastDeselected = doc != nullptr && doc->lastDeselected.has_value();
+  }
+
   // --- Open Recent --------------------------------------------------------
   // A missing entry is shown, greyed, with the reason in its tooltip -- never
   // dropped behind the user's back (app/DocumentLifecycle.hpp argues why).
@@ -5600,10 +5614,15 @@ MenuContext menuContextFromState(AppState& st) {
     const PaintMode m = static_cast<PaintMode>(i);
     ctx.paintModes.push_back(familyEntry(paintModeName(m), true, st.mode == m));
   }
-  for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
-    const Tool t = static_cast<Tool>(i);
-    ctx.tools.push_back(familyEntry(toolName(t), true, st.brush.tool == t));
-  }
+  // A4 (reachability audit): see `toolMenuFamily()`'s own comment
+  // (ui/MacPaintUI.hpp) for the bug this replaced -- this loop used to pass
+  // `enabled = true` unconditionally, so all 27 tools were freely selectable
+  // from Goodies while `toolButton()` (AtelierChrome.cpp:456) gated the same
+  // list correctly one panel over. Factored out rather than fixed in place
+  // so `--selftest` can call the exact predicate the menu uses without
+  // needing an `AppState` or touching the recent-documents file this
+  // function's own first line reads.
+  ctx.tools = toolMenuFamily(st.brush.tool);
   ctx.paused = st.paused;
 
   // --- View ---------------------------------------------------------------
@@ -5675,6 +5694,36 @@ void drawMenuNodes(AppState& st, const std::vector<MenuNode>& nodes, uint32_t ca
 }
 
 }  // namespace
+
+// Declared in ui/MacPaintUI.hpp, which carries the full argument for why this
+// exists and why it is public. Defined here, after the anonymous namespace
+// closes, for the same reason `performMenuAction()` just below is: it calls
+// two names that stay file-local (`settleWetPaintBeforeHistoryMove()`,
+// `installHistoryCursor()`), which this translation unit can still see this
+// far down even though neither has external linkage.
+void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
+                       OpenDocument& od, int direction) {
+  settleWetPaintBeforeHistoryMove(st, sim, gpu, od);
+  History& h = od.history;
+  installHistoryCursor(od, historyPanelClick(h, historySerialForRow(h, h.cursor() + direction)));
+}
+
+// Declared in ui/MacPaintUI.hpp, which carries the full argument. Defined
+// here, after the anonymous namespace closes, so it can still call
+// `familyEntry()` (file-local, defined above) while itself having the
+// external linkage `menuContextFromState()` and `app/selftest/MenuBasics.cpp`
+// both need -- the former to assign `ctx.tools`, the latter to assert the
+// A4 fix directly.
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current) {
+  std::vector<MenuFamilyEntry> tools;
+  for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+    const Tool t = static_cast<Tool>(i);
+    const bool implemented = toolImplemented(t);
+    tools.push_back(familyEntry(toolName(t), implemented, current == t, false,
+                                implemented ? std::string() : toolTooltip(t)));
+  }
+  return tools;
+}
 
 // ---------------------------------------------------------------------------
 // **The one place a menu action is performed.**
@@ -5853,6 +5902,53 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       break;
 
     // --- Edit -------------------------------------------------------------
+    //
+    // D1 + D2 (docs/reachability-audit.md). Every one of these eleven sets
+    // the SAME request flag main.cpp's keymap dispatch already sets for the
+    // matching chord (see that file's SDL_EVENT_KEY_DOWN block) and, for
+    // Undo/Redo, that the title-bar buttons and the HISTORY panel already
+    // drive through `moveHistoryCursor()`. Nothing here performs an edit
+    // directly -- the request-flag consumption a few hundred lines down in
+    // this file (drawUI()'s "selection and clipboard commands" block, and
+    // its undo/redo block just above it) is the one place that does, because
+    // that is the one place with an `OpenDocument&`, a `sim` and a `gpu` to
+    // do it with. A menu callback and a native one both fire outside that
+    // context, which is exactly the constraint the flag exists to route
+    // around.
+    case MenuAction::Undo:
+      st.requestUndo = true;
+      break;
+    case MenuAction::Redo:
+      st.requestRedo = true;
+      break;
+    case MenuAction::Cut:
+      st.requestCut = true;
+      break;
+    case MenuAction::Copy:
+      st.requestCopy = true;
+      break;
+    case MenuAction::CopyMerged:
+      st.requestCopyMerged = true;
+      break;
+    case MenuAction::Paste:
+      st.requestPaste = true;
+      break;
+    case MenuAction::DeleteSelection:
+      st.requestDeleteSelection = true;
+      break;
+    case MenuAction::SelectAll:
+      st.requestSelectAll = true;
+      break;
+    case MenuAction::Deselect:
+      st.requestDeselect = true;
+      break;
+    case MenuAction::Reselect:
+      st.requestReselect = true;
+      break;
+    case MenuAction::InvertSelection:
+      st.requestInvertSelection = true;
+      break;
+
     case MenuAction::ClearCanvas:
       st.requestClear = true;
       break;
@@ -6102,24 +6198,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const float redoW = ImGui::CalcTextSize("Redo").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float statusW = ImGui::CalcTextSize(status).x;
     ImGui::SameLine(ImGui::GetWindowWidth() - undoW - redoW - statusW - 40.0f);
+    // D1: routed through `moveHistoryCursor()`, the same function the
+    // HISTORY panel's pair, the Edit menu's Undo/Redo and ⌘Z/⇧⌘Z all call --
+    // one implementation, four callers, so the title bar cannot drift from
+    // what a keystroke does.
     ImGui::BeginDisabled(titleHistory == nullptr || !titleHistory->canUndo());
-    if (ImGui::SmallButton("Undo")) {
-      settleWetPaintBeforeHistoryMove(st, sim, gpu, *activeForBar);
-      installHistoryCursor(*activeForBar,
-                           historyPanelClick(*titleHistory,
-                                             historySerialForRow(*titleHistory,
-                                                                 titleHistory->cursor() - 1)));
-    }
+    if (ImGui::SmallButton("Undo")) moveHistoryCursor(st, sim, gpu, *activeForBar, -1);
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(titleHistory == nullptr || !titleHistory->canRedo());
-    if (ImGui::SmallButton("Redo")) {
-      settleWetPaintBeforeHistoryMove(st, sim, gpu, *activeForBar);
-      installHistoryCursor(*activeForBar,
-                           historyPanelClick(*titleHistory,
-                                             historySerialForRow(*titleHistory,
-                                                                 titleHistory->cursor() + 1)));
-    }
+    if (ImGui::SmallButton("Redo")) moveHistoryCursor(st, sim, gpu, *activeForBar, +1);
     ImGui::EndDisabled();
     ImGui::SameLine(ImGui::GetWindowWidth() - statusW - 12.0f);
     ImGui::TextDisabled("%s", status);
@@ -6777,6 +6865,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     {
       OpenDocument* od = st.documents.active();
       Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
+
+      // D1 (docs/reachability-audit.md): undo/redo's keymap-and-menu path.
+      // Serviced here for the identical reason the block below is -- ⌘Z and
+      // the Edit menu's Undo/Redo both fire from places with no OpenDocument
+      // and no sim to settle wet paint against -- and guarded the same way
+      // the HISTORY panel's and title bar's own buttons already are, so a
+      // chord fired with nothing to undo, or a native menu callback racing a
+      // document close, is a no-op rather than a call into
+      // `moveHistoryCursor()` against a history that is not there.
+      if (od != nullptr) {
+        History& h = od->history;
+        if (st.requestUndo && h.canUndo()) moveHistoryCursor(st, sim, gpu, *od, -1);
+        if (st.requestRedo && h.canRedo()) moveHistoryCursor(st, sim, gpu, *od, +1);
+      }
+      st.requestUndo = false;
+      st.requestRedo = false;
 
       if (st.requestSelectAll && od != nullptr)
         installSelection(*od, selectAll(od->document.width, od->document.height));

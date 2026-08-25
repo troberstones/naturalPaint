@@ -304,6 +304,18 @@ struct AppState {
   bool requestPaste = false;
   bool requestDeleteSelection = false;
 
+  // Undo / redo (PRD O1, R2). Same request-flag reasoning as the block
+  // above -- ⌘Z/⇧⌘Z resolve in main.cpp's keymap dispatch, which has no
+  // OpenDocument, no sim and no GpuContext to settle wet paint against
+  // before moving the history cursor (ui/MacPaintUI.cpp's
+  // `moveHistoryCursor()`, which is also what the title-bar buttons and the
+  // Edit menu's Undo/Redo call -- one function, four callers, never two
+  // undo paths). `--selftest`'s reachability suite
+  // (app/selftest/MenuBasics.cpp) asserts the menu action and the keymap
+  // action both end up flipping the SAME flag.
+  bool requestUndo = false;
+  bool requestRedo = false;
+
   // The application's one clipboard (PRD M5). Holds copy-on-write tile
   // references, so an idle clipboard after a full-document copy costs
   // refcounts rather than the 68 MB a flattened 4K buffer would -- which is

@@ -129,6 +129,36 @@ enum class MenuAction : uint16_t {
   Quit,
 
   // --- Edit ---------------------------------------------------------------
+  //
+  // D1 and D2 of docs/reachability-audit.md. `ClearCanvas` was the entire
+  // Edit menu; everything from `Undo` to `DeleteSelection` below is new.
+  //
+  // Undo/Redo were reachable from nowhere but the mouse -- no keymap action
+  // name, no menu enumerator -- despite PRD O1/R2 both being P0. The other
+  // nine were the opposite defect: fully written, fully keyboard-reachable
+  // (main.cpp's dispatch already resolves every one of them), and invisible
+  // the moment `keymap.loadFromFile()` fails, because a stderr line was the
+  // only thing standing between a user and Cut, Copy, Copy Merged, Paste,
+  // Select All, Deselect, Reselect, Invert Selection and Delete.
+  //
+  // `SelectAll` through `DeleteSelection` belong, in Photoshop, to a
+  // **Select** menu this application does not have yet -- `track7/selectmenu`
+  // is building one in parallel. They sit in Edit for now because File, Edit
+  // and Goodies are the only menus this step may touch; a later step that
+  // adds Select is expected to relocate them, and nothing here should make
+  // that relocation harder than moving five enumerators between two `switch`
+  // blocks.
+  Undo,
+  Redo,
+  Cut,
+  Copy,
+  CopyMerged,
+  Paste,
+  DeleteSelection,
+  SelectAll,
+  Deselect,
+  Reselect,
+  InvertSelection,
   ClearCanvas,
 
   // --- Layer --------------------------------------------------------------
@@ -391,6 +421,37 @@ struct MenuContext {
   bool hasDocument = false;
   bool hasPath = false;
   std::vector<MenuFamilyEntry> recentDocuments;
+
+  // --- Edit -----------------------------------------------------------------
+  //
+  // Resolved by the caller against `core/History`, `core/Clipboard.hpp`'s
+  // rules and the active `OpenDocument`, for the identical reason the header
+  // comment gives for keeping `Document*` out of this struct entirely: a
+  // native menu asks "is this enabled?" from a snapshot, on a thread with no
+  // safe way to dereference a pointer into a document that may have closed.
+  //
+  // Every one of these mirrors a guard that already exists at the one place
+  // each command is actually performed
+  // (`ui/MacPaintUI.cpp`'s request-flag consumption block for the clipboard
+  // nine, `moveHistoryCursor()`'s callers for undo/redo) -- copied rather
+  // than shared because the two call sites read a live `OpenDocument&` and
+  // this one reads a `bool` a frame old, and folding them into one function
+  // would mean giving that function a dangling-pointer problem to solve for
+  // no reason.
+  bool canUndo = false;
+  bool canRedo = false;
+  // An active layer exists at all -- Copy's only requirement, since a copy
+  // reads and changes nothing.
+  bool hasActiveLayer = false;
+  // An active layer exists AND is not locked -- Cut's and Delete's
+  // requirement, since both mutate it. `core/Clipboard.hpp`'s
+  // `cutThroughSelection()` already refuses a locked layer on its own, but a
+  // menu item that is clickable and silently does nothing is exactly the
+  // "silent no-op" category this audit exists to stop shipping.
+  bool hasEditableLayer = false;
+  bool clipboardHasContent = false;   // Paste
+  bool hasSelection = false;          // Deselect, Invert Selection
+  bool hasLastDeselected = false;     // Reselect
 
   // --- Layer --------------------------------------------------------------
   // Empty `layerCommands` means "no document open", which the Layer menu shows
