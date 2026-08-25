@@ -333,6 +333,21 @@ inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
          route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase;
 }
 
+// Reachability audit B2: `BrushState::wetness` (the WET slider, drawn in both
+// `ui/AtelierChrome.cpp`'s options bar and `ui/MacPaintUI.cpp`'s BRUSH panel)
+// reaches exactly one place -- `applyToolToBrush()`'s write to
+// `sim::PaintSim::brushWater`, called only on the route that paints the
+// solver canvas rather than a document layer. Extracted the same way
+// `strokeRouteWritesLayer()` above was: two UI call sites asked "does WET do
+// anything right now" with their own copy of `route == StrokeRoute::PaintSim`
+// before this existed, which is exactly the shape of drift that predicate's
+// own comment warns about -- a third call site (this one's test) is what
+// makes the duplication worth closing before it happens again rather than
+// after.
+inline bool wetnessReachesSolver(StrokeRoute route) noexcept {
+  return route == StrokeRoute::PaintSim;
+}
+
 const char* strokeRouteName(StrokeRoute route) noexcept;
 
 // `target` is the layer the stroke is aimed at, or nullptr when there is none.

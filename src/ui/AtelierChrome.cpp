@@ -659,7 +659,12 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
   // changes every frame of a drag, and a proportional face makes the track's
   // text jump about as the digits change width.
   pushAtelierMono();
-  ImGui::SliderFloat("##size", &st.brush.radius, 2.0f, 90.0f, "%.0f px");
+  // kBrushRadiusMin/Max (app/AppState.hpp) -- the one range for this field,
+  // also read by the BRUSH panel's Radius slider. See that constant's own
+  // comment: this bar used to hardcode 2..90, a narrower range than the
+  // panel's 1..200, so a value the panel set above 90 clamped back down the
+  // moment this widget was touched (reachability audit B3).
+  ImGui::SliderFloat("##size", &st.brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
   popAtelierMono();
 
   bandSeparator();
@@ -667,18 +672,21 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
   ImGui::SameLine();
   ImGui::SetNextItemWidth(110.0f);
   pushAtelierMono();
-  ImGui::SliderFloat("##hard", &st.brush.hardness, 0.0f, 1.0f, "%.2f");
+  // kBrushHardnessMin/Max (app/AppState.hpp) -- the one range for this
+  // field, also read by the BRUSH panel's Hardness slider.
+  ImGui::SliderFloat("##hard", &st.brush.hardness, kBrushHardnessMin, kBrushHardnessMax, "%.2f");
   popAtelierMono();
 
   bandSeparator();
-  // The same range drawBrushSection() uses (0..2.5), not a second one invented
-  // here: one field behind two widgets with two ranges is two clamps, and the
-  // narrower one silently truncates what the other set.
+  // kBrushLoadMin/Max (app/AppState.hpp) -- the same range drawBrushSection()
+  // uses, not a second one invented here: one field behind two widgets with
+  // two ranges is two clamps, and the narrower one silently truncates what
+  // the other set.
   capsLabel("LOAD");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(110.0f);
   pushAtelierMono();
-  ImGui::SliderFloat("##load", &st.brush.load, 0.0f, 2.5f, "%.2f");
+  ImGui::SliderFloat("##load", &st.brush.load, kBrushLoadMin, kBrushLoadMax, "%.2f");
   popAtelierMono();
 
   bandSeparator();
@@ -686,7 +694,25 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
   ImGui::SameLine();
   ImGui::SetNextItemWidth(110.0f);
   pushAtelierMono();
-  ImGui::SliderFloat("##wet", &st.brush.wetness, 0.0f, 3.0f, "%.2f");
+  // **Same honest-refusal treatment MacPaintUI.cpp's drawBrushSection() gives
+  // this same field** (see that comment for the full argument):
+  // `st.brush.wetness` reaches `sim::PaintSim`'s `brushWater` only, through
+  // `applyToolToBrush()`, and that is called only when `strokeRouteFor()`
+  // answers `StrokeRoute::PaintSim` -- Water always, or Brush/DryBrush with
+  // no document layer to aim at. A locally-scoped `route`, not the band's own
+  // one three separators down: that one is computed after this slider and
+  // reusing it here would mean drawing WET's disabled state off a value this
+  // control has not reached yet on the very frame the tool or layer changes.
+  {
+    const OpenDocument* wetOd = st.documents.active();
+    const Layer* wetTarget = wetOd != nullptr ? activeLayerOf(*wetOd) : nullptr;
+    const bool wetHonoured = wetnessReachesSolver(strokeRouteFor(st.brush.tool, wetTarget));
+    ImGui::BeginDisabled(!wetHonoured);
+    // kBrushWetnessMin/Max (app/AppState.hpp) -- the one range for this
+    // field, also read by the BRUSH panel's Water slider.
+    ImGui::SliderFloat("##wet", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax, "%.2f");
+    ImGui::EndDisabled();
+  }
   popAtelierMono();
 
   // --- what the next gesture will actually hit -----------------------------

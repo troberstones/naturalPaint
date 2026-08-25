@@ -119,6 +119,54 @@ enum class ColorMode {
   // could not detect.
   Rgb,
 };
+// **The one range per `BrushState` field, read by every widget that edits
+// it.** Reachability audit B3: the options bar (`ui/AtelierChrome.cpp`'s
+// SIZE/HARD/LOAD/WET row) and the BRUSH panel (`ui/MacPaintUI.cpp`'s
+// Radius/Hardness/Load/Water sliders) edit the same four `BrushState`
+// fields, and `AtelierChrome.cpp`'s own comment where LOAD is drawn states
+// the rule: "one field behind two widgets with two ranges is two clamps,
+// and the narrower one silently truncates what the other set." SIZE broke
+// it -- 2..90 in the bar, 1..200 in the panel, so a value the panel accepted
+// (say, 150) silently clamped to 90 the instant the bar's own widget next
+// touched the field -- because its two literals were never unified into one
+// symbol for that rule to keep in sync. LOAD, WET and HARD happened to
+// carry matching literals at both sites already, which is a coincidence a
+// second author changing one file at a time is not obliged to preserve.
+// These eight constants are the fix, generalised: **one named range per
+// field, and both files read it** -- not because the other three were
+// broken, but because "happened to match" is exactly the state SIZE was
+// once in too, and the fix that only protects the field that already broke
+// protects nothing going forward.
+//
+// **Radius: 1..200, not a guess.** `brush/Deposit.hpp`'s roundness-floor
+// derivation (:225-230) names 200 px explicitly as "the widest radius the
+// UI offers" and reasons about the resulting minor-axis pixel width from
+// it -- the deposit engine already assumes this ceiling is real, so
+// narrowing the options bar's widget below it was the bug, not the panel's
+// wider range being wrong. The floor: `Deposit.hpp:410`'s comment on
+// `BrushTip::radius` says "a radius of 0 or less deposits nothing at all"
+// -- 0 is provably useless, so 1 is the smallest value strictly above it
+// that still reads as a whole pixel on the `"%.0f px"` format both widgets
+// share. (The options bar's old floor of 2 had no comment anywhere in this
+// file's history explaining it -- git blame finds no derivation, the same
+// "guessed, not measured" failure this project's other magic numbers are
+// held to.)
+//
+// **Hardness, Load, Wetness: unchanged from what both files already
+// agreed** -- 0..1, 0..2.5 and 0..3 respectively. Not re-derived here
+// because neither site disagreed and nothing in `brush/Deposit.hpp`,
+// `sim::PaintSim` or the PRD names a different ceiling for any of the
+// three; unifying them is closing the same class of bug B3 was, before a
+// second author's independent edit reopens it on a field that has not
+// broken yet.
+constexpr float kBrushRadiusMin = 1.0f;
+constexpr float kBrushRadiusMax = 200.0f;
+constexpr float kBrushHardnessMin = 0.0f;
+constexpr float kBrushHardnessMax = 1.0f;
+constexpr float kBrushLoadMin = 0.0f;
+constexpr float kBrushLoadMax = 2.5f;
+constexpr float kBrushWetnessMin = 0.0f;
+constexpr float kBrushWetnessMax = 3.0f;
 
 struct BrushState {
   Tool tool = Tool::Brush;

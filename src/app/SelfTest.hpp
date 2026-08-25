@@ -3328,5 +3328,43 @@ bool runOpenAnyFileTest();
 //
 // Headless and GPU-free, like every ops/ section it sits beside.
 bool runFilterMenuTest();
+// Reachability audit A5/B2/B3: three BRUSH-panel bugs sharing one cause -- a
+// control drawn twice (once in ui/AtelierChrome.cpp's options bar, once in
+// ui/MacPaintUI.cpp's BRUSH panel) with nothing checking the two copies
+// agree, or a clobber running unconditionally after a slider that looked
+// live. Headless and GPU-free; deliberately does not drive Dear ImGui (see
+// the function's own closing comment for exactly what that leaves
+// unverified at this level). Four parts:
+//
+//  - **B3, generalised.** A table of every `BrushState` field both surfaces
+//    edit today (radius, hardness, load, wetness), asserting each has
+//    exactly one range -- app/AppState.hpp's kBrush*Min/Max constants, which
+//    both widgets now read instead of each carrying its own literal -- and
+//    that range matches an independently re-derived expectation (radius's
+//    200 px ceiling traced to brush/Deposit.hpp's own comment naming it "the
+//    widest radius the UI offers").
+//  - **The round trip B3 itself asks for**: 150 (only the wide range admits
+//    it) survives `std::clamp` against the shared bound twice, modelling
+//    both widgets' clamps in the order a user could hit them; the retired
+//    2..90 options-bar bound is then applied on purpose, for contrast, and
+//    shown to still truncate 150 -> 90 -- proving the assertion above is
+//    sensitive to the regression it names, not merely satisfied by it being
+//    absent.
+//  - **B2's WET predicate**, `wetnessReachesSolver()` (app/StrokeSession.hpp)
+//    as a pure function of the route: no layer or the Water tool honours it,
+//    a writable RGB or Pigment layer under Brush does not, a locked layer
+//    still does not -- and the case the brief names specifically, switching
+//    Brush to Water on the IDENTICAL selected layer flips the same call from
+//    disabled to honoured, proving the predicate reacts to the live route
+//    rather than being a fixed "always disabled".
+//  - **A5, resolved explicitly**: the loaded pigment owns Density/Staining/
+//    Granulation (PLAN.md's own record of brushTipFor(), 2026-08-21 --
+//    "the colour travels, the three physical constants do not"). Asserted
+//    by replicating main.cpp's per-frame resolution
+//    (`st.sim.density = pig.density;` etc.) against a value deliberately
+//    tampered away from the pigment's own first, so the round trip cannot
+//    pass vacuously, then showing the pigment's own numbers are what is
+//    left standing.
+bool runChromeConsistencyTest();
 
 }  // namespace np

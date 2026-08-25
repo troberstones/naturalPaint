@@ -1938,6 +1938,12 @@ int main(int argc, char** argv) {
     // PixelOpRefusal cannot touch refuses by the SAME message the paint
     // bucket already uses.
     const bool filterMenuOk = np::runFilterMenuTest();
+    // Reachability audit A5/B2/B3: the BRUSH panel's shared-field ranges, the
+    // WET slider's route-dependent disabled state, and the loaded pigment's
+    // ownership of Density/Staining/Granulation. Headless -- no ImGui frame,
+    // no window; see the section's own doc comment for what that leaves
+    // unverified.
+    const bool chromeConsistencyOk = np::runChromeConsistencyTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1968,7 +1974,7 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
                     quitGuardOk && menuBasicsOk && menuModelOk && openAnyFileOk &&
-                    filterMenuOk && selectMenuOk;
+                    filterMenuOk && selectMenuOk && chromeConsistencyOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
