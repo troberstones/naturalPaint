@@ -20,11 +20,14 @@
 #include "app/CompPanel.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
+#include "app/DabPreview.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/HistoryPanel.hpp"
+#include "app/ImportImage.hpp"
 #include "app/Journal.hpp"
 #include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
+#include "app/QuitSequence.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
@@ -39,6 +42,7 @@
 #include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/ToolCursor.hpp"
 
 namespace np {
 namespace {
@@ -116,6 +120,19 @@ StrokeSession g_stroke;
 // rather than in a log line: a locked target makes the brush silently stop
 // working, which is the failure a user cannot diagnose from the canvas.
 std::string g_strokeRefusal;
+
+// What the canvas wants the pointer to be this frame, or empty when the pointer
+// is not over it. `canvasCursorRequest()` at the bottom of this file is the
+// accessor, and main.cpp's `SystemCursorTable::apply()` is the only reader.
+//
+// **Cleared at the top of every `drawUI()`, not at the point of use.** The
+// canvas block is one branch among several -- a frame with no document open, or
+// one where the pointer sits over a panel, never reaches it -- so clearing it
+// only where it is set would leave the previous frame's crosshair standing
+// while the pointer was somewhere else entirely. That is precisely the stale
+// cursor that suppressing the ImGui backend was meant to make impossible, so
+// the reset is unconditional and lives where nothing can skip it.
+std::optional<SDL_SystemCursor> g_canvasCursor;
 
 // --- The label column (UI detour step 3, problem 1b) ----------------------
 //
@@ -2777,6 +2794,156 @@ void drawColorSection(AppState& st) {
 // the TEST STROKE footer (there is no off-canvas stroke preview surface).
 // Neither is faked; a dead control that looks live is worse than one that is
 // not drawn.
+//
+// **4a's TIP PREVIEW is now present**, and is the one part of this panel that
+// is not chrome: `app/DabPreview` rasterises a real dab through
+// `dabCoverage()` and `depositTexel()` and this file only uploads and places
+// it. That header carries every decision -- three pressures, one shared scale,
+// the loaded colour over paper -- and none of them is repeated here.
+
+// --- The tip preview's texture ---------------------------------------------
+//
+// **ui/DocumentTexture is not reusable for this, and the reasons are structural
+// rather than a matter of taste.** It is keyed on `(DocumentId, revision,
+// width, height)` and takes an `OpenDocument`; there is no document here. It
+// composites through `compositeDocumentStraightHalf()`, which walks a layer
+// stack. It uploads `RGBA16Float` **linear** texels, which is correct for the
+// document and wrong here -- a linear texture drawn through ImGui's own
+// pipeline is the present-transfer defect ui/CanvasQuad.hpp was written about,
+// and routing an already-sRGB-encoded preview through ui/CanvasQuad instead
+// would encode it a second time. And it holds a canvas-sized f16 mirror and a
+// tile-band scratch for an incremental path that a 192x64 image has no use for.
+// What is shared with it is the *policy*, not the code: cache on a key, upload
+// only on a miss, and make the counters public so a test can prove the cache
+// invalidates.
+//
+// So this is 30 lines of its own: one `RGBA8Unorm` texture, created once,
+// re-written when `DabPreviewCache::generation()` moves. `RGBA8Unorm` and not
+// its sRGB sibling because `gfx/Context` takes a non-sRGB surface, which makes
+// Dear ImGui's gamma uniform 1.0 -- so these bytes reach the screen exactly as
+// every chrome colour does, which is what makes `ImGui::Image()` the right call
+// here and the wrong one for the document.
+//
+// Never released, for `g_documentTextures`' reason: gfx/Wgpu.hpp's convention
+// is that a GPU object lives for the process, and ImGui's WebGPU backend builds
+// its bind group from the view pointer fresh each frame and releases it at the
+// end of `RenderDrawData`, so a view that is created once and kept has no
+// stale-bind-group hazard at all (which is the hazard DocumentTexture::retired_
+// exists for, and it arises only from *replacing* a view).
+class DabPreviewTexture {
+ public:
+  WGPUTextureView viewFor(GpuContext& gpu, const DabPreviewImage& img, uint64_t generation) {
+    if (img.width <= 0 || img.height <= 0 || img.rgba.empty()) return nullptr;
+    if (texture_ == nullptr) {
+      WGPUTextureDescriptor td = {};
+      td.label = sv("brush tip preview");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height), 1};
+      td.format = WGPUTextureFormat_RGBA8Unorm;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+      // The image is a fixed size (app/DabPreview's constants), so there is no
+      // resize path and no retired list. If that ever stops being true this is
+      // where the size has to enter the key.
+      width_ = img.width;
+      height_ = img.height;
+    }
+    if (generation != uploaded_) {
+      WGPUTexelCopyTextureInfo dst = {};
+      dst.texture = texture_;
+      dst.mipLevel = 0;
+      dst.aspect = WGPUTextureAspect_All;
+      WGPUTexelCopyBufferLayout layout = {};
+      layout.bytesPerRow = static_cast<uint32_t>(width_) * 4u;
+      layout.rowsPerImage = static_cast<uint32_t>(height_);
+      const WGPUExtent3D extent = {static_cast<uint32_t>(width_),
+                                   static_cast<uint32_t>(height_), 1};
+      wgpuQueueWriteTexture(gpu.queue, &dst, img.rgba.data(), img.rgba.size(), &layout,
+                            &extent);
+      uploaded_ = generation;
+      ++uploads_;
+    }
+    return view_;
+  }
+
+  uint64_t uploads() const noexcept { return uploads_; }
+
+ private:
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  int width_ = 0;
+  int height_ = 0;
+  // `DabPreviewCache::generation()` starts at 0 and is bumped before the first
+  // image is handed out, so 0 here is unambiguously "nothing uploaded yet" and
+  // the first frame always writes.
+  uint64_t uploaded_ = 0;
+  uint64_t uploads_ = 0;
+};
+
+DabPreviewCache g_dabPreview;
+DabPreviewTexture g_dabPreviewTexture;
+
+// 4a's TIP PREVIEW block: the image, its frame, its cell dividers, and the one
+// line of text that says what scale it is drawn at.
+//
+// The frame and the dividers are `ImDrawList` primitives over the image rather
+// than texels inside it, deliberately: they are chrome, they take the chrome's
+// own tokens, and baking them into the image would make the "outermost covered
+// texel tracks radius" assertion in `--selftest` have to know where the chrome
+// stops. What `ImDrawList` cannot do is the falloff ramp, which is the whole
+// reason there is a texture here at all.
+void drawTipPreview(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
+  const std::array<BrushTip, kDabPreviewCells> tips =
+      dabPreviewTipsFor(st.brush, lut, dynamicInputsFor(st));
+  const DabPreviewImage& img = g_dabPreview.imageFor(tips);
+  const WGPUTextureView view = g_dabPreviewTexture.viewFor(gpu, img, g_dabPreview.generation());
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  const float w = static_cast<float>(img.width);
+  const float h = static_cast<float>(img.height);
+
+  if (view != nullptr) {
+    // ImGui's own pipeline, not ui/CanvasQuad: these bytes are already
+    // display-referred sRGB (app/DabPreview's `DabPreviewImage`), and the
+    // surface is non-sRGB, so the gamma applied is 1.0 and they arrive
+    // untouched -- exactly like the chrome around them.
+    dl->AddImage(reinterpret_cast<ImTextureID>(view), o, ImVec2(o.x + w, o.y + h));
+  } else {
+    // No adapter, or a texture that could not be made. Say so rather than
+    // leaving a gap that reads as "this brush deposits nothing".
+    dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), atelierToken(kChromeDeep));
+  }
+  for (int c = 1; c < kDabPreviewCells; ++c) {
+    const float x = o.x + static_cast<float>(c * kDabPreviewCell);
+    dl->AddLine(ImVec2(x, o.y), ImVec2(x, o.y + h), atelierToken(kDivider),
+                kDividerThickness);
+  }
+  dl->AddRect(o, ImVec2(o.x + w, o.y + h), atelierToken(kDivider), 0.0f, 0, kDividerThickness);
+  ImGui::Dummy(ImVec2(w, h));
+
+  // The three pressures and the scale, said in numbers, because a picture of
+  // three dabs does not say which pressures they are -- and because §3's whole
+  // claim is that the preview is at a *stated* ratio rather than fitted.
+  pushAtelierMono();
+  if (img.scale <= 1.0f)
+    ImGui::TextDisabled("PRESSURE %.2f  %.2f  %.2f   1:1", kDabPreviewPressures[0],
+                        kDabPreviewPressures[1], kDabPreviewPressures[2]);
+  else
+    ImGui::TextDisabled("PRESSURE %.2f  %.2f  %.2f   1:%.1f", kDabPreviewPressures[0],
+                        kDabPreviewPressures[1], kDabPreviewPressures[2],
+                        static_cast<double>(img.scale));
+  popAtelierMono();
+  if (ImGui::IsItemHovered() || ImGui::IsMouseHoveringRect(o, ImVec2(o.x + w, o.y + h)))
+    ImGui::SetTooltip(
+        "One dab on empty paper, at three pen pressures.\n"
+        "radius %.0f / %.0f / %.0f px -- the same falloff the brush deposits.",
+        static_cast<double>(img.radii[0]), static_cast<double>(img.radii[1]),
+        static_cast<double>(img.radii[2]));
+}
 
 // One labelled row of the matrix's own geometry: a 54 px row label, twelve
 // equal cells, a 34 px live-value gutter. Shared by the header row and the
@@ -3014,10 +3181,33 @@ void drawBrushLibrarySection(AppState& st) {
     const bool isActive = i == lib.active;
 
     // The tip's proportions, at a glance: a bar whose length tracks the
-    // radius and whose height tracks roundness. It is not a stroke preview --
-    // there is no off-canvas stroke surface yet -- and it is drawn as an
-    // obvious abstraction rather than as a fake dab, so it cannot be mistaken
-    // for one.
+    // radius and whose height tracks roundness. It is deliberately an obvious
+    // abstraction rather than a fake dab, so it cannot be mistaken for one.
+    //
+    // **It stays a bar even though there is now a real dab rasteriser**
+    // (`app/DabPreview`, drawn by the BRUSH EDITOR one section below), and
+    // that is a decision rather than an omission:
+    //
+    //   * At row height a real dab is *less* informative than the bar. The
+    //     `Flat Wash` preset is hardness 0.12 -- at 18 px its falloff occupies
+    //     about two texels and it renders as an indistinct smudge, while the
+    //     bar still says "long and thin" legibly. A thumbnail that is too
+    //     small to read is not a preview, it is texture.
+    //   * The question this pane answers is "which brush", and the answer is
+    //     the name. The question "what does this brush do" is answered one
+    //     section down, by the preview, against the *live* brush -- and
+    //     picking a row calls `applyPresetToBrush()`, so it updates in the
+    //     same frame the row is clicked.
+    //   * The cost of the alternative, stated so it can be weighed rather
+    //     than guessed at: one rasterisation per preset per invalidation.
+    //     Per-preset that is `radius x radius`-bounded work over a 24 px
+    //     thumbnail -- 576 texels, ~2.3k for the four shipped presets, which
+    //     is nothing. What is *not* nothing is the machinery around it: N
+    //     images means either N GPU textures or one atlas plus a per-row UV
+    //     rect, and a per-preset cache keyed on the preset's own fields
+    //     (which are not a `BrushTip` -- a preset has no pigment, so a
+    //     thumbnail would have to invent a colour for it). That is a second
+    //     cache and a second key for a row a user glances at.
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 o = ImGui::GetCursorScreenPos();
     constexpr float kSwatchW = 40.0f, kSwatchH = 18.0f;
@@ -3079,7 +3269,7 @@ void drawBrushLibrarySection(AppState& st) {
   }
 }
 
-void drawBrushSection(AppState& st) {
+void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   // --- The preset header: which brush this is, and whether it still is ----
   BrushLibrary& lib = st.brush.brushLibrary;
   if (lib.active < lib.presets.size()) {
@@ -3110,6 +3300,11 @@ void drawBrushSection(AppState& st) {
   // panel. Spacing is in radii, and the design's caption is the reason it can
   // be: dabs are spaced by arc length, not by time, so the number means the
   // same thing however fast the pen moves.
+  //
+  // The preview goes ABOVE the sliders, which is 4a's own order and is also
+  // the useful one: a slider drag is judged by what happens above it, and a
+  // preview below the controls is under the hand that is dragging them.
+  drawTipPreview(st, gpu, lut);
   ctlSlider("Radius", &st.brush.radius, 1.0f, 200.0f, "%.0f px");
   ctlSlider("Hardness", &st.brush.hardness, 0.0f, 1.0f);
   ctlSlider("Spacing", &st.brush.spacing, 0.02f, 1.0f, "%.2f r");
@@ -3133,11 +3328,19 @@ void drawBrushSection(AppState& st) {
     const OpenDocument* od = st.documents.active();
     const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
     const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
-    const bool honoured = route == StrokeRoute::RgbDeposit;
+    // **The eraser reads this same slider as its STRENGTH** (brush/RgbErase.hpp
+    // §2), so it is live on that route too. One control with one meaning -- the
+    // fraction of the maximum effect one stroke may reach -- rather than a
+    // second "strength" number that would leave OPACITY dimmed and inert
+    // whenever the eraser was selected, which is the exact complaint this
+    // disabled-rather-than-hidden treatment was written to answer.
+    const bool honoured = route == StrokeRoute::RgbDeposit || route == StrokeRoute::RgbErase;
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
-    if (honoured)
+    if (route == StrokeRoute::RgbErase)
+      ImGui::TextDisabled("Flow is how fast it bites; opacity is how much it takes.");
+    else if (honoured)
       ImGui::TextDisabled("Flow is how fast paint builds; opacity is where it stops.");
     else
       ImGui::TextDisabled("Opacity applies to RGB layers; this stroke goes to %s.",
@@ -4331,16 +4534,34 @@ void drawExportStatesDialog(AppState& st) {
 // Which state lives where follows app/AppState.hpp's rule: the session and
 // the recent list are on AppState; the text buffer, the pending action and
 // the last status line are function-local, because they are widget state.
-enum class DocPathAction { None, Open, SaveAs, SaveCopy };
+// `ImportImage` reuses this same typed-path modal rather than growing a second
+// path-entry UI beside it. There is still no native file picker in this
+// codebase (see above), and inventing a *second* spartan one -- with its own
+// buffer, its own pre-fill rule and its own error line -- would double the
+// thing that has to be replaced when a real panel arrives, for no benefit
+// today. The modal's verb, its pre-fill and the status it leaves behind are
+// the only things that vary by action, and each of those is one line.
+enum class DocPathAction { None, Open, SaveAs, SaveCopy, ImportImage };
 
 bool g_docPathRequested = false;
 DocPathAction g_docPathAction = DocPathAction::None;
 bool g_revertConfirmRequested = false;
 std::string g_docStatus;
+// Whether the last `applyDocumentPathAction()` succeeded, which is how the path
+// modal decides to close itself.
+//
+// It used to read `g_docStatus.rfind("OK: ", 0) == 0`. That worked only because
+// every action's success message happened to start with the same four
+// characters, and Import Image's does not: an import writes no file, so "OK:
+// <path>" would be a sentence about something that did not happen. A boolean
+// says the thing the modal actually needs to know, and cannot be broken by a
+// future action wording its success differently.
+bool g_docPathActionOk = false;
 
 void applyDocumentPathAction(AppState& st, DocPathAction action, const std::string& path) {
   OpenDocument* doc = st.documents.active();
   DocumentOpResult r;
+  g_docPathActionOk = false;
   switch (action) {
     case DocPathAction::Open: {
       OpenDocument opened;
@@ -4358,9 +4579,32 @@ void applyDocumentPathAction(AppState& st, DocPathAction action, const std::stri
       // app/DocumentLifecycle.hpp on why a copy is not an open document.
       r = saveDocumentCopy(*doc, path);
       break;
+    case DocPathAction::ImportImage: {
+      // The one caller of app/ImportImage in the running application, and the
+      // one a drag-and-drop handler would join rather than duplicate (there is
+      // no SDL_EVENT_DROP_FILE handler anywhere in src/ today -- see
+      // app/ImportImage.hpp).
+      if (!doc) return;
+      const ImportImageResult imported = importImageAsLayer(*doc, path);
+      // **Not folded into the `r.ok` path below.** That path is for operations
+      // that wrote a file and prefixes its status with "OK: <path>"; an import
+      // wrote nothing, and its own sentence already names the file, the pixel
+      // size and the layer. Routing it through the generic branch would replace
+      // a true sentence with a misleading one.
+      g_docStatus = imported.status;
+      for (const std::string& w : imported.warnings) g_docStatus += "\n! " + w;
+      // Read by the modal below to decide whether to close. A refused import
+      // keeps the dialog up with the reason under the text field, exactly as a
+      // refused save does, rather than dropping the user back to the canvas
+      // with the one thing they needed to read sitting one line high beside the
+      // menus.
+      g_docPathActionOk = imported.ok;
+      return;
+    }
     case DocPathAction::None:
       return;
   }
+  g_docPathActionOk = r.ok;
   if (r.ok) {
     std::string saveErr;
     st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
@@ -4377,6 +4621,29 @@ void applyDocumentPathAction(AppState& st, DocPathAction action, const std::stri
 // this is what answers it, and neither path can grow a second dialog of its
 // own that says something different.
 constexpr const char* kCloseDecisionPopup = "Close document";
+
+// **Every answer to that dialog goes through here**, and that is the point
+// rather than tidiness.
+//
+// The popup has more exits than it has buttons -- three buttons, two keys, the
+// document vanishing underneath it, and a dismissal from outside -- and a quit
+// sequence (app/QuitSequence.hpp) is waiting on whichever of them fires. One
+// exit that called `resolveDocumentClose()` directly would answer the question
+// and leave the quit stranded: no next question, no exit, and a `quitSequence`
+// stuck `running` so that every later Cmd-Q is refused for the rest of the
+// session. With no quit in flight this is exactly `resolveDocumentClose()`.
+CloseOutcome answerPendingClose(AppState& st, CloseAnswer answer) {
+  CloseOutcome outcome;
+  const QuitStep step =
+      answerQuitQuestion(st.documents, st.pendingClose, st.quitSequence, answer,
+                         documentSaverFor(&st.recentDocuments), &outcome);
+  if (!step.status.empty()) g_docStatus = step.status;
+  // The one line in the UI that ends the process, and it is reachable only by
+  // emptying the queue of dirty documents -- never by `--screenshot`, which
+  // does not run a sequence and does not come through this function.
+  if (step.exitNow) st.quit = true;
+  return outcome;
+}
 
 void drawDocumentDialogs(AppState& st) {
   static char pathBuf[512] = "";
@@ -4408,10 +4675,13 @@ void drawDocumentDialogs(AppState& st) {
       // that cannot act on a document at all, which is the right thing to send
       // when the user never got to see the question they are being answered
       // for.
-      const CloseOutcome outcome =
-          resolveDocumentClose(st.documents, st.pendingClose, CloseAnswer::Cancel,
-                               documentSaverFor(&st.recentDocuments));
-      if (!outcome.status.empty()) g_docStatus = outcome.status;
+      //
+      // A quit sequence waiting on this question is abandoned by that Cancel,
+      // which is the conservative reading and the deliberate one: the user is
+      // owed a question about each remaining dirty document, and the honest way
+      // to get back to asking them is the next Cmd-Q rather than carrying on
+      // through a sequence whose current entry evaporated.
+      (void)answerPendingClose(st, CloseAnswer::Cancel);
       st.pendingClose.clear();
       ImGui::CloseCurrentPopup();
     } else {
@@ -4454,10 +4724,7 @@ void drawDocumentDialogs(AppState& st) {
         answer = closeAnswerForKey(CloseKey::Enter);
 
       if (answer) {
-        const CloseOutcome outcome =
-            resolveDocumentClose(st.documents, st.pendingClose, *answer,
-                                 documentSaverFor(&st.recentDocuments));
-        if (!outcome.status.empty()) g_docStatus = outcome.status;
+        const CloseOutcome outcome = answerPendingClose(st, *answer);
         if (outcome.needsDestination) {
           // No native file picker exists in this build, so Save on a document
           // that has never been saved falls back to the Save As dialog below
@@ -4481,10 +4748,23 @@ void drawDocumentDialogs(AppState& st) {
           g_docPathAction = DocPathAction::SaveAs;
           g_docPathRequested = true;
         }
-        // Still asking only when the answer could not be carried out -- a save
-        // that failed. The dialog stays up with the writer's own error beside
-        // it rather than closing on a document that is still dirty.
-        closeDialogError = st.pendingClose.asking() ? outcome.status : std::string();
+        // Still asking, after an answer, has two causes now and only one of
+        // them is a failure:
+        //
+        //  * the answer could not be carried out -- a save that failed. The
+        //    dialog stays up with the writer's own error beside it rather than
+        //    closing on a document that is still dirty.
+        //  * a quit sequence has just moved this same dialog on to the *next*
+        //    dirty document (app/QuitSequence). Nothing went wrong, and
+        //    painting "Closed Study, discarding its unsaved changes." in the
+        //    error colour underneath the next document's question would read as
+        //    though it had.
+        //
+        // So the error is set from what the outcome *did*, not from whether a
+        // question happens to be up afterwards.
+        const bool answerFailed = !outcome.closed && !outcome.vanished &&
+                                  !outcome.needsDestination && st.pendingClose.asking();
+        closeDialogError = answerFailed ? outcome.status : std::string();
         if (!st.pendingClose.asking()) ImGui::CloseCurrentPopup();
       }
       if (!closeDialogError.empty()) {
@@ -4498,9 +4778,9 @@ void drawDocumentDialogs(AppState& st) {
     // The popup was open at the top of this frame and is not open now, and no
     // button above ran -- so something outside this block dismissed it. The
     // only honest reading of a question dismissed without an answer is the
-    // answer that changes nothing, which is what Escape means too.
-    resolveDocumentClose(st.documents, st.pendingClose, closeAnswerForKey(CloseKey::Escape),
-                         documentSaverFor(&st.recentDocuments));
+    // answer that changes nothing, which is what Escape means too -- and, when
+    // a quit is in flight, what abandons it.
+    (void)answerPendingClose(st, closeAnswerForKey(CloseKey::Escape));
   }
 
   if (g_docPathRequested) {
@@ -4508,22 +4788,33 @@ void drawDocumentDialogs(AppState& st) {
     g_docStatus.clear();
     // Pre-fill with the active document's own path, so Save As on an already
     // saved document starts from its name rather than from nothing.
-    if (const OpenDocument* d = st.documents.active())
+    //
+    // **Except for an import**, which is reading someone else's file: offering
+    // the open document's own `.npaint` path as the image to import is not a
+    // useful starting point, and one careless Return away from a refusal that
+    // names the wrong mistake. It starts empty instead.
+    if (g_docPathAction == DocPathAction::ImportImage) {
+      pathBuf[0] = '\0';
+    } else if (const OpenDocument* d = st.documents.active()) {
       std::snprintf(pathBuf, sizeof(pathBuf), "%s", d->path.c_str());
+    }
     ImGui::OpenPopup("Document path");
   }
   if (ImGui::BeginPopupModal("Document path", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    const char* verb = g_docPathAction == DocPathAction::Open      ? "Open"
-                       : g_docPathAction == DocPathAction::SaveAs  ? "Save As"
-                                                                   : "Save a Copy";
+    const char* verb = g_docPathAction == DocPathAction::Open        ? "Open"
+                       : g_docPathAction == DocPathAction::SaveAs    ? "Save As"
+                       : g_docPathAction == DocPathAction::SaveCopy  ? "Save a Copy"
+                                                                    : "Import Image";
     ImGui::Text("%s", verb);
     if (g_docPathAction == DocPathAction::SaveCopy)
       ImGui::TextDisabled("Writes elsewhere; this document stays bound to its own file.");
+    if (g_docPathAction == DocPathAction::ImportImage)
+      ImGui::TextDisabled("Adds the image to this document as a new RGB layer, on top.");
     ImGui::SetNextItemWidth(480.0f);
     ImGui::InputText("Path", pathBuf, sizeof(pathBuf));
     if (ImGui::Button(verb)) {
       applyDocumentPathAction(st, g_docPathAction, pathBuf);
-      if (g_docStatus.rfind("OK: ", 0) == 0) ImGui::CloseCurrentPopup();
+      if (g_docPathActionOk) ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
@@ -4551,16 +4842,25 @@ void drawDocumentDialogs(AppState& st) {
       // finishes the close, and finds nothing left to write (see
       // app/CloseDecision's already-clean branch), so the file is not written
       // a second time.
-      const CloseOutcome outcome =
-          resolveDocumentClose(st.documents, st.pendingClose, CloseAnswer::Save,
-                               documentSaverFor(&st.recentDocuments));
-      if (!outcome.status.empty()) g_docStatus = outcome.status;
+      (void)answerPendingClose(st, CloseAnswer::Save);
     } else {
       // Backing out of the file name backs out of the close. Re-raising the
       // question instead would bounce the user between two dialogs with no way
       // out that did not either write a file or discard their work.
-      g_docStatus = "Close cancelled: '" + st.pendingClose.name + "' has not been saved.";
+      //
+      // And it backs out of a quit that was waiting behind it, for the same
+      // reason Cancel does: the user declined to name a file for work they were
+      // asked about, which is not an answer that can be carried forward to the
+      // next document.
+      // The name is read before the clear, not after: `PendingClose::clear()`
+      // empties it, and a sentence naming '' is worse than no sentence.
+      const std::string backedOut = st.pendingClose.name;
+      g_docStatus = "Close cancelled: '" + backedOut + "' has not been saved.";
       st.pendingClose.clear();
+      const QuitStep abandoned =
+          abandonQuit(st.quitSequence, "Quit cancelled: '" + backedOut +
+                                           "' was not saved, so nothing else was closed.");
+      if (!abandoned.status.empty()) g_docStatus = abandoned.status;
     }
   }
 
@@ -4782,6 +5082,24 @@ void drawDocumentMenuItems(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     ImGui::EndMenu();
   }
 
+  // PLAN.md Phase 2 step 13 / app/ImportImage. Beside Open rather than beside
+  // Export, because it is the other half of the same idea: Open turns a file
+  // into a document, Import puts a file *into* the document already open, as a
+  // new RGB layer on top. `placeImageAsLayer()` has done that correctly since
+  // step 13 and had no caller outside --selftest until this line.
+  //
+  // Disabled with no open document, and the tooltip says which of the two
+  // commands the user wanted -- a greyed item with no explanation is how a user
+  // concludes the feature is missing rather than inapplicable.
+  if (ImGui::MenuItem("Import Image...", nullptr, false, hasDoc)) {
+    g_docPathAction = DocPathAction::ImportImage;
+    g_docPathRequested = true;
+  }
+  if (!hasDoc && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip(
+        "Import adds an image to an open document. With nothing open, use Open... instead, "
+        "which turns the image into a document of its own.");
+
   ImGui::Separator();
   if (ImGui::MenuItem("Save", nullptr, false, hasPath)) {
     const DocumentOpResult r = saveDocument(*doc, {}, &st.recentDocuments);
@@ -4841,6 +5159,12 @@ void drawDocumentMenuItems(AppState& st, uint32_t canvasW, uint32_t canvasH) {
 
 void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
            const MixboxLut& lut, uint32_t canvasW, uint32_t canvasH) {
+  // First, before any branch can skip it: last frame's cursor request is not
+  // this frame's answer. See `g_canvasCursor`'s own comment -- the canvas block
+  // that sets it is reachable only on some frames, so a reset that lived beside
+  // it would let a crosshair outlive the pointer being over the canvas.
+  g_canvasCursor.reset();
+
   const ImGuiViewport* vp = ImGui::GetMainViewport();
 
   // ------------------------------------------------------------ title bar
@@ -4893,7 +5217,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (ImGui::MenuItem("Export Comps / Layers To Files..."))
         g_exportStatesRequested = true;
       ImGui::Separator();
-      if (ImGui::MenuItem("Quit", "Cmd+Q")) st.quit = true;
+      // `requestQuit`, not `quit`: main.cpp answers it against the open
+      // documents (app/QuitSequence). This item used to set `quit` directly and
+      // therefore threw away every unsaved document without a word.
+      if (ImGui::MenuItem("Quit", "Cmd+Q")) st.requestQuit = true;
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
@@ -5367,7 +5694,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // Two panes, because picking a brush and authoring one are
         // different acts (drawBrushLibrarySection()'s own comment).
         case ControlsSection::BrushLibrary: drawBrushLibrarySection(st); break;
-        case ControlsSection::Brush:     drawBrushSection(st); break;
+        // `gpu` and `lut` for the TIP PREVIEW alone: the preview is a real
+        // rasterised dab in a real texture, so this section needs the device
+        // (to upload it) and the LUT (because `brushTipFor()` resolves the
+        // loaded pigment through it). drawHistorySection() above already takes
+        // a GpuContext for the same shape of reason.
+        case ControlsSection::Brush:     drawBrushSection(st, gpu, lut); break;
         case ControlsSection::Pigment:   drawPigmentSection(st); break;
         case ControlsSection::Medium:    drawMediumSection(st, sim.get()); break;
         case ControlsSection::BoardTilt: drawBoardTiltSection(st); break;
@@ -5617,6 +5949,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                            ImGuiButtonFlags_MouseButtonLeft |
                                ImGuiButtonFlags_MouseButtonMiddle);
     const bool hovered = ImGui::IsItemHovered();
+    // Read here rather than at the cursor decision far below, because
+    // `IsItemActive()` speaks about the item most recently submitted and by
+    // then that is a ruler, a guide or nothing at all -- this is the only line
+    // in the block where it still means `##canvasHit`.
+    //
+    // It exists so a drag that STARTED on the canvas keeps the canvas cursor
+    // when the pointer runs off the sheet, which is the ordinary way to pan:
+    // grab the paper and throw it. `hovered` alone goes false the moment the
+    // pointer crosses onto a panel, and the pan cursor would flicker back to an
+    // arrow mid-gesture while the view was still moving under it.
+    const bool canvasHeld = ImGui::IsItemActive();
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     // Pen input maps back through the transform's actual inverse (docs/
     // shortcuts.md section 3) -- not a second, independently re-derived
@@ -6189,6 +6532,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const bool paintTool = st.brush.tool == Tool::Brush ||
                            st.brush.tool == Tool::Water ||
                            st.brush.tool == Tool::DryBrush;
+    // **The eraser is a stroke tool but never a SOLVER stroke**, which is why it
+    // is a second flag rather than a fourth line above. It joins `paintTool` at
+    // the two branches below that reach a layer and at the cursor ring, and is
+    // deliberately absent from the branch that constructs `PaintSim`: that
+    // simulation has no alpha and no erase step, so an eraser reaching it would
+    // run the *paint* path and add pigment where the user asked for its removal
+    // (app/StrokeSession.hpp §1's Eraser rows). Folding it into `paintTool` would
+    // have been one word and would have made the eraser deposit watercolour on
+    // the canvas texture the moment no document was open.
+    const bool eraseTool = st.brush.tool == Tool::Eraser;
+    const bool strokeTool = paintTool || eraseTool;
     const bool inside = tx >= 0 && ty >= 0 && tx < texW && ty < texH;
     const bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
 
@@ -6239,22 +6593,36 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const Layer* strokeTarget = strokeDoc != nullptr ? activeLayerOf(*strokeDoc) : nullptr;
     const StrokeRoute route = strokeRouteFor(st.brush.tool, strokeTarget);
 
-    if (paintTool && down && hovered && inside && !panning && !rotating &&
+    if (strokeTool && down && hovered && inside && !panning && !rotating &&
         !st.pendingGuide.has_value() && strokeRouteWritesLayer(route)) {
       // **The pen reaches a Layer.** app/StrokeSession section 4 said this was
       // "a missing decision rather than missing plumbing", and the decision it
       // was missing was `OpenDocument::activeLayer`.
       //
-      // **Both deposit routes come through here**, and this branch does not
-      // know which -- `StrokeSession::begin()` reads the route table once and
-      // owns the difference from there. A Pigment target deposits latent and
-      // mass through brush/Deposit; an RGB target deposits premultiplied linear
-      // colour through brush/RgbDeposit, with a per-stroke alpha accumulator
-      // and the active selection as its bound. Everything visible from this
-      // block -- the tip, the pressure schedule, the pen-up below, the single
-      // history entry -- is identical for the two, which is the whole reason
-      // the RGB route was worth putting inside `StrokeSession` rather than
-      // beside it.
+      // **All three layer-writing routes come through here**, and this branch
+      // does not know which -- `StrokeSession::begin()` reads the route table
+      // once and owns the difference from there. A Pigment target deposits
+      // latent and mass through brush/Deposit; an RGB target deposits
+      // premultiplied linear colour through brush/RgbDeposit, with a per-stroke
+      // alpha accumulator and the active selection as its bound; an eraser on an
+      // RGB target takes alpha back out through brush/RgbErase, with a
+      // per-stroke *erasure* accumulator and the same bound. Everything visible
+      // from this block -- the tip, the pressure schedule, the pen-up below, the
+      // single history entry -- is identical for the three, which is the whole
+      // reason the RGB routes were worth putting inside `StrokeSession` rather
+      // than beside it.
+      //
+      // **The eraser is shaped by the same tip and the same dynamics**, and that
+      // is ADR-0007's requirement rather than a shortcut: "it inherits the whole
+      // modulation matrix -- pressure, tilt, jitter, spacing, grain -- because an
+      // eraser with no dynamics is useless for the drawing work it is for". So
+      // `brushTipFor()` below is called once for every stroke tool, and
+      // pressure->size and pressure->flow reach an erase exactly as they reach a
+      // brush: harder pressure erases a wider mark and bites faster. Radius,
+      // hardness, roundness, angle and spacing come from the active preset for
+      // the same reason -- a painter who has set up a soft round tip expects to
+      // erase with the shape they are drawing with, and a separate eraser tip
+      // would be a second brush editor to keep in step.
       //
       // Shaped exactly as that header predicted: `begin()` where
       // `strokePath.reset()` is, `addPoint()` where `strokePath.addPoint()`
@@ -6284,9 +6652,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         st.lastX = tx;
         st.lastY = ty;
       }
-    } else if (paintTool && down && hovered && inside && !panning && !rotating &&
+    } else if (strokeTool && down && hovered && inside && !panning && !rotating &&
                !st.pendingGuide.has_value() && route == StrokeRoute::None &&
-               strokeTarget != nullptr) {
+               (strokeTarget != nullptr || eraseTool)) {
       // The refusals worth saying out loud. The route table sends each of them
       // nowhere rather than falling through to the solver, because falling
       // through would put paint on the *canvas* when the user aimed at a layer
@@ -6298,10 +6666,28 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // layer kind with nowhere to put paint is not something clearing a lock
       // will help with, and telling someone to clear a lock they have not set
       // is worse than telling them nothing.
+      //
+      // **The eraser needs its own third and fourth sentences, and that is what
+      // "refuse by name" costs.** The kind sentence below tells a painter to
+      // "Pick a Pigment or RGB layer", which is true of the brush and false of
+      // the eraser -- a Pigment layer is precisely where an erase does *not* go
+      // today (app/StrokeSession.hpp §1). Handing the eraser the brush's wording
+      // would send the user to the one layer that cannot take the gesture, which
+      // is worse than the silence this whole block replaced. And the eraser
+      // reaches here with **no target at all**, where the brush would have gone
+      // to the solver, so the no-layer case is its alone.
       g_strokeRefusal =
-          strokeTarget->locked
-              ? std::string("locked layer: \"") + strokeTarget->name +
-                    "\" cannot be painted. Clear its Lock in LAYERS."
+          strokeTarget == nullptr
+              ? std::string("no layer: the eraser has nothing to erase. Open a document, "
+                            "or add a layer in LAYERS.")
+          : strokeTarget->locked
+              ? std::string("locked layer: \"") + strokeTarget->name + "\" cannot be " +
+                    (eraseTool ? "erased" : "painted") + ". Clear its Lock in LAYERS."
+          : eraseTool
+              ? std::string("\"") + strokeTarget->name + "\" is " +
+                    layerKindName(strokeTarget->kind) +
+                    " and cannot be erased. The eraser reaches RGB layers; erasing a "
+                    "Pigment layer reduces its Mass (PRD F10) and is not built yet."
               : std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +
                     " and cannot be painted. Pick a Pigment or RGB layer in LAYERS.";
@@ -6509,9 +6895,82 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
 
     // --- brush cursor ring ---
-    if (hovered && paintTool && inside) {
+    //
+    // The eraser gets one too, at the same radius and drawn the same way: it is
+    // the brush's tip (ADR-0007), so the ring is telling the truth about the
+    // footprint of the next dab whichever direction that dab moves the alpha.
+    if (hovered && strokeTool && inside) {
       dl->AddCircle(mouse, st.brush.radius * st.view.zoom,
                     IM_COL32(235, 235, 225, 170), 32, 1.0f);
+    }
+
+    // --- the pointer itself (ui/ToolCursor) --------------------------------
+    //
+    // Beside the ring deliberately: the ring has been this application's only
+    // cursor-like feedback since it was written, and it says one true thing --
+    // how big the next dab is. Everything else the pointer could have said was
+    // missing, and until this block the build made **no** cursor call at all.
+    //
+    // **This block sets no cursor. It records a request**, which
+    // `SystemCursorTable::apply()` in main.cpp reads once at the end of the
+    // frame -- ui/ToolCursor §6. The distinction is the whole safety argument:
+    // this build now suppresses the ImGui SDL3 backend's own cursor handling
+    // with `ImGuiConfigFlags_NoMouseCursorChange`, so there must be exactly one
+    // writer, and a `SDL_SetCursor()` here would make two.
+    //
+    // **Scoped to the canvas, and nowhere else.** Over the panels, the menus
+    // and the tool palette the cursor must stay whatever ImGui wants -- the
+    // I-beam in the LAYERS filter box, the resize arrows on a window border --
+    // and `apply()` gives them exactly that by falling back to
+    // `ImGui::GetMouseCursor()` whenever this request is empty. So the gate
+    // below is the only thing standing between a crosshair and a chrome that
+    // feels broken, and it is the same `hovered` the painting, zooming and
+    // picking above are gated on. That also means a popup or modal covering the
+    // canvas suppresses this for free: ImGui refuses the hover under a popup,
+    // so the tool cursor cannot leak out over a dialog.
+    //
+    // The band drawing below (`drawAtelierOptionsBar()` and the rest) happens
+    // after this and may ask ImGui for cursors of its own -- harmlessly,
+    // because those bands only do so when the pointer is over them, and the
+    // pointer cannot be over the canvas and over a band at once.
+    //
+    // **Transient gestures beat the tool**, which is what the ordering here is
+    // for. A guide being dragged off a ruler, a pan and a view rotation each
+    // already own the drag they are in the middle of, and showing the tool's
+    // cursor during one of them would describe a click the user is not about to
+    // make. They are tested in the same order the input blocks above resolve
+    // them, so the cursor cannot claim a gesture the canvas gave to something
+    // else.
+    if (hovered || canvasHeld) {
+      if (st.pendingGuide.has_value()) {
+        // The one place a resize cursor is literally correct rather than
+        // approximately: the guide slides along one axis and the double-headed
+        // arrow names which. A horizontal guide is a horizontal line that moves
+        // vertically, so it takes the north-south arrow -- getting that pair
+        // the wrong way round is the easy mistake here.
+        //
+        // Spelled as SDL shapes rather than as `ToolCursor` intents because
+        // these are not tools: `ToolCursor` is what a *tool* means, and adding
+        // guide-drag members to it would make that enum a grab-bag of shapes
+        // and stop it being the thing a later bitmap layer can be written
+        // against.
+        g_canvasCursor = st.pendingGuide->orientation == GuideOrientation::Horizontal
+                             ? SDL_SYSTEM_CURSOR_NS_RESIZE
+                             : SDL_SYSTEM_CURSOR_EW_RESIZE;
+      } else if (panning || rotating) {
+        // Both drag the view rather than the document. `Pan` is the intent for
+        // each: a rotation is still "the sheet follows the pointer", and SDL
+        // has nothing that means rotation anyway.
+        g_canvasCursor = sdlCursorFor(ToolCursor::Pan);
+      } else {
+        // The tool, against the layer it is actually pointed at -- so a brush
+        // over a locked or unpaintable layer, and a bucket over a Pigment
+        // layer, show the slashed circle *before* the gesture is spent rather
+        // than a sentence in another band afterwards. `strokeTarget` is the
+        // same active layer the stroke and fill blocks above route on, read
+        // once for all three.
+        g_canvasCursor = sdlCursorFor(toolCursorOnTarget(st.brush.tool, strokeTarget));
+      }
     }
   }
   ImGui::End();
@@ -6666,6 +7125,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 }
 
 const DocumentTexturePool& canvasDocumentTexture() { return g_documentTextures; }
+
+std::optional<SDL_SystemCursor> canvasCursorRequest() { return g_canvasCursor; }
 
 void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex) {
   setActiveLayer(doc, layerIndex);

@@ -1431,6 +1431,10 @@ int main(int argc, char** argv) {
     // range semantics, invert, curve clamping, and the commutative fold that
     // lets three sources drive one target. Headless and GPU-free.
     const bool brushDynamicsOk = np::runBrushDynamicsTest();
+    // The BRUSH EDITOR's tip preview (app/DabPreview): the rasterised dab
+    // checked against a real depositDab(), plus the elliptical tip that
+    // building it found missing. Headless and GPU-free.
+    const bool dabPreviewOk = np::runDabPreviewTest();
     // io/AbrBrushes: Photoshop `.abr` libraries into brush/Library presets --
     // the container framing and the parameter mapping, including what an
     // import could NOT bring across. Headless and GPU-free.
@@ -1746,6 +1750,14 @@ int main(int argc, char** argv) {
     // independence at zero tolerance, the selection as a bound rather than a
     // speed limit, and paint landing on the active layer and on no other.
     const bool rgbDepositOk = np::runRgbDepositTest();
+    // PRD F9/F10 (both P0), ADR-0007 -- the eraser on a plain RGB layer, which
+    // until this step did NOTHING: Tool::Eraser sat in the not-built routing
+    // list, so a drag with it reached no layer and said nothing about why.
+    // Destination-out on all four channels (premultiplied, so no fringe), the
+    // per-stroke FLOOR with the rejected per-dab model measured beside it, the
+    // selection as a bound rather than a speed limit, an erase that costs
+    // nothing on blank canvas, and the Pigment refusal by name.
+    const bool rgbEraseOk = np::runRgbEraseTest();
     // PRD D25/D26 -- the paint bucket's refusals. ops/FloodFill was never
     // wrong; the gate in front of it was inside the click condition, so a
     // bucket click on the layer kind a new layer defaults to disappeared with
@@ -1755,6 +1767,18 @@ int main(int argc, char** argv) {
     // once, PRD E1's selection bound at exact zero -- and the live recomposite
     // the Layer Properties dialog's undimmed modal depends on.
     const bool bucketRefusalOk = np::runBucketRefusalTest();
+    // ui/ToolCursor -- the pointer, which until now was the OS arrow over every
+    // tool because the build made no cursor call at all. The table is total and
+    // no tool answers the fallback; the brush is a real crosshair, which needed
+    // the ImGui backend suppressed and SDL driven directly (ImGui's set has no
+    // crosshair, so routing through it left the six most-used tools sharing one
+    // arrow); ImGui's own eleven cursors are asserted too, since suppressing
+    // the backend made the panels ours; and the half worth having is that the
+    // cursor reads the SAME refusal predicates the options bar does, so a brush
+    // over a locked layer and a bucket over a Pigment layer are slashed before
+    // the gesture is spent -- with the successes asserted beside them so a
+    // function that always answers "not allowed" cannot pass.
+    const bool toolCursorOk = np::runToolCursorTest();
     // Phase 5 step 11 / PRD C12, C13, C15: the multi-selection's ordering and
     // all-or-nothing rules, the integer-pixel translate align is built on
     // (asserted bit-identical), links, colour labels and the panel filter.
@@ -1778,6 +1802,12 @@ int main(int argc, char** argv) {
     // successfully instead of failing. Headless, GPU-free, writes no files, and
     // asserts the same answers in BOTH NP_USE_OIIO configurations.
     const bool closeDecisionOk = np::runCloseDecisionTest();
+    // app/ImportImage and app/QuitSequence: the way an image gets into the open
+    // document, and the way the application gets out without discarding it.
+    // Both were features that existed and could not be reached -- an importer
+    // with no caller outside this suite, and a quit that never asked a single
+    // document whether it was dirty.
+    const bool quitGuardOk = np::runQuitGuardTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1793,18 +1823,20 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && abrBrushesOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dabPreviewOk && abrBrushesOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
                     controlsLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
-                    exportStatesOk && pigmentDepositOk && rgbDepositOk && bucketRefusalOk &&
-                    layerMultiSelectOk && layerPanel2aOk &&
+                    exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&
+                    bucketRefusalOk &&
+                    layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
-                    pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk;
+                    pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
+                    quitGuardOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -1817,6 +1849,22 @@ int main(int argc, char** argv) {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.IniFilename = nullptr;  // the layout is fixed; don't persist window state
+  // ui/ToolCursor §§1 and 6: **this build owns the mouse cursor outright.**
+  //
+  // `ImGui_ImplSDL3_UpdateMouseCursor()` tests this flag first and early-returns,
+  // so the backend stops calling `SDL_SetCursor()` entirely. That is what makes
+  // a crosshair over the canvas possible at all -- ImGui's cursor set contains
+  // no crosshair, and its backend only ever builds one SDL cursor per ImGui
+  // value, so `SDL_SYSTEM_CURSOR_CROSSHAIR` is unreachable through it.
+  //
+  // **The cost is that the panels are now ours too.** With the backend
+  // suppressed, nothing else will set the I-beam in a text box or the resize
+  // arrows on a window border; `cursors.apply()` below has to, by falling
+  // back to `ImGui::GetMouseCursor()` whenever the canvas has not asked for
+  // something. Removing this line without also removing that call leaves two
+  // writers and a cursor that sticks; removing the call without this line
+  // leaves the tool cursors dead.
+  io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
   np::applyAtelierTheme();
 
   // ui/Fonts: six of the seven layer-kind glyphs docs/ui.md 3.2 assigns are
@@ -1864,6 +1912,18 @@ int main(int argc, char** argv) {
   wgpuInit.DepthStencilFormat = WGPUTextureFormat_Undefined;
   ImGui_ImplWGPU_Init(&wgpuInit);
   np::initCanvasQuad(gpu);
+
+  // Every cursor this application will ever show (ui/ToolCursor §6), built once
+  // here because `SDL_CreateSystemCursor()` needs SDL's video subsystem up --
+  // which it has been since `SDL_Init()` far above -- and destroyed at the
+  // bottom of `main()` **before `SDL_Quit()`**, which tears the subsystem down
+  // underneath any cursor still alive.
+  //
+  // A local rather than a file-scope object so that lifetime is exactly this
+  // function's: there is no static destructor racing `SDL_Quit()`, and the
+  // create/destroy pair can be read as one by scrolling between them.
+  np::SystemCursorTable cursors;
+  cursors.create();
 
   // app/Keymap (Phase 2 step 15, PRD R7/R8): bindings loaded from a data
   // file rather than the `if (e.key.key == SDLK_...)` checks this used to
@@ -2058,10 +2118,15 @@ int main(int argc, char** argv) {
       // here would understate latency by however long the event sat queued.
       if (isPointerSampleEvent(e)) st.lastInputEventNs = e.common.timestamp;
 
-      if (e.type == SDL_EVENT_QUIT) st.quit = true;
+      // `requestQuit`, not `quit` — a user asking to leave is a request that
+      // has to be answered against the open documents first (app/QuitSequence).
+      // The one flag that still stops the loop outright is `--screenshot`'s,
+      // below; keeping the two apart is what makes the guard structurally
+      // unable to hang the golden harness.
+      if (e.type == SDL_EVENT_QUIT) st.requestQuit = true;
       if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
           e.window.windowID == SDL_GetWindowID(window))
-        st.quit = true;
+        st.requestQuit = true;
       if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
         int w = 0, h = 0;
         SDL_GetWindowSizeInPixels(window, &w, &h);
@@ -2081,7 +2146,7 @@ int main(int argc, char** argv) {
         if (action == "toggle_pause") st.paused = !st.paused;
         else if (action == "clear_canvas") st.requestClear = true;
         else if (action == "reload_shaders") st.requestReload = true;
-        else if (action == "quit") st.quit = true;
+        else if (action == "quit") st.requestQuit = true;
         // F12: app/Screenshot -- the app photographs its own window, because
         // every macOS route to another process's pixels is behind a
         // permission that fails silently. Serviced in the present block.
@@ -2143,6 +2208,45 @@ int main(int argc, char** argv) {
         else if (action == "toggle_guides") st.showGuides = !st.showGuides;
         else if (action == "toggle_snapping") st.snappingEnabled = !st.snappingEnabled;
         else if (action == "toggle_grid") st.showGrid = !st.showGrid;
+      }
+    }
+
+    // ---- the quit guard (app/QuitSequence) ---------------------------------
+    //
+    // Serviced once per frame, right after the events that can raise it. Before
+    // this, every one of the four ways out of this application set `st.quit`
+    // directly and none of them looked at a document, so quitting with three
+    // painted, unsaved documents open discarded all three and said nothing --
+    // and, because a clean shutdown removes the recovery scratch directory
+    // (PRD O8), it deleted the journal's copy of them on the way past.
+    //
+    // **Why this cannot hang `--screenshot`, and therefore the golden
+    // harness.** Two independent reasons, either of which is sufficient:
+    //
+    //  1. The guard reads `st.requestQuit` and never `st.quit`. The capture
+    //     block further down this loop writes `st.quit` and never
+    //     `st.requestQuit`. There is no expression in either direction, so a
+    //     `--screenshot` run's exit cannot pass through a document question at
+    //     all -- it is not a check that happens to pass, it is a check that is
+    //     not on that path.
+    //  2. The branch below exits at once whenever `--screenshot` was passed.
+    //     That is not belt-and-braces: SDL turns SIGINT and SIGTERM into
+    //     `SDL_EVENT_QUIT`, so a harness that times out and signals the process
+    //     really can set `requestQuit` in a capture run, and a modal raised in
+    //     response would make the process unkillable by signal.
+    if (st.requestQuit) {
+      st.requestQuit = false;
+      if (screenshotPath != nullptr) {
+        st.quit = true;
+      } else {
+        const np::QuitStep step = np::beginQuit(st.documents, st.quitSequence, st.pendingClose);
+        if (step.exitNow) st.quit = true;
+        // Only ever a refusal ("something is already waiting for an answer"),
+        // and the modal that refused it is on screen saying so. stderr rather
+        // than the status line beside the menus because that string is
+        // ui/MacPaintUI.cpp's own file-local state, and because this is the
+        // same channel the journal's own problems already use.
+        if (!step.status.empty()) std::fprintf(stderr, "[quit] %s\n", step.status.c_str());
       }
     }
 
@@ -2248,6 +2352,20 @@ int main(int argc, char** argv) {
     }
 
     np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
+
+    // **The one place the mouse cursor is set** (ui/ToolCursor §6). After
+    // `drawUI()`, because the canvas's request is produced inside it and every
+    // panel has by now told ImGui what it wants; before `Render()`, because
+    // both inputs -- `np::canvasCursorRequest()` and `ImGui::GetMouseCursor()`
+    // -- are this frame's answers and `NewFrame()` resets the second one.
+    //
+    // Unconditional. A frame in which the pointer is over a panel passes
+    // `nullopt` and `apply()` honours ImGui's own request, which is what stands
+    // in for the backend call suppressed by
+    // `ImGuiConfigFlags_NoMouseCursorChange` above. Making this call
+    // conditional on the canvas having asked for something is exactly how the
+    // panels would lose their cursors.
+    cursors.apply(np::canvasCursorRequest());
 
     ImGui::Render();
 
@@ -2496,6 +2614,12 @@ int main(int argc, char** argv) {
   }
 
   np::shutdownCanvasQuad();
+  // Before `SDL_Quit()` below, which tears down the video subsystem that owns
+  // these handles -- destroying them afterwards is a use-after-free. Placed
+  // with the other shutdowns rather than at the end so the whole teardown
+  // sequence reads in one block, and paired with the `cursors.create()` beside
+  // `ImGui_ImplWGPU_Init()`.
+  cursors.destroy();
   ImGui_ImplWGPU_Shutdown();
   ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();

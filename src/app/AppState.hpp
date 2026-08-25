@@ -9,6 +9,7 @@
 #include "app/CloseDecision.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
+#include "app/QuitSequence.hpp"
 #include "app/StrokeBake.hpp"
 #include "core/Clipboard.hpp"
 #include "core/SelectionBoundary.hpp"
@@ -33,7 +34,10 @@ namespace np {
 // name, an icon and a keyboard-shortcut slot for a tool that is not built
 // yet: ui/MacPaintUI.cpp's palette draws every one of them visibly disabled
 // (dimmed, unclickable, tooltip says so), and app/StrokeSession.cpp's
-// strokeRouteFor() routes all twenty to StrokeRoute::None. Each earns real
+// strokeRouteFor() routes them to StrokeRoute::None. **`Eraser` has left that
+// list** -- PRD F9/F10 are P0, and it now routes to StrokeRoute::RgbErase on a
+// writable RGB layer and refuses by name on every other kind (ADR-0007, and
+// app/StrokeSession.hpp §1's Eraser rows). Each earns real
 // behaviour on its own PRD id and phase, per docs/ui.md section 4's table --
 // which is also where MEASURE and SLICE's earlier "Dropped" disposition is
 // reversed: the palette keeps them for now, and per the user's own words,
@@ -491,7 +495,25 @@ struct AppState {
   bool requestZoom100 = false;
   bool requestZoomIn = false;
   bool requestZoomOut = false;
+
+  // **The frame loop stops when this is true, and nothing else.** It is not a
+  // request and never has been: `--screenshot` sets it directly as its
+  // capture-and-exit mechanism, and tools/golden/run_golden.sh depends on that
+  // exit happening on the frame it was asked for, with nothing in the way.
   bool quit = false;
+
+  // **A user asking to leave**, which is a different thing (app/QuitSequence).
+  // Set by `SDL_EVENT_QUIT`, by the window's close button, by the keymap's
+  // "quit" action and by File > Quit; serviced once per frame in main.cpp,
+  // where it either exits at once (no dirty documents) or starts asking about
+  // each dirty one in turn.
+  //
+  // Separate from `quit` above deliberately and structurally. A dirty-document
+  // check bolted onto `quit` would put a modal in front of `--screenshot`'s own
+  // exit and hang the golden harness forever; keeping the flags apart means
+  // there is no expression through which the screenshot path can reach the
+  // guard. app/QuitSequence.hpp carries the full argument.
+  bool requestQuit = false;
 
   // F12, and `--screenshot <path>`. Serviced in main.cpp between the UI's
   // submission and the present, which is the only moment the backbuffer both
@@ -574,6 +596,17 @@ struct AppState {
   // which is how the tab strip and the File menu would end up with two
   // different answers to the same question.
   PendingClose pendingClose;
+
+  // The documents a quit has still to ask about (app/QuitSequence.hpp). Empty
+  // and `running == false` for every frame of a normal session -- a quit is in
+  // flight only between the keystroke and the last answer.
+  //
+  // Session state for the same reason `pendingClose` is, and it has to be: the
+  // sequence is started from main.cpp's event loop and advanced from
+  // ui/MacPaintUI.cpp's Save / Don't Save / Cancel dialog, so a function-local
+  // static in either would leave the other half of the feature unable to see
+  // it.
+  QuitSequence quitSequence;
 
   // PRD I18's "open recent", persisted (see app/DocumentLifecycle.hpp for the
   // file and its location). Empty and untouched until the File menu is first

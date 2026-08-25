@@ -4,7 +4,9 @@ add_executable(naturalPaint
   app/CompPanel.cpp
   app/ControlsLayout.cpp
   app/CurveEdit.cpp
+  app/DabPreview.cpp
   app/DocumentLifecycle.cpp
+  app/ImportImage.cpp
   app/Journal.cpp
   app/HistoryPanel.cpp
   app/Keymap.cpp
@@ -39,6 +41,7 @@ add_executable(naturalPaint
   app/selftest/CowTile.cpp
   app/selftest/CreateBlank.cpp
   app/selftest/CurveEdit.cpp
+  app/selftest/DabPreview.cpp
   app/selftest/Descriptor.cpp
   app/selftest/Document.cpp
   app/selftest/DocumentLifecycle.cpp
@@ -85,8 +88,10 @@ add_executable(naturalPaint
   app/selftest/PointOps.cpp
   app/selftest/PresentTransfer.cpp
   app/selftest/Probe.cpp
+  app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/RgbDeposit.cpp
+  app/selftest/RgbErase.cpp
   app/selftest/Selection.cpp
   app/selftest/SelectionBoundary.cpp
   app/selftest/SelectionRefine.cpp
@@ -98,8 +103,10 @@ add_executable(naturalPaint
   app/selftest/Support.cpp
   app/selftest/TileResidency.cpp
   app/selftest/TileStore.cpp
+  app/selftest/ToolCursor.cpp
   app/selftest/Transform.cpp
   app/selftest/ViewTransform.cpp
+  app/QuitSequence.cpp
   app/Snapping.cpp
   app/StrokeBake.cpp
   app/StrokeSession.cpp
@@ -108,6 +115,7 @@ add_executable(naturalPaint
   brush/Dynamics.cpp
   brush/Library.cpp
   brush/RgbDeposit.cpp
+  brush/RgbErase.cpp
   brush/StrokePath.cpp
   color/LutBake.cpp
   color/Shaper.cpp
@@ -168,6 +176,7 @@ add_executable(naturalPaint
   ui/CanvasQuad.cpp
   ui/AtelierLayout.cpp
   ui/AtelierChrome.cpp
+  ui/ToolCursor.cpp
 )
 
 target_include_directories(naturalPaint PRIVATE

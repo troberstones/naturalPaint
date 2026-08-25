@@ -159,6 +159,68 @@
 // with no division at all, which is the `DryBrush` end of the range.
 //
 // ==========================================================================
+// 2b. The tip is an ellipse, and why that arrived this late
+// ==========================================================================
+//
+// `roundness` and `angle` have been on `BrushState` since the BRUSH EDITOR
+// panel was built, `DynamicTarget::Roundness` and `DynamicTarget::Angle` have
+// been two of the DYNAMICS matrix's twelve columns for just as long, the
+// `Flat Wash` preset in `brush/Library.cpp` sets them to 0.28 and 35 deg with
+// a comment saying they are "what roundness and angle are FOR", and
+// `io/AbrBrushes` imports Photoshop's `Rndn` and `Angl` straight into them.
+//
+// **None of it reached a dab.** `brushTipFor()` dropped both fields on the
+// floor, `BrushTip` had nowhere to put them, and this function computed a
+// circle. Every one of those five surfaces was telling a user that two
+// sliders shape the brush, and painting with them produced the identical
+// round mark -- which is the flavour of wrong that is worse than a missing
+// feature, because a missing control cannot be *believed*. It was found by
+// building the dab preview (`app/DabPreview`): a preview that draws what the
+// deposit actually does drew a circle for the flat wash brush, and there is
+// no honest way to draw the ellipse in a preview that the deposit will not
+// then paint.
+//
+// So the offset is mapped into the tip's own frame before the radial test:
+//
+//     u =  dx*cos(angle) + dy*sin(angle)     // along the MAJOR axis
+//     v = -dx*sin(angle) + dy*cos(angle)     // along the MINOR axis
+//     v /= roundness                          // minor semi-axis = roundness*r
+//
+// and `coverage` is then §2's profile of `sqrt(u*u + v*v) / radius` exactly
+// as before. So `roundness` is the minor/major axis *ratio* it has always
+// claimed to be (`radius` stays the semi-MAJOR axis, never the minor), and
+// `angle` is the major axis's rotation in degrees, measured from +x toward
+// +y -- which, y being down in canvas space, is the clockwise direction on
+// screen, and is the same sense Photoshop's `Angl` uses.
+//
+// **A round tip takes neither branch.** `roundness == 1` and `angle == 0` are
+// tested for and skipped, so `d2` is the bit-identical float it was before
+// this mapping existed. That is not an optimisation: it is what makes the
+// change invisible to every dab this application has ever deposited, to
+// `--pigment-stroke-demo` (which builds a default `BrushTip`), and therefore
+// to the `canvas` golden reference. A version that always ran the rotation
+// would move every existing stroke by a last-bit rounding, which is exactly
+// the kind of diff nobody can tell from a real regression.
+//
+// **`dabPixelBounds()` is deliberately NOT tightened for the ellipse.** The
+// minor semi-axis is `roundness * radius <= radius`, so an elliptical tip is
+// *inscribed* in the circle the bounds already describe, and §3's fact 1 --
+// every texel this module changes lies inside `dabPixelBounds()` -- survives
+// unchanged. A rotated ellipse's true bounding box is
+// `sqrt((r cos a)^2 + (r*rn sin a)^2)` by `sqrt((r sin a)^2 + (r*rn cos a)^2)`,
+// which is tighter, and computing it would buy a shorter scan over texels
+// whose coverage is zero and which are therefore never written. §3's *tile*
+// set stays tight regardless, because a tile is reported at the moment its
+// first texel is written and not from the bounds.
+//
+// **The floor on `roundness` is 0.01 and it is `io/AbrBrushes.cpp`'s**, which
+// already clamps an imported `Rndn` there; the same number is applied here so
+// an import cannot produce a tip this function has to defend against. Below
+// it the division amplifies `dy` by more than 100x for no visible gain -- at
+// the widest radius the UI offers, 200 px, a roundness of 0.01 is a minor
+// axis of 2 px, already a hairline -- and at zero it would divide by zero.
+//
+// ==========================================================================
 // 3. Which tiles a dab touches, and why the set is complete
 // ==========================================================================
 //
@@ -219,6 +281,11 @@ namespace np {
 // already applies at its own boundary.
 inline constexpr float kMaxMass = 1.0f;
 
+// The narrowest tip §2b will draw. `io/AbrBrushes.cpp`'s own clamp on an
+// imported `Rndn`, restated here so the deposit is defended at the point of
+// use and not only at the one importer that happens to share the number.
+inline constexpr float kMinRoundness = 0.01f;
+
 // One stamp of the brush tip: its shape, its load, and what it is loaded with.
 //
 // `spacing` is carried here rather than left to the caller because it belongs
@@ -235,6 +302,21 @@ struct BrushTip {
   // The fraction of the radius that is the flat, fully-covered core, in
   // [0,1]. 0 is a pure smoothstep from the centre; 1 is a hard disc.
   float hardness = 0.35f;
+
+  // Minor/major axis ratio of an elliptical tip, in (0,1]; 1 is round. See
+  // §2b. `radius` above is the semi-MAJOR axis whatever this holds, so
+  // narrowing a tip never widens it.
+  //
+  // Defaulted to 1 so that every `BrushTip` built by naming its fields --
+  // `--pigment-stroke-demo`, half of `--selftest`, this struct's own
+  // aggregate initialisation -- is the exact circle it was before §2b.
+  float roundness = 1.0f;
+
+  // The major axis's rotation in degrees, from +x toward +y. Ignored, and not
+  // merely ineffective, when `roundness == 1`: §2b's rotation branch is
+  // skipped outright for a round tip, because rotating a circle is arithmetic
+  // that can only introduce a rounding.
+  float angle = 0.0f;
 
   // Mass laid down per dab where coverage is 1. Not clamped to [0,1] here --
   // a flow above 1 is a legitimate "one dab saturates the paper" tip, and the
@@ -282,10 +364,20 @@ struct BrushTip {
   }
 };
 
-// The dab's coverage profile at an offset from its centre, in [0,1]. See §2.
+// The dab's coverage profile at an offset from its centre, in [0,1]. See §2
+// for the profile and §2b for the ellipse.
 //
-// Exactly 0.0f for every offset at or beyond `tip.radius`, exactly 1.0f
-// inside `tip.hardness * tip.radius`, and a smoothstep between them.
+// Exactly 0.0f for every offset at or beyond the tip's rim, exactly 1.0f
+// inside `tip.hardness` of the way to it, and a smoothstep between them --
+// where "the rim" is the circle of `tip.radius` for a round tip and §2b's
+// ellipse for any other.
+//
+// **This is the one function that decides what a dab looks like**, and it has
+// exactly two callers by design: `depositDab()` below, and `app/DabPreview`,
+// which shows a user what one dab will do. A preview with its own falloff
+// would agree with this on the day it was written and drift the first time
+// §2 changed -- and a preview that lies is worse than no preview, because a
+// user who cannot trust it has to paint to find out anyway.
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept;
 
 // The rule of §1, as a pure function of one texel, for the one reason a pure

@@ -895,6 +895,18 @@ bool runCurveEditTest();
 // PaintSim involvement at all.
 bool runBrushDynamicsTest();
 
+// The BRUSH EDITOR's tip preview (app/DabPreview): a real dab, rasterised
+// through the deposit's own `dabCoverage()` and `depositTexel()`, at three pen
+// pressures. The assertion the whole thing turns on is that the preview and a
+// real `depositDab()` into a real `PigmentTileStore` agree texel for texel --
+// a preview with a falloff of its own would drift the first time brush/Deposit
+// §2 changed, and a preview that has drifted is worse than the abstract bar it
+// replaced. Also covers brush/Deposit §2b's elliptical tip, which building
+// this preview is what found: `roundness` and `angle` had five surfaces
+// telling a user they shape the brush and reached no dab at all. Pure CPU --
+// the rasteriser has no ImGui, GPU or PaintSim involvement.
+bool runDabPreviewTest();
+
 // io/AbrBrushes: reading Photoshop `.abr` brush libraries into brush/Library
 // presets. The container framing (which parses a format from the internet and
 // must refuse rather than guess) and the parameter mapping (where a wrong
@@ -2454,6 +2466,87 @@ bool runPigmentDepositTest();
 // claim is made twice rather than merely compiled twice. Headless and GPU-free;
 // writes no files.
 bool runRgbDepositTest();
+// **The eraser on a plain RGB layer** (brush/RgbErase), and the routing that
+// made it exist at all (app/StrokeSession section 1; PRD F9 and F10, both
+// **P0**; ADR-0007; PRD E1 (P0) for the selection bound).
+//
+// **This section exists because the tool did nothing.** Not "did the wrong
+// thing" and not "was approximate": `Tool::Eraser` sat in `strokeRouteFor()`'s
+// not-built list beside nineteen unimplemented palette cells, so a drag with it
+// reached no layer, wrote no texel, produced no message and recorded nothing. It
+// drew a cursor ring. Two P0 requirements described it in full and one ADR
+// specified it per layer kind.
+//
+// What this section proves:
+//
+//  - **Destination-out on ALL FOUR channels.** `dst' = dst * (1 - e)`, one
+//    factor for rgb and alpha alike, because core::Tile is premultiplied -- the
+//    same all-four-channels argument `fillThroughSelection()` makes for the
+//    bucket's feathered edge, checked here rather than assumed. A strength-0.5
+//    dab halves every channel at **zero tolerance** (multiplying a normal
+//    binary16 by 0.5 only decrements its exponent), and the un-premultiplied
+//    colour is proven unchanged -- scaling the alpha alone would leave it
+//    brighter by `1/(1-e)`, which is a fringe on exactly the soft edges an
+//    eraser is used for.
+//  - **Erasing to nothing leaves EXACTLY nothing**, all four channels at zero
+//    and through a real composite, because a texel with colour at alpha 0 is
+//    malformed: `core/Composite` reads it as an additive glow with no coverage,
+//    nothing flags it, and it survives a save.
+//  - **Strength is a per-stroke FLOOR, which is the one piece of arithmetic here
+//    that can be *plausibly* wrong.** The accumulator holds the **fraction
+//    removed**, not the alpha, so the floor is `alpha_0 * (1 - strength)` and one
+//    stroke takes an opaque texel and an alpha-0.3 texel to the same *proportion*
+//    of themselves -- both asserted, because an absolute floor would leave faint
+//    paint untouched and would pass every assertion made only on an opaque texel.
+//    50 overlapping dabs remove exactly the strength in the accumulator, at zero
+//    tolerance, and land on the floor in the layer within a derived f16 bound --
+//    **with the rejected per-dab model computed on the identical numbers beside
+//    it, grinding the texel to under 1 % of itself**, and asserted to be wrong so
+//    the good assertion cannot pass against it. Once the floor is reached the
+//    remaining dabs write nothing at all, and a 3 %-coverage rim texel reaches
+//    the same floor as the 100 % centre.
+//  - **The floor is per stroke**, asserted from the other side: a second pass at
+//    strength 0.5 takes the texel to 0.25, because an accumulator that survived
+//    pen-up would be a tool that appeared to stop working after one drag.
+//  - **The selection bounds the erase, both ways** (PRD E1): it scales what one
+//    dab removes *and* caps what any number of dabs can remove, so a
+//    half-selected texel cannot be scrubbed past its coverage. Asserted through
+//    the module and again end to end through `StrokeSession`, with the texels
+//    outside the ants **bit-identical** afterwards -- what a runaway eraser
+//    destroys is invisible until the layer under it is, and one undo step covers
+//    the whole stroke. The null-Selection branch and the engaged-but-absent-tile
+//    case are both driven through this module's own hoisted loop, which
+//    core/SelectionMask.hpp requires.
+//  - **Speed independence at zero tolerance**: 61 samples and 4 samples over the
+//    same straight 180 px emit the identical dabs and leave **bit-identical**
+//    tiles -- with the straightness stated as a condition of the claim, since two
+//    sample rates describe two slightly different Catmull-Rom curves.
+//  - **Erasing nothing costs nothing**: a stroke of dozens of dabs across blank
+//    canvas allocates **not one tile**, reports none, records no entry and moves
+//    no revision -- while a *malformed* texel (colour at alpha 0) is erased
+//    rather than skipped, because the skip tests all four channels.
+//  - **The routing table's Eraser rows**, including the three that are decisions:
+//    no layer at all is `None` for the eraser and `PaintSim` for the brush (the
+//    solver has no alpha, so an eraser sent there would *add* pigment); a Pigment
+//    layer takes a deposit and **refuses an erase by name**, because ADR-0007's
+//    mass reduction needs the pigment route's missing PRD E1 gate; and Media,
+//    Adjustment and the storeless kinds each refuse rather than silently doing
+//    nothing.
+//  - **The erase lands on the ACTIVE layer and on no other**, driven through
+//    `setActiveLayer()` and `od.activeLayer`, with the other layer asserted
+//    bit-identical.
+//  - **One stroke is ONE undo step, labelled "erase"** and not "brush stroke",
+//    moving the content revision and not the structural one; and the
+//    accumulator's lifetime measured on both sides of pen-up.
+//  - **Every refusal by name**, with the locked and Pigment sentences asserted
+//    *different* -- both present to a user as "the eraser did nothing", and only
+//    one has a switch in LAYERS that fixes it.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all, and `oiioBackendCompiledIn()` is checked so that
+// claim is made twice rather than merely compiled twice. Headless and GPU-free;
+// writes no files.
+bool runRgbEraseTest();
 // PLAN.md Phase 5 step 11 ("Multi-select, align and distribute, colour labels,
 // linking, panel filtering"; PRD C12 (P0), C13 (P1), C15 (P2)).
 //
@@ -2575,6 +2668,84 @@ bool runActiveLayerTest();
 // here rather than given a test that asserts something adjacent to it.
 bool runBucketRefusalTest();
 
+// The mouse pointer, and whether it describes what the next click will actually
+// do (ui/ToolCursor).
+//
+// **Written for an absence.** Before it there was not one cursor call anywhere
+// in `src/` -- no `ImGui::SetMouseCursor`, no `SDL_SetCursor`, no
+// `SDL_CreateCursor` -- so the OS arrow sat over the canvas identically whether
+// the next press would deposit pigment, drag a marquee, sample a colour, pan
+// the view, or be refused outright and do nothing at all.
+//
+// What is asserted:
+//
+//  - **The table is total and nobody phoned in an arm.** Every one of the
+//    twenty-eight `Tool` values answers a real intent. `-Wswitch` already
+//    forces exhaustiveness -- `cursorForTool()` has no `default:`, the same
+//    guard `strokeRouteFor()` spells its twenty-tool list out for -- so what is
+//    added on top of the compiler is that **no tool answers `Arrow`**: that
+//    value belongs to `Tool::Count`, which is the enum's bound and not a tool,
+//    so a tool wearing it is an arm added to satisfy the compiler without a
+//    decision behind it.
+//  - **Non-degenerate, in both directions**: paint, select, sample, pan and
+//    zoom are five different intents, *and* the members of each family agree
+//    with one another -- a table handing every tool its own unique answer would
+//    pass the first check and still be wrong.
+//  - **The shapes, and the one collision left.** Dear ImGui's cursor set
+//    contains **no crosshair** -- Arrow, TextInput, four Resize shapes, Hand,
+//    Wait, Progress, NotAllowed is the whole enum, and its SDL3 backend builds
+//    exactly one system cursor per value, so `SDL_SYSTEM_CURSOR_CROSSHAIR`
+//    cannot be reached through `ImGui::SetMouseCursor()` at all. Routed that
+//    way the brush, the four selection tools, the eyedropper and the bucket all
+//    became one plain arrow. This build therefore suppresses the backend
+//    (`ImGuiConfigFlags_NoMouseCursorChange`) and drives SDL system cursors
+//    itself, so paint, select and sample are asserted **distinct** and each is
+//    pinned to the shape ui/ToolCursor §3 documents -- a re-map has to change
+//    the documented table too. Pan and MoveObject share SDL's single
+//    four-pointed arrow, asserted as an *equality* with its reasoning, since it
+//    is a fair collision rather than a forced one; a count of distinct shapes
+//    catches a second pair collapsing unnoticed.
+//  - **What suppressing the backend costs, paid back.** Nothing else will apply
+//    ImGui's own cursors any more, so all eleven `ImGuiMouseCursor_` values are
+//    asserted against the SDL shapes the backend used (imgui_impl_sdl3.cpp
+//    624-634), plus the `None` sentinel, which is -1 and a hide request rather
+//    than a shape. A wrong entry there is invisible on the canvas and shows
+//    only as a panel or text box behaving oddly.
+//  - **The valuable half: the cursor describes the OUTCOME, not the
+//    selection.** Nine refusals -- the brush on a locked layer of either
+//    paintable kind and on an Adjustment layer, the bucket and the gradient on
+//    a Pigment layer, and the fills with no document at all -- each show the
+//    slashed circle. These are the same gestures `app/StrokeSession` §§1 and 6
+//    already refuse with a sentence in the options bar; the point is that the
+//    options bar is a different band and the user is looking at the canvas.
+//  - **And the negative case, so that cannot pass vacuously**: a
+//    `toolCursorOnTarget()` hard-wired to "not allowed" satisfies every refusal
+//    above and dies on the successes -- the brush on both paintable kinds, the
+//    fills on an RGB layer, and **a stroke with no document at all**, which
+//    routes to the solver's dense canvas texture and is a real destination
+//    rather than a refusal. Plus the over-eager-refusal rows: a lock and an
+//    unwritable kind must stop tools that *write* without stopping the
+//    eyedropper, the selection tools or the Hand.
+//  - **The unbuilt palette cells answer "not allowed"**, checked against a
+//    perfectly writable RGB layer so the claim is about the tool. That is the
+//    harsh choice of the two available and ui/ToolCursor.hpp §5 argues it,
+//    including the case against; the check that it has not spilled -- every
+//    *built* tool usable over that same layer -- sits on the next line.
+//
+// Headless and GPU-free: no window, no ImGui context, no SDL video and no
+// document. Writes no files.
+//
+// **Two things it cannot cover, stated rather than approximated.** The wiring
+// in `ui/MacPaintUI.cpp`'s canvas block -- that the request is scoped to the
+// canvas hit rect, cleared every frame, and that a guide drag, a pan and a view
+// rotation beat the tool -- is ImGui state inside a window this suite has none
+// of. And `SystemCursorTable` itself calls into the platform through SDL's
+// video subsystem: its hide/show, null-entry fallback and once-per-frame apply
+// are argued in ui/ToolCursor.hpp §6 line by line against the backend function
+// they replace, but nothing here executes them. Both are given no test rather
+// than a test that asserts something adjacent to them.
+bool runToolCursorTest();
+
 // The presentation transfer function: what the value in a layer becomes by the
 // time it is a byte in a screenshot. Establishes the surface format the adapter
 // actually preferred and the gamma Dear ImGui's backend selects from it, then
@@ -2694,5 +2865,66 @@ bool runDescriptorTest();
 // assertion holds in BOTH NP_USE_OIIO configurations rather than the section
 // going quiet in the OFF build.
 bool runCloseDecisionTest();
+
+// Getting an image *into* the open document (app/ImportImage), and getting out
+// of the application without losing what is in it (app/QuitSequence).
+//
+// **Both halves are the same defect twice, at opposite ends of the
+// application.** `placeImageAsLayer()` was written, tested and correct, and had
+// no caller in the binary outside this suite -- a finished feature that was
+// nonetheless absent. Quitting set `AppState::quit` from four places and
+// consulted no document at all, so `DocumentSession::close()` was never called
+// on the way out and PRD I11's protection, along with the whole Save / Don't
+// Save / Cancel question, was bypassed by the one exit every user takes. A
+// session with three painted, unsaved documents closed on one keystroke and
+// said nothing -- and because a clean shutdown removes the recovery scratch
+// directory (PRD O8), the same exit deleted the journal's copy of the work.
+//
+// Covered, in order:
+//
+//  - An import adds **exactly one** layer, RGB-kind with its `rgbTiles`
+//    engaged and holding pixels, at the top of the stack, and it becomes the
+//    active layer. Exactly one history entry, labelled with the file's own
+//    name. With three layers already open it still lands on top rather than
+//    above the active one, and the active layer follows it.
+//  - Five refusals -- a missing file, a file no decoder accepts, an empty
+//    file, a folder, an empty path -- each adding **no** layer, recording
+//    **no** history entry, bumping no revision and naming the file in its
+//    message. Asserted together, because an implementation that returned
+//    failure *after* appending the layer would pass a returns-false check.
+//  - An image larger than the canvas: neither cropped nor resampled, warned
+//    about by name with both sizes, and the tiles it really occupies counted
+//    so the invisible-pixel cost is pinned rather than described.
+//  - A quit with nothing unsaved exits **on the call**, storing nothing, and
+//    the clean documents are not closed one at a time on the way out.
+//  - Three documents of which two are dirty: exactly two questions, in session
+//    order, and the clean one is never asked about and is still open when the
+//    process exits. A quit raised while another close question is up is
+//    refused by name and does not exit.
+//  - Cancel on the second of three questions abandons the whole quit, the
+//    third document is never asked about, the application does **not** exit,
+//    and the unanswered documents are still open and still dirty. A document
+//    already answered with Don't Save stays closed -- the cancel stops the
+//    quit, it does not un-answer an answered question.
+//  - A **failed** save abandons the quit rather than marching on to the next
+//    document, closes nothing, leaves that document open and dirty, and leaves
+//    the question up carrying the writer's own error. The successful
+//    counterpart asserts the writer really ran, so a silenced saver cannot pass
+//    the failure case.
+//  - **Every question is keyed on `DocumentId`.** A document is closed
+//    underneath a running sequence and the fixture is arranged so an
+//    index-keyed queue would move to a *clean* document and let a dirty one
+//    leave unasked -- it would not fail, it would succeed at the wrong thing.
+//    Plus the other half: a question about a document that has gone acts on
+//    nothing and moves on rather than discarding the bystander that inherited
+//    its index.
+//  - Escape during a quit cancels it and destroys nothing, and no key maps to
+//    Don't Save on the quit path either.
+//
+// Headless and GPU-free. The save is injected, so the quit half holds in BOTH
+// NP_USE_OIIO configurations; the import half writes PNG fixtures into a
+// scratch directory of its own, which it removes, because "a path that does not
+// exist is refused by name" cannot be asserted without a filesystem.
+bool runQuitGuardTest();
 
 }  // namespace np

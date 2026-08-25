@@ -11,11 +11,43 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   const float r = tip.radius;
   if (!(r > 0.0f)) return 0.0f;
 
-  // Squared, before any square root: this is the comparison the footprint
-  // argument (header §3, fact 1) rests on, and it must be the *only* thing
-  // that decides whether a texel is outside the dab. A `sqrt` first would put
-  // a rounding between the disc and the test.
-  const float d2 = dx * dx + dy * dy;
+  // --- The offset, in the tip's own frame (header §2b) --------------------
+  //
+  // **A round tip takes the else branch and nothing else**, so `d2` is the
+  // bit-identical float it was before the ellipse existed. Both guards matter
+  // and neither is an optimisation: the rotation is skipped for a circle
+  // because rotating an isotropic distance is a no-op in exact arithmetic and
+  // is *not* one in floating point, and skipping it is what keeps every
+  // already-deposited dab, `--pigment-stroke-demo` and the `canvas` golden
+  // exactly where they were.
+  const float rn = std::clamp(tip.roundness, kMinRoundness, 1.0f);
+  float d2;
+  if (rn < 1.0f) {
+    float u = dx;
+    float v = dy;
+    if (tip.angle != 0.0f) {
+      // Degrees on the wire because that is what the ANGLE slider shows, what
+      // `DynamicTarget::Angle` adds in, and what Photoshop's `Angl` imports
+      // as. The conversion happens here, once, rather than being a second
+      // unit for BrushState to disagree with app/AppState about.
+      const float t = tip.angle * 0.017453292519943295f;  // pi / 180
+      const float c = std::cos(t);
+      const float s = std::sin(t);
+      u = dx * c + dy * s;
+      v = -dx * s + dy * c;
+    }
+    // The minor semi-axis is `rn * r`, so a point at `|v| == rn*r` must land
+    // on the rim: dividing by `rn` is what puts it at `r` in the isotropic
+    // measure the profile below is written in.
+    v /= rn;
+    d2 = u * u + v * v;
+  } else {
+    // Squared, before any square root: this is the comparison the footprint
+    // argument (header §3, fact 1) rests on, and it must be the *only* thing
+    // that decides whether a texel is outside the dab. A `sqrt` first would
+    // put a rounding between the disc and the test.
+    d2 = dx * dx + dy * dy;
+  }
   const float r2 = r * r;
   if (!(d2 < r2)) return 0.0f;
 

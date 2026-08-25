@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,10 @@
 #include "sim/PaintSim.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/DocumentTexture.hpp"
+// For `SDL_SystemCursor`, the return type of `canvasCursorRequest()` below.
+// ui/ToolCursor is the module that owns what the cursor means; this header only
+// carries one of its values across.
+#include "ui/ToolCursor.hpp"
 
 namespace np {
 
@@ -41,6 +46,26 @@ void drawUI(AppState& state, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 // scrolls and that section can sit below the fold at small window sizes, so
 // the shutdown line is the one that is always observable.
 const DocumentTexturePool& canvasDocumentTexture();
+
+// What the canvas wants the mouse pointer to be **this frame**, or `nullopt`
+// when the pointer is not over it.
+//
+// The same file-scope-plus-accessor shape `canvasDocumentTexture()` above uses,
+// and for the same reason: the value is produced deep inside `drawUI()`'s
+// canvas block, where `hovered`, the active layer and the in-flight gesture are
+// all in scope, and it is consumed somewhere else entirely.
+//
+// **It is a request, not an application.** ui/ToolCursor §6 makes this build
+// the only writer of the cursor -- the ImGui SDL3 backend is suppressed with
+// `ImGuiConfigFlags_NoMouseCursorChange` -- and being the only writer is worth
+// nothing if the writing happens in two places. `SystemCursorTable::apply()`
+// in main.cpp is the one caller, once a frame; everything here does is say
+// what the canvas would like.
+//
+// Cleared at the top of every `drawUI()`, so a frame in which the pointer left
+// the canvas answers `nullopt` rather than the last frame's tool -- which is
+// exactly the stale-cursor failure suppressing the backend was meant to end.
+std::optional<SDL_SystemCursor> canvasCursorRequest();
 
 // Which layer the LAYERS panel, the `Layer` menu and **the brush** act on.
 //

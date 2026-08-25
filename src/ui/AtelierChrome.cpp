@@ -163,7 +163,14 @@ constexpr ToolMeta kToolMeta[] = {
     {"Measure", "ruler", 57675u, "", false},
     {"Frame", "frame", 58001u, "", false},
     {"Clone Stamp", "stamp", 58299u, "S", false},
-    {"Eraser", "eraser", 57999u, "E", false},
+    // **Built**, as of the RGB erase route: PRD F9/F10 (P0), ADR-0007,
+    // brush/RgbErase. It stays in this half of the table because the rows are in
+    // `Tool`'s declaration order and the static_assert below rests on that --
+    // the divider above marks where the enum's not-built run began, not a second
+    // list to keep in step. Flipping this flag is what makes the palette cell
+    // clickable at all; a route that works behind a disabled cell is a feature
+    // no user can reach.
+    {"Eraser", "eraser", 57999u, "E", true},
     {"Paint Bucket", "paint-bucket", 58086u, "Shift+G", true},
     {"Gradient", "blend", 58780u, "G", true},
     {"Pencil", "pencil", 57849u, "", false},

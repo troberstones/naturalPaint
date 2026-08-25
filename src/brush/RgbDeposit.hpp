@@ -227,10 +227,19 @@
 // belongs to `app/StrokeSession`, which owns the record and the history that
 // `app/` owns.
 //
-// **No blend mode, no eraser, no smudge, no texture.** A dab is source-over of
-// one colour. `Layer::blend` still applies to the layer as a whole at composite
-// time and is untouched; a brush that could pick its own blend mode per dab is
-// a different feature with its own UI.
+// **No blend mode, no smudge, no texture.** A dab is source-over of one colour.
+// `Layer::blend` still applies to the layer as a whole at composite time and is
+// untouched; a brush that could pick its own blend mode per dab is a different
+// feature with its own UI.
+//
+// **No eraser -- it is `brush/RgbErase`, a sibling.** That module borrows this
+// one's dab stream, falloff, footprint, tile loop and accumulator *type*, and
+// differs in the two places that matter: a dab is a destination-out rather than
+// a source-over, and the accumulator holds the fraction this stroke has REMOVED
+// rather than the alpha it has added -- so §2's ceiling becomes a floor of
+// `alpha_0 * (1 - strength)` there. A `bool erasing` parameter on
+// `depositRgbTexel()` was the alternative and was rejected: it would put both
+// arithmetics inside one function whose §2 argument describes only one of them.
 //
 // **No fluid behaviour at all**, exactly as `brush/Deposit` says of itself: no
 // water, no diffusion, no edge darkening, no granulation, no paper tooth. An
