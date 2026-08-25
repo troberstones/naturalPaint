@@ -49,12 +49,19 @@ each was verified by sabotage rather than by reading.
 | ~~R4~~ | No `SDL_EVENT_DROP_FILE` handler anywhere (PRD **I14**, P0) | `track6/openany` |
 | ~~R5~~ | No brush-library persistence of any kind | `track6/abrlib` — preferences file, lazy load, unload |
 | ~~R6~~ | No native macOS menu bar (PRD **R10**) | `track6/nativemenu` — menu is now a 49-action data model with ImGui and AppKit backends |
+| ~~R7~~ | **A1** — Eyedropper did nothing (PRD **Q10**, P0) | `track7/eyedropper` — three sample sources, five sample sizes; also fixed `probePixel()` diluting alpha with off-canvas texels |
+| ~~R8~~ | **A6** — half the DYNAMICS matrix was inert | `track7/dynamics` — and the RANDOM arm of `sourceValue()` is now asserted directly, which is what a constant would have hidden from every behavioural test |
+| ~~R9~~ | **C1/C5** — Filter, Image and Select menus were unreachable engines | `track7/filtermenu`, `track7/selectmenu` |
+| ~~R10~~ | **A3 / D3** — Zoom tool did nothing (PRD **Q1**/**R5**, P0) | `track8/zoom` — scrubby zoom, `[`/`]` size keys; the `toolNoHandlerException()` row recording Zoom is now deleted, which is what that mechanism existed to force |
+| ~~R11~~ | **A7** — `BRUSH EDITOR > Save` did not persist a built-in preset | `track8/brushlib` — a separate, atomically-written user preset file; Save forks rather than shadows a built-in |
+| ~~R12~~ | **D5** — PRD **I13** (P1) save-readback was unimplemented | `track8/savereadback` — and it found the larger bug underneath: `saveNpaint()` wrote in place and its failure path *deleted the target*, so a failed save destroyed the previously-good file |
+| ~~R13~~ | **B1** — the solver canvas could not be saved, exported or undone | Already resolved by the "stroke bridge" series **before the audit was written**; see B1's own note. `track8/solverio` proved the missing half (a baked layer survives `saveNpaint()`/`loadNpaint()` bit-for-bit) and surfaced **B1a** |
 
-**Partially resolved:** `BRUSH EDITOR > Save` still does not persist an edit to a
-*built-in* preset. `track6/abrlib` disabled Save for library-owned presets
-deliberately (this build writes no `.abr`, so the edit would be silently replaced
-next launch) and added the preferences file, but a user-authored preset library
-does not exist yet. Tracked below as **A7**.
+**A note on R13.** An audit is a snapshot, and this one outlived the tree by
+seven commits: B1 was already false when it was written. That is worth more than
+the item itself — every entry here has a shelf life, and the ones that describe
+*absence* ("nothing calls X") spoil fastest, because a single merge elsewhere
+falsifies them silently. Re-verify before building against any of them.
 
 ---
 
@@ -355,6 +362,40 @@ scatter import feeds a **dead** `DynamicTarget` (see **A6**).
 
 A green suite is not evidence of a reachable feature. That is the whole point of
 this document.
+
+### F4 — `--selftest` cannot reach a single ImGui or SDL dispatch site
+
+Established by sabotage during `track8/zoom`, and confirmed here: corrupting the
+*pure* functions in `app/ZoomAndSize.cpp` reddens 7 assertions immediately, but
+corrupting the ImGui canvas block or `main.cpp`'s SDL action dispatch that
+*calls* them reddens **nothing**. No test anywhere drives ImGui mouse/keyboard
+dispatch headlessly; `runKeymapTest()` covers `Keymap::resolve()` and stops
+short of the action-string dispatch that consumes its output.
+
+So for every gesture and shortcut in the build, the shape of the coverage is
+the same: the arithmetic is proven, and the wire from the event to the
+arithmetic is not. A regression that makes a correct, well-tested function stop
+being *called* ships silently. This is the same gap that let the original
+wheel-zoom anchor bug — a formula that never read the mouse position — live in
+the tree with a green suite.
+
+Not new, not introduced by any track, and not cheap to close: it needs a
+headless input harness, which is its own piece of work. Recorded because it
+bounds what every other green line in this file is worth.
+
+### F5 — a refused save crashes a later section rather than failing it
+
+Found by sabotage, and narrower than it first looks. Forcing
+`verifyNpaintRoundTrip()` to refuse every save makes `--selftest` exit **139**
+(SIGSEGV) in an unrelated later section, rather than reporting red assertions —
+a fixture there saves a file and then reads it back without checking that the
+save succeeded, so it hands a truncated file to the PNG reader.
+
+This is a test-harness robustness gap, not a production defect: no production
+path makes every save refuse. It is recorded because a suite that *crashes*
+under a fault instead of reporting it costs the next person the diagnosis, and
+because a crash is the one failure mode that stops later sections from running
+at all — which is how a single fault hides an unknown number of others.
 
 ---
 
