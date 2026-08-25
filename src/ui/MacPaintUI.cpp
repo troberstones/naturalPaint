@@ -2995,10 +2995,16 @@ void drawDynamicsMatrix(AppState& st) {
       const float x0 = o.x + kMatrixLabelW + cellW * static_cast<float>(t);
       if (t % 2 == 1)
         dl->AddRectFilled(ImVec2(x0, o.y), ImVec2(x0 + cellW, o.y + kMatrixHeadH), altCol);
-      const char* ab = targetAbbrev(static_cast<DynamicTarget>(t));
+      const DynamicTarget headTarget = static_cast<DynamicTarget>(t);
+      const char* ab = targetAbbrev(headTarget);
       const ImVec2 sz = ImGui::CalcTextSize(ab);
+      // A refused column's head reads in the muted colour too -- the same
+      // "disabled rather than absent" treatment `newLayerKindMenuItem()`
+      // gives a layer kind with nowhere to land, so a reader learns the
+      // matrix has twelve columns even though one of them does nothing.
+      const bool headBuildable = targetUnbuildableReason(headTarget) == nullptr;
       dl->AddText(ImVec2(x0 + (cellW - sz.x) * 0.5f, o.y + (kMatrixHeadH - sz.y) * 0.5f),
-                  textCol, ab);
+                  headBuildable ? textCol : mutedCol, ab);
     }
     dl->AddLine(ImVec2(o.x, o.y + kMatrixHeadH), ImVec2(o.x + width, o.y + kMatrixHeadH),
                 ruleCol, 1.0f);
@@ -3025,8 +3031,18 @@ void drawDynamicsMatrix(AppState& st) {
       const size_t at = findLink(st.brush.links, source, target);
       const bool selected = st.brush.editSource == source && st.brush.editTarget == target;
       const ImVec2 mid((cellMin.x + cellMax.x) * 0.5f, (cellMin.y + cellMax.y) * 0.5f);
+      // Per-CELL, not merely per-column (`cellUnbuildableReason()`,
+      // brush/Dynamics.hpp): Wetness refuses its whole column, but Hue/
+      // Saturation/Value refuse only the four cells a stroke-local source
+      // would otherwise resolve to a silent constant. A refused cell draws
+      // as neither filled nor an empty dot: it is not a decision the user
+      // can make yet, so it should not look like one that simply has not
+      // been made.
+      const char* unbuildable = cellUnbuildableReason(source, target);
 
-      if (at != kNoLink) {
+      if (unbuildable != nullptr) {
+        dl->AddLine(ImVec2(mid.x - 3.0f, mid.y), ImVec2(mid.x + 3.0f, mid.y), mutedCol, 1.0f);
+      } else if (at != kNoLink) {
         // A link that has been switched off keeps its curve but drives
         // nothing, so it draws as neither filled nor empty -- an outline.
         const float half = selected ? 5.5f : 4.5f;
@@ -3049,20 +3065,34 @@ void drawDynamicsMatrix(AppState& st) {
       // One hit target per cell. Clicking an empty cell selects it rather
       // than creating a link there -- creation is the editor's ADD button,
       // so that a stray click on a 17 px cell cannot silently change how the
-      // brush paints.
+      // brush paints. A refused cell is disabled outright -- the same
+      // `BeginDisabled()` / `IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)`
+      // pair `newLayerKindMenuItem()` uses, so the reason is still reachable
+      // by hovering a cell that cannot be clicked.
       ImGui::SetCursorScreenPos(cellMin);
       char id[48];
       std::snprintf(id, sizeof id, "##cell%zu_%zu", s, t);
+      ImGui::BeginDisabled(unbuildable != nullptr);
       ImGui::InvisibleButton(id, ImVec2(cellW, kMatrixRowH));
-      if (ImGui::IsItemHovered()) {
-        popAtelierMono();
-        ImGui::SetTooltip("%s \xE2\x86\x92 %s%s", sourceName(source), targetName(target),
-                          at == kNoLink ? "  (no link)" : "");
-        pushAtelierMono();
-      }
-      if (ImGui::IsItemClicked()) {
-        st.brush.editSource = source;
-        st.brush.editTarget = target;
+      ImGui::EndDisabled();
+      if (unbuildable != nullptr) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+          popAtelierMono();
+          ImGui::SetTooltip("%s \xE2\x86\x92 %s\n%s", sourceName(source), targetName(target),
+                            unbuildable);
+          pushAtelierMono();
+        }
+      } else {
+        if (ImGui::IsItemHovered()) {
+          popAtelierMono();
+          ImGui::SetTooltip("%s \xE2\x86\x92 %s%s", sourceName(source), targetName(target),
+                            at == kNoLink ? "  (no link)" : "");
+          pushAtelierMono();
+        }
+        if (ImGui::IsItemClicked()) {
+          st.brush.editSource = source;
+          st.brush.editTarget = target;
+        }
       }
     }
 
@@ -3075,8 +3105,13 @@ void drawDynamicsMatrix(AppState& st) {
     const ImVec2 vsz = ImGui::CalcTextSize(val);
     const float gx = o.x + width - kMatrixGutterW;
     dl->AddLine(ImVec2(gx, o.y), ImVec2(gx, o.y + kMatrixRowH), ruleCol, 1.0f);
-    // RANDOM is redrawn per dab, so it has no value between them; its em dash
-    // is drawn muted for the same reason.
+    // RANDOM genuinely is redrawn per dab now (`dynamicRandomDraw()`,
+    // `app/StrokeSession`'s deposit loop), so it has no value between dabs;
+    // its em dash is drawn muted for the same reason. VELOCITY, FADE and
+    // NOISE are also stroke-local -- `live` here is `dynamicInputsFor()`'s
+    // per-FRAME hardware sample, which cannot see a dab in progress, so this
+    // gutter shows their truthful idle reading (0.0, "not moving" / "just
+    // started" / "at rest") rather than what the stroke is doing right now.
     dl->AddText(ImVec2(o.x + width - 5.0f - vsz.x, o.y + (kMatrixRowH - vsz.y) * 0.5f),
                 source == DynamicSource::Random ? mutedCol : textCol, val);
 
@@ -3102,6 +3137,16 @@ void drawLinkEditor(AppState& st) {
   ImGui::Text("%s \xE2\x86\x92 %s", sourceName(source), targetName(target));
   popAtelierMono();
 
+  // The same per-CELL refusal the matrix's own cells already enforce by
+  // disabling the click that would get here -- restated rather than
+  // trusted, because a link loaded from an older preset file (or a future
+  // importer) could name a refused cell directly, without ever going
+  // through a matrix click.
+  if (const char* unbuildable = cellUnbuildableReason(source, target)) {
+    ImGui::TextDisabled("%s", unbuildable);
+    return;
+  }
+
   if (at == kNoLink) {
     ImGui::TextDisabled("No link in this cell.");
     if (ImGui::Button("Add link")) {
@@ -3112,6 +3157,17 @@ void drawLinkEditor(AppState& st) {
       addLink(st.brush.links, made);
     }
     return;
+  }
+
+  // Hue/Saturation/Value shift the deposited colour only -- brush/
+  // Dynamics.hpp's own section comment on `applyHsvDynamics()` is the full
+  // argument; this is that same caveat surfaced where the one person who
+  // needs it, someone wiring up exactly this link, can actually see it.
+  if (target == DynamicTarget::Hue || target == DynamicTarget::Saturation ||
+      target == DynamicTarget::Value) {
+    ImGui::TextDisabled(
+        "Shifts the deposited colour only. Density, staining and granulation stay the "
+        "swatch's own.");
   }
 
   BrushLink& link = st.brush.links.links[at];

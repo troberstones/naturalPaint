@@ -1,10 +1,81 @@
 #include "app/StrokeSession.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 #include "color/Space.hpp"
 
 namespace np {
+namespace {
+
+// A per-dab XOR salt, folded into the seed before drawing SCATTER's random
+// direction -- see `applyPerDabScatter()`. Any fixed odd 64-bit constant
+// would decorrelate the two streams equally well; this one is the ASCII
+// bytes of "scatter1" read as a little-endian word, chosen only so a reader
+// grepping the binary for something recognisable has a chance of finding it,
+// not for any property of the bits themselves.
+constexpr uint64_t kScatterAngleSalt = 0x3172657474616373ULL;  // "scatter1" (LE)
+
+// Two 2*pi's worth of named precision rather than a bare literal: the
+// dynamics matrix's other angular sources (`sourceDisplay()`'s tilt/azimuth/
+// barrel cases) all go through `%.0f` degrees, and this is the one place in
+// the deposit path that turns a [0,1) draw into radians directly.
+constexpr float kTwoPi = 6.28318530717958647692f;
+
+// Folds the per-dab corrections from `strokeLocalLinks_` -- resolved against
+// VELOCITY/FADE/NOISE/RANDOM alone, via `evaluateLinksFiltered()` -- onto a
+// tip already resolved against the four hardware sources
+// (`brushTipFor()`'s own `dyn`, baked into `base` at `setTip()` time).
+//
+// **Multiplying/adding the stroke-local factor onto the already-resolved
+// field, rather than re-running `evaluateLinks()` on the WHOLE link set with
+// both halves of the inputs filled in, is not a shortcut -- it is required by
+// this file's per-dab granularity.** The hardware four are sampled once per
+// render frame (`dynamicInputsFor()`), before this dab's position is even
+// known; the stroke-local four are sampled once per DAB, inside this very
+// loop. There is no single instant at which "the whole `DynamicInputs`" for
+// this dab actually exists. Composing two partial resolutions of the SAME
+// link set is what `evaluateLinksFiltered()`'s own comment proves equal to
+// resolving it in one pass: `TargetCombine`'s fold is commutative and
+// associative (asserted in `--selftest`'s "order independence" section), so
+// multiplying the two Multiply-target partials and adding the two Add-target
+// partials reproduces exactly the number one whole-set `evaluateLinks()`
+// call would have produced, had one been possible.
+//
+// Spacing is deliberately NOT corrected here: `BrushTip::spacingPx()` is
+// consumed once, by `StrokePath`, before this loop ever runs (`pending_` is
+// already the emitted dab stream by the time `depositPending()` executes),
+// so a stroke-local spacing correction at this point would have no consumer
+// -- it could not un-emit or re-emit a dab that has already been decided.
+BrushTip applyStrokeLocalCorrection(const BrushTip& base, const DynamicResult& corr) noexcept {
+  BrushTip out = base;
+  out.radius *= corr.at(DynamicTarget::Size);
+  out.hardness *= corr.at(DynamicTarget::Hardness);
+  out.roundness *= corr.at(DynamicTarget::Roundness);
+  out.angle += corr.at(DynamicTarget::Angle);
+  out.flow *= corr.at(DynamicTarget::Flow) * corr.at(DynamicTarget::Concentration);
+  out.scatter += corr.at(DynamicTarget::Scatter);
+  return out;
+}
+
+// SCATTER's own direction: a fresh draw off a SALTED copy of the stroke seed,
+// keyed by dab index like every other per-dab draw. Salted rather than reused
+// from `dynamicRandomDraw(seed, dabIndex)` directly, because a brush that
+// links RANDOM to both SCATTER and FLOW (`brush/Library.cpp`'s `Dry Bristle`
+// does exactly this) would otherwise jitter and thin in visible lockstep --
+// wide exactly when faint, narrow exactly when heavy -- which reads as one
+// coupled effect rather than the two independent ones the matrix promises.
+Vec2 applyPerDabScatter(Vec2 centre, const BrushTip& tip, uint64_t seed,
+                        uint32_t dabIndex) noexcept {
+  if (tip.scatter == 0.0f) return centre;  // the identity: no branch taken,
+                                           // no draw spent, for every brush
+                                           // with nothing linked to SCATTER
+  const float angle = dynamicRandomDraw(seed ^ kScatterAngleSalt, dabIndex) * kTwoPi;
+  const float magnitude = tip.scatter * tip.radius;
+  return Vec2{centre.x + std::cos(angle) * magnitude, centre.y + std::sin(angle) * magnitude};
+}
+
+}  // namespace
 
 const char* strokeRouteName(StrokeRoute route) noexcept {
   switch (route) {
@@ -247,8 +318,24 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // one dab saturates the paper tip"). So this is the same number, scaled by
   // pressure, and not a remapping that would make the LOAD slider mean two
   // things.
-  tip.flow = brush.load * flowMul;
+  //
+  // **`Concentration` is a SECOND Multiply column onto this same product**,
+  // not a second field -- brush/Dynamics.hpp's own comment on the target says
+  // so ("scales BrushState::load"). Composing it here, multiplied alongside
+  // `flowMul` rather than folded into a combined dynamic target, is exactly
+  // what `--selftest`'s "a Multiply target COMPOSES its sources" section
+  // already proves of two links on ONE target -- Flow and Concentration are
+  // simply two different cells the matrix lets a user drive independently,
+  // and both were always meant to reach the one number a dab actually lays
+  // down.
+  tip.flow = brush.load * flowMul * dyn.at(DynamicTarget::Concentration);
   tip.spacing = brush.spacing * dyn.at(DynamicTarget::Spacing);
+  // `DynamicTarget::Scatter`'s resolved magnitude (an Add target, identity
+  // 0.0) -- see `BrushTip::scatter`'s own comment for why this is a magnitude
+  // and not yet a position. Undriven, every existing brush gets exactly 0.0
+  // here, which is the identity `applyPerDabScatter()` (below, in the deposit
+  // loop) treats as "no offset" and skips outright.
+  tip.scatter = dyn.at(DynamicTarget::Scatter);
   // Straight through, unscaled: there is no `DynamicTarget::Opacity` in
   // brush/Dynamics' twelve, and inventing one here rather than in the matrix
   // that draws them would give the DYNAMICS panel a target it cannot show. The
@@ -262,8 +349,22 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
           : 0;
   const Pigment& pigment = palette[index];
 
+  // **HUE, SATURATION and VALUE shift the swatch itself, before either
+  // decode below** -- brush/Dynamics.hpp's own section comment is the whole
+  // argument for doing this in sRGB, at this exact point in the pipeline, and
+  // for what it deliberately leaves alone (the palette row's density,
+  // staining and granulation, which `drawLinkEditor()` says plainly on these
+  // three cells rather than only in a header comment). At the identity --
+  // every brush with no Hue/Saturation/Value link, which today is every
+  // shipped preset -- `applyHsvDynamics()`'s own short-circuit hands back
+  // `pigment.rgb` bit-identical, so this line changes nothing about any
+  // existing stroke.
+  const std::array<float, 3> shiftedRgb = applyHsvDynamics(
+      {pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]}, dyn.at(DynamicTarget::Hue),
+      dyn.at(DynamicTarget::Saturation), dyn.at(DynamicTarget::Value));
+
   // **The same swatch, decoded, for the other layer kind** (brush/Deposit.hpp's
-  // `linearRgb`). Derived here, from the same `pigment` the latent below is
+  // `linearRgb`). Derived here, from the same `shiftedRgb` the latent below is
   // derived from, so the two representations of one load are produced by one
   // statement pair and cannot name different colours.
   //
@@ -273,11 +374,11 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // again rather than called because `app/` must not include `ui/` -- the
   // dependency runs the other way. `--selftest` asserts the two agree, which is
   // the guard that spelling it twice needs.
-  tip.linearRgb = {srgbDecode(pigment.rgb[0]), srgbDecode(pigment.rgb[1]),
-                   srgbDecode(pigment.rgb[2])};
+  tip.linearRgb = {srgbDecode(shiftedRgb[0]), srgbDecode(shiftedRgb[1]),
+                   srgbDecode(shiftedRgb[2])};
 
   if (lut.valid())
-    tip.pigment = lut.rgbToLatent(pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]);
+    tip.pigment = lut.rgbToLatent(shiftedRgb[0], shiftedRgb[1], shiftedRgb[2]);
   else
     // No LUT: `Latent::c` is Mixbox's own three weights and the fourth
     // (white) is derived, so a straight copy of the sRGB triple is not the
@@ -285,7 +386,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
     // that never loaded the 512x512 PNG painting *something* beats one that
     // paints white. The LUT is loaded by main.cpp before any UI exists, so
     // this branch is for tests and for a broken install.
-    tip.pigment.c = {pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]};
+    tip.pigment.c = {shiftedRgb[0], shiftedRgb[1], shiftedRgb[2]};
   return tip;
 }
 
@@ -331,7 +432,7 @@ bool brushIsEdited(const BrushState& brush) {
 }
 
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
-                          std::string* errorOut) {
+                          std::string* errorOut, const BrushLinkSet* strokeLocalLinks) {
   if (errorOut != nullptr) errorOut->clear();
   const auto refuse = [&](std::string why) {
     if (errorOut != nullptr) *errorOut = std::move(why);
@@ -414,6 +515,18 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   strokeTiles_.clear();
   dabs_ = 0;
   texels_ = 0;
+
+  // VELOCITY/FADE/NOISE/RANDOM's own state, for the identical reason: a
+  // second stroke that inherited the first's seed, previous position or
+  // travelled distance would draw correlated noise and measure velocity
+  // against a point on a different path entirely.
+  strokeLocalLinks_ = strokeLocalLinks;
+  seed_ = 0;
+  seedLatched_ = false;
+  prevDabX_ = 0.0f;
+  prevDabY_ = 0.0f;
+  havePrevDab_ = false;
+  distanceTravelled_ = 0.0f;
   return true;
 }
 
@@ -465,23 +578,89 @@ void StrokeSession::depositPending() {
   // while the RGB branch on the line below it passed this same pointer.
   const Selection* selection = doc_->selection.has_value() ? &*doc_->selection : nullptr;
 
-  // The four routes differ in exactly this call, and each takes `selection`.
-  // Everything around it -- the dab stream, the tile bookkeeping, the counters,
-  // the revision bump and the single history entry -- is shared, because none of
-  // it is a property of what a texel is made of or of which direction the stroke
-  // moves it.
-  const StrokeDeposit deposited =
-      route_ == StrokeRoute::RgbErase
-          ? erase_.eraseDabs(*layer.rgbTiles, tip_, pending_, doc.width, doc.height, selection)
-      : route_ == StrokeRoute::PigmentErase
-          ? pigErase_.eraseDabs(*layer.pigmentTiles, tip_, pending_, doc.width, doc.height,
-                                selection)
-      : route_ == StrokeRoute::RgbDeposit
-          ? rgb_.depositDabs(*layer.rgbTiles, tip_, pending_, doc.width, doc.height, selection)
-          : depositDabs(*layer.pigmentTiles, tip_, pending_, doc.width, doc.height, selection);
-  dabs_ += deposited.dabs;
-  texels_ += deposited.texels;
-  frameTiles_ = deposited.tiles;
+  // **One dab at a time, calling each route's own SINGULAR `*Dab()` rather
+  // than its batched `*Dabs()`.** The four batched functions
+  // (`rgb_.depositDabs()`, `erase_.eraseDabs()`, `pigErase_.eraseDabs()`,
+  // the free `depositDabs()`) are, every one of them, exactly this loop --
+  // `for (dab : dabs) { call the singular form; accumulate; } sortUniqueTiles()`
+  // -- with no per-dab hook a caller could use to vary the tip. This loop
+  // reproduces that shape by hand so it CAN vary the tip: VELOCITY, FADE,
+  // NOISE and RANDOM (brush/Dynamics.hpp) are stroke-local sources that must
+  // be resolved once per dab, not once per frame, and the only place a dab's
+  // own index and position exist is here.
+  //
+  // **This is provably a no-op when `strokeLocalLinks_` is null** -- the
+  // default every existing caller of `begin()` still gets. With it null,
+  // `dabTip` below is `tip_` unconditionally and `centre` is `p`
+  // unconditionally (`applyPerDabScatter()`'s own identity branch: `tip_.
+  // scatter` is 0.0 for any brush with nothing linked to SCATTER, which is
+  // every shipped preset before this file existed), so this loop calls the
+  // IDENTICAL sequence of singular `*Dab()` calls, in the IDENTICAL order,
+  // accumulating into the IDENTICAL vector, sorted once at the end exactly as
+  // the batched functions do internally -- bit-for-bit the same floating-
+  // point operations as the code this replaced. No golden image, no
+  // `--pigment-stroke-demo` reference and no existing `--selftest` assertion
+  // about a dab's footprint or a stroke's byte-identical undo has anything to
+  // notice.
+  size_t frameTexels = 0;
+  for (const Vec2& p : pending_) {
+    // The seed, latched once from the stroke's very FIRST dab position --
+    // brush/Dynamics.hpp's own section comment on why position rather than a
+    // counter, and why this must happen here rather than at `begin()`, which
+    // has no position yet to latch.
+    if (!seedLatched_) {
+      seed_ = strokeSeedFromStart(p.x, p.y);
+      seedLatched_ = true;
+    }
+
+    // VELOCITY's step distance -- 0.0 on this stroke's first dab, exactly
+    // `dynamicVelocity()`'s documented "no previous position" contract --
+    // and FADE/NOISE's running arc length, both measured dab-to-dab rather
+    // than sample-to-sample (this file's own member comments on why).
+    const float stepDist =
+        havePrevDab_ ? std::hypot(p.x - prevDabX_, p.y - prevDabY_) : 0.0f;
+    distanceTravelled_ += stepDist;
+
+    BrushTip dabTip = tip_;
+    if (strokeLocalLinks_ != nullptr) {
+      DynamicInputs local{};
+      local.velocity = dynamicVelocity(stepDist, tip_.radius);
+      local.fade = dynamicFade(distanceTravelled_);
+      local.noise = dynamicNoiseAt(seed_, distanceTravelled_);
+      local.random = dynamicRandomDraw(seed_, static_cast<uint32_t>(dabs_));
+      const DynamicResult corr =
+          evaluateLinksFiltered(*strokeLocalLinks_, local, /*wantStrokeLocal=*/true);
+      dabTip = applyStrokeLocalCorrection(tip_, corr);
+    }
+
+    const Vec2 centre =
+        applyPerDabScatter(p, dabTip, seed_, static_cast<uint32_t>(dabs_));
+
+    // The four routes differ in exactly this call, and each takes
+    // `selection`. Everything around it -- the tile bookkeeping, the
+    // counters, the revision bump and the single history entry -- is shared,
+    // because none of it is a property of what a texel is made of or of
+    // which direction the stroke moves it.
+    const DepositCount c =
+        route_ == StrokeRoute::RgbErase
+            ? erase_.eraseDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
+                              &frameTiles_)
+        : route_ == StrokeRoute::PigmentErase
+            ? pigErase_.eraseDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height,
+                                 selection, &frameTiles_)
+        : route_ == StrokeRoute::RgbDeposit
+            ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
+                              &frameTiles_)
+            : depositDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height, selection,
+                        &frameTiles_);
+    frameTexels += c.texels;
+    ++dabs_;
+    prevDabX_ = p.x;
+    prevDabY_ = p.y;
+    havePrevDab_ = true;
+  }
+  sortUniqueTiles(frameTiles_);
+  texels_ += frameTexels;
 
   if (!frameTiles_.empty()) {
     strokeTiles_.insert(strokeTiles_.end(), frameTiles_.begin(), frameTiles_.end());

@@ -895,6 +895,19 @@ bool runCurveEditTest();
 // PaintSim involvement at all.
 bool runBrushDynamicsTest();
 
+// A6 (docs/reachability-audit.md): the DYNAMICS matrix's dead half. Four
+// sources that used to be hard `0.0` forever -- VELOCITY, FADE, NOISE,
+// RANDOM -- and six targets nothing ever read, of which five now do
+// (SCATTER, CONCENTRATION, HUE, SATURATION, VALUE) and one is an honest
+// refusal (WETNESS, brush/Dynamics.hpp's `targetUnbuildableReason()`). The
+// centrepiece is determinism: the same stroke replayed through two
+// independent `StrokeSession`s deposits bit-identical tiles, including
+// through the two stochastic sources, because `core/History` replays a
+// stroke's own dab stream and the golden harness compares pixels across
+// runs of the same binary. `BrushDynamics.cpp` proves the link model this
+// builds on; not restated here.
+bool runDynamicsSourcesTest();
+
 // The BRUSH EDITOR's tip preview (app/DabPreview): a real dab, rasterised
 // through the deposit's own `dabCoverage()` and `depositTexel()`, at three pen
 // pressures. The assertion the whole thing turns on is that the preview and a

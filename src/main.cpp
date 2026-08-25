@@ -1454,6 +1454,11 @@ int main(int argc, char** argv) {
     // range semantics, invert, curve clamping, and the commutative fold that
     // lets three sources drive one target. Headless and GPU-free.
     const bool brushDynamicsOk = np::runBrushDynamicsTest();
+    // A6 (docs/reachability-audit.md): the four sources that used to be
+    // hard 0.0 (VELOCITY, FADE, NOISE, RANDOM), the six targets nothing
+    // read, and the determinism the two stochastic sources must hold under
+    // a replayed stroke. Headless and GPU-free.
+    const bool dynamicsSourcesOk = np::runDynamicsSourcesTest();
     // The BRUSH EDITOR's tip preview (app/DabPreview): the rasterised dab
     // checked against a real depositDab(), plus the elliptical tip that
     // building it found missing. Headless and GPU-free.
@@ -1877,7 +1882,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dabPreviewOk && abrBrushesOk && brushLibraryFileOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && brushLibraryFileOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
