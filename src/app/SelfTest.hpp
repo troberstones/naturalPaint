@@ -2927,4 +2927,76 @@ bool runCloseDecisionTest();
 // exist is refused by name" cannot be asserted without a filesystem.
 bool runQuitGuardTest();
 
+// **File > Open accepts any file this build can read, and decides which reader
+// gets it from the file's bytes** (app/OpenAnyFile, io/FileKind), plus the
+// drag-and-drop gesture that had no handler at all.
+//
+// Three absences, one shape. `File > Open...` called `openNpaintDocument()` and
+// nothing else, so it opened `.npaint` and refused every picture on the user's
+// disk -- while io/ImageIO's `openImageAsDocument()`, whose own header had said
+// for two phases that it was "the function a future File > Open would call",
+// had no caller in the binary outside this suite. And there was no
+// `SDL_EVENT_DROP_FILE` handler anywhere in `src/`, despite io/Export.hpp
+// describing `placeImageAsLayer()` as written "for step 13's drag-and-drop".
+//
+// **What identifies a `.npaint` on disk.** There is no naturalPaint magic
+// number: the container is OpenEXR's, because a `.npaint` *is* a multi-part
+// tiled EXR (PRD I8 -- "`.exr` is the same container under a different name").
+// What makes one ours is an attribute named `np:version` in part 0's header,
+// which `saveNpaint()` stamps on every file it writes. io/FileKind walks the
+// EXR header structure to find it, and section B ties that spec-derived walk to
+// reality by saving a real document and asserting the walk recognises it.
+//
+// Covered, in order:
+//
+//  - Every leading signature io/FileKind knows, from literal bytes, plus TGA
+//    from its trailing footer -- and six malformed or truncated EXR headers,
+//    including one with a 0xFFFFFFFF attribute size, all answering "not one of
+//    ours" rather than reading past the buffer. Plus the false positive the
+//    attribute walk exists to avoid: the string `np:version` sitting inside an
+//    attribute's *value*, which a byte search of the header would fall for.
+//  - A real `.npaint` written by `saveNpaint()` sniffs as a document, and a
+//    plain EXR written by io/Export sniffs as a picture.
+//  - **Dispatch is by content.** A PNG named `.npaint` opens as a picture, and
+//    a file carrying `np:version` named `.png` is routed to the document
+//    reader -- the two assertions an extension-based fix fails and every other
+//    one here passes.
+//  - The three refusals told apart by their sentences: "we do not read this",
+//    "this build has no reader for that format", and "your file is damaged",
+//    the last being the only one a user can act on. Plus the four that come
+//    first -- empty path, missing file, folder, zero bytes -- each naming the
+//    file, and none of them leaving a half-built document behind.
+//  - **What an opened picture is bound to: nothing.** Its `path` is empty and
+//    its `title` is the picture's own name, so `saveDocument()` refuses by name
+//    and points at Save As. Asserted by *calling* Save and then comparing the
+//    picture on disk byte for byte with what it was -- `saveNpaint()` writes
+//    EXR bytes whatever the path is called, so a document bound to `photo.png`
+//    would have its next Cmd-S destroy the user's photograph. It is dirty from
+//    birth, so a close asks about it; its one layer is RGB-kind with tiles
+//    engaged and occupies exactly the tiles the image spans.
+//  - **Import already accepts every decodable format**, and this proves it
+//    rather than changing it: the section walks `allFormatCapabilities()`, the
+//    live runtime query, encodes an in-memory fixture for every format this
+//    build can both read and write, and asserts each one imports and adds
+//    exactly one layer. Nothing is read from the repository. PSD and camera raw
+//    are read-only and cannot be reached this way -- named rather than skipped
+//    silently.
+//  - The drop routing rule as a **pure function** of (file kind, is a document
+//    open?), so it is asserted without a window: a `.npaint` always opens,
+//    never imports, because importing one would flatten its whole stack through
+//    its composite; a picture opens when nothing is open and becomes a layer
+//    when something is.
+//  - **Twelve files dropped at once.** Onto an empty session: one document and
+//    eleven layers in it, not twelve tabs and not one file used and eleven
+//    dropped. Onto an open document: twelve layers. A mixed drop resolves in
+//    order and names the file it refused. Twenty unreadable files count all
+//    twenty, name eight, and say how many were not named.
+//
+// Headless and GPU-free. All of it holds in BOTH NP_USE_OIIO configurations
+// except the two halves that need a `.npaint` writer, which are gated on
+// `oiioBackendCompiledIn()` and print a skip line rather than going quiet. It
+// writes files into a scratch directory of its own, which it removes, because
+// "a refused Save left the picture untouched" is a claim about a filesystem.
+bool runOpenAnyFileTest();
+
 }  // namespace np
