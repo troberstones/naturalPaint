@@ -120,4 +120,27 @@ void setSplitArrangement(AtelierSplit mode);
 void commitDrawnSelection(AppState& st, OpenDocument& od,
                           const std::optional<Selection>& drawn);
 
+// The foreground colour as STRAIGHT LINEAR RGBA -- what the paint bucket (PRD
+// D25/D26) and the gradient (D24) both need, and what neither can be handed
+// directly.
+//
+// **`paint/Palette`'s `rgb` is display-referred sRGB, not linear.** It is
+// drawn straight into an 8-bit swatch and handed raw to the Mixbox LUT, whose
+// API is sRGB, so both of its existing consumers want it encoded. The two ops
+// here want the opposite, because this build's working space is linear
+// (DESIGN-imaging.md), and ops/Gradient.hpp puts the conversion explicitly on
+// the caller: "a colour picked from an sRGB swatch must be decoded by whoever
+// builds the stop list, not here".
+//
+// Exposed rather than left inline because the failure is silent and plausible:
+// omit the decode and every fill lands far darker than the swatch that was
+// clicked, which reads as a colour-management bug somewhere else entirely
+// rather than as a missing one-line conversion. Alpha is always 1.0 -- the
+// foreground well has no opacity of its own; the gradient's fade lives in its
+// opacity stops and the bucket's in its `opacity` argument.
+//
+// An out-of-range index yields opaque black rather than reading past the
+// palette.
+std::array<float, 4> foregroundLinearRgba(int pigmentIndex);
+
 }  // namespace np

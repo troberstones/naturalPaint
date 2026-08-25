@@ -342,17 +342,22 @@ bool runAtelierChromeTest() {
     // that table getting its `implemented` flag wrong is something this check
     // can actually catch rather than agreeing with itself.
     //
-    // Eleven now, from seven: PRD E3's remaining selection tools landed
-    // together, because they all end in the same place -- a Selection built,
-    // combined through the ⇧/⌥ modifiers (PRD E7) and installed. Note that
-    // "implemented" means the tool DOES something, not that its op exists:
-    // ops/Gradient and ops/FloodFill's bucket half are both built and tested,
-    // and both stay false here until a drag reaches them.
-    const Tool kImplementedTools[] = {Tool::Brush,      Tool::Water,
-                                      Tool::DryBrush,   Tool::Eyedropper,
-                                      Tool::Marquee,    Tool::EllipseMarquee,
-                                      Tool::Lasso,      Tool::PolygonLasso,
-                                      Tool::MagicWand,  Tool::Hand,
+    // Thirteen now, from eleven, from seven. PRD E3's selection tools landed
+    // together because they all end in the same place; the paint bucket (PRD
+    // D25/D26) and the gradient (D24) then followed, and they too share an
+    // ending -- both write texels, so both take a locked-layer refusal and a
+    // history entry gated on a non-zero written count.
+    //
+    // "Implemented" means the tool DOES something, not that its op exists.
+    // That distinction earned its keep: ops/Gradient and ops/FloodFill were
+    // both complete and tested for a whole commit while these two rows still
+    // read false, because nothing reached them from a drag.
+    const Tool kImplementedTools[] = {Tool::Brush,       Tool::Water,
+                                      Tool::DryBrush,    Tool::Eyedropper,
+                                      Tool::Marquee,     Tool::EllipseMarquee,
+                                      Tool::Lasso,       Tool::PolygonLasso,
+                                      Tool::MagicWand,   Tool::PaintBucket,
+                                      Tool::Gradient,    Tool::Hand,
                                       Tool::Zoom};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
@@ -363,7 +368,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the eleven tools with real behaviour");
+          "toolImplemented() is true for exactly the thirteen tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --

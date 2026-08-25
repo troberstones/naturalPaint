@@ -1,7 +1,11 @@
 #include "app/selftest/Support.hpp"
 
+#include <cmath>
+
+#include "color/Space.hpp"
 #include "core/SelectionMask.hpp"
 #include "core/SelectionOps.hpp"
+#include "paint/Palette.hpp"
 #include "ui/MacPaintUI.hpp"
 
 namespace np {
@@ -119,6 +123,39 @@ bool runSelectionToolsTest() {
           "tools: installing bumps selectionRevision -- the cached bounds and the GPU "
           "coverage are keyed on it, so a selection that changed without it would draw and "
           "gate as the previous one");
+  }
+
+  // --- 5. The foreground colour the writing tools actually use ------------
+  //
+  // The paint bucket and the gradient want STRAIGHT LINEAR rgba; the palette
+  // holds display-referred sRGB. Omit the decode and every fill lands far
+  // darker than the swatch that was clicked -- a silent, plausible failure
+  // that looks like a colour-management bug somewhere else.
+  {
+    const std::vector<Pigment>& palette = defaultPalette();
+    bool decodedAll = true;
+    bool anyDiffered = false;
+    for (size_t i = 0; i < palette.size(); ++i) {
+      const std::array<float, 4> got = foregroundLinearRgba(static_cast<int>(i));
+      for (int c = 0; c < 3; ++c) {
+        const float want = srgbDecode(palette[i].rgb[c]);
+        if (std::fabs(got[c] - want) > 1e-6f) decodedAll = false;
+        // sRGB and linear agree only at 0 and 1, so a palette of real colours
+        // must show a difference somewhere -- otherwise this check would pass
+        // just as happily against a version that skipped the decode.
+        if (std::fabs(palette[i].rgb[c] - want) > 1e-3f) anyDiffered = true;
+      }
+      if (got[3] != 1.0f) decodedAll = false;
+    }
+    check(decodedAll && anyDiffered,
+          "fill colour: the foreground is DECODED from the palette's display-referred sRGB "
+          "to linear -- skipping it fills far darker than the swatch clicked, and the "
+          "palette is checked to actually differ so this cannot pass on a no-op");
+
+    check(foregroundLinearRgba(-1) == std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f} &&
+              foregroundLinearRgba(9999) == std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f},
+          "fill colour: an out-of-range pigment index yields opaque black rather than "
+          "reading past the palette");
   }
 
   std::printf("[selftest] selection tools %s\n", ok ? "PASS" : "FAIL");

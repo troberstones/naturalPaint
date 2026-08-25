@@ -30,7 +30,9 @@
 #include "core/LayerOps.hpp"
 #include "imgui.h"
 #include "io/ExportAs.hpp"
+#include "color/Space.hpp"
 #include "ops/FloodFill.hpp"
+#include "ops/Gradient.hpp"
 #include "io/ExportStates.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
@@ -2414,6 +2416,14 @@ void installSelection(OpenDocument& od, std::optional<Selection> selection) {
 // can reach the three intent rules below. That header says why they are
 // worth reaching.
 }  // namespace
+
+std::array<float, 4> foregroundLinearRgba(int pigmentIndex) {
+  const std::vector<Pigment>& palette = defaultPalette();
+  if (pigmentIndex < 0 || static_cast<size_t>(pigmentIndex) >= palette.size())
+    return {0.0f, 0.0f, 0.0f, 1.0f};
+  const Pigment& pig = palette[static_cast<size_t>(pigmentIndex)];
+  return {srgbDecode(pig.rgb[0]), srgbDecode(pig.rgb[1]), srgbDecode(pig.rgb[2]), 1.0f};
+}
 
 void commitDrawnSelection(AppState& st, OpenDocument& od,
                           const std::optional<Selection>& drawn) {
@@ -4815,6 +4825,114 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (st.polygonLassoActive) {
         st.polygonLassoActive = false;
         st.lassoPoints.clear();
+      }
+    }
+
+    // --- the pixel-writing tools: paint bucket and gradient ----------------
+    //
+    // PRD D25/D26 and D24. Unlike the five selection tools above, these are
+    // EDITS: each writes texels, so each needs a locked-layer refusal and a
+    // history entry, and neither may record one when it changed nothing --
+    // both ops return a written-texel count for exactly that reason, and
+    // that count is what gates `recordEdit()` here.
+    //
+    // Both are RGB-layer only. A Pigment layer stores latents plus mass, not
+    // colour, and filling one with a straight RGBA would be writing the wrong
+    // kind of value into it; ops/FloodFill and ops/Gradient both take a
+    // `TileStore` and say so. Refused by silence rather than by writing
+    // something plausible-looking into the wrong channel set.
+    if ((st.brush.tool == Tool::PaintBucket || st.brush.tool == Tool::Gradient) &&
+        !panning && !rotating && !st.pendingGuide.has_value()) {
+      OpenDocument* od = st.documents.active();
+      Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
+      const bool usable = target != nullptr && !target->locked && target->rgbTiles.has_value();
+
+      // The foreground colour, DECODED TO LINEAR.
+      //
+      // `paint/Palette`'s `rgb` is display-referred sRGB -- it is drawn
+      // straight into an 8-bit swatch and handed raw to the Mixbox LUT, whose
+      // API is sRGB -- while both ops want STRAIGHT LINEAR, which is what this
+      // build's working space is. ops/Gradient.hpp states the rule and puts
+      // the decode on the caller: "a colour picked from an sRGB swatch must be
+      // decoded by whoever builds the stop list, not here". Skipping it fills
+      // roughly twice as dark as the swatch shown, which reads as a colour
+      // management bug rather than a missing conversion.
+      const std::array<float, 4> fg = foregroundLinearRgba(st.brush.pigment);
+
+      if (st.brush.tool == Tool::PaintBucket) {
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && usable && tx >= 0 &&
+            ty >= 0 && tx < texW && ty < texH) {
+          FloodFillParams params;
+          // Same modifier meaning the wand gives it: Option is "fill all
+          // similar" (PRD D25's second half), the global predicate pass
+          // rather than the connectivity walk.
+          params.reach = ImGui::GetIO().KeyAlt ? FloodFillReach::Global
+                                               : FloodFillReach::Contiguous;
+          Selection region = floodFillSelection(
+              *target->rgbTiles,
+              PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)},
+              od->document.width, od->document.height, params);
+          // **The active selection still bounds the bucket.** PRD E1 is P0 --
+          // "every deposit and every op respects the active selection" -- and a
+          // bucket that ignored it would be the one op in the build that
+          // painted outside the marching ants.
+          if (od->selection.has_value()) {
+            region = combineSelections(region, *od->selection, SelectionCombine::Intersect);
+          }
+          if (fillThroughSelection(*target->rgbTiles, region, fg) > 0) {
+            od->recordEdit("paint bucket", EditKind::Content);
+          }
+        }
+      } else {
+        // The gradient is a DRAG: its two handles are where the pointer went
+        // down and came up, which is the geometry ops/Gradient takes.
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          st.marqueeDragging = true;
+          st.marqueeX0 = tx;
+          st.marqueeY0 = ty;
+        }
+        if (st.marqueeDragging) {
+          st.marqueeX1 = tx;
+          st.marqueeY1 = ty;
+          if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            st.marqueeDragging = false;
+            const float dx = st.marqueeX1 - st.marqueeX0;
+            const float dy = st.marqueeY1 - st.marqueeY0;
+            // A click with no drag has no direction, and a zero-length
+            // gradient is not a fill -- it is an undefined ramp. Ignored
+            // rather than guessed at.
+            if (usable && dx * dx + dy * dy >= 1.0f) {
+              GradientGeometry geom;
+              geom.kind = GradientKind::Linear;
+              geom.x0 = st.marqueeX0;
+              geom.y0 = st.marqueeY0;
+              geom.x1 = st.marqueeX1;
+              geom.y1 = st.marqueeY1;
+
+              // **Foreground to transparent**, which is the only default this
+              // build can honestly offer: docs/ui.md deliberately has no BG
+              // half to the swatch (nothing fills with a background colour
+              // until PRD D25/D26), so "foreground to background" would name a
+              // colour that does not exist. The colour stops hold one colour
+              // at both ends and the OPACITY stops do the fading -- which is
+              // exactly why ops/Gradient keeps the two lists independent, and
+              // is what stops the ramp darkening toward a transparent black
+              // that was never a stop.
+              GradientStops stops;
+              stops.colorStops.push_back(ColorStop{0.0f, {fg[0], fg[1], fg[2]}, 0.5f});
+              stops.colorStops.push_back(ColorStop{1.0f, {fg[0], fg[1], fg[2]}, 0.5f});
+              stops.opacityStops.push_back(OpacityStop{0.0f, 1.0f, 0.5f});
+              stops.opacityStops.push_back(OpacityStop{1.0f, 0.0f, 0.5f});
+
+              const GradientRegion region{0, 0, od->document.width, od->document.height};
+              const Selection* sel =
+                  od->selection.has_value() ? &*od->selection : nullptr;
+              if (renderGradient(*target->rgbTiles, region, geom, stops, sel) > 0) {
+                od->recordEdit("gradient", EditKind::Content);
+              }
+            }
+          }
+        }
       }
     }
 
