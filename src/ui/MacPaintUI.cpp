@@ -3643,10 +3643,11 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
 
   // Opacity is the stroke's CEILING and flow is its rate, which is the one
   // pair in this panel whose difference is invisible from the numbers alone --
-  // hence the caption. It reaches only the RGB deposit: brush/RgbDeposit's
-  // accumulator is what enforces a ceiling, and the pigment route has no
-  // equivalent because wet pigment's density is the solver's answer to the
-  // same question. Drawn disabled rather than hidden on the routes that ignore
+  // hence the caption. It reaches three of the four layer-writing routes: an
+  // accumulator is what enforces a ceiling (or a floor), and the pigment
+  // DEPOSIT is the one route with none, because wet pigment's density is the
+  // solver's answer to the same question. Drawn disabled rather than hidden on
+  // the route that ignores
   // it, so that a painter who turns it down and sees no change is told why
   // instead of concluding it is broken -- and so the control does not appear
   // and vanish as the active layer changes.
@@ -3655,21 +3656,30 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
     const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
     // **The eraser reads this same slider as its STRENGTH** (brush/RgbErase.hpp
-    // §2), so it is live on that route too. One control with one meaning -- the
-    // fraction of the maximum effect one stroke may reach -- rather than a
-    // second "strength" number that would leave OPACITY dimmed and inert
-    // whenever the eraser was selected, which is the exact complaint this
-    // disabled-rather-than-hidden treatment was written to answer.
-    const bool honoured = route == StrokeRoute::RgbDeposit || route == StrokeRoute::RgbErase;
+    // §2, brush/PigmentErase.hpp §2), so it is live on **both** erase routes.
+    // One control with one meaning -- the fraction of the maximum effect one
+    // stroke may reach -- rather than a second "strength" number that would
+    // leave OPACITY dimmed and inert whenever the eraser was selected, which is
+    // the exact complaint this disabled-rather-than-hidden treatment was written
+    // to answer.
+    //
+    // `cpu-deposit` is still the one layer-writing route that ignores it, and
+    // still for the stated reason: the pigment DEPOSIT has no per-stroke
+    // accumulator, so it has no ceiling to raise or lower. The pigment ERASE
+    // does -- `E` is the fraction removed, dimensionless, so the floor
+    // `mass_0 * (1 - strength)` needs nothing the deposit was missing.
+    const bool erasing =
+        route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase;
+    const bool honoured = erasing || route == StrokeRoute::RgbDeposit;
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
-    if (route == StrokeRoute::RgbErase)
+    if (erasing)
       ImGui::TextDisabled("Flow is how fast it bites; opacity is how much it takes.");
     else if (honoured)
       ImGui::TextDisabled("Flow is how fast paint builds; opacity is where it stops.");
     else
-      ImGui::TextDisabled("Opacity applies to RGB layers; this stroke goes to %s.",
+      ImGui::TextDisabled("Opacity is a stroke ceiling; this stroke goes to %s.",
                           strokeRouteName(route));
   }
 
@@ -7354,15 +7364,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // will help with, and telling someone to clear a lock they have not set
       // is worse than telling them nothing.
       //
-      // **The eraser needs its own third and fourth sentences, and that is what
-      // "refuse by name" costs.** The kind sentence below tells a painter to
-      // "Pick a Pigment or RGB layer", which is true of the brush and false of
-      // the eraser -- a Pigment layer is precisely where an erase does *not* go
-      // today (app/StrokeSession.hpp §1). Handing the eraser the brush's wording
-      // would send the user to the one layer that cannot take the gesture, which
-      // is worse than the silence this whole block replaced. And the eraser
-      // reaches here with **no target at all**, where the brush would have gone
-      // to the solver, so the no-layer case is its alone.
+      // **The eraser still needs its own sentences, but no longer for the same
+      // reason.** They used to differ because a Pigment layer was where an erase
+      // did *not* go, so handing the eraser the brush's "Pick a Pigment or RGB
+      // layer" would have sent the user to the one kind that refused the
+      // gesture. `brush/PigmentErase` closed that row, and the two tools now
+      // reach the same two kinds -- so the eraser's kind sentence says the same
+      // thing in its own verb rather than naming a different destination. What
+      // is still its alone is the **no target at all** case, where the brush
+      // would have gone to the solver and the eraser cannot: `sim::PaintSim` has
+      // no alpha and no erase step (app/StrokeSession.hpp §1).
       g_strokeRefusal =
           strokeTarget == nullptr
               ? std::string("no layer: the eraser has nothing to erase. Open a document, "
@@ -7373,8 +7384,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           : eraseTool
               ? std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +
-                    " and cannot be erased. The eraser reaches RGB layers; erasing a "
-                    "Pigment layer reduces its Mass (PRD F10) and is not built yet."
+                    " and cannot be erased. Pick a Pigment or RGB layer in LAYERS."
               : std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +
                     " and cannot be painted. Pick a Pigment or RGB layer in LAYERS.";

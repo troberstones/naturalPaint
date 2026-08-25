@@ -699,11 +699,17 @@ bool runRgbEraseTest() {
               strokeRouteFor(Tool::DryBrush, &rgbLayer) == StrokeRoute::RgbDeposit,
           "routing: and the brush on the SAME layer still deposits -- the two tools give two "
           "different answers about one layer, which is why the session latches its tool");
-    check(strokeRouteFor(Tool::Eraser, &pigment) == StrokeRoute::None &&
+    // This row used to assert `None` -- a Pigment layer refused the erase
+    // because the pigment deposit had no selection parameter, so ADR-0007's
+    // mass reduction could only have been built un-gated (PRD E1, P0). That
+    // gate is `brush/Deposit` §4 and the row is `brush/PigmentErase`;
+    // runPigmentSelectionTest() owns both, and this asserts only that the table
+    // agrees with it and still tells the two tools apart on the one layer.
+    check(strokeRouteFor(Tool::Eraser, &pigment) == StrokeRoute::PigmentErase &&
               strokeRouteFor(Tool::Brush, &pigment) == StrokeRoute::CpuDeposit,
-          "routing: a Pigment layer takes a deposit and REFUSES an erase -- ADR-0007's mass "
-          "reduction needs the pigment route's missing selection gate (PRD E1, P0), so it "
-          "refuses by name rather than half-implementing a P0");
+          "routing: a Pigment layer takes a deposit AND an erase, on two different routes -- "
+          "the refusal that used to stand here named one blocker, the pigment route's "
+          "missing PRD E1 gate, and it is built");
     check(strokeRouteFor(Tool::Eraser, nullptr) == StrokeRoute::None &&
               strokeRouteFor(Tool::Brush, nullptr) == StrokeRoute::PaintSim,
           "routing: no layer at all is None for the eraser and PaintSim for the brush -- the "
@@ -726,6 +732,7 @@ bool runRgbEraseTest() {
               strokeRouteWritesLayer(StrokeRoute::RgbErase) &&
               strokeRouteWritesLayer(StrokeRoute::RgbDeposit) &&
               strokeRouteWritesLayer(StrokeRoute::CpuDeposit) &&
+              strokeRouteWritesLayer(StrokeRoute::PigmentErase) &&
               !strokeRouteWritesLayer(StrokeRoute::PaintSim) &&
               !strokeRouteWritesLayer(StrokeRoute::None),
           "routing: the new route has a name of its own and answers the one predicate four "
@@ -884,30 +891,40 @@ bool runRgbEraseTest() {
               contains(error, "erase") && contains(error, "none"),
           "refusal: a LOCKED RGB layer refuses the erase and names the lock, the tool and the "
           "route -- the one refusal of the four with a fix the user can carry out");
-    check(!s.begin(od, 2, t, Tool::Eraser, &error) && contains(error, "Pigment") &&
-              contains(error, "erase"),
-          "refusal: a PIGMENT layer refuses BY NAME and names its kind -- ADR-0007's mass "
-          "reduction is owed, and a silent no-op is exactly what this step replaced");
+    // Layer 2 is a Pigment layer and it no longer refuses: `brush/PigmentErase`
+    // is ADR-0007's Pigment row and runPigmentSelectionTest() owns it. What is
+    // asserted here is the *pair* -- that the erase begins on it and reports the
+    // pigment route -- so this file cannot go on describing a refusal that has
+    // been retired without the assertion noticing.
+    check(s.begin(od, 2, t, Tool::Eraser, &error) && error.empty() &&
+              s.route() == StrokeRoute::PigmentErase,
+          "refusal: a PIGMENT layer no longer refuses -- it takes the erase on its own "
+          "route, which is the row this file used to record as owed");
+    s.end();
     check(!s.begin(od, 3, t, Tool::Eraser, &error) && contains(error, "Adjustment"),
           "refusal: an Adjustment layer refuses by name -- it holds no tiles at all");
     check(!s.begin(od, 99, t, Tool::Eraser, &error) && contains(error, "out of range"),
           "refusal: an out-of-range index refuses without touching the document");
     check(od.history.entries().size() == entries && od.revision == rev && !s.active(),
-          "refusal: not one of the four refusals recorded an entry or moved the revision");
+          "refusal: not one of the three refusals -- nor the Pigment stroke that began and "
+          "deposited nothing -- recorded an entry or moved the revision");
 
-    // The Pigment refusal is told apart from the locked one in the half of the
+    // The kind refusal is told apart from the locked one in the half of the
     // sentence that names the fix, on two layers whose names differ -- so the
-    // difference cannot be mistaken for a name.
+    // difference cannot be mistaken for a name. The Adjustment layer stands in
+    // for the Pigment one this used to use: Pigment is a destination now, and
+    // the two sentences that must still differ are "you can clear this lock"
+    // and "this kind holds no pixels at all".
     std::string lockedWhy;
-    std::string pigmentWhy;
+    std::string kindWhy;
     s.begin(od, 1, t, Tool::Eraser, &lockedWhy);
-    s.begin(od, 2, t, Tool::Eraser, &pigmentWhy);
-    std::printf("  [measured] locked: %s\n  [measured] pigment: %s\n", lockedWhy.c_str(),
-                pigmentWhy.c_str());
-    check(lockedWhy != pigmentWhy && !lockedWhy.empty() && !pigmentWhy.empty(),
-          "refusal: the locked and Pigment sentences are DIFFERENT -- both present to a user "
-          "as \"the eraser did nothing\", and only one of them has a switch in LAYERS that "
-          "fixes it");
+    s.begin(od, 3, t, Tool::Eraser, &kindWhy);
+    std::printf("  [measured] locked: %s\n  [measured] kind: %s\n", lockedWhy.c_str(),
+                kindWhy.c_str());
+    check(lockedWhy != kindWhy && !lockedWhy.empty() && !kindWhy.empty(),
+          "refusal: the locked and wrong-kind sentences are DIFFERENT -- both present to a "
+          "user as \"the eraser did nothing\", and only one of them has a switch in LAYERS "
+          "that fixes it");
 
     // Strength 0 is a legitimate setting, not an error, and must behave as one.
     fillRect(*od.document.layers[0].rgbTiles, 40, 40, 120, 120, {1.0f, 1.0f, 1.0f, 1.0f});

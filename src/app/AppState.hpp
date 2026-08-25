@@ -37,7 +37,8 @@ namespace np {
 // (dimmed, unclickable, tooltip says so), and app/StrokeSession.cpp's
 // strokeRouteFor() routes them to StrokeRoute::None. **`Eraser` has left that
 // list** -- PRD F9/F10 are P0, and it now routes to StrokeRoute::RgbErase on a
-// writable RGB layer and refuses by name on every other kind (ADR-0007, and
+// writable RGB layer, to StrokeRoute::PigmentErase on a writable Pigment one,
+// and refuses by name on every other kind (ADR-0007, and
 // app/StrokeSession.hpp §1's Eraser rows). Each earns real
 // behaviour on its own PRD id and phase, per docs/ui.md section 4's table --
 // which is also where MEASURE and SLICE's earlier "Dropped" disposition is

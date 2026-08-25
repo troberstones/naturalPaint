@@ -12,6 +12,7 @@ const char* strokeRouteName(StrokeRoute route) noexcept {
     case StrokeRoute::CpuDeposit: return "cpu-deposit";
     case StrokeRoute::RgbDeposit: return "rgb-deposit";
     case StrokeRoute::RgbErase: return "rgb-erase";
+    case StrokeRoute::PigmentErase: return "pigment-erase";
     case StrokeRoute::PaintSim: return "paint-sim";
   }
   return "?";
@@ -94,15 +95,16 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
   // "at most one of rgbTiles and pigmentTiles is engaged" allows a layer of
   // either kind with neither, and painting one has nowhere to go.
   //
-  // **A Pigment layer takes a deposit and refuses an erase**, and the header §1
-  // carries that argument at length: mass is the erasable quantity ADR-0007
-  // names, but `depositDab(PigmentTileStore&, ...)` has no selection parameter,
-  // so a Pigment erase built today would be the one tool on that layer kind that
-  // either stopped at the marching ants alone or destroyed paint outside a
-  // selection drawn to protect it. It refuses by name until the pigment route
-  // has PRD E1's gate.
+  // **A Pigment layer takes both now**, and the header §1 carries the argument
+  // for the row that changed. It used to refuse the erase by name, on one
+  // stated condition -- `depositDab(PigmentTileStore&, ...)` had no selection
+  // parameter, so a Pigment erase built then would have been the one tool on
+  // that layer kind either stopping at the marching ants alone or destroying
+  // paint outside a selection drawn to protect it. `brush/Deposit` §4 is that
+  // gate and `brush/PigmentErase` is the row, and they landed together as the
+  // one decision the refusal asked for.
   if (target->kind == LayerKind::Pigment && target->pigmentTiles)
-    return erasing ? StrokeRoute::None : StrokeRoute::CpuDeposit;
+    return erasing ? StrokeRoute::PigmentErase : StrokeRoute::CpuDeposit;
   if (target->kind == LayerKind::RGB && target->rgbTiles)
     return erasing ? StrokeRoute::RgbErase : StrokeRoute::RgbDeposit;
 
@@ -392,6 +394,17 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   else
     erase_.end();
 
+  // The Pigment erase route's own accumulator, latched from the same slider for
+  // the same reason (brush/PigmentErase.hpp §2). Three `begin()`/`end()` pairs
+  // rather than one switch because each one's `else` is the load-bearing half:
+  // whichever route this stroke took, the other two must be left holding no
+  // tiles, and an interrupted drag is exactly the case that reaches here with
+  // one of them still live.
+  if (route_ == StrokeRoute::PigmentErase)
+    pigErase_.begin(tip.opacity);
+  else
+    pigErase_.end();
+
   // Leftover arc length and point history from whatever stroke happened
   // before must not bleed into this one -- brush/StrokePath::reset()'s own
   // contract, and the same call ui/MacPaintUI already makes at pen-down.
@@ -444,22 +457,28 @@ void StrokeSession::depositPending() {
   // during a pointer drag, and reading it here means a session that outlived one
   // somehow cannot write through a stale bound.
   //
-  // Hoisted out of the call below now that two of the three routes take it, so
-  // the deposit and the erase cannot end up reading the selection two different
-  // ways. The pigment route still takes none, which is the gap
-  // `strokeRouteFor()`'s Pigment-eraser row refuses over.
+  // Hoisted out of the call below because **every** route takes it now, so no
+  // two of them can end up reading the selection different ways. It used to be
+  // hoisted for two of three, with the pigment route taking none at all -- and
+  // that gap was PRD E1 unmet on the layer kind `Document::createBlank()`
+  // makes: a natural-media stroke painted straight through the marching ants
+  // while the RGB branch on the line below it passed this same pointer.
   const Selection* selection = doc_->selection.has_value() ? &*doc_->selection : nullptr;
 
-  // The three routes differ in exactly this call. Everything around it -- the
-  // dab stream, the tile bookkeeping, the counters, the revision bump and the
-  // single history entry -- is shared, because none of it is a property of what
-  // a texel is made of or of which direction the stroke moves it.
+  // The four routes differ in exactly this call, and each takes `selection`.
+  // Everything around it -- the dab stream, the tile bookkeeping, the counters,
+  // the revision bump and the single history entry -- is shared, because none of
+  // it is a property of what a texel is made of or of which direction the stroke
+  // moves it.
   const StrokeDeposit deposited =
       route_ == StrokeRoute::RgbErase
           ? erase_.eraseDabs(*layer.rgbTiles, tip_, pending_, doc.width, doc.height, selection)
+      : route_ == StrokeRoute::PigmentErase
+          ? pigErase_.eraseDabs(*layer.pigmentTiles, tip_, pending_, doc.width, doc.height,
+                                selection)
       : route_ == StrokeRoute::RgbDeposit
           ? rgb_.depositDabs(*layer.rgbTiles, tip_, pending_, doc.width, doc.height, selection)
-          : depositDabs(*layer.pigmentTiles, tip_, pending_, doc.width, doc.height);
+          : depositDabs(*layer.pigmentTiles, tip_, pending_, doc.width, doc.height, selection);
   dabs_ += deposited.dabs;
   texels_ += deposited.texels;
   frameTiles_ = deposited.tiles;
@@ -498,12 +517,13 @@ const std::vector<TileCoord>& StrokeSession::end() {
   // it is dropped here rather than at the next `begin()` so an application
   // sitting idle after a long stroke is not holding 64 KiB per tile it painted.
   // Unconditional: `end()` on an idle accumulator is a no-op, and a branch here
-  // would be one more place the routes could disagree about cleanup. Both are
-  // dropped, not the one this stroke used -- exactly one of them was ever live,
-  // and asking which at cleanup time is how the other one keeps its tiles after
-  // an interrupted drag.
+  // would be one more place the routes could disagree about cleanup. All three
+  // are dropped, not the one this stroke used -- exactly one of them was ever
+  // live, and asking which at cleanup time is how the other two keep their tiles
+  // after an interrupted drag.
   rgb_.end();
   erase_.end();
+  pigErase_.end();
 
   // Exactly one entry, and only for a stroke that put something down --
   // header §2.

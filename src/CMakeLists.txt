@@ -89,6 +89,7 @@ add_executable(naturalPaint
   app/selftest/PigmentBasis.cpp
   app/selftest/PigmentDeposit.cpp
   app/selftest/PigmentLayer.cpp
+  app/selftest/PigmentSelection.cpp
   app/selftest/PlaceImageAsLayer.cpp
   app/selftest/PointOps.cpp
   app/selftest/PresentTransfer.cpp
@@ -120,6 +121,7 @@ add_executable(naturalPaint
   brush/Deposit.cpp
   brush/Dynamics.cpp
   brush/Library.cpp
+  brush/PigmentErase.cpp
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/StrokePath.cpp

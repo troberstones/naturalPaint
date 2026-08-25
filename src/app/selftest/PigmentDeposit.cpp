@@ -402,7 +402,7 @@ bool runPigmentDepositTest() {
     OpenDocument od = makePigmentDoc(256, 256, 1);
     PigmentTileStore& store = *od.document.layers[1].pigmentTiles;
     const BrushTip t = tip(20.0f, 0.4f, 0.5f, kBlue);
-    depositDab(store, t, Vec2{128.5f, 128.5f}, 256, 256, nullptr);
+    depositDab(store, t, Vec2{128.5f, 128.5f}, 256, 256, nullptr, nullptr);
 
     // The literal, configuration-independent answer: flow 0.5 at coverage 1,
     // on empty paper, with f16-exact weights. Both NP_USE_OIIO builds must
@@ -427,7 +427,8 @@ bool runPigmentDepositTest() {
           "brush and core/Composite cannot disagree about what mass means");
 
     // Overpainting cannot put an out-of-range alpha into a document.
-    for (int n = 0; n < 40; ++n) depositDab(store, t, Vec2{128.5f, 128.5f}, 256, 256, nullptr);
+    for (int n = 0; n < 40; ++n)
+      depositDab(store, t, Vec2{128.5f, 128.5f}, 256, 256, nullptr, nullptr);
     float worstMass = 0.0f;
     for (const auto& entry : store) {
       const PigmentTile& tile = entry.second;
@@ -452,7 +453,8 @@ bool runPigmentDepositTest() {
       OpenDocument od = makePigmentDoc(512, 512, 1);
       PigmentTileStore& store = *od.document.layers[1].pigmentTiles;
       std::vector<TileCoord> touched;
-      const DepositCount c = depositDab(store, t, Vec2{256.0f, 256.0f}, 512, 512, &touched);
+      const DepositCount c =
+          depositDab(store, t, Vec2{256.0f, 256.0f}, 512, 512, nullptr, &touched);
       sortUniqueTiles(touched);
       check(touched.size() == 4 && c.tiles == 4,
             "footprint: a dab on the corner where four tiles meet reports exactly four "
@@ -481,7 +483,7 @@ bool runPigmentDepositTest() {
       for (const Vec2& p : positions) {
         const TileBytes before = snapshotBytes(store);
         std::vector<TileCoord> touched;
-        depositDab(store, t, p, 512, 512, &touched);
+        depositDab(store, t, p, 512, 512, nullptr, &touched);
         sortUniqueTiles(touched);
         const TileBytes after = snapshotBytes(store);
         if (touched != changedTiles(before, after)) everyReportExact = false;
@@ -522,7 +524,7 @@ bool runPigmentDepositTest() {
       const BrushTip small = tip(20.0f, 0.3f, 0.5f, kBlue);
       const Vec2 at{138.0f, 146.0f};
       std::vector<TileCoord> touched;
-      depositDab(store, small, at, 512, 512, &touched);
+      depositDab(store, small, at, 512, 512, nullptr, &touched);
       sortUniqueTiles(touched);
 
       const PixelBounds b = dabPixelBounds(small, at, 512, 512);
@@ -916,7 +918,7 @@ bool runPigmentDepositTest() {
       OpenDocument od = makePigmentDoc(1024, 1024, 1);
       PigmentTileStore& store = *od.document.layers[1].pigmentTiles;
       const BrushTip t = tip(24.0f, 0.35f, 0.05f, kBlue);
-      depositDab(store, t, Vec2{512.0f, 512.0f}, 1024, 1024, nullptr);  // warm the tiles
+      depositDab(store, t, Vec2{512.0f, 512.0f}, 1024, 1024, nullptr, nullptr);  // warm the tiles
       constexpr int kDabs = 2000;
       // Best of three 2000-dab batches, not one: a single batch is one
       // average over 2000 calls, and one scheduler stall anywhere in it
@@ -927,7 +929,7 @@ bool runPigmentDepositTest() {
       for (int batch = 0; batch < 3; ++batch) {
         const auto t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < kDabs; ++i)
-          depositDab(store, t, Vec2{512.0f, 512.0f}, 1024, 1024, nullptr);
+          depositDab(store, t, Vec2{512.0f, 512.0f}, 1024, 1024, nullptr, nullptr);
         const auto t1 = std::chrono::steady_clock::now();
         us = std::min(us, std::chrono::duration<double, std::micro>(t1 - t0).count() / kDabs);
       }

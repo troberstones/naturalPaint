@@ -60,8 +60,8 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   return 1.0f - u * u * (3.0f - 2.0f * u);
 }
 
-PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment,
-                          float deltaMass) noexcept {
+PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float deltaMass,
+                          float selection) noexcept {
   const float denom = dst.mass + deltaMass;
   // Header §1(ii): the limit as dm -> 0+ on empty paper, not a convention.
   const float w = (denom > 0.0f) ? (deltaMass / denom) : 1.0f;
@@ -70,8 +70,31 @@ PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment,
   // core/Blend's own lerp, not a second copy of it: `Mix` and the brush must
   // agree about what mixing two latents means, and this is the same function
   // core/Composite's Pigment-pair branch calls.
+  //
+  // **Deliberately weighted by the UNCAPPED `dm`**, header §1(iii) and §4: a
+  // texel that has reached its cap -- the paper's or the selection's -- keeps
+  // taking on the brush's hue. The selection bounds how much paint is present,
+  // not which paint it is.
   out.latent = mixLatents(dst.latent, pigment, w);
-  out.mass = denom < kMaxMass ? denom : kMaxMass;
+
+  // Header §4. The cap is the paper's capacity scaled by the selection's
+  // coverage, with two clauses the header argues at length:
+  //
+  //   * never below `dst.mass` -- a DEPOSIT must never remove paint, so a texel
+  //     already thicker than the selection allows keeps what it has and simply
+  //     gains nothing. Without this the brush erases wherever a selection is
+  //     thinner than the paint under it.
+  //   * never above `kMaxMass` -- `sel <= 1` so this bites only for a
+  //     destination handed in already over the cap, and clamping at the point
+  //     of storage is what makes the invariant a property of the document.
+  //
+  // At `sel == 1` this is `min(denom, kMaxMass)` bit for bit, which is what the
+  // rule was before the parameter existed.
+  const float sel = std::clamp(selection, 0.0f, 1.0f);
+  float cap = kMaxMass * sel;
+  if (cap < dst.mass) cap = dst.mass;
+  if (cap > kMaxMass) cap = kMaxMass;
+  out.mass = denom < cap ? denom : cap;
   return out;
 }
 
@@ -93,7 +116,7 @@ PixelBounds dabPixelBounds(const BrushTip& tip, Vec2 centre, int32_t canvasW,
 }
 
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
-                        int32_t canvasW, int32_t canvasH,
+                        int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut) {
   DepositCount count;
   if (!(tip.flow > 0.0f)) return count;
@@ -106,11 +129,28 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
 
   // Tile-major, then texel within tile: one hash lookup per tile per dab
   // rather than one per texel, and the tile pointer stays hot for its whole
-  // sub-rectangle. Ascending (y, x) so `touchedOut` comes out in
-  // `sortUniqueTiles()`'s order for the common single-dab case.
+  // sub-rectangle -- and with a selection there are now *two* stores keyed by
+  // the same coordinate, so hoisting saves two lookups per texel rather than
+  // one. Ascending (y, x) so `touchedOut` comes out in `sortUniqueTiles()`'s
+  // order for the common single-dab case.
   for (int32_t ty = first.y; ty <= last.y; ++ty) {
     for (int32_t tx = first.x; tx <= last.x; ++tx) {
       const TileCoord coord{tx, ty};
+
+      // §4. The null branch is owned here rather than borrowed from
+      // `selectionCoverageAt()`, which core/SelectionMask.hpp requires of every
+      // hoisted loop -- a null *Selection* is "no restriction" and a null
+      // *tile* inside an engaged selection is "selects nothing". Getting those
+      // two nulls the same way round is how a brush starts painting outside the
+      // ants, or stops painting at all.
+      const SelectionTile* cover = nullptr;
+      if (selection != nullptr) {
+        cover = selection->tiles.find(coord);
+        // An engaged selection that names no tile here selects nothing here, so
+        // the whole tile is skipped before anything is looked up or allocated.
+        if (cover == nullptr) continue;
+      }
+
       const PixelCoord org = tileOrigin(coord);
       const int32_t x0 = std::max(b.x0, org.x);
       const int32_t x1 = std::min(b.x1, org.x + kTileSize - 1);
@@ -126,7 +166,26 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
         const float dy = (static_cast<float>(y) + 0.5f) - centre.y;
         for (int32_t x = x0; x <= x1; ++x) {
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
-          const float deltaMass = tip.flow * dabCoverage(tip, dx, dy);
+          const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
+
+          const float cov = dabCoverage(tip, dx, dy);
+          if (!(cov > 0.0f)) continue;
+          const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
+          // A texel the selection excludes is not written AT ALL -- not written
+          // with zero mass, not counted, and its tile not created on its
+          // account. That is what keeps §3's two facts true with a selection in
+          // play: the reported tile set stays exactly the set of tiles whose
+          // bytes changed.
+          if (!(sel > 0.0f)) continue;
+
+          // **The selection enters TWICE, and both are load-bearing** -- §4.
+          // Into the rate, so one pass through a half-selected texel lays half
+          // a dab; and into the cap, so *no number of passes* takes that texel
+          // past half. The first alone is a speed limit rather than a bound,
+          // and at the shipped defaults a half-selected texel walks straight
+          // through it in six dabs -- one and a half radii of travel, which is
+          // less than one ordinary brush-width of a stroke.
+          const float deltaMass = tip.flow * cov * sel;
           if (!(deltaMass > 0.0f)) continue;
 
           if (tile == nullptr) {
@@ -134,8 +193,8 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
             ++count.tiles;
             if (touchedOut != nullptr) touchedOut->push_back(coord);
           }
-          const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
-          tile->writeTexel(local, depositTexel(tile->readTexel(local), tip.pigment, deltaMass));
+          tile->writeTexel(local,
+                           depositTexel(tile->readTexel(local), tip.pigment, deltaMass, sel));
           ++count.texels;
         }
       }
@@ -152,11 +211,11 @@ void sortUniqueTiles(std::vector<TileCoord>& tiles) {
 }
 
 StrokeDeposit depositDabs(PigmentTileStore& store, const BrushTip& tip,
-                          const std::vector<Vec2>& dabs, int32_t canvasW,
-                          int32_t canvasH) {
+                          const std::vector<Vec2>& dabs, int32_t canvasW, int32_t canvasH,
+                          const Selection* selection) {
   StrokeDeposit out;
   for (const Vec2& dab : dabs) {
-    const DepositCount c = depositDab(store, tip, dab, canvasW, canvasH, &out.tiles);
+    const DepositCount c = depositDab(store, tip, dab, canvasW, canvasH, selection, &out.tiles);
     out.texels += c.texels;
     ++out.dabs;
   }

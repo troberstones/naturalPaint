@@ -106,7 +106,8 @@ bool runDabPreviewTest() {
     // the identical centre so the two sample the identical points.
     PigmentTileStore store;
     const DepositCount count =
-        depositDab(store, tip, Vec2{32.0f, 32.0f}, kDabPreviewCell, kDabPreviewCell, nullptr);
+        depositDab(store, tip, Vec2{32.0f, 32.0f}, kDabPreviewCell, kDabPreviewCell, nullptr,
+                   nullptr);
     check(count.texels > 0, "the reference deposit actually wrote texels");
 
     size_t compared = 0;
