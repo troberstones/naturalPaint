@@ -444,6 +444,42 @@ bool runGradientTest();
 // never had.
 bool runBlurTest();
 
+// ops/Filters (PLAN.md "Phase 6 -- Filter and transform it": highpass as
+// `src - blur(src)`, unsharp, offset with wrap, sharpen, add noise, local
+// contrast; DESIGN-imaging.md "Class B"). Headless and GPU-free -- pure CPU
+// tile arithmetic, like the blur spine it hangs off.
+//
+// Four hazards carry the section. **The seam, six times**: it asserts for
+// every filter in the file that a request split across a tile boundary is
+// bit-identical to the same request made once, on a sparse store, at a split
+// that is not tile-aligned. Five of them inherit the property from ops/Blur's
+// apron; add noise had to be *built* for it, because a stateful generator
+// makes a texel's value depend on how many texels were drawn before it -- the
+// section computes what a stream PRNG would have drawn at the same texel to
+// show what is being prevented. **Premultiplied alpha at a soft edge**:
+// sharpening RGB while copying alpha through is the obvious reading of
+// "sharpen the picture" and it puts a bright rim inside every antialiased
+// cut-out; the shipped path is asserted to leave an un-premultiplied constant
+// colour alone to within four store roundings, and the rejected form is then
+// computed on purpose and measured drifting by tens of percent, so the
+// assertion is proved sensitive rather than merely satisfied. **The two
+// domains, in opposite directions**: add noise and unsharp's threshold are
+// shaper-domain quantities sitting on a linear-light blur, and the section
+// measures the constancy that buys -- the same amount perturbs every level by
+// the same 0.83 fraction over six stops, which is what the ACEScct log segment
+// predicts -- against what the linear alternative does instead, which is drive
+// light NEGATIVE at an ordinary setting. **The exactness budget**: every
+// tolerance is one of the two storage formats' own rounding, including the
+// claim that a shaper round trip is free, which is checked over all 31 744
+// finite positive halves rather than sampled.
+//
+// Also here: each op's ROI declaration, including offset's -- the first
+// production op in the build for which `roiBackward` and `roiForward` return
+// different rectangles, which ops/Roi.hpp could previously only pin on a
+// synthetic op -- and the honest limit that a wrapped read is not expressible
+// as a `RoiOp` at all.
+bool runFiltersTest();
+
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
 // coverage-weighted clear. Headless and GPU-free -- pure CPU tile arithmetic.
@@ -456,6 +492,43 @@ bool runBlurTest();
 // no wrong pixel anywhere to point at. Both conventions are asserted side by
 // side so neither can drift onto the other.
 bool runSelectionTest();
+
+// core/Channels + io/NpaintFile's `S####` part (PLAN.md "Phase 7 -- Select and
+// paste"; PRD E11, E12, E13). Alpha channels stored in the document, the
+// selection<->channel round trip, saved selections, and quick mask. Mostly
+// headless CPU tile arithmetic; three sections go through a real `.npaint` on
+// disk, because a format claim asserted against a struct is a claim about the
+// struct.
+//
+// Two hazards give the section its shape:
+//
+//  - **A channel inherits the SELECTION default, not the layer mask's**: an
+//    absent tile is 0.0. Backwards, a channel painted on one tile of a
+//    four-tile document comes back selecting the other three, and nothing
+//    crashes -- so the two conventions are asserted side by side, exactly as
+//    runSelectionTest() asserts them, and then the four-tile case is checked
+//    directly.
+//  - **PRD E11 is not a licence to move the active selection into `Document`.**
+//    A *saved* selection is a named channel and is document data; the live
+//    marquee stays session state on `app::OpenDocument`. The section snapshots
+//    a document through `core::History`, undoes, and asserts that the channel
+//    came back while the active selection did not move -- the assertion that
+//    fails the day someone "simplifies" the two into one member and makes
+//    drawing a marquee undoable.
+//
+// Also covered: the round trip is exact texel-for-texel *and* tile-for-tile in
+// both directions; quick mask's two boundary decisions (entering with no
+// selection gives an empty overlay, and leaving with an empty one gives back no
+// selection rather than a selection that selects nothing); a document with
+// channels saves and reloads them at **zero tolerance** -- HALF carries all 256
+// points of the uint8 coverage grid exactly, with 8.06x of margin, measured and
+// printed rather than assumed; a document written **without** channels still
+// loads, with no channel warning, and writes bytes identical to a second save
+// once capDate is masked; a two-channel `S0001` from a newer build is carried
+// verbatim and does not steal the part name a real channel needs (PRD I10); and
+// the two save refusals -- an unnamed channel, and two channels sharing a name
+// -- each asserted on the specific string it names (PRD I11).
+bool runChannelsTest();
 
 // ops/FloodFill (PLAN.md "Phase 6" paint bucket + "Phase 7" magic wand; PRD
 // D25, D26, E2, E3). Headless and GPU-free.
@@ -485,6 +558,25 @@ bool runFloodFillTest();
 // error is the store's own 1/255 quantisation. Every tolerance in that section
 // is stated as a multiple of that step and was measured before it was written.
 bool runSelectionShapesTest();
+
+// core/SelectionRefine (PRD E8's grow/shrink, PRD E9's colour and luminance
+// range). Headless and GPU-free.
+//
+// Two claims, and both are about MECHANISM rather than arithmetic. PRD E8
+// demands a distance transform "so the radius is a real number and antialiasing
+// survives", and iterated dilation would pass every plausible smoke test while
+// failing both clauses -- so the section asserts a fractional radius produces
+// fractional coverage, an integer one leaves the edge hard, and an antialiased
+// boundary texel survives grow-by-zero bit-exactly while a thresholded copy of
+// the same edge is destroyed. Euclidean-ness is checked against
+// core/SelectionShapes' analytic disc, reached by closed-form area integration
+// with no distance field anywhere.
+//
+// PRD E9's hazard is the one ops/FloodFill.hpp names: two implementations of
+// "similar colour". The section asserts colour range fed the colour under a
+// texel returns the IDENTICAL selection to a Global flood fill seeded there, so
+// a second tolerance metric is a test failure and not a user complaint.
+bool runSelectionRefineTest();
 
 // The intent rules behind PRD E3's five selection tools -- ui/MacPaintUI's
 // commitDrawnSelection(). Headless and GPU-free.
@@ -529,6 +621,55 @@ bool runSelectionToolsTest();
 // four-corner homography solve and its refusal of a degenerate quad; and the
 // tile-store bridge's allocation behaviour in both directions.
 bool runTransformTest();
+
+// ops/DocumentTransform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14,
+// D16, D17, E10). Headless and GPU-free -- runTransformTest()'s entry point,
+// one level up, on real `Document`s and `Layer`s.
+//
+// runTransformTest() proves the resampler. This one proves the four claims that
+// only exist once a Document is involved, because each is about a store the
+// resampler has never heard of:
+//
+//  - **A crop moves the MASK.** `core::Layer` has no offset field -- tiles are
+//    keyed in absolute document coordinates -- so a crop is an integer
+//    translate of every store, and translating `rgbTiles` and not `mask` gives
+//    a composite that is internally consistent and a mask that has slid off the
+//    content it was painted for. The section asserts pixels, mask and selection
+//    all landed at the same offset, and asserts the pixels landed bit-identical
+//    (0 of 30 000 texels differ) rather than close.
+//  - **A layer mask must NOT transform in coverage space.**
+//    `transformImage()`'s outside-the-source policy is transparent black, which
+//    for a selection means "unselected" (right) and for a mask would mean
+//    "hidden" (a document that vanishes). Measured: the naive packing hides
+//    1 649 of 3 249 destination texels of one 30-degree rotation. The shipped
+//    hide-space packing (`1 - coverage`) leaves them revealed, and is bit-exact
+//    for all 65 536 half words.
+//  - **A pigment latent passes only through a positive-weight kernel, and only
+//    MASS-WEIGHTED.** DESIGN-imaging.md section 3 puts `resample` in its
+//    valid-on-latents column, so refusing pigment layers would refuse the
+//    default layer kind; but a negative lobe drives the implied fourth pigment
+//    weight outside the model (measured on a hard latent edge: Catmull-Rom
+//    -0.0438 on a pigment weight, Lanczos3 -0.0753, both lobe-free kernels
+//    exactly +0.0000). The section checks the restriction is a TYPE rather than
+//    a runtime test, that `latentKernelFor()` refuses a ringing kernel by name
+//    instead of rounding it down, that every output latent stays inside the
+//    convex hull of the inputs that had mass (excursion 0.000e+00), and that a
+//    straight (unweighted) average of the same field differs by 0.6061 of
+//    latent -- which is not a fringe, it is a different pigment.
+//  - **D16 is a claim about a process at document level too.** A layer rotated
+//    60 degrees out and back by two routes that land identically: 2 resamples
+//    against 6, measuring 1.778x less RMS error, widening to 2.647x at 16 steps
+//    while the composed cost stays flat at 2.
+//
+// Also here: all nine canvas anchors with the odd pixel floored; a 1:1 image
+// size proven bit-identical rather than run as an identity resample; document
+// flips and quarter turns at zero resamples with memcmp equality; the
+// area-average prefilter reaching the pigment path (mass stripes 256 -> 35, sd
+// 0.0324 against 0.2939); PRD E10's selection transform on the exact path with
+// every coverage byte intact; and the locked-layer split -- a per-layer
+// transform refuses one by name, a document-level grid change moves it and
+// reports the count.
+bool runDocumentTransformTest();
 
 // core/Clipboard (PLAN.md "Phase 7 -- Select and paste"; PRD M1, M3, M4, M5,
 // M8). Headless and GPU-free.

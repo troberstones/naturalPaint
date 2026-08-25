@@ -209,11 +209,26 @@ struct OpenDocument {
   //
   // On the OpenDocument rather than inside `Document`, deliberately. A
   // selection is per-document but it is **session state, not document data**:
-  // io/NpaintFile does not save it (PRD E11, "a selection can be saved into
-  // the document and restored", is P1 and not built), and putting it in
-  // `Document` would put it in `History`'s snapshots -- so every undo would
-  // restore a marquee along with the pixels, and drawing a marquee would be an
-  // undoable act. Neither is what an editor does.
+  // io/NpaintFile does not save it, and putting it in `Document` would put it
+  // in `History`'s snapshots -- so every undo would restore a marquee along
+  // with the pixels, and drawing a marquee would be an undoable act. Neither is
+  // what an editor does.
+  //
+  // **PRD E11 ("a selection can be saved into the document and restored") is
+  // built, and it does not touch this member.** It is satisfied by
+  // `core::saveSelectionAsChannel()` / `loadChannelAsSelection()`, which copy
+  // coverage across the session/document line only when the user issues the
+  // command: a *saved* selection is a named `core::AlphaChannel` in
+  // `Document::channels`, which is document data and therefore is in history
+  // snapshots and is written to the file, while the **active** selection stays
+  // here and stays out of both. The two are one word apart and conflating them
+  // makes every marquee undoable, which is why the rule is written down at both
+  // ends -- core/Channels.hpp carries the long form.
+  //
+  // So nothing may copy this member into `Document` implicitly. In particular
+  // `saveDocument()` must not "helpfully" persist the live marquee: that would
+  // satisfy E11's sentence and break the history rule at the same time, while
+  // looking like a convenience.
   std::optional<Selection> selection;
 
   // The selection that was thrown away most recently, for Reselect (⌘⇧D,

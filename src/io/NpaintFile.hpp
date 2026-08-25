@@ -73,6 +73,12 @@
 //                   np:clipped  1                only when the layer is
 //                               clipped by the alpha of the layer below
 //
+//   part N  "S0001"...    coverage, HALF, tiled 128x128       (an alpha channel)
+//                         data window == the bounding box of the channel's
+//                         occupied tiles, tile-aligned
+//           attrs:  np:kind     "selection"
+//                   np:name     the channel's name, unique in the document
+//
 // Part names are the stable synthetic ids docs/document-format.md requires
 // (`L0001`, one-based, in layer order): "layer names are not unique -- two
 // layers may both be 'Layer 1' -- so the part name is a stable synthetic id
@@ -204,8 +210,48 @@
 //    parameters live in `sim::PaintSim`/`app::AppState`, and no Media-kind
 //    Layer is constructible with content today.
 //
-//  * **Saved selections (`S0001`, `np:kind="selection"`).**
-//    `core::Selection` exists but `core::Document` holds no selection.
+//  * ~~**Saved selections (`S0001`, `np:kind="selection"`)**~~ -- **delivered
+//    at PLAN.md Phase 7** (PRD E11, E13). The blocker was ownership, not a
+//    carrier: `core::Selection` existed but nothing in `core::Document` held
+//    one. `Document::channels` does now -- a `std::vector<core::AlphaChannel>`,
+//    each a named coverage store -- and a *saved selection is a channel*, which
+//    is why one part kind serves both requirements. core/Channels.hpp argues
+//    the identity, and argues at length why a saved selection is document data
+//    while the **active** selection stays session state on
+//    `app::OpenDocument` (putting the live marquee in `Document` would put it
+//    in every `History` snapshot and make drawing one undoable).
+//
+//    Four properties make this a format decision rather than a serialisation
+//    detail, and each is asserted rather than assumed:
+//
+//     - **One `S####` part per channel, with a single `coverage` channel in
+//       HALF** -- exactly the sketch docs/document-format.md has carried since
+//       before anything wrote one, down to the part name, the `np:kind` string
+//       and the channel name. Nothing here invents a shape; the one thing the
+//       sketch did not say is the sample type, and HALF is what every other
+//       part of this file uses.
+//     - **HALF is lossless for this store, measured rather than assumed.** A
+//       `core::SelectionTile` is uint8, so the values on the wire are the 256
+//       points of the k/255 grid. All 256 survive float -> HALF -> float ->
+//       `*255 + 0.5` **exactly** (0 mismatches); the worst half-rounding across
+//       the grid is 2.432e-4 at k=239, against a half-grid-step of 1/510 =
+//       1.961e-3 -- 8.06x of margin, and 0.0 and 1.0 are exact identities. So
+//       the zero-tolerance fidelity claim this header makes for HALF layer
+//       pixels extends to channels, and `--selftest` asserts a channel round
+//       trip at zero tolerance rather than within a tolerance. The rejected
+//       alternative was FLOAT, which would be exact for free and doubles the
+//       part; the unavailable one was UINT8, which OpenEXR has no pixel type
+//       for.
+//     - **A document with no channels writes no `S####` part at all**, so it
+//       produces exactly the bytes it produced before this step -- the property
+//       `np:ops`, `np:comps` and the `mask` channel each established in turn,
+//       and asserted the same way, against a file rather than by argument.
+//     - **`np:version` does not move.** An older reader meeting an `S0001` part
+//       does not recognise it, carries it verbatim into `NpaintCarry::rawParts`
+//       and writes it back unchanged -- which is docs/document-format.md §3.2
+//       working exactly as designed, and is why this is an additive change and
+//       not a structural one. Bumping the version would have told every older
+//       build the file was beyond it, over a part they already handle safely.
 //
 //  * **The mip pyramid.** docs/document-format.md's §1 table pairs "128^2
 //    tiles + a display mip pyramid" with EXR's mip-mapped storage, and §6
@@ -240,6 +286,14 @@
 //    does not survive this OpenImageIO (see NpaintAttribute), so the file
 //    would come back declaring no basis at all rather than declaring an
 //    unknown one.
+//  * An alpha channel with an **empty name**, or two channels sharing one
+//    name. `np:name` is how a channel is referred to at all
+//    (`core::loadChannelAsSelection(doc, name)`), an empty `string` attribute
+//    does not survive this OpenImageIO, and a duplicate makes that lookup's
+//    answer depend on vector order -- so either would produce a file holding
+//    coverage nothing can ask for. Named rather than uniquified on the way out,
+//    because silently renaming a user's channel during a save is a change to
+//    the document made by the writer.
 //  * An `opacity` outside [0,1].
 //  * A lossy EXR compression, by name. See NpaintSaveOptions::compression.
 //  * A canvas with a non-positive width or height.
@@ -369,10 +423,18 @@ struct NpaintRawPart {
 // exactly the kind PRD I10 exists to prevent, just in the ordering rather
 // than in the bytes. So the order is carried too.
 struct NpaintPartSlot {
-  enum class Kind { Layer, RawPart };
+  // `Channel` is an alpha channel part (`S####`), added at PLAN.md Phase 7.
+  // It is in this enum rather than being appended after the layers on every
+  // save for the same reason `RawPart` is: a channel that sat between two
+  // layer parts in the file it came from must go back where it was, or a
+  // load/save cycle silently reorders the file. Nothing *reads* channel order
+  // for meaning today -- layer order is the stack, channel order is only the
+  // order a panel would list them in -- but "we did not need to preserve it"
+  // is not a reason to destroy it.
+  enum class Kind { Layer, RawPart, Channel };
   Kind kind = Kind::Layer;
-  // Index into Document::layers for Layer, or into NpaintCarry::rawParts for
-  // RawPart.
+  // Index into Document::layers for Layer, into NpaintCarry::rawParts for
+  // RawPart, or into Document::channels for Channel.
   size_t index = 0;
 };
 
@@ -653,8 +715,14 @@ struct NpaintLoadResult {
 // written order does come back intact through this OpenImageIO, but that is
 // its normalisation and not OpenEXR's storage (whose `ChannelList` is a
 // name-sorted map putting `res.B` first), so a positional read would be luck.
+//
+// A part named `S####` carrying `np:kind = "selection"` and exactly one HALF
+// channel named `coverage` becomes a `core::AlphaChannel` in
+// `document.channels` instead, under the name its `np:name` gives (PRD E11,
+// E13).
+//
 // Anything else -- a Media part, a group part with
-// no channels, a saved selection, an RGB part a newer build gave a fifth
+// no channels, an RGB part a newer build gave a fifth
 // channel -- is carried verbatim into `carry.rawParts` instead. That rule is
 // deliberately strict in the reader's own disfavour: turning a part this
 // build only half-understands into a Layer would drop the half it does not,

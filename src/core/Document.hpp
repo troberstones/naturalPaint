@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "color/Space.hpp"
+#include "core/Channels.hpp"
 #include "core/Layer.hpp"
 #include "core/LayerComp.hpp"
 
@@ -130,6 +131,38 @@ struct Document {
   // before this member existed. `--selftest` asserts that against a file rather
   // than assuming it.
   std::vector<LayerComp> comps;
+
+  // **Alpha channels** (PLAN.md Phase 7; PRD E13), and with them PRD E11's
+  // saved selections -- a saved selection *is* a named channel, and
+  // core/Channels.hpp is where that identity is argued.
+  //
+  // On `Document` for the two reasons `comps` gives above, and against a third
+  // consideration that pulls the other way and must not win:
+  //
+  //  * `core::History` entries hold a whole `Document` by value, so Save
+  //    Selection, rename and delete are undoable for free. That is **correct
+  //    here and would be wrong for the active selection**, which is the whole
+  //    distinction: saving a selection is a deliberate command that changes the
+  //    document, so undo must remove the channel; drawing a marquee is a
+  //    gesture, so undo must not touch it. `app::OpenDocument::selection` holds
+  //    the active one and states the other half of the argument.
+  //  * io/NpaintFile writes each channel as its own `S####` EXR part, the shape
+  //    docs/document-format.md sketched before anything wrote one. A list on
+  //    the session record would have to be threaded through `saveNpaint()` as a
+  //    further argument for no gain.
+  //
+  // The consideration that loses: a channel is *bulk pixel data*, so a history
+  // entry now carries the channel tiles too. It costs a refcount per tile and
+  // not a copy -- `SelectionTileStore` is copy-on-write like every other tile
+  // store (core/TileStore.hpp) -- so an undo of a paint stroke on a document
+  // with twelve saved selections copies twelve pointers, not twelve masks.
+  //
+  // Empty for every document until a user saves a selection, and io/NpaintFile
+  // writes **no part at all** for an empty list -- so a document with no
+  // channels produces exactly the bytes it produced before this member existed,
+  // and a file written before it existed loads with the list empty.
+  // `--selftest` asserts both against files rather than assuming them.
+  std::vector<AlphaChannel> channels;
 
   // The next value `core::normalizeLayerIds()` will hand out for `Layer::id`.
   //

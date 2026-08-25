@@ -319,6 +319,52 @@ part 4   "S0001"          coverage                   ← a saved selection
 >   file it was preserved in — the same argument §3.3 already makes for an unimplementable
 >   `np:blend`.
 
+> ✅ **Implemented, 2026-08-24, at PLAN.md Phase 7 (PRD E11, E13): the `S0001` part above is
+> real.** §2's sketch has drawn it since before anything wrote one, and it is implemented
+> exactly as drawn — part name `S####`, `np:kind "selection"`, one channel called `coverage`
+> — plus an `np:name` carrying the channel's own name. One part per entry in
+> `core::Document::channels`. **A saved selection and an alpha channel are the same thing**,
+> which is why one part kind answers both requirements; `core/Channels.hpp` argues the
+> identity and, at more length, why a *saved* selection is document data while the **active**
+> selection stays session state outside `Document` (in `Document` it would land in every
+> `History` snapshot and drawing a marquee would become undoable).
+>
+> Four things about it are format decisions rather than serialisation details:
+>
+> - **The sample type is `HALF`, and that is lossless here — measured, not assumed.** The
+>   sketch never said what type `coverage` is. A `core::SelectionTile` is one **uint8** per
+>   texel (`core/SelectionMask.hpp` argues why, and notes Photoshop stores selections at 8
+>   bits too), so the values on the wire are the 256 points of the `k/255` grid. All 256
+>   survive `float → HALF → float → ×255 + 0.5` with **zero** mismatches; the worst
+>   half-rounding across the grid is **2.432 × 10⁻⁴** (at k = 239), against a half-grid-step
+>   of 1/510 = **1.961 × 10⁻³** — **8.06×** of margin — and 0.0 and 1.0 are exact identities.
+>   So `--selftest` asserts the channel round trip at **zero tolerance**, the same standard
+>   the HALF layer pixels are held to. `FLOAT` would have been exact for free and twice the
+>   size; `UINT8` is not an OpenEXR pixel type at all.
+> - **The absent-tile value is 0.0, the inverse of the `mask` channel's 1.0.** Both are "the
+>   identity element the channel actually has": an absent layer-mask tile reveals, an absent
+>   coverage tile is *unselected*. So the drop-on-read rule here is "every sample is exactly
+>   zero" — the RGB channels' rule, not the mask channel's — and a rectangular data window's
+>   unavoidable holes are spelled with a zero fill that costs no extra pass. Backwards, a
+>   channel painted on one tile of a four-tile document would come back selecting the other
+>   three.
+> - **A document with no channels writes no `S####` part at all**, so it produces exactly the
+>   bytes it produced before this step — the property `np:ops`, `np:comps` and the `mask`
+>   channel each established in turn, asserted the same way, against a file with `capDate`
+>   masked rather than by argument.
+> - **`np:version` does not move**, and that is what makes this additive rather than
+>   structural. An older build meeting an `S0001` part does not recognise it, carries it
+>   verbatim under §3.2 and writes it back unchanged. Bumping the version would have told
+>   every older build the file was beyond it, over a part they already handle correctly.
+>
+> Two smaller rules, both from PRD I11. A channel with an **empty name**, or two channels
+> sharing one, is **refused on save by name** — a channel is looked up by its name and has no
+> synthetic id standing behind it the way `L####` stands behind a layer's non-unique name, so
+> either would write coverage nothing can ask for. The *reader* does the opposite and
+> **repairs** a duplicate or empty name, warning with both spellings: a file that opened but
+> could never be saved again would be the trap §3.3's basis note already refuses to build.
+> Coverage is preserved exactly in that repair; only the label moves.
+
 - **Every part must agree about being tiled.** Also measured: OpenImageIO cannot write a
   multi-part EXR mixing tiled and scanline parts — it fails partway through with
   `Can't build a TiledOutputFile from a type-mismatched part`. Since part 0 is tiled,

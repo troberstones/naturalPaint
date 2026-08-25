@@ -1312,11 +1312,29 @@ int main(int argc, char** argv) {
     // asserted bit-for-bit and then proved sensitive against the tile-local
     // blur it rejects -- and ops/Feather. Also headless and GPU-free.
     const bool blurOk = np::runBlurTest();
+    // PLAN.md "Phase 6 -- Filter and transform it": ops/Filters -- the filter
+    // set that hangs off the blur spine. Highpass as `src - blur(src)`,
+    // unsharp with amount/radius/threshold, sharpen, offset with wrap, add
+    // noise and local contrast. The seam property is re-asserted for all six
+    // (add noise earns it with a counter-based PRNG rather than inheriting it
+    // from an apron), the premultiplied-alpha rule at a soft edge is asserted
+    // against the RGB-only form it rejects, and both of PLAN.md's domain traps
+    // for this phase are measured: shaper-domain noise is constant across six
+    // stops where linear-light noise varies by 234x, and a log-domain local
+    // contrast cannot produce the negative light a linear unsharp does. Also
+    // headless and GPU-free.
+    const bool filtersOk = np::runFiltersTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
     // arithmetic, no PaintSim involvement.
     const bool selectionOk = np::runSelectionTest();
+    // PLAN.md "Phase 7 -- Select and paste" (PRD E11, E12, E13): core/Channels'
+    // named coverage channels in the document, the exact selection<->channel
+    // round trip, saved selections, quick mask, and io/NpaintFile's `S####`
+    // part -- including that a document written with no channels still loads.
+    // Mostly headless; the format sections write a real `.npaint` to disk.
+    const bool channelsOk = np::runChannelsTest();
     // ops/FloodFill (PLAN.md "Phase 6" paint bucket + "Phase 7" magic wand;
     // PRD D25, D26, E2, E3): the display-encoded tolerance metric, the derived
     // antialiased coverage ramp, the scanline traversal that pages through the
@@ -1326,6 +1344,11 @@ int main(int argc, char** argv) {
     // core/SelectionShapes (PRD E3): the ellipse, lasso and polygon lasso, and
     // the exact-area claim behind all three. Headless, pure CPU.
     const bool selectionShapesOk = np::runSelectionShapesTest();
+    // core/SelectionRefine (PRD E8, E9): grow and shrink through a signed
+    // distance field seeded at sub-texel accuracy from the coverage itself,
+    // and the two range selections, which reuse ops/FloodFill's tolerance
+    // metric rather than inventing a second one. Headless, pure CPU.
+    const bool selectionRefineOk = np::runSelectionRefineTest();
     // ui/MacPaintUI's commitDrawnSelection(): the intent rules all five of
     // PRD E3's selection tools funnel through. Headless, pure CPU.
     const bool selectionToolsOk = np::runSelectionToolsTest();
@@ -1335,6 +1358,14 @@ int main(int argc, char** argv) {
     // area-average prefilter a downscale must run first, and crop/canvas
     // size/image size. Also headless and GPU-free -- pure CPU resampling.
     const bool transformOk = np::runTransformTest();
+    // PLAN.md "Phase 6" again, one level up (PRD D14, D16, D17, E10):
+    // ops/DocumentTransform, the Document/Layer entry point to that resampler.
+    // A crop moving masks and selections with the pixels (a Layer has no offset
+    // field, so its tile keying IS its offset); pigment layers transformed
+    // mass-weighted through a kernel with no negative lobes, enforced by type;
+    // and D16 asserted at document level -- a stack of any depth resamples once.
+    // Headless and GPU-free.
+    const bool documentTransformOk = np::runDocumentTransformTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -1693,9 +1724,11 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && gradientOk && selectionOk &&
-                    selectionShapesOk && selectionToolsOk && floodFillOk && clipboardOk && opStackOk &&
-                    lutBakeOk && applyPassOk && transformOk && blurOk &&
+                    histogramOk && pointOpsOk && gradientOk && selectionOk && channelsOk &&
+                    selectionShapesOk && selectionRefineOk && selectionToolsOk && floodFillOk &&
+                    clipboardOk && opStackOk &&
+                    lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
+                    filtersOk &&
                     curveEditOk && brushDynamicsOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&

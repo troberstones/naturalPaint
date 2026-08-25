@@ -11,6 +11,7 @@
 #include <optional>
 #include <utility>
 
+#include "core/Channels.hpp"
 #include "core/Composite.hpp"
 #include "core/Half.hpp"
 #include "core/Layer.hpp"
@@ -159,6 +160,50 @@ constexpr size_t kPigmentLatentFirst = 4;
 // -- with the identity element the channel actually has.
 constexpr const char* kMaskChannelName = "mask";
 
+// --- An alpha channel's part (PLAN.md Phase 7; PRD E11, E13) ---------------
+//
+// docs/document-format.md has drawn this part since before anything wrote one:
+//
+//     part 4   "S0001"          coverage                   <- a saved selection
+//              attrs:  np:kind        "selection"
+//
+// and all three strings below are taken from it verbatim rather than chosen
+// here. Two notes on that:
+//
+//  * **`"selection"` is lower-case where every other `np:kind` is
+//    capitalised** ("RGB", "Pigment", "Adjustment"). That is the published
+//    sketch's own spelling, and matching a document that predates the code is
+//    worth more than matching a naming habit -- anyone who implemented a reader
+//    against that table would have matched the lower-case string. There is no
+//    `LayerKind` for it to collide with: a channel is not a layer, and
+//    `layerKindName()` never produces this value.
+//  * **A channel part is not a layer part**, so it deliberately does not reuse
+//    `layerPartName()`'s `L` prefix. The reader's first test is the name, and
+//    keeping the two namespaces disjoint means an `S####` part can never be
+//    mistaken for a layer whose channels happen to be unreadable.
+//
+// The sample type is **HALF**, which the sketch did not specify, for the reason
+// the `mask` channel gives one line up: `NpaintRawPart` carries one
+// `sampleTypeName` per part, and every part this module writes is HALF. That is
+// only acceptable because it is *lossless here*, which is measured rather than
+// assumed -- io/NpaintFile.hpp carries the numbers (all 256 points of the
+// uint8 k/255 grid survive exactly; worst half-rounding 2.432e-4 against a
+// half-grid-step of 1.961e-3, 8.06x of margin). OpenEXR has no 8-bit pixel
+// type, so storing the tile's own bytes was never on the table; FLOAT would
+// have been exact for free and twice the size, for a channel whose values live
+// on a 256-point grid.
+//
+// **The drop rule on read is "every sample is exactly zero"** -- the same rule
+// the RGB unpacker uses, and the *opposite* of the `mask` channel's "every
+// sample is exactly 1.0" one directly above. Both are "the identity element the
+// channel actually has", and for selection coverage that element is 0.0: an
+// absent tile is unselected (core/SelectionMask.hpp, and core/Channels.hpp on
+// why a channel inherits the selection default and not the layer-mask one).
+// Getting this backwards would make a channel painted on one tile of a
+// four-tile document come back selecting the other three.
+constexpr const char* kChannelKindName = "selection";
+constexpr const char* kCoverageChannelName = "coverage";
+
 // Where each of `names` sits in `part.channelNames`, or an empty optional when
 // any of them is missing.
 //
@@ -253,6 +298,22 @@ std::string layerPartName(size_t oneBasedIndex) {
 // after.
 bool isLayerPartName(const std::string& name) {
   if (name.size() < 2 || name[0] != 'L') return false;
+  for (size_t i = 1; i < name.size(); ++i) {
+    if (!std::isdigit(static_cast<unsigned char>(name[i]))) return false;
+  }
+  return true;
+}
+
+// The channel analogue, one-based and in `Document::channels` order.
+// docs/document-format.md's own `S0001`.
+std::string channelPartName(size_t oneBasedIndex) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "S%04zu", oneBasedIndex);
+  return buf;
+}
+
+bool isChannelPartName(const std::string& name) {
+  if (name.size() < 2 || name[0] != 'S') return false;
   for (size_t i = 1; i < name.size(); ++i) {
     if (!std::isdigit(static_cast<unsigned char>(name[i]))) return false;
   }
@@ -603,6 +664,122 @@ NpaintRawPart buildAdjustmentLayerPart(const Layer& layer, const std::string& pa
       words[i] = MaskTile::kRevealWord;
   }
   return part;
+}
+
+// An alpha channel's part (PRD E11, E13): one `coverage` channel over the
+// tile-aligned bounding box of the channel's occupied tiles.
+//
+// The same "allocate only where content exists" rule the layer parts follow,
+// with the one difference that makes it *cheaper* here than for a mask: a
+// rectangular data window cannot encode a hole, so the hole has to be spelled
+// with the value it means -- and for coverage that value is **zero**, which the
+// zero-fill from `assign()` has already written. `writeMaskChannel()` needs an
+// explicit reveal pass because 1.0 is not what a zeroed buffer holds; this
+// needs nothing.
+//
+// A texel is `floatToHalf(coverageAt(...))`, i.e. `floatToHalf(v * (1/255))`.
+// There is no clamp on the way out -- `SelectionTile` cannot hold a value
+// outside [0,1] by construction, which is `writeCoverage()`'s own guarantee, so
+// a clamp here would be dead code claiming a hazard that does not exist. It is
+// on the way *in* that a foreign sample has to be handled, and it is.
+NpaintRawPart buildChannelPart(const AlphaChannel& channel, const std::string& partName) {
+  NpaintRawPart part;
+  part.name = partName;
+  part.channelNames = {kCoverageChannelName};
+  part.sampleTypeName = "half";
+  part.tileWidth = kTileSize;
+  part.tileHeight = kTileSize;
+
+  const TileBounds b = occupiedTileBounds(channel.tiles);
+  // An empty channel still needs a non-empty data window -- EXR has no
+  // representation for a zero-area part, the same wall `buildLayerPart()` hits.
+  // One all-zero tile at the origin is the minimal legal answer and it
+  // round-trips back to zero tiles, because the reader drops all-zero tiles
+  // exactly as it drops all-zero pixel tiles. So "a channel the user saved and
+  // then erased" survives as a named, empty channel rather than disappearing,
+  // which is the honest answer: the channel is document data, its emptiness is
+  // not.
+  const int32_t tileX0 = b.any ? b.minX : 0;
+  const int32_t tileY0 = b.any ? b.minY : 0;
+  const int32_t tilesW = b.any ? (b.maxX - b.minX + 1) : 1;
+  const int32_t tilesH = b.any ? (b.maxY - b.minY + 1) : 1;
+
+  part.x = tileX0 * kTileSize;
+  part.y = tileY0 * kTileSize;
+  part.width = tilesW * kTileSize;
+  part.height = tilesH * kTileSize;
+
+  const size_t rowWords = static_cast<size_t>(part.width);
+  part.rawPixels.assign(rowWords * static_cast<size_t>(part.height) * sizeof(uint16_t), 0);
+  auto* words = reinterpret_cast<uint16_t*>(part.rawPixels.data());
+
+  for (const auto& [coord, tile] : channel.tiles) {
+    const size_t col0 = static_cast<size_t>(coord.x - tileX0) * kTileSize;
+    const size_t row0 = static_cast<size_t>(coord.y - tileY0) * kTileSize;
+    for (int32_t ty = 0; ty < kTileSize; ++ty) {
+      uint16_t* row = words + (row0 + static_cast<size_t>(ty)) * rowWords;
+      for (int32_t tx = 0; tx < kTileSize; ++tx)
+        row[col0 + static_cast<size_t>(tx)] = floatToHalf(tile.coverageAt(PixelCoord{tx, ty}));
+    }
+  }
+  return part;
+}
+
+// The inverse. Returns how many samples were outside [0,1] or NaN and had to be
+// clamped, so the caller can name a count in a warning (PRD I11) rather than
+// absorbing a malformed channel in silence -- the rule the `mask` channel
+// already follows, for the same reason: a bad sample in a coverage channel does
+// not show up as a wrong pixel, it shows up as an edit that lands somewhere
+// unexpected.
+//
+// **NaN clamps to 0.0, not to 1.0.** Both are defensible readings of "this
+// sample means nothing"; 0.0 is chosen because it is the value an absent tile
+// already has, so a NaN-filled tile drops out entirely rather than becoming a
+// tile that selects everything. Selecting nothing on bad data refuses edits;
+// selecting everything applies them. The first is recoverable.
+size_t unpackChannelPart(const NpaintRawPart& part, size_t coverageIdx,
+                         SelectionTileStore* tiles) {
+  const int32_t tileX0 = part.x / kTileSize;
+  const int32_t tileY0 = part.y / kTileSize;
+  const int32_t tilesW = part.width / kTileSize;
+  const int32_t tilesH = part.height / kTileSize;
+  const size_t channels = part.channelNames.size();
+  const size_t rowWords = static_cast<size_t>(part.width) * channels;
+  const auto* words = reinterpret_cast<const uint16_t*>(part.rawPixels.data());
+
+  size_t clamped = 0;
+  SelectionTile scratch;
+  for (int32_t ty = 0; ty < tilesH; ++ty) {
+    for (int32_t tx = 0; tx < tilesW; ++tx) {
+      const size_t col0 = static_cast<size_t>(tx) * kTileSize;
+      const size_t row0 = static_cast<size_t>(ty) * kTileSize;
+      for (int32_t r = 0; r < kTileSize; ++r) {
+        const uint16_t* row = words + (row0 + static_cast<size_t>(r)) * rowWords;
+        for (int32_t x = 0; x < kTileSize; ++x) {
+          float v = halfToFloat(row[(col0 + static_cast<size_t>(x)) * channels + coverageIdx]);
+          if (!(v >= 0.0f && v <= 1.0f)) {  // false for NaN, for < 0 and for > 1
+            v = (v > 1.0f) ? 1.0f : 0.0f;   // NaN and < 0 both land on 0.0
+            ++clamped;
+          }
+          // Back onto the uint8 grid through the store's own quantiser, so a
+          // value that came from this build's own writer lands on exactly the
+          // byte it left as -- measured over all 256 grid points, and the
+          // reason this round trip is asserted at zero tolerance rather than
+          // within one (io/NpaintFile.hpp carries the numbers).
+          scratch.writeCoverage(PixelCoord{x, r}, v);
+        }
+      }
+      // An all-zero tile is dropped rather than allocated, for the reason the
+      // RGB unpacker drops an all-transparent one and the mask unpacker drops
+      // an all-reveal one: under core/Channels.hpp's convention it is
+      // indistinguishable from an absent tile, so allocating it would grow a
+      // document's resident cost on every save-and-reopen and change nothing a
+      // reader can observe.
+      if (scratch.selectsNothing()) continue;
+      tiles->getOrCreate(TileCoord{tileX0 + tx, tileY0 + ty}) = scratch;
+    }
+  }
+  return clamped;
 }
 
 // The exact inverse. `part` has already been checked to be R/G/B/A HALF with
@@ -1047,6 +1224,37 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     }
   }
 
+  // --- Alpha channels (PLAN.md Phase 7; PRD E11, E13) --------------------
+  //
+  // Two refusals, and both are about the *name*, because the name is the only
+  // handle a channel has: `core::loadChannelAsSelection(doc, name)` is how a
+  // saved selection is restored, and there is no synthetic id standing behind
+  // it the way `L####` stands behind a layer's non-unique name.
+  //
+  // Refused rather than repaired -- not uniquified on the way out, not given a
+  // stand-in name -- because either repair is the writer editing the user's
+  // document during a save, and the user would find a channel called something
+  // they never typed with no record of when it changed.
+  for (size_t i = 0; i < doc.channels.size(); ++i) {
+    const AlphaChannel& channel = doc.channels[i];
+    if (channel.name.empty()) {
+      return fail("save refused: alpha channel " + std::to_string(i) +
+                  " has no name, and `np:name` is the only way anything refers to a channel "
+                  "(loadChannelAsSelection() takes a name). An empty string attribute does not "
+                  "survive this OpenImageIO either, so the part would come back nameless. "
+                  "Nothing was written.");
+    }
+    for (size_t j = i + 1; j < doc.channels.size(); ++j) {
+      if (doc.channels[j].name != channel.name) continue;
+      return fail("save refused: alpha channels " + std::to_string(i) + " and " +
+                  std::to_string(j) + " are both named \"" + channel.name +
+                  "\", and a channel is looked up by name -- two would make "
+                  "loadChannelAsSelection() depend on list order, which is not something a "
+                  "user can see. Rename one (core::uniqueChannelName() produces a free name). "
+                  "Nothing was written.");
+    }
+  }
+
   // PRD C8: "the file records which pigment basis produced them". The value
   // stamped is the *document's* (PLAN.md Phase 5 step 15), not this build's
   // constant, so a document loaded from a file written in another basis is
@@ -1241,6 +1449,38 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     }
   }
 
+  // Channel part names (`S####`), in `Document::channels` order.
+  //
+  // **Allocated fresh on every save, not carried like `layerPartNames`**, and
+  // that asymmetry is deliberate rather than an omission. A layer's part name
+  // has to survive a round trip because `np:parent` links name a part, and a
+  // carried part written by a newer build may hold a reference to `L0003` this
+  // build cannot see inside -- renumbering would repoint it. **Nothing in this
+  // format references a channel part name at all**: a channel is referred to by
+  // its `np:name`, which is document data and does round-trip. So a carry
+  // vector for these would be a field to keep in step with no reader. If a
+  // future attribute ever does reference `S####` -- a layer masked by a channel
+  // would be the obvious one -- this is the decision that has to be revisited,
+  // and it is named here rather than left to be discovered then.
+  //
+  // Names taken by *carried* parts are still skipped, which is not theoretical:
+  // a newer build's channel part carrying a second channel this build does not
+  // understand is carried verbatim under its own `S0001`, and EXR requires
+  // unique part names.
+  std::vector<std::string> channelNames(doc.channels.size());
+  {
+    size_t nextChannelId = 1;
+    for (size_t i = 0; i < doc.channels.size(); ++i) {
+      for (;;) {
+        std::string candidate = channelPartName(nextChannelId++);
+        if (std::find(takenNames.begin(), takenNames.end(), candidate) != takenNames.end())
+          continue;
+        channelNames[i] = std::move(candidate);
+        break;
+      }
+    }
+  }
+
   // --- `np:comps` (PLAN.md Phase 5 step 12, PRD C14) ----------------------
   //
   // Assembled here, after the part names exist, because the payload's whole
@@ -1333,28 +1573,57 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     request.parts.push_back(std::move(part));
   };
 
+  // An alpha channel's part (PRD E11, E13). Two attributes and one channel of
+  // pixels -- there is nothing else a channel is. No `np:blend`, `np:opacity`
+  // or `np:visible`: a channel is not composited, it is coverage a command
+  // loads. Writing them anyway "for symmetry" would put values in the file that
+  // nothing reads and that a later reader might believe.
+  auto appendChannelPart = [&](size_t i) {
+    NpaintRawPart part = buildChannelPart(doc.channels[i], channelNames[i]);
+    part.attributes.push_back(stringAttr(kAttrKind, kChannelKindName));
+    part.attributes.push_back(stringAttr(kAttrName, doc.channels[i].name));
+    request.parts.push_back(std::move(part));
+  };
+
   // Part order after part 0. The carried order is replayed first so a
   // carried part that sat *between* two layers stays between them -- see
   // NpaintPartSlot on why appending them at the end would be data loss in
   // the ordering rather than in the bytes.
   std::vector<bool> layerWritten(doc.layers.size(), false);
   std::vector<bool> rawWritten(carry ? carry->rawParts.size() : 0, false);
+  std::vector<bool> channelWritten(doc.channels.size(), false);
   if (carry) {
     for (const NpaintPartSlot& slot : carry->partOrder) {
-      if (slot.kind == NpaintPartSlot::Kind::Layer) {
-        if (slot.index >= doc.layers.size() || layerWritten[slot.index]) continue;
-        layerWritten[slot.index] = true;
-        appendLayerPart(slot.index);
-      } else {
-        if (slot.index >= carry->rawParts.size() || rawWritten[slot.index]) continue;
-        rawWritten[slot.index] = true;
-        request.parts.push_back(carry->rawParts[slot.index]);
+      switch (slot.kind) {
+        case NpaintPartSlot::Kind::Layer:
+          if (slot.index >= doc.layers.size() || layerWritten[slot.index]) continue;
+          layerWritten[slot.index] = true;
+          appendLayerPart(slot.index);
+          break;
+        case NpaintPartSlot::Kind::Channel:
+          if (slot.index >= doc.channels.size() || channelWritten[slot.index]) continue;
+          channelWritten[slot.index] = true;
+          appendChannelPart(slot.index);
+          break;
+        case NpaintPartSlot::Kind::RawPart:
+          if (slot.index >= carry->rawParts.size() || rawWritten[slot.index]) continue;
+          rawWritten[slot.index] = true;
+          request.parts.push_back(carry->rawParts[slot.index]);
+          break;
       }
     }
   }
   for (size_t i = 0; i < doc.layers.size(); ++i) {
     if (layerWritten[i]) continue;
     appendLayerPart(i);
+  }
+  // Channels created since the load, and every channel of a document that was
+  // never loaded, go after the layers -- which is docs/document-format.md's own
+  // sketch, where `S0001` follows the `L####` parts. A channel that came in
+  // from a file has already been written above, in the position it held there.
+  for (size_t i = 0; i < doc.channels.size(); ++i) {
+    if (channelWritten[i]) continue;
+    appendChannelPart(i);
   }
   if (carry) {
     for (size_t i = 0; i < carry->rawParts.size(); ++i) {
@@ -1576,10 +1845,89 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     const bool isAdjustmentLayer = isLayerPartName(part.name) && namedKind &&
                                    kind->stringValue == layerKindName(LayerKind::Adjustment) &&
                                    adjustmentChannels && tileAligned;
+    // An alpha channel part (PRD E11, E13): `S####`, `np:kind = "selection"`,
+    // and exactly one HALF channel named `coverage`. Matched by name like every
+    // other channel here even though there is only one of them -- a part whose
+    // single channel is called something else is a part this build does not
+    // understand, and carrying it is cheaper than guessing.
+    const std::optional<std::vector<size_t>> coverageIdx =
+        (isHalf && part.channelNames.size() == 1)
+            ? channelIndicesByName(part, {kCoverageChannelName})
+            : std::nullopt;
+    const bool isAlphaChannel = isChannelPartName(part.name) && namedKind &&
+                                kind->stringValue == kChannelKindName &&
+                                coverageIdx.has_value() && tileAligned;
+
+    if (isAlphaChannel) {
+      if (part.tileWidth != kTileSize || part.tileHeight != kTileSize) {
+        result.warnings.push_back(
+            "channel part '" + part.name + "' is stored with " +
+            std::to_string(part.tileWidth) + "x" + std::to_string(part.tileHeight) +
+            " on-disk tiles rather than this build's " + std::to_string(kTileSize) +
+            "; docs/document-format.md §6 asks that these match. The coverage is "
+            "unaffected.");
+      }
+
+      AlphaChannel channel;
+      const NpaintAttribute* nameAttr = findAttr(part.attributes, kAttrName);
+      const std::string wanted =
+          (nameAttr != nullptr && nameAttr->type == NpaintAttribute::Type::String)
+              ? nameAttr->stringValue
+              : std::string();
+
+      // **A name collision is repaired on load, not refused, and this is the
+      // one place the reader edits what it read.** A channel is looked up by
+      // name, so two channels called "Alpha 1" make that lookup depend on list
+      // order -- and `saveNpaint()` refuses such a document, which means a file
+      // holding one (hand-built, or written by a tool that did not enforce it)
+      // would open, accept edits, and never be writable again. This header's
+      // own basis section calls that shape a trap and says why: "a refusal that
+      // costs the user their work to protect a label has the trade backwards".
+      //
+      // So the *coverage* is preserved exactly and only the label moves, the
+      // warning names both spellings, and the next save is possible. Same
+      // treatment for a channel with no name at all, which cannot round-trip
+      // through an EXR header anyway (an empty string attribute is dropped by
+      // this OpenImageIO -- see NpaintAttribute).
+      channel.name = uniqueChannelName(result.document, wanted);
+      if (channel.name != wanted) {
+        result.warnings.push_back(
+            "channel part '" + part.name + "' declares np:name \"" + wanted +
+            "\", which " + (wanted.empty() ? "is empty" : "another channel in this file already "
+                                                          "uses") +
+            ". It was opened as \"" + channel.name +
+            "\" so the document stays saveable -- a channel is looked up by name, and a "
+            "duplicate would make that lookup depend on list order. Its coverage is "
+            "unchanged.");
+      }
+
+      const size_t clamped = unpackChannelPart(part, (*coverageIdx)[0], &channel.tiles);
+      if (clamped != 0) {
+        result.warnings.push_back(
+            "channel part '" + part.name + "' (\"" + channel.name + "\") had " +
+            std::to_string(clamped) +
+            " coverage sample(s) outside [0,1] or NaN. They were clamped into range (NaN and "
+            "negatives to 0.0, which is 'not selected'), and the clamped values are what the "
+            "next save writes. Coverage weights every edit, so a bad sample here does not "
+            "show as a wrong pixel -- it shows as an edit landing somewhere unexpected.");
+      }
+
+      result.carry.partOrder.push_back(
+          NpaintPartSlot{NpaintPartSlot::Kind::Channel, result.document.channels.size()});
+      result.document.channels.push_back(std::move(channel));
+      continue;
+    }
 
     if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer) {
       std::string reason;
-      if (!isLayerPartName(part.name)) {
+      if (isChannelPartName(part.name)) {
+        // An `S####` part that failed the test above. Worth its own sentence
+        // rather than falling into "its name is not the L#### form", which
+        // would be true and unhelpful.
+        reason = "its name is the S#### form this build gives alpha channel parts, but it is "
+                 "not one -- a channel part carries np:kind \"selection\" and exactly one "
+                 "channel named coverage, in half, on a tile-aligned data window";
+      } else if (!isLayerPartName(part.name)) {
         reason = "its name is not the L#### form this build gives layer parts";
       } else if (kind == nullptr) {
         reason = "it has no np:kind attribute";

@@ -26,6 +26,7 @@ add_executable(naturalPaint
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
   app/selftest/BrushDynamics.cpp
+  app/selftest/Channels.cpp
   app/selftest/Clipboard.cpp
   app/selftest/ClippingMask.cpp
   app/selftest/ColorSpace.cpp
@@ -38,11 +39,13 @@ add_executable(naturalPaint
   app/selftest/DocumentLifecycle.cpp
   app/selftest/DocumentResidency.cpp
   app/selftest/DocumentTexture.cpp
+  app/selftest/DocumentTransform.cpp
   app/selftest/Driver.cpp
   app/selftest/Export.cpp
   app/selftest/ExportAs.cpp
   app/selftest/ExportStates.cpp
   app/selftest/FieldAllocation.cpp
+  app/selftest/Filters.cpp
   app/selftest/FloodFill.cpp
   app/selftest/Fonts.cpp
   app/selftest/AtelierChrome.cpp
@@ -78,6 +81,7 @@ add_executable(naturalPaint
   app/selftest/Probe.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/Selection.cpp
+  app/selftest/SelectionRefine.cpp
   app/selftest/SelectionShapes.cpp
   app/selftest/SelectionTools.cpp
   app/selftest/Shaper.cpp
@@ -99,6 +103,7 @@ add_executable(naturalPaint
   color/Shaper.cpp
   color/Space.cpp
   core/Blend.cpp
+  core/Channels.cpp
   core/Clipboard.cpp
   core/Composite.cpp
   core/DirtyTiles.cpp
@@ -116,6 +121,7 @@ add_executable(naturalPaint
   core/Probe.cpp
   core/SelectionMask.cpp
   core/SelectionOps.cpp
+  core/SelectionRefine.cpp
   core/SelectionShapes.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp
@@ -131,7 +137,9 @@ add_executable(naturalPaint
   io/OpSerial.cpp
   io/TileResidency.cpp
   ops/Blur.cpp
+  ops/DocumentTransform.cpp
   ops/Feather.cpp
+  ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
   ops/PointOps.cpp

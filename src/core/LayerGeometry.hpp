@@ -35,24 +35,47 @@
 //   a **translate** -- move those pixels by an integer offset.
 //
 // Both are here, both are real, and the second is what core/LayerComp.hpp said
-// would have to exist first. What is still *not* here, and is refused by name
-// rather than approximated, is a **transform**: rotate, scale, skew, or any
-// translate by a fractional pixel. Every one of those resamples, and resampling
-// is Phase 6 ("Filter and transform it") -- it needs a filter kernel choice, a
-// premultiplied-alpha argument, and on a Pigment layer a decision about whether
-// a latent triple may be interpolated at all (DESIGN-imaging.md §3: "any op
-// that is a linear combination of pixels stays valid in latent space" -- a
-// resample is, a filter with negative lobes is not). None of those is a field.
+// would have to exist first.
 //
-// So the honest boundary, stated once:
+// **Phase 6 has landed and the three things this file was waiting on all
+// exist**, so the sentence that used to sit here -- *"An integer-pixel translate
+// is exact and lossless. Anything else is a transform, and this build has
+// none."* -- is no longer true and is not worth preserving as folklore. What it
+// listed as missing arrived in this order:
 //
-//   **An integer-pixel translate is exact and lossless. Anything else is a
-//   transform, and this build has none.**
+//   a **filter kernel choice**: `ops/Transform.hpp`'s five reconstruction
+//     kernels, with each one's cost stated so a caller chooses rather than
+//     guesses;
+//   a **premultiplied-alpha argument**: made and argued in that file's §2 --
+//     everything resamples premultiplied, with no un-premultiply step anywhere
+//     except around the area-average prefilter, whose interface demands one;
+//   a **decision about interpolating latent pigment triples**:
+//     `ops/DocumentTransform.hpp` §2. Pigment layers *are* transformed --
+//     DESIGN-imaging.md §3 puts `resample` in its "valid on latents" column by
+//     name -- but only through a kernel with **no negative lobes**, enforced by
+//     a separate two-value `LatentKernel` type rather than by a runtime check,
+//     and only **mass-weighted**, so the output latent is a convex combination
+//     of the latents that actually had paint in them.
 //
-// `translateLayer()` takes `int32_t` deltas for that reason -- there is no
-// float overload to round silently -- and `alignLayerSet()` rounds its own
-// target to an integer and *reports the residual* rather than pretending the
-// half pixel did not exist.
+// So the boundary this file draws is now about **cost and exactness**, not about
+// existence, and it is the reason the two operations here did not become
+// wrappers over the matrix path when that path arrived:
+//
+//   **An integer-pixel translate is exact and lossless, and it stays a separate
+//   operation for exactly that reason.** Routing it through a resampler would
+//   make an align cost a generation of filtering to move a layer by a whole
+//   number of pixels -- the same mistake ops/Transform.hpp §4 refuses for flips.
+//
+// `translateLayer()` still takes `int32_t` deltas -- there is no float overload
+// to round silently, and a caller who wants a fractional move now has a real
+// place to get one -- and `alignLayerSet()` still rounds its own target to an
+// integer and *reports the residual* rather than pretending the half pixel did
+// not exist. Both are unchanged by Phase 6 and both are still right.
+//
+// `translatedTileStore()` below is also now the engine of PRD D17's **crop** and
+// **canvas size** at document level (`ops/DocumentTransform.hpp` §4): those
+// change the pixel grid, so every layer's stores -- and its mask -- move by an
+// integer offset, and this is the function that makes that bit-exact.
 //
 // ==========================================================================
 // (2) WHY THE TRANSLATE IS LOSSLESS, structurally rather than carefully
