@@ -329,6 +329,26 @@ struct AppState {
   bool penDown = false;
   float penPressure = 1.0f;
 
+  // The other three hardware axes, already converted to the normalised [0,1]
+  // form brush/Dynamics.hpp's sources take (app/PenAxes.hpp does the polar
+  // conversion; SDL reports tilt as two independent angles, not as a lean and
+  // a direction).
+  //
+  // **Their defaults are the values a mouse produces, and the DYNAMICS matrix
+  // reads them literally.** An upright pen has no azimuth, so 0 there is the
+  // honest rendering of "no information" rather than a stale sample -- which
+  // is also what the panel's live gutter shows on a machine with no tablet.
+  // Barrel rests at 0.5 because its range is signed about the rest position.
+  float penTilt = 0.0f;
+  float penAzimuth = 0.0f;
+  float penBarrel = 0.5f;
+
+  // Raw SDL tilt in degrees, kept only because the two axes arrive in
+  // separate SDL_EVENT_PEN_AXIS events and the polar conversion needs both at
+  // once -- an x-tilt event alone cannot compute an azimuth.
+  float penTiltXDeg = 0.0f;
+  float penTiltYDeg = 0.0f;
+
   // Freshest pointer-input timestamp (SDL_GetTicksNS) seen during this
   // frame's poll loop; 0 if no pen/mouse sample arrived this frame. Feeds
   // Latency::recordFrame() once the frame that used it has been presented.

@@ -7,6 +7,7 @@ add_executable(naturalPaint
   app/Journal.cpp
   app/HistoryPanel.cpp
   app/Keymap.cpp
+  app/PenAxes.cpp
   app/Screenshot.cpp
   app/LayerEditor.cpp
   app/LayerPanel.cpp

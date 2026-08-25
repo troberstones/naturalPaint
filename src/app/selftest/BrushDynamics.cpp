@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "app/PenAxes.hpp"
 #include "brush/Dynamics.hpp"
 
 namespace np {
@@ -343,6 +344,58 @@ bool runBrushDynamicsTest() {
     check(tiltFlat && pressureTwoDp,
           "gutter: TILT reads as an altitude in degrees and the plain sources to two "
           "decimals -- the panel converts, the model stays normalised");
+  }
+
+  // --- 12. SDL's raw pen axes -> the matrix's polar sources ---------------
+  //
+  // SDL reports tilt as two independent angles; the TILT and AZIMUTH rows
+  // want a lean and a direction. The conversion is the one piece of the pen
+  // path with an answer that can be quietly wrong -- every value it produces
+  // is plausible, in range, and moves the right way when the pen moves.
+  {
+    // The whole reason for the tangents. A pen at 45 degrees in x and 45 in y
+    // leans 54.74 from vertical, not sqrt(45^2+45^2) = 63.64: the tilts
+    // compose as direction cosines. The naive form overstates every diagonal
+    // lean, worst at exactly this angle -- which is the ordinary wrist
+    // position for a right-handed painter shading.
+    const float diagonal = penTiltNormalised(45.0f, 45.0f);
+    const float naive = std::sqrt(45.0f * 45.0f + 45.0f * 45.0f) / 90.0f;
+    check(nearf(diagonal, 54.7356f / 90.0f, 1e-3f) && std::fabs(diagonal - naive) > 0.09f,
+          "pen: a 45/45 lean is 54.7 degrees, not 63.6 -- tilts compose as tangents, and "
+          "the naive hypotenuse of the two angles is a full 0.098 of the range away");
+
+    // On-axis, the tangent form and the angle agree exactly -- which is what
+    // makes the diagonal case the only one that could hide an error.
+    check(nearf(penTiltNormalised(45.0f, 0.0f), 0.5f, 1e-4f) &&
+              nearf(penTiltNormalised(0.0f, -45.0f), 0.5f, 1e-4f),
+          "pen: a purely single-axis lean normalises to the angle itself, so the two forms "
+          "differ only off-axis");
+
+    check(penTiltNormalised(0.0f, 0.0f) == 0.0f &&
+              nearf(penTiltNormalised(90.0f, 0.0f), 1.0f, 2e-3f),
+          "pen: upright is 0 and flat is 1, with tan(90) clamped rather than infinite");
+
+    // Azimuth measured anticlockwise from +x, over a full turn.
+    check(nearf(penAzimuthNormalised(1.0f, 0.0f), 0.0f, 1e-4f) &&
+              nearf(penAzimuthNormalised(0.0f, 1.0f), 0.25f, 1e-4f) &&
+              nearf(penAzimuthNormalised(-1.0f, 0.0f), 0.5f, 1e-4f) &&
+              nearf(penAzimuthNormalised(0.0f, -1.0f), 0.75f, 1e-4f),
+          "pen: azimuth runs a full turn anticlockwise from +x, so the four cardinal leans "
+          "land on the quarters rather than wrapping through a negative");
+
+    check(penAzimuthNormalised(0.0f, 0.0f) == 0.0f,
+          "pen: an UPRIGHT pen reports azimuth 0 -- it has no direction of lean, and a "
+          "stale or NaN angle would drive an Angle link from noise");
+
+    // Barrel rests in the MIDDLE, and round-trips through the gutter's own
+    // inverse -- the pair is only meaningful if the two agree.
+    char buf[32];
+    sourceDisplay(DynamicSource::Barrel, penBarrelNormalised(0.0f), buf, sizeof buf);
+    check(nearf(penBarrelNormalised(0.0f), 0.5f, 1e-6f) &&
+              penBarrelNormalised(-180.0f) == 0.0f && penBarrelNormalised(180.0f) == 1.0f &&
+              std::strcmp(buf, "0\xC2\xB0") == 0,
+          "pen: barrel rest is 0.5 and round-trips through the gutter's inverse -- a rest "
+          "at 0 would put half the range beyond a curve whose domain starts there");
   }
 
   std::printf("[selftest] brush dynamics %s\n", ok ? "PASS" : "FAIL");

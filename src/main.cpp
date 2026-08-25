@@ -25,6 +25,7 @@
 #include "app/Keymap.hpp"
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
+#include "app/PenAxes.hpp"
 #include "app/Screenshot.hpp"
 #include "app/SelfTest.hpp"
 #include "app/StrokeBake.hpp"
@@ -519,9 +520,28 @@ void handlePenEvent(np::AppState& st, const SDL_Event& e) {
       st.penPressure = 0.0f;
       break;
     case SDL_EVENT_PEN_AXIS:
-      if (e.paxis.axis == SDL_PEN_AXIS_PRESSURE) {
-        st.penSeen = true;
-        st.penPressure = std::clamp(e.paxis.value, 0.0f, 1.0f);
+      // Each axis arrives as its own event, which is why the two tilt angles
+      // are stored raw and re-converted on either one: an x-tilt event on its
+      // own cannot compute an azimuth, it needs the y that came before it.
+      switch (e.paxis.axis) {
+        case SDL_PEN_AXIS_PRESSURE:
+          st.penSeen = true;
+          st.penPressure = std::clamp(e.paxis.value, 0.0f, 1.0f);
+          break;
+        case SDL_PEN_AXIS_XTILT:
+        case SDL_PEN_AXIS_YTILT:
+          st.penSeen = true;
+          if (e.paxis.axis == SDL_PEN_AXIS_XTILT) st.penTiltXDeg = e.paxis.value;
+          else st.penTiltYDeg = e.paxis.value;
+          st.penTilt = np::penTiltNormalised(st.penTiltXDeg, st.penTiltYDeg);
+          st.penAzimuth = np::penAzimuthNormalised(st.penTiltXDeg, st.penTiltYDeg);
+          break;
+        case SDL_PEN_AXIS_ROTATION:
+          st.penSeen = true;
+          st.penBarrel = np::penBarrelNormalised(e.paxis.value);
+          break;
+        default:
+          break;
       }
       break;
     default:
