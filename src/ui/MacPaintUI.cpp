@@ -3631,15 +3631,50 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   // the useful one: a slider drag is judged by what happens above it, and a
   // preview below the controls is under the hand that is dragging them.
   drawTipPreview(st, gpu, lut);
-  ctlSlider("Radius", &st.brush.radius, 1.0f, 200.0f, "%.0f px");
-  ctlSlider("Hardness", &st.brush.hardness, 0.0f, 1.0f);
+  // kBrushRadiusMin/Max (app/AppState.hpp): the one range for this field,
+  // also read by the options bar's SIZE slider. See that constant's comment.
+  ctlSlider("Radius", &st.brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
+  // kBrushHardnessMin/Max (app/AppState.hpp): the one range for this field,
+  // also read by the options bar's HARD slider.
+  ctlSlider("Hardness", &st.brush.hardness, kBrushHardnessMin, kBrushHardnessMax);
   ctlSlider("Spacing", &st.brush.spacing, 0.02f, 1.0f, "%.2f r");
   ctlSlider("Roundness", &st.brush.roundness, 0.05f, 1.0f);
   ctlSlider("Angle", &st.brush.angle, -180.0f, 180.0f, "%.0f deg");
   ImGui::TextDisabled("Dabs are spaced by arc length, not by time.");
 
-  ctlSlider("Load", &st.brush.load, 0.0f, 2.5f);
-  ctlSlider("Water", &st.brush.wetness, 0.0f, 3.0f);
+  // kBrushLoadMin/Max (app/AppState.hpp): the one range for this field, also
+  // read by the options bar's LOAD slider.
+  ctlSlider("Load", &st.brush.load, kBrushLoadMin, kBrushLoadMax);
+
+  // **WET reaches sim::PaintSim's `brushWater` and nothing else.**
+  // `applyToolToBrush()` (:742) is the only reader of `st.brush.wetness`, and
+  // its only call site is the canvas block's `paintTool && ...` branch below,
+  // which is reached exclusively when `strokeRouteFor()` answers
+  // `StrokeRoute::PaintSim` -- the Water tool always, or Brush/DryBrush with
+  // no document layer to have aimed at (app/StrokeSession.cpp:87). Every
+  // layer-writing route -- CpuDeposit, RgbDeposit, RgbErase, PigmentErase --
+  // calls `brushTipFor()` instead, and `BrushTip` (app/StrokeSession.hpp) has
+  // no water field at all: the slider cannot reach a layer even in
+  // principle, not just in this build's current wiring. Same
+  // disabled-rather-than-hidden treatment as OPACITY below, for the reason
+  // its own comment gives -- and WET is ignored on *more* routes than
+  // OPACITY (four, not one), so it deserves at least the same honesty.
+  {
+    const OpenDocument* od = st.documents.active();
+    const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
+    const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
+    const bool honoured = wetnessReachesSolver(route);
+    ImGui::BeginDisabled(!honoured);
+    // kBrushWetnessMin/Max (app/AppState.hpp): the one range for this field,
+    // also read by the options bar's WET slider.
+    ctlSlider("Water", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax);
+    ImGui::EndDisabled();
+    if (honoured)
+      ImGui::TextDisabled("Water content the solver canvas mixes into this stroke.");
+    else
+      ImGui::TextDisabled("Water reaches the solver canvas; this stroke goes to %s.",
+                          strokeRouteName(route));
+  }
 
   // Opacity is the stroke's CEILING and flow is its rate, which is the one
   // pair in this panel whose difference is invisible from the numbers alone --
@@ -3684,11 +3719,21 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   }
 
   // --- LOADED PIGMENT ----------------------------------------------------
-  // The three constants belong to the PIGMENT, not to the brush, so they are
-  // read-only here. The PIGMENT section further down the column edits the
-  // solver's own globals, which are a different set of numbers with the same
-  // three names -- showing these as editable would merge two things the
-  // model deliberately keeps apart.
+  // The three constants belong to the PIGMENT (paint/Palette.hpp's
+  // `density`/`staining`/`granulation` -- "the real pigment measurements
+  // published with Mixbox"), not to the brush, so they are read-only here.
+  //
+  // **This comment used to claim the PIGMENT section further down the column
+  // "edits the solver's own globals, which are a different set of numbers
+  // with the same three names" -- that was false.** `st.sim.density` /
+  // `staining` / `granulation` are not a second, independent set: main.cpp's
+  // simulation block overwrites all three from the active pigment
+  // unconditionally, every frame ("Physical constants follow the selected
+  // paint, not a global slider", main.cpp:2521-2525), which is the *same*
+  // three numbers this block already shows. A slider on them there used to
+  // look live and snap back one frame later -- A5 in the reachability audit.
+  // drawPigmentSection() now gives them the same disabled, read-only
+  // treatment as this block, for the same reason.
   if (ImGui::CollapsingHeader("LOADED PIGMENT", ImGuiTreeNodeFlags_DefaultOpen)) {
     const std::vector<Pigment>& palette = defaultPalette();
     const size_t idx = st.brush.pigment >= 0 &&
@@ -3720,16 +3765,56 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   if (ImGui::CollapsingHeader("LINK", ImGuiTreeNodeFlags_DefaultOpen)) drawLinkEditor(st);
 }
 
+// A5 (reachability audit): Density, Staining and Granulation used to be live
+// `ctlSlider()`s here, and a drag on any of them worked for exactly one
+// frame. main.cpp's simulation block runs after `ImGui::Render()` and before
+// the sim upload and overwrites all three from the *active pigment's own*
+// constants, unconditionally, every frame:
+//
+//   st.sim.density = pig.density;
+//   st.sim.staining = pig.staining;
+//   st.sim.granulation = pig.granulation;
+//
+// with the comment "Physical constants follow the selected paint, not a
+// global slider, so switching from Phthalo Blue to Ultramarine actually
+// changes behaviour" (main.cpp:2521-2525). That comment is the design
+// decision, not a bug to route around, and it is a *domain* question before
+// it is a code one: CONTEXT.md does not gloss "Pigment" as a struct, but
+// PLAN.md's own step-8 record does, in exactly these words -- describing
+// `brushTipFor()`'s deliberate choice not to carry these three fields into
+// `brush/Deposit`, "because `brush/Deposit` simulates no settling, lifting
+// or granulation and three dead fields would imply a fidelity that is not
+// there." Settling, lifting and granulation are properties of the SOLVER's
+// simulated paper and water, driven by which real paint is loaded --
+// `paint/Palette.hpp`'s header calls the numbers "the real pigment
+// measurements published with Mixbox," and real paints differ in exactly
+// this way (a staining pigment resists being lifted, a granulating one
+// pools in the paper's tooth). A user picks that behaviour by picking a
+// pigment, not by dialling a slider independent of one -- the same reading
+// `drawBrushSection()`'s LOADED PIGMENT block already gives these three,
+// read-only, several hundred lines above this section. Editing them here as
+// a per-session override, and *keeping* that override past the next frame,
+// is a real alternative -- but nothing in the PRD, CONTEXT.md, the palette
+// header or main.cpp's own comment asks for one, and inventing somewhere for
+// it to live (a per-preset shadow value? a global multiplier?) would be
+// answering a question nobody asked. So the honest fix is the
+// disabled-rather-than-hidden treatment `drawBrushSection()` already gives
+// OPACITY and WET: the value is real and worth showing, the control here
+// just is not what owns it.
 void drawPigmentSection(AppState& st) {
+  ImGui::BeginDisabled();
   ctlSlider("Density", &st.sim.density, 0.0f, 1.0f);
-  if (ImGui::IsItemHovered())
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip("How fast pigment drops out of suspension.");
   ctlSlider("Staining", &st.sim.staining, 0.02f, 1.0f);
-  if (ImGui::IsItemHovered())
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip("Resistance to being lifted back into the water.");
   ctlSlider("Granulation", &st.sim.granulation, 0.0f, 1.0f);
-  if (ImGui::IsItemHovered())
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     ImGui::SetTooltip("Affinity for the paper's valleys.");
+  ImGui::EndDisabled();
+  ImGui::TextDisabled("Owned by the loaded pigment -- pick a different paint to change these.");
+
   ctlSlider("Diffusion", &st.sim.pigmentDiffuse, 0.0f, 1.0f);
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Pigment spreading through the wet film.\n"

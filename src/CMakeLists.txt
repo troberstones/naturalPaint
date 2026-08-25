@@ -36,6 +36,7 @@ add_executable(naturalPaint
   app/selftest/BrushLibraryFile.cpp
   app/selftest/BucketRefusal.cpp
   app/selftest/Channels.cpp
+  app/selftest/ChromeConsistency.cpp
   app/selftest/Clipboard.cpp
   app/selftest/ClippingMask.cpp
   app/selftest/CloseDecision.cpp
