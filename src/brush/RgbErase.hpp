@@ -45,10 +45,12 @@
 // the whole dynamics matrix, and that what it removes depends on the layer
 // kind: **alpha on RGB**, Mass on Pigment with the Latent left alone, deposit on
 // Media, dab records on Strokes, the mask on the parametric kinds. This module
-// is the RGB row and only the RGB row. The others are refusals in
-// `strokeRouteFor()` today rather than silent no-ops, and that header's §1
-// table is where the missing rows are recorded -- see its Eraser rows for why
-// the Pigment one is not simply the same arithmetic on `pig.m`.
+// is the RGB row and only the RGB row. **The Pigment row is
+// `brush/PigmentErase`**, a sibling of this file rather than a flag on it -- it
+// landed once `brush/Deposit` §4 gave the pigment route PRD E1's selection
+// gate, which is the single blocker this header used to record. The remaining
+// rows are refusals in `strokeRouteFor()` rather than silent no-ops, and that
+// header's §1 table is where they are recorded.
 //
 // **Never implement erase as painting the background colour.** MacPaint's
 // model, still Photoshop's on a locked Background layer, and ADR-0007 rejects
@@ -282,10 +284,14 @@
 // reason: this is the arithmetic of removal against a `core::TileStore`, and the
 // stroke lifecycle belongs to `app/StrokeSession`.
 //
-// **No Pigment, Media, Strokes or mask erase.** ADR-0007 defines all four and
-// `strokeRouteFor()` refuses all four by name; that header's §1 carries the
-// argument for each row, including why the Pigment one is not simply this
-// arithmetic applied to `pig.m`.
+// **No Pigment, Media, Strokes or mask erase.** ADR-0007 defines all four.
+// **Pigment is built, in `brush/PigmentErase`**, and it is not simply this
+// arithmetic applied to `pig.m`: the accumulator and the floor carry across
+// unchanged (its §2), but a Pigment texel is straight rather than premultiplied,
+// so §4's all-four-channels emptiness test becomes a mass-only one and §1's
+// "alpha 0 with colour is malformed" rule does not hold there at all (its §3).
+// The other three are still refusals in `strokeRouteFor()`, whose §1 carries the
+// argument for each row.
 //
 // **No colour at all.** `BrushTip::linearRgb` and `BrushTip::pigment` are not
 // read here. An eraser that reached for either would be a brush painting the

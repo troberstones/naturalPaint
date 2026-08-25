@@ -1755,9 +1755,20 @@ int main(int argc, char** argv) {
     // list, so a drag with it reached no layer and said nothing about why.
     // Destination-out on all four channels (premultiplied, so no fringe), the
     // per-stroke FLOOR with the rejected per-dab model measured beside it, the
-    // selection as a bound rather than a speed limit, an erase that costs
-    // nothing on blank canvas, and the Pigment refusal by name.
+    // selection as a bound rather than a speed limit, and an erase that costs
+    // nothing on blank canvas.
     const bool rgbEraseOk = np::runRgbEraseTest();
+    // PRD E1 (P0) on the layer kind that never had it, and ADR-0007's Pigment
+    // eraser row that gate unblocked. brush/Deposit.hpp did not contain the word
+    // "Selection", so a natural-media stroke on a Pigment layer painted straight
+    // through the marching ants while the RGB branch one line above it passed
+    // doc_->selection. The gate, with the rate-only model measured beside it --
+    // mass accumulates LINEARLY, so kMaxMass alone is not a bound and six dabs
+    // saturate a half-selected texel -- and then the eraser whose refusal named
+    // that gate as its single blocker: the floor at zero tolerance, the latent
+    // bit-identical, and an emptied texel proven well-formed by the rule a
+    // straight-latent storage actually has rather than by the premultiplied one.
+    const bool pigmentSelectionOk = np::runPigmentSelectionTest();
     // PRD D25/D26 -- the paint bucket's refusals. ops/FloodFill was never
     // wrong; the gate in front of it was inside the click condition, so a
     // bucket click on the layer kind a new layer defaults to disappeared with
@@ -1831,7 +1842,7 @@ int main(int argc, char** argv) {
                     controlsLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&
-                    bucketRefusalOk &&
+                    pigmentSelectionOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&

@@ -2525,28 +2525,98 @@ bool runRgbDepositTest();
 //    canvas allocates **not one tile**, reports none, records no entry and moves
 //    no revision -- while a *malformed* texel (colour at alpha 0) is erased
 //    rather than skipped, because the skip tests all four channels.
-//  - **The routing table's Eraser rows**, including the three that are decisions:
+//  - **The routing table's Eraser rows**, including the two that are decisions:
 //    no layer at all is `None` for the eraser and `PaintSim` for the brush (the
-//    solver has no alpha, so an eraser sent there would *add* pigment); a Pigment
-//    layer takes a deposit and **refuses an erase by name**, because ADR-0007's
-//    mass reduction needs the pigment route's missing PRD E1 gate; and Media,
-//    Adjustment and the storeless kinds each refuse rather than silently doing
-//    nothing.
+//    solver has no alpha, so an eraser sent there would *add* pigment); and
+//    Media, Adjustment and the storeless kinds each refuse rather than silently
+//    doing nothing. The Pigment row is asserted here only for agreement -- it
+//    used to be a refusal by name, on the single stated ground that the pigment
+//    deposit had no PRD E1 gate, and it is now `StrokeRoute::PigmentErase`.
+//    `runPigmentSelectionTest()` owns that row and the gate that unblocked it.
 //  - **The erase lands on the ACTIVE layer and on no other**, driven through
 //    `setActiveLayer()` and `od.activeLayer`, with the other layer asserted
 //    bit-identical.
 //  - **One stroke is ONE undo step, labelled "erase"** and not "brush stroke",
 //    moving the content revision and not the structural one; and the
 //    accumulator's lifetime measured on both sides of pen-up.
-//  - **Every refusal by name**, with the locked and Pigment sentences asserted
-//    *different* -- both present to a user as "the eraser did nothing", and only
-//    one has a switch in LAYERS that fixes it.
+//  - **Every refusal by name**, with the locked and wrong-kind sentences
+//    asserted *different* -- both present to a user as "the eraser did nothing",
+//    and only one has a switch in LAYERS that fixes it.
 //
 // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
 // it reads no file at all, and `oiioBackendCompiledIn()` is checked so that
 // claim is made twice rather than merely compiled twice. Headless and GPU-free;
 // writes no files.
 bool runRgbEraseTest();
+// **The active selection on a Pigment layer** (brush/Deposit §4; PRD E1, **P0**)
+// and **the eraser that gate unblocked** (brush/PigmentErase; PRD F9/F10, both
+// **P0**; ADR-0007's Pigment row).
+//
+// **This section exists because of a P0 that had never been implemented on one
+// layer kind, not because of an approximation.** `brush/Deposit.hpp` did not
+// contain the string "Selection": `depositDab(PigmentTileStore&, ...)` took no
+// selection, so `app/StrokeSession`'s pigment branch could not pass one while
+// the RGB branch on the line directly above it passed `doc_->selection`
+// explicitly. Painting natural media on a Pigment layer -- the kind
+// `Document::createBlank()` makes -- went straight through the marching ants.
+//
+// What this section proves:
+//
+//  - **A dab through an engaged selection deposits NOTHING outside it**, on a
+//    texel the dab's own falloff covers fully and the selection does not,
+//    asserted at **exactly zero** on mass *and* latent -- so the texel is
+//    indistinguishable from paper rather than merely faint. This is the
+//    assertion that fails against the code the section replaced.
+//  - **The two nulls, which are opposites**, each driven through
+//    `brush/Deposit`'s own hoisted loop as core/SelectionMask.hpp requires: a
+//    **null `Selection*`** deposits everywhere in the footprint ("no
+//    restriction"), and an **engaged selection naming no tile** at that
+//    coordinate deposits nothing and allocates **no tiles at all**. A fix that
+//    confuses the two fails in one direction or the other.
+//  - **Coverage is proportional, not in-or-out** (PRD E2): one dab through a
+//    partially selected texel lands exactly `flow * coverage`, within the single
+//    binary16 rounding of the write that produced it.
+//  - **`kMaxMass` was NOT already a bound, derived rather than assumed.** The RGB
+//    route's argument for capping as well as gating rests on a per-stroke
+//    accumulator this route does not have -- so the question was answered from
+//    what `depositTexel()` does, and mass accumulates **linearly**: gating only
+//    the rate reaches `kMaxMass` *exactly*, at the shipped defaults in **six
+//    dabs** on a half-selected texel, which is 1.5 radii of travel. Both models
+//    run on identical inputs and both numbers are printed; the built one reaches
+//    `kMaxMass * coverage` at **zero** tolerance, because the cap writes that
+//    float itself.
+//  - **A deposit never REMOVES mass**: a texel already thicker than the
+//    selection allows keeps every bit of what it had -- while its hue still
+//    moves, because coverage bounds how much paint is present and not which
+//    paint it is.
+//  - **The gate costs the unselected document nothing**: a null selection and a
+//    Select All deposit **bit-identical** tiles, so `--pigment-stroke-demo` and
+//    the `canvas` golden reference are untouched by its existence.
+//  - **The selection reaches the deposit through `StrokeSession`**, not only
+//    through the free function -- with all 3731 pre-painted texels outside the
+//    ants asserted over the whole rectangle rather than sampled, and the stroke
+//    still exactly one history entry.
+//  - **ADR-0007's Pigment eraser**: the per-stroke **floor**
+//    `mass_0 * (1 - strength)`, asserted at **zero** tolerance (halving a normal
+//    binary16 is exact) **with the rejected per-dab model computed on the
+//    identical inputs beside it, grinding the same texel to under 1 % of the
+//    floor**; a half-selected texel that cannot be scrubbed past its coverage,
+//    with the un-capped model shown removing over 99 % of it; **the latent
+//    bit-identical throughout** (PRD §7's own acceptance row: "Mass falls, Latent
+//    unchanged"); an erase across blank canvas allocating **not one 224 KiB
+//    tile** and recording nothing; and one stroke as one entry labelled "erase".
+//  - **A Pigment texel emptied by the eraser is NOT malformed, by the rule this
+//    storage actually has** -- the deliberate inverse of brush/RgbErase's. Mass 0
+//    with a stale hue composites to **four exact zeros**, because the latent is
+//    straight rather than premultiplied and `projectPigmentTexel()` multiplies;
+//    and the next deposit onto it takes the brush's latent outright, which is
+//    what `depositTexel()`'s §1(ii) was written for.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all, and `oiioBackendCompiledIn()` is checked so that
+// claim is made twice rather than merely compiled twice. Headless and GPU-free;
+// writes no files.
+bool runPigmentSelectionTest();
 // PLAN.md Phase 5 step 11 ("Multi-select, align and distribute, colour labels,
 // linking, panel filtering"; PRD C12 (P0), C13 (P1), C15 (P2)).
 //

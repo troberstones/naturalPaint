@@ -7,6 +7,7 @@
 
 #include "brush/StrokePath.hpp"
 #include "core/Pigment.hpp"
+#include "core/SelectionMask.hpp"
 #include "core/Tile.hpp"
 
 // brush/Deposit -- **what happens to a dab.**
@@ -68,10 +69,15 @@
 // A dab is a centre, a radius, a falloff and a pigment. Per covered texel it
 // **adds mass and mixes latent**, and the rule is exactly:
 //
-//     dm  = flow * coverage(|texel_centre - dab_centre| / radius)
+//     dm  = flow * coverage(|texel_centre - dab_centre| / radius) * sel
 //     w   = dm / (m + dm)                       // (m + dm == 0 -> w = 1)
 //     z'  = lerp(z, z_brush, w)                 // == (z*m + z_brush*dm)/(m+dm)
-//     m'  = min(m + dm, kMaxMass)
+//     m'  = min(m + dm, kMaxMass * sel)         // ... never below m; see §4
+//
+// where `sel` is the active selection's coverage at that texel, 1.0 when there
+// is no selection. §4 is the whole argument for why it appears in **both** the
+// first line and the last one, and what happens to a feathered edge when it
+// appears only in the first.
 //
 // Three things in those four lines are decisions rather than algebra.
 //
@@ -105,7 +111,10 @@
 // IS the layer's alpha** -- so a mass above 1 is not a bright texel, it is a
 // document with alpha 1.4 in it, which no compositor in this codebase or any
 // other has a meaning for. The stored mass is therefore capped at
-// `kMaxMass == 1`. The *weight* `w` deliberately uses the uncapped `dm`, so a
+// `kMaxMass == 1` -- or at `kMaxMass * sel` where a selection is only partly
+// engaged, which §4 derives and which is the *same* cap with the paper's
+// capacity scaled rather than a second mechanism. The *weight* `w`
+// deliberately uses the uncapped `dm`, so a
 // texel already at full mass keeps taking on the brush's hue as more paint
 // goes down (`w = dm/(1+dm) > 0`) instead of freezing at the first colour that
 // happened to saturate it. Capping `dm` instead -- "the paper can only hold so
@@ -252,7 +261,109 @@
 // corner where four tiles meet.
 //
 // ==========================================================================
-// 4. What is deliberately not here
+// 4. The selection bounds the deposit (PRD E1, P0) -- and `kMaxMass` alone
+//    does NOT bound it
+// ==========================================================================
+//
+// "Every deposit and every op respects the active selection", and until this
+// section existed **this was the one deposit in the build that did not**.
+// `depositDab()` took no `Selection` at all, so `app/StrokeSession`'s pigment
+// branch could not pass one while the RGB branch on the line directly above it
+// passed `doc_->selection` explicitly: painting natural media on a Pigment
+// layer -- the layer kind `Document::createBlank()` actually makes -- went
+// straight through the marching ants. PRD E1 is **P0**.
+//
+// **The two nulls, which are opposites and are both reachable.**
+// `core/SelectionMask.hpp` states the rule and this loop obeys it: a null
+// `Selection*` is "no restriction anywhere" and weighs 1.0; a **null tile**
+// inside an engaged selection is "selects nothing here" and weighs 0.0. That
+// header requires every hoisted per-texel loop to own its own copy of the first
+// branch (a hash lookup per texel is not affordable, so the tile is fetched
+// once per tile and `selectionTileCoverage()` is called per texel), and warns
+// that a perturbation inverting one copy leaves the others right. This is one
+// such loop; `--selftest` drives both nulls through it.
+//
+// **The selection enters twice, and the second one is what makes it a bound.**
+// `brush/RgbDeposit` §4 found the same thing on the other storage, but the
+// argument there rests on a per-stroke accumulator and **this route has none**
+// -- its ceiling is `kMaxMass`, a property of the paper. So the question "does
+// the walk-through problem exist here too?" has to be answered from what
+// `depositTexel()` actually does, and the answer is **yes, and it arrives
+// faster than in RGB**:
+//
+//   * Gate only the rate, `dm = flow * cov * sel`, and mass still accumulates
+//     **linearly** toward `kMaxMass`: after N dabs a texel holds
+//     `min(N * flow * cov * sel, 1)`. For any `sel > 0` that reaches 1 exactly,
+//     in `ceil(1 / (flow*cov*sel))` dabs. At the shipped defaults -- `flow`
+//     0.35 (`BrushTip::flow`), `cov` 1 under the tip's flat core -- a
+//     **half**-selected texel saturates in **6 dabs**, and at the 0.25-radius
+//     default spacing six dabs is **1.5 radii of travel**. One ordinary pass of
+//     the brush across a feathered selection edge therefore makes it fully
+//     opaque: the feather is not softened, it is deleted.
+//   * That is strictly worse than the RGB route's version of the same defect.
+//     There `A' = A + w(1-A)` approaches the ceiling asymptotically and never
+//     arrives, so the edge degrades gradually with scrubbing; here the cap is
+//     hit exactly, and quickly, by a stroke drawn at ordinary speed.
+//   * So **`kMaxMass` does not already handle it.** It bounds the mass at 1
+//     regardless of coverage, which is precisely the bound that ignores the
+//     selection.
+//
+// The fix is the one the shape of this route already suggests: `kMaxMass` is
+// the *paper's* capacity, so scale the paper rather than inventing a stroke
+// ceiling the pigment route deliberately does not have.
+//
+//     dm  = flow * cov * sel                 // one dab lays `sel` of what it would
+//     cap = kMaxMass * sel                   // and NO number of dabs goes past it
+//
+// with two clauses that are not decoration:
+//
+//   * **`cap` is never lowered below the mass already stored.** A deposit must
+//     never *remove* paint. A texel holding mass 0.9 from an earlier unselected
+//     stroke, dabbed again through a half-engaged selection, keeps its 0.9 --
+//     it simply gains nothing. Without this clause the brush would be an eraser
+//     wherever the selection is thinner than the paint underneath it, which is
+//     the single most alarming way a selection gate can be wrong.
+//   * **`cap` is never raised above `kMaxMass`.** `sel <= 1`, so this can only
+//     bite when a caller hands `depositTexel()` a destination already over the
+//     cap; clamping at the point of storage keeps the invariant a property of
+//     the *document* rather than of one reader, which is the same discipline
+//     `kMaxMass`'s own comment states.
+//
+// At `sel == 1` the two clauses collapse to `min(m + dm, kMaxMass)` **bit for
+// bit** -- `max(m, kMaxMass)` is `kMaxMass` for every legal `m` -- so a
+// document with no selection, `--pigment-stroke-demo` and the `canvas` golden
+// reference all deposit the identical floats they did before this section
+// existed. That exactness is deliberate and is what makes the gate free.
+//
+// **What the cap does NOT bound, and why that is right.** The mixing weight `w`
+// still uses the uncapped `dm` (§1(iii)), so hue keeps moving on a texel that
+// has reached its selection-scaled cap, exactly as it does on one that has
+// reached `kMaxMass`. A half-selected texel can therefore be repainted to any
+// colour -- it just cannot be made more *present* than half. That is what a
+// coverage mask means: the selection says how much of this edit lands here, not
+// which colour it is allowed to be. Bounding the hue as well would need the
+// pre-stroke latent remembered per texel, which is `brush/RgbErase` §2's
+// rejected `A0` store wearing a different hat.
+//
+// **Order-independence moves with the cap, it does not break.** §1's running
+// mass-weighted mean is order-independent *below saturation* and order-
+// dependent at it; a partial selection simply lowers where saturation is. Two
+// pigments laid through a half-engaged selection commute up to mass 0.5 and
+// stop commuting above it, for the identical reason and by the identical
+// mechanism.
+//
+// **Repeated separate strokes.** The cap is on the *stored mass*, not on a
+// stroke, so unlike the RGB route's ceiling it does not reset at pen-up: a
+// second pass through a half-selected texel cannot lift it past 0.5 either.
+// That is a stronger guarantee than the RGB route gives (`brush/RgbDeposit` §4
+// records that two passes there reach 0.5 then 0.75), and it is stronger
+// because it costs nothing here -- there is no accumulator to reset. It is also
+// the more defensible reading of a coverage mask, and it is what
+// `clearThroughSelection(PigmentTileStore&)` already implies by scaling mass
+// alone.
+//
+// ==========================================================================
+// 5. What is deliberately not here
 // ==========================================================================
 //
 // **No `Document`, no `History`, no `OpenDocument`.** This module is
@@ -386,8 +497,25 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept;
 //
 // Defined for every finite input, including `dst.mass + deltaMass == 0` (see
 // §1(ii): the result takes `pigment` as its latent and keeps mass 0).
-PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment,
-                          float deltaMass) noexcept;
+//
+// `selection` is the active selection's coverage at this texel, in [0,1], and
+// it is the **cap** half of §4 -- `deltaMass` is expected to have the *rate*
+// half already folded in, exactly as `depositRgbTexel()` takes a `weight` with
+// the selection in it and an `opacity` ceiling separately. Values outside [0,1]
+// are clamped rather than trusted, because a grow/shrink or a boolean can land
+// a hair outside and an unclamped one would lift the document's own mass cap.
+//
+// **Defaulted to 1.0, and that default is the identity rather than a way of
+// leaving callers alone.** `core/SelectionMask.hpp`'s convention is that the
+// *absence* of a selection means "no restriction", weight 1.0 -- so 1.0 here is
+// the same statement, and §4 shows the arithmetic at 1.0 is bit-identical to
+// the rule this function had before the parameter existed. The callers that
+// take the default are the ones for which that is the truth: `app/DabPreview`
+// draws one dab on empty paper with no document and therefore no selection, and
+// the texel invariants in `--selftest` are claims about the mixing arithmetic
+// and not about the gate. The *loop* below deliberately does not default it.
+PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float deltaMass,
+                          float selection = 1.0f) noexcept;
 
 // The inclusive texel rectangle a dab centred at `centre` can change, clipped
 // to `[0,canvasW) x [0,canvasH)`. Empty (`x1 < x0` or `y1 < y0`) when the dab
@@ -410,7 +538,17 @@ struct DepositCount {
   size_t tiles = 0;
 };
 
-// Deposits one dab into `store`, clipped to the canvas.
+// Deposits one dab into `store`, clipped to the canvas and gated by
+// `selection` (nullptr means no restriction, §4).
+//
+// **Neither trailing parameter is defaulted, and that is deliberate.** The
+// obvious shape for this change was `const Selection* selection = nullptr`
+// after `touchedOut`, which would have left all nine existing call sites
+// compiling untouched -- and that is exactly the objection to it: "nothing had
+// to change" is indistinguishable from "nothing was checked", and the one thing
+// this parameter must not be is easy to forget at a call site. The order is
+// `RgbStroke::depositDab()`'s, argument for argument, so the two routes read
+// identically and a reader moving between them cannot transpose the last two.
 //
 // Every tile it writes is appended to `touchedOut` when that is non-null,
 // exactly once per dab, at the moment the tile is first written -- see §3 on
@@ -422,7 +560,7 @@ struct DepositCount {
 // copy is left exactly as it was. That is the whole of what makes one stroke
 // cost its own tiles and not the layer's.
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
-                        int32_t canvasW, int32_t canvasH,
+                        int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut);
 
 // Sorts ascending by (y, x) and removes duplicates, in place.
@@ -442,10 +580,11 @@ struct StrokeDeposit {
   std::vector<TileCoord> tiles;
 };
 
-// Deposits every dab in `dabs`, in order. Order matters: §1's mixing rule is
-// not commutative across two different pigments, and a stroke is a sequence.
+// Deposits every dab in `dabs`, in order, gated by `selection` (§4). Order
+// matters: §1's mixing rule is not commutative across two different pigments,
+// and a stroke is a sequence.
 StrokeDeposit depositDabs(PigmentTileStore& store, const BrushTip& tip,
-                          const std::vector<Vec2>& dabs, int32_t canvasW,
-                          int32_t canvasH);
+                          const std::vector<Vec2>& dabs, int32_t canvasW, int32_t canvasH,
+                          const Selection* selection);
 
 }  // namespace np

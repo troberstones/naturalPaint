@@ -8,6 +8,7 @@
 #include "app/AppState.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "brush/Deposit.hpp"
+#include "brush/PigmentErase.hpp"
 #include "brush/RgbDeposit.hpp"
 #include "brush/RgbErase.hpp"
 #include "brush/StrokePath.hpp"
@@ -39,11 +40,11 @@
 //   DryBrush    Pigment, with tiles, writable    CpuDeposit
 //   Brush       RGB, with tiles, writable        RgbDeposit
 //   DryBrush    RGB, with tiles, writable        RgbDeposit
-//   Eraser      RGB, with tiles, writable        RgbErase    <- new
-//   Eraser      Pigment, with tiles, writable    None        <- new, and a
-//                                                               refusal by
-//                                                               name; see below
-//   Eraser      **no target at all**             None        <- new, and NOT
+//   Eraser      RGB, with tiles, writable        RgbErase
+//   Eraser      Pigment, with tiles, writable    PigmentErase <- new; this row
+//                                                               used to be a
+//                                                               refusal by name
+//   Eraser      **no target at all**             None        <- and NOT
 //                                                               PaintSim
 //   Brush       **any layer, locked**            None
 //   DryBrush    **any layer, locked**            None
@@ -118,27 +119,41 @@
 //     the tool doing the opposite of its name, and it is exactly the invisible
 //     wrong-target failure the locked row exists to prevent.
 //
-//   * **A Pigment layer refuses BY NAME rather than routing.** The refusal is
-//     the decision, so here is the argument for it. ADR-0007 does define the
-//     row -- mass is "the Pigment analogue of alpha" (core/Pigment.hpp,
-//     docs/document-format.md), scaling it is a valid operation on a latent
-//     because mass is linear, and `depositTexel()`'s §1(ii) already handles the
-//     zero-mass texel an eraser leaves behind ("a stale hue at zero coverage,
-//     which PRD F10's eraser deliberately creates"). So the arithmetic is not
-//     the blocker. **The selection is.** `depositDab(PigmentTileStore&, ...)`
-//     takes no `Selection` at all -- the pigment deposit route does not
-//     implement PRD E1 (**P0**) today, which is visible three screens down where
-//     only the RGB branch passes `doc_->selection`. An eraser is the worst tool
-//     to give a half-answer there: gated, it would be the only thing on a
-//     Pigment layer that stopped at the ants, and un-gated it would destroy
-//     paint outside a selection the user had drawn precisely to protect it, with
-//     one undo step covering the whole stroke. A Pigment erase therefore lands
-//     with the pigment route's own selection gate, as one decision, and until
-//     then this row says so out loud instead of silently doing nothing.
+//   * **A Pigment layer takes an erase now, and the refusal that stood here is
+//     spent.** This row used to read `None` and the paragraph under it said
+//     why: ADR-0007 defines the row completely -- mass is "the Pigment analogue
+//     of alpha" (core/Pigment.hpp, docs/document-format.md), scaling it is a
+//     valid operation on a latent because mass is linear, and `depositTexel()`'s
+//     §1(ii) already handles the zero-mass texel an eraser leaves behind ("a
+//     stale hue at zero coverage, which PRD F10's eraser deliberately creates")
+//     -- so the arithmetic was never the blocker. **The selection was.**
+//     `depositDab(PigmentTileStore&, ...)` took no `Selection` at all, so a
+//     Pigment erase built then would have been "the only thing on that layer
+//     kind that stopped at the ants, or would destroy paint outside a selection
+//     drawn to protect it, with one undo step covering the stroke". The refusal
+//     was conditional on one thing and named it.
+//
+//     `brush/Deposit` §4 is that gate, and both halves landed together as one
+//     decision exactly as this paragraph asked: the pigment deposit is bounded
+//     by the active selection, and `brush/PigmentErase` is bounded by the same
+//     rule in the same shape. `depositDab()` now takes a `Selection*` and
+//     `depositPending()` passes `doc_->selection` down all four routes rather
+//     than three.
+//
+//     **The two erase routes stay two modules**, for `brush/RgbErase` §0's
+//     reason applied one level up: they share the dab stream, the falloff, the
+//     footprint, the tile loop and the accumulator *type*, and differ in what
+//     one dab does to one texel -- four premultiplied channels against one
+//     straight mass beside an untouched latent -- and in what a texel emptied of
+//     paint is allowed to hold (`brush/PigmentErase` §3: at mass 0 a stale hue
+//     is well-formed here and malformed there, because one storage is
+//     premultiplied and the other is not). A `bool pigment` on `RgbEraseStroke`
+//     would put both conventions inside one loop whose §1 argument describes
+//     only one of them.
 //
 //   * **Media, Strokes, Text, Flats and Adjustment refuse for their own
-//     reasons**, all of which ADR-0007 states and none of which this step
-//     builds: erasing a Strokes layer deletes dab records rather than pixels
+//     reasons**, all of which ADR-0007 states and none of which is built:
+//     erasing a Strokes layer deletes dab records rather than pixels
 //     (PRD F11, a structural edit), erasing a Media layer removes the dry
 //     deposit and not the film or the saturation (which is Blot, PRD F12, P2),
 //     and erasing a parametric kind paints its mask, since there are no pixels
@@ -283,16 +298,21 @@ namespace np {
 
 // Where a stroke with this tool, on this layer, deposits. See §1.
 enum class StrokeRoute {
-  None,        // the tool does not paint, or the target refuses the edit
-  CpuDeposit,  // brush/Deposit, into the target layer's pigment tiles
-  RgbDeposit,  // brush/RgbDeposit, into the target layer's rgb tiles
-  RgbErase,    // brush/RgbErase, taking alpha back OUT of the target layer's
-               // rgb tiles -- ADR-0007's RGB row, and the only one built
-  PaintSim,    // sim::PaintSim's dense canvas texture, and only when there is
-               // no document layer to have aimed at -- see §1's last paragraph
+  None,          // the tool does not paint, or the target refuses the edit
+  CpuDeposit,    // brush/Deposit, into the target layer's pigment tiles
+  RgbDeposit,    // brush/RgbDeposit, into the target layer's rgb tiles
+  RgbErase,      // brush/RgbErase, taking alpha back OUT of the target layer's
+                 // rgb tiles -- ADR-0007's RGB row
+  PigmentErase,  // brush/PigmentErase, taking MASS back out of the target
+                 // layer's pigment tiles and leaving the latent alone --
+                 // ADR-0007's Pigment row. The two erase rows are two routes
+                 // and not one with a flag, because the storage conventions
+                 // differ in what an emptied texel may hold (§1)
+  PaintSim,      // sim::PaintSim's dense canvas texture, and only when there is
+                 // no document layer to have aimed at -- see §1's last paragraph
 };
 
-// The three routes that write a `Layer`, as one predicate, because four call
+// The four routes that write a `Layer`, as one predicate, because four call
 // sites ask the same question -- `begin()`'s refusal, `depositPending()`'s
 // per-frame re-validation, `ui/MacPaintUI`'s canvas branch, and the options
 // bar's route indicator, which accents a route that reaches the user's layer
@@ -301,16 +321,16 @@ enum class StrokeRoute {
 // `== CpuDeposit` at each site: it read "goes to the solver" grey for a live RGB
 // stroke for exactly as long as it had its own copy of the test.
 //
-// **`RgbErase` is in here, and "writes" is the right word for it.** A route that
-// removes paint still unshares a copy-on-write tile, still moves the revision,
-// still dirties tiles for the incremental composite and still owes exactly one
-// history entry -- every one of the four call sites wants the same answer for it
-// as for a deposit. A predicate that meant "adds paint" would leave the options
-// bar greying a live erase as though it went to the solver, which is the
-// specific drift this predicate was extracted to stop.
+// **Both erase routes are in here, and "writes" is the right word for them.** A
+// route that removes paint still unshares a copy-on-write tile, still moves the
+// revision, still dirties tiles for the incremental composite and still owes
+// exactly one history entry -- every one of the four call sites wants the same
+// answer for it as for a deposit. A predicate that meant "adds paint" would
+// leave the options bar greying a live erase as though it went to the solver,
+// which is the specific drift this predicate was extracted to stop.
 inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
   return route == StrokeRoute::CpuDeposit || route == StrokeRoute::RgbDeposit ||
-         route == StrokeRoute::RgbErase;
+         route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase;
 }
 
 const char* strokeRouteName(StrokeRoute route) noexcept;
@@ -517,11 +537,13 @@ class StrokeSession {
   // for the whole stroke. `setTip()` below may still change radius, hardness,
   // spacing and flow mid-stroke; it deliberately does not change those two.
   //
-  // For an erase it latches `tip.opacity` as the **strength**, the same slider
-  // and the same units (brush/RgbErase.hpp §2), for the identical reason: a
-  // stroke whose floor moved half way through has no well-defined floor. The
-  // ink is not read at all -- an eraser that reached for a colour would be a
-  // brush painting the background, which ADR-0007 exists to reject.
+  // For **either** erase it latches `tip.opacity` as the **strength**, the same
+  // slider and the same units (brush/RgbErase.hpp §2, brush/PigmentErase.hpp
+  // §2), for the identical reason: a stroke whose floor moved half way through
+  // has no well-defined floor. Neither the ink nor the loaded latent is read at
+  // all -- an eraser that reached for a colour would be a brush painting the
+  // background, which ADR-0007 exists to reject, and on a Pigment layer would
+  // deposit white, which under Kubelka-Munk is opaque paint.
   //
   // **The tool is latched too**, and that is not bookkeeping: §5's per-frame
   // re-validation asks `strokeRouteFor()` the same question again, and the
@@ -533,7 +555,7 @@ class StrokeSession {
   bool begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
              std::string* errorOut);
 
-  // Which of §1's three layer-writing routes this stroke took. Meaningless before
+  // Which of §1's four layer-writing routes this stroke took. Meaningless before
   // `begin()` succeeds.
   StrokeRoute route() const noexcept { return route_; }
 
@@ -601,12 +623,21 @@ class StrokeSession {
   // that took the pigment or the erase route, which is what
   // `RgbStroke::active()` says.
   RgbStroke rgb_;
-  // The erase route's per-stroke *erasure* accumulator and latched strength
+  // The RGB erase route's per-stroke *erasure* accumulator and latched strength
   // (brush/RgbErase.hpp §2). A separate object rather than a mode on `rgb_`
   // because the two accumulators count different quantities -- alpha added
   // against fraction removed -- and exactly one of them is ever live, which is
   // an invariant two members make checkable and one member with a flag hides.
   RgbEraseStroke erase_;
+  // The Pigment erase route's, likewise (brush/PigmentErase.hpp §2). A third
+  // member rather than a shared one for the same reason there are two erase
+  // modules: `E` means the same *number* on both routes, but the loop that
+  // consumes it reads a different store and writes a different texel type, and
+  // a session holding one accumulator would need a tag to say which loop last
+  // touched it. Idle objects cost 24 bytes each and hold no tiles --
+  // `accumulatorTiles()` is 0 -- which `--selftest` measures rather than
+  // assumes.
+  PigmentEraseStroke pigErase_;
 
   StrokePath path_;
   std::vector<Vec2> pending_;
