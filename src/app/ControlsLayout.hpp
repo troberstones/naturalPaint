@@ -99,6 +99,10 @@ enum class ControlsSection {
   // a history row is an edit *to* it, so LAYERS reads before either.
   Comps,
   Grade,
+  // The brush library (brush/Library.hpp) -- which brush, as opposed to what
+  // that brush is. Immediately above BRUSH, because picking is what you do
+  // before editing and the editor's header names what the pane above chose.
+  BrushLibrary,
   Brush,
   Pigment,
   Medium,

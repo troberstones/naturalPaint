@@ -99,6 +99,7 @@ add_executable(naturalPaint
   app/ViewTransform.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
+  brush/Library.cpp
   brush/StrokePath.cpp
   color/LutBake.cpp
   color/Shaper.cpp

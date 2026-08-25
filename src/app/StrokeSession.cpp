@@ -106,17 +106,25 @@ const char* strokeEditLabel(Tool tool) noexcept {
 }
 
 BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressure) {
-  // The same two curves ui/MacPaintUI's solver route applies, and they are
-  // here rather than there so the two routes cannot drift apart. A pen
-  // configured for size-only pressure must feel the same whichever layer kind
-  // it lands on.
-  const float p = pressure < 0.0f ? 0.0f : (pressure > 1.0f ? 1.0f : pressure);
-  const float sizeMul = brush.pressureSize ? (0.25f + 0.75f * p) : 1.0f;
-  const float flowMul = brush.pressureFlow ? (0.15f + 0.85f * p) : 1.0f;
+  DynamicInputs in;
+  in.pressure = pressure;  // evaluateLinks() clamps; see linkContribution()
+  return brushTipFor(brush, lut, in);
+}
+
+BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
+                     const DynamicInputs& inputs) {
+  // Resolved here rather than at each call site so the two routes cannot drift
+  // apart. A pen configured for size-only pressure must feel the same
+  // whichever layer kind it lands on -- which is the reason the two hardcoded
+  // curves were pulled into one place before, and the reason the link set that
+  // replaced them is read in one place now.
+  const DynamicResult dyn = evaluateLinks(brush.links, inputs);
+  const float sizeMul = dyn.at(DynamicTarget::Size);
+  const float flowMul = dyn.at(DynamicTarget::Flow);
 
   BrushTip tip;
   tip.radius = brush.radius * sizeMul;
-  tip.hardness = brush.hardness;
+  tip.hardness = brush.hardness * dyn.at(DynamicTarget::Hardness);
   // `BrushState::load` is "pigment concentration" and ranges 0..2.5; a tip's
   // `flow` is "mass laid down per dab where coverage is 1" and is deliberately
   // not clamped to [0,1] (brush/Deposit.hpp: "a flow above 1 is a legitimate
@@ -124,7 +132,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressu
   // pressure, and not a remapping that would make the LOAD slider mean two
   // things.
   tip.flow = brush.load * flowMul;
-  tip.spacing = brush.spacing;
+  tip.spacing = brush.spacing * dyn.at(DynamicTarget::Spacing);
 
   const std::vector<Pigment>& palette = defaultPalette();
   const size_t index =
@@ -143,6 +151,47 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressu
     // this branch is for tests and for a broken install.
     tip.pigment.c = {pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]};
   return tip;
+}
+
+DynamicInputs dynamicInputsFor(const AppState& st) noexcept {
+  DynamicInputs in;
+  in.pressure = st.penSeen ? st.penPressure : 1.0f;
+  in.tilt = st.penTilt;
+  in.azimuth = st.penAzimuth;
+  in.barrel = st.penBarrel;
+  return in;
+}
+
+void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
+  brush.radius = preset.radius;
+  brush.hardness = preset.hardness;
+  brush.spacing = preset.spacing;
+  brush.roundness = preset.roundness;
+  brush.angle = preset.angle;
+  brush.load = preset.load;
+  brush.wetness = preset.wetness;
+  brush.links = preset.links;
+}
+
+BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
+  BrushPreset p;
+  p.name = std::move(name);
+  p.radius = brush.radius;
+  p.hardness = brush.hardness;
+  p.spacing = brush.spacing;
+  p.roundness = brush.roundness;
+  p.angle = brush.angle;
+  p.load = brush.load;
+  p.wetness = brush.wetness;
+  p.links = brush.links;
+  return p;
+}
+
+bool brushIsEdited(const BrushState& brush) {
+  if (brush.brushLibrary.active >= brush.brushLibrary.presets.size()) return false;
+  const BrushPreset& p = brush.brushLibrary.presets[brush.brushLibrary.active];
+  return !presetMatches(p, brush.radius, brush.hardness, brush.spacing, brush.roundness,
+                        brush.angle, brush.load, brush.wetness, brush.links);
 }
 
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,

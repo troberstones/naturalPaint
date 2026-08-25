@@ -10,7 +10,8 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
   // COLOR leads and why the three Document sections follow it.
   static const std::vector<ControlsSectionSpec> kSections = {
       {ControlsSection::Color, R::Tool, "COLOR", true},
-      {ControlsSection::Brush, R::Tool, "BRUSH", false},
+      {ControlsSection::BrushLibrary, R::Tool, "BRUSH LIBRARY", false},
+      {ControlsSection::Brush, R::Tool, "BRUSH EDITOR", false},
       {ControlsSection::Layers, R::Document, "LAYERS", true},
       {ControlsSection::History, R::Document, "HISTORY", true},
       {ControlsSection::Comps, R::Document, "COMPS", true},

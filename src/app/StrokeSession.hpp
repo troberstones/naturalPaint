@@ -233,6 +233,46 @@ const char* strokeEditLabel(Tool tool) noexcept;
 // paints, in the pigment's colour, rather than painting nothing.
 BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressure);
 
+// The same, against the WHOLE source set rather than pressure alone -- what a
+// stroke that has tilt, azimuth, barrel and its own derived sources to hand
+// should call. The scalar form above delegates here with everything but
+// pressure left at its default, which is exactly a mouse.
+BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
+                     const DynamicInputs& inputs);
+
+// This frame's live source sample, read off AppState.
+//
+// **Four of the eight are still at their defaults**, and deliberately so:
+// VELOCITY, FADE, NOISE and RANDOM are derived from a stroke in progress
+// rather than read off hardware, so they belong to whoever owns the dab loop,
+// not to a per-frame snapshot of input state. The DYNAMICS matrix draws their
+// rows anyway -- an empty cell being as informative as a filled one is the
+// whole premise of that panel -- and its live gutter shows them holding
+// still, which is the truth about them today.
+//
+// Pressure falls back to 1.0 when no pen has ever been seen, so a mouse
+// paints at full strength rather than at whatever `penPressure` last held.
+DynamicInputs dynamicInputsFor(const AppState& st) noexcept;
+
+// --- The brush library, against the live brush ------------------------------
+//
+// These three live here rather than in brush/Library.hpp because they need
+// `BrushState`, which is app/AppState.hpp's -- and AppState already includes
+// the library for its member, so the dependency only runs one way.
+
+// Load a preset into the live brush. Leaves the loaded pigment and the
+// selected tool alone: a preset holds neither (brush/Library.hpp), so picking
+// a brush must not repaint in another colour or switch tools underneath you.
+void applyPresetToBrush(const BrushPreset& preset, BrushState& brush);
+
+// Capture the live brush as a preset under `name`.
+BrushPreset presetFromBrush(std::string name, const BrushState& brush);
+
+// Whether the live brush still matches the preset it was picked from -- what
+// the editor's EDITED badge shows. False when `active` is out of range, since
+// a brush picked from nothing cannot have drifted from it.
+bool brushIsEdited(const BrushState& brush);
+
 // One stroke, from pen-down to pen-up.
 //
 // Deliberately shaped like the block in `ui/MacPaintUI.cpp` that already feeds

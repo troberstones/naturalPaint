@@ -951,8 +951,13 @@ float distancePointToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
 // points are already shaper-domain coordinates by contract, so nothing here
 // calls color::shaperEncode/Decode; see app/CurveEdit.hpp's own header
 // comment for why plotting needs no colour-domain conversion at all.
-bool drawCurveWidget(Curve& curve) {
-  constexpr float kPlotSize = 200.0f;
+// `plotSize` is a parameter rather than a constant because the LINK editor in
+// the BRUSH SETTINGS panel (design turn 4a) draws the same widget at 104 px in
+// a 322 px column, and that design's note is explicit that it is the same
+// widget as the grading stack's -- so it is this function at another size, not
+// a second implementation that would drift.
+bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
+  const float kPlotSize = plotSize;
   constexpr float kHitRadiusPx = 8.0f;
   constexpr int kSamples = 64;
 
@@ -2152,13 +2157,399 @@ void drawColorSection(AppState& st) {
   }
 }
 
+// --- BRUSH SETTINGS (design "naturalPaint Panels" turn 4, option 4a) --------
+//
+// The panel is drawn as one of the right column's collapsing sections rather
+// than behind the design's COLOR/BRUSH/LAYERS tab strip. **That is a
+// deliberate deviation and worth saying out loud**: the column already has a
+// navigation idiom, and adopting the tab strip means restructuring LAYERS and
+// COMPS too -- which is turns 1 and 3's redesign, not 4a's. The tab strip
+// belongs to whoever lands those; 4a's contribution is what goes *inside* the
+// BRUSH tab, and that is what is built here.
+//
+// Two of 4a's parts are absent because the systems under them are: the preset
+// header (name, EDITED badge, save/revert -- there are no brush presets) and
+// the TEST STROKE footer (there is no off-canvas stroke preview surface).
+// Neither is faked; a dead control that looks live is worse than one that is
+// not drawn.
+
+// One labelled row of the matrix's own geometry: a 54 px row label, twelve
+// equal cells, a 34 px live-value gutter. Shared by the header row and the
+// eight source rows so the columns cannot drift between them.
+constexpr float kMatrixLabelW = 54.0f;
+constexpr float kMatrixGutterW = 34.0f;
+constexpr float kMatrixRowH = 19.0f;
+constexpr float kMatrixHeadH = 16.0f;
+
+// The two shades the matrix needs that the token table does not carry: the
+// alternating column wash, and the dot marking a cell with no link. Local to
+// the matrix because that is the only thing with columns to alternate.
+constexpr uint32_t kMatrixColumnAlt = 0x333030;
+constexpr uint32_t kMatrixEmptyDot = 0x4f4c4c;
+
+// The DYNAMICS matrix: every source against every target it could drive.
+//
+// **Drawing the whole space is the design's central claim, not a stylistic
+// choice** -- "an empty cell is as informative as a filled one -- you can see
+// that nothing drives spacing". A list of existing links would be smaller and
+// would answer a different question. The cost the design names honestly is
+// that twelve targets in 322 px means two-letter heads, which have to be
+// learned; the full names are on the cells' tooltips.
+void drawDynamicsMatrix(AppState& st) {
+  const DynamicInputs live = dynamicInputsFor(st);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const float width = ImGui::GetContentRegionAvail().x;
+  const float cellsW = width - kMatrixLabelW - kMatrixGutterW;
+  if (!(cellsW > 0.0f)) return;
+  const float cellW = cellsW / static_cast<float>(kDynamicTargetCount);
+
+  const ImU32 ruleCol = atelierToken(kDivider);
+  const ImU32 textCol = atelierToken(kTextPrimary);
+  const ImU32 mutedCol = atelierToken(kTextSecondary);
+  const ImU32 accentCol = atelierToken(kAccent);
+  const ImU32 altCol = atelierToken(kMatrixColumnAlt);
+
+  pushAtelierMono();
+
+  // --- header row: the two-letter target heads --------------------------
+  {
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    for (size_t t = 0; t < kDynamicTargetCount; ++t) {
+      const float x0 = o.x + kMatrixLabelW + cellW * static_cast<float>(t);
+      if (t % 2 == 1)
+        dl->AddRectFilled(ImVec2(x0, o.y), ImVec2(x0 + cellW, o.y + kMatrixHeadH), altCol);
+      const char* ab = targetAbbrev(static_cast<DynamicTarget>(t));
+      const ImVec2 sz = ImGui::CalcTextSize(ab);
+      dl->AddText(ImVec2(x0 + (cellW - sz.x) * 0.5f, o.y + (kMatrixHeadH - sz.y) * 0.5f),
+                  textCol, ab);
+    }
+    dl->AddLine(ImVec2(o.x, o.y + kMatrixHeadH), ImVec2(o.x + width, o.y + kMatrixHeadH),
+                ruleCol, 1.0f);
+    ImGui::Dummy(ImVec2(width, kMatrixHeadH));
+  }
+
+  // --- one row per source -------------------------------------------------
+  for (size_t s = 0; s < kDynamicSourceCount; ++s) {
+    const DynamicSource source = static_cast<DynamicSource>(s);
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+
+    dl->AddText(ImVec2(o.x + 5.0f, o.y + (kMatrixRowH - ImGui::GetFontSize()) * 0.5f), textCol,
+                sourceName(source));
+    dl->AddLine(ImVec2(o.x + kMatrixLabelW, o.y),
+                ImVec2(o.x + kMatrixLabelW, o.y + kMatrixRowH), ruleCol, 1.0f);
+
+    for (size_t t = 0; t < kDynamicTargetCount; ++t) {
+      const DynamicTarget target = static_cast<DynamicTarget>(t);
+      const float x0 = o.x + kMatrixLabelW + cellW * static_cast<float>(t);
+      const ImVec2 cellMin(x0, o.y);
+      const ImVec2 cellMax(x0 + cellW, o.y + kMatrixRowH);
+      if (t % 2 == 1) dl->AddRectFilled(cellMin, cellMax, altCol);
+
+      const size_t at = findLink(st.brush.links, source, target);
+      const bool selected = st.brush.editSource == source && st.brush.editTarget == target;
+      const ImVec2 mid((cellMin.x + cellMax.x) * 0.5f, (cellMin.y + cellMax.y) * 0.5f);
+
+      if (at != kNoLink) {
+        // A link that has been switched off keeps its curve but drives
+        // nothing, so it draws as neither filled nor empty -- an outline.
+        const float half = selected ? 5.5f : 4.5f;
+        const ImVec2 a(mid.x - half, mid.y - half), b(mid.x + half, mid.y + half);
+        if (st.brush.links.links[at].enabled) {
+          dl->AddRectFilled(a, b, accentCol);
+        } else {
+          dl->AddRect(a, b, accentCol, 0.0f, 0, 1.0f);
+        }
+        if (selected) dl->AddRect(ImVec2(a.x - 1, a.y - 1), ImVec2(b.x + 1, b.y + 1), textCol,
+                                  0.0f, 0, 1.0f);
+      } else {
+        dl->AddRectFilled(ImVec2(mid.x - 1.0f, mid.y - 1.0f), ImVec2(mid.x + 1.0f, mid.y + 1.0f),
+                          atelierToken(kMatrixEmptyDot));
+        if (selected)
+          dl->AddRect(ImVec2(mid.x - 5.5f, mid.y - 5.5f), ImVec2(mid.x + 5.5f, mid.y + 5.5f),
+                      mutedCol, 0.0f, 0, 1.0f);
+      }
+
+      // One hit target per cell. Clicking an empty cell selects it rather
+      // than creating a link there -- creation is the editor's ADD button,
+      // so that a stray click on a 17 px cell cannot silently change how the
+      // brush paints.
+      ImGui::SetCursorScreenPos(cellMin);
+      char id[48];
+      std::snprintf(id, sizeof id, "##cell%zu_%zu", s, t);
+      ImGui::InvisibleButton(id, ImVec2(cellW, kMatrixRowH));
+      if (ImGui::IsItemHovered()) {
+        popAtelierMono();
+        ImGui::SetTooltip("%s \xE2\x86\x92 %s%s", sourceName(source), targetName(target),
+                          at == kNoLink ? "  (no link)" : "");
+        pushAtelierMono();
+      }
+      if (ImGui::IsItemClicked()) {
+        st.brush.editSource = source;
+        st.brush.editTarget = target;
+      }
+    }
+
+    // The live gutter. Its whole job is that the matrix teaches what a source
+    // IS while you paint, so it shows the value in the source's own unit --
+    // degrees for the angular three -- not the normalised number the model
+    // carries.
+    char val[32];
+    sourceDisplay(source, sourceValue(live, source), val, sizeof val);
+    const ImVec2 vsz = ImGui::CalcTextSize(val);
+    const float gx = o.x + width - kMatrixGutterW;
+    dl->AddLine(ImVec2(gx, o.y), ImVec2(gx, o.y + kMatrixRowH), ruleCol, 1.0f);
+    // RANDOM is redrawn per dab, so it has no value between them; its em dash
+    // is drawn muted for the same reason.
+    dl->AddText(ImVec2(o.x + width - 5.0f - vsz.x, o.y + (kMatrixRowH - vsz.y) * 0.5f),
+                source == DynamicSource::Random ? mutedCol : textCol, val);
+
+    ImGui::SetCursorScreenPos(o);
+    ImGui::Dummy(ImVec2(width, kMatrixRowH));
+    dl->AddLine(ImVec2(o.x, o.y + kMatrixRowH), ImVec2(o.x + width, o.y + kMatrixRowH), ruleCol,
+                1.0f);
+  }
+  popAtelierMono();
+
+  if (!st.penSeen)
+    ImGui::TextDisabled("No tablet: tilt, azimuth and barrel read as rest.");
+}
+
+// The LINK editor: one cell's response curve, its range, and what it is
+// resolving to right now.
+void drawLinkEditor(AppState& st) {
+  const DynamicSource source = st.brush.editSource;
+  const DynamicTarget target = st.brush.editTarget;
+  const size_t at = findLink(st.brush.links, source, target);
+
+  pushAtelierMono();
+  ImGui::Text("%s \xE2\x86\x92 %s", sourceName(source), targetName(target));
+  popAtelierMono();
+
+  if (at == kNoLink) {
+    ImGui::TextDisabled("No link in this cell.");
+    if (ImGui::Button("Add link")) {
+      BrushLink made;
+      made.source = source;
+      made.target = target;
+      targetDefaultRange(target, made.rangeLo, made.rangeHi);
+      addLink(st.brush.links, made);
+    }
+    return;
+  }
+
+  BrushLink& link = st.brush.links.links[at];
+  const DynamicInputs live = dynamicInputsFor(st);
+  const float in = sourceValue(live, source);
+
+  ImGui::Checkbox("On", &link.enabled);
+  ImGui::SameLine();
+  if (ImGui::Button("Delete")) {
+    removeLink(st.brush.links, source, target);
+    return;  // `link` is dangling from here on.
+  }
+
+  // The design's 104 px plot, and the grading stack's own widget rather than
+  // a second one -- see drawCurveWidget()'s comment.
+  drawCurveWidget(link.curve, 104.0f);
+
+  // IN is the source's live value; OUT is what the link resolves to. Showing
+  // both is what makes the curve legible while painting: the design rides the
+  // live value along the curve as the pen moves.
+  const float out = link.enabled ? linkContribution(link, in) : targetIdentity(target);
+  pushAtelierMono();
+  ImGui::Text("IN  %.2f", in);
+  ImGui::Text("OUT %.3f", out);
+  popAtelierMono();
+
+  // RANGE bounds the OUTPUT (brush/Dynamics.hpp): at curve 0 the link resolves
+  // to lo, at 1 to hi. On PRESSURE -> SIZE at 0.10-1.00 that is a floor on
+  // size, not a deadzone on pressure.
+  float lo = link.rangeLo, hi = link.rangeHi;
+  const bool angular = targetCombine(target) == TargetCombine::Add;
+  const float sliderLo = angular ? -360.0f : 0.0f;
+  const float sliderHi = angular ? 360.0f : 2.0f;
+  if (ctlSlider("Range lo", &lo, sliderLo, sliderHi)) link.rangeLo = lo;
+  if (ctlSlider("Range hi", &hi, sliderLo, sliderHi)) link.rangeHi = hi;
+  ImGui::Checkbox("Invert", &link.invert);
+
+  // The three easing chips. They set the SAME Curve the widget edits, so a
+  // chip and a hand-drawn curve cannot disagree -- and a curve dragged away
+  // from all three lights none of them, which is the honest answer.
+  const EasingPreset presets[3] = {EasingPreset::Linear, EasingPreset::EaseOut,
+                                   EasingPreset::SCurve};
+  const char* names[3] = {"Linear", "Ease out", "S"};
+  for (int i = 0; i < 3; ++i) {
+    if (i > 0) ImGui::SameLine();
+    const bool active = matchesPreset(link.curve, presets[i]);
+    if (active) ImGui::PushStyleColor(ImGuiCol_Button, atelierToken(kAccent));
+    if (ImGui::Button(names[i])) link.curve = easingCurve(presets[i]);
+    if (active) ImGui::PopStyleColor();
+  }
+}
+
+// --- BRUSH LIBRARY ---------------------------------------------------------
+//
+// Picking a brush and authoring one are different acts done at different
+// rates, so they are two panes rather than one. This is the pane that answers
+// "which brush", and it is deliberately a plain list: a row is a name, a
+// stripe showing the tip's proportions, and the count of what drives it.
+//
+// **Picking a brush with unsaved edits discards them, and the pane says so
+// before it happens rather than after.** The alternative -- auto-saving into
+// the preset on the way out -- would mean a brush silently becoming whatever
+// it was last nudged into, which is the failure mode that makes people stop
+// trusting a library.
+void drawBrushLibrarySection(AppState& st) {
+  BrushLibrary& lib = st.brush.brushLibrary;
+  const bool edited = brushIsEdited(st.brush);
+
+  for (size_t i = 0; i < lib.presets.size(); ++i) {
+    const BrushPreset& p = lib.presets[i];
+    ImGui::PushID(static_cast<int>(i));
+    const bool isActive = i == lib.active;
+
+    // The tip's proportions, at a glance: a bar whose length tracks the
+    // radius and whose height tracks roundness. It is not a stroke preview --
+    // there is no off-canvas stroke surface yet -- and it is drawn as an
+    // obvious abstraction rather than as a fake dab, so it cannot be mistaken
+    // for one.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    constexpr float kSwatchW = 40.0f, kSwatchH = 18.0f;
+    const float frac = std::clamp(p.radius / 60.0f, 0.08f, 1.0f);
+    const float h = std::max(2.0f, kSwatchH * p.roundness);
+    dl->AddRectFilled(ImVec2(o.x, o.y + (kSwatchH - h) * 0.5f),
+                      ImVec2(o.x + kSwatchW * frac, o.y + (kSwatchH + h) * 0.5f),
+                      atelierToken(isActive ? kAccent : kTextSecondary));
+    ImGui::Dummy(ImVec2(kSwatchW, kSwatchH));
+    ImGui::SameLine();
+
+    if (ImGui::Selectable(p.name.c_str(), isActive)) {
+      if (i != lib.active) {
+        lib.active = i;
+        applyPresetToBrush(p, st.brush);
+      }
+    }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("%s\nradius %.0f px, spacing %.2f r, %zu link%s%s", p.name.c_str(),
+                        p.radius, p.spacing, p.links.links.size(),
+                        p.links.links.size() == 1 ? "" : "s",
+                        (isActive && edited) ? "\n\nEdited -- picking another brush discards it."
+                                             : "");
+    }
+    ImGui::PopID();
+  }
+
+  ImGui::Separator();
+  if (ImGui::Button("Duplicate")) {
+    // From the LIVE brush, not from the stored preset: duplicating is the
+    // sanctioned way to keep an edit without overwriting what it came from,
+    // so it has to capture what is on screen.
+    BrushPreset made = presetFromBrush(
+        uniquePresetName(lib, lib.active < lib.presets.size()
+                                  ? lib.presets[lib.active].name
+                                  : std::string("Brush")),
+        st.brush);
+    lib.presets.push_back(made);
+    lib.active = lib.presets.size() - 1;
+  }
+  ImGui::SameLine();
+  // Never the last one: a library with no rows has nothing to pick, and the
+  // live brush would be left pointing at an index that does not exist.
+  ImGui::BeginDisabled(lib.presets.size() <= 1);
+  if (ImGui::Button("Delete")) {
+    if (lib.active < lib.presets.size()) {
+      lib.presets.erase(lib.presets.begin() + static_cast<std::ptrdiff_t>(lib.active));
+      if (lib.active >= lib.presets.size()) lib.active = lib.presets.size() - 1;
+      applyPresetToBrush(lib.presets[lib.active], st.brush);
+    }
+  }
+  ImGui::EndDisabled();
+
+  if (edited) {
+    pushAtelierMono();
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)),
+                       "EDITED -- picking another brush discards it");
+    popAtelierMono();
+  }
+}
+
 void drawBrushSection(AppState& st) {
+  // --- The preset header: which brush this is, and whether it still is ----
+  BrushLibrary& lib = st.brush.brushLibrary;
+  if (lib.active < lib.presets.size()) {
+    pushAtelierMono();
+    ImGui::TextUnformatted(lib.presets[lib.active].name.c_str());
+    popAtelierMono();
+    const bool edited = brushIsEdited(st.brush);
+    if (edited) {
+      ImGui::SameLine();
+      ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)), "EDITED");
+    }
+    ImGui::BeginDisabled(!edited);
+    // Save overwrites the preset with what is on screen; Revert throws the
+    // edit away. Both are disabled when there is no edit, so neither is a
+    // button that does nothing.
+    if (ImGui::Button("Save")) {
+      lib.presets[lib.active] =
+          presetFromBrush(lib.presets[lib.active].name, st.brush);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Revert")) applyPresetToBrush(lib.presets[lib.active], st.brush);
+    ImGui::EndDisabled();
+    ImGui::Separator();
+  }
+
+  // --- TIP ---------------------------------------------------------------
+  // Radius, hardness and spacing already existed; roundness is new with this
+  // panel. Spacing is in radii, and the design's caption is the reason it can
+  // be: dabs are spaced by arc length, not by time, so the number means the
+  // same thing however fast the pen moves.
+  ctlSlider("Radius", &st.brush.radius, 1.0f, 200.0f, "%.0f px");
+  ctlSlider("Hardness", &st.brush.hardness, 0.0f, 1.0f);
+  ctlSlider("Spacing", &st.brush.spacing, 0.02f, 1.0f, "%.2f r");
+  ctlSlider("Roundness", &st.brush.roundness, 0.05f, 1.0f);
+  ctlSlider("Angle", &st.brush.angle, -180.0f, 180.0f, "%.0f deg");
+  ImGui::TextDisabled("Dabs are spaced by arc length, not by time.");
+
   ctlSlider("Load", &st.brush.load, 0.0f, 2.5f);
   ctlSlider("Water", &st.brush.wetness, 0.0f, 3.0f);
-  ctlSlider("Hardness", &st.brush.hardness, 0.0f, 1.0f);
-  ImGui::Checkbox("Pressure -> size", &st.brush.pressureSize);
-  ImGui::Checkbox("Pressure -> flow", &st.brush.pressureFlow);
-  if (!st.penSeen) ImGui::TextDisabled("(no tablet detected)");
+
+  // --- LOADED PIGMENT ----------------------------------------------------
+  // The three constants belong to the PIGMENT, not to the brush, so they are
+  // read-only here. The PIGMENT section further down the column edits the
+  // solver's own globals, which are a different set of numbers with the same
+  // three names -- showing these as editable would merge two things the
+  // model deliberately keeps apart.
+  if (ImGui::CollapsingHeader("LOADED PIGMENT", ImGuiTreeNodeFlags_DefaultOpen)) {
+    const std::vector<Pigment>& palette = defaultPalette();
+    const size_t idx = st.brush.pigment >= 0 &&
+                               static_cast<size_t>(st.brush.pigment) < palette.size()
+                           ? static_cast<size_t>(st.brush.pigment)
+                           : 0;
+    const Pigment& p = palette[idx];
+    ImGui::ColorButton("##loaded", ImVec4(p.rgb[0], p.rgb[1], p.rgb[2], 1.0f),
+                       ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop,
+                       ImVec2(34, 46));
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::TextUnformatted(p.name);
+    pushAtelierMono();
+    ImGui::Text("DENSITY      %.2f", p.density);
+    ImGui::Text("STAINING     %.2f", p.staining);
+    ImGui::Text("GRANULATION  %.2f", p.granulation);
+    popAtelierMono();
+    ImGui::EndGroup();
+  }
+
+  // --- DYNAMICS ----------------------------------------------------------
+  if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
+    pushAtelierMono();
+    ImGui::Text("%zu LINKS", st.brush.links.links.size());
+    popAtelierMono();
+    drawDynamicsMatrix(st);
+  }
+  if (ImGui::CollapsingHeader("LINK", ImGuiTreeNodeFlags_DefaultOpen)) drawLinkEditor(st);
 }
 
 void drawPigmentSection(AppState& st) {
@@ -4182,6 +4573,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // docs/ui.md section 3.3 / PRD L4. First in the column, which is the
         // design's own order -- see app/ControlsLayout.hpp's `Tool` role.
         case ControlsSection::Color:     drawColorSection(st); break;
+        // Two panes, because picking a brush and authoring one are
+        // different acts (drawBrushLibrarySection()'s own comment).
+        case ControlsSection::BrushLibrary: drawBrushLibrarySection(st); break;
         case ControlsSection::Brush:     drawBrushSection(st); break;
         case ControlsSection::Pigment:   drawPigmentSection(st); break;
         case ControlsSection::Medium:    drawMediumSection(st, sim.get()); break;
@@ -5000,8 +5394,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // route and setting them here would leave the oil segment carrying a
       // stroke that never touched the canvas texture.
       st.paintingThisFrame = true;
-      const float pressure = st.penSeen ? st.penPressure : 1.0f;
-      const BrushTip tip = brushTipFor(st.brush, lut, pressure);
+      // The whole source set, not pressure alone -- tilt, azimuth and barrel
+      // reach the tip here (app/PenAxes.hpp converts them), which is what the
+      // DYNAMICS matrix's non-pressure rows actually drive.
+      const BrushTip tip = brushTipFor(st.brush, lut, dynamicInputsFor(st));
       if (!g_stroke.active()) {
         g_strokeRefusal.clear();
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
@@ -5060,9 +5456,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         } else {
           st.sim.brushReload = 0;
         }
-        const float pressure = st.penSeen ? st.penPressure : 1.0f;
-        const float sizeMul = st.brush.pressureSize ? (0.25f + 0.75f * pressure) : 1.0f;
-        const float flowMul = st.brush.pressureFlow ? (0.15f + 0.85f * pressure) : 1.0f;
+        // The link set, not two literals -- the same resolution
+        // app/StrokeSession's brushTipFor() does, so the solver route and the
+        // CPU deposit route cannot drift apart. This used to be a copy of the
+        // two curves; now both read `st.brush.links`.
+        const DynamicResult dyn = evaluateLinks(st.brush.links, dynamicInputsFor(st));
+        const float sizeMul = dyn.at(DynamicTarget::Size);
+        const float flowMul = dyn.at(DynamicTarget::Flow);
 
         applyToolToBrush(st);
         st.sim.brushRadius = st.brush.radius * sizeMul;

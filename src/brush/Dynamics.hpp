@@ -260,6 +260,22 @@ bool removeLink(BrushLinkSet& set, DynamicSource source, DynamicTarget target);
 // span would look broken rather than subtle.
 void targetDefaultRange(DynamicTarget target, float& lo, float& hi) noexcept;
 
+// What a new brush starts with: the two links that were `BrushState`'s
+// `pressureSize` and `pressureFlow` booleans.
+//
+// **Those two booleans were already links, with the ranges written into them
+// as literals.** Both routes that read them applied exactly `0.25 + 0.75p` to
+// the radius and `0.15 + 0.85p` to the flow, which is this model's
+// `linkContribution()` at ranges [0.25,1] and [0.15,1] through a linear curve
+// -- not approximately, identically. So the migration off the booleans is
+// exact rather than a re-tuning, and --selftest asserts the two agree across
+// the pressure range rather than taking that on the comment's word.
+//
+// A brush with no links would also have been defensible, but it would mean a
+// tablet did nothing until the user opened the matrix and drew a curve, and
+// it would silently change how every existing brush feels.
+BrushLinkSet defaultBrushLinks();
+
 // Resolve the whole set against one sample.
 //
 // Disabled links are skipped. Every target starts at its identity and folds

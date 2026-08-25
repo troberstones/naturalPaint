@@ -34,3 +34,7 @@ compile_commands.json
 
 # Recovery scratch (ADR-0008) and tile spill
 *.npscratch/
+
+# A third-party sample brush library, dropped in for import testing.
+# Not ours to redistribute.
+runny_inkers.abr

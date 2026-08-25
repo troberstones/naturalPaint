@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "brush/Dynamics.hpp"
+#include "brush/Library.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
 #include "app/StrokeBake.hpp"
@@ -91,8 +93,45 @@ struct BrushState {
   float load = 0.9f;      // pigment concentration
   float wetness = 1.3f;   // water deposited
   float hardness = 0.35f;
-  bool pressureSize = true;
-  bool pressureFlow = true;
+  // Minor/major axis ratio of an elliptical tip; 1.0 is round. The design's
+  // TIP section (turn 4a) shows it beside radius, hardness and spacing, and
+  // DynamicTarget::Roundness drives it.
+  float roundness = 1.0f;
+  // Tip rotation in degrees, the axis `roundness` is measured against -- a
+  // round tip does not care, an elliptical one does. DynamicTarget::Angle
+  // drives it, and Photoshop's `Angl` imports straight into it.
+  float angle = 0.0f;
+
+  // Every input-drives-parameter relationship this brush has (brush/Dynamics).
+  //
+  // **This replaced `bool pressureSize` / `bool pressureFlow`, which were
+  // already two links with their ranges written in as literals** -- both
+  // routes applied exactly `0.25 + 0.75p` and `0.15 + 0.85p`, which is
+  // `linkContribution()` at [0.25,1] and [0.15,1]. `defaultBrushLinks()`
+  // reproduces them identically, so nothing about how a pen feels changed
+  // when the booleans went away; what changed is that the relationship is now
+  // sayable for the other seven sources and ten targets too.
+  BrushLinkSet links = defaultBrushLinks();
+
+  // Which cell of the DYNAMICS matrix the LINK editor below it is showing.
+  //
+  // UI state on BrushState rather than on AppState proper because it is
+  // scoped to the brush being edited: switching brushes should not leave the
+  // editor pointed at a cell the new brush has nothing in. It names a CELL,
+  // not a link -- the editor opens on an empty cell too, which is how a link
+  // gets created (the design has no separate "new link" dialog; +LINK just
+  // opens the editor on the first empty cell).
+  DynamicSource editSource = DynamicSource::Pressure;
+  DynamicTarget editTarget = DynamicTarget::Size;
+
+  // The brush library this brush was picked from (brush/Library.hpp).
+  //
+  // It lives on BrushState rather than beside it because `active` only means
+  // anything relative to the live brush -- the EDITED badge is exactly "the
+  // fields above no longer match `brushLibrary.presets[active]`", and the two
+  // halves of that comparison drifting into different structs is how a badge
+  // starts lying.
+  BrushLibrary brushLibrary = defaultBrushLibrary();
   // Arc-length dab spacing (CONTEXT.md "Dab", ADR-0003), in units of the
   // current brush radius: a dab emits every `spacing * radius` px of travel.
   // 0.25 is the conventional middle ground among painting apps (most sit in

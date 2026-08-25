@@ -4,6 +4,8 @@
 #include <cstring>
 
 #include "app/PenAxes.hpp"
+#include "app/StrokeSession.hpp"
+#include "brush/Library.hpp"
 #include "brush/Dynamics.hpp"
 
 namespace np {
@@ -396,6 +398,140 @@ bool runBrushDynamicsTest() {
               std::strcmp(buf, "0\xC2\xB0") == 0,
           "pen: barrel rest is 0.5 and round-trips through the gutter's inverse -- a rest "
           "at 0 would put half the range beyond a curve whose domain starts there");
+  }
+
+  // --- 13. The library, and what EDITED means -----------------------------
+  //
+  // The badge is the whole contract between the two panes: the LIBRARY pane
+  // discards edits when you pick another brush, and it is only allowed to do
+  // that silently-but-warned because the badge is trustworthy. A badge that
+  // reads EDITED on an untouched brush trains people to ignore it; one that
+  // reads clean on an edited brush loses work.
+  {
+    BrushState brush;
+    const BrushLibrary lib = defaultBrushLibrary();
+    check(lib.presets.size() >= 2, "library: a fresh install has more than one brush");
+
+    // They must actually differ, or the pane is a list of one brush under
+    // several names and every assertion below passes vacuously.
+    bool allDistinct = true;
+    for (size_t i = 0; i < lib.presets.size(); ++i)
+      for (size_t j = i + 1; j < lib.presets.size(); ++j)
+        if (lib.presets[i].name == lib.presets[j].name ||
+            (lib.presets[i].radius == lib.presets[j].radius &&
+             linkSetsEqual(lib.presets[i].links, lib.presets[j].links)))
+          allDistinct = false;
+    check(allDistinct,
+          "library: the shipped brushes are genuinely different from each other -- opening a "
+          "second one is what teaches what the first one's links were doing");
+
+    // **A freshly launched app is not edited.** Nothing applies a preset at
+    // startup -- the live brush is BrushState's defaults and the library says
+    // it is on preset 0 -- so the two have to agree by construction. They did
+    // not when the library first landed (preset 0 carried the design mock's
+    // 24 px against BrushState's 20), and the app opened its editor showing
+    // EDITED on a brush nobody had touched.
+    {
+      BrushState fresh;
+      check(!brushIsEdited(fresh),
+            "library: a FRESHLY LAUNCHED app is not edited -- preset 0 is the shipped "
+            "default, not a second opinion about it");
+    }
+
+    // apply -> capture is an identity, which is what makes Save/Revert safe.
+    applyPresetToBrush(lib.presets[1], brush);
+    brush.brushLibrary = lib;
+    brush.brushLibrary.active = 1;
+    check(!brushIsEdited(brush),
+          "library: a brush just loaded from a preset is NOT edited -- the badge starts clean");
+
+    const BrushPreset round = presetFromBrush(lib.presets[1].name, brush);
+    check(presetMatches(round, brush.radius, brush.hardness, brush.spacing, brush.roundness,
+                        brush.angle, brush.load, brush.wetness, brush.links),
+          "library: capturing a brush that was loaded from a preset reproduces that preset");
+
+    // Picking a brush must not repaint in another colour or switch tools.
+    BrushState coloured;
+    coloured.pigment = 3;
+    coloured.tool = Tool::DryBrush;
+    applyPresetToBrush(lib.presets[2], coloured);
+    check(coloured.pigment == 3 && coloured.tool == Tool::DryBrush,
+          "library: loading a preset leaves the LOADED pigment and the selected tool alone -- "
+          "a preset holds neither, so picking a brush cannot silently repaint");
+
+    // And a nudge to any one field trips the badge.
+    brush.radius += 1.0f;
+    check(brushIsEdited(brush), "library: nudging the radius trips EDITED");
+    brush.radius -= 1.0f;
+    check(!brushIsEdited(brush), "library: and putting it back clears it again");
+
+    // A link change trips it too -- the matrix is part of the brush, not a
+    // view of it.
+    addLink(brush.links, BrushLink{DynamicSource::Noise, DynamicTarget::Hue, {}, 0.0f, 1.0f,
+                                   false, true});
+    check(brushIsEdited(brush),
+          "library: adding a LINK trips EDITED -- the matrix is part of the brush, so a "
+          "dynamics edit is as much an edit as moving a slider");
+  }
+
+  // --- 14. Link-set equality is order-insensitive --------------------------
+  //
+  // `addLink()` replaces in place and `removeLink()` erases, so two brushes
+  // with identical matrices can hold their links in different orders. If
+  // equality were positional, a brush would read as EDITED after a
+  // remove-then-re-add that put everything back exactly -- and the LIBRARY
+  // pane would then offer to discard changes that do not exist.
+  {
+    BrushLinkSet a, b;
+    BrushLink one{DynamicSource::Pressure, DynamicTarget::Size, {}, 0.25f, 1.0f, false, true};
+    BrushLink two{DynamicSource::Tilt, DynamicTarget::Angle, {}, 0.0f, 360.0f, false, true};
+    addLink(a, one);
+    addLink(a, two);
+    addLink(b, two);
+    addLink(b, one);
+    check(linkSetsEqual(a, b),
+          "library: two link sets holding the same cells in a different ORDER are equal -- a "
+          "matrix cell is a cell, so position carries no meaning");
+
+    // But a real difference is still a difference.
+    BrushLinkSet c = a;
+    c.links[0].rangeLo = 0.9f;
+    check(!linkSetsEqual(a, c), "library: a changed range is not equal");
+    BrushLinkSet d = a;
+    d.links[0].invert = true;
+    check(!linkSetsEqual(a, d), "library: nor is a flipped INVERT");
+    BrushLinkSet e = a;
+    removeLink(e, DynamicSource::Tilt, DynamicTarget::Angle);
+    check(!linkSetsEqual(a, e), "library: nor is a missing link");
+
+    // An empty curve and an explicit linear one mean the same thing to
+    // `linkContribution()`, so they must compare equal -- otherwise pressing
+    // the LINEAR chip on a fresh link would mark the brush edited without
+    // changing how it paints.
+    BrushLinkSet f = a;
+    f.links[0].curve = easingCurve(EasingPreset::Linear);
+    check(linkSetsEqual(a, f),
+          "library: an empty curve equals an explicit LINEAR one -- pressing the chip that "
+          "means what the link already meant does not count as an edit");
+    BrushLinkSet g = a;
+    g.links[0].curve = easingCurve(EasingPreset::SCurve);
+    check(!linkSetsEqual(a, g), "library: but a real curve change does");
+  }
+
+  // --- 15. Naming ----------------------------------------------------------
+  {
+    BrushLibrary lib;
+    lib.presets.push_back(BrushPreset{});
+    lib.presets[0].name = "Liner";
+    check(uniquePresetName(lib, "Other") == "Other",
+          "library: a free name is returned unchanged");
+    check(uniquePresetName(lib, "Liner") == "Liner 2",
+          "library: a taken name gets a counter rather than being refused -- a library that "
+          "makes you invent names is one people stop saving into");
+    lib.presets.push_back(BrushPreset{});
+    lib.presets[1].name = "Liner 2";
+    check(uniquePresetName(lib, "Liner") == "Liner 3",
+          "library: and the counter steps past names already taken");
   }
 
   std::printf("[selftest] brush dynamics %s\n", ok ? "PASS" : "FAIL");

@@ -53,9 +53,9 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 11, "every section has exactly one spec (11)");
-  check(newOrder.size() == kOldOrder.size() + 2,
-        "the same sections plus COMPS and COLOR, reordered -- none was dropped");
+  check(sections.size() == 12, "every section has exactly one spec (12)");
+  check(newOrder.size() == kOldOrder.size() + 3,
+        "the same sections plus COMPS, COLOR and BRUSH LIBRARY, reordered -- none was dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
     // enumerators rather than against a count, so a section added to the enum

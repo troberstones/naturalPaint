@@ -122,27 +122,38 @@ bool runActiveLayerTest() {
     check(full.hardness == brush.hardness && full.spacing == brush.spacing,
           "hardness and spacing do not vary with pressure at all");
 
-    // The two curves, which are `ui/MacPaintUI`'s solver-route curves moved
-    // into one place. Asserted as the literal expressions rather than as
-    // numbers, so a change to one route has to change this line too.
-    const BrushTip half = brushTipFor(brush, noLut, 0.5f);
-    check(std::fabs(half.radius - brush.radius * (0.25f + 0.75f * 0.5f)) < 1e-5f,
-          "pressure -> size uses the solver route's own curve");
-    check(std::fabs(half.flow - brush.load * (0.15f + 0.85f * 0.5f)) < 1e-5f,
-          "pressure -> flow uses the solver route's own curve");
+    // The two curves, which used to be `bool pressureSize` / `pressureFlow`
+    // with their ranges written in as literals, and are now two links in
+    // `defaultBrushLinks()`. **Still asserted as the literal expressions**, at
+    // every pressure rather than at one -- that is what makes the migration
+    // off the booleans checkable rather than asserted in a comment. If the
+    // default link set is not exactly the old formula, a pen that has felt one
+    // way for the whole project's life quietly starts feeling another.
+    bool exactEverywhere = true;
+    for (int i = 0; i <= 20; ++i) {
+      const float p = static_cast<float>(i) / 20.0f;
+      const BrushTip t = brushTipFor(brush, noLut, p);
+      if (std::fabs(t.radius - brush.radius * (0.25f + 0.75f * p)) > 1e-5f)
+        exactEverywhere = false;
+      if (std::fabs(t.flow - brush.load * (0.15f + 0.85f * p)) > 1e-5f) exactEverywhere = false;
+    }
+    check(exactEverywhere,
+          "the default links ARE the old pressure curves, at every pressure -- 0.25+0.75p "
+          "and 0.15+0.85p, so replacing the two booleans changed no feel");
 
-    // The two toggles are independent, because a pen configured for size-only
-    // must feel the same on both routes.
-    brush.pressureFlow = false;
+    // The two are independent, because a pen configured for size-only must
+    // feel the same on both routes. Expressed by removing a link rather than
+    // by clearing a boolean; the rule under test is unchanged.
+    removeLink(brush.links, DynamicSource::Pressure, DynamicTarget::Flow);
     const BrushTip sizeOnly = brushTipFor(brush, noLut, 0.5f);
     check(sizeOnly.flow == brush.load && sizeOnly.radius < brush.radius,
-          "pressure -> flow off leaves flow alone and still sizes");
-    brush.pressureSize = false;
-    brush.pressureFlow = true;
+          "pressure -> flow removed leaves flow alone and still sizes");
+    brush.links = defaultBrushLinks();
+    removeLink(brush.links, DynamicSource::Pressure, DynamicTarget::Size);
     const BrushTip flowOnly = brushTipFor(brush, noLut, 0.5f);
     check(flowOnly.radius == brush.radius && flowOnly.flow < brush.load,
           "and the other way round");
-    brush.pressureSize = true;
+    brush.links = defaultBrushLinks();
 
     // Out-of-range pressure is clamped rather than producing a negative
     // radius, which `dabCoverage()` would read as "deposits nothing".

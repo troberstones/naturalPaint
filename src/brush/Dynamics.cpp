@@ -236,6 +236,27 @@ bool removeLink(BrushLinkSet& set, DynamicSource source, DynamicTarget target) {
   return true;
 }
 
+BrushLinkSet defaultBrushLinks() {
+  BrushLinkSet set;
+  BrushLink size;
+  size.source = DynamicSource::Pressure;
+  size.target = DynamicTarget::Size;
+  // The literals from the two routes that used to read `pressureSize`, kept
+  // as the range they always were. A linear curve, so the link IS the old
+  // expression rather than an approximation of it.
+  size.rangeLo = 0.25f;
+  size.rangeHi = 1.0f;
+  addLink(set, size);
+
+  BrushLink flow;
+  flow.source = DynamicSource::Pressure;
+  flow.target = DynamicTarget::Flow;
+  flow.rangeLo = 0.15f;
+  flow.rangeHi = 1.0f;
+  addLink(set, flow);
+  return set;
+}
+
 DynamicResult evaluateLinks(const BrushLinkSet& set,
                             const DynamicInputs& inputs) noexcept {
   DynamicResult out{};
