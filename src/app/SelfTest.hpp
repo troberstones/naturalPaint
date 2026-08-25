@@ -3377,5 +3377,46 @@ bool runFilterMenuTest();
 //    pass vacuously, then showing the pigment's own numbers are what is
 //    left standing.
 bool runChromeConsistencyTest();
+// Reachability audit D5 / PRD I13 (P1) -- "Saves are read back and
+// structurally verified before the original leaves memory." Unimplemented
+// before this: `saveNpaint()` had no reader call, `saveDocumentAs()` went
+// straight from write to bookkeeping, and app/Journal.cpp's own crash
+// checkpoint called its hash check "a small down payment on PRD I13, which
+// does not exist yet."
+//
+// **The finding this step surfaced that outranks the missing readback:**
+// `saveNpaint()` writes in place. With verification off -- every caller
+// before this step, and app/Journal.cpp's periodic checkpoint still -- a
+// write that dies partway does not leave a merely-incomplete file; its own
+// failure path removes it outright, so a failed save can destroy a
+// previously-good version rather than merely fail to add a new one.
+//
+// io/NpaintFile's `NpaintSaveOptions::verifyReadback` (off by default, forced
+// on by app/DocumentLifecycle.cpp's saveDocumentAs() for every explicit
+// Save / Save As / Save a Copy / Save Incremental) closes both problems with
+// one mechanism: write to a temp sibling, read it back through
+// `loadNpaint()` -- the same reader File > Open uses -- compare structurally
+// and pixel-for-pixel against the in-memory document under
+// `verifyNpaintRoundTrip()`'s stated identity-tile rule, and only then
+// rename it into place. At every failure point the original file has not
+// been opened for writing at all.
+//
+// Covered, in order: a good save verifying and marking the document clean
+// with the close guard falling silent; the assertion a hash cannot make (two
+// different, individually intact documents, one file, one caught by
+// structural comparison and not by any byte check); a genuinely truncated
+// file refused, beside a demonstration that a byte-level read of it succeeds
+// completely; a forced write failure and a forced rename failure, each
+// against a path already holding a known-good file, proving that file's
+// size is unchanged; and the same guarantee one layer up through
+// saveDocumentAs() -- a failed save leaves the document dirty, the in-memory
+// edit untouched, and app/CloseDecision.hpp's close guard still asking.
+//
+// Gated on `oiioBackendCompiledIn()` and prints a skip line rather than
+// going quiet, matching runOpenAnyFileTest()'s and runNpaintFormatTest()'s
+// own convention -- not reachable in practice, since the top-level
+// CMakeLists.txt now defines NP_USE_OIIO unconditionally, but kept per
+// PLAN.md 1.5's "an unexercised build option is not a seam."
+bool runSaveReadbackTest();
 
 }  // namespace np

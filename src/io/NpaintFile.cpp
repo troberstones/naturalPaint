@@ -7,8 +7,10 @@
 #include <cstring>
 
 #include <array>
+#include <filesystem>
 #include <limits>
 #include <optional>
+#include <unordered_set>
 #include <utility>
 
 #include "core/Channels.hpp"
@@ -1079,6 +1081,101 @@ DecodedImage decodeCompositePart(const NpaintRawPart& part) {
   return img;
 }
 
+// --- PRD I13 helpers: temp-file naming and the round-trip comparator ------
+
+// True when every stored word is exactly zero -- the identity `Tile` and
+// `PigmentTile` share (both are interleaved half-float channels with no
+// distinguished "reveal" value, unlike `MaskTile`), and therefore the value
+// an unallocated tile of either type already reads as. Used by
+// verifyNpaintRoundTrip() below, not by the writer or reader -- those have
+// their own copies of this exact test (unpackRgbLayerPart(),
+// unpackPigmentLayerPart()) that this deliberately does not call, because a
+// bug shared between the writer's drop rule and the verifier's identity rule
+// would make the two agree about the wrong thing and the whole check would
+// prove nothing.
+bool allStoredWordsZero(const uint16_t* data, size_t count) noexcept {
+  for (size_t i = 0; i < count; ++i) {
+    if (data[i] != 0) return false;
+  }
+  return true;
+}
+
+// Compares two tile stores of the same type under the round-trip identity
+// rule verifyNpaintRoundTrip() argues in io/NpaintFile.hpp: a tile present on
+// exactly one side is only a mismatch if it is not that store's identity
+// value, because the writer and reader are both allowed to drop one. Every
+// tile present on *both* sides is compared bit-for-bit at zero tolerance --
+// no rounding stage separates a tile in memory from the same tile decoded
+// back out of the file, so anything but equality there is a real defect.
+//
+// `isIdentity` is the per-type predicate (`allStoredWordsZero` for `Tile` and
+// `PigmentTile`, `MaskTile::isFullyRevealed()`, `SelectionTile::
+// selectsNothing()`) -- passed in rather than dispatched on `TileType` so
+// this stays one function for four unrelated types instead of four near-
+// copies of it.
+template <typename Store, typename IsIdentity>
+bool tileStoresRoundTripEqual(const Store& memory, const Store& reloaded, IsIdentity isIdentity,
+                              std::string* mismatch) {
+  using TileType = typename Store::TileType;
+  std::unordered_set<TileCoord> coords;
+  coords.reserve(memory.occupiedTileCount() + reloaded.occupiedTileCount());
+  for (const auto& [coord, tile] : memory) coords.insert(coord);
+  for (const auto& [coord, tile] : reloaded) coords.insert(coord);
+
+  for (const TileCoord& coord : coords) {
+    const TileType* a = memory.find(coord);
+    const TileType* b = reloaded.find(coord);
+    if (a && b) {
+      if (std::memcmp(a->data(), b->data(), sizeof(TileType)) != 0) {
+        if (mismatch) {
+          *mismatch = "tile (" + std::to_string(coord.x) + "," + std::to_string(coord.y) +
+                      ") holds different pixels after the round trip";
+        }
+        return false;
+      }
+      continue;
+    }
+    // Present on exactly one side. Allowed only when the side that has it
+    // holds nothing but the identity value -- see this function's own doc
+    // comment and io/NpaintFile.hpp's verifyNpaintRoundTrip() for the four
+    // named cases this covers.
+    const TileType& only = a ? *a : *b;
+    if (!isIdentity(only)) {
+      if (mismatch) {
+        *mismatch = "tile (" + std::to_string(coord.x) + "," + std::to_string(coord.y) + ") is " +
+                    (a ? "allocated in the document being saved but absent after the round trip"
+                       : "absent from the document being saved but present after the round trip") +
+                    ", and is not empty -- an allocated-but-empty tile is allowed to change "
+                    "presence (io/NpaintFile.cpp's own drop-on-read rule), a non-empty one is not";
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+// Where saveNpaint() writes when `options.verifyReadback` is set: a sibling
+// of `path`, in the same directory (so the final rename is same-filesystem
+// and therefore atomic rather than a copy), with `.tmp` spliced in before the
+// extension rather than appended after it.
+//
+// The splice, not a simple `path + ".tmp"` suffix, is deliberate and copies
+// app/Journal.cpp's own established convention for exactly the reason its
+// comment there gives: `loadNpaint()`'s read side opens the temp file through
+// `OIIO::ImageInput::open(path)`, which tries format detection by extension
+// before falling back to sniffing file contents, and a name ending in only
+// `.tmp` is one that lookup has never heard of. `foo.npaint` becomes
+// `foo.tmp.npaint`, `foo.exr` becomes `foo.tmp.exr` -- either way the
+// extension a working reader keys on survives, and content sniffing (EXR has
+// a magic number) would likely have caught even a bare `.tmp` suffix, but
+// there is no reason to lean on "likely" when the exact-suffix form is
+// already proven in this codebase.
+std::string npaintTempSiblingPath(const std::string& path) {
+  const std::filesystem::path p(path);
+  const std::string tempName = p.stem().string() + ".tmp" + p.extension().string();
+  return (p.parent_path() / tempName).string();
+}
+
 }  // namespace
 
 bool npaintCompressionIsLossy(std::string_view name, std::string* whyOut) {
@@ -1117,6 +1214,181 @@ bool npaintCompressionIsLossy(std::string_view name, std::string* whyOut) {
   }
   if (whyOut) whyOut->clear();
   return false;
+}
+
+NpaintVerifyResult verifyNpaintRoundTrip(const Document& doc, const std::string& path) {
+  NpaintVerifyResult result;
+  auto fail = [&](std::string message) {
+    result.ok = false;
+    result.error = std::move(message);
+    return result;
+  };
+
+  // The whole point: this is loadNpaint(), the same function File > Open
+  // calls, not a second reduced-effort reader written for this check alone.
+  const NpaintLoadResult loaded = loadNpaint(path);
+  if (!loaded.ok) {
+    return fail("'" + path +
+                "' was written but could not be read back through the same reader File > Open "
+                "uses (" + loaded.error + "). The bytes on disk cannot be trusted as a document.");
+  }
+  const Document& back = loaded.document;
+
+  if (back.width != doc.width || back.height != doc.height) {
+    return fail("'" + path + "' reads back as " + std::to_string(back.width) + "x" +
+                std::to_string(back.height) + ", not the " + std::to_string(doc.width) + "x" +
+                std::to_string(doc.height) + " canvas that was saved.");
+  }
+  if (back.pigmentBasis != doc.pigmentBasis) {
+    return fail("'" + path + "' reads back declaring pigment basis \"" + back.pigmentBasis +
+                "\", not \"" + doc.pigmentBasis + "\" as the document being saved does.");
+  }
+  // Chromaticities: a native FLOAT[8] EXR attribute with no HALF stage, so
+  // this is held to the same zero-tolerance standard as the pixel channels
+  // rather than given a numeric tolerance it does not need.
+  {
+    const Primaries& a = doc.workingSpace.primaries;
+    const Primaries& b = back.workingSpace.primaries;
+    if (a.redX != b.redX || a.redY != b.redY || a.greenX != b.greenX || a.greenY != b.greenY ||
+        a.blueX != b.blueX || a.blueY != b.blueY || a.whiteX != b.whiteX ||
+        a.whiteY != b.whiteY) {
+      return fail("'" + path +
+                  "' reads back declaring different chromaticities than the document being "
+                  "saved carries.");
+    }
+  }
+
+  if (back.layers.size() != doc.layers.size()) {
+    return fail("'" + path + "' reads back " + std::to_string(back.layers.size()) +
+                " layer(s), not the " + std::to_string(doc.layers.size()) +
+                " the document being saved holds.");
+  }
+  for (size_t i = 0; i < doc.layers.size(); ++i) {
+    const Layer& a = doc.layers[i];
+    const Layer& b = back.layers[i];
+    const std::string where = "layer " + std::to_string(i) + " (\"" + a.name + "\")";
+    if (a.kind != b.kind) {
+      return fail(where + " reads back as a " + layerKindName(b.kind) + " layer, not " +
+                  layerKindName(a.kind) + ".");
+    }
+    if (a.name != b.name) return fail(where + " reads back named \"" + b.name + "\".");
+    if (a.blend != b.blend) {
+      return fail(where + " reads back with blend \"" + b.blend + "\", not \"" + a.blend + "\".");
+    }
+    if (a.opacity != b.opacity) {
+      return fail(where + " reads back at opacity " + std::to_string(b.opacity) + ", not " +
+                  std::to_string(a.opacity) + ".");
+    }
+    if (a.visible != b.visible) {
+      return fail(where + " reads back " + (b.visible ? "visible" : "hidden") +
+                  ", the opposite of what was saved.");
+    }
+    if (a.locked != b.locked) {
+      return fail(where + " reads back " + (b.locked ? "locked" : "unlocked") +
+                  ", the opposite of what was saved.");
+    }
+    if (a.clipped != b.clipped) {
+      return fail(where + " reads back " + (b.clipped ? "clipped" : "unclipped") +
+                  ", the opposite of what was saved.");
+    }
+    if (a.parent != b.parent) {
+      return fail(where + " reads back with parent \"" + b.parent + "\", not \"" + a.parent +
+                  "\".");
+    }
+    if (a.colorLabel != b.colorLabel) {
+      return fail(where + " reads back with colour label \"" + b.colorLabel + "\", not \"" +
+                  a.colorLabel + "\".");
+    }
+    if (a.linkGroup != b.linkGroup) {
+      return fail(where + " reads back in link group " + std::to_string(b.linkGroup) +
+                  ", not " + std::to_string(a.linkGroup) + ".");
+    }
+    // io/OpSerial's own byte encoding, not a field-by-field walk of
+    // core::Op's dozen union-like param blocks -- this is what np:ops
+    // actually persists, so comparing it directly is comparing the save
+    // rather than reimplementing a second opinion about it.
+    if (serializeOpStack(a.ops) != serializeOpStack(b.ops)) {
+      return fail(where + "'s op stack reads back different from what was saved.");
+    }
+
+    if (a.rgbTiles.has_value() != b.rgbTiles.has_value()) {
+      return fail(where + (b.rgbTiles.has_value() ? " reads back with RGB tile storage it did "
+                                                     "not have"
+                                                   : " reads back with its RGB tile storage "
+                                                     "missing entirely") +
+                  ".");
+    }
+    if (a.rgbTiles) {
+      std::string why;
+      if (!tileStoresRoundTripEqual(
+              *a.rgbTiles, *b.rgbTiles,
+              [](const Tile& t) { return allStoredWordsZero(t.data(), Tile::kTexelCount); },
+              &why)) {
+        return fail(where + ": " + why + ".");
+      }
+    }
+    if (a.pigmentTiles.has_value() != b.pigmentTiles.has_value()) {
+      return fail(where + (b.pigmentTiles.has_value() ? " reads back with pigment tile storage "
+                                                         "it did not have"
+                                                       : " reads back with its pigment tile "
+                                                         "storage missing entirely") +
+                  ".");
+    }
+    if (a.pigmentTiles) {
+      std::string why;
+      if (!tileStoresRoundTripEqual(*a.pigmentTiles, *b.pigmentTiles,
+                                    [](const PigmentTile& t) {
+                                      return allStoredWordsZero(t.data(), PigmentTile::kTexelCount);
+                                    },
+                                    &why)) {
+        return fail(where + ": " + why + ".");
+      }
+    }
+    if (a.mask.has_value() != b.mask.has_value()) {
+      return fail(where +
+                  (b.mask.has_value() ? " reads back with a layer mask it did not have"
+                                       : " reads back with its layer mask missing entirely") +
+                  ".");
+    }
+    if (a.mask) {
+      std::string why;
+      if (!tileStoresRoundTripEqual(
+              *a.mask, *b.mask, [](const MaskTile& t) { return t.isFullyRevealed(); }, &why)) {
+        return fail(where + ": " + why + ".");
+      }
+    }
+  }
+
+  // Layer comps (PRD C14): compared whole, with LayerComp's own generated
+  // operator==. This is also where Layer::id actually surfaces -- see
+  // verifyNpaintRoundTrip()'s header comment on why the id is not compared
+  // per layer.
+  if (back.comps != doc.comps) {
+    return fail("'" + path +
+                "' reads back with different layer comps than the document being saved holds.");
+  }
+
+  if (back.channels.size() != doc.channels.size()) {
+    return fail("'" + path + "' reads back " + std::to_string(back.channels.size()) +
+                " alpha channel(s), not the " + std::to_string(doc.channels.size()) +
+                " the document being saved holds.");
+  }
+  for (size_t i = 0; i < doc.channels.size(); ++i) {
+    const AlphaChannel& a = doc.channels[i];
+    const AlphaChannel& b = back.channels[i];
+    if (a.name != b.name) {
+      return fail("alpha channel " + std::to_string(i) + " reads back named \"" + b.name +
+                  "\", not \"" + a.name + "\".");
+    }
+    std::string why;
+    if (!tileStoresRoundTripEqual(
+            a.tiles, b.tiles, [](const SelectionTile& t) { return t.selectsNothing(); }, &why)) {
+      return fail("alpha channel \"" + a.name + "\": " + why + ".");
+    }
+  }
+
+  result.ok = true;
+  return result;
 }
 
 NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
@@ -1646,10 +1918,102 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     }
   }
 
-  std::string error;
-  if (!oiioWriteMultiPartExr(request, &error)) return fail(error);
+  const int32_t partsWritten = static_cast<int32_t>(request.parts.size());
+
+  if (!options.verifyReadback) {
+    // Unchanged from before this option existed: open `path` directly and
+    // write straight into it. Every existing caller -- app/Journal's crash
+    // checkpoint, and every `--selftest` call that predates PRD I13 -- takes
+    // this branch, byte for byte the same as it did before. See
+    // NpaintSaveOptions::verifyReadback for why this in-place write is a real
+    // hazard (a failure partway can destroy a previously-good file at `path`)
+    // and why that hazard is reported rather than silently fixed for callers
+    // that have not opted into the fix.
+    std::string error;
+    if (!oiioWriteMultiPartExr(request, &error)) return fail(error);
+    result.ok = true;
+    result.partsWritten = partsWritten;
+    return result;
+  }
+
+  // --- Verified save: write beside `path`, read it back, only then replace -
+  //
+  // This is the whole of PRD I13's "before the original leaves memory": at
+  // every one of the four places this can fail below -- the write itself,
+  // the reload, the comparison, the final rename -- `path` has not been
+  // opened for writing, so whatever was there when this call started is
+  // exactly what is there if it returns `!ok`. See
+  // NpaintSaveOptions::verifyReadback for the cost argument and why only some
+  // callers set this.
+  namespace fs = std::filesystem;
+  const std::string tempPath = npaintTempSiblingPath(path);
+  request.path = tempPath;
+
+  std::string writeError;
+  if (!oiioWriteMultiPartExr(request, &writeError)) {
+    // oiioWriteMultiPartExr()'s own failure path already removed `tempPath`
+    // ("never leave a partial document behind") -- `path` itself was never
+    // touched.
+    return fail("save refused: writing '" + path + "' failed before it could even be verified (" +
+                writeError +
+                "). The file that was at '" + path + "' before this save, if any, was not "
+                "touched.");
+  }
+
+  // What verifyNpaintRoundTrip() is asked to confirm is what was actually
+  // WRITTEN, not `doc` read back to the letter -- and those two are not
+  // always the same string. `np:basis` above is stamped from `carry->basis`
+  // when it is non-empty, exactly the precedence kNpaintPigmentBasis and the
+  // basis-mismatch refusal already argue: a non-empty carried basis is what
+  // the file this document came from declared, and PRD I10 carries it
+  // verbatim. An RGB-only document loaded from a foreign-basis file is the
+  // legitimate case that reaches here with `doc.pigmentBasis` and
+  // `carry->basis` genuinely different (the mismatch refusal above only
+  // fires when the document holds Pigment layers) -- comparing the reload
+  // against `doc.pigmentBasis` unmodified would make every such save fail
+  // its own verification, which is not a corrupted save, it is this
+  // function forgetting its own precedence rule. `expected` is a cheap
+  // copy -- `core::Document`'s tile stores are copy-on-write, so this is
+  // refcount increments, not a second copy of any pixel -- with only the
+  // one field corrected.
+  Document expected = doc;
+  if (carry && !carry->basis.empty()) expected.pigmentBasis = carry->basis;
+  const NpaintVerifyResult verified = verifyNpaintRoundTrip(expected, tempPath);
+  if (!verified.ok) {
+    std::error_code removeEc;
+    fs::remove(tempPath, removeEc);
+    result.ok = false;
+    result.verificationFailed = true;
+    // Names the file (twice -- the path the user asked to save to, and what
+    // went wrong reading it back), says the previous version is intact, and
+    // says what to do next, matching app/StrokeSession.hpp's PixelOpRefusal
+    // and the bucket refusals' house style: name the problem, name the fix.
+    result.error =
+        "save refused: '" + path +
+        "' did not verify after being written, so the write was discarded and the file at '" +
+        path + "' is exactly as it was before this save -- your previous version is safe. " +
+        verified.error +
+        " Try saving again; if this keeps happening, check available disk space and that '" +
+        path + "' and its folder are writable, then report it -- a save that writes but does "
+               "not verify usually means a bug in the writer, not a full disk.";
+    return result;
+  }
+
+  std::error_code renameEc;
+  fs::rename(tempPath, path, renameEc);
+  if (renameEc) {
+    std::error_code removeEc;
+    fs::remove(tempPath, removeEc);
+    return fail("save refused: '" + path +
+                "' was written and verified correctly, but could not be put in place (" +
+                renameEc.message() +
+                "). The file that was at '" + path + "' before this save, if any, was not "
+                "touched; nothing was lost, but nothing new was saved either. Check that '" +
+                path + "' and its folder are writable and try again.");
+  }
+
   result.ok = true;
-  result.partsWritten = static_cast<int32_t>(request.parts.size());
+  result.partsWritten = partsWritten;
   return result;
 }
 

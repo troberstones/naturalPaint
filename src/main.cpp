@@ -1948,6 +1948,11 @@ int main(int argc, char** argv) {
     // no window; see the section's own doc comment for what that leaves
     // unverified.
     const bool chromeConsistencyOk = np::runChromeConsistencyTest();
+    // Reachability audit D5 / PRD I13: a save is now read back through the
+    // same reader File > Open uses and structurally verified before the
+    // original file is replaced, closing the in-place-write hazard the step
+    // found alongside the missing readback.
+    const bool saveReadbackOk = np::runSaveReadbackTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1978,7 +1983,8 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
-                    openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk;
+                    openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
+                    saveReadbackOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
