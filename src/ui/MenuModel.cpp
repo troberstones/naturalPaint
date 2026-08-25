@@ -102,6 +102,20 @@ const MenuItemSpec* specTable() {
 
     family(MenuAction::LayerCommandItem);
     family(MenuAction::LayerSetCommandItem);
+
+    // The five refine ops each carry "..." because every one of them opens a
+    // dialog rather than acting on the spot (MenuEffect::Deferred, below) --
+    // the same convention "Export As..." and "Add Guide..." already use for
+    // exactly that reason.
+    set(MenuAction::SelectGrow, "Grow...", "");
+    set(MenuAction::SelectShrink, "Shrink...", "");
+    set(MenuAction::SelectFeather, "Feather...", "");
+    set(MenuAction::SelectColourRange, "Colour Range...", "");
+    set(MenuAction::SelectLuminanceRange, "Luminance Range...", "");
+    // No "...": it needs nothing from the user and acts immediately, the
+    // same reason Deselect and Invert (Edit menu) carry none either.
+    set(MenuAction::SelectUndoRefine, "Undo Refine", "");
+
     family(MenuAction::PaintModeItem);
     family(MenuAction::ToolItem);
 
@@ -314,6 +328,12 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::ClearCanvas: return "ClearCanvas";
     case MenuAction::LayerCommandItem: return "LayerCommandItem";
     case MenuAction::LayerSetCommandItem: return "LayerSetCommandItem";
+    case MenuAction::SelectGrow: return "SelectGrow";
+    case MenuAction::SelectShrink: return "SelectShrink";
+    case MenuAction::SelectFeather: return "SelectFeather";
+    case MenuAction::SelectColourRange: return "SelectColourRange";
+    case MenuAction::SelectLuminanceRange: return "SelectLuminanceRange";
+    case MenuAction::SelectUndoRefine: return "SelectUndoRefine";
     case MenuAction::PaintModeItem: return "PaintModeItem";
     case MenuAction::ToolItem: return "ToolItem";
     case MenuAction::PauseSolver: return "PauseSolver";
@@ -387,6 +407,18 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::AddNoise:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
+    // The five refine dialogs -- a radius, or a colour/band plus tolerance --
+    // for the identical reason: opening one is `ImGui::OpenPopup()`, which a
+    // native menu's AppKit callback has no frame to call.
+    //
+    // `SelectUndoRefine` is NOT here. It needs nothing from the user -- it
+    // pops a stack and installs what was there -- so it acts immediately,
+    // the same as Deselect and Invert.
+    case MenuAction::SelectGrow:
+    case MenuAction::SelectShrink:
+    case MenuAction::SelectFeather:
+    case MenuAction::SelectColourRange:
+    case MenuAction::SelectLuminanceRange:
       return MenuEffect::Deferred;
 
     default:
@@ -553,6 +585,66 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     image.children.push_back(item(MenuAction::ImageSize, ctx.hasDocument));
     image.children.push_back(item(MenuAction::CanvasSize, ctx.hasDocument));
     bar.push_back(std::move(image));
+  }
+
+  // ----------------------------------------------------------------- Select
+  //
+  // docs/reachability-audit.md C5: five proven engines (PRD E4/E8's grow,
+  // shrink, feather; PRD E9's colour range, luminance range) with no caller
+  // outside `--selftest`, because this menu did not exist. Placed right after
+  // Layer -- Photoshop's own bar puts Select next to Layer too (on the far
+  // side of an Image menu this build does not have), and every other item
+  // here operates on the SAME thing Layer's "Selection" submenu already
+  // names: the active selection.
+  //
+  // Select All / Deselect / Reselect / Invert are deliberately NOT here --
+  // they are the Edit menu's item, and `ui/MacPaintUI.cpp`'s "selection and
+  // clipboard commands" block already dispatches all four through
+  // `AppState::requestSelectAll` &c. A second copy in this menu would give a
+  // user two places that could disagree about what is selected.
+  {
+    MenuNode select = submenu("Select");
+    std::vector<MenuNode>& s = select.children;
+
+    // A disabled item with no tooltip is the "silent no-op" this whole audit
+    // exists to name (docs/reachability-audit.md's own table). Every refusal
+    // below says what is missing, not merely that something is.
+    auto refusable = [](MenuNode n, bool enabled, const char* why) {
+      n.enabled = enabled;
+      if (!enabled) n.tooltip = why;
+      return n;
+    };
+
+    s.push_back(refusable(
+        item(MenuAction::SelectGrow), ctx.hasEngagedSelection,
+        "Grow moves an existing selection's edge outward by a distance -- make a "
+        "selection first (core/SelectionRefine.hpp: grow takes a Selection, not the "
+        "unrestricted 'no selection' state)."));
+    s.push_back(refusable(
+        item(MenuAction::SelectShrink), ctx.hasEngagedSelection,
+        "Shrink moves an existing selection's edge inward by a distance -- make a "
+        "selection first."));
+    s.push_back(refusable(
+        item(MenuAction::SelectFeather), ctx.hasEngagedSelection,
+        "Feather softens an existing selection's edge with a blur -- make a selection "
+        "first."));
+    s.push_back(separator());
+    s.push_back(refusable(
+        item(MenuAction::SelectColourRange), ctx.hasRgbSource,
+        "Colour Range samples the active layer's own pixels, connected or not -- open "
+        "an RGB layer with something painted on it. No selection needs to exist first."));
+    s.push_back(refusable(
+        item(MenuAction::SelectLuminanceRange), ctx.hasRgbSource,
+        "Luminance Range samples the active layer's own pixels by brightness -- open an "
+        "RGB layer with something painted on it. No selection needs to exist first."));
+    s.push_back(separator());
+    s.push_back(refusable(
+        item(MenuAction::SelectUndoRefine), ctx.hasRefineUndo,
+        "Nothing to undo. Grow, Shrink, Feather, Colour Range and Luminance Range each "
+        "push one step here; the ordinary Undo does not reach a selection change (see "
+        "OpenDocument::selection in app/DocumentLifecycle.hpp)."));
+
+    bar.push_back(std::move(select));
   }
 
   // ---------------------------------------------------------------- Medium

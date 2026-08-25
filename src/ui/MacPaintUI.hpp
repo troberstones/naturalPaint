@@ -16,6 +16,7 @@
 // For `SDL_SystemCursor`, the return type of `canvasCursorRequest()` below.
 // ui/ToolCursor is the module that owns what the cursor means; this header only
 // carries one of its values across.
+#include "ui/MenuModel.hpp"
 #include "ui/ToolCursor.hpp"
 
 namespace np {
@@ -303,5 +304,88 @@ struct EyedropperPick {
 // pick, and "I clicked on empty canvas" is not an instruction to paint in
 // black.
 EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at);
+// ---------------------------------------------------------------------------
+// The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9) -- exposed
+// for --selftest for the identical reason `commitDrawnSelection()` above is.
+// ---------------------------------------------------------------------------
+//
+// The ImGui popups around these (ui/MacPaintUI.cpp's drawSelectMenuDialogs())
+// cannot run headless -- there is no window, no frame, nothing for
+// `ImGui::BeginPopupModal()` to draw into. What CAN run headless, and what
+// app/selftest/SelectMenu.cpp actually needs proven, is the boundary between
+// "what the dialog holds" and "what the engine sees": that
+// `MenuAction::SelectGrow` reaches `growSelection()` and not
+// `shrinkSelection()`, that the radius on screen is the radius the engine
+// receives rather than a hardcoded default, and that colour/luminance range
+// decode and forward their sliders rather than falling back to
+// `SelectionRangeParams{}`'s defaults. These six functions ARE that boundary
+// -- every popup's confirm button calls exactly one of them and nothing else,
+// so a test that calls them the same way the button does is testing the real
+// wiring and not a re-implementation of it.
+
+// The enable predicate for Grow, Shrink and Feather: an ENGAGED selection.
+// All three take a `const Selection&` (core/SelectionRefine.hpp,
+// ops/Feather.hpp), not a `const Selection*`, so there is no way to hand them
+// "no restriction" -- `od.selection` must `has_value()`.
+bool selectRefineEnabled(const OpenDocument& od) noexcept;
+
+// The enable predicate for Colour Range and Luminance Range: an RGB layer to
+// sample. Both take a `const TileStore&`, not a `Selection` at all (PRD E9),
+// so unlike the three above they need NO selection already drawn.
+bool selectRangeEnabled(const OpenDocument& od) noexcept;
+
+// The enable predicate for `MenuAction::SelectUndoRefine`: the stack this
+// file's own `installRefinedSelection()` pushes to is non-empty.
+bool selectUndoRefineEnabled(const OpenDocument& od) noexcept;
+
+// The dialog -> engine boundary for Grow, Shrink and Feather. `action` picks
+// the engine function -- `SelectGrow` to `growSelection()`, `SelectShrink` to
+// `shrinkSelection()`, `SelectFeather` to `featherSelection()` -- and
+// `radius` is passed through exactly as the dialog's slider holds it. Any
+// other `action` returns `current` unchanged; the three popups this backs
+// never pass one.
+Selection applySelectRefineAction(MenuAction action, const Selection& current, float radius);
+
+// The dialog -> engine boundary for Colour Range. `swatchSrgb` is the
+// dialog's `ImGui::ColorEdit3` value -- display-encoded sRGB, matching
+// `foregroundLinearRgba()`'s own input above -- and is decoded to STRAIGHT
+// LINEAR here, the one boundary core/SelectionRefine.hpp asks for, rather
+// than at every call site. `tolerance`/`edgeBand` are the dialog's own
+// sliders, forwarded into a `SelectionRangeParams` rather than left at that
+// struct's defaults.
+Selection applySelectColourRangeAction(const std::array<float, 3>& swatchSrgb, float tolerance,
+                                       float edgeBand, const TileStore& source, int32_t width,
+                                       int32_t height);
+
+// The dialog -> engine boundary for Luminance Range. `low`/`high`/`edgeBand`
+// are the dialog's own sliders -- display-encoded Rec.709 luminance
+// (core/SelectionRefine.hpp), forwarded into a `SelectionLuminanceRange`
+// rather than left at that struct's defaults (which select nearly
+// everything: 0..1).
+Selection applySelectLuminanceRangeAction(float low, float high, float edgeBand,
+                                          const TileStore& source, int32_t width, int32_t height);
+
+// Where every one of the six functions above ends up: installs `result` as
+// `od.selection` (through `installSelection()`, so the revision bump and the
+// existing `lastDeselected` bookkeeping happen exactly once) and pushes what
+// it REPLACED onto `od.refineUndoStack` first. See that member's own comment
+// (app/DocumentLifecycle.hpp) for why this is a dedicated stack and not
+// `core::History`.
+//
+// Not `installSelection()` itself: that function is also what every
+// interactive marquee drag calls, once a frame, for as long as the drag
+// lasts -- and a marquee drag is not five hundred refine-undo entries.
+void installRefinedSelection(OpenDocument& od, std::optional<Selection> result);
+
+// `MenuAction::SelectUndoRefine`'s body. Pops the most recent entry off
+// `od.refineUndoStack` and restores exactly the selection it replaced
+// (`std::nullopt` included -- see that member's comment on why "no
+// selection" is a real, restorable state and not the same as an
+// empty-but-engaged one). Returns false and changes nothing on an empty
+// stack, which is the enable predicate above turned into a runtime guard as
+// well as a greyed menu item -- a native menu backend re-validates on open,
+// but a queued action from before the last validation should still refuse
+// quietly rather than pop a stack that emptied out from under it.
+bool undoLastRefine(OpenDocument& od);
 
 }  // namespace np

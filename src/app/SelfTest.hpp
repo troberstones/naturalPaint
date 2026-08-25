@@ -3150,6 +3150,36 @@ bool runMenuBasicsTest();
 //    opening but not for a check mark flipping.
 bool runMenuModelTest();
 
+// The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9). Headless --
+// no window, no GPU, no ImGui context.
+//
+// Five engines -- grow, shrink (PRD E8's distance transform), feather (a
+// blur of coverage), colour range and luminance range (PRD E9's whole-layer
+// predicate passes) -- were correct and tested (app/selftest/
+// SelectionRefine.cpp, app/selftest/Blur.cpp) with no caller outside those
+// two sections, because there was no Select menu to put them behind. This
+// section does not restate that those engines are correct; it proves the
+// menu built on top of them actually reaches them.
+//
+// **What is asserted, and why it is not the same claim as the engine
+// section's:** that `MenuAction::SelectGrow` reaches `growSelection()` and
+// not `shrinkSelection()`; that a dialog's own radius (or swatch, tolerance,
+// band) is what the engine receives rather than a struct's default that
+// happened to compile; that growing by N then shrinking by N is a
+// morphological CLOSING, not an identity -- extensive, so a gap narrower
+// than the radius stays bridged once bridged, which core/SelectionRefine.hpp
+// says in words and this section demonstrates on a texel that starts at
+// coverage 0.0 and stays above it; that a null TILE inside an engaged
+// Selection reads as coverage 0.0 at a grow's boundary, never as the
+// OPPOSITE convention a null `Selection*` uses (1.0, "no restriction"); that
+// the three enable predicates are pure functions of a hand-built
+// `OpenDocument`; and that each of the five operations -- which changes only
+// a Selection, never a pixel -- pushes exactly one entry onto a dedicated
+// undo stack (`OpenDocument::refineUndoStack`, deliberately NOT
+// `core::History`, whose entries hold nothing but a `core::Document`) and
+// that undoing restores the previous mask exactly, `std::nullopt` included.
+bool runSelectMenuTest();
+
 // **File > Open accepts any file this build can read, and decides which reader
 // gets it from the file's bytes** (app/OpenAnyFile, io/FileKind), plus the
 // drag-and-drop gesture that had no handler at all.

@@ -55,6 +55,15 @@ MenuContext richContext() {
   ctx.tools = {row("Brush", true, true), row("Eraser")};
   ctx.openDocuments = {row("wash.npaint", true, true), row("sketch.npaint *")};
   ctx.hasGuides = true;
+  // docs/reachability-audit.md C5: the Select menu (track7/selectmenu). All
+  // three true, matching this function's own "every menu is populated" rule
+  // -- anything less and Grow/Shrink/Feather/Colour Range/Luminance
+  // Range/Undo Refine would be legitimately absent from the reachable set
+  // rather than merely disabled, which is a different failure from the one
+  // section B below is checking for.
+  ctx.hasEngagedSelection = true;
+  ctx.hasRgbSource = true;
+  ctx.hasRefineUndo = true;
   return ctx;
 }
 
@@ -119,21 +128,33 @@ bool runMenuModelTest() {
   std::printf("  -- A. the ids: one action, one spec, and no two the same --\n");
 
   // **41 was the count of `ImGui::MenuItem()` call sites in the block this
-  // model replaced**, counted rather than taken on trust (the brief that
-  // commissioned this said 43). It stayed pinned because the number was the
+  // model originally replaced**, counted rather than taken on trust (the brief
+  // that commissioned this said 43). It is pinned because the number is the
   // only thing standing between "the extraction is complete" and "the
   // extraction dropped two items nobody has opened that menu since".
   //
-  // **52 now** -- track7/menubasics (docs/reachability-audit.md D1, D2) added
-  // the eleven Edit-menu actions the audit found written, tested and reachable
-  // by nothing but a key: Undo, Redo, Cut, Copy, Copy Merged, Paste, Delete,
-  // Select All, Deselect, Reselect, Invert Selection. This literal is exactly
-  // as brittle to the NEXT track that adds an action as it was before, and
-  // that brittleness is the point -- see the comment two lines up.
-  check(kMenuActionCount == 52,
-        "ids: exactly 52 actions -- one per MenuItem() call site the extraction "
-        "replaced, plus D1/D2's eleven Edit-menu additions, so an item lost in a "
-        "later edit fails here");
+  // **64 now, and the arithmetic is the point.** Three tracks landed menus in
+  // one window and each pinned this literal to its own total in its own
+  // branch -- 52, 47, and a third -- so all three were wrong about the merge
+  // and none could have known. The union, counted from the merged enum rather
+  // than taken from any one of them:
+  //
+  //     41  the original extraction
+  //   + 11  D1/D2: Undo, Redo, Cut, Copy, Copy Merged, Paste, Delete,
+  //         Select All, Deselect, Reselect, Invert Selection -- all written,
+  //         tested, and reachable by nothing but a key
+  //   +  6  C5: the Select menu -- Grow, Shrink, Feather, Colour Range,
+  //         Luminance Range, Undo Refine
+  //   +  6  C1: the Filter and Image menus -- Gaussian Blur, Sharpen,
+  //         Unsharp Mask, Add Noise, Image Size, Canvas Size
+  //   = 64
+  //
+  // This literal is exactly as brittle to the NEXT track that adds an action
+  // as it was before, and that brittleness is the point -- an enumerator added
+  // without a menu entry fails here rather than shipping unreachable.
+  check(kMenuActionCount == 64,
+        "ids: exactly 64 actions -- the original 41-item extraction plus D1/D2's "
+        "eleven, C5's six and C1's six, so an item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

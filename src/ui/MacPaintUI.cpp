@@ -37,9 +37,11 @@
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
 #include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
+#include "core/SelectionRefine.hpp"
 #include "imgui.h"
 #include "io/ExportAs.hpp"
 #include "color/Space.hpp"
+#include "ops/Feather.hpp"
 #include "ops/FloodFill.hpp"
 #include "ops/Gradient.hpp"
 #include "io/ExportStates.hpp"
@@ -3977,6 +3979,101 @@ void installSelection(OpenDocument& od, std::optional<Selection> selection) {
   ++od.selectionRevision;
 }
 
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// The Select menu's dialog -> engine boundary (docs/reachability-audit.md C5;
+// PRD E4/E8/E9). Declared in ui/MacPaintUI.hpp and defined here, external
+// linkage, for the same reason `commitDrawnSelection()` a few sections up
+// is: `app/selftest/SelectMenu.cpp` calls these directly, because the ImGui
+// popups that also call them cannot run without a window.
+// ---------------------------------------------------------------------------
+
+bool selectRefineEnabled(const OpenDocument& od) noexcept { return od.selection.has_value(); }
+
+bool selectRangeEnabled(const OpenDocument& od) noexcept {
+  const Layer* target = activeLayerOf(od);
+  return target != nullptr && target->rgbTiles.has_value();
+}
+
+bool selectUndoRefineEnabled(const OpenDocument& od) noexcept {
+  return !od.refineUndoStack.empty();
+}
+
+Selection applySelectRefineAction(MenuAction action, const Selection& current, float radius) {
+  // One switch, one engine call per case -- the shape `performMenuAction()`
+  // itself uses, and for the identical reason stated there: a call site that
+  // fell through to a default would be a menu item wired to nothing, which is
+  // worse than wired to the wrong thing because it is silent. There is no
+  // `default:` here for the same reason -- an action added to the enum
+  // without a row here should fail to compile once this switch is marked
+  // exhaustive, not fall through to returning `current` unchanged, which
+  // would look like a working "Grow" that grows nothing.
+  switch (action) {
+    case MenuAction::SelectGrow: return growSelection(current, radius);
+    case MenuAction::SelectShrink: return shrinkSelection(current, radius);
+    case MenuAction::SelectFeather: return featherSelection(current, radius);
+    default: return current;
+  }
+}
+
+Selection applySelectColourRangeAction(const std::array<float, 3>& swatchSrgb, float tolerance,
+                                       float edgeBand, const TileStore& source, int32_t width,
+                                       int32_t height) {
+  // sRGB -> STRAIGHT LINEAR, per channel -- the identical conversion
+  // foregroundLinearRgba() applies to the swatch above, and for the identical
+  // reason: `selectColourRange()` wants straight linear RGBA
+  // (core/SelectionRefine.hpp says so at the parameter), and skipping this
+  // selects a colour roughly twice as dark as the one the swatch showed,
+  // which reads as a colour-management bug rather than a missing conversion.
+  const std::array<float, 4> linear = {srgbDecode(swatchSrgb[0]), srgbDecode(swatchSrgb[1]),
+                                       srgbDecode(swatchSrgb[2]), 1.0f};
+  SelectionRangeParams params;
+  params.tolerance = tolerance;
+  // Clamped here rather than left to core/SelectionRefine's own internal
+  // clamp (SelectionRangeParams::edgeBand's comment says it clamps to
+  // tolerance) so a caller inspecting `params` before the call sees the value
+  // that will actually be used, not one that only becomes correct inside the
+  // engine.
+  params.edgeBand = std::min(edgeBand, tolerance);
+  return selectColourRange(source, linear, width, height, params);
+}
+
+Selection applySelectLuminanceRangeAction(float low, float high, float edgeBand,
+                                          const TileStore& source, int32_t width,
+                                          int32_t height) {
+  SelectionLuminanceRange range;
+  range.low = low;
+  range.high = high;
+  range.edgeBand = edgeBand;
+  return selectLuminanceRange(source, width, height, range);
+}
+
+void installRefinedSelection(OpenDocument& od, std::optional<Selection> result) {
+  // Pushed BEFORE installSelection() moves od.selection out from under this
+  // read -- the ordering that makes "one entry per operation" true rather
+  // than aspirational.
+  od.refineUndoStack.push_back(od.selection);
+  installSelection(od, std::move(result));
+}
+
+bool undoLastRefine(OpenDocument& od) {
+  if (od.refineUndoStack.empty()) return false;
+  std::optional<Selection> previous = std::move(od.refineUndoStack.back());
+  od.refineUndoStack.pop_back();
+  // Through installSelection(), not a bare assignment: undoing a refine still
+  // bumps selectionRevision (the GPU coverage upload and the cached bounds
+  // must both notice), and if the refine had emptied a previously-engaged
+  // selection down to `std::nullopt`, restoring an engaged one here is
+  // exactly the transition installSelection()'s lastDeselected bookkeeping
+  // already knows how to leave alone (it only fires the other direction,
+  // engaged -> absent).
+  installSelection(od, std::move(previous));
+  return true;
+}
+
+namespace {
+
 // Where every one of PRD E3's five selection tools ends: the shape it drew,
 // combined with what was already installed through the PRD E7 modifier the
 // gesture latched, installed once.
@@ -5940,6 +6037,221 @@ void drawCanvasSizeDialog(AppState& st) {
 // ui/MenuModel.hpp records all three as `MenuEffect::Deferred`.
 bool g_addGuideRequested = false;
 
+// --- The Select menu's five dialogs (docs/reachability-audit.md C5) --------
+//
+// Same one-flag-per-frame route as ExportAs/AddGuide above, for the same
+// reason: `MenuAction::SelectGrow` &c. arrive from a native menu's AppKit
+// callback with no ImGui frame in progress, so `performMenuAction()` sets a
+// flag instead of calling `ImGui::OpenPopup()` directly.
+//
+// `SelectUndoRefine` needs none of these -- it has nothing to ask the user,
+// so `performMenuAction()` performs it on the spot (see that case's comment).
+bool g_selectGrowRequested = false;
+bool g_selectShrinkRequested = false;
+bool g_selectFeatherRequested = false;
+bool g_selectColourRangeRequested = false;
+bool g_selectLuminanceRangeRequested = false;
+
+// The shape Grow, Shrink and Feather share: a title, a one-line explanation
+// of what THIS op's radius means (grow/shrink move an edge; feather softens
+// one -- different enough to be worth saying, per core/SelectionRefine.hpp
+// §1 vs ops/Feather.hpp §2), and one positive radius. Written once rather
+// than three times, because three near-identical copies is exactly the shape
+// that lets one silently drift -- a click confirming "Feather" that reads a
+// stale "Grow" radius because a copy-paste missed one rename, say.
+//
+// `radius` defaults to 4.0f: visible against a typical marquee without being
+// a startling first click, and NOT zero -- growSelection(s, 0) is a
+// documented no-op (core/SelectionRefine.hpp), so a default of zero would
+// make a user's first "Grow" click look like nothing happened at all.
+struct RefineRadiusDialog {
+  const char* popupId;
+  const char* verb;          // the confirm button's label: "Grow", "Shrink", "Feather"
+  const char* explanation;
+  MenuAction action;         // which of applySelectRefineAction()'s three cases to reach
+  float radius = 4.0f;
+};
+
+// One popup, shared by all three static instances in drawSelectMenuDialogs()
+// below. `*requested` is the flag `performMenuAction()` set; `dlg.action`
+// (not a passed-in function pointer) is what selects growSelection() /
+// shrinkSelection() / featherSelection() inside applySelectRefineAction() --
+// keeping that dispatch in ONE switch, shared with --selftest, rather than
+// wiring each call site to a function pointer here where nothing but a
+// human reading the diff could notice two dialogs pointed at the same one.
+void drawRefineRadiusDialog(AppState& st, RefineRadiusDialog& dlg, bool* requested) {
+  if (*requested) {
+    *requested = false;
+    ImGui::OpenPopup(dlg.popupId);
+  }
+  if (!ImGui::BeginPopupModal(dlg.popupId, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  ImGui::TextWrapped("%s", dlg.explanation);
+  ImGui::SetNextItemWidth(160.0f);
+  // 500.0f: comfortably past anything a document this build ships needs --
+  // core/SelectionRefine.hpp's own cost section prices a Select All on a 4K
+  // canvas grown by 20 at ~18 ms and ~816 MiB peak, transient; 500 is the
+  // point a further ceiling would be protecting against a typo, not a
+  // workflow, and DragFloat's own clamp already refuses anything past it.
+  ImGui::DragFloat("Radius (px)", &dlg.radius, 0.25f, 0.0f, 500.0f, "%.2f");
+  ImGui::Separator();
+
+  OpenDocument* od = st.documents.active();
+  const bool usable = od != nullptr && selectRefineEnabled(*od);
+  if (od == nullptr) {
+    ImGui::TextDisabled("No document is open.");
+  } else if (!usable) {
+    ImGui::TextDisabled("Nothing is selected -- there is no edge to move.");
+  }
+  ImGui::BeginDisabled(!usable);
+  if (ImGui::Button(dlg.verb)) {
+    installRefinedSelection(*od, applySelectRefineAction(dlg.action, *od->selection, dlg.radius));
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  ImGui::EndPopup();
+}
+
+// Colour Range (PRD E9). The colour comes from an on-the-spot swatch rather
+// than an eyedropper: PRD A1/A2 (docs/reachability-audit.md) records that
+// this build's eyedropper has nowhere to put a picked colour yet, and Colour
+// Range does not need to wait on that -- Photoshop's own dialog offers a
+// swatch alongside its eyedropper for the same reason `selectColourRange()`
+// takes a colour value rather than only a seed coordinate (core/
+// SelectionRefine.hpp §3: "a function that can only be given a texel cannot
+// serve the swatch").
+void drawSelectColourRangeDialog(AppState& st) {
+  static float swatchSrgb[3] = {0.5f, 0.5f, 0.5f};
+  // Defaults match core/SelectionRefine.hpp's SelectionRangeParams -- the
+  // same numbers ops/FloodFill.hpp's magic wand defaults to (§3: "the same
+  // numbers meaning the same thing"), so a user arriving from the wand
+  // already knows what this slider does.
+  static float tolerance = kFloodDefaultTolerance;
+  static float edgeBand = kFloodDefaultEdgeBand;
+
+  if (g_selectColourRangeRequested) {
+    g_selectColourRangeRequested = false;
+    ImGui::OpenPopup("Colour Range");
+  }
+  if (!ImGui::BeginPopupModal("Colour Range", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  ImGui::TextWrapped(
+      "Selects every pixel on the active layer within tolerance of this colour -- connected "
+      "or not, unlike the magic wand.");
+  ImGui::ColorEdit3("Colour", swatchSrgb);
+  ImGui::SetNextItemWidth(160.0f);
+  ImGui::SliderFloat("Tolerance", &tolerance, 0.0f, 1.0f, "%.3f");
+  ImGui::SetNextItemWidth(160.0f);
+  // Capped at `tolerance` on the slider itself as well as internally
+  // (applySelectColourRangeAction() clamps again) -- an edge band wider than
+  // the tolerance it is softening the OUTSIDE of is not a state the dialog
+  // should let a user reach and then silently correct underneath them.
+  ImGui::SliderFloat("Edge softness", &edgeBand, 0.0f, std::max(tolerance, 0.001f), "%.3f");
+  ImGui::Separator();
+
+  OpenDocument* od = st.documents.active();
+  const bool usable = od != nullptr && selectRangeEnabled(*od);
+  const Layer* target = usable ? activeLayerOf(*od) : nullptr;
+  if (!usable) {
+    ImGui::TextDisabled("The active layer has no RGB pixels to sample.");
+  }
+  ImGui::BeginDisabled(!usable);
+  if (ImGui::Button("Select")) {
+    const std::array<float, 3> swatch = {swatchSrgb[0], swatchSrgb[1], swatchSrgb[2]};
+    installRefinedSelection(
+        *od, applySelectColourRangeAction(swatch, tolerance, edgeBand, *target->rgbTiles,
+                                          od->document.width, od->document.height));
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  ImGui::EndPopup();
+}
+
+// Luminance Range (PRD E9): a band rather than a tolerance around a sample.
+void drawSelectLuminanceRangeDialog(AppState& st) {
+  static float low = 0.0f;
+  static float high = 1.0f;
+  static float edgeBand = kFloodDefaultEdgeBand;
+
+  if (g_selectLuminanceRangeRequested) {
+    g_selectLuminanceRangeRequested = false;
+    ImGui::OpenPopup("Luminance Range");
+  }
+  if (!ImGui::BeginPopupModal("Luminance Range", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    return;
+
+  ImGui::TextWrapped(
+      "Selects every pixel on the active layer whose brightness falls in this band "
+      "(display-encoded, so 0.75..1.0 means the visibly brightest quarter).");
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Low", &low, 0.0f, 1.0f, "%.3f");
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("High", &high, 0.0f, 1.0f, "%.3f");
+  if (low > high) {
+    // core/SelectionRefine.hpp: "low > high selects nothing (an empty band is
+    // empty, not inverted)". Said out loud here rather than left for the
+    // user to discover from an empty result with no explanation -- the same
+    // "honest refusal" standard the audit asks of the menu items themselves.
+    const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+    ImGui::TextWrapped("Low is above High -- this selects nothing, rather than everything "
+                       "outside the band.");
+    ImGui::PopStyleColor();
+  }
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Edge softness", &edgeBand, 0.0f, 0.25f, "%.3f");
+  ImGui::Separator();
+
+  OpenDocument* od = st.documents.active();
+  const bool usable = od != nullptr && selectRangeEnabled(*od);
+  const Layer* target = usable ? activeLayerOf(*od) : nullptr;
+  if (!usable) {
+    ImGui::TextDisabled("The active layer has no RGB pixels to sample.");
+  }
+  ImGui::BeginDisabled(!usable);
+  if (ImGui::Button("Select")) {
+    installRefinedSelection(
+        *od, applySelectLuminanceRangeAction(low, high, edgeBand, *target->rgbTiles,
+                                             od->document.width, od->document.height));
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  ImGui::EndPopup();
+}
+
+// The five dialogs together, called once a frame from the same place
+// drawExportAsDialog() &c. are: outside BeginMainMenuBar()/EndMainMenuBar(),
+// because a popup opened from a menu item has to begin outside the menu
+// bar's own ID stack (the comment beside those calls explains this at
+// length; it is not repeated a sixth time here).
+void drawSelectMenuDialogs(AppState& st) {
+  static RefineRadiusDialog growDlg{
+      "Grow Selection", "Grow",
+      "Moves the selection's edge outward by this many pixels -- a real number, so the new "
+      "edge can land mid-pixel rather than snapping to a whole one.",
+      MenuAction::SelectGrow};
+  static RefineRadiusDialog shrinkDlg{
+      "Shrink Selection", "Shrink",
+      "Moves the selection's edge inward by this many pixels.", MenuAction::SelectShrink};
+  static RefineRadiusDialog featherDlg{
+      "Feather Selection", "Feather",
+      "Softens the selection's edge with a blur -- the visible soft band is about this many "
+      "pixels on each side of the original edge.",
+      MenuAction::SelectFeather};
+
+  drawRefineRadiusDialog(st, growDlg, &g_selectGrowRequested);
+  drawRefineRadiusDialog(st, shrinkDlg, &g_selectShrinkRequested);
+  drawRefineRadiusDialog(st, featherDlg, &g_selectFeatherRequested);
+  drawSelectColourRangeDialog(st);
+  drawSelectLuminanceRangeDialog(st);
+}
+
 MenuFamilyEntry familyEntry(std::string label, bool enabled, bool checked,
                             bool separatorAfter = false, std::string tooltip = {}) {
   MenuFamilyEntry e;
@@ -6067,6 +6379,19 @@ MenuContext menuContextFromState(AppState& st) {
           layerSetCommandLabel(command), layerSetCommandAvailable(d, command, visible), false,
           rule));
     }
+  }
+
+  // --- Select ---------------------------------------------------------------
+  //
+  // Resolved against `*doc` here, inside the frame, for the identical reason
+  // every other predicate on this context is: a native menu backend reads
+  // this snapshot after the frame that produced it has ended, so a live
+  // `OpenDocument*` on the context would be a dangling pointer the first time
+  // a user closed a document with the menu open.
+  if (doc != nullptr) {
+    ctx.hasEngagedSelection = selectRefineEnabled(*doc);
+    ctx.hasRgbSource = selectRangeEnabled(*doc);
+    ctx.hasRefineUndo = selectUndoRefineEnabled(*doc);
   }
 
   // --- Medium / Goodies ---------------------------------------------------
@@ -6444,6 +6769,41 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       break;
     }
 
+    // --- Select -------------------------------------------------------------
+    //
+    // Each of the five sets a request flag rather than acting -- the same
+    // `MenuEffect::Deferred` route ExportAs/AddGuide use, and for the
+    // identical reason: opening the dialog is `ImGui::OpenPopup()`, which
+    // must not be called from a native menu's AppKit callback. The engine
+    // call itself happens in drawSelectMenuDialogs()'s confirm button, through
+    // applySelectRefineAction() / applySelectColourRangeAction() /
+    // applySelectLuminanceRangeAction() (ui/MacPaintUI.hpp) -- the boundary
+    // app/selftest/SelectMenu.cpp exercises directly, since it cannot open a
+    // popup either.
+    case MenuAction::SelectGrow:
+      g_selectGrowRequested = true;
+      break;
+    case MenuAction::SelectShrink:
+      g_selectShrinkRequested = true;
+      break;
+    case MenuAction::SelectFeather:
+      g_selectFeatherRequested = true;
+      break;
+    case MenuAction::SelectColourRange:
+      g_selectColourRangeRequested = true;
+      break;
+    case MenuAction::SelectLuminanceRange:
+      g_selectLuminanceRangeRequested = true;
+      break;
+
+    // Acts immediately -- there is nothing to ask the user, so there is no
+    // dialog to defer to. `doc == nullptr` (no open document) is exactly
+    // `selectUndoRefineEnabled()`'s false case, reached here only via a stale
+    // queued native-menu action (see undoLastRefine()'s own comment).
+    case MenuAction::SelectUndoRefine:
+      if (doc != nullptr) undoLastRefine(*doc);
+      break;
+
     // --- Medium / Goodies -------------------------------------------------
     case MenuAction::PaintModeItem: {
       if (param < 0 || param >= static_cast<int>(PaintMode::Count)) break;
@@ -6779,6 +7139,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawAddNoiseDialog(st);
   drawImageSizeDialog(st);
   drawCanvasSizeDialog(st);
+  // docs/reachability-audit.md C5 (PRD E4/E8/E9): the Select menu's five
+  // refine dialogs, same placement rule again.
+  drawSelectMenuDialogs(st);
 
   // ------------------------------------------------------------ the bands
   //
