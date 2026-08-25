@@ -445,8 +445,26 @@ const Pigment& foregroundPhysicalConstants(const BrushState& brush) noexcept {
 std::array<float, 3> foregroundSrgb(const BrushState& brush) noexcept {
   if (brush.colorMode == ColorMode::Rgb) return brush.rgb;
   const std::vector<Pigment>& palette = defaultPalette();
-  if (brush.pigment < 0 || static_cast<size_t>(brush.pigment) >= palette.size())
-    return {0.0f, 0.0f, 0.0f};  // matches foregroundLinearRgba()'s contract exactly
+  // **Out of range falls back to entry 0, NOT to black**, and the difference
+  // from `ui/MacPaintUI`'s `foregroundLinearRgba(int)` -- which answers black,
+  // and is asserted to (app/selftest/SelectionTools.cpp) -- is deliberate.
+  // They are two different questions, exactly as that function's own header
+  // says: the index form is the *palette* question ("what colour is row N"),
+  // and a row that does not exist has no colour, so black. This is the
+  // *foreground* question ("what paint does the next stroke lay down"), and the
+  // answer has to be paint. `brushTipFor()` has clamped to entry 0 since long
+  // before there was a second way to say a colour, app/selftest/ActiveLayer.cpp
+  // asserts it, and routing this through the palette form's contract instead
+  // silently turned a bad index into a black stroke.
+  //
+  // An out-of-range index is an invariant violation either way -- `pigment` is
+  // a plain `int` on a public aggregate, so nothing stops one. The choice is
+  // only about which wrong answer is least destructive to a painting, and
+  // black is the one a user would have to undo.
+  if (brush.pigment < 0 || static_cast<size_t>(brush.pigment) >= palette.size()) {
+    if (palette.empty()) return {0.0f, 0.0f, 0.0f};
+    return {palette[0].rgb[0], palette[0].rgb[1], palette[0].rgb[2]};
+  }
   const Pigment& p = palette[static_cast<size_t>(brush.pigment)];
   return {p.rgb[0], p.rgb[1], p.rgb[2]};
 }

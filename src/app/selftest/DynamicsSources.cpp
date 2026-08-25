@@ -544,32 +544,62 @@ bool runDynamicsSourcesTest() {
         s.addPoint(80.0f + 5.0f * static_cast<float>(i), 500.0f);
       s.end();
 
-      // Five sample points, each 60 px from its neighbours -- far enough
-      // that no dab from one point's neighbourhood reaches another (radius
+      // Five sample columns, each 60 px from its neighbours -- far enough
+      // that no dab from one column's neighbourhood reaches another (radius
       // 18 px « 60 px), but NOT far enough that only one dab touches any
-      // single point: at this preset's own 0.55 * 18 px ~= 10 px spacing,
-      // several consecutive dabs overlap every sample texel, so each mass
-      // below is the running mass-weighted mean of a handful of LOCAL
-      // random draws. That is still the right proof: with RANDOM stuck at
-      // the audit's constant 0.35, every dab along a straight line at
-      // constant spacing repeats the identical local pattern, so all five
-      // sample points would read the SAME accumulated mass. They read
-      // different masses here because the dabs feeding each one drew
-      // genuinely different flow multipliers.
+      // single column: at this preset's own 0.55 * 18 px ~= 10 px spacing,
+      // several consecutive dabs overlap every sample texel. 60 is an exact
+      // multiple of that spacing, and that is what makes the comparison
+      // below a proof: with RANDOM stuck at the audit's constant 0.35, every
+      // dab repeats the identical local pattern (identical flow, and --
+      // since RANDOM also drives this preset's SCATTER -- an identical
+      // offset), so all five columns would read the SAME mass at the same
+      // depth. They read different masses because the dabs feeding each one
+      // drew genuinely different values.
+      //
+      // **The row this reads is found, not fixed, and it is never the
+      // centreline.** Deposition accumulates as `m' = min(m + dm, kMaxMass)`,
+      // and with several dabs overlapping every centreline texel all of them
+      // reach the 1.0 cap regardless of what multiplier each drew -- a sweep
+      // down from y=500 reads exactly 1.000000 for the first fifteen rows.
+      // Measured on the centreline this assertion cannot tell a varying
+      // RANDOM from a constant one at all; the cap erases the signal it is
+      // trying to read. Out at the rim of the dab footprint the sum stays
+      // under the cap and the per-dab draws survive into the reading, so the
+      // search below walks outward to the first row holding at least three
+      // samples strictly inside (0, cap) and measures there. At the time of
+      // writing that lands on dy=16, whose three in-range samples are
+      // 0.889 / 0.438 / 0.453 -- a spread of 0.45, which is why the
+      // "these differ" threshold below can sit four orders of magnitude
+      // lower and still never fire on noise.
+      constexpr float kSaturated = 0.99f;  // below kMaxMass by more than half-float eps there
+      constexpr float kUnpainted = 1e-3f;
       std::vector<float> isolatedMasses;
-      for (int i = 0; i < 5; ++i) {
-        const PixelCoord at{100 + i * 60, 500};
-        const PigmentTile* t = od.document.layers[1].pigmentTiles->find(tileCoordAt(at));
-        if (t != nullptr) isolatedMasses.push_back(t->readTexel(tileLocalOffset(at)).mass);
+      int rimOffset = -1;
+      for (int dy = 0; dy <= static_cast<int>(brush.radius) + 4 && isolatedMasses.empty(); ++dy) {
+        std::vector<float> row;
+        for (int i = 0; i < 5; ++i) {
+          const PixelCoord at{100 + i * 60, 500 + dy};
+          const PigmentTile* t = od.document.layers[1].pigmentTiles->find(tileCoordAt(at));
+          if (t == nullptr) continue;
+          const float m = t->readTexel(tileLocalOffset(at)).mass;
+          if (m > kUnpainted && m < kSaturated) row.push_back(m);
+        }
+        if (row.size() >= 3) {
+          isolatedMasses = std::move(row);
+          rimOffset = dy;
+        }
       }
+      std::printf("  dry bristle: %zu unsaturated rim masses at dy=%d\n", isolatedMasses.size(),
+                  rimOffset);
       bool anyDiffer = false;
       for (size_t i = 1; i < isolatedMasses.size(); ++i)
         if (std::fabs(isolatedMasses[i] - isolatedMasses[0]) > 1e-4f) anyDiffer = true;
-      std::printf("  dry bristle: %zu isolated dab masses sampled along the path\n",
-                  isolatedMasses.size());
       check(isolatedMasses.size() >= 3 && anyDiffer,
             "dry bristle: RANDOM -> FLOW no longer resolves to the constant 0.35 the audit "
-            "found -- separated dabs along the same stroke carry visibly different mass");
+            "found -- separated dabs along the same stroke carry visibly different mass. A "
+            "zero count here is its own finding: it means no row of the footprint escaped the "
+            "kMaxMass cap, so there was nowhere left to read the per-dab draws");
     }
   }
 

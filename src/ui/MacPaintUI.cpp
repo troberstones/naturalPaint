@@ -8502,8 +8502,19 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const BrushTip tip = brushTipFor(st.brush, lut, dynamicInputsFor(st));
       if (!g_stroke.active()) {
         g_strokeRefusal.clear();
+        // **`&st.brush.links` is what makes the stroke-local dynamics sources
+        // reach a real stroke.** Velocity, Fade, Noise and Random resolve per
+        // dab inside `StrokeSession`, not once per frame in `dynamicInputsFor()`
+        // above, so they can only be driven by a link set the session holds for
+        // the stroke's whole life. The track that built those four sources could
+        // not add this argument -- this block was reserved for another track at
+        // the time -- and said so plainly: without it the four were reachable
+        // from `--selftest` and from nowhere a user could click, which is the
+        // exact defect class docs/reachability-audit.md exists to remove. It is
+        // one argument, and it is the whole difference between "implemented" and
+        // "reachable".
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
-                            &g_strokeRefusal)) {
+                            &g_strokeRefusal, &st.brush.links)) {
           st.paintingThisFrame = false;
         }
         st.lastX = tx;

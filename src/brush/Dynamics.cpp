@@ -407,8 +407,16 @@ float dynamicVelocity(float stepDistancePx, float radiusPx) noexcept {
   // already treats a zero-or-negative radius as "deposits nothing" rather
   // than as an error, and this function has the same contract -- a degenerate
   // tip reads as motionless rather than dividing by zero.
-  const float r = radiusPx > 1e-6f ? radiusPx : 1e-6f;
-  return clamp01(stepDistancePx / r);
+  //
+  // **Return early rather than clamping the denominator.** Substituting a tiny
+  // r and dividing (`stepDistancePx / 1e-6f`) is the obvious-looking guard and
+  // it produces the exact opposite of the contract above: any real step over a
+  // near-zero radius comes out as 1e7 and clamps to **1.0**, so a degenerate
+  // tip reads as maximum speed. It also never divides by zero, so it looks
+  // correct and passes any test that only checks for NaN. The value is what is
+  // wrong, not the arithmetic.
+  if (!(radiusPx > 1e-6f)) return 0.0f;
+  return clamp01(stepDistancePx / radiusPx);
 }
 
 float dynamicFade(float distanceAlongStroke) noexcept {

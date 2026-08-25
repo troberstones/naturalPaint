@@ -220,16 +220,44 @@ bool runSelectMenuTest() {
     // fixture shape (a new instance, not shared code -- this section proves
     // wiring, that one proves the metric, and they should not depend on one
     // another's data to stay independently readable).
+    // **The three band values are sRGB, and the store holds their linear
+    // decode.** A `TileStore` texel is premultiplied LINEAR, but every
+    // tolerance in this section is compared in sRGB-encoded space --
+    // `floodFillDistance()` encodes each channel before subtracting, and
+    // `selectionLuminanceOf()` encodes the luma scalar -- so the numbers that
+    // have to be spaced correctly are the ENCODED ones. Writing the band
+    // values straight in as linear is how this fixture used to read, and it
+    // silently put the swatch nowhere near the band it claimed to name: sRGB
+    // 0.45 decodes to linear 0.171, while the linear 0.45 band encodes back to
+    // sRGB 0.70. Every band then sat 0.21 or more from the reference, past
+    // BOTH tolerances below, so both selections came out empty and the two
+    // assertions comparing them compared nothing.
+    //
+    // The 0.08 spacing is the point of the fixture and is chosen to sit
+    // between the two tolerances it has to tell apart: wider than the dialog's
+    // 0.05, so a correctly-forwarded tolerance selects the middle band ALONE,
+    // and narrower than SelectionRangeParams{}'s kFloodDefaultTolerance
+    // (~0.1255), so a dropped tolerance reaches both neighbours and the
+    // difference is three whole bands rather than a fringe of texels. Margins
+    // either side (0.03 and 0.045) are ~300x the half-float quantisation the
+    // store round trip costs at these magnitudes (~1e-4 in sRGB), so nothing
+    // here is riding a rounding edge.
+    constexpr float kBandLoSrgb = 0.54f;
+    constexpr float kBandMidSrgb = 0.62f;
+    constexpr float kBandHiSrgb = 0.70f;
     TileStore src;
     for (int32_t y = 0; y < 60; ++y) {
       for (int32_t x = 0; x < 60; ++x) {
-        const float v = x < 20 ? 0.05f : (x < 40 ? 0.45f : 0.85f);
+        const float s = x < 20 ? kBandLoSrgb : (x < 40 ? kBandMidSrgb : kBandHiSrgb);
+        const float v = srgbDecode(s);
         const PixelCoord p{x, y};
         src.getOrCreate(tileCoordAt(p)).writePixel(tileLocalOffset(p), {v, v, v, 1.0f});
       }
     }
 
-    const std::array<float, 3> swatchSrgb = {0.45f, 0.45f, 0.45f};  // the middle band, in sRGB
+    // The middle band, in sRGB -- the same number the fixture wrote, which is
+    // the whole reason it names the band it says it does.
+    const std::array<float, 3> swatchSrgb = {kBandMidSrgb, kBandMidSrgb, kBandMidSrgb};
     const float tolerance = 0.05f;   // tighter than kFloodDefaultTolerance (~0.1255)
     const float edgeBand = 0.01f;
 
@@ -250,16 +278,26 @@ bool runSelectMenuTest() {
 
     // Catches tolerance/edge band dropped on the way to the engine: a
     // tighter-than-default tolerance must select FEWER texels than
-    // SelectionRangeParams{}'s own default (~0.1255), which is wide enough at
-    // this fixture's 0.05-wide bands (0.05/0.45/0.85) to reach past the
-    // middle band's neighbours.
+    // SelectionRangeParams{}'s own default (~0.1255), which at this fixture's
+    // 0.08 band spacing reaches BOTH of the middle band's neighbours while
+    // the dialog's 0.05 reaches neither. The difference is therefore two
+    // whole 20-column bands, not a fringe.
     const Selection viaEngineDefault = selectColourRange(src, linear, 60, 60, {});
     check(!identicalOver(viaWiring, viaEngineDefault, 0, 0, 60, 60),
           "wiring: the tolerance/edge band reaching selectColourRange() are the dialog's own "
           "values, not SelectionRangeParams{}'s defaults -- catches those two being dropped "
           "on the way to the engine");
 
-    const float low = 0.3f, high = 0.6f, lumBand = 0.02f;
+    // `selectionLuminanceOf()` is srgbEncode(luma), and for the neutral greys
+    // this fixture holds luma IS the linear value, so each band's luminance is
+    // exactly the sRGB number it was written as: 0.54 / 0.62 / 0.70. The high
+    // endpoint is 0.58 rather than the 0.6 this read before because 0.6 would
+    // land 0.02 from the middle band -- exactly `lumBand` -- and
+    // `floodFillCoverage()` refuses at `!(distance < tolerance)`, so that band
+    // would sit precisely on the knife edge between selected and not. At 0.58
+    // the low band is inside with 0.04 to spare and both others are outside by
+    // 2x and 6x the edge band.
+    const float low = 0.3f, high = 0.58f, lumBand = 0.02f;
     const Selection viaWiringLum = applySelectLuminanceRangeAction(low, high, lumBand, src, 60, 60);
     SelectionLuminanceRange rangeDirect;
     rangeDirect.low = low;

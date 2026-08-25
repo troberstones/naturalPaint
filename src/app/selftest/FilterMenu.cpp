@@ -51,6 +51,17 @@ void fillFilterMenuField(TileStore& tiles) {
 OpenDocument makeFilterMenuDocument(const char* title) {
   OpenDocument od = makeBlankOpenDocument(256, 256, WorkingSpace{}, title);
   fillFilterMenuField(*od.document.layers[0].rgbTiles);
+  // **The fill has to be RECORDED, not merely written.**
+  // `makeBlankOpenDocument()` seeds history with one baseline entry holding the
+  // BLANK document, and the line above writes tiles straight into the layer
+  // without going through `recordEdit()`. Left that way, a filter's undo has
+  // only the blank baseline to land on, so section C's "undo restores the
+  // pre-filter tiles" compares a filled TileStore against an empty one and
+  // fails -- reporting a history defect where the real fault is a fixture that
+  // never committed its own content. Every entry count in this file is taken
+  // relative to `entries().size()` at the point of use, so adding this second
+  // baseline moves no assertion.
+  od.recordEdit("filter fixture field", EditKind::Content);
   return od;
 }
 
@@ -78,16 +89,6 @@ std::array<float, 4> readAt(const TileStore& store, int32_t x, int32_t y) {
   const Tile* tile = store.find(tileCoordAt(PixelCoord{x, y}));
   if (tile == nullptr) return {0.0f, 0.0f, 0.0f, 0.0f};
   return tile->readPixel(tileLocalOffset(PixelCoord{x, y}));
-}
-
-// A minimal `MenuFamilyEntry`-shaped row, matching
-// app/selftest/MenuModel.cpp's own `row()` -- kept as a private copy for the
-// same reason `filterMenuTestNoise()` is: this section is meant to read on
-// its own, not by cross-referencing another TU's anonymous namespace.
-MenuFamilyEntry menuRow(const char* label) {
-  MenuFamilyEntry e;
-  e.label = label;
-  return e;
 }
 
 // Depth-first search for one action in a built menu tree -- the same walk

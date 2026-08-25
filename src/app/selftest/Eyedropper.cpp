@@ -497,6 +497,18 @@ bool runEyedropperTest() {
   // Section 1 proved `probePixel()` distinguishes the three sources; this
   // proves `applyEyedropperPick()` actually passes `st.eyedropper` through to
   // it rather than sampling with defaults. Same fixture shape as section 1.
+  //
+  // **The active layer is HIDDEN, and it has to be for this to prove anything.**
+  // As first written this fixture had an opaque green active layer over an
+  // opaque red one, and asserted that `ActiveAndBelow` answered red -- but
+  // "and below" composites the stack up to *and including* the active layer,
+  // so an opaque green on top makes the honest answer green. The assertion was
+  // wrong, not the code, and it could only ever have failed. Hiding the green
+  // layer restores the property the section actually wants: `CurrentLayer`
+  // still reads it (core/Probe.hpp's deliberate asymmetry -- a hidden layer
+  // stays probeable for what it *holds*), while both compositing modes skip it
+  // and see the red beneath. Now the two answers genuinely differ, and they
+  // differ for the reason the SOURCE setting exists.
   {
     AppState st;
     OpenDocument od;
@@ -505,6 +517,7 @@ bool runEyedropperTest() {
     mid.kind = LayerKind::RGB;
     mid.rgbTiles.emplace();
     mid.name = "middle";
+    mid.visible = false;
     od.document.layers.push_back(std::move(mid));
     writeStraight(od.document, 0, 2, 2, 1.0f, 0.0f, 0.0f, 1.0f);  // red below
     writeStraight(od.document, 1, 2, 2, 0.0f, 1.0f, 0.0f, 1.0f);  // green above
