@@ -112,12 +112,14 @@ add_executable(naturalPaint
   app/selftest/ToolCursor.cpp
   app/selftest/Transform.cpp
   app/selftest/ViewTransform.cpp
+  app/selftest/ZoomAndSize.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp
   app/StrokeBake.cpp
   app/StrokeSession.cpp
   app/ViewTransform.cpp
+  app/ZoomAndSize.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
   brush/Library.cpp

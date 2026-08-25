@@ -94,6 +94,22 @@ enum class Tool {
   Count
 };
 
+// track8/zoom (PRD R5, D3): the one range a brush radius is allowed to take.
+// `docs/reachability-audit.md` B3 names the bug this closes: the options bar
+// slider clamps to 2..90 (`ui/AtelierChrome.cpp`) and the BRUSH panel clamps
+// to 1..200 (`ui/MacPaintUI.cpp`), so a size set in the wider one silently
+// truncates the moment the narrower one is touched. `app/ZoomAndSize.hpp`'s
+// `clampBrushRadius()` is the one place both the new `[`/`]` keys and the
+// new `⌃⌥`-drag gesture clamp through, and it reads these two constants
+// rather than each carrying its own copy of 1/200. A SEPARATE, not-yet-
+// merged track is converging the two existing sliders onto shared constants
+// of this exact name at this exact location -- these are deliberately
+// defined here, now, with the same values, so the two definitions collide
+// harmlessly (an ODR duplicate, trivially deduped) at merge instead of
+// diverging into two different ranges under two different names.
+constexpr float kBrushRadiusMin = 1.0f;
+constexpr float kBrushRadiusMax = 200.0f;
+
 struct BrushState {
   Tool tool = Tool::Brush;
   int pigment = 6;  // Ultramarine Blue

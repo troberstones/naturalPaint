@@ -33,6 +33,7 @@
 #include "app/QuitSequence.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
+#include "app/ZoomAndSize.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
 #include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
@@ -6482,7 +6483,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // rotation/mirror are untouched: those are independent view toggles,
     // not reset by a zoom command.
     if (st.requestFitWindow) {
-      st.view.zoom = std::clamp(std::min(avail.x / texW, avail.y / texH), 0.1f, 8.0f);
+      st.view.zoom = clampViewZoom(std::min(avail.x / texW, avail.y / texH));
       st.view.panX = 0.0f;
       st.view.panY = 0.0f;
       st.requestFitWindow = false;
@@ -6744,24 +6745,122 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
-    // --- zoom, anchored the same way whether the wheel or a keyboard
-    // command triggered it (PRD Q1) -- one formula, reused, rather than the
-    // keyboard commands inventing a second anchoring rule.
-    auto applyZoomFactor = [&](float factor) {
+    // --- brush size by canvas gesture (PRD R5, D3) -- ⌃⌥-drag, horizontal
+    // only. Resolved here, ahead of the zoom/pan blocks below, for the same
+    // reason `rotating` is resolved ahead of them: it also claims the
+    // left-mouse-drag gesture, and the competitors need to agree on a
+    // winner. Live modifier check each frame, matching `rotateHeld` above,
+    // rather than latched at gesture start -- the same house style, not a
+    // new inconsistency. docs/shortcuts.md section 2 assigns this chord
+    // "size and hardness by dragging"; this track's brief scopes it to size
+    // (the horizontal half) only -- hardness (vertical) is a second track's
+    // to add.
+    const bool sizingHeld = ImGui::GetIO().KeyCtrl && ImGui::GetIO().KeyAlt;
+    const bool sizing = sizingHeld && hovered && !st.pendingGuide.has_value() &&
+                        ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+    if (sizing) {
+      // Per-frame, against the CURRENT radius -- the same incremental style
+      // `rotating` above and `panning` below already use, not a remembered
+      // drag-start value. app/ZoomAndSize.hpp's header comment on
+      // `radiusForDrag()` is where the "this is still honestly a pure
+      // function of total drag pixels" argument lives; it does not need
+      // restating at every call site.
+      st.brush.radius =
+          clampBrushRadius(radiusForDrag(st.brush.radius, ImGui::GetIO().MouseDelta.x));
+    }
+
+    // --- zoom, anchored the same way regardless of what triggered it (PRD
+    // Q1) -- one function, `applyZoomFactor`, and app/ZoomAndSize.hpp's
+    // `panForAnchoredZoom()` underneath it, reused by every caller below
+    // rather than each inventing its own anchoring rule. `anchorScreen` is
+    // the screen point that must stay under the same document coordinate
+    // after the zoom -- the wheel and the Zoom tool pass the actual cursor
+    // position; a keyboard/menu command has no cursor to anchor on, so it
+    // passes the viewport's own centre, matching how those commands behave
+    // with no drag or click driving them.
+    //
+    // **This replaces a formula that never read the mouse position at all**
+    // -- see app/ZoomAndSize.hpp's own header comment for the counterexample
+    // that proves the old one drifted off whatever point it happened to
+    // anchor on rather than the cursor. No existing `--selftest` assertion
+    // exercised the old formula's exact output (grepped for
+    // `applyZoomFactor`/anchor coverage before writing this), so nothing
+    // here is a documented behaviour change -- it is a latent bug this
+    // track's own P0 anchor requirement forced into the open.
+    auto applyZoomFactor = [&](float factor, ImVec2 anchorScreen) {
       const float oldZoom = st.view.zoom;
-      st.view.zoom = std::clamp(st.view.zoom * factor, 0.1f, 8.0f);
-      const float k = st.view.zoom / oldZoom;
-      st.view.panX = (st.view.panX + (origin.x - paintOrigin.x)) * k - (origin.x - paintOrigin.x);
-      st.view.panY = (st.view.panY + (origin.y - paintOrigin.y)) * k - (origin.y - paintOrigin.y);
+      const float newZoom = clampViewZoom(oldZoom * factor);
+      if (newZoom == oldZoom) return;  // clamped to the existing limit: nothing to repan
+      st.view.panX = panForAnchoredZoom(anchorScreen.x, origin.x, oldZoom, newZoom,
+                                        paintOrigin.x, avail.x, texW);
+      st.view.panY = panForAnchoredZoom(anchorScreen.y, origin.y, oldZoom, newZoom,
+                                        paintOrigin.y, avail.y, texH);
+      st.view.zoom = newZoom;
     };
     // --- zoom on wheel, anchored under the cursor ---
     if (hovered && ImGui::GetIO().MouseWheel != 0.0f)
-      applyZoomFactor(1.0f + ImGui::GetIO().MouseWheel * 0.12f);
-    if (st.requestZoomIn) { applyZoomFactor(1.2f); st.requestZoomIn = false; }
-    if (st.requestZoomOut) { applyZoomFactor(1.0f / 1.2f); st.requestZoomOut = false; }
+      applyZoomFactor(1.0f + ImGui::GetIO().MouseWheel * 0.12f, mouse);
+    const ImVec2 viewportCenter(paintOrigin.x + avail.x * 0.5f, paintOrigin.y + avail.y * 0.5f);
+    if (st.requestZoomIn) {
+      applyZoomFactor(kZoomStepFactor, viewportCenter);
+      st.requestZoomIn = false;
+    }
+    if (st.requestZoomOut) {
+      applyZoomFactor(1.0f / kZoomStepFactor, viewportCenter);
+      st.requestZoomOut = false;
+    }
+
+    // --- the Zoom tool itself (PRD Q1, A3): click zooms in at the clicked
+    // point, Alt/Option-click zooms out, press-drag horizontally scrubs
+    // continuously. Gated on `toolZoomsView()` rather than
+    // `st.brush.tool == Tool::Zoom` directly -- see app/ZoomAndSize.hpp's
+    // header comment on that predicate for why: it is meant to be the
+    // literal expression this block is gated on, so a future disjunction of
+    // "does this tool have any canvas handler" can absorb it by including
+    // the predicate rather than hand-listing `Tool::Zoom` a second time.
+    // `!sizingHeld`: the size gesture above also claims a left-mouse-drag
+    // and already won the tie for `rotating`/`panning`; Zoom loses it too.
+    // `hovered || canvasHeld`: a plain click needs `hovered` (a click that
+    // started on a side panel must never zoom just because the tool happens
+    // to be Zoom), but a SCRUB that wanders off the canvas edge needs
+    // `canvasHeld` too, or it would freeze the instant the cursor crosses
+    // onto a panel -- the exact reason this file's own `canvasHeld` comment
+    // gives for existing: "a drag that STARTED on the canvas keeps [going]
+    // when the pointer runs off the sheet." `rotating`/`panning` above don't
+    // need this union because they have no click-only case to guard against.
+    if (toolZoomsView(st.brush.tool) && (hovered || canvasHeld) &&
+        !st.pendingGuide.has_value() && !sizingHeld) {
+      if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        // Scrubby zoom, anchored at the SCREEN point the drag started from
+        // -- `io.MouseClickedPos[0]`, which ImGui itself remembers for the
+        // whole gesture, not the live mouse position. The live position
+        // moves purely to signal "more/less zoom"; anchoring on it instead
+        // would make the point the user actually clicked on walk out from
+        // under the cursor as they scrub, which is the opposite of what a
+        // scrubby zoom is for. Reapplying `applyZoomFactor` with this SAME
+        // fixed anchor every frame, against whatever zoom the previous
+        // frame left, keeps that original point pinned for the whole drag
+        // -- app/ZoomAndSize.hpp's header comment on `panForAnchoredZoom()`
+        // is where that induction argument is written out.
+        const ImVec2 clickPos = ImGui::GetIO().MouseClickedPos[ImGuiMouseButton_Left];
+        applyZoomFactor(zoomFactorForDrag(ImGui::GetIO().MouseDelta.x), clickPos);
+      } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        // A release with zero accumulated drag -- `GetMouseDragDelta()`'s
+        // own documented "0 until the mouse moves past a distance
+        // threshold" semantics -- is a plain click, not the tail end of a
+        // scrub the branch above already handled. Alt/Option picks the
+        // direction, matching every other Alt-reverses convention already
+        // in this file (e.g. the paint bucket's global-fill modifier above).
+        const ImVec2 dragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+        if (dragDelta.x == 0.0f && dragDelta.y == 0.0f) {
+          const float factor = ImGui::GetIO().KeyAlt ? (1.0f / kZoomStepFactor) : kZoomStepFactor;
+          applyZoomFactor(factor, mouse);
+        }
+      }
+    }
 
     const bool panning =
-        !rotateHeld && !st.pendingGuide.has_value() &&
+        !rotateHeld && !sizingHeld && !st.pendingGuide.has_value() &&
         (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
          (st.brush.tool == Tool::Hand && ImGui::IsMouseDragging(ImGuiMouseButton_Left)));
     if (panning) {
@@ -6893,7 +6992,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         st.brush.tool == Tool::Lasso || st.brush.tool == Tool::PolygonLasso ||
         st.brush.tool == Tool::MagicWand;
 
-    if (selectionTool && !panning && !rotating && !st.pendingGuide.has_value()) {
+    if (selectionTool && !panning && !rotating && !sizingHeld && !st.pendingGuide.has_value()) {
       const ImGuiIO& mods = ImGui::GetIO();
       const bool clicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
       OpenDocument* od = st.documents.active();
@@ -7079,7 +7178,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // now lives beside `strokeRouteWritesLayer()` (that header's §6) so the
     // gate, the message and the options bar's indicator are one answer rather
     // than three, and the click is REFUSED OUT LOUD instead of discarded.
-    if (toolWritesRgbPixels(st.brush.tool) && !panning && !rotating &&
+    if (toolWritesRgbPixels(st.brush.tool) && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       OpenDocument* od = st.documents.active();
       Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
@@ -7290,7 +7389,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const Layer* strokeTarget = strokeDoc != nullptr ? activeLayerOf(*strokeDoc) : nullptr;
     const StrokeRoute route = strokeRouteFor(st.brush.tool, strokeTarget);
 
-    if (strokeTool && down && hovered && inside && !panning && !rotating &&
+    if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value() && strokeRouteWritesLayer(route)) {
       // **The pen reaches a Layer.** app/StrokeSession section 4 said this was
       // "a missing decision rather than missing plumbing", and the decision it
@@ -7349,7 +7448,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         st.lastX = tx;
         st.lastY = ty;
       }
-    } else if (strokeTool && down && hovered && inside && !panning && !rotating &&
+    } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
                !st.pendingGuide.has_value() && route == StrokeRoute::None &&
                (strokeTarget != nullptr || eraseTool)) {
       // The refusals worth saying out loud. The route table sends each of them
@@ -7388,7 +7487,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
               : std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +
                     " and cannot be painted. Pick a Pigment or RGB layer in LAYERS.";
-    } else if (paintTool && down && hovered && inside && !panning && !rotating &&
+    } else if (paintTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       // 1.4 / ADR-0001: this is the first moment a paint tool actually
       // deposits, so it's where PaintSim gets constructed if it doesn't

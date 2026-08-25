@@ -3130,4 +3130,29 @@ bool runMenuModelTest();
 // "a refused Save left the picture untouched" is a claim about a filesystem.
 bool runOpenAnyFileTest();
 
+// ---------------------------------------------------------------------------
+// track8/zoom: app/ZoomAndSize's pure functions -- PRD Q1 (the Zoom tool's
+// click/Alt-click/scrubby-drag, cursor-anchored) and PRD R5/D3 (brush size
+// by the ⌃⌥-drag canvas gesture and its `[`/`]` alternate). Headless and
+// GPU-free -- every function under test takes and returns plain floats or a
+// `Tool`, no ImGui/GPU/OpenDocument involved, specifically so the suite
+// exercises the actual arithmetic `ui/MacPaintUI.cpp`'s canvas block and
+// `main.cpp`'s key dispatch call, not a restatement of it. Covers:
+//  - `panForAnchoredZoom()`: the point under an arbitrary screen anchor
+//    stays at the same document coordinate across a zoom change, checked
+//    against hand-workable cases and a spread of randomized zoom/pan states
+//    -- the property the OLD wheel-zoom formula (see this header's own
+//    replacement comment) never actually had.
+//  - `zoomFactorForDrag()`/`radiusForDrag()`: pure, monotonic, symmetric
+//    about zero, and -- because both are exponential -- equal whether
+//    called once with a total or accumulated frame by frame, which is how
+//    `ui/MacPaintUI.cpp` actually drives the brush-size gesture.
+//  - `clampViewZoom()`/`clampBrushRadius()`: the two clamps `applyZoomFactor`
+//    and the `[`/`]`/⌃⌥-drag paths actually call, not the constants alone --
+//    a prior track's suite once asserted only the constants and a
+//    regression of the code that reads them stayed green.
+//  - `toolZoomsView()`: true for `Tool::Zoom`, false for a sample of tools
+//    with no zoom handler.
+bool runZoomAndSizeTest();
+
 }  // namespace np
