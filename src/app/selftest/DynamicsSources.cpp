@@ -288,6 +288,64 @@ bool runDynamicsSourcesTest() {
           "sources: all eight vary across a realistic sequence -- the table that would have "
           "caught VELOCITY, FADE, NOISE and RANDOM stuck at their old hard 0.0, and must catch "
           "a future source silently returning a constant");
+
+    // **The table above proves the GENERATORS vary. It does not touch the
+    // dispatch that hands their values to the link system, and that is the
+    // half the audit's defect lived in.**
+    //
+    // Every row above calls a generator directly -- `dynamicRandomDraw()`,
+    // `dynamicNoiseAt()`, `dynamicVelocity()`, `dynamicFade()`. Nothing in it
+    // calls `sourceValue()`, which is the one function a link actually goes
+    // through to read a source. Pinning `sourceValue()`'s RANDOM arm to a
+    // literal 0.35 -- the exact shape of the constant the reachability audit
+    // found -- leaves this whole section green, and leaves every behavioural
+    // assertion in this file green too, because the other two seed consumers
+    // (`dynamicNoiseAt()` for NOISE and `applyPerDabScatter()`, which draws
+    // SCATTER's angle straight off a salted seed and deliberately bypasses
+    // links entirely -- app/StrokeSession.cpp section on kScatterAngleSalt)
+    // keep the deposit varying whatever the link layer does.
+    //
+    // So this asserts the dispatch itself, field by field: each source must
+    // return ITS OWN input, not a constant, not a neighbour. Distinct values
+    // per field are what make "not a neighbour" checkable at all -- with two
+    // fields sharing a value a copy-paste between their two `case` arms would
+    // read as correct.
+    DynamicInputs probe;
+    probe.pressure = 0.11f;
+    probe.tilt = 0.22f;
+    probe.azimuth = 0.33f;
+    probe.barrel = 0.44f;
+    probe.velocity = 0.55f;
+    probe.fade = 0.66f;
+    probe.noise = 0.77f;
+    probe.random = 0.88f;
+    const struct {
+      DynamicSource source;
+      float expected;
+      const char* name;
+    } dispatch[8] = {
+        {DynamicSource::Pressure, probe.pressure, "PRESSURE"},
+        {DynamicSource::Tilt, probe.tilt, "TILT"},
+        {DynamicSource::Azimuth, probe.azimuth, "AZIMUTH"},
+        {DynamicSource::Barrel, probe.barrel, "BARREL"},
+        {DynamicSource::Velocity, probe.velocity, "VELOCITY"},
+        {DynamicSource::Fade, probe.fade, "FADE"},
+        {DynamicSource::Noise, probe.noise, "NOISE"},
+        {DynamicSource::Random, probe.random, "RANDOM"},
+    };
+    bool dispatchOk = true;
+    for (const auto& d : dispatch) {
+      const float got = sourceValue(probe, d.source);
+      if (got != d.expected) {
+        dispatchOk = false;
+        std::printf("  source dispatch: %-10s returned %.6f, expected %.6f\n", d.name, got,
+                    d.expected);
+      }
+    }
+    check(dispatchOk,
+          "sources: sourceValue() returns each source's OWN input, at zero tolerance -- the "
+          "assertion that catches a source arm replaced by a literal, which is what RANDOM was "
+          "before the audit and what nothing else in this file can see");
   }
 
   // ======================================================================
@@ -544,62 +602,82 @@ bool runDynamicsSourcesTest() {
         s.addPoint(80.0f + 5.0f * static_cast<float>(i), 500.0f);
       s.end();
 
-      // Five sample columns, each 60 px from its neighbours -- far enough
-      // that no dab from one column's neighbourhood reaches another (radius
-      // 18 px « 60 px), but NOT far enough that only one dab touches any
-      // single column: at this preset's own 0.55 * 18 px ~= 10 px spacing,
-      // several consecutive dabs overlap every sample texel. 60 is an exact
-      // multiple of that spacing, and that is what makes the comparison
-      // below a proof: with RANDOM stuck at the audit's constant 0.35, every
-      // dab repeats the identical local pattern (identical flow, and --
-      // since RANDOM also drives this preset's SCATTER -- an identical
-      // offset), so all five columns would read the SAME mass at the same
-      // depth. They read different masses because the dabs feeding each one
-      // drew genuinely different values.
+      // **The same stroke again, shifted along x by a whole number of
+      // pixels.** This is the measurement, and the two rejected ones are
+      // worth recording because each looked correct and neither was.
       //
-      // **The row this reads is found, not fixed, and it is never the
-      // centreline.** Deposition accumulates as `m' = min(m + dm, kMaxMass)`,
-      // and with several dabs overlapping every centreline texel all of them
-      // reach the 1.0 cap regardless of what multiplier each drew -- a sweep
-      // down from y=500 reads exactly 1.000000 for the first fifteen rows.
-      // Measured on the centreline this assertion cannot tell a varying
-      // RANDOM from a constant one at all; the cap erases the signal it is
-      // trying to read. Out at the rim of the dab footprint the sum stays
-      // under the cap and the per-dab draws survive into the reading, so the
-      // search below walks outward to the first row holding at least three
-      // samples strictly inside (0, cap) and measures there. At the time of
-      // writing that lands on dy=16, whose three in-range samples are
-      // 0.889 / 0.438 / 0.453 -- a spread of 0.45, which is why the
-      // "these differ" threshold below can sit four orders of magnitude
-      // lower and still never fire on noise.
-      constexpr float kSaturated = 0.99f;  // below kMaxMass by more than half-float eps there
-      constexpr float kUnpainted = 1e-3f;
-      std::vector<float> isolatedMasses;
-      int rimOffset = -1;
-      for (int dy = 0; dy <= static_cast<int>(brush.radius) + 4 && isolatedMasses.empty(); ++dy) {
-        std::vector<float> row;
-        for (int i = 0; i < 5; ++i) {
-          const PixelCoord at{100 + i * 60, 500 + dy};
-          const PigmentTile* t = od.document.layers[1].pigmentTiles->find(tileCoordAt(at));
-          if (t == nullptr) continue;
-          const float m = t->readTexel(tileLocalOffset(at)).mass;
-          if (m > kUnpainted && m < kSaturated) row.push_back(m);
-        }
-        if (row.size() >= 3) {
-          isolatedMasses = std::move(row);
-          rimOffset = dy;
+      // Reading accumulated mass along the CENTRELINE proves nothing: pigment
+      // accumulates as `m' = min(m + dm, kMaxMass)`, several dabs overlap
+      // every centreline texel at this preset's ~10 px spacing, and a sweep
+      // down from y=500 reads exactly 1.000000 for fifteen straight rows. The
+      // cap, not the dynamics, decides the value.
+      //
+      // Comparing several columns of the SAME stroke out at the rim, where
+      // the sum stays under the cap, survives that objection and still fails
+      // -- it just fails silently. It rests on the columns being an exact
+      // multiple of the dab spacing apart, so that a constant RANDOM would
+      // repeat the identical local pattern at each one. They are not: the
+      // spacing is 0.55 * 18 px ~= 9.9 px and the columns are 60 px apart,
+      // which is 6.06 dabs, so every column sits at a different phase in the
+      // dab lattice and reads a different mass **whatever RANDOM does**.
+      // Pinning RANDOM to the audit's constant 0.35 leaves that version of
+      // this assertion green. It measures lattice phase and calls it entropy.
+      //
+      // Shifting the stroke by a whole number of pixels is what this settles
+      // on, and it is worth being exact about what that does and does not
+      // prove. Translating by an integer leaves the geometry -- and so the
+      // lattice phase, and so everything the previous attempt was
+      // accidentally measuring -- identical, while changing the stroke's
+      // seed, which is latched from its first dab position. So a difference
+      // here can only come from the seed.
+      //
+      // **It does NOT isolate RANDOM -> FLOW, and must not claim to.** Three
+      // separate things read that seed: `local.random` (the RANDOM source,
+      // which reaches FLOW through a link), `local.noise` (the NOISE source),
+      // and `applyPerDabScatter()`, which draws SCATTER's angle straight off
+      // a salted copy of the seed and deliberately bypasses the link system
+      // altogether. Pinning `sourceValue()`'s RANDOM arm to a constant still
+      // leaves ~1570 of these texels differing, because the scatter angle
+      // alone keeps moving dabs about. The claim that RANDOM specifically is
+      // not a constant belongs to the `sourceValue()` dispatch assertion in
+      // section 5, which tests it directly; what this one proves is the
+      // end-to-end property that the seed reaches the paint at all.
+      constexpr int32_t kShiftPx = 400;  // > 2 * radius, so the two strokes cannot overlap
+      OpenDocument odShifted = makeDoc(1024, 1024);
+      StrokeSession shifted;
+      std::string eShifted;
+      check(shifted.begin(odShifted, 1, tip(brush.radius, brush.hardness, brush.load), Tool::Brush,
+                          &eShifted, &brush.links),
+            "dry bristle: the shifted stroke begins with the same link set");
+      for (int i = 0; i <= 60; ++i)
+        shifted.addPoint(80.0f + static_cast<float>(kShiftPx) + 5.0f * static_cast<float>(i),
+                         500.0f);
+      shifted.end();
+
+      const auto massAt = [](const OpenDocument& doc, int32_t x, int32_t y) -> float {
+        const PixelCoord at{x, y};
+        const PigmentTile* t = doc.document.layers[1].pigmentTiles->find(tileCoordAt(at));
+        return t != nullptr ? t->readTexel(tileLocalOffset(at)).mass : 0.0f;
+      };
+      // 1e-4 is far below the smallest real disagreement and far above the
+      // half-float storage step, so it separates "the draws differed" from
+      // "the same value quantised twice" without sitting near either.
+      int differing = 0;
+      int compared = 0;
+      for (int32_t dy = 0; dy <= static_cast<int32_t>(brush.radius) + 4; ++dy) {
+        for (int32_t x = 100; x <= 360; ++x) {
+          ++compared;
+          if (std::fabs(massAt(od, x, 500 + dy) - massAt(odShifted, x + kShiftPx, 500 + dy)) > 1e-4f)
+            ++differing;
         }
       }
-      std::printf("  dry bristle: %zu unsaturated rim masses at dy=%d\n", isolatedMasses.size(),
-                  rimOffset);
-      bool anyDiffer = false;
-      for (size_t i = 1; i < isolatedMasses.size(); ++i)
-        if (std::fabs(isolatedMasses[i] - isolatedMasses[0]) > 1e-4f) anyDiffer = true;
-      check(isolatedMasses.size() >= 3 && anyDiffer,
-            "dry bristle: RANDOM -> FLOW no longer resolves to the constant 0.35 the audit "
-            "found -- separated dabs along the same stroke carry visibly different mass. A "
-            "zero count here is its own finding: it means no row of the footprint escaped the "
-            "kMaxMass cap, so there was nowhere left to read the per-dab draws");
+      std::printf("  dry bristle: %d of %d texels differ between the stroke and its shift\n",
+                  differing, compared);
+      check(differing > 0,
+            "dry bristle: the shipped preset's stroke is SEEDED -- the same path drawn at a "
+            "different position deposits different paint, so the stroke seed reaches the paint "
+            "end to end. Zero differing texels would mean every stroke-local source resolved to "
+            "the same thing regardless of where the stroke started");
     }
   }
 

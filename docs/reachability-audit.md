@@ -149,7 +149,47 @@ built-in edited and saved is still lost at quit with no warning. PRD **G6** (P1)
 
 ## B. Partially wired — a value dropped at exactly one tier
 
-### B1 — The solver canvas cannot be saved, exported or undone
+### B1 — The solver canvas cannot be saved, exported or undone — ~~OPEN~~ **STALE, see B1a**
+
+> **This entry's premise no longer holds, and it was already false when the
+> audit was written.** The audit was verified at `304bd21`; the seven "stroke
+> bridge" commits (`ab77003`…`9490517`) are ancestors of that same history and
+> had already built the machinery this entry says is missing. Verified directly
+> against the tree, not taken from a report: `StrokeBakeCycle::step()` runs
+> unconditionally every frame (`main.cpp:2638`), `bakeReadyTiles()` writes dried
+> solver texels into an ordinary `Layer::pigmentTiles` and calls
+> `recordEdit("dried paint")` / `amendEdit(...)` (`StrokeBake.cpp:227-230`), and
+> `forceBake()` settles wet paint before every history move
+> (`MacPaintUI.cpp:4377`). Because the bake target is a plain
+> `LayerKind::Pigment` layer, `io/` needed no changes at all — persisted dried
+> paint is indistinguishable from hand-painted content by the time
+> `saveNpaint()` sees it. `readbackCanvas()`, cited below, is an unrelated RGBA8
+> diagnostic blit; the production path is the deferred tile readback.
+>
+> Kept rather than deleted because the reasoning below is what the stroke
+> bridge was built to answer, and because "the audit item was already stale"
+> is itself the finding: **an audit is a snapshot, and this one outlived the
+> tree by seven commits.**
+
+### B1a — A refused bake is silent, and the refusal names itself to nobody
+
+`StrokeBakeCycle::step()` and `forceBake()` both return a `BakeCycleReport`
+saying *why* a bake did not happen, and **both call sites discard it** —
+`main.cpp:2638` and `MacPaintUI.cpp:4377`.
+
+So when solver paint exists but the active layer is not a writable Pigment
+layer (an RGB layer selected, no document, the layer locked, or Oil mode), the
+paint renders on screen every frame and never persists, and nothing anywhere
+tells the user. No data is lost — the solver keeps it — but the user has no way
+to learn that the thing they are looking at is not going into their file.
+
+This is category A's defect shape exactly: the refusal exists, is computed
+correctly, and is thrown away one line before it could be shown. The fix is a
+readout, not a mechanism.
+
+---
+
+*Original entry follows.*
 
 `strokeRouteFor()` sends `Tool::Water` to `PaintSim` for every target
 (`StrokeSession.cpp:41`), and Brush/DryBrush there whenever no writable layer
