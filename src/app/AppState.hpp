@@ -6,10 +6,12 @@
 
 #include "brush/Dynamics.hpp"
 #include "brush/Library.hpp"
+#include "app/CloseDecision.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
 #include "app/StrokeBake.hpp"
 #include "core/Clipboard.hpp"
+#include "core/SelectionBoundary.hpp"
 #include "core/SelectionOps.hpp"
 #include "core/SelectionShapes.hpp"
 #include "brush/StrokePath.hpp"
@@ -340,17 +342,32 @@ struct AppState {
   // flag of its own to say "a path is open".
   bool polygonLassoActive = false;
 
-  // Cached bounds of the active document's selection, for drawing. Recomputed
-  // only when the selection changes -- `selectionBounds()` walks every
-  // selected texel, which is not something to do per frame. `selectionRevision`
-  // is what says it is stale.
+  // The active document's selection BOUNDARY, for PRD E6's marching ants.
+  // Recomputed only when the selection changes -- extraction walks every texel
+  // of every occupied tile (~6 ms for a full-canvas selection on a 2048x2048
+  // document, measured in `--selftest`), which is not something to do 120 times
+  // a second inside PRD F3's 20 ms frame.
+  //
+  // **This replaced a cached `SelectionBounds`.** The bounding box was exact
+  // while `selectRectangle()` was the only constructor, and became a lie the
+  // moment PRD E3's lasso, polygon lasso and wand landed: every selection drew
+  // as a rectangle. core/SelectionBoundary.hpp carries that argument.
+  //
+  // Keyed **inside the object**, on `(DocumentId, selectionRevision)`, which is
+  // why there is no companion pair of cached-key members beside it: the caller
+  // hands it the key and it decides whether to re-extract.
+  SelectionBoundaryCache selectionBoundary;
+
+  // The key the GPU coverage upload is gated on: `PaintSim::setSelection()`
+  // uploads a canvas-sized texture and must not do it per frame.
   //
   // Keyed on the document id as well as the revision, and that is not
   // belt-and-braces: revisions start at 0 per document, so two open tabs sit
   // at the same revision most of the time. Keying on the revision alone would
-  // draw one tab's ants over the other's canvas whenever the two numbers
-  // happened to agree, which is the common case rather than the rare one.
-  std::optional<SelectionBounds> selectionBoundsCache;
+  // leave one tab's paint gated by the other tab's selection whenever the two
+  // numbers happened to agree, which is the common case rather than the rare
+  // one. `SelectionBoundaryCache` keys itself the same way, for the same
+  // reason.
   DocumentId cachedSelectionDoc = 0;
   uint64_t cachedSelectionRevision = 0;
 
@@ -544,6 +561,19 @@ struct AppState {
   // and touches no Layer::rgbTiles. See app/DocumentLifecycle.hpp's own
   // section on the gap.
   DocumentSession documents;
+
+  // The Save / Don't Save / Cancel question raised by a close, and not yet
+  // answered (app/CloseDecision.hpp). Zero-initialised -- "nothing pending" --
+  // for all but a handful of frames in a session.
+  //
+  // Session state by this header's own rule above, and it has to be: it names
+  // a *document* by id rather than describing a widget, it outlives the frame
+  // the click happened on, and it is raised from ui/AtelierChrome.cpp's tab
+  // strip while being answered by ui/MacPaintUI.cpp's dialog. A function-local
+  // static in either file would be invisible to the other half of the feature,
+  // which is how the tab strip and the File menu would end up with two
+  // different answers to the same question.
+  PendingClose pendingClose;
 
   // PRD I18's "open recent", persisted (see app/DocumentLifecycle.hpp for the
   // file and its location). Empty and untouched until the File menu is first

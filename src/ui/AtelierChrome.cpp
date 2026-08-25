@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "app/CloseDecision.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/Memory.hpp"
 #include "app/StrokeSession.hpp"
@@ -337,7 +338,27 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
 
     ImGui::SetCursorScreenPos(ImVec2(x, top));
     ImGui::PushID(static_cast<int>(i));
+    // **The close box sits inside this button's rect, so this one has to let
+    // it through.** Without this line the tab claims the hover for its whole
+    // width, `ItemHoverable()` refuses every later item overlapping it
+    // (`g.HoveredId != id && !g.HoveredIdAllowOverlap`), and the `##close`
+    // button submitted below is never hovered, never clicked and never even
+    // drawn in its hover colour. That is not a subtlety -- it is why clicking
+    // the `x` did nothing at all: the click landed on the tab, which merely
+    // made it active, and on the tab that was already active it did literally
+    // nothing. No amount of work behind the close box could have been reached.
+    //
+    // `SetNextItemAllowOverlap()` is ImGui's front-to-back hit test: the item
+    // submitted *later* wins the overlap, which is exactly the reading a user
+    // has of a small control drawn on top of a large one. The price is that
+    // the tab's own hover is gated on the previous frame's hovered id, so its
+    // fill lights one frame after the pointer arrives -- invisible at any
+    // frame rate this application runs at, and the correct trade for a close
+    // box that works.
+    ImGui::SetNextItemAllowOverlap();
     if (ImGui::InvisibleButton("##tab", ImVec2(tabW, h))) st.documents.setActive(i);
+    // False while the pointer is over the close box, which is what makes the
+    // tab stop painting its hover fill the moment the `x` takes the hit.
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetTooltip("%s", name.c_str());
 
@@ -358,13 +379,28 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
       dl->AddCircleFilled(ImVec2(x + tabW - 26.0f, top + h * 0.5f), 4.0f, atelierToken(kAccent),
                           12);
 
-    // Close. Refuses a dirty document by name, which is the File menu's own
-    // rule and the same call -- a tab that discarded work on one click would
-    // be the one place in the application where PRD I11 did not hold.
+    // Close. A clean document goes on this click; a dirty one raises the
+    // Save / Don't Save / Cancel question (app/CloseDecision.hpp), which the
+    // File menu's own Close Document raises too -- one decision point, so the
+    // two paths cannot give a user different answers about the same document.
+    //
+    // This used to call `st.documents.close(i, false, ...)` and drop the
+    // refusal into the status line. PRD I11 was satisfied on paper and the
+    // control read as broken in the hand.
     ImGui::SetCursorScreenPos(ImVec2(x + tabW - 18.0f, top + (h - 14.0f) * 0.5f));
+    bool closedHere = false;
     if (ImGui::InvisibleButton("##close", ImVec2(14.0f, 14.0f))) {
-      std::string err;
-      if (!st.documents.close(i, false, &err) && statusOut != nullptr) *statusOut = err;
+      const CloseOutcome outcome = requestDocumentClose(st.documents, i, st.pendingClose);
+      if (statusOut != nullptr && !outcome.status.empty()) *statusOut = outcome.status;
+      closedHere = outcome.closed;
+    }
+    // **Only a close leaves the loop.** A raised question changed nothing --
+    // the document is still open and still in the list at the same index -- so
+    // the strip finishes drawing normally and the tab the user clicked stays
+    // on screen behind the modal, which is where they need to see it. Breaking
+    // for a question would blank every tab to the right of it for a frame and
+    // make the strip appear to lose documents at the moment it asks about one.
+    if (closedHere) {
       ImGui::PopID();
       break;  // the list changed under the loop
     }
@@ -512,14 +548,21 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
   ImGui::SliderFloat("##wet", &st.brush.wetness, 0.0f, 3.0f, "%.2f");
   popAtelierMono();
 
-  // --- what the next stroke will actually hit ------------------------------
+  // --- what the next gesture will actually hit -----------------------------
   //
-  // The layers panel says which layer is selected; this says what *painting*
-  // on it does, which is a different question with three answers
-  // (app/StrokeSession section 1) and no other place in the chrome that
-  // answers it. A brush that routes to the solver when the user thinks they
-  // are painting a layer, or that refuses because the layer is locked, both
-  // look identical on the canvas: nothing happens where you expected pigment.
+  // The layers panel says which layer is selected; this says what *using this
+  // tool* on it does, which is a different question and one no other part of
+  // the chrome answers. A brush that routes to the solver when the user thinks
+  // they are painting a layer, a brush that refuses because the layer is
+  // locked, and a bucket whose click is refused all look identical on the
+  // canvas: nothing happens where you expected paint.
+  //
+  // Two tables feed it, because there are two kinds of gesture and one enum
+  // cannot honestly cover both: `strokeRouteFor()` (app/StrokeSession §1) for
+  // the tools that make a stroke, and `pixelOpRefusalFor()` (§6) for the two
+  // that fill. Both branches use their table's own "does this reach the user's
+  // layer" predicate for the accent, so the colour means the same thing in
+  // either.
   bandSeparator();
   const OpenDocument* od = st.documents.active();
   const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
@@ -530,6 +573,39 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
     ImGui::PopStyleColor();
   } else if (target == nullptr) {
     capsLabel("NO LAYER");
+  } else if (toolWritesRgbPixels(st.brush.tool)) {
+    // **The paint bucket and the gradient are not strokes, and this band used
+    // to lie about both of them.** `strokeRouteFor()` answers `None` for every
+    // tool that cannot begin a stroke -- correct for its own table, and wrong
+    // here: with the bucket selected over a perfectly writable RGB layer this
+    // read a grey "-> none", so the one place in the chrome that answers "what
+    // will this tool do to this layer" said "nothing" about a tool that was
+    // about to fill it.
+    //
+    // They get their own answer, off `pixelOpWritesLayer()` -- the same
+    // predicate the canvas block gates the click with and the same one its
+    // refusal sentence comes from (app/StrokeSession §6), so this band and that
+    // refusal cannot disagree about whether the fill will land.
+    const bool writes = pixelOpWritesLayer(target);
+    pushAtelierMono();
+    ImGui::PushStyleColor(
+        ImGuiCol_Text,
+        ImGui::ColorConvertU32ToFloat4(atelierToken(writes ? kAccent : kTextSecondary)));
+    ImGui::Text("-> %s", writes ? "rgb-fill" : "none");
+    ImGui::PopStyleColor();
+    popAtelierMono();
+    if (ImGui::IsItemHovered()) {
+      // The refusal's own sentence in the tooltip rather than a second wording
+      // of it, and shown whether or not the user has clicked yet -- so the
+      // answer is available *before* the wasted gesture as well as after it.
+      const std::string why =
+          pixelOpRefusalMessage(pixelOpRefusalFor(target), target, toolName(st.brush.tool));
+      if (why.empty())
+        ImGui::SetTooltip("The active layer is \"%s\".\nThe %s fills its RGB pixels.",
+                          target->name.c_str(), toolName(st.brush.tool));
+      else
+        ImGui::SetTooltip("%s", why.c_str());
+    }
   } else {
     pushAtelierMono();
     ImGui::PushStyleColor(

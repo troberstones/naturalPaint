@@ -1372,6 +1372,13 @@ int main(int argc, char** argv) {
     // ui/MacPaintUI's commitDrawnSelection(): the intent rules all five of
     // PRD E3's selection tools funnel through. Headless, pure CPU.
     const bool selectionToolsOk = np::runSelectionToolsTest();
+    // core/SelectionBoundary (PRD E6): the true outline the marching ants draw
+    // -- islands, holes and concave corners -- which replaced the bounding box
+    // that made every lasso, wand and Shift-add selection render as a
+    // rectangle. Includes the 0.5 coverage threshold, the revision-keyed cache
+    // and its invalidation, and the extraction's cost against PRD F3's 20 ms.
+    // Headless, pure CPU.
+    const bool selectionBoundaryOk = np::runSelectionBoundaryTest();
     // PLAN.md "Phase 6 -- Filter and transform it" (PRD D14-D17): ops/Transform's
     // 3x3 matrix stack composed BEFORE resampling, the exact no-resample paths
     // for flips and quarter turns, the five reconstruction kernels, the
@@ -1739,6 +1746,15 @@ int main(int argc, char** argv) {
     // independence at zero tolerance, the selection as a bound rather than a
     // speed limit, and paint landing on the active layer and on no other.
     const bool rgbDepositOk = np::runRgbDepositTest();
+    // PRD D25/D26 -- the paint bucket's refusals. ops/FloodFill was never
+    // wrong; the gate in front of it was inside the click condition, so a
+    // bucket click on the layer kind a new layer defaults to disappeared with
+    // nothing said. A success first (so a silenced bucket cannot pass the
+    // refusals), then three refusals that name the layer and move no texel,
+    // locked told apart from no-RGB-store, the options bar's two tables read at
+    // once, PRD E1's selection bound at exact zero -- and the live recomposite
+    // the Layer Properties dialog's undimmed modal depends on.
+    const bool bucketRefusalOk = np::runBucketRefusalTest();
     // Phase 5 step 11 / PRD C12, C13, C15: the multi-selection's ordering and
     // all-or-nothing rules, the integer-pixel translate align is built on
     // (asserted bit-identical), links, colour labels and the panel filter.
@@ -1752,6 +1768,16 @@ int main(int argc, char** argv) {
     // Phase 12 / PRD G7, G9: io/Descriptor, the Action Descriptor reader, against
     // synthetic fixtures parsed out of guard-paged mappings.
     const bool descriptorOk = np::runDescriptorTest();
+    // app/CloseDecision: closing a document that holds unsaved work. PRD I11's
+    // refusal was correct and invisible -- it went to a line of dim grey beside
+    // the menus, so the tab's close box read as a dead control. This is the
+    // Save / Don't Save / Cancel question that replaced it, and above all the
+    // assertion that the pending close is keyed on the document's identity
+    // rather than on its index: the stale index is arranged to name a
+    // *different* document, so an index-keyed version discards the wrong one
+    // successfully instead of failing. Headless, GPU-free, writes no files, and
+    // asserts the same answers in BOTH NP_USE_OIIO configurations.
+    const bool closeDecisionOk = np::runCloseDecisionTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1762,7 +1788,8 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && gradientOk && selectionOk && channelsOk &&
-                    selectionShapesOk && selectionRefineOk && selectionToolsOk && floodFillOk &&
+                    selectionShapesOk && selectionRefineOk && selectionToolsOk &&
+                    selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
@@ -1773,11 +1800,11 @@ int main(int argc, char** argv) {
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
                     controlsLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
-                    exportStatesOk && pigmentDepositOk && rgbDepositOk &&
+                    exportStatesOk && pigmentDepositOk && rgbDepositOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
-                    pigmentBakeOk && strokeBridgeOk && descriptorOk;
+                    pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

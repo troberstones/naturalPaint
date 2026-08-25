@@ -578,6 +578,38 @@ bool runSelectionShapesTest();
 // a second tolerance metric is a test failure and not a user complaint.
 bool runSelectionRefineTest();
 
+// core/SelectionBoundary -- the TRUE outline of a selection, which is what PRD
+// E6's marching ants draw. Headless and GPU-free.
+//
+// **The section exists because a green suite once agreed with a bug.** The ants
+// were drawn from `selectionBounds()` -- exact for a rectangle, a bounding box
+// for everything else -- and nothing here noticed when PRD E3's lasso, polygon
+// lasso and wand landed and every selection started drawing as a rectangle.
+// Every existing assertion was about the selection MODEL, which was right in
+// each case; the picture was the only thing wrong, and four separate bug
+// reports were that one picture.
+//
+// So every assertion is one a bounding box passes and a real trace does not, or
+// the reverse: a rectangle is still exactly 2*(w+h) unit edges; an L visits its
+// concave corner and NOT the box corner outside the shape; a ring produces a
+// second, inner contour, because a hole drawn as filled says the opposite of
+// what the selection does; and a Shift-add of two disjoint rectangles produces
+// two contours of 24 edges rather than one box of 52.
+//
+// Three more decisions are pinned here rather than left to prose. **Select All
+// draws the canvas edge and not nothing**, which follows from
+// core/SelectionMask.hpp's inverted default (outside a selection is coverage 0,
+// so the document edge is a real edge). **The coverage threshold is 0.5**, the
+// contour Photoshop draws, and the section measures how much larger the
+// rejected "any coverage at all" outline is on an antialiased ellipse. And the
+// **cache is asserted to invalidate**, in a form that fails both for a cache
+// which never refreshes and for one which refreshes into a stale copy -- a
+// frozen outline is invisible to any test that draws once.
+//
+// Cost is measured, not assumed: a full-canvas selection on 2048x2048 against
+// PRD F3's 20 ms frame, beside the cached re-ask it has to be cheaper than.
+bool runSelectionBoundaryTest();
+
 // The intent rules behind PRD E3's five selection tools -- ui/MacPaintUI's
 // commitDrawnSelection(). Headless and GPU-free.
 //
@@ -2490,6 +2522,59 @@ bool runAtelierChromeTest();
 // something calls it.
 bool runActiveLayerTest();
 
+// **The paint bucket's refusals** (app/StrokeSession section 6), and the one
+// question the Layer Properties dialog's un-dimming rests on.
+//
+// **This section exists because of a silence, not a miscalculation.**
+// ops/FloodFill was correct and runFloodFillTest() passed on both sides of this
+// step. What was wrong was one line of wiring: `ui/MacPaintUI.cpp` put its "can
+// this layer take a fill" test *inside* the click condition, so a bucket click
+// on anything but an unlocked RGB layer disappeared -- no fill, no history
+// entry, no mark on the canvas and **no message anywhere in the chrome**. The
+// ordinary route to it was to add a layer (Pigment: `CONTEXT.md`'s default kind
+// and the NEW popup's first entry) and click. The brush had had a refusal for
+// this case since the RGB route landed; the bucket and the gradient, sitting in
+// the same palette group behind the same guard, never had one.
+//
+// What is asserted:
+//
+//  - **A success first**, so a fix that silenced the bucket everywhere cannot
+//    pass the refusal sections: a click on a blank RGB layer moves every texel,
+//    stores the ink premultiplied, reaches the far corner, and records exactly
+//    one edit named "paint bucket" -- while a second click in the same colour
+//    moves nothing and records nothing.
+//  - **Three refusals that change nothing**: a Pigment layer, an Adjustment
+//    layer and a locked RGB layer, each with a fillable RGB layer underneath so
+//    "nothing was written" is a claim about the refusal. Zero texels, exact.
+//  - **The refusal NAMES the layer** -- the assertion that fails against the
+//    shipped behaviour, which produced no sentence at all -- and **locked is
+//    told apart from no-RGB-store**, in the half of the sentence that names the
+//    fix, for two layers deliberately given the same name so the difference
+//    cannot be the name.
+//  - **The lying indicator.** `strokeRouteFor()` answers `None` for the bucket
+//    on every layer, correctly, because it begins no stroke -- so the options
+//    bar, the one place in the chrome that says what a tool will do to a layer,
+//    read a grey "-> none" over a layer the bucket was about to fill. Both
+//    tables are asserted at the same moment on the same layer.
+//  - **PRD E1 (P0), the selection as a bound**: the flood covers a blank layer
+//    entirely and the intersection cuts it to the rectangle, with the texels one
+//    past each edge exactly {0,0,0,0} in an *allocated* tile -- so the
+//    assertion cannot pass on a tile that merely does not exist.
+//  - **The gradient refused by the same predicate**, since fixing one of the
+//    two would be half a fix.
+//  - **The canvas re-composites while an op stack is edited** -- the claim the
+//    Layer Properties dialog's undimmed modal depends on, asserted on both
+//    mechanisms it rests on: the revision `ui/DocumentTexture` caches on moves,
+//    and `documentDirtyTiles()` classifies the change as `LayerOpsChanged`
+//    rather than finding the empty tile set an op edit would otherwise produce.
+//    The recomposited halves are compared bit for bit, and disabling the op
+//    returns the bit-identical original picture.
+//
+// Headless and GPU-free; writes no files. The dim suppression itself is ImGui
+// state inside a window this suite has none of, and is stated as untestable
+// here rather than given a test that asserts something adjacent to it.
+bool runBucketRefusalTest();
+
 // The presentation transfer function: what the value in a layer becomes by the
 // time it is a byte in a screenshot. Establishes the surface format the adapter
 // actually preferred and the gamma Dear ImGui's backend selects from it, then
@@ -2563,5 +2648,51 @@ bool runPresentTransferTest(GpuContext& gpu);
 //    words rather than the allocator's, and `maxDepth = 0` reported as a caller
 //    error rather than blamed on the file.
 bool runDescriptorTest();
+
+// Closing a document that holds unsaved work (app/CloseDecision) -- PRD I11's
+// refusal turned into a Save / Don't Save / Cancel question, and the one
+// decision point the tab strip's close box and File > Close Document both go
+// through.
+//
+// **The defect this section was written against was invisible to the suite.**
+// Both close paths called `DocumentSession::close(..., discard = false)` and
+// dropped the refusal into a line of dim grey beside the menus, so a tab with
+// unsaved work read as a dead control -- which is worse than either saving or
+// discarding, because it teaches the user the button is broken. The refusal
+// itself was correct and is still asserted by runDocumentLifecycleTest(); what
+// nothing asserted was what the *user* gets afterwards. (The close box was in
+// fact unreachable for a second, independent reason -- an ImGui hit-test one
+// that no headless test can see. ui/AtelierChrome.cpp's tab loop carries it.)
+//
+// Covered, in order:
+//
+//  - A clean document closes on the click, with no question raised at all, and
+//    closing the LAST one leaves the empty session the application already had
+//    rather than inventing a blank document or a quit.
+//  - A dirty document raises the question and is **still open** afterwards,
+//    unchanged down to its unsaved-edit labels; the question names the
+//    document and the work in PRD I11's own `unsavedWorkSummary()` words; and
+//    a second question is refused while the first is up.
+//  - Cancel leaves the count, the dirty flag, the labels and the active index
+//    exactly as they were.
+//  - Don't Save closes exactly one document, and it is the one asked about.
+//  - Save calls the writer exactly once and only then closes; a **failed**
+//    save closes nothing and leaves the question up carrying the writer's own
+//    error; a never-saved document asks for a destination and writes nothing;
+//    and finishing that hand-off does not write the same bytes twice. The
+//    production saver is proven to be `saveDocument()` through the one refusal
+//    only that function produces.
+//  - **The pending close is keyed on identity, not on an index.** The stale
+//    index is arranged to be in range and to name a *different* document, so
+//    an index-keyed implementation does not fail -- it succeeds at discarding
+//    the wrong document. The same hazard's other half: a question about a
+//    document something else has closed acts on nothing and says so.
+//  - Escape maps to Cancel and Enter to Save, and **no** key maps to Don't
+//    Save, asserted by exhaustion over the key enum.
+//
+// Headless, GPU-free, and writes no files: the save is injected, so every
+// assertion holds in BOTH NP_USE_OIIO configurations rather than the section
+// going quiet in the OFF build.
+bool runCloseDecisionTest();
 
 }  // namespace np

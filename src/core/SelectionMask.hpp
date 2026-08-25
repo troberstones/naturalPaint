@@ -200,15 +200,26 @@ Selection selectRectangle(float x0, float y0, float x1, float y1);
 // `std::nullopt` when nothing is selected. `x1`/`y1` are exclusive, so an
 // empty rectangle and a one-texel one are distinguishable.
 //
-// For DRAWING the selection. It is the true bounds, which is exact for a
-// rectangular marquee and merely a bounding box for anything else -- so when
-// lasso and wand land (PRD E3) and PRD E6's marching ants have to trace a real
-// boundary, this is not the function that will do it. Named here rather than
-// discovered then.
+// **Not for drawing the selection**, and that prediction is now settled rather
+// than pending. This used to say that the bounds were "exact for a rectangular
+// marquee and merely a bounding box for anything else -- so when lasso and wand
+// land (PRD E3) and PRD E6's marching ants have to trace a real boundary, this
+// is not the function that will do it". Those tools landed, the marching ants
+// did draw this rectangle for a while, and every lasso, wand and Shift-added
+// selection rendered as a box. **core/SelectionBoundary is the function that
+// does it**, and the marching ants go through that.
 //
-// O(selected tiles x texels), so a caller that draws every frame should cache
-// the answer and recompute it when the selection changes rather than calling
-// this from a render loop.
+// What this is still for is an EXTENT: the rectangle an op has to cover.
+// ops/Gradient.hpp names it for a gradient's span and ops/Feather.cpp for the
+// coarser tile-granular version of the same question. Nothing in this build
+// calls it today -- the ants were its only caller -- which is stated rather
+// than hidden, because a bounding box is exactly the right answer to "how much
+// of the canvas does this op have to touch" and exactly the wrong answer to
+// "where is the edge".
+//
+// O(selected tiles x texels), so a caller that needs it every frame should
+// cache the answer on `selectionRevision` rather than calling it from a render
+// loop -- `SelectionBoundaryCache` is the worked example.
 struct SelectionBounds {
   int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   int32_t width() const noexcept { return x1 - x0; }

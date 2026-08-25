@@ -299,9 +299,14 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session, AtelierSplit
 // docs/ui.md section 2's 34px band: the open documents as tabs (PRD **A5**),
 // and at its right edge the two split icons that section 5 asks for.
 //
-// `statusOut`, when non-null, receives the refusal from a close the session
-// declined -- a dirty document names what would be lost (PRD I11), exactly as
-// the File menu's own Close Document does, because it is the same call.
+// `statusOut`, when non-null, receives the one sentence a close produced --
+// "Closed <name>." for a clean document, or a refusal for a request that could
+// not even be made. A **dirty** document does not report here at all: it
+// raises the Save / Don't Save / Cancel question on `AppState::pendingClose`
+// (app/CloseDecision.hpp), which is the same question File > Close Document
+// raises, because it is the same call. The status line used to be where the
+// dirty case's refusal went, and a sentence in dim grey beside the menus is
+// how the close box came to look like a dead control.
 //
 // `split` is read for the icons' pressed state and written when one is
 // clicked. Clicking the *active* arrangement's icon returns to a single pane,

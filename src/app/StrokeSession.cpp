@@ -128,6 +128,54 @@ const char* strokeEditLabel(Tool tool) noexcept {
   return "stroke";
 }
 
+// --- the pixel-writing ops that are not strokes (header §6) ----------------
+
+bool toolWritesRgbPixels(Tool tool) noexcept {
+  return tool == Tool::PaintBucket || tool == Tool::Gradient;
+}
+
+PixelOpRefusal pixelOpRefusalFor(const Layer* target) noexcept {
+  if (target == nullptr) return PixelOpRefusal::NoLayer;
+  // Before the storage test, so a locked RGB layer refuses for the reason that
+  // has a fix. See the header.
+  if (target->locked) return PixelOpRefusal::Locked;
+  // **`rgbTiles`, not `kind == RGB`.** core/Layer.hpp allows a layer of either
+  // paint kind to carry neither store, and ops/FloodFill and ops/Gradient both
+  // take a `TileStore&` -- so the question is whether there is one to write,
+  // not what the kind tag says. `strokeRouteFor()` draws the same distinction
+  // just above its own fallthrough, for the same reason.
+  if (!target->rgbTiles.has_value()) return PixelOpRefusal::NoRgbStore;
+  return PixelOpRefusal::None;
+}
+
+std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
+                                  const char* opName) {
+  const std::string op = opName != nullptr ? opName : "fill";
+  const std::string name = target != nullptr ? target->name : std::string();
+  switch (reason) {
+    case PixelOpRefusal::None:
+      return {};
+    case PixelOpRefusal::NoLayer:
+      // No name to give, because there is nothing to name -- and the fix is a
+      // different one from the other two, so it says so rather than reusing
+      // "pick a layer in LAYERS" for a stack that may have none.
+      return "no layer: the " + op +
+             " has nothing to fill. Open a document, or add a layer in LAYERS.";
+    case PixelOpRefusal::Locked:
+      return "locked layer: \"" + name + "\" cannot take the " + op +
+             ". Clear its Lock in LAYERS.";
+    case PixelOpRefusal::NoRgbStore:
+      // Names the KIND as well as the layer: "Pigment" is the answer to "why
+      // not", and a user who has just made a layer from the NEW popup's first
+      // entry has no other way in the chrome to find out which of the seven
+      // kinds they picked.
+      return "\"" + name + "\" is " +
+             (target != nullptr ? layerKindName(target->kind) : "?") +
+             " and has no RGB pixels for the " + op + ". Pick an RGB layer in LAYERS.";
+  }
+  return {};
+}
+
 BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressure) {
   DynamicInputs in;
   in.pressure = pressure;  // evaluateLinks() clamps; see linkContribution()

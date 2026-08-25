@@ -12,9 +12,11 @@
 #include <cstdio>
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "app/CloseDecision.hpp"
 #include "app/CompPanel.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
@@ -851,8 +853,7 @@ void drawGridOverlay(ImDrawList* dl, const ViewTransform& xform, float texW, flo
   }
 }
 
-// PRD E6's marching ants, for an axis-aligned rectangle in document texel
-// space.
+// PRD E6's marching ants.
 //
 // Two passes rather than one: a solid dark line, then a light dashed line over
 // it with the gaps left open. That is what makes the boundary legible on both
@@ -864,37 +865,117 @@ void drawGridOverlay(ImDrawList* dl, const ViewTransform& xform, float texW, flo
 // rather than a frame counter, so the speed is the same whether the app is
 // running at 30 or 120 fps.
 //
-// **Rectangles only.** The selection store is general (sparse coverage), but
-// the only constructor is `selectRectangle()`, so a rectangle is the only
-// boundary there is to draw. When lasso and wand land (PRD E3) this will need
-// a real boundary trace rather than a bounding box, and the bounding box would
-// then be actively wrong rather than merely approximate. Named here so that is
-// a known cost and not a surprise.
+// **The outline is the selection's TRUE boundary**, traced by
+// core/SelectionBoundary from the coverage itself: closed contours round every
+// island, an inner contour round every hole, and a corner wherever the shape
+// turns. It used to be the selection's bounding box, which was exact while
+// `selectRectangle()` was the only constructor and became a lie the day PRD E3's
+// lasso, polygon lasso and wand landed -- every selection, whatever its shape,
+// drew as a rectangle, and PRD E7's Shift-add drew two islands as one box round
+// both. core/SelectionBoundary.hpp's header carries the full argument, including
+// which threshold counts as inside and why marching squares was not used.
+//
+// **The dash phase runs along ARC LENGTH, across every segment and every
+// contour**, which is what makes the ants crawl round a corner rather than
+// restart at each one. `phaseAccum` is threaded through the segment drawing for
+// exactly that: it carries the leftover of the previous segment's last dash
+// into the next segment's first. The one place it cannot be continuous is a
+// closed contour's seam, where the loop's perimeter is not generally a whole
+// number of dash periods -- there is no phase that makes both ends of a loop
+// agree, and every editor has that same seam.
+constexpr ImU32 kAntDark = IM_COL32(0, 0, 0, 190);
+constexpr ImU32 kAntLight = IM_COL32(255, 255, 255, 230);
+constexpr float kAntDash = 6.0f;
+
+// The animated phase for this frame, in screen pixels along the boundary.
+// Read once per frame by each caller and threaded through, rather than sampled
+// per segment, so two segments of the same outline cannot land on two different
+// clock readings.
+float marchingAntPhase() {
+  return static_cast<float>(std::fmod(ImGui::GetTime() * 18.0, kAntDash * 2.0));
+}
+
+// One segment of an outline, both passes, advancing `phaseAccum` by the
+// segment's screen length. `phaseAccum` is "how far into the current dash
+// period the segment starts", so a segment whose predecessor ended mid-dash
+// begins mid-dash.
+void drawAntSegment(ImDrawList* dl, ImVec2 a, ImVec2 b, float& phaseAccum) {
+  dl->AddLine(a, b, kAntDark, 1.0f);
+  const float dx = b.x - a.x, dy = b.y - a.y;
+  const float len = std::sqrt(dx * dx + dy * dy);
+  if (!(len > 0.0f)) return;
+  const float ux = dx / len, uy = dy / len;
+  constexpr float kPeriod = kAntDash * 2.0f;
+  for (float t = -phaseAccum; t < len; t += kPeriod) {
+    const float s = std::max(t, 0.0f);
+    const float e = std::min(t + kAntDash, len);
+    if (e <= s) continue;
+    dl->AddLine(ImVec2(a.x + ux * s, a.y + uy * s), ImVec2(a.x + ux * e, a.y + uy * e),
+                kAntLight, 1.0f);
+  }
+  phaseAccum = std::fmod(phaseAccum + len, kPeriod);
+}
+
+// A closed or open run of document-space points, drawn as ants.
+//
+// The transform is applied per point rather than per contour, because the view
+// can be rotated and mirrored (app/ViewTransform) and a boundary is not
+// axis-aligned on screen even when it is axis-aligned in the document.
+void drawAntPolyline(ImDrawList* dl, const ViewTransform& xform,
+                     const std::vector<Vec2>& pts, bool closed, float& phaseAccum) {
+  if (pts.size() < 2) return;
+  const size_t last = closed ? pts.size() : pts.size() - 1;
+  Vec2 prev = xform.toScreen(pts[0]);
+  for (size_t i = 0; i < last; ++i) {
+    const Vec2 next = xform.toScreen(pts[(i + 1) % pts.size()]);
+    drawAntSegment(dl, ImVec2(prev.x, prev.y), ImVec2(next.x, next.y), phaseAccum);
+    prev = next;
+  }
+}
+
+// The committed selection's outline: every contour of it.
+//
+// A hole's contour is drawn exactly like an island's, deliberately -- nothing
+// here distinguishes the two, and a version that drew only outer contours would
+// show a ring selection as a filled disc, which is a picture that says the
+// opposite of what the selection does.
+//
+// The per-frame cost is one dark line plus its dashes per TURNING POINT, not
+// per boundary texel -- core/SelectionBoundary collapses collinear runs, so a
+// full-canvas selection is four segments. There is deliberately no cap on that
+// count: a wand result on a noisy photograph can have thousands of turns, and
+// drawing only the first N of them would show a boundary that stops partway
+// round, which is a worse lie than a slow frame. If that ever becomes the
+// bottleneck the answer is to simplify the contour at the current zoom, not to
+// truncate it.
+void drawMarchingAnts(ImDrawList* dl, const ViewTransform& xform,
+                      const SelectionBoundary& boundary) {
+  float phase = marchingAntPhase();
+  std::vector<Vec2> pts;
+  for (const BoundaryContour& contour : boundary.contours) {
+    pts.clear();
+    pts.reserve(contour.vertices.size());
+    for (const BoundaryVertex v : contour.vertices)
+      pts.push_back(Vec2{static_cast<float>(v.x), static_cast<float>(v.y)});
+    drawAntPolyline(dl, xform, pts, /*closed=*/true, phase);
+  }
+}
+
+// The in-progress gesture's preview: an axis-aligned rectangle in document
+// texel space, drawn from the drag's own corners.
+//
+// **Deliberately a separate entry point from the one above**, and not a
+// degenerate case of it. This draws a shape that has no `Selection` behind it
+// yet -- the rubber band exists only between mouse-down and mouse-up -- and
+// building a real selection per frame to outline it would allocate tiles 120
+// times a second to answer a question four floats already answer. The two must
+// not be confused in the other direction either: once the gesture commits, the
+// thing on screen is the selection's own boundary and not the drag rectangle.
 void drawMarchingAnts(ImDrawList* dl, const ViewTransform& xform, float x0, float y0,
                       float x1, float y1) {
-  const Vec2 c[4] = {xform.toScreen(Vec2{x0, y0}), xform.toScreen(Vec2{x1, y0}),
-                     xform.toScreen(Vec2{x1, y1}), xform.toScreen(Vec2{x0, y1})};
-  constexpr ImU32 kDark = IM_COL32(0, 0, 0, 190);
-  constexpr ImU32 kLight = IM_COL32(255, 255, 255, 230);
-  constexpr float kDash = 6.0f;
-  const float phase = static_cast<float>(std::fmod(ImGui::GetTime() * 18.0, kDash * 2.0));
-
-  for (int i = 0; i < 4; ++i) {
-    const ImVec2 a(c[i].x, c[i].y);
-    const ImVec2 b(c[(i + 1) % 4].x, c[(i + 1) % 4].y);
-    dl->AddLine(a, b, kDark, 1.0f);
-    const float dx = b.x - a.x, dy = b.y - a.y;
-    const float len = std::sqrt(dx * dx + dy * dy);
-    if (len <= 0.0f) continue;
-    const float ux = dx / len, uy = dy / len;
-    for (float t = -phase; t < len; t += kDash * 2.0f) {
-      const float s = std::max(t, 0.0f);
-      const float e = std::min(t + kDash, len);
-      if (e <= s) continue;
-      dl->AddLine(ImVec2(a.x + ux * s, a.y + uy * s), ImVec2(a.x + ux * e, a.y + uy * e),
-                  kLight, 1.0f);
-    }
-  }
+  float phase = marchingAntPhase();
+  const std::vector<Vec2> pts = {Vec2{x0, y0}, Vec2{x1, y0}, Vec2{x1, y1}, Vec2{x0, y1}};
+  drawAntPolyline(dl, xform, pts, /*closed=*/true, phase);
 }
 
 // One guide, drawn across the full canvas extent (0..texW or 0..texH) --
@@ -2397,7 +2478,38 @@ void drawLayersSection(AppState& st) {
     st.openLayerProperties = false;
     ImGui::OpenPopup("Layer Properties");
   }
-  if (ImGui::BeginPopupModal("Layer Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  // --- this modal alone does not dim the canvas ----------------------------
+  //
+  // **It stays modal.** Modality is what the paragraph above relies on: it is
+  // why `selected` cannot change under the dialog mid-edit, and dropping it
+  // would hand this dialog the layer-deleted-underneath-you hazard
+  // app/StrokeSession §5 spends a page on and cannot close today, because
+  // `Layer::id` is 0 on every layer this build creates. So the modality is
+  // kept and only the *dimming* is dropped.
+  //
+  // The dim is right for a modal that asks a question -- Revert, Recover
+  // Documents, Document path, and both Export dialogs are decision gates, and
+  // greying what is behind them is the sentence "nothing else is live until you
+  // answer". **This dialog is not a question; it is an editor whose output is
+  // the canvas.** It holds the layer's op stack, so a user changing a curve or
+  // an exposure here is looking *past* the dialog at the thing they are
+  // changing -- and a 55 %-black wash over it defeats the only feedback the
+  // control has. So the suppression is scoped to this one popup rather than
+  // applied to `applyAtelierTheme()`'s token, where it would also strip the
+  // five gates that want it.
+  //
+  // **The push must bracket `BeginPopupModal()` and nothing else.** ImGui
+  // captures the dim colour once, per modal window, into `window->DC.
+  // ModalDimBgColor` inside `Begin()`, and `RenderDimmedBackgroundBehindWindow()`
+  // reads *that* at end-of-frame rather than re-reading the live style -- which
+  // is exactly what makes a per-dialog override possible at all. Pushing after
+  // the Begin, or around the popup's body, would change nothing; pushing around
+  // the whole block would dim nothing anywhere.
+  ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+  const bool layerPropertiesOpen =
+      ImGui::BeginPopupModal("Layer Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+  ImGui::PopStyleColor();
+  if (layerPropertiesOpen) {
     if (selected >= doc.layers.size()) {
       ImGui::TextDisabled("This layer no longer exists.");
     } else {
@@ -4259,8 +4371,137 @@ void applyDocumentPathAction(AppState& st, DocPathAction action, const std::stri
   }
 }
 
+// The one dialog for the one decision (app/CloseDecision.hpp). Opened from
+// `AppState::pendingClose` rather than from a request flag, so whichever close
+// path raised the question -- the tab strip's `x` or File > Close Document --
+// this is what answers it, and neither path can grow a second dialog of its
+// own that says something different.
+constexpr const char* kCloseDecisionPopup = "Close document";
+
 void drawDocumentDialogs(AppState& st) {
   static char pathBuf[512] = "";
+  // Why not `g_docStatus`: a failed save has to stay legible in the dialog
+  // until the user does something about it, and `g_docStatus` is overwritten
+  // by every other document operation and is drawn one line high beside the
+  // menus. Widget state, so function-local, per app/AppState.hpp's rule.
+  static std::string closeDialogError;
+
+  // --- Save / Don't Save / Cancel -----------------------------------------
+  //
+  // First in the function, so that answering `Save` on a document that has
+  // never been saved can hand straight over to the path dialog below in the
+  // same frame rather than leaving a blank one in between.
+  //
+  // `wasOpen` is read before anything can open or close the popup, which is
+  // what lets the `else` branch below tell "the popup was dismissed without an
+  // answer" apart from "we have only just asked for it".
+  const bool closePopupWasOpen = ImGui::IsPopupOpen(kCloseDecisionPopup);
+  if (st.pendingClose.asking() && !closePopupWasOpen) {
+    closeDialogError.clear();
+    ImGui::OpenPopup(kCloseDecisionPopup);
+  }
+  if (ImGui::BeginPopupModal(kCloseDecisionPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    OpenDocument* closing = st.documents.find(st.pendingClose.document);
+    if (closing == nullptr) {
+      // Closed by something else while the question was up, so there is
+      // nothing left to ask about. Answered as Cancel: it is the one answer
+      // that cannot act on a document at all, which is the right thing to send
+      // when the user never got to see the question they are being answered
+      // for.
+      const CloseOutcome outcome =
+          resolveDocumentClose(st.documents, st.pendingClose, CloseAnswer::Cancel,
+                               documentSaverFor(&st.recentDocuments));
+      if (!outcome.status.empty()) g_docStatus = outcome.status;
+      st.pendingClose.clear();
+      ImGui::CloseCurrentPopup();
+    } else {
+      // The question names the document and the work, in app/CloseDecision's
+      // words -- which are PRD I11's own `unsavedWorkSummary()`. Read from the
+      // live record, so a rename behind the dialog renames the dialog.
+      ImGui::TextWrapped("%s", closeQuestion(*closing).c_str());
+      ImGui::Spacing();
+
+      // **Don't Save is set apart, on the left, in the warning colour.** It is
+      // the only button here that destroys anything, so it does not sit in the
+      // row where a user's hand goes -- macOS's own arrangement for a
+      // destructive third choice, and the reason for the 40 px gap rather than
+      // the usual item spacing: a mis-aimed click on Cancel must not land on
+      // it.
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+      const bool pressedDontSave = ImGui::Button("Don't Save");
+      ImGui::PopStyleColor();
+      ImGui::SameLine(0.0f, 40.0f);
+      const bool pressedCancel = ImGui::Button("Cancel");
+      ImGui::SameLine();
+      const bool pressedSave = ImGui::Button("Save");
+
+      // The two keys, through app/CloseDecision's mapping rather than through
+      // a pair of literals here -- the mapping is asserted in `--selftest` and
+      // this is the call site that has to be the one being asserted.
+      //
+      // Handled explicitly because this build does not set
+      // `ImGuiConfigFlags_NavEnableKeyboard`, so ImGui neither activates a
+      // focused button on Enter nor closes a modal on Escape; both keys are
+      // ours to read. **No key can reach Don't Save** -- there is no third
+      // branch here and `closeAnswerForKey()` has no third answer to give.
+      std::optional<CloseAnswer> answer;
+      if (pressedDontSave) answer = CloseAnswer::DontSave;
+      else if (pressedCancel) answer = CloseAnswer::Cancel;
+      else if (pressedSave) answer = CloseAnswer::Save;
+      else if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+        answer = closeAnswerForKey(CloseKey::Escape);
+      else if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))
+        answer = closeAnswerForKey(CloseKey::Enter);
+
+      if (answer) {
+        const CloseOutcome outcome =
+            resolveDocumentClose(st.documents, st.pendingClose, *answer,
+                                 documentSaverFor(&st.recentDocuments));
+        if (!outcome.status.empty()) g_docStatus = outcome.status;
+        if (outcome.needsDestination) {
+          // No native file picker exists in this build, so Save on a document
+          // that has never been saved falls back to the Save As dialog below
+          // -- the same one File > Save As... opens, not a second one. The
+          // pending close stays alive across it and is finished (or dropped)
+          // by the block that follows that dialog.
+          //
+          // **The document being closed is made active first, and it has to
+          // be.** `applyDocumentPathAction()` writes `st.documents.active()`,
+          // so closing an unsaved tab that was *not* the active one and
+          // choosing Save would otherwise write the wrong document to the
+          // typed path -- silently, and over whatever the user typed. Bringing
+          // it to the front is also what the user is owed: the file name they
+          // are about to type is for the document the question named, and they
+          // should be looking at it while they type. The cost is that backing
+          // out of the file name leaves that tab active rather than the one
+          // that was; the alternative costs a file.
+          if (const std::optional<size_t> pendingIndex =
+                  documentIndexById(st.documents, st.pendingClose.document))
+            st.documents.setActive(*pendingIndex);
+          g_docPathAction = DocPathAction::SaveAs;
+          g_docPathRequested = true;
+        }
+        // Still asking only when the answer could not be carried out -- a save
+        // that failed. The dialog stays up with the writer's own error beside
+        // it rather than closing on a document that is still dirty.
+        closeDialogError = st.pendingClose.asking() ? outcome.status : std::string();
+        if (!st.pendingClose.asking()) ImGui::CloseCurrentPopup();
+      }
+      if (!closeDialogError.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+        ImGui::TextWrapped("%s", closeDialogError.c_str());
+        ImGui::PopStyleColor();
+      }
+    }
+    ImGui::EndPopup();
+  } else if (st.pendingClose.asking() && closePopupWasOpen) {
+    // The popup was open at the top of this frame and is not open now, and no
+    // button above ran -- so something outside this block dismissed it. The
+    // only honest reading of a question dismissed without an answer is the
+    // answer that changes nothing, which is what Escape means too.
+    resolveDocumentClose(st.documents, st.pendingClose, closeAnswerForKey(CloseKey::Escape),
+                         documentSaverFor(&st.recentDocuments));
+  }
 
   if (g_docPathRequested) {
     g_docPathRequested = false;
@@ -4292,6 +4533,35 @@ void drawDocumentDialogs(AppState& st) {
       ImGui::PopStyleColor();
     }
     ImGui::EndPopup();
+  }
+
+  // A close that was waiting for a file name, now that the dialog above has
+  // gone one way or the other.
+  //
+  // Here rather than on that dialog's "Save As" button because the popup has
+  // more exits than it has buttons -- the button, its Cancel, and any future
+  // dismissal -- and a pending close left dangling behind one of them would
+  // block every subsequent close for the rest of the session with "is already
+  // waiting for an answer".
+  if (st.pendingClose.awaitingDestination && !ImGui::IsPopupOpen("Document path")) {
+    const OpenDocument* target = st.documents.find(st.pendingClose.document);
+    st.pendingClose.awaitingDestination = false;
+    if (target != nullptr && target->hasPath() && !target->isDirty()) {
+      // Save As did exactly what Save would have. Answering Save again
+      // finishes the close, and finds nothing left to write (see
+      // app/CloseDecision's already-clean branch), so the file is not written
+      // a second time.
+      const CloseOutcome outcome =
+          resolveDocumentClose(st.documents, st.pendingClose, CloseAnswer::Save,
+                               documentSaverFor(&st.recentDocuments));
+      if (!outcome.status.empty()) g_docStatus = outcome.status;
+    } else {
+      // Backing out of the file name backs out of the close. Re-raising the
+      // question instead would bounce the user between two dialogs with no way
+      // out that did not either write a file or discard their work.
+      g_docStatus = "Close cancelled: '" + st.pendingClose.name + "' has not been saved.";
+      st.pendingClose.clear();
+    }
   }
 
   // Revert's confirmation is the refusal itself: revertDocument() is called
@@ -4556,10 +4826,14 @@ void drawDocumentMenuItems(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     g_docStatus = "Duplicated (unbound -- Save As gives it a file of its own).";
   }
   if (ImGui::MenuItem("Close Document", nullptr, false, hasDoc)) {
-    std::string err;
-    // Refuses a dirty document by name. The menu is not the place to offer a
-    // discard, so the message says what to do instead.
-    if (!st.documents.close(st.documents.activeIndex(), false, &err)) g_docStatus = err;
+    // The same entry point the tab strip's close box uses
+    // (app/CloseDecision.hpp): a clean document closes on this click, a dirty
+    // one raises Save / Don't Save / Cancel. This used to call
+    // `documents.close(..., false, ...)` and leave the refusal in the status
+    // line -- the menu's half of the defect the tab strip made obvious.
+    const CloseOutcome outcome =
+        requestDocumentClose(st.documents, st.documents.activeIndex(), st.pendingClose);
+    if (!outcome.status.empty()) g_docStatus = outcome.status;
   }
 }
 
@@ -5531,25 +5805,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.requestPaste = false;
       st.requestDeleteSelection = false;
 
-      // --- keep the cached bounds and the GPU coverage in step -------------
+      // --- keep the GPU coverage in step -----------------------------------
       //
-      // Both are expensive enough to want an "has it changed?" test rather
-      // than a per-frame rebuild: selectionBounds() walks every selected
-      // texel, and setSelection() uploads a canvas-sized texture. The
-      // revision is that test.
+      // `setSelection()` uploads a canvas-sized texture, which is expensive
+      // enough to want an "has it changed?" test rather than a per-frame
+      // rebuild. The revision is that test.
       //
-      // The sim upload is inside the same branch deliberately. It must ALSO
-      // happen when a sim is constructed mid-session, which is why the
-      // condition includes a sim that has not been told yet.
+      // The cached BOUNDS used to be refreshed here too, for the marching
+      // ants. They are gone: the ants now draw the selection's true boundary
+      // (core/SelectionBoundary), which carries its own revision-keyed cache
+      // and is asked for at the point it is drawn. Recomputing a bounding box
+      // that nothing reads would have been work for a picture nobody sees.
+      //
+      // The sim upload's condition includes a sim that has not been told yet,
+      // deliberately: it must ALSO happen when a sim is constructed
+      // mid-session, at which point the revision has not moved.
       if (od != nullptr) {
         const bool stale = od->selectionRevision != st.cachedSelectionRevision ||
                            od->id != st.cachedSelectionDoc;
         const bool simUninformed =
             sim && od->selection.has_value() != sim->hasSelection();
         if (stale || simUninformed) {
-          st.selectionBoundsCache = od->selection.has_value()
-                                        ? selectionBounds(*od->selection)
-                                        : std::nullopt;
           if (sim) {
             sim->setSelection(gpu, od->selection.has_value() ? &*od->selection : nullptr);
           }
@@ -5750,13 +6026,37 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // Both are RGB-layer only. A Pigment layer stores latents plus mass, not
     // colour, and filling one with a straight RGBA would be writing the wrong
     // kind of value into it; ops/FloodFill and ops/Gradient both take a
-    // `TileStore` and say so. Refused by silence rather than by writing
-    // something plausible-looking into the wrong channel set.
-    if ((st.brush.tool == Tool::PaintBucket || st.brush.tool == Tool::Gradient) &&
-        !panning && !rotating && !st.pendingGuide.has_value()) {
+    // `TileStore` and say so.
+    //
+    // **That refusal used to be silent, and this is where it stopped being.**
+    // The gate was one local `usable` bool spelled inline here, and it sat
+    // *inside* the click condition -- so a bucket click on the layer kind
+    // `CONTEXT.md` makes the default for a new layer evaluated to false and
+    // vanished: no fill, no history entry, no message, nothing on the canvas
+    // and nothing in the chrome. It is the same invisible wrong-target failure
+    // app/StrokeSession §1 was written about, and the brush had had a refusal
+    // for it since the RGB route landed while these two had not. The predicate
+    // now lives beside `strokeRouteWritesLayer()` (that header's §6) so the
+    // gate, the message and the options bar's indicator are one answer rather
+    // than three, and the click is REFUSED OUT LOUD instead of discarded.
+    if (toolWritesRgbPixels(st.brush.tool) && !panning && !rotating &&
+        !st.pendingGuide.has_value()) {
       OpenDocument* od = st.documents.active();
       Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
-      const bool usable = target != nullptr && !target->locked && target->rgbTiles.has_value();
+      const PixelOpRefusal refusal = pixelOpRefusalFor(target);
+      const bool usable = refusal == PixelOpRefusal::None;
+
+      // **A refusal is cleared the moment it stops being true**, every frame
+      // and not only on the next click. The options bar shows one line, and it
+      // shows the refusal *instead of* the route indicator -- so a stale
+      // sentence about a Pigment layer would go on hiding the live "-> rgb-fill"
+      // for the RGB layer the user has just fixed the problem by selecting,
+      // until they clicked again to find out. A fill tool has no in-flight
+      // state to protect (unlike a stroke, whose refusal is cleared at the next
+      // pen-down because it must survive the frames of the gesture it refused),
+      // so "this layer can take the fill" is the whole truth about it and there
+      // is nothing left to say.
+      if (usable) g_strokeRefusal.clear();
 
       // The foreground colour, DECODED TO LINEAR.
       //
@@ -5771,36 +6071,66 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const std::array<float, 4> fg = foregroundLinearRgba(st.brush.pigment);
 
       if (st.brush.tool == Tool::PaintBucket) {
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && usable && tx >= 0 &&
-            ty >= 0 && tx < texW && ty < texH) {
-          FloodFillParams params;
-          // Same modifier meaning the wand gives it: Option is "fill all
-          // similar" (PRD D25's second half), the global predicate pass
-          // rather than the connectivity walk.
-          params.reach = ImGui::GetIO().KeyAlt ? FloodFillReach::Global
-                                               : FloodFillReach::Contiguous;
-          Selection region = floodFillSelection(
-              *target->rgbTiles,
-              PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)},
-              od->document.width, od->document.height, params);
-          // **The active selection still bounds the bucket.** PRD E1 is P0 --
-          // "every deposit and every op respects the active selection" -- and a
-          // bucket that ignored it would be the one op in the build that
-          // painted outside the marching ants.
-          if (od->selection.has_value()) {
-            region = combineSelections(region, *od->selection, SelectionCombine::Intersect);
-          }
-          if (fillThroughSelection(*target->rgbTiles, region, fg) > 0) {
-            od->recordEdit("paint bucket", EditKind::Content);
+        // `usable` is deliberately NOT in this condition. A click on the canvas
+        // is a click on the canvas whatever the active layer is made of, and
+        // whether it can be honoured is answered *inside*, where there is
+        // somewhere to put the answer. Putting it back in the condition is what
+        // makes the refusal silent again.
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && tx >= 0 && ty >= 0 &&
+            tx < texW && ty < texH) {
+          if (!usable) {
+            // The same band, the same colour and the same voice as the stroke
+            // refusals below -- and cleared on the next click that lands, so
+            // the sentence describes this click rather than an older one.
+            g_strokeRefusal = pixelOpRefusalMessage(refusal, target, "paint bucket");
+          } else {
+            // No clear here: the block head already cleared it this frame, and
+            // a second one would suggest the refusal's lifetime is per click.
+            FloodFillParams params;
+            // Same modifier meaning the wand gives it: Option is "fill all
+            // similar" (PRD D25's second half), the global predicate pass
+            // rather than the connectivity walk.
+            params.reach = ImGui::GetIO().KeyAlt ? FloodFillReach::Global
+                                                 : FloodFillReach::Contiguous;
+            Selection region = floodFillSelection(
+                *target->rgbTiles,
+                PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)},
+                od->document.width, od->document.height, params);
+            // **The active selection still bounds the bucket.** PRD E1 is P0 --
+            // "every deposit and every op respects the active selection" -- and
+            // a bucket that ignored it would be the one op in the build that
+            // painted outside the marching ants.
+            if (od->selection.has_value()) {
+              region = combineSelections(region, *od->selection, SelectionCombine::Intersect);
+            }
+            if (fillThroughSelection(*target->rgbTiles, region, fg) > 0) {
+              od->recordEdit("paint bucket", EditKind::Content);
+            }
           }
         }
       } else {
         // The gradient is a DRAG: its two handles are where the pointer went
         // down and came up, which is the geometry ops/Gradient takes.
+        //
+        // **The gradient had the identical defect and gets the identical fix**
+        // -- it shared the one `usable` bool, and a drag on a Pigment layer was
+        // discarded at pen-up with nothing said. Fixing only the bucket would
+        // have left the same silence in the tool sitting in the same palette
+        // group behind the same guard.
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-          st.marqueeDragging = true;
-          st.marqueeX0 = tx;
-          st.marqueeY0 = ty;
+          // **Refused at pen-DOWN, not at pen-up**, which is the one place the
+          // two tools' refusals differ in shape. A bucket's wasted gesture is
+          // one click; a gradient's is a drag across the canvas, and letting
+          // the user pull the whole ramp before admitting it was never going to
+          // land is the same silence in slower motion. So a refused gradient
+          // never starts a drag at all.
+          if (!usable) {
+            g_strokeRefusal = pixelOpRefusalMessage(refusal, target, "gradient");
+          } else {
+            st.marqueeDragging = true;
+            st.marqueeX0 = tx;
+            st.marqueeY0 = ty;
+          }
         }
         if (st.marqueeDragging) {
           st.marqueeX1 = tx;
@@ -5812,6 +6142,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // A click with no drag has no direction, and a zero-length
             // gradient is not a fill -- it is an undefined ramp. Ignored
             // rather than guessed at.
+            //
+            // `usable` is re-tested rather than trusted from pen-down: the
+            // drag spans frames, and `*target->rgbTiles` is dereferenced two
+            // lines down. Nothing in this build can lock or retype a layer
+            // while the pointer is held -- the same argument app/StrokeSession
+            // §5 makes about its own latched target -- so this is the guard
+            // being kept where it is relied on rather than where it happens to
+            // have been established.
             if (usable && dx * dx + dy * dy >= 1.0f) {
               GradientGeometry geom;
               geom.kind = GradientKind::Linear;
@@ -6061,23 +6399,73 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     if (st.showGrid) drawGridOverlay(dl, xform, texW, texH, st.gridSpacing, st.gridSubdivisions,
                                      st.view.zoom);
 
-    // --- the selection, and the marquee being dragged (PRD E6) ------------
+    // --- the selection, and the gesture in progress (PRD E6) --------------
     //
     // After the grid so it sits on top: the selection is the thing the user is
     // currently acting on, and a grid line crossing the ants would read as
     // part of the boundary.
-    if (st.marqueeDragging) {
-      // The live rubber band, drawn from the drag corners rather than from a
-      // Selection -- there is no Selection yet, and building one per frame to
-      // draw a rectangle would allocate tiles 60 times a second.
+    //
+    // **Two different things, drawn two different ways, and keeping them apart
+    // is what this block is for:**
+    //
+    //   The COMMITTED selection is a real `Selection`, and what is drawn is
+    //   that store's TRUE boundary (core/SelectionBoundary) -- every island,
+    //   every hole, every concave corner. It used to be the bounding box, which
+    //   drew a lasso as a rectangle and a Shift-add of two disjoint shapes as
+    //   one box round both.
+    //
+    //   The GESTURE IN PROGRESS has no `Selection` behind it at all: every
+    //   constructor in core/SelectionShapes allocates tiles, so the shape is
+    //   built once at mouse-up rather than 120 times a second (the selection
+    //   tools block above says so in those words). Its preview is therefore
+    //   drawn from the raw gesture points -- the drag corners for the two
+    //   marquees, the accumulated path for the two lassos.
+    //
+    // The committed outline is drawn even mid-gesture, which the previous
+    // `else` did not do. A Shift-add has to show what it is adding to; hiding
+    // the existing ants for the duration of the drag is half of what made
+    // "shift just draws another rectangle" look true.
+    if (OpenDocument* selOd = st.documents.active(); selOd != nullptr) {
+      // Revision-keyed, so this costs a hash-free key compare on every frame
+      // the selection has not changed. core/SelectionBoundary.hpp has the
+      // measurement that makes the cache necessary rather than tidy.
+      drawMarchingAnts(dl, xform,
+                       st.selectionBoundary.boundaryFor(
+                           selOd->selection.has_value() ? &*selOd->selection : nullptr,
+                           selOd->id, selOd->selectionRevision));
+    }
+
+    if (st.marqueeDragging &&
+        (st.brush.tool == Tool::Marquee || st.brush.tool == Tool::EllipseMarquee)) {
+      // The live rubber band, from the drag's own corners.
       drawMarchingAnts(dl, xform, std::min(st.marqueeX0, st.marqueeX1),
                        std::min(st.marqueeY0, st.marqueeY1),
                        std::max(st.marqueeX0, st.marqueeX1),
                        std::max(st.marqueeY0, st.marqueeY1));
-    } else if (st.selectionBoundsCache.has_value()) {
-      const SelectionBounds& b = *st.selectionBoundsCache;
-      drawMarchingAnts(dl, xform, static_cast<float>(b.x0), static_cast<float>(b.y0),
-                       static_cast<float>(b.x1), static_cast<float>(b.y1));
+    } else if (st.marqueeDragging || st.polygonLassoActive) {
+      // The lasso path as it is being drawn.
+      //
+      // This branch previously did not exist, and the marquee's rubber band ran
+      // in its place: `marqueeDragging` is set by the freehand lasso too, while
+      // `marqueeX0..Y1` are only ever written by the two marquee tools. So a
+      // lasso drag drew the STALE rectangle left behind by whatever marquee was
+      // dragged last -- which is, precisely and literally, "the lasso only
+      // draws rectangular selections".
+      //
+      // Drawn OPEN rather than closed. `selectPolygon()` does close the path
+      // when the gesture ends, but showing the closing chord while the hand is
+      // still moving would draw a line the user has not made yet across the
+      // middle of their own shape.
+      std::vector<Vec2> pts;
+      pts.reserve(st.lassoPoints.size() + 1);
+      for (const SelectionPoint& p : st.lassoPoints) pts.push_back(Vec2{p.x, p.y});
+      // The polygon lasso's path only moves on clicks, so without the pointer
+      // appended the segment being placed is invisible until it is committed.
+      // The freehand lasso needs nothing of the kind -- its last point already
+      // tracks the pointer within a texel.
+      if (st.polygonLassoActive && hovered) pts.push_back(Vec2{tx, ty});
+      float lassoPhase = marchingAntPhase();
+      drawAntPolyline(dl, xform, pts, /*closed=*/false, lassoPhase);
     }
 
     if (st.showGuides) {

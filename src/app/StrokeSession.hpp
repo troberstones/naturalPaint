@@ -254,6 +254,98 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept;
 // O2's panel reads consistently down the column.
 const char* strokeEditLabel(Tool tool) noexcept;
 
+// ==========================================================================
+// 6. The pixel-writing ops that are NOT strokes -- the bucket and the gradient
+// ==========================================================================
+//
+// **Why this lives in the stroke file.** It does not describe a stroke, and on
+// that reading it does not belong here. It is here anyway because §1 exists to
+// stop *one* question -- "can this tool put colour on this layer?" -- being
+// answered in more than one place, and the paint bucket and the gradient ask
+// exactly that question about exactly the same `Layer` members. Splitting them
+// into a second header would recreate the drift §1's own comment describes
+// ("the options bar's route indicator read 'goes to the solver' grey for a live
+// RGB stroke for exactly as long as it had its own copy of the test"), only in
+// a file nobody would think to look at when adding a third fill tool.
+//
+// **They are not rows in `strokeRouteFor()`'s table**, and that is deliberate
+// rather than an omission to be corrected later. That table answers where a
+// *stroke* deposits, and both of these tools are listed there as `None` because
+// neither begins a stroke -- `StrokeSession::begin()` must go on refusing them.
+// The two questions merely rhyme; folding them into one enum would make
+// `StrokeRoute::None` mean "no stroke route" in one caller and "cannot be
+// filled" in another.
+//
+// **RGB only, and the reason is ops/FloodFill's, not this file's.** Both ops
+// take a `core::TileStore` and write straight linear RGBA into it. A Pigment
+// layer stores latents premultiplied by mass (core/Pigment.hpp) and
+// ops/FloodFill.hpp §4 states outright that it does not sample a
+// `PigmentTileStore`, because "similar colour" between two latents is a
+// question about Kubelka-Munk space that nothing in this build has decided.
+// Filling one with a straight RGBA would be writing the wrong *kind* of value
+// into it -- not a slightly wrong colour, a meaningless one.
+//
+// **The defect this closes.** `ui/MacPaintUI.cpp`'s canvas block used to spell
+// this predicate inline as one `usable` bool and put it *inside the click
+// condition*, so a bucket click on a Pigment layer -- which is the kind
+// `CONTEXT.md` makes the default for a new layer, and the first entry in the
+// LAYERS panel's own NEW popup -- evaluated to false and the click was
+// discarded with no message, no history entry and no mark on the canvas. That
+// is the same invisible wrong-target failure §1's last paragraph was written
+// about, arriving through the one tool in the build that had not been given a
+// refusal. The brush had had one since the RGB route landed; the bucket and the
+// gradient had not.
+enum class PixelOpRefusal {
+  None,        // the layer can take the fill
+  NoLayer,     // no document, or a document with no layer to have aimed at
+  Locked,      // the layer is locked -- the one of the three a user can fix
+  NoRgbStore,  // the kind holds no RGB tiles, or its store was never allocated
+};
+
+// Whether `tool` is one of the pixel-writing ops this section covers -- the
+// paint bucket and the gradient, and nothing else.
+//
+// A predicate rather than the `tool == A || tool == B` the canvas block and the
+// options bar would each otherwise spell, for `strokeRouteWritesLayer()`'s
+// stated reason: a third fill tool must reach both call sites or neither.
+bool toolWritesRgbPixels(Tool tool) noexcept;
+
+// Why a fill cannot write `target`, or `None` when it can. `nullptr` is a legal
+// argument and means "there is no target", which is its own answer rather than
+// an error.
+//
+// **Locked is tested before storage**, exactly as `strokeRouteFor()` orders its
+// own two refusals and for the same reason: a locked RGB layer must refuse for
+// being locked, so the message a user gets names the one problem they can
+// actually carry out a fix for.
+PixelOpRefusal pixelOpRefusalFor(const Layer* target) noexcept;
+
+// The same answer as a bool, for the call sites that only need the gate --
+// `strokeRouteWritesLayer()`'s counterpart, and named to rhyme with it.
+inline bool pixelOpWritesLayer(const Layer* target) noexcept {
+  return pixelOpRefusalFor(target) == PixelOpRefusal::None;
+}
+
+// The sentence the options bar shows, in the same shape and the same voice as
+// `ui/MacPaintUI.cpp`'s stroke refusals: what is wrong, which layer it is wrong
+// about **by name**, and -- only when there is one -- what to do about it.
+//
+// `opName` is the op in the same noun form the history entry uses ("paint
+// bucket", "gradient"), so a refusal and the entry it did not create name the
+// same thing. Passed in rather than switched on a `Tool` here because
+// `toolName()` is `ui/AtelierChrome`'s and `app/` does not include `ui/`.
+//
+// **The three reasons produce three visibly different sentences**, which is a
+// requirement and not a nicety. "Locked" and "no RGB store" both present to a
+// user as "the bucket did nothing", and only the first has a switch in LAYERS
+// that fixes it; telling someone to clear a lock they never set is worse than
+// telling them nothing at all. `--selftest` asserts the two are distinguishable
+// rather than merely non-empty.
+//
+// Empty for `PixelOpRefusal::None` -- there is nothing to say when it worked.
+std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
+                                  const char* opName);
+
 // The pen's brush state, as a tip -- the one mapping from what the UI holds to
 // what `brush/Deposit` takes, so the interactive route and `--selftest` cannot
 // disagree about what a given brush deposits.

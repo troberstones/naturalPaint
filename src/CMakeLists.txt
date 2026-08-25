@@ -1,5 +1,6 @@
 add_executable(naturalPaint
   main.cpp
+  app/CloseDecision.cpp
   app/CompPanel.cpp
   app/ControlsLayout.cpp
   app/CurveEdit.cpp
@@ -28,9 +29,11 @@ add_executable(naturalPaint
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
   app/selftest/BrushDynamics.cpp
+  app/selftest/BucketRefusal.cpp
   app/selftest/Channels.cpp
   app/selftest/Clipboard.cpp
   app/selftest/ClippingMask.cpp
+  app/selftest/CloseDecision.cpp
   app/selftest/ColorSpace.cpp
   app/selftest/ControlsLayout.cpp
   app/selftest/CowTile.cpp
@@ -85,6 +88,7 @@ add_executable(naturalPaint
   app/selftest/RecoveryJournal.cpp
   app/selftest/RgbDeposit.cpp
   app/selftest/Selection.cpp
+  app/selftest/SelectionBoundary.cpp
   app/selftest/SelectionRefine.cpp
   app/selftest/SelectionShapes.cpp
   app/selftest/SelectionTools.cpp
@@ -125,6 +129,7 @@ add_executable(naturalPaint
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp
+  core/SelectionBoundary.cpp
   core/SelectionMask.cpp
   core/SelectionOps.cpp
   core/SelectionRefine.cpp
