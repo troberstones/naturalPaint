@@ -76,6 +76,7 @@ add_executable(naturalPaint
   app/selftest/LayerPanel2a.cpp
   app/selftest/LayerStack.cpp
   app/selftest/LutBake.cpp
+  app/selftest/MenuModel.cpp
   app/selftest/MergeFamily.cpp
   app/selftest/MipPyramid.cpp
   app/selftest/NpaintFormat.cpp
@@ -176,8 +177,50 @@ add_executable(naturalPaint
   ui/CanvasQuad.cpp
   ui/AtelierLayout.cpp
   ui/AtelierChrome.cpp
+  ui/MenuModel.cpp
   ui/ToolCursor.cpp
 )
+
+# ---- the native menu bar (ui/MacNativeMenu.mm) ------------------------------
+#
+# macOS puts an application's menus in the bar at the top of the *screen*, not
+# in a strip inside the window, and a painting application that does not is
+# immediately and permanently foreign. ui/MenuModel.hpp is the platform-neutral
+# description both bars are built from; this is the AppKit half, and it is the
+# first Objective-C++ in this project.
+#
+# `enable_language(OBJCXX)` is here rather than in the root `project()` call's
+# LANGUAGES list, deliberately. A language named in `project()` is probed on
+# **every** platform, so a Linux or Windows configure would go looking for an
+# Objective-C++ compiler it has no reason to own, and fail at configure time
+# over a file it was never going to build. Enabling it inside `if(APPLE)` asks
+# only the machines that can answer.
+#
+# `-fobjc-arc` on this one source. The alternative is manual retain/release
+# around NSMenu and NSMenuItem objects that live for the process's whole
+# lifetime and are rebuilt whenever a document opens or closes -- which is to
+# say, a slow leak nobody would notice and a double-release everybody would.
+# ARC is per-translation-unit, costs the rest of the target nothing, and the
+# file is written for it. (It compiles clean both with and without, so a
+# toolchain that ignored this property would still build.)
+#
+# Cocoa is named explicitly even though SDL3-static already pulls it in on this
+# platform. This translation unit `#import`s <Cocoa/Cocoa.h> and uses NSMenu
+# directly, so it has a dependency of its own; inheriting it from SDL would
+# work right up until somebody made SDL a dynamic dependency.
+#
+# The -Werror=unused-* guard at the bottom of this file applies to this source
+# too, which is intended: an Objective-C++ helper nobody calls is the same
+# defect as a C++ one.
+if(APPLE)
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_STANDARD 20)
+  set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+  target_sources(naturalPaint PRIVATE ui/MacNativeMenu.mm)
+  set_source_files_properties(ui/MacNativeMenu.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(naturalPaint PRIVATE "-framework Cocoa")
+  message(STATUS "naturalPaint: native AppKit menu bar (ui/MacNativeMenu.mm)")
+endif()
 
 target_include_directories(naturalPaint PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}

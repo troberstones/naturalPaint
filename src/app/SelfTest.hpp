@@ -2927,4 +2927,50 @@ bool runCloseDecisionTest();
 // exist is refused by name" cannot be asserted without a filesystem.
 bool runQuitGuardTest();
 
+// **ui/MenuModel -- what the menus ARE, separated from how they are drawn.**
+//
+// The menu bar used to be forty-one `ImGui::MenuItem()` call sites, each of
+// which declared an item and performed its action in the body of an `if`, and
+// nothing but Dear ImGui mid-frame could read any of them. A native `NSMenu` is
+// built once, out of band, and calls back with no `if` to be the body of -- so
+// the honest choices were "extract the model" or "write every action out a
+// second time in Objective-C". This section is what makes the first choice
+// checkable, and it is entirely headless: no window, no GPU, no ImGui context
+// and no `NSApplication` anywhere near it.
+//
+// What is asserted:
+//
+//  - **The ids.** Every action has exactly one spec, every spec carries its own
+//    id (a row that disagrees with its index wires one item to another's
+//    behaviour, invisibly), and the count is pinned at 41 -- one per call site
+//    the extraction replaced.
+//  - **Reachability.** Every action appears in the tree, only the six family
+//    actions ever carry a param, and no pickable item carries `None`.
+//  - **The predicates**, as pure functions of a constructed state: Open Recent
+//    disabled on an empty list and enabled with one entry, Save needing a path
+//    where Save As... needs only a document, the check marks tracking their own
+//    flags, and `buildMenuModel()` proven to give the same tree twice.
+//  - **The quit**, at length, because this is the one part of the menu where
+//    getting it wrong costs the user their work. Quit's declared effect is
+//    `QuitRequest` and it is the only action with it; **performing it sets
+//    `AppState::requestQuit` and leaves `AppState::quit` alone**, which is the
+//    assertion a backend wired to `[NSApp terminate:]` could not pass; no item
+//    may use a system selector; and suppressing File > Quit under a native
+//    application menu removes exactly one item and no others.
+//  - **The modals.** All nine are pinned as deferred-to-the-next-frame, because
+//    "inline" for these means `ImGui::OpenPopup()` from an AppKit callback with
+//    no frame in progress -- and the plain state flips are pinned as *not*
+//    deferred, so the marking has not simply been applied to everything.
+//  - **The key equivalents**, cross-checked against the real
+//    keymaps/default.json. A native menu item does not display a chord, it
+//    **consumes** it before SDL ever sees the key, so a chord whose menu action
+//    differs from its keymap action is a documented key that quietly does
+//    something else. Also: no two items claim one chord, every claimed chord
+//    carries Command (a bare letter would be swallowed inside text fields), and
+//    the four display-only chords are pinned in both directions.
+//  - **The published snapshot**, which is the seam the AppKit backend reads:
+//    a stale id is not pickable, and the shape generation moves for a document
+//    opening but not for a check mark flipping.
+bool runMenuModelTest();
+
 }  // namespace np
