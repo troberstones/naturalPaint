@@ -98,6 +98,7 @@ add_executable(naturalPaint
   app/selftest/RecoveryJournal.cpp
   app/selftest/RgbDeposit.cpp
   app/selftest/RgbErase.cpp
+  app/selftest/SaveReadback.cpp
   app/selftest/Selection.cpp
   app/selftest/SelectionBoundary.cpp
   app/selftest/SelectionRefine.cpp

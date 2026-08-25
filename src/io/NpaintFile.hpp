@@ -622,6 +622,87 @@ struct NpaintSaveOptions {
   // npaintCompressionIsLossy() recognises is refused by name before a byte
   // is written.
   std::string compression = "zip";
+
+  // --- PRD I13: "Saves are read back and structurally verified before the
+  // --- original leaves memory" ----------------------------------------------
+  //
+  // **Off by default, and the reason is the same reason `saveNpaint()` writes
+  // straight to `path` when this is false: existing callers -- app/Journal's
+  // crash checkpoint, and every `--selftest` call that predates this option --
+  // must see byte-for-byte the same behaviour they saw before it existed.**
+  // `false` is not "verification does not happen"; app/DocumentLifecycle.cpp
+  // sets this `true` on every File > Save, Save As, Save a Copy and Save
+  // Incremental, which is where a user believes their work just became safe
+  // and where PRD I13 actually has to hold. It stays `false` for
+  // app/Journal.cpp's periodic crash checkpoint; see below for why that split
+  // is deliberate rather than an oversight.
+  //
+  // **What turning it on changes about the write itself, not only about what
+  // happens after.** With this `false`, `saveNpaint()` opens `path` directly
+  // (`io/OiioBackend.cpp`'s `oiioWriteMultiPartExr()`) -- so a write that dies
+  // partway (a full disk, a killed process, a crash inside OpenImageIO) can
+  // leave `path` holding a truncated file, and `oiioWriteMultiPartExr()`'s own
+  // failure path then calls `std::remove(path)` rather than leave a partial
+  // one behind -- which means a failed save **replaces a previously-good file
+  // with nothing at all**. That is true today, with or without this option,
+  // for every existing caller, and it is the largest single finding of this
+  // step: see io/NpaintFile.cpp's `saveNpaint()` for where the in-place write
+  // happens and PLAN.md's note on PRD I13 for the fuller argument. Turning
+  // this option on is what closes it, but only for the save it is passed to --
+  // it does not retroactively make the `false` path safe, and this comment
+  // says so rather than implying a fix that only half-shipped.
+  //
+  // With this `true`, `saveNpaint()` writes to a temporary file **beside**
+  // `path` (same directory, so the final rename is same-filesystem and
+  // therefore atomic on every platform this project targets), reads that
+  // temporary file back through `loadNpaint()` -- **the same reader File >
+  // Open uses**, not a hash, not a byte count -- and only renames it onto
+  // `path` once the reload compares equal to `doc` under
+  // `verifyNpaintRoundTrip()`'s rule. At every point where this can go wrong
+  // -- the write itself fails, the reload fails, the comparison finds a
+  // mismatch, or the final rename fails -- `path` has not been opened for
+  // writing at all, so whatever was there before this call is exactly what is
+  // there after it. That is the property PRD I13's "before the original
+  // leaves memory" is actually asking for: not merely a check that runs, but
+  // a check whose failure cannot make things worse than doing nothing.
+  //
+  // **What "structurally verified" means, and what is deliberately excluded**
+  // is argued in full at `verifyNpaintRoundTrip()` below, because that is
+  // where the comparison actually lives and a second explanation here would
+  // drift from it (AGENT-BRIEF.md rule 4, "one home per rationale").
+  //
+  // **Cost.** The write itself is unchanged -- the same bytes, to a different
+  // path. What this adds is one more full read of that file
+  // (`loadNpaint()`'s own I/O, dominated by disk bandwidth and OpenImageIO's
+  // decode, not by anything this module does) and, transiently, a second
+  // in-memory `Document` alongside the one being saved -- freed the moment
+  // `verifyNpaintRoundTrip()` returns. That is a real, roughly 2x cost in both
+  // save time and peak memory, but it is paid **once, briefly, during an
+  // action the user already initiated and is already waiting on** -- a save
+  // is not the interactive painting loop `--selftest`'s idle-RSS budget is
+  // about, and it is not a background timer either. That is the argument for
+  // `true` on an explicit Save and `false` on app/Journal's automatic
+  // checkpoint, which fires on a timer *during* painting and would turn this
+  // 2x cost into a routine one rather than an occasional one -- exactly the
+  // background-memory-growth failure mode the project's own idle-RSS
+  // discipline exists to catch. The checkpoint keeps the cheaper check it
+  // already had (`app/Journal.cpp`'s own comment calls it "a small down
+  // payment on PRD I13" -- accurate, and now a fully-paid one exists
+  // alongside it rather than in place of it).
+  //
+  // One more thing the cost argument depends on and is worth stating rather
+  // than assuming: doing the **pixel** half of the comparison adds
+  // essentially nothing on top of doing the **structural** half, because
+  // `loadNpaint()` has to decode every tile's pixels to answer even a
+  // structural question ("does this layer have pigment tiles, and how many"
+  // is not answerable from an `ImageSpec` alone once the reader has to decide
+  // which tiles were dropped as identity). The expensive part is the I/O
+  // `loadNpaint()` already pays; comparing the bytes it returns is a `memcmp`
+  // over data already resident. A "cheap structural check, full pixel check
+  // only sometimes" split -- which PLAN.md's step brief for I13 raised as a
+  // real option -- would not have saved the I/O, only the comparison, and the
+  // comparison was never where the cost was.
+  bool verifyReadback = false;
 };
 
 struct NpaintSaveResult {
@@ -629,6 +710,14 @@ struct NpaintSaveResult {
   // Non-empty exactly when !ok, and always names the specific thing that was
   // refused -- which layer, which value, which compressor -- per PRD I11.
   std::string error;
+  // True exactly when `options.verifyReadback` was set, the physical write
+  // (and, if it got that far, the atomic rename) both succeeded, and
+  // `verifyNpaintRoundTrip()` is what refused the save. Lets a caller (and
+  // `--selftest`) tell "your disk is full" apart from "the write looked fine
+  // but did not decode back to what was asked for", which are different
+  // problems with different next steps even though both leave `ok == false`
+  // and `path` untouched.
+  bool verificationFailed = false;
   // How many parts were written, part 0 included. Reported so a caller (and
   // --selftest) can check the structure without reopening the file.
   int32_t partsWritten = 0;
@@ -663,6 +752,84 @@ struct NpaintSaveResult {
 NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
                             const NpaintSaveOptions& options = {},
                             const NpaintCarry* carry = nullptr);
+
+// --- PRD I13: verify a save by reading it back -----------------------------
+
+struct NpaintVerifyResult {
+  bool ok = false;
+  // Non-empty exactly when !ok. Names the file and the specific property that
+  // did not survive the round trip, in the same "name the thing" register as
+  // every other refusal in this module.
+  std::string error;
+};
+
+// Reads `path` back through `loadNpaint()` -- **the same reader File > Open
+// uses**, not a hash and not a byte count -- and asks whether the result is
+// the document `doc` claims to be. `saveNpaint()` calls this automatically
+// when `NpaintSaveOptions::verifyReadback` is set; it is exposed separately
+// so a caller, or `--selftest`, can point it at an arbitrary file without
+// going through a whole save first (which is how the "a hash would not have
+// caught this" case gets tested: write a file honestly, then ask whether it
+// verifies against a *different* document than the one that produced it).
+//
+// --- What "the same document" means here, decided and justified ------------
+//
+// A `.npaint` save is lossless by design (docs/document-format.md §1: "HALF
+// channels -- byte-identical, no conversion"), so the standard this holds the
+// round trip to is equality, not closeness -- with three narrow, named
+// exceptions, each one a place the format's *own* rules say a value is
+// dropped rather than preserved. Getting this list right is the difference
+// between a check that catches a real defect and one that cries wolf on every
+// legitimate save until someone disables it:
+//
+//  * **Part 0, the composite, is not compared at all.** It is a *derived*
+//    product, regenerated unconditionally on every save (PRD I12) from
+//    `io/Export`'s `flattenDocumentToLinear()`. Comparing it here would only
+//    re-test that function, which already has its own coverage
+//    (`runNpaintFormatTest()`'s composite-tolerance section); it says nothing
+//    about whether the *document* -- the layer parts everything else is
+//    reconstructed from -- round-tripped.
+//  * **An individual tile that equals its channel's identity value is allowed
+//    to move between "present and reads as that value" and "absent, which
+//    reads as that value too".** This is not a gap in the check, it is
+//    `io/NpaintFile.cpp`'s own drop-on-read rule, stated four times over in
+//    docs/document-format.md for the four tile kinds it applies to: an
+//    all-zero `Tile`/`PigmentTile`/`coverage` `SelectionTile` is
+//    indistinguishable from one that was never allocated, and an all-1.0
+//    `MaskTile` (`MaskTile::isFullyRevealed()`) is the mask's identity for
+//    the same reason. A save that allocated an all-zero tile in memory and
+//    read one back as absent has lost nothing a reader can observe --
+//    `TileStoreOf::find()` already treats "absent" and "present at the
+//    identity value" as the same answer everywhere else in this codebase --
+//    so asserting bit-for-bit tile-*presence* equality here would fail on
+//    every document that has ever painted and then fully erased a stroke,
+//    which is not a corruption. What is **not** allowed to differ is the
+//    *value* a present tile decodes to, at zero tolerance, for the reason
+//    this module's own top-of-file comment gives for every other HALF
+//    channel: the pack/unpack path has no rounding stage in it, so any
+//    difference is a real one.
+//  * **A layer's `Layer::id` is not compared directly.** It travels through
+//    `Document::comps` (`np:comps`, PRD C14) rather than through the layer
+//    part itself, and stays `0` -- every layer's default -- for the
+//    overwhelming majority of documents, which have never captured a comp.
+//    `Document::comps` **is** compared, whole, with `LayerComp`'s own
+//    generated `operator==`; a document whose comps do not round trip fails
+//    this check through that comparison, which is where the id actually
+//    surfaces (`LayerCompEntry::layerId`).
+//
+// Everything else PRD I13 names is compared exactly: canvas dimensions, the
+// working space's chromaticities (a native `FLOAT[8]` EXR attribute with no
+// conversion stage, so exact rather than toleranced, the same reasoning as
+// the HALF pixels), the pigment basis, and per layer: kind, name, blend
+// name, opacity, visibility, lock, clip, parent link, colour label, link
+// group, the op stack (compared through `io/OpSerial`'s own
+// `serializeOpStack()`, which is what actually gets written, rather than
+// field-by-field against `core::Op`'s dozen union-like members), and every
+// tile of every engaged store under the identity rule above. Alpha channels
+// (`Document::channels`, PRD E11/E13 -- a saved selection is a channel) are
+// compared the same way: name, then tiles under the `SelectionTile`
+// identity (`selectsNothing()`).
+NpaintVerifyResult verifyNpaintRoundTrip(const Document& doc, const std::string& path);
 
 // --- Load -----------------------------------------------------------------
 

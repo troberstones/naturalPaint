@@ -429,8 +429,26 @@ DocumentOpResult saveDocumentAs(OpenDocument& doc, const std::string& path,
                                 const NpaintSaveOptions& options, RecentDocuments* recent) {
   if (path.empty()) return failure("save refused: no path was given.");
 
-  const NpaintSaveResult save = saveNpaint(doc.document, path, options, &doc.carry);
+  // PRD I13: every explicit save through this function -- File > Save, Save
+  // As, and (via saveDocumentIncremental() below) Save Incremental -- is read
+  // back and structurally verified before it is trusted, per
+  // NpaintSaveOptions::verifyReadback's own argument for why this is where
+  // that cost belongs and app/Journal.cpp's crash checkpoint is where it does
+  // not. `options` is the caller's (compression, etc.); only this one field
+  // is forced on, on a local copy, so a caller cannot accidentally turn it
+  // off and does not have to know it exists to get it.
+  NpaintSaveOptions verified = options;
+  verified.verifyReadback = true;
+  const NpaintSaveResult save = saveNpaint(doc.document, path, verified, &doc.carry);
   DocumentOpResult r = fromSave(save, path);
+  // A verification failure is a save failure: `save.ok` is already false, so
+  // the early return below already leaves `doc` exactly as it was -- dirty,
+  // still bound to whatever it was bound to before this call, its unsaved
+  // edits intact. That is what keeps this agreeing with app/CloseDecision.hpp
+  // ("Save writes through save, and closes only if the write reported ok")
+  // and app/QuitSequence's own guard: neither one has to know this function
+  // now does more work before answering, because the answer it gives on
+  // failure -- "this document is still dirty" -- is unchanged.
   if (!save.ok) return r;
 
   // The file at `path` is not what the cache thinks it is any more.
@@ -460,7 +478,16 @@ DocumentOpResult saveDocumentCopy(const OpenDocument& doc, const std::string& pa
   // `doc` is const, so this function cannot rebind the path, cannot clear the
   // dirty state and cannot record an edit -- the whole difference from Save As
   // is enforced by the signature rather than by remembering not to.
-  const NpaintSaveResult save = saveNpaint(doc.document, path, options, &doc.carry);
+  //
+  // Verified for the same PRD I13 reason saveDocumentAs() is: a copy the user
+  // asked for and then finds unreadable is exactly the failure this feature
+  // exists to catch, and it would be worse here, not better, because the
+  // document this copy came from is not even the file it would clobber --
+  // there is nothing to "still have the previous version of" except the
+  // in-memory document, which the caller already holds.
+  NpaintSaveOptions verified = options;
+  verified.verifyReadback = true;
+  const NpaintSaveResult save = saveNpaint(doc.document, path, verified, &doc.carry);
   DocumentOpResult r = fromSave(save, path);
   if (save.ok) dropCachedTilesFor(path);
   return r;
