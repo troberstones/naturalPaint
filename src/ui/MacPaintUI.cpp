@@ -32,6 +32,7 @@
 #include "app/OpenAnyFile.hpp"
 #include "app/QuitSequence.hpp"
 #include "app/Snapping.hpp"
+#include "app/UserBrushLibrary.hpp"
 #include "app/ViewTransform.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
 #include "core/LayerCompOps.hpp"
@@ -3325,9 +3326,68 @@ void saveBrushLibraries(AppState& st) {
     g_brushLibraryStatus = err;
 }
 
+// PRD G6's user-authored presets (app/UserBrushLibrary.hpp), loaded lazily
+// exactly like `st.brushLibraries` above -- and read that module's header
+// before touching either call site below, because *where* this runs matters:
+//
+// **Must complete before `st.brushLibraries.loadFromFile()`'s own first
+// call.** That module's `resolveActive()` restores the last active preset by
+// counting "the Nth preset with `libraryId == 0`" (app/BrushLibraryFile.hpp's
+// `active` line) -- built-ins AND user presets both qualify, so a user
+// preset not yet appended to `lib.presets` when that count runs makes the
+// count short, landing `active` on the wrong preset or falling back to a
+// built-in. `drawBrushLibrarySection()` below calls this first, then
+// `st.brushLibraries.loadFromFile()`, in that order, for exactly this
+// reason.
+//
+// **Also called from `drawBrushSection()`**, defensively: Save lives there,
+// a collapsed BRUSH LIBRARY pane is a real layout state, and `saveUserBrush-
+// Library()` below must never serialise a `lib` that has not yet read
+// user-presets.txt's existing content -- that would write back only what is
+// in memory this session and silently drop every preset this session never
+// touched. Guarded by its own flag, so a frame where both call sites fire
+// costs one extra boolean check.
+void ensureUserBrushLibraryLoaded(AppState& st) {
+  if (st.userBrushLibraryLoaded) return;
+  st.userBrushLibraryLoaded = true;
+  std::string err;
+  if (!st.userBrushLibrary.loadFromFile(defaultUserPresetsFilePath(), st.brush.brushLibrary,
+                                        &err) &&
+      !err.empty())
+    g_brushLibraryStatus = err;
+}
+
+// Write user-presets.txt, and say so only when it fails -- saveBrushLibraries()'s
+// shape, for the file app/UserBrushLibrary.hpp §4 durability-hardens instead
+// (write-to-temp-then-rename): what is lost if this write is interrupted is
+// the user's own work, not a re-importable `.abr` reference.
+//
+// Called after Save, Duplicate and Delete wherever they touch a preset the
+// user owns. **Not gated on "is there anything to write"**, unlike
+// `saveBrushLibraries()`: that guard is there so an install that only ever
+// picks built-ins never creates a settings file. Reaching this function at
+// all means one of those three buttons just ran on a user-owned preset --
+// including Delete removing the last one, where writing the now-empty file
+// is what makes the deletion stick rather than the brush walking back in
+// next launch (`unload()`'s own unconditional write is the same call, same
+// reasoning, one file over).
+void saveUserBrushLibrary(AppState& st) {
+  ensureUserBrushLibraryLoaded(st);
+  std::string err;
+  if (!st.userBrushLibrary.saveToFile(defaultUserPresetsFilePath(), st.brush.brushLibrary, &err))
+    g_brushLibraryStatus = err;
+}
+
 void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   BrushLibrary& lib = st.brush.brushLibrary;
   const bool edited = brushIsEdited(st.brush);
+
+  // **user-presets.txt FIRST, then the `.abr` registry** -- `ensureUserBrush-
+  // LibraryLoaded()`'s own comment explains why the order is load-bearing:
+  // the registry's `resolveActive()` counts user presets among the built-ins
+  // when it restores which preset was active, so they must already be in
+  // `lib.presets` before it runs.
+  ensureUserBrushLibraryLoaded(st);
 
   // **The preferences, on the first frame this pane is drawn -- and nothing
   // else.** `recentDocumentsLoaded` above does the same for the same reason
@@ -3543,6 +3603,15 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
         st.brush);
     lib.presets.push_back(made);
     lib.active = lib.presets.size() - 1;
+    // PRD G6: a Duplicate is a brush the user now owns, and must survive a
+    // quit exactly like a Save does -- see saveUserBrushLibrary()'s comment
+    // above. Written immediately rather than waiting for an edit, because a
+    // Duplicate that is not yet edited has nothing for Save's `edited` gate
+    // to enable (`presetFromBrush()` captured the live brush, so the new
+    // preset already matches it): without this call, a brush kept by
+    // Duplicate alone and never subsequently nudged would be exactly as
+    // unpersisted as A7 originally described.
+    saveUserBrushLibrary(st);
   }
   ImGui::SameLine();
   // Never the last one: a library with no rows has nothing to pick, and the
@@ -3563,6 +3632,15 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
       if (lib.active >= lib.presets.size()) lib.active = lib.presets.size() - 1;
       applyPresetToBrush(lib.presets[lib.active], st.brush);
       saveBrushLibraries(st);
+      // PRD G6: if the deleted preset was one of the user's own,
+      // user-presets.txt must stop describing it -- and unconditionally,
+      // same reasoning as `unload()`'s own unconditional write: deleting the
+      // very last user preset has to leave a file with none, not skip the
+      // write and let the last one silently walk back in next launch. A
+      // deleted built-in costs this call nothing: `serialize()` only ever
+      // describes presets with `libraryId == 0 && !builtin`, so a built-in
+      // was never in this file to remove.
+      saveUserBrushLibrary(st);
     }
   }
   ImGui::EndDisabled();
@@ -3580,6 +3658,14 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
 }
 
 void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
+  // Defensive, not the primary load site (that is drawBrushLibrarySection()
+  // above): the BRUSH LIBRARY pane can be collapsed while this one is drawn,
+  // and Save below must never write user-presets.txt from a `lib` that has
+  // not read the file's existing content -- see ensureUserBrushLibraryLoaded()'s
+  // own comment. Idempotent, so this costs one boolean check on every other
+  // frame.
+  ensureUserBrushLibraryLoaded(st);
+
   // --- The preset header: which brush this is, and whether it still is ----
   BrushLibrary& lib = st.brush.brushLibrary;
   if (lib.active < lib.presets.size()) {
@@ -3600,19 +3686,41 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     // where an edit belongs. Revert stays enabled: throwing an edit away needs
     // no file.
     const bool fromLibrary = lib.presets[lib.active].libraryId != 0;
+    // **A built-in is never overwritten** -- PRD G6 / A7, and app/
+    // UserBrushLibrary.hpp §3's full reasoning. `BrushPreset::builtin`
+    // (brush/Library.hpp) is what tells "one of the four shipped defaults"
+    // apart from "a preset the user made", since `libraryId == 0` is true of
+    // both. Save on a built-in forks a new preset instead of shadowing it,
+    // exactly what Duplicate does, so the button's label says so.
+    const bool isBuiltIn = lib.presets[lib.active].builtin;
     ImGui::BeginDisabled(!edited || fromLibrary);
-    // Save overwrites the preset with what is on screen; Revert throws the
-    // edit away. Both are disabled when there is no edit, so neither is a
-    // button that does nothing.
-    if (ImGui::Button("Save")) {
-      lib.presets[lib.active] =
-          presetFromBrush(lib.presets[lib.active].name, st.brush);
+    // Overwrites the active preset with what is on screen and persists it
+    // (app/UserBrushLibrary.hpp) when it is already the user's own; forks a
+    // new one, named uniquely off the current preset, when it is a built-in.
+    // Revert throws the edit away. Both buttons are disabled when there is
+    // no edit, so neither is a button that does nothing.
+    if (ImGui::Button(isBuiltIn ? "Save As New" : "Save")) {
+      if (isBuiltIn) {
+        BrushPreset made =
+            presetFromBrush(uniquePresetName(lib, lib.presets[lib.active].name), st.brush);
+        lib.presets.push_back(made);
+        lib.active = lib.presets.size() - 1;
+      } else {
+        lib.presets[lib.active] = presetFromBrush(lib.presets[lib.active].name, st.brush);
+      }
+      saveUserBrushLibrary(st);
     }
     ImGui::EndDisabled();
     if (fromLibrary && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       ImGui::SetTooltip(
           "'%s' came from an imported .abr, and this build does not write .abr files.\n"
           "Duplicate keeps your version as a brush of your own.",
+          lib.presets[lib.active].name.c_str());
+    if (isBuiltIn && edited && ImGui::IsItemHovered())
+      ImGui::SetTooltip(
+          "'%s' is a built-in brush, so it cannot be overwritten -- there would be no way\n"
+          "back to it. This makes a brush of your own with these settings, the same as\n"
+          "Duplicate, and saves it.",
           lib.presets[lib.active].name.c_str());
     ImGui::SameLine();
     ImGui::BeginDisabled(!edited);

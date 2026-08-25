@@ -90,6 +90,7 @@ BrushLibrary defaultBrushLibrary() {
   // on. --selftest asserts a default AppState is not edited.
   BrushPreset round;
   round.name = "Round Bristle 03";
+  round.builtin = true;
   round.links = defaultBrushLinks();
   lib.presets.push_back(round);
 
@@ -98,6 +99,7 @@ BrushLibrary defaultBrushLibrary() {
   // brush laid harder puts down more water, not a wider mark.
   BrushPreset wash;
   wash.name = "Flat Wash";
+  wash.builtin = true;
   wash.radius = 46.0f;
   wash.hardness = 0.12f;
   wash.spacing = 0.12f;
@@ -115,6 +117,7 @@ BrushLibrary defaultBrushLibrary() {
   // than in pressure -- the marks break up because the dabs do.
   BrushPreset dry;
   dry.name = "Dry Bristle";
+  dry.builtin = true;
   dry.radius = 18.0f;
   dry.hardness = 0.85f;
   dry.spacing = 0.55f;
@@ -131,6 +134,7 @@ BrushLibrary defaultBrushLibrary() {
   // uses rather than at the extremes.
   BrushPreset liner;
   liner.name = "Detail Liner";
+  liner.builtin = true;
   liner.radius = 5.0f;
   liner.hardness = 0.95f;
   liner.spacing = 0.08f;

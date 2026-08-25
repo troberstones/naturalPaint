@@ -12,6 +12,7 @@
 #include "app/Journal.hpp"
 #include "app/QuitSequence.hpp"
 #include "app/StrokeBake.hpp"
+#include "app/UserBrushLibrary.hpp"
 #include "core/Clipboard.hpp"
 #include "core/SelectionBoundary.hpp"
 #include "core/SelectionOps.hpp"
@@ -638,6 +639,20 @@ struct AppState {
   // is picked.
   BrushLibraryStore brushLibraries;
   bool brushLibrariesLoaded = false;
+
+  // PRD G6's OTHER half: the presets the user made, saved so a tuned brush
+  // is still there after a quit (app/UserBrushLibrary.hpp; reachability-
+  // audit.md's A7). A sibling of `brushLibraries` above, not a member of it
+  // -- app/UserBrushLibrary.hpp's own header, §0, is the argument for why
+  // this is a second file rather than the `.abr` registry extended: the two
+  // change at different rates and lose different things when a write is
+  // interrupted, and coupling them means a bug in one blocks the other.
+  //
+  // Empty and untouched until first needed, exactly like `brushLibraries`
+  // above -- `userBrushLibraryLoaded` is the same lazy gate, guarding the
+  // same idle-RSS promise (PRD A2, ADR-0001).
+  UserBrushLibraryStore userBrushLibrary;
+  bool userBrushLibraryLoaded = false;
 
   // PLAN.md Phase 4 step 9 (app/Journal, ADR-0008, PRD O5-O10). The recovery
   // journal for this run: one scratch directory, its lock, and one journal

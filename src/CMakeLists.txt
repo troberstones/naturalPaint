@@ -111,12 +111,14 @@ add_executable(naturalPaint
   app/selftest/TileStore.cpp
   app/selftest/ToolCursor.cpp
   app/selftest/Transform.cpp
+  app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp
   app/StrokeBake.cpp
   app/StrokeSession.cpp
+  app/UserBrushLibrary.cpp
   app/ViewTransform.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
