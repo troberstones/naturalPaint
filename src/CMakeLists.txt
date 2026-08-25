@@ -1,5 +1,7 @@
 add_executable(naturalPaint
   main.cpp
+  app/BrushLibraryFile.cpp
+  app/BrushRowIcon.cpp
   app/CloseDecision.cpp
   app/CompPanel.cpp
   app/ControlsLayout.cpp
@@ -31,6 +33,7 @@ add_executable(naturalPaint
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
   app/selftest/BrushDynamics.cpp
+  app/selftest/BrushLibraryFile.cpp
   app/selftest/BucketRefusal.cpp
   app/selftest/Channels.cpp
   app/selftest/Clipboard.cpp

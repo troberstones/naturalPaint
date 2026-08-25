@@ -6,6 +6,7 @@
 
 #include "brush/Dynamics.hpp"
 #include "brush/Library.hpp"
+#include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
@@ -615,6 +616,27 @@ struct AppState {
   // (PRD A2, ADR-0001), and --selftest's idle-RSS measurement would notice.
   RecentDocuments recentDocuments;
   bool recentDocumentsLoaded = false;
+
+  // PRD G6/G7's imported `.abr` brush libraries, remembered across launches
+  // (app/BrushLibraryFile.hpp for the file, the row cache and the lazy read).
+  //
+  // Here rather than on `BrushState` beside `brushLibrary`, even though the
+  // two are operated on together: this is persistence and session state -- a
+  // file path, a handful of cached rows and two counters -- and it belongs
+  // with `recentDocuments` above, which it is the same kind of thing as. The
+  // coupling to `brush.brushLibrary` is carried in every signature that needs
+  // it (`importFile`, `useLibrary`, `unload` all take a `BrushLibrary&`)
+  // rather than by nesting, which is also what lets --selftest exercise the
+  // whole feature with no `AppState` anywhere near it.
+  //
+  // Empty and untouched until the BRUSH LIBRARY pane is first drawn --
+  // `brushLibrariesLoaded` is what makes that lazy, exactly as
+  // `recentDocumentsLoaded` does above. **Reading the preferences file is not
+  // reading a `.abr`**: it is a few hundred bytes of text plus one `stat()`
+  // per remembered library, and no brush pack is opened until a brush from one
+  // is picked.
+  BrushLibraryStore brushLibraries;
+  bool brushLibrariesLoaded = false;
 
   // PLAN.md Phase 4 step 9 (app/Journal, ADR-0008, PRD O5-O10). The recovery
   // journal for this run: one scratch directory, its lock, and one journal

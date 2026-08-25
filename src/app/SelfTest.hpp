@@ -915,6 +915,21 @@ bool runDabPreviewTest();
 // else's copyrighted work and megabytes besides.
 bool runAbrBrushesTest();
 
+// app/BrushLibraryFile: the preferences file that remembers which `.abr`
+// libraries are loaded, the row cache that lets a remembered library draw its
+// brushes with its file unread, and the unload that has to remove exactly one
+// library's presets. Four things that fail silently and expensively -- a
+// hand-edited or truncated file that loses libraries it could have kept; a
+// lazy load that is not lazy (asserted with a read counter, because an eager
+// load produces every correct answer); a failed load that is a silent no-op;
+// and an unload that shifts every later preset index and quietly selects a
+// different brush. Also asserts the design's central claim, that a cached row
+// of seven numbers rasterises the byte-identical dab the loaded preset does.
+// Writes `.abr` fixtures byte by byte through app/selftest/DescFixture.hpp and
+// removes every one of them; `$NP_BRUSH_LIBRARIES` keeps it out of
+// ~/Library/Application Support. Headless and GPU-free.
+bool runBrushLibraryFileTest();
+
 
 
 // Headless, GPU-free check on io/Export (PLAN.md Phase 4 step 1: "Export
