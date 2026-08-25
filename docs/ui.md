@@ -299,11 +299,11 @@ T  [▨] Plate caption        TEXT · NORMAL · 100%
 |---|---|
 | `◉` | Pigment — the default |
 | `□` | RGB |
-| `◈` | Media (suffixed with the medium) |
+| `◈` | Media (the medium name is not built; see the callout below) |
 | `✂` | Strokes |
 | `▤` | Adjustment |
 | `T` | Text |
-| `▩` | Flats — suffixed with the fill count |
+| `▩` | Flats — the fill count is not built; see the callout below |
 
 > ✅ **`CLIPPED` became real at PLAN.md Phase 5 step 9 (PRD C9).** The `ADJUSTMENT ·
 > CLIPPED` row above predated the feature by four steps; `app::layerRowSubLine()` now
@@ -321,6 +321,21 @@ layer panel useless. See
 
 The Media sub-line is also where **wet state** lives — remaining working time while
 wet, and the refuse-to-wet warning PRD H5 requires be *visible*.
+
+> ⚠️ **Two things in this section have never been built, and the panel does not
+> pretend otherwise.** The Media sub-line carries no wet state and no drying
+> countdown, and a Flats row carries no fill count.
+>
+> Neither is a presentation gap — the model cannot supply either number.
+> `core::Layer` has no medium name and no wet state; the wetness that exists is
+> `sim::PaintSim`'s single canvas-wide field with no layer awareness at all, and
+> nothing anywhere computes seconds-until-dry. `core/Merge.cpp` says the other
+> half outright: a Flats layer has no regions, so there is no fill list to count.
+>
+> So a Media row reads `MEDIA · NORMAL · 100%` and a Flats row reads
+> `FLATS · NORMAL · 100%`. Recorded here rather than quietly dropped, because
+> this file is the design's own statement of intent and a reader comparing it
+> against the running panel deserves to know which of the two is behind.
 
 ### 3.3 The colour picker cannot express pigment
 
