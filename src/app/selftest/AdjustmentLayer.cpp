@@ -619,7 +619,7 @@ bool runAdjustmentLayerTest() {
     writeMask(doc, 1, 1, 1, 0.5f);
 
     ProbeParams all;
-    all.sampleAllLayers = true;
+    all.source = ProbeSource::AllLayers;
     const ProbeSample sample = probePixel(doc, PixelCoord{1, 1}, all);
     const std::array<float, 4> flat = pixelOf(flattenDocumentToLinear(doc), 1, 1);
     check(std::fabs(sample.linear[0] - flat[0]) <= kAdjustTol &&
@@ -640,7 +640,7 @@ bool runAdjustmentLayerTest() {
           "an adjustment layer contributes no colour, so it does not make the probe report "
           "one");
     ProbeParams own;
-    own.sampleAllLayers = false;
+    own.source = ProbeSource::CurrentLayer;
     own.activeLayerIndex = 1;
     const ProbeSample layerOwn = probePixel(doc, PixelCoord{1, 1}, own);
     check(layerOwn.linear[3] == 0.0f,

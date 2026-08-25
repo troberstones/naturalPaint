@@ -2697,11 +2697,21 @@ void drawLayersSection(AppState& st) {
 // what changed is that it is in the panel the design puts colour in, and that
 // selecting a pigment now visibly reports what it selected.
 //
-// Panel-local state, like `drawCompsSection()`'s selection: which mode the
-// panel is in is not a property of the document and no file records it.
-bool g_colorPigmentMode = true;
-float g_colorRgb[3] = {0.10f, 0.12f, 0.45f};
-
+// **This state used to be panel-local, and that was the bug.** Two file
+// statics lived here -- `bool g_colorPigmentMode` and
+// `float g_colorRgb[3]` -- on the stated grounds that "which mode the panel is
+// in is not a property of the document and no file records it". The first half
+// is still true; the conclusion was not. `g_colorRgb` was **read by no file in
+// `src/`**: the picker below was fully live, wrote to it every frame, and
+// nothing downstream ever looked, which the panel itself admitted in a line of
+// body text ("Not yet connected: no tool reads this colour").
+//
+// Both now live on `app/AppState.hpp`'s `BrushState`, beside the palette index
+// they are the alternative to, because the mode does not merely decide what the
+// panel draws -- it decides what `foregroundSrgb()` returns and therefore what
+// every brush, bucket and gradient in the build lays down. A file static could
+// not be reached by `app/StrokeSession`, could not be written by the
+// eyedropper, and could not be asserted by `--selftest`.
 void drawColorSection(AppState& st) {
   // The mode toggle in the header row, where section 3.3 puts it ("COLOR
   // gains a mode toggle in its header"). Two buttons rather than a combo: the
@@ -2720,14 +2730,20 @@ void drawColorSection(AppState& st) {
     if (on) ImGui::PopStyleColor(3);
     return pressed;
   };
-  if (modeButton("PIGMENT", g_colorPigmentMode)) g_colorPigmentMode = true;
+  const bool pigmentMode = st.brush.colorMode == ColorMode::Pigment;
+  if (modeButton("PIGMENT", pigmentMode)) st.brush.colorMode = ColorMode::Pigment;
   ImGui::SameLine();
-  if (modeButton("RGB", !g_colorPigmentMode)) g_colorPigmentMode = false;
+  if (modeButton("RGB", !pigmentMode)) st.brush.colorMode = ColorMode::Rgb;
 
   const std::vector<Pigment>& palette = defaultPalette();
-  const Pigment& sel = palette[st.brush.pigment];
+  // `foregroundPhysicalConstants()` rather than `palette[st.brush.pigment]`:
+  // the index is user-settable and an out-of-range one would index past the
+  // vector here, which is exactly the read that function exists to make safe.
+  // It is also the honest name for what this row is in RGB mode -- the pigment
+  // whose *constants* are still in force, not the colour.
+  const Pigment& sel = foregroundPhysicalConstants(st.brush);
 
-  if (g_colorPigmentMode) {
+  if (pigmentMode) {
     // The well. Wrapped to the panel width rather than laid out in one row:
     // the strip this came from was as wide as the window, and a 322 px column
     // is not.
@@ -2769,18 +2785,32 @@ void drawColorSection(AppState& st) {
     popAtelierMono();
   } else {
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-    ImGui::ColorPicker3("##rgb", g_colorRgb,
+    // Writes straight into `BrushState::rgb`, which is where the foreground
+    // lives -- no copy back, no second source of truth. The array is
+    // `std::array<float,3>` and ImGui wants a `float*`, so `.data()`; the
+    // storage is contiguous by the standard, so this is the same pointer the
+    // retired `float g_colorRgb[3]` handed over.
+    ImGui::ColorPicker3("##rgb", st.brush.rgb.data(),
                         ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview |
                             ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_Float);
-    // Said plainly rather than left for a user to discover by painting.
-    // Section 3.3 allows a raw RGB colour on a Pigment layer -- "it maps
-    // through RGB->latent, with the caveat ... that the decomposition is
-    // plausible rather than true" -- but the mapping is not built, and neither
-    // is the path from any colour here to a deposit: the pen is not yet wired
-    // to a layer at all (PLAN.md's Phase 5 finding).
-    ImGui::TextWrapped("Not yet connected: no tool reads this colour. The brush deposits the "
-                       "PIGMENT selection, which carries physical constants an RGB triple "
-                       "does not.");
+    // **This paragraph used to say "Not yet connected: no tool reads this
+    // colour", and it was true.** It is now connected -- `foregroundSrgb()`
+    // returns this triple in RGB mode, and every route reads it -- so what is
+    // left to say is the one thing that is still *not* carried across, said
+    // plainly rather than left to be discovered by a wash that granulates
+    // unexpectedly. docs/ui.md §3.3 licenses the colour half explicitly ("it
+    // maps through RGB->latent, with the caveat ... that the decomposition is
+    // plausible rather than true"); it says nothing about the constants,
+    // because there is nothing to say: three floats cannot produce them.
+    pushAtelierMono();
+    ImGui::TextDisabled("density %.2f    staining %.2f", sel.density, sel.staining);
+    ImGui::TextDisabled("granulation %.2f", sel.granulation);
+    popAtelierMono();
+    ImGui::TextWrapped(
+        "This colour paints: RGB layers take it exactly, Pigment layers through RGB->latent. "
+        "The three constants above are NOT from it -- an RGB triple has none -- and still come "
+        "from %s. Switch to PIGMENT to change them.",
+        sel.name);
   }
 }
 
@@ -3982,6 +4012,88 @@ std::array<float, 4> foregroundLinearRgba(int pigmentIndex) {
     return {0.0f, 0.0f, 0.0f, 1.0f};
   const Pigment& pig = palette[static_cast<size_t>(pigmentIndex)];
   return {srgbDecode(pig.rgb[0]), srgbDecode(pig.rgb[1]), srgbDecode(pig.rgb[2]), 1.0f};
+}
+
+std::array<float, 4> foregroundLinearRgba(const BrushState& brush) {
+  // One decode, of `app/StrokeSession`'s one answer to "what colour is the
+  // foreground". Alpha is 1.0 for the reason the index overload's header
+  // comment gives: the foreground well has no opacity of its own.
+  const std::array<float, 3> fg = foregroundSrgb(brush);
+  return {srgbDecode(fg[0]), srgbDecode(fg[1]), srgbDecode(fg[2]), 1.0f};
+}
+
+EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
+  EyedropperPick out;
+
+  const OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    // The solver canvas is not a document and `probePixel()` takes one, so
+    // there is genuinely nothing to sample. Said, rather than ignored: a tool
+    // that does nothing without explaining itself is the defect this whole
+    // change exists to remove.
+    out.report = "Nothing to sample: no document is open. File > New Document makes one.";
+    st.lastPickReport = out.report;
+    return out;
+  }
+
+  ProbeParams params;
+  params.sampleSize = st.eyedropper.sampleSize;
+  params.source = st.eyedropper.source;
+  // Not a user setting -- whichever layer is active at the instant of the
+  // click. `ProbeSource::CurrentLayer` reads it and `ActiveAndBelow` stops at
+  // it; `AllLayers` ignores it entirely.
+  params.activeLayerIndex = static_cast<int32_t>(od->activeLayer);
+  out.sample = probePixel(od->document, at, params);
+
+  // Nothing there. See the header: not applied, and said out loud rather than
+  // silently leaving the foreground alone, because "the swatch did not change"
+  // is indistinguishable from "the tool is broken".
+  if (!(out.sample.linear[3] > 0.0f)) {
+    out.report = "Nothing to sample there: that point is transparent in this sample source.";
+    st.lastPickReport = out.report;
+    return out;
+  }
+
+  // **`display`, not `linear`.** The foreground is display-referred sRGB
+  // (app/AppState.hpp's `BrushState::rgb`), and `ProbeSample::display` is
+  // exactly `srgbEncode()` of the linear value the document holds -- so this
+  // is the encode half of the same boundary `foregroundLinearRgba()` decodes,
+  // taken from the struct that already computed it rather than re-derived
+  // here. Storing the *linear* value in a field everything treats as sRGB
+  // would make the swatch, the picker and the Mixbox LUT wrong together, and
+  // every picked colour would repaint far too dark -- the sort of wrong nobody
+  // notices until they hold the result against the pixel they picked it from.
+  //
+  // Clamped to [0,1]. Working-space values legitimately exceed 1.0
+  // (color/Space.hpp: "Working-space values are linear light and can
+  // legitimately exceed 1.0"), and so therefore can their sRGB encoding -- but
+  // `ImGui::ColorPicker3` cannot show such a value, an 8-bit swatch cannot draw
+  // it, and `MixboxLut::rgbToLatent()` clamps it away regardless. Clamping here
+  // rather than at those three places means the number the picker shows is the
+  // number the next stroke uses, instead of a fourth value only the clamps know
+  // about.
+  for (int c = 0; c < 3; ++c) st.brush.rgb[c] = std::clamp(out.sample.display[c], 0.0f, 1.0f);
+
+  out.switchedToRgbMode = st.brush.colorMode == ColorMode::Pigment;
+  st.brush.colorMode = ColorMode::Rgb;
+
+  char buf[256];
+  if (out.switchedToRgbMode) {
+    std::snprintf(buf, sizeof(buf),
+                  "Picked %.3f %.3f %.3f -- COLOR switched to RGB mode: a sampled colour has "
+                  "no density, staining or granulation, so those keep coming from %s.",
+                  static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
+                  static_cast<double>(st.brush.rgb[2]),
+                  foregroundPhysicalConstants(st.brush).name);
+  } else {
+    std::snprintf(buf, sizeof(buf), "Picked %.3f %.3f %.3f into the foreground colour.",
+                  static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
+                  static_cast<double>(st.brush.rgb[2]));
+  }
+  out.report = buf;
+  st.lastPickReport = out.report;
+  out.applied = true;
+  return out;
 }
 
 void commitDrawnSelection(AppState& st, OpenDocument& od,
@@ -6293,16 +6405,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // promising a feature that is not behind it.
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    const auto& pig = defaultPalette()[st.brush.pigment];
+    // **`foregroundSrgb()`, not `defaultPalette()[st.brush.pigment]`.** This
+    // is the well PRD Q10 says the eyedropper picks *into*, so it has to show
+    // the colour that was picked; drawing the palette row here would leave the
+    // one control a user looks at to confirm a pick showing the colour they
+    // just replaced. It also indexed `st.brush.pigment` unchecked, which
+    // `foregroundSrgb()` does not.
+    const std::array<float, 3> fg = foregroundSrgb(st.brush);
     dl->AddRectFilled(p, ImVec2(p.x + swatchSide, p.y + swatchSide),
-                      IM_COL32((int)(pig.rgb[0] * 255), (int)(pig.rgb[1] * 255),
-                               (int)(pig.rgb[2] * 255), 255));
+                      IM_COL32((int)(fg[0] * 255), (int)(fg[1] * 255), (int)(fg[2] * 255), 255));
     dl->AddRect(p, ImVec2(p.x + swatchSide, p.y + swatchSide), atelierToken(kRule), 0.0f, 0,
                 kRuleThickness);
     ImGui::Dummy(ImVec2(swatchSide, swatchSide));
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3)",
-                        pig.name);
+      ImGui::SetTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
+                        "or picked with the eyedropper (PRD Q10)",
+                        foregroundName(st.brush));
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
     ImGui::TextUnformatted("FG");
     ImGui::PopStyleColor();
@@ -6763,7 +6881,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const bool panning =
         !rotateHeld && !st.pendingGuide.has_value() &&
         (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
-         (st.brush.tool == Tool::Hand && ImGui::IsMouseDragging(ImGuiMouseButton_Left)));
+         // `toolPansView()` rather than `== Tool::Hand`: this expression IS
+         // the hand tool's canvas handler, and `toolHasCanvasHandler()`'s
+         // completeness check reads the same predicate rather than a
+         // description of it (app/StrokeSession §6b).
+         (toolPansView(st.brush.tool) && ImGui::IsMouseDragging(ImGuiMouseButton_Left)));
     if (panning) {
       const ImVec2 d = ImGui::GetIO().MouseDelta;
       st.view.panX += d.x;
@@ -6888,10 +7010,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // every constructor in core/SelectionShapes allocates tiles, and
     // rebuilding one 120 times a second to draw an outline the draw code can
     // trace from its own points would be work for nothing.
-    const bool selectionTool =
-        st.brush.tool == Tool::Marquee || st.brush.tool == Tool::EllipseMarquee ||
-        st.brush.tool == Tool::Lasso || st.brush.tool == Tool::PolygonLasso ||
-        st.brush.tool == Tool::MagicWand;
+    // `toolDrawsSelection()` rather than the five-way `||` this used to spell
+    // inline: this expression IS these five tools' canvas handler, and
+    // `toolHasCanvasHandler()`'s completeness check reads the same predicate
+    // rather than a copy of it (app/StrokeSession §6b).
+    const bool selectionTool = toolDrawsSelection(st.brush.tool);
 
     if (selectionTool && !panning && !rotating && !st.pendingGuide.has_value()) {
       const ImGuiIO& mods = ImGui::GetIO();
@@ -7055,6 +7178,52 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // --- the eyedropper (PRD Q10, P0) --------------------------------------
+    //
+    // **The tool that claimed to be implemented for two phases and had no
+    // handler.** `kToolMeta` said `implemented = true`, so the palette cell was
+    // clickable and highlighted, `toolCursorOnTarget()` withheld the `Refuse`
+    // cursor *because* of that flag and handed out a bespoke `ToolCursor::Sample`
+    // pointer -- and then the click arrived here and nothing whatsoever
+    // consumed it. Every tier of the chrome said live except the one that acts.
+    // `toolHasCanvasHandler()` (ui/AtelierChrome) is what stops that recurring,
+    // and this block is the handler that makes the eyedropper's row in that
+    // table true.
+    //
+    // **A drag re-samples continuously**, on every frame the button is held,
+    // not only on the click. Photoshop does the same and the reason is the
+    // gesture people actually make: over a gradient, a photograph or a
+    // brushstroke's soft edge the exact texel matters, and "click, look at the
+    // swatch, undo the pick, click again" is a loop nobody should be made to
+    // run. Watching the swatch while dragging converges in one gesture. The
+    // cost of continuous sampling is bounded and small -- `probePixel()` is
+    // read-only, allocates nothing on the RGB path, and walks at most
+    // `sampleSize^2` texels of a box that is clipped to the document.
+    //
+    // **A pick records NO history entry**, deliberately, and this is the same
+    // rule the paint bucket ten lines below obeys from the other side: history
+    // is for edits to the document, and both ops there return a written-texel
+    // count precisely so that a fill which changed nothing records nothing. A
+    // pick changes no texel at all. Three consequences settle it: a
+    // continuously-resampling drag would push hundreds of rows into a panel
+    // PRD O2 says is scanned to find an edit to undo; undoing "past" a pick
+    // would have to restore a foreground colour that `core::History` does not
+    // store and has no field for; and a user who wants their previous colour
+    // back has the COLOR panel right there, which is a cheaper answer than a
+    // history model that tracks tool state.
+    if (toolSamplesCanvas(st.brush.tool) && !panning && !rotating &&
+        !st.pendingGuide.has_value()) {
+      OpenDocument* od = st.documents.active();
+      // Held, not clicked -- see the drag paragraph above. `hovered` keeps a
+      // drag that wanders off the canvas from sampling coordinates the
+      // document does not have; `probePixel()` would answer transparent black
+      // there anyway, but refusing to sample at all leaves the last good pick
+      // in place rather than replacing it with a refusal sentence.
+      const bool sampling = hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+      if (sampling && (od == nullptr || (tx >= 0 && ty >= 0 && tx < texW && ty < texH)))
+        applyEyedropperPick(st, PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)});
+    }
+
     // --- the pixel-writing tools: paint bucket and gradient ----------------
     //
     // PRD D25/D26 and D24. Unlike the five selection tools above, these are
@@ -7108,7 +7277,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // decoded by whoever builds the stop list, not here". Skipping it fills
       // roughly twice as dark as the swatch shown, which reads as a colour
       // management bug rather than a missing conversion.
-      const std::array<float, 4> fg = foregroundLinearRgba(st.brush.pigment);
+      //
+      // **The `BrushState` overload, not the palette-index one.** It used to
+      // pass `st.brush.pigment`, which was the same colour until the
+      // eyedropper existed; leaving it would have made the bucket and the
+      // gradient fill with the pigment the user replaced while the brush
+      // painted the colour they picked -- two tools disagreeing about the
+      // foreground, which is worse than either being wrong alone.
+      const std::array<float, 4> fg = foregroundLinearRgba(st.brush);
 
       if (st.brush.tool == Tool::PaintBucket) {
         // `usable` is deliberately NOT in this condition. A click on the canvas

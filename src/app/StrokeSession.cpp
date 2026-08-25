@@ -168,6 +168,33 @@ bool toolWritesRgbPixels(Tool tool) noexcept {
   return tool == Tool::PaintBucket || tool == Tool::Gradient;
 }
 
+bool toolBeginsStroke(Tool tool) {
+  // Two synthetic targets cover every row of §1's table that is not the
+  // no-target case: a writable RGB layer and a writable Pigment layer. Neither
+  // is locked and both have a store, so a tool that refuses on both refuses for
+  // being that tool -- which is exactly the question. Probing rather than
+  // re-listing is the whole point: `strokeRouteFor()` is one table, and a tool
+  // moving out of its not-built arm changes this answer for free.
+  Layer rgb;
+  rgb.kind = LayerKind::RGB;
+  rgb.rgbTiles.emplace();
+  Layer pigment;
+  pigment.kind = LayerKind::Pigment;
+  pigment.pigmentTiles.emplace();
+  return strokeRouteFor(tool, nullptr) != StrokeRoute::None ||
+         strokeRouteFor(tool, &rgb) != StrokeRoute::None ||
+         strokeRouteFor(tool, &pigment) != StrokeRoute::None;
+}
+
+bool toolDrawsSelection(Tool tool) noexcept {
+  return tool == Tool::Marquee || tool == Tool::EllipseMarquee || tool == Tool::Lasso ||
+         tool == Tool::PolygonLasso || tool == Tool::MagicWand;
+}
+
+bool toolSamplesCanvas(Tool tool) noexcept { return tool == Tool::Eyedropper; }
+
+bool toolPansView(Tool tool) noexcept { return tool == Tool::Hand; }
+
 PixelOpRefusal pixelOpRefusalFor(const Layer* target) noexcept {
   if (target == nullptr) return PixelOpRefusal::NoLayer;
   // Before the storage test, so a locked RGB layer refuses for the reason that
@@ -255,29 +282,27 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // clamp to a legal alpha is `RgbStroke::begin()`'s, at the point of use.
   tip.opacity = brush.opacity;
 
-  const std::vector<Pigment>& palette = defaultPalette();
-  const size_t index =
-      brush.pigment >= 0 && static_cast<size_t>(brush.pigment) < palette.size()
-          ? static_cast<size_t>(brush.pigment)
-          : 0;
-  const Pigment& pigment = palette[index];
+  // **The foreground, not `defaultPalette()[brush.pigment]`.** This used to
+  // read the palette row directly, which was the same thing right up until
+  // `BrushState` gained a second way to say a colour -- and it is the line
+  // that decides whether an eyedropper pick can paint at all. Header §7.
+  const std::array<float, 3> fg = foregroundSrgb(brush);
 
-  // **The same swatch, decoded, for the other layer kind** (brush/Deposit.hpp's
-  // `linearRgb`). Derived here, from the same `pigment` the latent below is
-  // derived from, so the two representations of one load are produced by one
-  // statement pair and cannot name different colours.
+  // **The same colour, decoded, for the other layer kind** (brush/Deposit.hpp's
+  // `linearRgb`). Derived here, from the same `fg` the latent below is derived
+  // from, so the two representations of one load are produced by one statement
+  // pair and cannot name different colours.
   //
-  // `paint/Palette`'s `rgb` is display-referred sRGB and a document part is
+  // The foreground is display-referred sRGB and a document part is
   // scene-referred linear (DESIGN-imaging.md, PRD B6). This is exactly
   // `ui/MacPaintUI::foregroundLinearRgba()`'s decode, and it is spelled out
   // again rather than called because `app/` must not include `ui/` -- the
   // dependency runs the other way. `--selftest` asserts the two agree, which is
   // the guard that spelling it twice needs.
-  tip.linearRgb = {srgbDecode(pigment.rgb[0]), srgbDecode(pigment.rgb[1]),
-                   srgbDecode(pigment.rgb[2])};
+  tip.linearRgb = {srgbDecode(fg[0]), srgbDecode(fg[1]), srgbDecode(fg[2])};
 
   if (lut.valid())
-    tip.pigment = lut.rgbToLatent(pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]);
+    tip.pigment = lut.rgbToLatent(fg[0], fg[1], fg[2]);
   else
     // No LUT: `Latent::c` is Mixbox's own three weights and the fourth
     // (white) is derived, so a straight copy of the sRGB triple is not the
@@ -285,8 +310,40 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
     // that never loaded the 512x512 PNG painting *something* beats one that
     // paints white. The LUT is loaded by main.cpp before any UI exists, so
     // this branch is for tests and for a broken install.
-    tip.pigment.c = {pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]};
+    tip.pigment.c = {fg[0], fg[1], fg[2]};
   return tip;
+}
+
+const Pigment& foregroundPhysicalConstants(const BrushState& brush) noexcept {
+  const std::vector<Pigment>& palette = defaultPalette();
+  // **palette[0] for a bad index here, and BLACK for a bad index in
+  // `foregroundSrgb()` below.** The two disagreeing is deliberate, not an
+  // oversight: the solver has to have some physically plausible paint to run
+  // with, and one real row's constants are as good as any invented ones,
+  // whereas a *colour* has an unambiguous "nothing" value, and returning it
+  // makes a bad index visible rather than plausible. `--selftest` pins both.
+  const size_t index =
+      brush.pigment >= 0 && static_cast<size_t>(brush.pigment) < palette.size()
+          ? static_cast<size_t>(brush.pigment)
+          : 0;
+  return palette[index];
+}
+
+std::array<float, 3> foregroundSrgb(const BrushState& brush) noexcept {
+  if (brush.colorMode == ColorMode::Rgb) return brush.rgb;
+  const std::vector<Pigment>& palette = defaultPalette();
+  if (brush.pigment < 0 || static_cast<size_t>(brush.pigment) >= palette.size())
+    return {0.0f, 0.0f, 0.0f};  // matches foregroundLinearRgba()'s contract exactly
+  const Pigment& p = palette[static_cast<size_t>(brush.pigment)];
+  return {p.rgb[0], p.rgb[1], p.rgb[2]};
+}
+
+const char* foregroundName(const BrushState& brush) noexcept {
+  if (brush.colorMode == ColorMode::Rgb) return "Custom RGB";
+  const std::vector<Pigment>& palette = defaultPalette();
+  if (brush.pigment < 0 || static_cast<size_t>(brush.pigment) >= palette.size())
+    return "(no pigment)";
+  return palette[static_cast<size_t>(brush.pigment)].name;
 }
 
 DynamicInputs dynamicInputsFor(const AppState& st) noexcept {

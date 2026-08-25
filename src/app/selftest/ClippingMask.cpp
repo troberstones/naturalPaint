@@ -706,7 +706,7 @@ bool runClippingMaskTest() {
 
     const DecodedImage flat = flattenDocumentToLinear(doc);
     ProbeParams params;
-    params.sampleAllLayers = true;
+    params.source = ProbeSource::AllLayers;
     params.sampleSize = 1;
     float worst = 0.0f;
     for (int32_t x = 0; x < 4; ++x) {

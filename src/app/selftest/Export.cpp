@@ -463,7 +463,7 @@ bool runExportTest() {
     }
 
     // Two layers, disjoint content -- the plain-sum path core/Probe.cpp's
-    // sampleAllLayers already documents. Both layers' pixels must appear.
+    // ProbeParams::source already documents. Both layers' pixels must appear.
     Document twoLayers = Document::createBlank(2, 1, WorkingSpace{});
     writeStraight(twoLayers, 0, 0, 0, 1.0f, 0.0f, 0.0f, 1.0f);
     Layer second;

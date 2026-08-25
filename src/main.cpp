@@ -1315,6 +1315,14 @@ int main(int argc, char** argv) {
     // tool, and premultiply-aware un-premultiplication on read. Also
     // headless and GPU-free -- pure CPU, no PaintSim involvement.
     const bool probeOk = np::runProbeTest();
+    // Phase 2 step 10's other half (PRD Q10 and L4, both P0): the eyedropper
+    // tool itself -- three sample sources over a stack built so they must
+    // disagree, box clipping at the document edge, the foreground colour a
+    // pick writes into and whether that colour reaches a stroke, and the
+    // implemented-vs-has-a-handler tripwire that would have caught the two
+    // phases in which `Tool::Eyedropper` claimed to be built and was not.
+    // Headless and GPU-free -- pure CPU, no PaintSim involvement.
+    const bool eyedropperOk = np::runEyedropperTest();
     // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
     // transform's round-trip identity, one hand-worked known-point check,
     // and the view-only proof that mirror/rotation/grayscale never mutate
@@ -1870,6 +1878,7 @@ int main(int argc, char** argv) {
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
+                    eyedropperOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && gradientOk && selectionOk && channelsOk &&
                     selectionShapesOk && selectionRefineOk && selectionToolsOk &&
@@ -2512,8 +2521,26 @@ int main(int argc, char** argv) {
     ImGui::Render();
 
     // ---- simulation ----
-    const auto& pig = np::defaultPalette()[st.brush.pigment];
-    const np::Latent z = lut.rgbToLatent(pig.rgb[0], pig.rgb[1], pig.rgb[2]);
+    //
+    // **Colour from the foreground, constants from the pigment**, and the
+    // split is the honest half of PRD Q10 rather than an inconsistency. This
+    // used to read `defaultPalette()[st.brush.pigment]` for both, which was the
+    // same thing until `BrushState` gained a second way to say a colour; had it
+    // been left alone, an eyedropper pick would have changed what the brush and
+    // the bucket lay down while the solver went on injecting the old pigment --
+    // three tools disagreeing about the foreground.
+    //
+    // The constants genuinely cannot follow a picked colour: density, staining
+    // and granulation are measurements of a real paint (paint/Palette.cpp,
+    // Curtis et al. 1997 Table 1) and there is no function from three floats to
+    // "how does this settle out of suspension". They therefore keep following
+    // `st.brush.pigment` in both modes, which is exactly what the COLOR panel
+    // tells the user in RGB mode rather than leaving it to be discovered by a
+    // wash that granulates unexpectedly. `foregroundPhysicalConstants()` is
+    // also the bounds-checked read `defaultPalette()[st.brush.pigment]` was not.
+    const std::array<float, 3> fg = np::foregroundSrgb(st.brush);
+    const auto& pig = np::foregroundPhysicalConstants(st.brush);
+    const np::Latent z = lut.rgbToLatent(fg[0], fg[1], fg[2]);
     for (int i = 0; i < 3; ++i) {
       st.sim.brushLatentC[i] = z.c[i];
       st.sim.brushLatentR[i] = z.res[i];

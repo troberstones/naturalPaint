@@ -96,15 +96,12 @@ bool runProbeTest() {
           "probePixel: the 3x3 average genuinely differs from the centre pixel's own value");
   }
 
-  // --- NxN box average straddling painted and never-painted texels:
-  // sampleSize=3 centred on the fixture's top-left corner (0,0) covers x/y
-  // in [-1,1] -- only 4 of the 9 texels ((0,0),(1,0),(0,1),(1,1)) were ever
-  // painted, the rest fall in a tile that was never allocated. Averaging in
-  // premultiplied space and un-premultiplying once at the end (Probe.cpp's
-  // own documented reasoning) means the 5 missing texels dilute alpha
-  // (4/9) without dragging the reported *colour* toward black -- so the
-  // expected linear colour is exactly the straight average of the 4
-  // painted texels, not a darker value and not an edge-repeated one -------
+  // --- NxN box at the document's own corner: sampleSize=3 centred on (0,0)
+  // asks for x/y in [-1,1], of which only the 2x2 quadrant ((0,0),(1,0),
+  // (0,1),(1,1)) is inside a 3x3 document at all. The colour is the straight
+  // average of those four, not a darker value and not an edge-repeated one --
+  // and the alpha is 1.0, because all four are opaque and the five texels
+  // outside the canvas are **not averaged in** -----------------------------
   {
     ProbeParams p;
     p.sampleSize = 3;
@@ -116,10 +113,22 @@ bool runProbeTest() {
               near(s.linear[2], bAvg, kTol8),
           "probePixel: a box straddling unpainted texels keeps the un-premultiplied colour at "
           "the painted texels' own average, not darkened toward black");
-    check(near(s.linear[3], 4.0f / 9.0f, kTol8),
-          "probePixel: that same box's alpha reflects exactly how much of it was actually "
-          "painted (4 of 9 texels), proving missing texels dilute coverage rather than being "
-          "skipped or edge-clamped to a painted neighbour");
+    // **This assertion used to read `4.0f / 9.0f` and it was canonising a
+    // bug.** The old sample box was never clipped to the document and the
+    // divisor was an unconditional sampleSize*sampleSize, so the five texels
+    // this box asks for *outside a 3x3 canvas* were averaged in as
+    // {0,0,0,0} and dragged the reported coverage of a fully opaque corner
+    // down to 0.44. The colour was unaffected (premultiplied averaging
+    // divides the colour sum by the alpha sum, so the zeros cancel), which is
+    // exactly why nobody saw it. The property the old line was really after
+    // -- that unpainted texels dilute coverage rather than being skipped or
+    // edge-repeated -- is genuinely true and is asserted where it belongs, on
+    // texels that are unpainted but *inside* the document, in
+    // runEyedropperTest(). Here the honest expectation is 1.0.
+    check(near(s.linear[3], 1.0f, kTol8),
+          "probePixel: a box hanging off the document's corner averages only the texels that "
+          "are actually in the document -- an opaque corner reads alpha 1.0, not diluted by "
+          "the off-canvas half of the box");
   }
 
   // --- translucent pixel: proves un-premultiplication actually ran, the
@@ -164,28 +173,37 @@ bool runProbeTest() {
     }
   }
 
-  // --- sampleAllLayers vs. single/active-layer sampling: today's
-  // core::Document only ever has at most one populated RGB layer (see
-  // Probe.cpp / ProbeParams::sampleAllLayers's own doc comment for why), so
-  // this cannot yet assert the two modes differ -- what IS testable today
-  // is that the parameter is genuinely wired through and both modes agree,
-  // rather than one of them being dead code -------------------------------
+  // --- the three ProbeSource modes on a ONE-layer document, where they are
+  // required to agree. This fixture has a single, fully opaque RGB layer at
+  // index 0, so "what is on the active layer", "what does the whole stack
+  // show" and "what does the stack up to and including the active layer
+  // show" are the same question -- and all three must answer it identically,
+  // which is what proves the three arms share one box arithmetic rather than
+  // each having grown their own. The modes *differing* on a stack built so
+  // they must is runEyedropperTest()'s job, not this one's ------------------
   {
     ProbeParams single;
     single.sampleSize = 3;
-    single.sampleAllLayers = false;
+    single.source = ProbeSource::CurrentLayer;
     ProbeParams all;
     all.sampleSize = 3;
-    all.sampleAllLayers = true;
+    all.source = ProbeSource::AllLayers;
+    ProbeParams below;
+    below.sampleSize = 3;
+    below.source = ProbeSource::ActiveAndBelow;
     const ProbeSample sSingle = probePixel(grid, PixelCoord{1, 1}, single);
     const ProbeSample sAll = probePixel(grid, PixelCoord{1, 1}, all);
+    const ProbeSample sBelow = probePixel(grid, PixelCoord{1, 1}, below);
     check(near(sSingle.linear[0], sAll.linear[0], 1e-6f) &&
               near(sSingle.linear[1], sAll.linear[1], 1e-6f) &&
               near(sSingle.linear[2], sAll.linear[2], 1e-6f) &&
-              near(sSingle.linear[3], sAll.linear[3], 1e-6f),
-          "probePixel: sampleAllLayers is wired through and agrees with single-layer sampling "
-          "on today's at-most-one-RGB-layer Document (the two modes have no way to differ yet "
-          "-- see ProbeParams::sampleAllLayers)");
+              near(sSingle.linear[3], sAll.linear[3], 1e-6f) &&
+              near(sBelow.linear[0], sAll.linear[0], 1e-6f) &&
+              near(sBelow.linear[1], sAll.linear[1], 1e-6f) &&
+              near(sBelow.linear[2], sAll.linear[2], 1e-6f) &&
+              near(sBelow.linear[3], sAll.linear[3], 1e-6f),
+          "probePixel: all three ProbeSource modes are wired through and agree on a "
+          "single-opaque-layer Document, where they are asking the same question");
   }
 
   // --- out-of-bounds / never-painted / misuse: all sane, documented,

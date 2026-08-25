@@ -534,13 +534,13 @@ bool runLayerStackTest() {
     writeStraight(doc, 1, 1, 1, 0.0f, 0.0f, 1.0f, 0.5f);
 
     ProbeParams all;
-    all.sampleAllLayers = true;
+    all.source = ProbeSource::AllLayers;
     const ProbeSample sample = probePixel(doc, PixelCoord{1, 1}, all);
     const auto flat = pixelOf(flattenDocumentToLinear(doc), 1, 1);
     check(near(sample.linear[0], flat[0], kUnpremultiplyTol) &&
               near(sample.linear[2], flat[2], kUnpremultiplyTol) &&
               near(sample.linear[3], flat[3], kUnpremultiplyTol),
-          "probe: sampleAllLayers composites through the SAME `over` the flattener uses -- an "
+          "probe: ProbeSource::AllLayers composites through the SAME `over` the flattener uses -- an "
           "eyedropper and an export that disagreed would be a bug nobody could explain");
 
     doc.layers[1].visible = false;
@@ -551,7 +551,7 @@ bool runLayerStackTest() {
           "underneath");
 
     ProbeParams justTop;
-    justTop.sampleAllLayers = false;
+    justTop.source = ProbeSource::CurrentLayer;
     justTop.activeLayerIndex = 1;
     const ProbeSample own = probePixel(doc, PixelCoord{1, 1}, justTop);
     check(near(own.linear[2], 1.0f, kUnpremultiplyTol) && near(own.linear[3], 0.5f, 0.0f),

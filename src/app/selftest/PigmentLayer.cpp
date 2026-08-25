@@ -521,19 +521,19 @@ bool runPigmentLayerTest() {
     setLayerBlend(doc, 1, BlendMode::Mix);
 
     ProbeParams all;
-    all.sampleAllLayers = true;
+    all.source = ProbeSource::AllLayers;
     const ProbeSample sample = probePixel(doc, PixelCoord{1, 1}, all);
     const std::array<float, 4> flat = pixelOf(flattenDocumentToLinear(doc), 1, 1);
     check(lutLoaded && near(sample.linear[0], flat[0], kUnpremultiplyTol) &&
               near(sample.linear[1], flat[1], kUnpremultiplyTol) &&
               near(sample.linear[2], flat[2], kUnpremultiplyTol) &&
               near(sample.linear[3], flat[3], kUnpremultiplyTol),
-          "probe: sampleAllLayers reads a mixed Pigment pair through the same functions the "
+          "probe: ProbeSource::AllLayers reads a mixed Pigment pair through the same functions the "
           "flattener uses -- an eyedropper and an export that disagreed would be a bug "
           "nobody could explain");
 
     ProbeParams own;
-    own.sampleAllLayers = false;
+    own.source = ProbeSource::CurrentLayer;
     own.activeLayerIndex = 1;
     const ProbeSample layerOwn = probePixel(doc, PixelCoord{1, 1}, own);
     const std::array<float, 3> blueProjected = latentToRgb(readPigment(doc, 1, 1, 1).latent);

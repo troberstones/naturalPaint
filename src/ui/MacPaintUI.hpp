@@ -182,4 +182,82 @@ void commitDrawnSelection(AppState& st, OpenDocument& od,
 // palette.
 std::array<float, 4> foregroundLinearRgba(int pigmentIndex);
 
+// The same, for **whichever** of the two colours `BrushState::colorMode`
+// currently selects -- `app/StrokeSession`'s `foregroundSrgb()`, decoded.
+//
+// Both overloads exist on purpose. The index form above is the *palette*
+// question ("what linear colour is row 6"), which `--selftest` walks over every
+// row and which nothing about the eyedropper changes; this form is the
+// *foreground* question ("what colour will the next fill actually use"), which
+// is the one every call site in the running application wants. Collapsing them
+// into one would have made the palette test un-writable without a BrushState.
+std::array<float, 4> foregroundLinearRgba(const BrushState& brush);
+
+// ------------------------------------------------------- the eyedropper
+//
+// PRD **Q10** (P0). What one eyedropper click *means*, separated from the
+// mouse handling that triggers it, for exactly the reason `commitDrawnSelection()`
+// above is separated: the rules here are about user intent, each of them
+// inverts without producing a wrong pixel anywhere, and inside the canvas block
+// no test could reach a single one of them.
+struct EyedropperPick {
+  // False when the click could not sample anything: no document, or a
+  // coordinate whose sample box misses the canvas. The foreground is left
+  // exactly as it was.
+  bool applied = false;
+  // What `probePixel()` returned, whether or not it was applied -- the
+  // readout half of PLAN.md step 10 ("both linear and display values", PRD D2)
+  // is this same struct, so the tool and the future probe readout share one
+  // call rather than sampling twice.
+  ProbeSample sample;
+  // True when the pick moved the COLOR panel from PIGMENT mode to RGB mode.
+  // See `report` for why it is allowed to.
+  bool switchedToRgbMode = false;
+  // One sentence for the options bar, in `app/StrokeSession`'s refusal voice:
+  // what was picked, and -- the case that needs saying -- that PIGMENT mode
+  // was left behind because a sampled triple has no physical constants.
+  std::string report;
+};
+
+// Samples the **active document** at `at` with `st.eyedropper`'s settings and
+// writes the result into `st.brush`'s foreground colour. Returns what happened.
+//
+// The document is read off `st.documents` rather than passed in, deliberately:
+// the sample's `activeLayerIndex` has to be *that document's* `activeLayer`
+// (`ProbeSource::CurrentLayer` reads it and `ActiveAndBelow` stops at it), and
+// a caller free to pass one document with another's active index is a
+// mismatch nothing would catch. With no document open, `applied` is false and
+// `report` says so.
+//
+// **Picking while COLOR is in PIGMENT mode switches the panel to RGB mode**,
+// and that is the decision the whole tool turned on. A pigment is a colour plus
+// density, staining and granulation measured off a real paint; three floats off
+// a canvas cannot supply those. The three alternatives and why they lost:
+//
+//   * *Snap to the nearest palette pigment.* Rejected outright. An eyedropper
+//     exists to reproduce a colour exactly, and one that answered "Burnt
+//     Sienna" to a sampled #7f3f00 is wrong in the single way this tool must
+//     never be wrong -- and silently, since the swatch would look about right.
+//   * *Refuse to pick in PIGMENT mode.* Rejected because PIGMENT is the
+//     **default** mode, so the tool would do nothing at all out of the box:
+//     the same silent no-op this whole track exists to remove, wearing a
+//     different hat.
+//   * *Keep the pigment selected and quietly paint the RGB colour.* Rejected
+//     as the worst of the three -- the panel would go on showing a pigment
+//     name and three constants for a colour that is no longer that pigment.
+//
+// So the mode moves, and the user is told twice: the COLOR panel's accent
+// visibly jumps from PIGMENT to RGB, and `report` says it in words. The pigment
+// selection itself is **not** cleared -- switching back to PIGMENT mode
+// restores exactly the paint that was selected before the pick, and the three
+// physical constants keep coming from it in the meantime
+// (`foregroundPhysicalConstants()`).
+//
+// A sample with zero alpha -- nothing painted there in this sample source --
+// is **not applied**. Writing transparent black into the foreground would
+// destroy the user's colour in exchange for a value they cannot have meant to
+// pick, and "I clicked on empty canvas" is not an instruction to paint in
+// black.
+EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at);
+
 }  // namespace np

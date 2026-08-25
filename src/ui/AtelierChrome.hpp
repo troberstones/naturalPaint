@@ -87,11 +87,56 @@ const char* toolName(Tool t);
 // tooltip shows. One table backs all four rather than four switches that
 // could disagree with each other about which tools exist.
 
-// True for exactly the seven Tool values this build has real behaviour for.
+// True for exactly the Tool values this build has real behaviour for.
 // Everything else is a palette cell that exists for its name/icon/slot only,
 // per app/AppState.hpp's own comment -- ui/MacPaintUI.cpp's toolButton()
 // reads this to decide whether a cell is clickable at all.
+//
+// **This flag is hand-written, and it shipped a lie.** See
+// `toolHasCanvasHandler()` immediately below, which is what now holds it to
+// account.
 bool toolImplemented(Tool t) noexcept;
+
+// Whether `ui/MacPaintUI.cpp`'s canvas block will do anything at all with a
+// gesture made with `t`.
+//
+// **The tripwire for the defect that made this whole table suspect.**
+// `Tool::Eyedropper` carried `implemented = true` in `kToolMeta` for two
+// phases with **no canvas handler anywhere in the build**. The flag is
+// hand-maintained and nothing checked it against reality, so every tier
+// downstream faithfully repeated it: the palette drew the cell live and
+// clickable, and `toolCursorOnTarget()` withheld the `Refuse` cursor
+// *precisely because* the tool claimed to be implemented, handing out a
+// bespoke `ToolCursor::Sample` pointer over a canvas that would ignore the
+// click. A user could select the tool, see the correct cursor, click, and get
+// nothing, with the chrome insisting the whole way that this was a working
+// tool.
+//
+// This is deliberately **not** a second hand-written table -- that would drift
+// the same way. It is the disjunction of `app/StrokeSession` §6b's four
+// predicates plus `toolWritesRgbPixels()`, and each of those five is *the
+// literal expression the corresponding canvas block is gated on*. Delete a
+// handler and its predicate stops being true; add a tool to a handler and its
+// predicate starts being true. `--selftest`'s `runEyedropperTest()` asserts
+// `toolImplemented(t) == toolHasCanvasHandler(t)` for every `Tool`, with
+// exactly the exceptions `toolNoHandlerException()` records.
+bool toolHasCanvasHandler(Tool t) noexcept;
+
+// Why `t` is marked implemented while having no canvas handler, or `nullptr`
+// when it is not such a tool.
+//
+// **One row today, and it is a real, live instance of the same defect.**
+// `Tool::Zoom` is `toolImplemented() == true`, gets its own `ToolCursor::Zoom`
+// magnifier, and has no canvas handler: zooming works from the scroll wheel
+// and the View menu, both of which are tool-independent and fire whatever tool
+// is selected, so selecting Zoom and clicking the canvas does nothing.
+// Building it is not this track's job. **Recording it is**, because the
+// difference between a known exception and an accident is whether removing it
+// is forced: the day Zoom's handler lands, `toolHasCanvasHandler(Tool::Zoom)`
+// becomes true, the selftest's "every recorded exception is still an
+// exception" assertion goes red, and this row has to be deleted before the
+// suite is green again. An exception that cannot be quietly forgotten.
+const char* toolNoHandlerException(Tool t) noexcept;
 
 // The Lucide icon a tool's cell draws: its name (third_party/lucide/, for
 // documentation and debugging) and its PUA codepoint
