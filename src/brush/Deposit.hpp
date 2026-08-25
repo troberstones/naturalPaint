@@ -437,6 +437,15 @@ struct BrushTip {
   // Arc-length dab spacing, in radii. `spacingPx()` is what StrokePath wants.
   float spacing = 0.25f;
 
+  // `DynamicTarget::Scatter`'s resolved magnitude, in radii -- an Add target
+  // (brush/Dynamics.hpp), identity 0.0. **Not a position**: this is how FAR a
+  // dab may be jittered from the stroke path, not which way. The direction is
+  // drawn per dab (`app/StrokeSession`'s deposit loop), independently of
+  // whatever fed this magnitude, so two dabs at the same scatter magnitude
+  // land in different places -- a jitter with a fixed direction would just be
+  // a second, smaller stroke offset from the first, not scatter.
+  float scatter = 0.0f;
+
   // What the tip is loaded with. `paint/Palette`'s `MixboxLut::rgbToLatent()`
   // produces one from a colour; `core/Pigment`'s `latentToRgb()` projects it
   // back with no LUT at all, which is why a Pigment layer composites in a
