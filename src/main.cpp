@@ -1916,6 +1916,17 @@ int main(int argc, char** argv) {
     // asserted as a pure function so it needs no window, and what a drop of
     // twelve files at once resolves to.
     const bool openAnyFileOk = np::runOpenAnyFileTest();
+    // app/FilterOps, ui/MenuModel's Filter and Image menus (docs/
+    // reachability-audit.md C1): six of ops/Blur's, ops/Filters' and ops/
+    // DocumentTransform's ~93 tested-but-unreachable entry points, wired to
+    // a menu, a dialog and a history entry. Proves the WIRING, not the
+    // engines runBlurTest()/runFiltersTest() already cover: each item
+    // reaches its own engine call with its own dialog parameters, the active
+    // selection bounds a pixel op over the whole excluded region, one
+    // history entry per confirmed dialog with an exact undo, and a layer
+    // PixelOpRefusal cannot touch refuses by the SAME message the paint
+    // bucket already uses.
+    const bool filterMenuOk = np::runFilterMenuTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1945,7 +1956,8 @@ int main(int argc, char** argv) {
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
-                    quitGuardOk && menuBasicsOk && menuModelOk && openAnyFileOk;
+                    quitGuardOk && menuBasicsOk && menuModelOk && openAnyFileOk &&
+                    filterMenuOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

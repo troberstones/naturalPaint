@@ -192,6 +192,31 @@ enum class MenuAction : uint16_t {
   ImGuiDemo,
   ActivateDocument,     // family: param = index into the open-document session
 
+  // --- Filter ---------------------------------------------------------
+  //
+  // ops/Blur + ops/Filters (docs/reachability-audit.md C1: ~93 tested entry
+  // points across six ops/ modules with no UI path to any of them). Four of
+  // them, chosen for depth over breadth -- see app/FilterOps.hpp's header
+  // for why these four and app/selftest/FilterMenu.cpp for the assertions
+  // that pin each one to its own engine call and its own parameters.
+  GaussianBlur,
+  Sharpen,
+  UnsharpMask,
+  AddNoise,
+
+  // --- Image ------------------------------------------------------------
+  //
+  // ops/DocumentTransform, Photoshop-style: geometry that changes the
+  // document's own extent, kept apart from Filter's pixel ops for the reason
+  // app/FilterOps.hpp states -- these move every layer, including locked
+  // ones, and refuse for a document-shaped reason (a zero extent) rather
+  // than a layer-shaped one (`PixelOpRefusal`). Two items, deliberately: PRD
+  // D17's crop and its rotate/flip canvas are left out, not left dead --
+  // see docs/reachability-audit.md C1's own instruction that an unwired
+  // operation must be absent from the menu, not present and inert.
+  ImageSize,
+  CanvasSize,
+
   Count,
 };
 
@@ -480,6 +505,25 @@ struct MenuContext {
   // --- Window -------------------------------------------------------------
   bool showDemo = false;
   std::vector<MenuFamilyEntry> openDocuments;
+
+  // --- Filter / Image -------------------------------------------------
+  //
+  // `filterLayerUsable` is `app/StrokeSession.hpp`'s `PixelOpRefusal`
+  // resolved against the active layer -- the same predicate the paint
+  // bucket and the gradient already gate on -- and `filterRefusalNote` is
+  // the sentence to show when it is false, built from the live layer inside
+  // the frame that produced this context (this file's own header explains
+  // why a `Layer*` cannot be carried on the context itself: a native menu
+  // reads this after the frame that built it has ended). All four
+  // Filter-menu items share one predicate and one sentence, because they
+  // share one question -- "can the active layer take a pixel op" -- and a
+  // per-item refusal would only ever repeat the same answer four times.
+  //
+  // Image-menu items use `hasDocument` alone: `ops/DocumentTransform`'s
+  // document-level ops move every layer, including locked ones, so there is
+  // no layer-shaped refusal for them to carry.
+  bool filterLayerUsable = false;
+  std::string filterRefusalNote;
 
   // True when the platform's own menu bar already carries the standard
   // application menu, so `MenuItemSpec::omitWhenNativeAppMenu` items are left
