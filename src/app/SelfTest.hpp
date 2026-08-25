@@ -842,6 +842,15 @@ bool runCurveEditTest();
 // PaintSim involvement at all.
 bool runBrushDynamicsTest();
 
+// io/AbrBrushes: reading Photoshop `.abr` brush libraries into brush/Library
+// presets. The container framing (which parses a format from the internet and
+// must refuse rather than guess) and the parameter mapping (where a wrong
+// value is still in range, still plausible, and still paints). Every byte is
+// written by app/selftest/DescFixture.hpp -- a real brush pack is somebody
+// else's copyrighted work and megabytes besides.
+bool runAbrBrushesTest();
+
+
 
 // Headless, GPU-free check on io/Export (PLAN.md Phase 4 step 1: "Export
 // path -- encode from working space to a chosen target space and bit depth,

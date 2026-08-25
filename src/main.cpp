@@ -1424,6 +1424,10 @@ int main(int argc, char** argv) {
     // range semantics, invert, curve clamping, and the commutative fold that
     // lets three sources drive one target. Headless and GPU-free.
     const bool brushDynamicsOk = np::runBrushDynamicsTest();
+    // io/AbrBrushes: Photoshop `.abr` libraries into brush/Library presets --
+    // the container framing and the parameter mapping, including what an
+    // import could NOT bring across. Headless and GPU-free.
+    const bool abrBrushesOk = np::runAbrBrushesTest();
     // Phase 4 step 1 ("Export path -- encode from working space to a chosen
     // target space and bit depth, explicitly, never silently"; PRD B6, I5,
     // I1): io/Export's flatten -> un-premultiply -> encode -> quantize ->
@@ -1749,7 +1753,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && abrBrushesOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

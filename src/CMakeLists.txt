@@ -24,6 +24,7 @@ add_executable(naturalPaint
   app/selftest/AdjustmentLayer.cpp
   app/selftest/ApplyPass.cpp
   app/selftest/BaseLayerAlpha.cpp
+  app/selftest/AbrBrushes.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
   app/selftest/BrushDynamics.cpp
@@ -127,6 +128,7 @@ add_executable(naturalPaint
   core/SelectionShapes.cpp
   gfx/Context.cpp
   gfx/ShaderLoader.cpp
+  io/AbrBrushes.cpp
   io/Capabilities.cpp
   io/CompSerial.cpp
   io/Descriptor.cpp
