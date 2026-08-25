@@ -535,7 +535,7 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
     ImGui::PushStyleColor(
         ImGuiCol_Text,
         ImGui::ColorConvertU32ToFloat4(atelierToken(
-            route == StrokeRoute::CpuDeposit ? kAccent : kTextSecondary)));
+            strokeRouteWritesLayer(route) ? kAccent : kTextSecondary)));
     ImGui::Text("-> %s", strokeRouteName(route));
     ImGui::PopStyleColor();
     popAtelierMono();

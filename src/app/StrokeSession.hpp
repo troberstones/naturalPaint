@@ -8,6 +8,7 @@
 #include "app/AppState.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "brush/Deposit.hpp"
+#include "brush/RgbDeposit.hpp"
 #include "brush/StrokePath.hpp"
 #include "paint/Palette.hpp"
 #include "core/Layer.hpp"
@@ -33,35 +34,60 @@
 //
 //   tool        target layer                     route
 //   ---------   ------------------------------   ----------------------------
-//   Brush       Pigment, writable                CpuDeposit  <- new
-//   DryBrush    Pigment, writable                CpuDeposit  <- new
-//   Brush       Pigment, **locked**              None        <- refused
-//   DryBrush    Pigment, **locked**              None        <- refused
-//   Brush       RGB / Adjustment / none / ...    PaintSim     (unchanged)
-//   DryBrush    RGB / Adjustment / none / ...    PaintSim     (unchanged)
+//   Brush       Pigment, with tiles, writable    CpuDeposit
+//   DryBrush    Pigment, with tiles, writable    CpuDeposit
+//   Brush       RGB, with tiles, writable        RgbDeposit  <- new
+//   DryBrush    RGB, with tiles, writable        RgbDeposit  <- new
+//   Brush       **any layer, locked**            None
+//   DryBrush    **any layer, locked**            None
+//   Brush       Adjustment / Media / Text / ...  None        <- was PaintSim
+//   DryBrush    Adjustment / Media / Text / ...  None        <- was PaintSim
+//   Brush       **no target at all**             PaintSim
+//   DryBrush    **no target at all**             PaintSim
 //   Water       anything                         PaintSim     (unchanged)
 //   Eyedropper / Hand / Zoom                     None         (unchanged)
 //
-// Two rows are decisions rather than bookkeeping.
+// Four rows are decisions rather than bookkeeping.
 //
-// **`Water` never routes here, on any layer.** The water tool deposits water
-// and no pigment (`app/AppState`'s own comment on the enumerator). A Pigment
-// tile has seven channels and not one of them is water -- `docs/document-
-// format.md`'s `pig.c0 pig.c1 pig.c2 pig.m` plus `res.R res.G res.B` -- so a
-// CPU deposit of "water" could only mean depositing zero mass, which is
-// indistinguishable from not painting. Wetness is a solver state; it belongs
-// to the medium that simulates it and it is one of the things the readback
-// bridge, not this step, will have to carry into a document.
+// **`Water` never routes to a layer, on any layer kind.** The water tool
+// deposits water and no pigment (`app/AppState`'s own comment on the
+// enumerator). A Pigment tile has seven channels and not one of them is water
+// -- `docs/document-format.md`'s `pig.c0 pig.c1 pig.c2 pig.m` plus
+// `res.R res.G res.B` -- so a CPU deposit of "water" could only mean depositing
+// zero mass, which is indistinguishable from not painting; and an RGB tile has
+// nowhere to put wetness at all. Wetness is a solver state; it belongs to the
+// medium that simulates it and it is one of the things the readback bridge, not
+// this step, will have to carry into a document.
 //
-// **A locked Pigment layer refuses rather than falling through to PaintSim.**
-// Falling through is the tempting row, because it never blocks the user -- but
-// it would put paint on the *solver canvas* when the user aimed at a layer,
-// which is the one failure mode a painter cannot see and cannot undo. Refusing
-// matches `core/LayerOps`, whose every setter refuses on `Layer::locked`, and
-// leaves the UI free to say why. **Visibility is deliberately not a refusal**,
-// for the same reason `core/LayerOps` does not refuse on it: hiding a layer is
-// a view decision, and `layerCoverage()` already makes a hidden layer
-// contribute nothing.
+// **A locked layer refuses rather than falling through to PaintSim.** Falling
+// through is the tempting row, because it never blocks the user -- but it would
+// put paint on the *solver canvas* when the user aimed at a layer, which is the
+// one failure mode a painter cannot see and cannot undo. Refusing matches
+// `core/LayerOps`, whose every setter refuses on `Layer::locked`, and leaves
+// the UI free to say why. **Visibility is deliberately not a refusal**, for the
+// same reason `core/LayerOps` does not refuse on it: hiding a layer is a view
+// decision, and `layerCoverage()` already makes a hidden layer contribute
+// nothing.
+//
+// **A target that cannot take the stroke refuses too, for exactly that
+// argument.** This table used to end with "everything else keeps today's
+// behaviour, which is the solver canvas", and that fallthrough was the same
+// invisible wrong-target defect the locked row had already been written to
+// prevent -- one line below it. Aiming at an RGB layer painted the canvas
+// texture; so did aiming at an Adjustment layer, a Media layer, a Text layer,
+// or a Pigment layer whose store had not been allocated. Paint appeared, the
+// document never saw it, undo did not remove it, and save did not keep it. The
+// RGB row is now a real destination and the rest are refusals with a reason the
+// UI can print.
+//
+// **`nullptr` still routes to PaintSim, and that row is not a fallthrough.**
+// It is the *only* case where the solver canvas is the destination the user
+// meant: no document is open, so there is no layer to have aimed at, and
+// watercolour and oil legitimately paint the dense canvas texture -- which is
+// what every medium demo and the whole of `sim::PaintSim` does today. The
+// distinction this table now draws is between "there was no target" and "there
+// was a target and it could not take the stroke", and only the first of those
+// is the solver's.
 //
 // ==========================================================================
 // 2. One stroke is ONE undo step
@@ -166,10 +192,17 @@
 //
 // `begin()` takes a layer **index**, because that is what a UI has, and every
 // frame re-validates it: the layer count must be what it was at pen-down, and
-// the layer at that index must still route to the CPU deposit (Pigment, with a
-// store, unlocked). A stroke whose target has gone away drops its remaining
-// dabs rather than writing anywhere, which `--selftest` exercises by deleting
-// the target layer mid-stroke.
+// the layer at that index must still route to **the same one** of §1's two
+// deposit routes it did then. A stroke whose target has gone away drops its
+// remaining dabs rather than writing anywhere, which `--selftest` exercises by
+// deleting the target layer mid-stroke.
+//
+// Comparing against the latched route rather than merely against "some deposit
+// route" is what stops a stroke changing medium under the pen: a Pigment layer
+// swapped for an RGB one at the same index and the same count would otherwise
+// keep the same session going and start writing RGB texels with a pigment
+// tip's latent -- or, worse, RGB texels through an accumulator that was never
+// started.
 //
 // **A pure reorder that preserves the count is not detected**, and that is
 // stated rather than hidden. The durable fix is to key the target by
@@ -192,8 +225,22 @@ namespace np {
 enum class StrokeRoute {
   None,        // the tool does not paint, or the target refuses the edit
   CpuDeposit,  // brush/Deposit, into the target layer's pigment tiles
-  PaintSim,    // sim::PaintSim's dense canvas texture, exactly as before
+  RgbDeposit,  // brush/RgbDeposit, into the target layer's rgb tiles
+  PaintSim,    // sim::PaintSim's dense canvas texture, and only when there is
+               // no document layer to have aimed at -- see §1's last paragraph
 };
+
+// The two routes that write a `Layer`, as one predicate, because four call
+// sites ask the same question -- `begin()`'s refusal, `depositPending()`'s
+// per-frame re-validation, `ui/MacPaintUI`'s canvas branch, and the options
+// bar's route indicator, which accents a route that reaches the user's layer
+// and greys one that does not -- and a fifth route added later must reach all
+// four or reach none. The indicator is the reason this is a predicate and not
+// an `== CpuDeposit` at each site: it read "goes to the solver" grey for a
+// live RGB stroke for exactly as long as it had its own copy of the test.
+inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
+  return route == StrokeRoute::CpuDeposit || route == StrokeRoute::RgbDeposit;
+}
 
 const char* strokeRouteName(StrokeRoute route) noexcept;
 
@@ -282,13 +329,30 @@ bool brushIsEdited(const BrushState& brush);
 class StrokeSession {
  public:
   // Pen-down. Returns false and fills `errorOut` (when non-null) without
-  // touching the document if the target cannot be painted: no such layer, not
-  // a Pigment layer, no pigment store, or locked. `doc` must outlive the
-  // stroke.
+  // touching the document if the target cannot be painted: no such layer, a
+  // kind with no tile store to write (Adjustment, Media, Text, ...), a Pigment
+  // or RGB layer whose store was never allocated, or a locked layer. `doc` must
+  // outlive the stroke.
+  //
+  // **Which of the two deposit routes runs is decided here, once**, by
+  // `strokeRouteFor()` and not by a second reading of the layer -- so the
+  // session cannot start on one kind and continue on another, and the
+  // per-frame re-validation in §5 is a comparison against this answer rather
+  // than a fresh decision.
+  //
+  // For an RGB target this also latches the ink: `tip.linearRgb` and
+  // `tip.opacity` are read once, here, because brush/RgbDeposit.hpp §2's
+  // accumulator is only exact against a colour and a ceiling that hold still
+  // for the whole stroke. `setTip()` below may still change radius, hardness,
+  // spacing and flow mid-stroke; it deliberately does not change those two.
   //
   // Records no history entry and does not move the revision -- §2.
   bool begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
              std::string* errorOut);
+
+  // Which of §1's two layer-writing routes this stroke took. Meaningless before
+  // `begin()` succeeds.
+  StrokeRoute route() const noexcept { return route_; }
 
   bool active() const noexcept { return doc_ != nullptr; }
 
@@ -344,6 +408,12 @@ class StrokeSession {
   size_t layerCount_ = 0;
   BrushTip tip_{};
   std::string label_;
+  // Latched at `begin()`, compared against on every frame. See `begin()`.
+  StrokeRoute route_ = StrokeRoute::None;
+  // The RGB route's per-stroke alpha accumulator and latched ink
+  // (brush/RgbDeposit.hpp §§2-3). Idle -- and holding no tiles -- for a stroke
+  // that took the pigment route, which is what `RgbStroke::active()` says.
+  RgbStroke rgb_;
 
   StrokePath path_;
   std::vector<Vec2> pending_;

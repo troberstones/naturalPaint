@@ -1732,10 +1732,23 @@ int main(int argc, char** argv) {
     // what one dab does to one texel, that a stroke's tile set is complete and
     // tight, that N dabs are one undo step, and `Mix` witnessed from a stroke.
     const bool pigmentDepositOk = np::runPigmentDepositTest();
+    // Phase 5 -- painting on a plain RGB layer (brush/RgbDeposit), and the
+    // routing fix that made it reachable: the premultiplied and linear
+    // conventions established rather than assumed, the per-stroke opacity
+    // ceiling with the rejected per-dab model measured beside it, speed
+    // independence at zero tolerance, the selection as a bound rather than a
+    // speed limit, and paint landing on the active layer and on no other.
+    const bool rgbDepositOk = np::runRgbDepositTest();
     // Phase 5 step 11 / PRD C12, C13, C15: the multi-selection's ordering and
     // all-or-nothing rules, the integer-pixel translate align is built on
     // (asserted bit-identical), links, colour labels and the panel filter.
     const bool layerMultiSelectOk = np::runLayerMultiSelectTest();
+    // The LAYERS panel as design "naturalPaint Panels" turn 2 option 2a
+    // specifies it: the kind rail, the NEW popup's seven kinds, the row
+    // metadata line against the design's own examples -- and the three pieces
+    // of 2a that are deliberately NOT drawn, each pinned so a later revision
+    // cannot quietly invent the number behind it.
+    const bool layerPanel2aOk = np::runLayerPanel2aTest();
     // Phase 12 / PRD G7, G9: io/Descriptor, the Action Descriptor reader, against
     // synthetic fixtures parsed out of guard-paged mappings.
     const bool descriptorOk = np::runDescriptorTest();
@@ -1760,7 +1773,8 @@ int main(int argc, char** argv) {
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
                     controlsLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
-                    exportStatesOk && pigmentDepositOk && layerMultiSelectOk &&
+                    exportStatesOk && pigmentDepositOk && rgbDepositOk &&
+                    layerMultiSelectOk && layerPanel2aOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && strokeBridgeOk && descriptorOk;

@@ -140,6 +140,27 @@ struct BrushState {
   // yet -- exposing it is a later phase's job; this is just the constant
   // default.
   float spacing = 0.25f;
+
+  // **The ceiling one stroke can reach on an RGB layer**, in [0,1] --
+  // deliberately NOT the same quantity as `load` above, which is how much a
+  // single dab lays down. brush/RgbDeposit.hpp §2 carries the whole argument;
+  // the short form is that at the default 0.25-radius spacing every dab
+  // overlaps its neighbours about four deep, so a brush that applied its
+  // opacity per dab would have no setting at all that produces a flat 50 %
+  // pass.
+  //
+  // 1.0 rather than a lower default because a brush that does not reach the
+  // colour it is loaded with is the surprising one, and because it makes this
+  // field invisible to every existing behaviour until someone moves it. **No UI
+  // control yet** -- exposing it is a later step's job, exactly as `spacing`
+  // above still says of itself; this is the constant default and the place the
+  // DYNAMICS matrix would multiply if a `DynamicTarget::Opacity` is ever added
+  // (there is none today, which is why `brushTipFor()` copies this straight
+  // through rather than scaling it).
+  //
+  // Read only by the RGB deposit route. The pigment route caps at `kMaxMass`,
+  // a property of the paper rather than of the stroke.
+  float opacity = 1.0f;
 };
 
 // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4): zoom/pan plus

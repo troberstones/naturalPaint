@@ -2,12 +2,15 @@
 
 #include <algorithm>
 
+#include "color/Space.hpp"
+
 namespace np {
 
 const char* strokeRouteName(StrokeRoute route) noexcept {
   switch (route) {
     case StrokeRoute::None: return "none";
     case StrokeRoute::CpuDeposit: return "cpu-deposit";
+    case StrokeRoute::RgbDeposit: return "rgb-deposit";
     case StrokeRoute::PaintSim: return "paint-sim";
   }
   return "?";
@@ -56,13 +59,33 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
       return StrokeRoute::None;
   }
 
-  // A Pigment layer with somewhere to put pigment is the only thing that
-  // routes to the CPU deposit. Everything else keeps today's behaviour
-  // exactly, which is the solver canvas.
-  if (target == nullptr || target->kind != LayerKind::Pigment || !target->pigmentTiles)
-    return StrokeRoute::PaintSim;
+  // **No target at all is the one case the solver canvas is right for**, and
+  // it is checked first so that it reads as its own row rather than as the
+  // remainder of the ones below it (header §1's last paragraph). No document is
+  // open, so there is no layer the user could have aimed at, and watercolour
+  // and oil paint the dense canvas texture legitimately.
+  if (target == nullptr) return StrokeRoute::PaintSim;
+
+  // Locked before kind, so a locked layer refuses for being locked whatever it
+  // is made of -- and so the UI's "clear its Lock in LAYERS" message is the one
+  // a user gets for the one problem they can actually fix.
   if (target->locked) return StrokeRoute::None;
-  return StrokeRoute::CpuDeposit;
+
+  // A store to write is part of the question, not a precondition: `Layer.hpp`'s
+  // "at most one of rgbTiles and pigmentTiles is engaged" allows a layer of
+  // either kind with neither, and painting one has nowhere to go.
+  if (target->kind == LayerKind::Pigment && target->pigmentTiles)
+    return StrokeRoute::CpuDeposit;
+  if (target->kind == LayerKind::RGB && target->rgbTiles) return StrokeRoute::RgbDeposit;
+
+  // Everything left is a real target that cannot take a stroke: an Adjustment
+  // layer (no tiles by construction), a Media/Strokes/Text/Flats layer (no
+  // storage built yet), or a Pigment/RGB layer whose store was never allocated.
+  // **`None`, not `PaintSim`** -- see §1. Falling through to the solver here is
+  // what made "select an RGB layer and paint" put colour on the canvas texture
+  // instead of on the layer, invisibly, one line below the locked row that
+  // exists to prevent exactly that.
+  return StrokeRoute::None;
 }
 
 const char* strokeEditLabel(Tool tool) noexcept {
@@ -133,6 +156,11 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // things.
   tip.flow = brush.load * flowMul;
   tip.spacing = brush.spacing * dyn.at(DynamicTarget::Spacing);
+  // Straight through, unscaled: there is no `DynamicTarget::Opacity` in
+  // brush/Dynamics' twelve, and inventing one here rather than in the matrix
+  // that draws them would give the DYNAMICS panel a target it cannot show. The
+  // clamp to a legal alpha is `RgbStroke::begin()`'s, at the point of use.
+  tip.opacity = brush.opacity;
 
   const std::vector<Pigment>& palette = defaultPalette();
   const size_t index =
@@ -140,6 +168,21 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
           ? static_cast<size_t>(brush.pigment)
           : 0;
   const Pigment& pigment = palette[index];
+
+  // **The same swatch, decoded, for the other layer kind** (brush/Deposit.hpp's
+  // `linearRgb`). Derived here, from the same `pigment` the latent below is
+  // derived from, so the two representations of one load are produced by one
+  // statement pair and cannot name different colours.
+  //
+  // `paint/Palette`'s `rgb` is display-referred sRGB and a document part is
+  // scene-referred linear (DESIGN-imaging.md, PRD B6). This is exactly
+  // `ui/MacPaintUI::foregroundLinearRgba()`'s decode, and it is spelled out
+  // again rather than called because `app/` must not include `ui/` -- the
+  // dependency runs the other way. `--selftest` asserts the two agree, which is
+  // the guard that spelling it twice needs.
+  tip.linearRgb = {srgbDecode(pigment.rgb[0]), srgbDecode(pigment.rgb[1]),
+                   srgbDecode(pigment.rgb[2])};
+
   if (lut.valid())
     tip.pigment = lut.rgbToLatent(pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]);
   else
@@ -212,18 +255,34 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // rather than re-deriving the same conditions, so the two cannot disagree
   // about which strokes a locked or non-Pigment layer accepts.
   const StrokeRoute route = strokeRouteFor(tool, &layer);
-  if (route != StrokeRoute::CpuDeposit)
+  if (!strokeRouteWritesLayer(route))
     return refuse(std::string("stroke refused: the ") + strokeEditLabel(tool) + " on layer " +
                   std::to_string(layerIndex) + " ('" + layer.name + "', " +
                   layerKindName(layer.kind) + (layer.locked ? ", locked" : "") +
                   ") routes to " + strokeRouteName(route) +
-                  ", not to the CPU pigment deposit.");
+                  ", which does not write a layer.");
 
   doc_ = &doc;
   layerIndex_ = layerIndex;
   layerCount_ = doc.document.layers.size();
   tip_ = tip;
+  route_ = route;
   label_ = strokeEditLabel(tool);
+
+  // The ink, latched for the whole stroke -- brush/RgbDeposit.hpp §2 on why the
+  // colour and the ceiling may not move once the accumulator has started, and
+  // §3 on the accumulator being allocated here and freed at `end()`.
+  //
+  // The `else` is not redundant. A pigment stroke that follows an RGB one must
+  // leave nothing of it behind, for exactly `StrokePath::reset()`'s reason
+  // below: alpha carried across strokes would let the ceiling of the last
+  // stroke cap the first dab of the next -- and a session begun without a
+  // matching `end()` (a window blur, an interrupted drag) is the case that
+  // reaches this line holding tiles.
+  if (route_ == StrokeRoute::RgbDeposit)
+    rgb_.begin(tip.linearRgb, tip.opacity);
+  else
+    rgb_.end();
 
   // Leftover arc length and point history from whatever stroke happened
   // before must not bleed into this one -- brush/StrokePath::reset()'s own
@@ -255,13 +314,32 @@ void StrokeSession::depositPending() {
     return;
   }
   Layer& layer = doc.layers[layerIndex_];
-  if (strokeRouteFor(Tool::Brush, &layer) != StrokeRoute::CpuDeposit) {
+  // Against the route latched at pen-down, not merely against "some deposit
+  // route" -- header §5's second paragraph on why a Pigment layer swapped for
+  // an RGB one at the same index must end the stroke rather than continue it.
+  // `Tool::Brush` stands in for the tool because `strokeRouteFor()` gives Brush
+  // and DryBrush the same answer on every target, and Water can never have
+  // begun a session at all.
+  if (strokeRouteFor(Tool::Brush, &layer) != route_) {
     pending_.clear();
     return;
   }
-  PigmentTileStore& store = *layer.pigmentTiles;
+
+  // The two deposits differ in exactly this call. Everything around it -- the
+  // dab stream, the tile bookkeeping, the counters, the revision bump and the
+  // single history entry -- is shared, because none of it is a property of what
+  // a texel is made of.
   const StrokeDeposit deposited =
-      depositDabs(store, tip_, pending_, doc.width, doc.height);
+      route_ == StrokeRoute::RgbDeposit
+          ? rgb_.depositDabs(*layer.rgbTiles, tip_, pending_, doc.width, doc.height,
+                             // PRD E1: the active selection bounds the deposit.
+                             // Read live rather than latched at pen-down --
+                             // nothing can install a selection during a pointer
+                             // drag, and reading it here means a session that
+                             // outlived one somehow cannot deposit through a
+                             // stale bound.
+                             doc_->selection.has_value() ? &*doc_->selection : nullptr)
+          : depositDabs(*layer.pigmentTiles, tip_, pending_, doc.width, doc.height);
   dabs_ += deposited.dabs;
   texels_ += deposited.texels;
   frameTiles_ = deposited.tiles;
@@ -296,6 +374,12 @@ const std::vector<TileCoord>& StrokeSession::end() {
   OpenDocument* doc = doc_;
   doc_ = nullptr;  // the session is over before the record, so a re-entrant
                    // caller cannot deposit into a half-ended stroke
+  // The accumulator's whole life is one stroke (brush/RgbDeposit.hpp §3), and
+  // it is dropped here rather than at the next `begin()` so an application
+  // sitting idle after a long stroke is not holding 64 KiB per tile it painted.
+  // Unconditional: `end()` on an idle `RgbStroke` is a no-op, and a branch here
+  // would be one more place the two routes could disagree about cleanup.
+  rgb_.end();
 
   // Exactly one entry, and only for a stroke that put something down --
   // header §2.

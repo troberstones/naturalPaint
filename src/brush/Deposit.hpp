@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -248,6 +249,30 @@ struct BrushTip {
   // back with no LUT at all, which is why a Pigment layer composites in a
   // build that never loaded the 512x512 texture.
   Latent pigment{};
+
+  // **The same load, in the shape an RGB layer can hold**: STRAIGHT LINEAR
+  // colour, for `brush/RgbDeposit`. Not a second colour -- `brushTipFor()`
+  // derives this and `pigment` above from the one palette entry, in one place,
+  // so a tip that paints one colour on a Pigment layer and a different one on
+  // an RGB layer is not a thing that can be built. Exactly one of the two is
+  // read per stroke, decided by `strokeRouteFor()`.
+  //
+  // Linear rather than the palette's display-referred sRGB because a document
+  // part is scene-referred (DESIGN-imaging.md, PRD B6); brush/RgbDeposit.hpp §1
+  // says what skipping the decode looks like, and it does not look like a
+  // missing conversion.
+  std::array<float, 3> linearRgb{0.0f, 0.0f, 0.0f};
+
+  // **The ceiling ONE STROKE can reach**, in [0,1] -- distinct from `flow`
+  // above, which is what one DAB lays down. brush/RgbDeposit.hpp §2 is the
+  // whole argument for why these are two numbers and what applying opacity per
+  // dab instead would do to a slow stroke.
+  //
+  // Read only by the RGB route. The pigment route has no equivalent today: its
+  // ceiling is `kMaxMass`, a property of the paper rather than of the stroke,
+  // and giving a pigment stroke a mass ceiling of its own is a decision about
+  // what a half-loaded brush means physically, not a plumbing job.
+  float opacity = 1.0f;
 
   // Floored exactly as `ui/MacPaintUI`'s solver path floors it, so the two
   // stroke routes cannot emit dabs at different spacings from one tip.

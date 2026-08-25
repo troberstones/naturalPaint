@@ -40,6 +40,98 @@ const char* layerKindGlyph(LayerKind kind) noexcept {
   return "?";
 }
 
+uint32_t layerKindRailRgb(LayerKind kind) noexcept {
+  // The design's own seven, read straight off option 2a's markup -- both the
+  // row rails and the `NEW` popup swatches, which carry the same value per kind
+  // there and so do here. Muted, and separated in hue rather than in value, for
+  // the reason `layerColorLabelSwatch()` gives about its own chips: at 3 px
+  // wide two colours that differ only in lightness read as one colour.
+  switch (kind) {
+    case LayerKind::Pigment: return 0xc2553d;     // warm red-earth
+    case LayerKind::RGB: return 0x4a6f8f;         // slate blue
+    case LayerKind::Media: return 0x3f7d6a;       // green
+    case LayerKind::Strokes: return 0x7a6aa8;     // violet
+    case LayerKind::Adjustment: return 0x8a7a3e;  // ochre
+    case LayerKind::Text: return 0x6f6f6f;        // neutral grey
+    case LayerKind::Flats: return 0xa05a7a;       // mauve
+  }
+  // Unreachable while every enumerator is covered, which `-Wswitch` and
+  // `--selftest` both check. A grey rather than a colour, so a kind added
+  // without a rail reads as "no rail" instead of impersonating one of the seven.
+  return 0x444141;
+}
+
+const std::vector<NewLayerKindEntry>& newLayerKindMenu() {
+  // Design 2a's popup order, which is not the enum's: Pigment first because
+  // it is the default kind (PRD principle 3) and the design draws it in the
+  // highlighted slot, then RGB, then the five parametric kinds. The four with
+  // no maker function are listed with `buildable == false` -- see the header
+  // for why they are listed at all.
+  static const std::vector<NewLayerKindEntry> kMenu = {
+      {LayerKind::Pigment, true, LayerCommand::NewPigmentLayer},
+      {LayerKind::RGB, true, LayerCommand::NewRgbLayer},
+      {LayerKind::Media, false, {}},
+      {LayerKind::Adjustment, true, LayerCommand::NewAdjustmentLayer},
+      {LayerKind::Strokes, false, {}},
+      {LayerKind::Text, false, {}},
+      {LayerKind::Flats, false, {}},
+  };
+  return kMenu;
+}
+
+const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
+  // core/Layer.hpp's and core/Merge.cpp's own words, one sentence each. Not a
+  // generic "not built yet": which *piece* is missing differs per kind, and the
+  // difference is the whole information a reader of a greyed row wants.
+  switch (kind) {
+    case LayerKind::Pigment:
+    case LayerKind::RGB:
+    case LayerKind::Adjustment:
+      return nullptr;
+    case LayerKind::Media:
+      return "Not built yet. A Media layer needs the fluid solver's own per-medium state on "
+             "top of the pigment tiles, and nothing on Layer holds it.";
+    case LayerKind::Strokes:
+      return "Not built yet. A Strokes layer here has no dabs: the kind has no parameter "
+             "member to hold them.";
+    case LayerKind::Text:
+      return "Not built yet. A Text layer here has no text: the kind has no string or font "
+             "member to hold one.";
+    case LayerKind::Flats:
+      return "Not built yet. A Flats layer here has no regions: the kind has no fill list to "
+             "hold them.";
+  }
+  return nullptr;
+}
+
+bool newLayerShortcutsExist() {
+  // A constant, deliberately, and the header says why it is a function at all:
+  // it is the assertion site for a piece of the design that is absent. This
+  // returns true on the day `keymaps/default.json` binds a layer action, and
+  // the `--selftest` line that pins it is what will send that revision back
+  // here to draw the shortcut column 2a asks for.
+  return false;
+}
+
+std::string layerLinkBadgeText(const Document& doc, size_t layerIndex) {
+  const size_t partners = layerLinkPartnerCount(doc, layerIndex);
+  if (partners == 0) return std::string();
+  return "LINKED+" + std::to_string(partners);
+}
+
+std::string layerKindFilterLabel(const std::optional<LayerKind>& kind) {
+  std::string s = "KIND: ";
+  s += kind.has_value() ? layerKindName(*kind) : "ALL";
+  for (char& c : s)
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+  return s;
+}
+
+std::string layerPanelCountLabel(size_t shown, size_t total) {
+  if (shown >= total) return std::to_string(total);
+  return std::to_string(shown) + "/" + std::to_string(total);
+}
+
 std::string layerRowTitle(const Layer& layer, size_t layerIndex) {
   if (!layer.name.empty()) return layer.name;
   return "Layer " + std::to_string(layerIndex + 1);

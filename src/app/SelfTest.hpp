@@ -586,6 +586,27 @@ bool runSelectionRefineTest();
 // neither produces a wrong pixel, so nothing else in this suite -- and no
 // golden image -- can catch one written backwards.
 bool runSelectionToolsTest();
+
+// The LAYERS panel as design "naturalPaint Panels" turn 2, option 2a specifies
+// it -- app/LayerPanel's half of it, which is nearly all of it. Headless and
+// GPU-free.
+//
+// The panel is mostly string assembly and table lookup, so this is where the
+// design's own example rows are asserted character for character: the kind rail
+// (seven distinct colours, none of them the colour of the row it marks), the
+// `NEW` popup (all seven kinds, exactly the three `core/LayerOps` can make
+// wired to their own commands), the `LINKED+n` badge, the `KIND: ALL` chip and
+// the header count.
+//
+// **The other half is the omissions**, which is what makes it worth a section
+// of its own. Three pieces of 2a are deliberately not drawn because nothing in
+// the model can supply them -- a Media layer's `WET 4.2s` countdown, a Flats
+// layer's `153 FILLS`, and the popup's `SHIFT-CMD-N` shortcut column. Each is
+// pinned by an assertion that fails the moment the number or the binding
+// appears, because an omission with only a comment behind it is one a later
+// revision reverses by reaching for a plausible-looking value.
+bool runLayerPanel2aTest();
+
 // ops/Transform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14, D15,
 // D16, D17). Headless and GPU-free -- pure CPU resampling.
 //
@@ -2334,6 +2355,73 @@ bool runExportStatesTest();
 // claim is made twice rather than merely compiled twice. Headless and GPU-free;
 // writes no files.
 bool runPigmentDepositTest();
+// **Painting on a plain RGB layer** (brush/RgbDeposit), and the routing fix
+// that made it reachable (app/StrokeSession section 1; PRD E1 (P0) for the
+// selection gate).
+//
+// **This section exists because of a wrong-target bug, not a missing feature.**
+// `strokeRouteFor()` used to end "everything else keeps today's behaviour
+// exactly, which is the solver canvas", one line below the row that refuses a
+// locked layer *precisely so that paint never lands on the solver canvas when
+// the user aimed at a layer*. So selecting an RGB layer -- the layer
+// `Document::createBlank()` actually makes, and therefore the one an ordinary
+// File > New selects -- and dragging the brush painted the dense canvas
+// texture. Colour appeared, in the right place; nothing composited it, saved
+// it or undid it. Section 10 below is the assertion that would have caught it.
+//
+// What this section proves:
+//
+//  - **Premultiplied storage, established rather than assumed**: white ink at
+//    half alpha stores 0.5 and not 1.0, and `core/Composite` reads the
+//    deposited texel through bit-identically -- so writer and reader hold one
+//    convention rather than two that agree only at alpha 1.
+//  - **Linear colour**: the tip's RGB is bit-identical to
+//    `foregroundLinearRgba()` for every palette entry (the decode is written
+//    twice, because `app/` may not include `ui/`), and the palette is checked
+//    to really differ from its own decode so the assertion cannot pass against
+//    a version that skipped the conversion.
+//  - **The flow/opacity model, which is the one thing here that can be
+//    *plausibly* wrong.** Flow is what one dab lays down; opacity is the
+//    ceiling one STROKE can reach, held by a sparse per-stroke alpha
+//    accumulator. 50 overlapping dabs at opacity 0.5 reach exactly 0.5 in the
+//    accumulator and 0.5 within a derived f16 bound in the layer -- **with the
+//    rejected per-dab model computed on the identical numbers beside it,
+//    reaching 0.9999**, and asserted to be wrong so the good assertion cannot
+//    pass against it. Once the ceiling is reached the remaining dabs write
+//    nothing at all, and a 3 %-coverage rim texel reaches the same ceiling as
+//    the 100 % centre.
+//  - **Speed independence at zero tolerance**: 61 samples and 4 samples over
+//    the same 180 px emit the identical dabs and leave **bit-identical** tiles.
+//  - **The ceiling is per stroke**, asserted from the other side: a second
+//    stroke at opacity 0.5 builds to 0.75, because the accumulator is thrown
+//    away at pen-up.
+//  - **The selection bounds the deposit, both ways** (PRD E1). It scales what
+//    one dab lays down *and* caps what any number of dabs can reach; the second
+//    was found by measurement rather than designed, since gating only the flow
+//    lets a scrubbed stroke climb to full opacity anyway. The null-Selection
+//    branch and the engaged-but-absent-tile case are both asserted through this
+//    module's own hoisted loop, which core/SelectionMask.hpp requires.
+//  - **The whole routing table**, including the four rows whose answer this
+//    step changed, and the one row that is still `PaintSim` (no target at all).
+//  - **Paint lands on the ACTIVE layer and on no other**: two RGB layers
+//    painted over the identical pixels through `setActiveLayer()` and
+//    `od.activeLayer`, each holding its own colour with the other's channel at
+//    exactly zero.
+//  - **Hiding a layer takes its paint with it**, through a real composite of a
+//    real painted layer rather than by reading the flag back -- every float of
+//    the frame exactly 0 -- and un-hiding restores the bit-identical composite.
+//  - **Every refusal**: a locked RGB layer, an Adjustment layer, an
+//    out-of-range index and the Water tool each refuse by name and record
+//    nothing; a stroke off the canvas and a stroke at opacity 0 each record no
+//    entry at all.
+//  - **The accumulator's lifetime**, measured on both sides of pen-up: one
+//    64 KiB float tile per touched tile while painting, zero afterwards.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all, and `oiioBackendCompiledIn()` is checked so that
+// claim is made twice rather than merely compiled twice. Headless and GPU-free;
+// writes no files.
+bool runRgbDepositTest();
 // PLAN.md Phase 5 step 11 ("Multi-select, align and distribute, colour labels,
 // linking, panel filtering"; PRD C12 (P0), C13 (P1), C15 (P2)).
 //

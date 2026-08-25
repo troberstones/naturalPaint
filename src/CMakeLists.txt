@@ -67,6 +67,7 @@ add_executable(naturalPaint
   app/selftest/LayerEditor.cpp
   app/selftest/LayerMask.cpp
   app/selftest/LayerMultiSelect.cpp
+  app/selftest/LayerPanel2a.cpp
   app/selftest/LayerStack.cpp
   app/selftest/LutBake.cpp
   app/selftest/MergeFamily.cpp
@@ -82,6 +83,7 @@ add_executable(naturalPaint
   app/selftest/PresentTransfer.cpp
   app/selftest/Probe.cpp
   app/selftest/RecoveryJournal.cpp
+  app/selftest/RgbDeposit.cpp
   app/selftest/Selection.cpp
   app/selftest/SelectionRefine.cpp
   app/selftest/SelectionShapes.cpp
@@ -101,6 +103,7 @@ add_executable(naturalPaint
   brush/Deposit.cpp
   brush/Dynamics.cpp
   brush/Library.cpp
+  brush/RgbDeposit.cpp
   brush/StrokePath.cpp
   color/LutBake.cpp
   color/Shaper.cpp

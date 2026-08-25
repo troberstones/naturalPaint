@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "app/LayerEditor.hpp"
 #include "core/Blend.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
@@ -82,6 +84,109 @@ size_t layerDropTargetIndex(size_t hoveredIndex, bool droppedAboveMidpoint,
 // thumbnail"). Returned as a UTF-8 string rather than a char, because every one
 // of them is multi-byte.
 const char* layerKindGlyph(LayerKind kind) noexcept;
+
+// --- The kind rail (design "naturalPaint Panels" turn 2, option 2a) --------
+//
+// 2a "carries 1a's kind rail forward": a 3 px colour bar down the leading edge
+// of every row, one colour per kind, and the same seven colours again as the
+// swatches in the `NEW` popup. That is what makes a kind readable at a glance
+// in a 322 px panel where the glyph is 11 px wide -- the design's own argument
+// for 1a over 1b ("1a spends colour on it, 1b spends type on it").
+//
+// **These seven values are NOT in ui/AtelierTheme.hpp and that is correct.**
+// That table is docs/ui.md section 1's twelve *role* tokens -- chrome, rule,
+// text, accent -- and every one of them is a role something in the chrome
+// plays. A kind rail is not a role; it is an identity, one per `LayerKind`, and
+// it belongs next to the kind's glyph rather than in a table of greys. The same
+// judgement ui/MacPaintUI.cpp's `kMatrixColumnAlt` records for the dynamics
+// matrix: "the shades the token table does not carry", declared where the thing
+// that needs them lives.
+//
+// Here rather than in ui/MacPaintUI.cpp because a rail is a property of a kind,
+// which is exactly what this file is for: `--selftest` can then assert that
+// every kind has one and that no two share a value -- two kinds drawn the same
+// colour is the one failure that makes the rail worse than no rail at all, and
+// it is invisible in a screenshot of a stack that happens not to contain both.
+//
+// 0xRRGGBB, sRGB, chrome -- never touches a pixel of the document, exactly as
+// `LayerLabelSwatch` below.
+uint32_t layerKindRailRgb(LayerKind kind) noexcept;
+
+// --- The NEW popup (design 2a's headline second change) --------------------
+//
+// 2a collapses three `New` buttons into one `NEW` with a popup "carrying all
+// seven kinds and their rails". Four of those seven cannot be created by this
+// build: `core/LayerOps` has `makeRgbLayer()`, `makePigmentLayer()` and
+// `makeAdjustmentLayer()` and nothing else, because Media/Strokes/Text/Flats
+// hold no content at all here (core/Layer.hpp: "still inert placeholders";
+// core/Merge.cpp: "a Text layer here has no text, a Strokes layer no dabs and a
+// Flats layer no regions").
+//
+// **They are listed anyway, and drawn disabled.** That is not a dead control
+// dressed as a live one -- it is the identical decision ui/AtelierChrome's
+// `toolImplemented()` already makes for the twenty tool cells this build has no
+// behaviour for, whose tooltips end "Not built yet." A disabled row says the
+// kind exists in the design and cannot be made here, which is true and is what
+// a reader of the popup needs to know; omitting them would make the popup claim
+// the product has three layer kinds.
+//
+// **There is no shortcut column**, and the design draws one (`⇧⌘N`, `⇧⌘R`).
+// See `newLayerShortcutsExist()` below for why.
+struct NewLayerKindEntry {
+  LayerKind kind;
+  // False for the four kinds with no maker function. `command` is meaningless
+  // then and is left at its default rather than at a plausible-looking value.
+  bool buildable = false;
+  LayerCommand command = LayerCommand::NewRgbLayer;
+};
+
+// All seven kinds, in the design's own popup order: Pigment, RGB, Media,
+// Adjustment, Strokes, Text, Flats. Pigment leads because PRD principle 3
+// ("Pigment by default") and the design puts it in the highlighted slot.
+const std::vector<NewLayerKindEntry>& newLayerKindMenu();
+
+// The sentence a disabled entry's tooltip carries, or `nullptr` for a kind that
+// is buildable. Taken from core/Layer.hpp's own account of why each kind is
+// inert rather than reworded here, so the popup and the header cannot come to
+// disagree about what is missing.
+const char* layerKindUnbuildableReason(LayerKind kind) noexcept;
+
+// **Whether this build binds a key to making a layer. It does not, and this
+// function exists so that fact is asserted rather than remembered.**
+//
+// docs/shortcuts.md section 4 lists `⌘⇧N` for "new layer" and the design's
+// popup draws it; `keymaps/default.json` binds no layer action to any key at
+// all, and `⌘N` there is bound to `clear_canvas`. So a shortcut column in that
+// popup would name a key that does something else. app/Keymap's own
+// `--selftest` covers the bindings that exist; this covers the one that does
+// not, because it is the reason a piece of the design is deliberately absent
+// and a later revision that wires `⌘⇧N` should be told to draw it.
+bool newLayerShortcutsExist();
+
+// --- Row furniture the design puts outside the sub-line -------------------
+
+// The trailing link badge, `LINKED+2`, or empty for an unlinked layer.
+//
+// 2a puts this in the row's trailing slot rather than in the metadata line,
+// which is the design's own answer to §6.1's worst case: "LINKED+n takes the
+// trailing slot, so nothing in the worst case is truncated at 322 px". The
+// count is `layerLinkPartnerCount()`'s and this only formats it -- there is no
+// second notion of what "linked" means here.
+std::string layerLinkBadgeText(const Document& doc, size_t layerIndex);
+
+// The design's `KIND: ALL` filter chip, upper-cased. `KIND: PIGMENT` when the
+// filter names one. Upper case because docs/ui.md section 1 puts caps labels in
+// the monospace face and this is one; the kind's own name comes from
+// `layerKindName()` so a kind added to core/Layer.hpp appears here for free.
+std::string layerKindFilterLabel(const std::optional<LayerKind>& kind);
+
+// The count in the panel header's right-hand slot -- the design's `8`.
+//
+// `shown < total` reads `3/8` instead, because the number beside a panel whose
+// filter is hiding five rows has to be the number of rows *and* the size of the
+// stack. A bare `8` over three visible rows, or a bare `3` over a stack of
+// eight, are each a different wrong answer to "how big is this document".
+std::string layerPanelCountLabel(size_t shown, size_t total);
 
 // The row's title: the layer's own name, or a synthesised "Layer N" for an
 // unnamed one so a row can never be blank. `layerIndex` is the model index, and

@@ -612,8 +612,16 @@ bool runPigmentDepositTest() {
   // ======================================================================
   {
     OpenDocument od = makePigmentDoc(256, 256, 1);
-    // An RGB layer to aim at, and a locked Pigment one.
-    recordLayerEdit(od, addLayer(od.document, od.document.layers.size(), makeRgbLayer("rgb")));
+    // An Adjustment layer to aim at, and a locked Pigment one.
+    //
+    // **This used to be an RGB layer**, back when an RGB target fell through to
+    // the solver and this session refused it. brush/RgbDeposit made that row a
+    // real destination, so the refusal it demonstrates had to move to a kind
+    // that genuinely has nowhere to put paint -- and Adjustment is the one that
+    // holds no tiles *by construction* rather than by not having been built
+    // yet. runRgbDepositTest() owns the RGB row now.
+    recordLayerEdit(od,
+                    addLayer(od.document, od.document.layers.size(), makeAdjustmentLayer("adj")));
     recordLayerEdit(od,
                     addLayer(od.document, od.document.layers.size(), makePigmentLayer("lk")));
     setLayerLocked(od.document, 3, true);
@@ -627,9 +635,10 @@ bool runPigmentDepositTest() {
               contains(error, "out of range"),
           "refusal: an out-of-range layer index refuses and says so");
     check(!session.begin(od, 2, tip(8.0f, 0.5f, 0.5f, kBlue), Tool::Brush, &error) &&
-              contains(error, "paint-sim") && contains(error, "RGB"),
-          "refusal: an RGB layer refuses and names where that stroke DOES go -- PaintSim, "
-          "exactly as before this step");
+              contains(error, "none") && contains(error, "Adjustment"),
+          "refusal: an Adjustment layer refuses BY NAME and reports a route of none -- it "
+          "holds no tiles at all, and the old fall-through to the solver painted the canvas "
+          "texture while the user watched the wrong layer");
     check(!session.begin(od, 3, tip(8.0f, 0.5f, 0.5f, kBlue), Tool::Brush, &error) &&
               contains(error, "locked") && contains(error, "none"),
           "refusal: a locked Pigment layer refuses rather than quietly falling through to "
@@ -701,11 +710,23 @@ bool runPigmentDepositTest() {
     check(strokeRouteFor(Tool::Brush, &pigment) == StrokeRoute::CpuDeposit &&
               strokeRouteFor(Tool::DryBrush, &pigment) == StrokeRoute::CpuDeposit,
           "routing: Brush and DryBrush on a writable Pigment layer -> the CPU deposit");
-    check(strokeRouteFor(Tool::Brush, &rgbLayer) == StrokeRoute::PaintSim &&
-              strokeRouteFor(Tool::Brush, &adjustment) == StrokeRoute::PaintSim &&
-              strokeRouteFor(Tool::Brush, nullptr) == StrokeRoute::PaintSim,
-          "routing: an RGB layer, an Adjustment layer and no layer at all keep today's "
-          "behaviour exactly -- sim::PaintSim, untouched by this step");
+    // These three rows moved when brush/RgbDeposit landed; runRgbDepositTest()
+    // is the section that owns the whole table now. They are restated here
+    // rather than deleted because this is the section a reader comes to for
+    // "where does a stroke go", and one left asserting the pre-RgbDeposit
+    // answers would be the authoritative-looking wrong one.
+    check(strokeRouteFor(Tool::Brush, &rgbLayer) == StrokeRoute::RgbDeposit,
+          "routing: an RGB layer with tiles is a real destination now -- it used to fall "
+          "through to the solver, which put paint on the canvas texture when the user had "
+          "aimed at a layer");
+    check(strokeRouteFor(Tool::Brush, &adjustment) == StrokeRoute::None,
+          "routing: an Adjustment layer refuses -- it holds no tiles at all, and falling "
+          "through to the solver would be the same invisible wrong-target defect the locked "
+          "row below exists to prevent");
+    check(strokeRouteFor(Tool::Brush, nullptr) == StrokeRoute::PaintSim,
+          "routing: NO layer at all still goes to sim::PaintSim -- the one case where the "
+          "solver canvas is the destination the user meant, and where watercolour and oil "
+          "paint legitimately");
     check(strokeRouteFor(Tool::Brush, &lockedPigment) == StrokeRoute::None &&
               strokeRouteFor(Tool::DryBrush, &lockedPigment) == StrokeRoute::None,
           "routing: a locked Pigment layer refuses, matching every core/LayerOps setter");
