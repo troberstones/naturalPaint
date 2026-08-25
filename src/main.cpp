@@ -1369,6 +1369,10 @@ int main(int argc, char** argv) {
     // widget (ui/MacPaintUI.cpp) calls into. Also headless and GPU-free --
     // pure CPU, no PaintSim involvement.
     const bool curveEditOk = np::runCurveEditTest();
+    // The brush dynamics link model (design "naturalPaint Panels" turn 4a):
+    // range semantics, invert, curve clamping, and the commutative fold that
+    // lets three sources drive one target. Headless and GPU-free.
+    const bool brushDynamicsOk = np::runBrushDynamicsTest();
     // Phase 4 step 1 ("Export path -- encode from working space to a chosen
     // target space and bit depth, explicitly, never silently"; PRD B6, I5,
     // I1): io/Export's flatten -> un-premultiply -> encode -> quantize ->
@@ -1692,7 +1696,7 @@ int main(int argc, char** argv) {
                     histogramOk && pointOpsOk && gradientOk && selectionOk &&
                     selectionShapesOk && selectionToolsOk && floodFillOk && clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && blurOk &&
-                    curveEditOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

@@ -693,6 +693,15 @@ bool runApplyPassTest(GpuContext& gpu, PaintSim& sim);
 //    documents as identity.
 bool runCurveEditTest();
 
+// The brush dynamics link model (design "naturalPaint Panels" turn 4a):
+// what one link resolves to, and how several links onto one target combine.
+// The DYNAMICS matrix draws an identical square whether the link behind it is
+// inverted, clamped or wrong by a factor of two, so a golden image cannot
+// check any of this. Pure CPU -- brush/Dynamics.hpp has no ImGui, GPU or
+// PaintSim involvement at all.
+bool runBrushDynamicsTest();
+
+
 // Headless, GPU-free check on io/Export (PLAN.md Phase 4 step 1: "Export
 // path -- encode from working space to a chosen target space and bit depth,
 // explicitly, never silently (PRD B6, I5)"). Pure CPU -- the export path

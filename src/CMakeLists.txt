@@ -25,6 +25,7 @@ add_executable(naturalPaint
   app/selftest/BaseLayerAlpha.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
+  app/selftest/BrushDynamics.cpp
   app/selftest/Clipboard.cpp
   app/selftest/ClippingMask.cpp
   app/selftest/ColorSpace.cpp
@@ -92,6 +93,7 @@ add_executable(naturalPaint
   app/StrokeSession.cpp
   app/ViewTransform.cpp
   brush/Deposit.cpp
+  brush/Dynamics.cpp
   brush/StrokePath.cpp
   color/LutBake.cpp
   color/Shaper.cpp
