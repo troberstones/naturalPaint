@@ -1,0 +1,686 @@
+#include "app/selftest/Support.hpp"
+
+#include "app/ImportImage.hpp"
+#include "app/OpenAnyFile.hpp"
+#include "io/FileKind.hpp"
+
+namespace np {
+
+// ---------------------------------------------------------------------------
+// Open accepts any file this build can read, and it decides which reader gets
+// it from the file's **bytes**.
+//
+// See SelfTest.hpp for the full breakdown. The assertion this section exists
+// for is section C's: a `.npaint` whose name ends in `.png`, and a PNG whose
+// name ends in `.npaint`, each going to the right reader. Every other
+// assertion here would still pass against a dispatch that tested the
+// extension; those two are the ones that would not.
+//
+// **What identifies a `.npaint`, and why it is asserted rather than assumed.**
+// There is no naturalPaint magic number -- the container is OpenEXR's (a
+// `.npaint` is a multi-part tiled EXR, and PRD I8 says `.exr` is the same file
+// under a different name). What makes it ours is an attribute named
+// `np:version` in part 0's header, which `saveNpaint()` stamps on every file it
+// writes. io/FileKind walks the EXR header to find it. That walk is a byte-level
+// reading of a format spec, so section B does not take it on trust: it saves a
+// real document through `saveNpaint()` and asserts the sniff calls the result a
+// document. If OpenEXR's header layout is not what io/FileKind.cpp believes, or
+// if that attribute is ever renamed, that assertion is what says so.
+//
+// Headless and GPU-free. Sections A, C-G hold in BOTH NP_USE_OIIO
+// configurations -- the fixtures are PNG (stb decodes it either way) and
+// hand-built byte strings. Section B's real-`.npaint` half needs a writer, so it
+// is gated on `oiioBackendCompiledIn()` and says so out loud rather than going
+// quiet; its synthetic half runs in both. Files are written into a scratch
+// directory of this section's own, removed at the end, because "a file is
+// refused by name" and "Save cannot overwrite the picture" are claims about a
+// filesystem and cannot be asserted without one.
+//
+// **No fixture comes from the repository.** Every byte asserted on here is
+// built in memory in this file. `runny_inkers.abr` and any `.psd` a reader
+// might reach for are third-party material that must never be committed or
+// depended on.
+// ---------------------------------------------------------------------------
+bool runOpenAnyFileTest() {
+  bool ok = true;
+  auto check = [&](bool cond, const char* what) {
+    std::printf("  %-58s %s\n", what, cond ? "pass" : "FAIL");
+    if (!cond) ok = false;
+  };
+  auto contains = [](const std::string& s, const char* needle) {
+    return s.find(needle) != std::string::npos;
+  };
+
+  const std::filesystem::path scratch =
+      std::filesystem::temp_directory_path() / "np-selftest-openanyfile";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  std::filesystem::create_directories(scratch, ec);
+
+  // --- fixtures -------------------------------------------------------------
+
+  // An opaque PNG of a given size. Opaque throughout: the premultiply
+  // arithmetic belongs to app/selftest/ImageIO.cpp and is not restated here --
+  // what this section needs from a picture is that it decodes, and that it
+  // decodes in an NP_USE_OIIO=OFF build too.
+  auto pngBytes = [](int w, int h) {
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
+    for (size_t i = 0; i < px.size(); i += 4) {
+      px[i + 0] = 200;
+      px[i + 1] = 120;
+      px[i + 2] = 40;
+      px[i + 3] = 255;
+    }
+    std::vector<uint8_t> out;
+    stbi_write_png_to_func(&appendToVector, &out, w, h, 4, px.data(), w * 4);
+    return out;
+  };
+
+  auto writeBytes = [&](const char* name, const std::vector<uint8_t>& bytes) {
+    const std::filesystem::path p = scratch / name;
+    std::ofstream out(p, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    return p.string();
+  };
+
+  auto writeText = [&](const char* name, const std::string& text) {
+    return writeBytes(name, std::vector<uint8_t>(text.begin(), text.end()));
+  };
+
+  // A hand-built OpenEXR header, to exercise io/FileKind's attribute walk
+  // directly and -- crucially -- in **both** build configurations, where
+  // `saveNpaint()` cannot be called at all.
+  //
+  // Format, from the OpenEXR spec: magic (4) + version field (4), then a
+  // sequence of `name\0 type\0 int32le size, size bytes`, ending at a
+  // zero-length name. Nothing here is a valid *image* -- there are no pixels --
+  // and it does not need to be: what is under test is whether the walk finds
+  // the marker without reading past the buffer.
+  auto exrHeader = [](const std::vector<std::pair<std::string, std::string>>& attributes,
+                      bool terminate) {
+    std::vector<uint8_t> b = {0x76, 0x2F, 0x31, 0x01, 0x02, 0x00, 0x00, 0x00};
+    for (const auto& [name, type] : attributes) {
+      b.insert(b.end(), name.begin(), name.end());
+      b.push_back(0);
+      b.insert(b.end(), type.begin(), type.end());
+      b.push_back(0);
+      // A four-byte payload for every attribute, whatever its declared type:
+      // the walk skips by the declared size and never interprets the bytes, so
+      // one size keeps the fixture readable.
+      const uint32_t size = 4;
+      b.push_back(static_cast<uint8_t>(size & 0xFF));
+      b.push_back(static_cast<uint8_t>((size >> 8) & 0xFF));
+      b.push_back(static_cast<uint8_t>((size >> 16) & 0xFF));
+      b.push_back(static_cast<uint8_t>((size >> 24) & 0xFF));
+      b.insert(b.end(), {0x01, 0x00, 0x00, 0x00});
+    }
+    if (terminate) b.push_back(0);  // zero-length name: end of part 0's header
+    return b;
+  };
+
+  // Part 0 with the marker buried behind two other attributes, so a walk that
+  // only looked at the first attribute would fail this.
+  const std::vector<uint8_t> npaintish =
+      exrHeader({{"channels", "chlist"}, {"compression", "compression"},
+                 {"np:version", "int"}, {"np:basis", "string"}},
+                true);
+  // The same shape with no marker: somebody else's EXR.
+  const std::vector<uint8_t> plainExrish =
+      exrHeader({{"channels", "chlist"}, {"compression", "compression"},
+                 {"screenWindowWidth", "float"}},
+                true);
+
+  auto sniff = [](const std::vector<uint8_t>& b) {
+    return sniffFileKind(b.empty() ? nullptr : b.data(), b.size());
+  };
+
+  // --- A. io/FileKind: what the bytes say, and never a byte further ---------
+  std::printf("-- A. content sniff: the container, from the container --\n");
+  {
+    check(sniff(npaintish).kind == FileKind::NpaintDocument,
+          "sniff: OpenEXR magic + an np:version attribute in part 0 is one of ours");
+    check(sniff(plainExrish).kind == FileKind::Image,
+          "sniff: OpenEXR magic with no np:version is somebody else's EXR, a picture -- "
+          "not a document with no layers in it");
+    check(sniff(plainExrish).format.has_value() &&
+              *sniff(plainExrish).format == ImageFormat::Exr,
+          "sniff: that EXR still reports the EXR format, so a refusal can name it");
+
+    check(sniff(pngBytes(4, 4)).kind == FileKind::Image &&
+              sniff(pngBytes(4, 4)).signature == "PNG",
+          "sniff: a PNG is an image and is named PNG");
+
+    // Every remaining signature, from a literal header. Each is the shortest
+    // byte string io/FileKind can decide on, so a signature that was wrong by
+    // one byte fails here rather than in a user's refusal message.
+    struct SigCase { const char* label; std::vector<uint8_t> bytes; const char* expect; };
+    const std::vector<SigCase> signatures = {
+        {"JPEG", {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}, "JPEG"},
+        {"BMP", {'B', 'M', 0x00, 0x00, 0x00, 0x00}, "BMP"},
+        {"PSD", {'8', 'B', 'P', 'S', 0x00, 0x01}, "Photoshop PSD"},
+        {"TIFF LE", {0x49, 0x49, 0x2A, 0x00, 0x08, 0x00}, "TIFF"},
+        {"TIFF BE", {0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x08}, "TIFF"},
+        {"HDR", {'#', '?', 'R', 'A', 'D', 'I', 'A', 'N', 'C', 'E', '\n'}, "Radiance HDR"},
+        {"DPX", {'S', 'D', 'P', 'X', 0x00, 0x00}, "DPX"},
+        {"DPX byte-swapped", {'X', 'P', 'D', 'S', 0x00, 0x00}, "DPX"},
+        {"Cineon", {0x80, 0x2A, 0x5F, 0xD7, 0x00, 0x00}, "Cineon"},
+        {"GIF", {'G', 'I', 'F', '8', '9', 'a'}, "GIF"},
+    };
+    bool allSignatures = true;
+    for (const SigCase& c : signatures) {
+      const FileSniff s = sniff(c.bytes);
+      if (s.kind != FileKind::Image || s.signature != c.expect) {
+        allSignatures = false;
+        std::printf("      %s sniffed as '%s' (%s)\n", c.label, s.signature.c_str(),
+                    fileKindName(s.kind));
+      }
+    }
+    check(allSignatures,
+          "sniff: every leading signature this build knows is recognised by name");
+
+    // TGA is the one format with nothing at the front, so it is matched from
+    // the back. A file with the footer and nothing else is not a decodable TGA
+    // and is not meant to be -- the sniff gates the message, never the attempt.
+    std::vector<uint8_t> tga(64, 0x00);
+    const char kFooter[] = "TRUEVISION-XFILE.";
+    std::memcpy(tga.data() + tga.size() - sizeof(kFooter), kFooter, sizeof(kFooter));
+    check(sniff(tga).kind == FileKind::Image && sniff(tga).signature == "TGA",
+          "sniff: TGA is recognised from its trailing footer, having no leading magic");
+
+    check(sniff({}).kind == FileKind::Unknown,
+          "sniff: an empty buffer is Unknown rather than a guess");
+    check(sniffFileKind(nullptr, 99).kind == FileKind::Unknown,
+          "sniff: a null pointer is Unknown and does not dereference it");
+    check(sniff({'h', 'e', 'l', 'l', 'o', '\n'}).kind == FileKind::Unknown,
+          "sniff: plain text matches nothing");
+    check(sniff({0x76}).kind == FileKind::Unknown,
+          "sniff: one byte of the EXR magic is not the EXR magic");
+
+    // --- the walk cannot read past its buffer -----------------------------
+    //
+    // Every one of these is a header truncated or malformed at a different
+    // step, and every one must answer "not one of ours" rather than crash or
+    // run on. Under ASan a walk that overran would fail here; without it, the
+    // assertion still pins the answer.
+    bool boundsHeld = true;
+    std::vector<std::vector<uint8_t>> malformed;
+    // Magic and version, then nothing at all.
+    malformed.push_back({0x76, 0x2F, 0x31, 0x01, 0x02, 0x00, 0x00, 0x00});
+    // A name that never terminates.
+    {
+      std::vector<uint8_t> b = {0x76, 0x2F, 0x31, 0x01, 0x02, 0x00, 0x00, 0x00};
+      for (const char c : std::string("np:vers")) b.push_back(static_cast<uint8_t>(c));
+      malformed.push_back(b);
+    }
+    // A complete name, then a type that never terminates.
+    {
+      std::vector<uint8_t> b = {0x76, 0x2F, 0x31, 0x01, 0x02, 0x00, 0x00, 0x00};
+      for (const char c : std::string("channels")) b.push_back(static_cast<uint8_t>(c));
+      b.push_back(0);
+      for (const char c : std::string("chli")) b.push_back(static_cast<uint8_t>(c));
+      malformed.push_back(b);
+    }
+    // Name, type, and only three of the four size bytes.
+    {
+      std::vector<uint8_t> b = {0x76, 0x2F, 0x31, 0x01, 0x02, 0x00, 0x00, 0x00};
+      for (const char c : std::string("channels")) b.push_back(static_cast<uint8_t>(c));
+      b.push_back(0);
+      for (const char c : std::string("chlist")) b.push_back(static_cast<uint8_t>(c));
+      b.push_back(0);
+      b.insert(b.end(), {0x04, 0x00, 0x00});
+      malformed.push_back(b);
+    }
+    // A size of 0xFFFFFFFF, which is the one that catches an implementation
+    // testing `p + size > bufferSize` instead of `size > bufferSize - p`: the
+    // addition wraps and the check passes.
+    {
+      std::vector<uint8_t> b = {0x76, 0x2F, 0x31, 0x01, 0x02, 0x00, 0x00, 0x00};
+      for (const char c : std::string("channels")) b.push_back(static_cast<uint8_t>(c));
+      b.push_back(0);
+      for (const char c : std::string("chlist")) b.push_back(static_cast<uint8_t>(c));
+      b.push_back(0);
+      b.insert(b.end(), {0xFF, 0xFF, 0xFF, 0xFF});
+      b.insert(b.end(), {0x01, 0x02, 0x03, 0x04});
+      malformed.push_back(b);
+    }
+    // A valid header with no marker and no terminator: the walk runs out of
+    // buffer rather than off a sentinel.
+    malformed.push_back(exrHeader({{"channels", "chlist"}}, false));
+    for (const std::vector<uint8_t>& b : malformed)
+      if (sniffFileKind(b.data(), b.size()).kind == FileKind::NpaintDocument)
+        boundsHeld = false;
+    check(boundsHeld,
+          "sniff: six malformed/truncated EXR headers, including a 0xFFFFFFFF attribute "
+          "size, all answer 'not one of ours' rather than reading past the buffer");
+
+    // The false positive the walk exists to avoid: the *string* np:version
+    // appearing inside an attribute's value rather than as an attribute name.
+    // A byte search of the header would call this a document and hand a
+    // picture to the document reader.
+    {
+      std::vector<uint8_t> b = {0x76, 0x2F, 0x31, 0x01, 0x02, 0x00, 0x00, 0x00};
+      const std::string name = "comment";
+      const std::string type = "string";
+      const std::string value = "np:version is what naturalPaint stamps";
+      b.insert(b.end(), name.begin(), name.end());
+      b.push_back(0);
+      b.insert(b.end(), type.begin(), type.end());
+      b.push_back(0);
+      const uint32_t size = static_cast<uint32_t>(value.size());
+      b.push_back(static_cast<uint8_t>(size & 0xFF));
+      b.push_back(static_cast<uint8_t>((size >> 8) & 0xFF));
+      b.push_back(static_cast<uint8_t>((size >> 16) & 0xFF));
+      b.push_back(static_cast<uint8_t>((size >> 24) & 0xFF));
+      b.insert(b.end(), value.begin(), value.end());
+      b.push_back(0);
+      check(sniffFileKind(b.data(), b.size()).kind == FileKind::Image,
+          "sniff: 'np:version' inside an attribute *value* is not a marker -- the walk "
+          "reads names, so a byte search would call this EXR a document");
+    }
+  }
+
+  // --- B. a real .npaint, saved and sniffed ---------------------------------
+  //
+  // The assertion that ties io/FileKind's spec-derived header walk to reality.
+  // Everything above proves the walk does what its author intended; this proves
+  // the intention matches what `saveNpaint()` actually writes.
+  std::printf("-- B. the marker is the one saveNpaint really writes --\n");
+  std::string realNpaintPath;
+  if (!oiioBackendCompiledIn()) {
+    std::printf("  %-58s %s\n",
+                "real .npaint fixture: skipped, this build has no writer", "n/a");
+  } else {
+    const std::filesystem::path p = scratch / "real.npaint";
+    Document doc = Document::createBlank(64, 48, WorkingSpace{});
+    const NpaintSaveResult saved = saveNpaint(doc, p.string());
+    check(saved.ok, "real .npaint fixture: saveNpaint() wrote one");
+    if (saved.ok) {
+      realNpaintPath = p.string();
+      std::ifstream in(p, std::ios::binary);
+      const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+      check(!bytes.empty() && sniffFileKind(bytes.data(), bytes.size()).kind ==
+                                  FileKind::NpaintDocument,
+            "real .npaint: sniffed from its own bytes as a naturalPaint document -- this "
+            "is what pins the EXR header walk to what saveNpaint() writes");
+
+      // The other side of the same coin: an EXR this application did not write
+      // has no marker and must sniff as a picture, or every EXR in the world
+      // would be handed to the document reader.
+      const DecodedImage flat = flattenDocumentToLinear(doc);
+      const ExportResult exr = encodeLinearImage(flat, WorkingSpace{}, ImageFormat::Exr,
+                                                 ExportTargetSpace::Rec709Linear,
+                                                 ExportBitDepth::Half);
+      if (exr.ok)
+        check(sniffFileKind(exr.bytes.data(), exr.bytes.size()).kind == FileKind::Image,
+              "a plain EXR written by io/Export sniffs as a picture, not as a document");
+    }
+  }
+
+  // --- C. dispatch is by content, and the extension is never consulted ------
+  //
+  // The two assertions this whole section exists for.
+  std::printf("-- C. content dispatch: the name is not the file --\n");
+  {
+    // A PNG called `.npaint`. An extension test opens this with the document
+    // reader and refuses it; content dispatch opens the picture.
+    const std::string liar = writeBytes("picture.npaint", pngBytes(9, 7));
+    const OpenAnyResult r = openAnyFileAsDocument(liar);
+    check(r.ok && r.kind == FileKind::Image,
+          "a PNG named '.npaint' opens as a picture -- the name is not consulted");
+    check(r.ok && r.document.document.width == 9 && r.document.document.height == 7,
+          "...and it is the picture's own size, so it really was decoded");
+
+    // A file carrying the `np:version` marker, called `.png`. It is not a
+    // *loadable* document -- the synthetic header has no pixels -- and that is
+    // the point: what is asserted is which reader it reached, which the refusal
+    // names. An extension test would have sent this to the image decoder.
+    const std::string masquerade = writeBytes("document.png", npaintish);
+    const OpenAnyResult m = openAnyFileAsDocument(masquerade);
+    check(m.kind == FileKind::NpaintDocument,
+          "a file carrying np:version named '.png' is routed to the document reader");
+    check(!m.ok && contains(m.status, "is a naturalPaint document"),
+          "...and when it will not load, the refusal says it was one of ours rather than "
+          "reporting an unreadable picture");
+
+    // With a writer available, the same claim end to end: a genuine `.npaint`
+    // renamed `.png` does not merely dispatch correctly, it opens.
+    if (!realNpaintPath.empty()) {
+      const std::filesystem::path renamed = scratch / "renamed.png";
+      std::filesystem::copy_file(realNpaintPath, renamed,
+                                 std::filesystem::copy_options::overwrite_existing, ec);
+      const OpenAnyResult g = openAnyFileAsDocument(renamed.string());
+      check(g.ok && g.kind == FileKind::NpaintDocument,
+            "a real .npaint renamed '.png' opens as a document, layers and all");
+      check(g.ok && g.document.document.width == 64 && g.document.document.height == 48,
+            "...at the canvas size the document was saved with, not a decoded image's");
+      check(g.ok && g.document.path == renamed.string(),
+            "...and it IS bound to its file, unlike a picture -- a .npaint has one");
+    }
+  }
+
+  // --- D. the three refusals, told apart -----------------------------------
+  std::printf("-- D. refusals name the file and say which kind of wrong --\n");
+  {
+    const std::string garbage = writeText("notes.txt", "this is not a picture at all\n");
+    const OpenAnyResult g = openAnyFileAsDocument(garbage);
+    check(!g.ok, "a text file is refused");
+    check(contains(g.status, "notes.txt"), "...naming the file");
+    check(g.kind == FileKind::Unknown && contains(g.status, "match no image format"),
+          "...as 'we do not read this', which is the refusal a user cannot act on");
+
+    // A real PNG, cut off partway through. The signature is intact, so this is
+    // the *other* failure -- the one a user can act on, by finding a better
+    // copy of the file.
+    std::vector<uint8_t> whole = pngBytes(32, 32);
+    whole.resize(whole.size() / 2);
+    const std::string cut = writeBytes("half.png", whole);
+    const OpenAnyResult c = openAnyFileAsDocument(cut);
+    check(!c.ok, "a truncated PNG is refused");
+    check(contains(c.status, "half.png") && contains(c.status, "PNG"),
+          "...naming both the file and what it was");
+    check(c.kind == FileKind::Image && contains(c.status, "damaged or truncated"),
+          "...as 'your file is broken', which is the refusal a user CAN act on");
+
+    check(g.status != c.status && !contains(g.status, "damaged") &&
+              !contains(c.status, "match no image format"),
+          "the two refusals are genuinely different sentences -- an implementation that "
+          "said 'could not be decoded' for both would pass every other check here");
+
+    // The refusals that come before any sniff, each naming the file.
+    check(!openAnyFileAsDocument("").ok, "an empty path is refused");
+    const OpenAnyResult missing =
+        openAnyFileAsDocument((scratch / "no-such-file.png").string());
+    check(!missing.ok && contains(missing.status, "no-such-file.png"),
+          "a path that does not exist is refused by name");
+    const OpenAnyResult folder = openAnyFileAsDocument(scratch.string());
+    check(!folder.ok && contains(folder.status, "folder"),
+          "a folder is refused as a folder, not as an unreadable file");
+    const std::string empty = writeBytes("empty.png", {});
+    const OpenAnyResult e0 = openAnyFileAsDocument(empty);
+    check(!e0.ok && contains(e0.status, "0 bytes"),
+          "a zero-byte file is refused as empty rather than as undecodable");
+    check(missing.document.document.layers.empty() && folder.document.document.layers.empty() &&
+              e0.document.document.layers.empty() && g.document.document.layers.empty() &&
+              c.document.document.layers.empty(),
+          "no refusal leaves a half-built document behind");
+  }
+
+  // --- E. what an opened picture IS, and why Save cannot go wrong -----------
+  //
+  // The title/path decision, asserted rather than described. Identity is
+  // checked on ids and on `path`/`title` directly and never on
+  // `documentDisplayName()`, which prefers the path's filename over the title
+  // -- app/selftest/CloseDecision.cpp once failed for exactly that reason.
+  std::printf("-- E. an opened picture is bound to nothing, deliberately --\n");
+  {
+    const std::string picture = writeBytes("photo.png", pngBytes(200, 140));
+    OpenAnyResult r = openAnyFileAsDocument(picture);
+    check(r.ok, "a PNG opens as a document");
+    if (r.ok) {
+      const Document& d = r.document.document;
+      check(d.width == 200 && d.height == 140,
+            "the document is the picture's size");
+      check(d.layers.size() == 1, "it has exactly one layer");
+      if (d.layers.size() == 1) {
+        check(d.layers[0].kind == LayerKind::RGB, "that layer is RGB-kind");
+        check(d.layers[0].rgbTiles.has_value() &&
+                  d.layers[0].rgbTiles->occupiedTileCount() > 0,
+              "its tile storage is engaged and holds tiles -- the pixels arrived, rather "
+              "than an empty layer of the right size being reported as success");
+        // 200x140 crosses x=128 and not y=128, so 2x1 tiles.
+        check(d.layers[0].rgbTiles->occupiedTileCount() == 2,
+              "exactly the 2x1 tiles a 200x140 image spans, not a count tied to some "
+              "other canvas (PRD C2)");
+      }
+
+      check(r.document.path.empty(),
+            "**the document is bound to no file** -- this is what stops the next Save "
+            "writing .npaint bytes over the user's photo.png");
+      check(r.document.title == "photo.png",
+            "its title is the picture's own name, so the tab is not 'Untitled'");
+      check(r.document.isDirty(),
+            "it is dirty from birth -- it holds a document that exists nowhere on disk, "
+            "so a close asks about it and the journal checkpoints it");
+      check(!r.document.history.empty() &&
+                r.document.history.entries().size() == 1,
+            "history is seeded with exactly the one baseline entry -- the picture as it "
+            "arrived, with nothing before it, because there was no earlier state of this "
+            "document");
+      bool warnedAboutBinding = false;
+      for (const std::string& w : r.warnings)
+        if (contains(w, "not bound to a file")) warnedAboutBinding = true;
+      check(warnedAboutBinding,
+            "the user is told, at the moment it happens, that Save is unavailable until "
+            "Save As -- the surprising half of the decision is not left to be discovered");
+
+      // The property the whole decision exists for, exercised rather than
+      // argued: Save refuses, and the picture on disk is untouched.
+      const DocumentOpResult save = saveDocument(r.document);
+      check(!save.ok, "**Save refuses** an opened picture rather than choosing a file");
+      check(contains(save.error, "Save As"),
+            "...and says to use Save As, which is where a destination gets chosen");
+
+      const std::vector<uint8_t> before = pngBytes(200, 140);
+      std::ifstream after(picture, std::ios::binary);
+      const std::vector<uint8_t> now((std::istreambuf_iterator<char>(after)),
+                                     std::istreambuf_iterator<char>());
+      check(now == before,
+            "photo.png is byte-for-byte what it was -- the refused Save wrote nothing "
+            "anywhere near it");
+
+      // And the deliberate act still works, to a file the user named.
+      if (oiioBackendCompiledIn()) {
+        const std::string dest = (scratch / "photo.npaint").string();
+        const DocumentOpResult saveAs = saveDocumentAs(r.document, dest);
+        check(saveAs.ok, "Save As writes it, to the path the user chose");
+        check(r.document.path == dest,
+              "...and rebinds, so the next Save goes there and not to the PNG");
+        std::ifstream stillThere(picture, std::ios::binary);
+        const std::vector<uint8_t> pngAfter((std::istreambuf_iterator<char>(stillThere)),
+                                            std::istreambuf_iterator<char>());
+        check(pngAfter == before, "...and photo.png is STILL untouched afterwards");
+      }
+    }
+  }
+
+  // --- F. Import already takes every format this build reads ----------------
+  //
+  // `importImageAsLayer()` reads raw bytes and hands them to
+  // `decodeImageLinear()`, which sniffs content -- so it has accepted every
+  // decodable format since it landed, and this section is the proof of that
+  // rather than a change to it.
+  //
+  // Driven off `allFormatCapabilities()`, the live runtime query, so the set
+  // asserted is whatever THIS build supports: adding a format to the enum, or
+  // building without OpenImageIO, changes what is tested without changing a
+  // line here. **Every fixture is encoded in memory** through
+  // `encodeLinearImage()` -- nothing is read from the repository.
+  //
+  // The formats this cannot reach are the read-only ones, PSD and camera raw:
+  // no encoder exists for either (this OpenImageIO has no PSD writer and no
+  // LibRaw at all), and the only way to test them would be to commit a binary
+  // fixture, which is forbidden. Named here so the gap is visible rather than
+  // implied by an absence.
+  std::printf("-- F. import: every format class this build reads --\n");
+  {
+    OpenDocument host = makeBlankOpenDocument(256, 256, WorkingSpace{}, "host");
+    const size_t layersBefore = host.document.layers.size();
+
+    DecodedImage src;
+    src.width = 24;
+    src.height = 16;
+    src.pixels.assign(static_cast<size_t>(src.width) * src.height * 4, 1.0f);
+    // Fully opaque and mid-grey: JPEG and HDR have no alpha channel at all and
+    // io/Export refuses a partially transparent image for them by name, so an
+    // alpha < 1 fixture would fail on the encoder rather than on the importer.
+    for (size_t i = 0; i < src.pixels.size(); i += 4) {
+      src.pixels[i + 0] = 0.25f;
+      src.pixels[i + 1] = 0.50f;
+      src.pixels[i + 2] = 0.75f;
+      src.pixels[i + 3] = 1.0f;
+    }
+
+    size_t tested = 0;
+    size_t accepted = 0;
+    std::string notAccepted;
+    std::string couldNotEncode;
+    for (const FormatCapability& cap : allFormatCapabilities()) {
+      if (!cap.canRead || !cap.canWrite) continue;
+      // The first depth this format can be written at without the backend
+      // silently substituting another (io/Capabilities' probe, not a table).
+      std::optional<ExportBitDepth> depth;
+      for (const ExportBitDepth d : {ExportBitDepth::UInt8, ExportBitDepth::UInt16,
+                                     ExportBitDepth::Half, ExportBitDepth::Float32})
+        if (!depth && cap.canWriteDepth(d)) depth = d;
+      if (!depth) continue;
+      // Radiance HDR and EXR carry linear values; the integer formats are
+      // written sRGB-encoded, which is what io/ImageDecode assumes on the way
+      // back in. Either target round-trips for this test's purpose, which is
+      // "was the file accepted", not "are the pixels identical".
+      const ExportTargetSpace space = exportBitDepthIsFloat(*depth)
+                                          ? ExportTargetSpace::Rec709Linear
+                                          : ExportTargetSpace::Rec709Srgb;
+      const ExportResult encoded =
+          encodeLinearImage(src, WorkingSpace{}, cap.format, space, *depth);
+      if (!encoded.ok) {
+        couldNotEncode += std::string(couldNotEncode.empty() ? "" : ", ") +
+                          imageFormatName(cap.format);
+        continue;
+      }
+      ++tested;
+      std::string name = std::string("fixture.") + imageFormatExtension(cap.format);
+      const std::string path = writeBytes(name.c_str(), encoded.bytes);
+      const ImportImageResult imported = importImageAsLayer(host, path);
+      if (imported.ok) {
+        ++accepted;
+      } else {
+        notAccepted += std::string(notAccepted.empty() ? "" : ", ") +
+                       imageFormatName(cap.format) + " (" + imported.status + ")";
+      }
+    }
+    std::printf("      encoded and imported %zu format(s); %s\n", tested,
+                couldNotEncode.empty()
+                    ? "every readable+writable format produced a fixture"
+                    : ("could not encode: " + couldNotEncode).c_str());
+    check(tested >= 4,
+          "at least PRD I1's four stb formats produced an in-memory fixture, in either "
+          "build configuration");
+    check(accepted == tested && notAccepted.empty(),
+          "import accepts every format this build can read -- it sniffs content through "
+          "decodeImageLinear() and has no format list of its own");
+    if (!notAccepted.empty()) std::printf("      refused: %s\n", notAccepted.c_str());
+    check(host.document.layers.size() == layersBefore + accepted,
+          "one layer per accepted fixture, so a format that was 'accepted' without "
+          "adding anything cannot pass");
+
+    // The one thing content-sniffing import buys that a name-based one would
+    // not: a picture whose extension lies.
+    const std::string mislabelled = writeBytes("actually-a-png.tga", pngBytes(8, 8));
+    const size_t before = host.document.layers.size();
+    const ImportImageResult liar = importImageAsLayer(host, mislabelled);
+    check(liar.ok && host.document.layers.size() == before + 1,
+          "import takes a PNG named '.tga' -- the decoder reads bytes, never the name");
+  }
+
+  // --- G. the drop routing rule, as a pure function ------------------------
+  std::printf("-- G. drag and drop: the rule, without a window --\n");
+  {
+    check(dropActionFor(FileKind::NpaintDocument, false) == DropAction::OpenAsDocument &&
+              dropActionFor(FileKind::NpaintDocument, true) == DropAction::OpenAsDocument,
+          "a dropped .npaint always OPENS, document open or not -- importing one would "
+          "flatten its whole stack into a single layer via its composite");
+    check(dropActionFor(FileKind::Image, false) == DropAction::OpenAsDocument,
+          "a dropped picture with nothing open opens -- there is no canvas to put it on");
+    check(dropActionFor(FileKind::Image, true) == DropAction::ImportAsLayer,
+          "a dropped picture with a document open becomes a layer in it -- what the "
+          "gesture means everywhere else");
+    check(dropActionFor(FileKind::Unknown, false) == DropAction::Refuse &&
+              dropActionFor(FileKind::Unknown, true) == DropAction::Refuse,
+          "an unrecognised file is refused rather than attempted twice");
+  }
+
+  // --- H. a whole drop, including twelve files at once ---------------------
+  std::printf("-- H. drag and drop: one gesture, however many files --\n");
+  {
+    // Twelve pictures onto an empty session.
+    std::vector<std::string> twelve;
+    for (int i = 0; i < 12; ++i) {
+      char name[64];
+      std::snprintf(name, sizeof(name), "batch-%02d.png", i);
+      twelve.push_back(writeBytes(name, pngBytes(16 + i, 16)));
+    }
+    DocumentSession empty;
+    RecentDocuments recent;
+    const DropOutcome batch = applyDroppedFiles(empty, &recent, twelve);
+    check(batch.opened == 1 && batch.imported == 11 && batch.refused == 0,
+          "twelve pictures onto an empty session: ONE document, eleven layers in it -- "
+          "not twelve tabs, and not one file used and eleven dropped");
+    check(empty.count() == 1,
+          "...and the session really holds one document, so the counts are not a story");
+    check(empty.active() != nullptr && empty.active()->document.layers.size() == 12,
+          "...whose stack is the one opened layer plus the eleven imported ones");
+    check(!batch.status.empty() && contains(batch.status, "12 files dropped"),
+          "the gesture reports itself once, naming how many files it was");
+
+    // The same twelve onto a session that already has a document: all layers.
+    DocumentSession busy;
+    busy.add(makeBlankOpenDocument(64, 64, WorkingSpace{}, "busy"));
+    const size_t layersBefore = busy.active()->document.layers.size();
+    const DropOutcome onto = applyDroppedFiles(busy, &recent, twelve);
+    check(onto.opened == 0 && onto.imported == 12,
+          "the same twelve onto an open document: twelve layers, no new tab");
+    check(busy.count() == 1 &&
+              busy.active()->document.layers.size() == layersBefore + 12,
+          "...all of them in the document that was already there");
+
+    // A mixture, resolved file by file in delivery order.
+    DocumentSession mixed;
+    std::vector<std::string> mixture = {
+        writeText("junk.dat", "not a picture"),
+        writeBytes("first.png", pngBytes(20, 20)),
+        writeBytes("second.png", pngBytes(21, 21)),
+    };
+    const DropOutcome mix = applyDroppedFiles(mixed, &recent, mixture);
+    check(mix.refused == 1 && mix.opened == 1 && mix.imported == 1,
+          "a mixed drop resolves in order: the junk is refused, the first picture opens "
+          "because nothing was, the second lands in what the first opened");
+    check(mix.problems.size() == 1 && contains(mix.problems[0], "junk.dat"),
+          "the refused file is named, so a drop that half-worked says which half");
+    check(contains(mix.status, "junk.dat"),
+          "...and that name reaches the status line rather than only the struct");
+
+    // Everything failing is still one legible answer.
+    DocumentSession none;
+    std::vector<std::string> allBad;
+    for (int i = 0; i < 20; ++i) {
+      char name[64];
+      std::snprintf(name, sizeof(name), "bad-%02d.dat", i);
+      allBad.push_back(writeText(name, "no"));
+    }
+    const DropOutcome bad = applyDroppedFiles(none, &recent, allBad);
+    check(bad.refused == 20 && bad.opened == 0 && bad.imported == 0,
+          "twenty unreadable files: all twenty counted, none opened");
+    check(bad.problems.size() == 8,
+          "...but only eight named, so the status stays readable");
+    check(contains(bad.status, "12 more not listed"),
+          "...and the twelve it did not name are counted rather than lost");
+
+    // A gesture that carried nothing -- SDL raises DROP_BEGIN when a drag
+    // merely enters the window, so this is reachable.
+    DocumentSession quiet;
+    const DropOutcome nothing = applyDroppedFiles(quiet, &recent, {});
+    check(!nothing.status.empty() && nothing.opened == 0 && nothing.imported == 0 &&
+              nothing.refused == 0 && quiet.empty(),
+          "a drop with no files changes nothing and still says something");
+  }
+
+  std::filesystem::remove_all(scratch, ec);
+
+  std::printf("[selftest] open any file %s\n", ok ? "PASS" : "FAIL");
+  return ok;
+}
+
+}  // namespace np

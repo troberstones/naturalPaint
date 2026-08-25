@@ -29,6 +29,7 @@
 #include "app/Journal.hpp"
 #include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
+#include "app/OpenAnyFile.hpp"
 #include "app/QuitSequence.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
@@ -4905,10 +4906,38 @@ void applyDocumentPathAction(AppState& st, DocPathAction action, const std::stri
   g_docPathActionOk = false;
   switch (action) {
     case DocPathAction::Open: {
-      OpenDocument opened;
-      r = openNpaintDocument(path, &opened, &st.recentDocuments);
-      if (r.ok) st.documents.add(std::move(opened));
-      break;
+      // **Any file this build can read, dispatched on its contents.**
+      //
+      // This used to be `openNpaintDocument()` and therefore opened `.npaint`
+      // and nothing else -- while io/ImageIO's `openImageAsDocument()` sat
+      // finished and asserted with no caller outside `--selftest`, its own
+      // header saying it was "the function a future File > Open would call".
+      // app/OpenAnyFile is that call, and it decides which reader a file goes
+      // to from the file's bytes rather than from its name: a `.npaint` is an
+      // OpenEXR carrying `np:version`, so one saved as `.exr` (PRD I8 -- the
+      // same container under a different name) still opens as a document, and a
+      // PNG someone named `sketch.npaint` still opens as a picture.
+      //
+      // **Not folded into the `r.ok` path below**, for exactly the reason the
+      // import case is not: that path prefixes its status with "OK: <path>",
+      // which is a sentence about a file that was *written*. An open writes
+      // nothing, and app/OpenAnyFile's own sentence already names the file,
+      // what kind of thing it turned out to be, and -- for a picture -- that
+      // the new document is bound to no file yet.
+      OpenAnyResult opened = openAnyFileAsDocument(path, &st.recentDocuments);
+      g_docStatus = opened.status;
+      for (const std::string& w : opened.warnings) g_docStatus += "\n! " + w;
+      g_docPathActionOk = opened.ok;
+      if (opened.ok) {
+        st.documents.add(std::move(opened.document));
+        // app/OpenAnyFile has already decided *whether* to add a recent entry
+        // (its header says why a picture cannot go in that list yet); this is
+        // only the write-through to disk, kept on the one success path so it
+        // stays beside the save-as and save-a-copy ones below.
+        std::string saveErr;
+        st.recentDocuments.saveToFile(defaultRecentDocumentsPath(), &saveErr);
+      }
+      return;
     }
     case DocPathAction::SaveAs:
       if (!doc) return;
@@ -5184,6 +5213,17 @@ void drawDocumentDialogs(AppState& st) {
                        : g_docPathAction == DocPathAction::ImportImage ? "Import Image"
                                                                       : "Import Brushes";
     ImGui::Text("%s", verb);
+    // Says what the field now accepts, because the widening is invisible
+    // otherwise: the modal looks exactly as it did when it took `.npaint`
+    // alone. The second sentence is the half users get wrong -- a picture opens
+    // into a document that is bound to no file, so Save As is how it acquires
+    // one (app/OpenAnyFile.hpp argues why binding it to the picture would be a
+    // trap).
+    if (g_docPathAction == DocPathAction::Open)
+      ImGui::TextDisabled(
+          "A .npaint document, or any image this build reads. Which one is decided by "
+          "the file's contents, not its name.\nAn image opens as a new, unsaved document; "
+          "use Save As to give it a .npaint of its own.");
     if (g_docPathAction == DocPathAction::SaveCopy)
       ImGui::TextDisabled("Writes elsewhere; this document stays bound to its own file.");
     if (g_docPathAction == DocPathAction::ImportImage)
@@ -7794,6 +7834,22 @@ void setLayersPanelMessages(std::string error, std::vector<std::string> warnings
   g_layers.lastWarnings = std::move(warnings);
 }
 void setCompsPanelRestoreSummary(std::string summary) { g_compsSummary = std::move(summary); }
+
+// The one line beside the menus that every document operation leaves its result
+// in, writable from outside this file.
+//
+// It exists for the drag-and-drop handler, which lives in main.cpp's SDL event
+// loop -- a drop is an *event*, not a widget, so it is handled where the events
+// are, and it has to be able to say what it did. Without this, main.cpp's only
+// way to report "3 files dropped: 1 opened as a document, 2 imported as layers"
+// would be a second status line of its own somewhere else on screen, which is
+// how one application ends up with two places to look for the same kind of
+// answer.
+//
+// Multi-line strings are expected and handled: the status line draws the first
+// line and puts the whole thing in its tooltip, which is what makes a
+// twelve-file drop's per-file problems reachable without a dialog.
+void setDocumentStatusLine(std::string status) { g_docStatus = std::move(status); }
 
 // Exactly the assignment the icon's click handler makes (see
 // `drawAtelierTabStrip()`'s split-icon loop), and deliberately not one line

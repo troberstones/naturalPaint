@@ -108,6 +108,20 @@ void setLayersPanelMessages(std::string error, std::vector<std::string> warnings
 // nothing to say about a restore that has already happened. Empty clears it.
 void setCompsPanelRestoreSummary(std::string summary);
 
+// The status line beside the menus -- the one every document operation (open,
+// save, revert, import, close) already leaves its result in.
+//
+// Exposed for main.cpp's drag-and-drop handler. A drop is an SDL *event*, so it
+// is handled in the event loop with the other events, and it has to be able to
+// report what it did; the alternative is a second status line somewhere else on
+// screen saying the same kind of thing, which is how an application ends up
+// with two places to look for one answer.
+//
+// Multi-line is expected: the status line draws the first line and shows the
+// whole string as its tooltip, which is how a twelve-file drop's per-file
+// refusals stay reachable without a dialog. Empty clears it.
+void setDocumentStatusLine(std::string status);
+
 // The tab strip's split arrangement, as if one of its two icons (docs/ui.md
 // section 5's `columns-2` and `layout-grid`) had been clicked.
 //

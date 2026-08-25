@@ -83,6 +83,7 @@ add_executable(naturalPaint
   app/selftest/MergeFamily.cpp
   app/selftest/MipPyramid.cpp
   app/selftest/NpaintFormat.cpp
+  app/selftest/OpenAnyFile.cpp
   app/selftest/OpStack.cpp
   app/selftest/PigmentBake.cpp
   app/selftest/PigmentBasis.cpp
@@ -110,6 +111,7 @@ add_executable(naturalPaint
   app/selftest/ToolCursor.cpp
   app/selftest/Transform.cpp
   app/selftest/ViewTransform.cpp
+  app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp
   app/StrokeBake.cpp
@@ -155,6 +157,7 @@ add_executable(naturalPaint
   io/Export.cpp
   io/ExportAs.cpp
   io/ExportStates.cpp
+  io/FileKind.cpp
   io/ImageDecode.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp

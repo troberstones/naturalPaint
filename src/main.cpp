@@ -25,6 +25,7 @@
 #include "app/Keymap.hpp"
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
+#include "app/OpenAnyFile.hpp"
 #include "app/PenAxes.hpp"
 #include "app/Screenshot.hpp"
 #include "app/SelfTest.hpp"
@@ -1842,6 +1843,14 @@ int main(int argc, char** argv) {
     // so a backend wired to Cocoa's `terminate:` -- which would route straight
     // past the guard runQuitGuardTest() covers -- cannot pass.
     const bool menuModelOk = np::runMenuModelTest();
+    // app/OpenAnyFile and io/FileKind: File > Open takes any file this build
+    // reads, and which reader it goes to is decided from the file's **bytes**
+    // rather than its extension -- a `.npaint` is an OpenEXR carrying
+    // `np:version`, so one saved as `.exr` is still a document and a PNG named
+    // `sketch.npaint` is still a picture. Plus the drag-and-drop routing rule,
+    // asserted as a pure function so it needs no window, and what a drop of
+    // twelve files at once resolves to.
+    const bool openAnyFileOk = np::runOpenAnyFileTest();
     // 1.3 / ADR-0003: deposited mass must match regardless of stroke speed.
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
@@ -1870,7 +1879,7 @@ int main(int argc, char** argv) {
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && strokeBridgeOk && descriptorOk && closeDecisionOk &&
-                    quitGuardOk && menuModelOk;
+                    quitGuardOk && menuModelOk && openAnyFileOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -2138,6 +2147,50 @@ int main(int argc, char** argv) {
   // episode, so one stroke would produce two history entries, and both would
   // contend for the solver's single readback slot.
 
+  // ------------------------------------------------------------ drag and drop
+  //
+  // PLAN.md step 13's other half. io/Export.hpp described `placeImageAsLayer()`
+  // as written "for step 13's drag-and-drop" and there was **no
+  // `SDL_EVENT_DROP_FILE` handler anywhere in `src/`** -- the same
+  // finished-but-unreachable shape app/ImportImage and app/OpenAnyFile each
+  // closed one level further in.
+  //
+  // **Enabling.** SDL3 posts drop events only while they are enabled, and only
+  // registers the window with the platform's drag-and-drop machinery when they
+  // are: on macOS `Cocoa_AcceptDragAndDrop()` is what calls
+  // `-registerForDraggedTypes:`, and it is driven by
+  // `SDL_EventEnabled(SDL_EVENT_DROP_FILE)` at window creation and again from
+  // `SDL_ToggleDragAndDropSupport()` whenever that flag changes. Read against
+  // this SDL, every event type starts *enabled* (`SDL_disabled_events` is
+  // zero-initialised), so this call changes nothing today and the window is
+  // already registered. It is here anyway, and this is the argument for it: it
+  // is the line that would have to exist if that default ever flipped, it costs
+  // one no-op call once, and without it the requirement is invisible -- a
+  // feature that works by default is a feature nobody knows is conditional.
+  // Ordering is not load-bearing either way, because a change to the flag
+  // re-registers every window that already exists.
+  SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, true);
+
+  // One drop gesture's files, accumulated across the burst of
+  // `SDL_EVENT_DROP_FILE` events between `SDL_EVENT_DROP_BEGIN` and
+  // `SDL_EVENT_DROP_COMPLETE`.
+  //
+  // **SDL delivers one event per file**, so acting on each as it arrives is how
+  // a drop of twelve pictures becomes twelve separate decisions -- twelve tabs,
+  // or twelve modals, or (the version that reads as a bug) one file used and
+  // eleven ignored. Batching turns the gesture back into one act, which is what
+  // the user performed; app/OpenAnyFile's `applyDroppedFiles()` owns what that
+  // act means and is asserted headlessly.
+  //
+  // SDL synthesises `DROP_BEGIN` itself before the first file of a gesture
+  // (`SDL_SendDrop()` tracks `window->is_dropping`), so it is always seen even
+  // though the Cocoa backend never sends one explicitly -- but it also fires on
+  // `DROP_POSITION`, i.e. when a drag merely *enters* the window. A drag that
+  // enters and leaves therefore begins a gesture that carries no files, which
+  // is why the list is cleared at both ends and why `applyDroppedFiles()` has a
+  // no-files case that says nothing happened.
+  std::vector<std::string> droppedFiles;
+
   // Frame counter, used only by --screenshot: the first frames are not
   // representative (ImGui lays out docked panels on frame 1).
   uint64_t frameIndex = 0;
@@ -2161,6 +2214,50 @@ int main(int argc, char** argv) {
       if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
           e.window.windowID == SDL_GetWindowID(window))
         st.requestQuit = true;
+      // --- a drop ---------------------------------------------------------
+      //
+      // The window filter accepts `windowID == 0` as well as ours: SDL's
+      // `SDL_SendDrop()` posts that for a drop delivered to the application
+      // rather than to a specific window, and this build has exactly one window
+      // for such a drop to have meant.
+      if (e.type == SDL_EVENT_DROP_BEGIN || e.type == SDL_EVENT_DROP_FILE ||
+          e.type == SDL_EVENT_DROP_COMPLETE) {
+        const bool forUs =
+            e.drop.windowID == 0 || e.drop.windowID == SDL_GetWindowID(window);
+        if (forUs) {
+          if (e.type == SDL_EVENT_DROP_BEGIN) {
+            droppedFiles.clear();
+          } else if (e.type == SDL_EVENT_DROP_FILE) {
+            // Copied immediately and deliberately. `e.drop.data` is SDL
+            // temporary memory (`SDL_CreateTemporaryString()`), valid only
+            // until the next `SDL_PumpEvents()` -- which the very next
+            // `SDL_PollEvent()` in this loop performs. Holding the pointer
+            // until DROP_COMPLETE would read freed memory for every file but
+            // the last, and would do it only for multi-file drops.
+            if (e.drop.data != nullptr) droppedFiles.emplace_back(e.drop.data);
+          } else {
+            // The whole gesture, resolved at once. Every decision -- open or
+            // import, in what order, what a refusal says -- belongs to
+            // app/OpenAnyFile, which `--selftest` exercises without a window;
+            // nothing here does more than hand over the list and show the
+            // sentence that comes back.
+            const np::DropOutcome dropped =
+                np::applyDroppedFiles(st.documents, &st.recentDocuments, droppedFiles);
+            droppedFiles.clear();
+            np::setDocumentStatusLine(dropped.status);
+            // Only a `.npaint` open adds a recent entry (app/OpenAnyFile.hpp
+            // says why a picture cannot yet), so this is a no-op for a drop of
+            // pictures -- but a dropped document has to reach the same list
+            // File > Open... puts one in, or "open recent" would depend on
+            // which gesture opened the file.
+            if (dropped.opened > 0) {
+              std::string recentSaveError;
+              st.recentDocuments.saveToFile(np::defaultRecentDocumentsPath(),
+                                            &recentSaveError);
+            }
+          }
+        }
+      }
       if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
         int w = 0, h = 0;
         SDL_GetWindowSizeInPixels(window, &w, &h);
