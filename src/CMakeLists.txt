@@ -197,12 +197,22 @@ add_executable(naturalPaint
 # description both bars are built from; this is the AppKit half, and it is the
 # first Objective-C++ in this project.
 #
-# `enable_language(OBJCXX)` is here rather than in the root `project()` call's
-# LANGUAGES list, deliberately. A language named in `project()` is probed on
-# **every** platform, so a Linux or Windows configure would go looking for an
-# Objective-C++ compiler it has no reason to own, and fail at configure time
-# over a file it was never going to build. Enabling it inside `if(APPLE)` asks
-# only the machines that can answer.
+# **`enable_language(OBJCXX)` is in the ROOT CMakeLists.txt, not here**, and the
+# reason is a CMake rule rather than a preference: `enable_language()` must be
+# called from the highest directory common to every target that uses the
+# language. Called from this subdirectory it appears to succeed -- no error is
+# printed at the call -- and then the generate step fails with
+# `Missing variable is: CMAKE_OBJCXX_COMPILE_OBJECT`, because the per-language
+# rule variables were never populated in the scope that generates the build.
+# The failure names a "may not be built correctly" CMake rather than the line
+# that caused it, so it reads as a broken toolchain; it is not.
+#
+# What stays true is why it is not in the root `project()` call's LANGUAGES
+# list: a language named there is probed on **every** platform, so a Linux or
+# Windows configure would go looking for an Objective-C++ compiler it has no
+# reason to own, and fail at configure time over a file it was never going to
+# build. So the root guards the same `if(APPLE)` around it -- right scope, and
+# still only the machines that can answer are asked.
 #
 # `-fobjc-arc` on this one source. The alternative is manual retain/release
 # around NSMenu and NSMenuItem objects that live for the process's whole
@@ -221,7 +231,6 @@ add_executable(naturalPaint
 # too, which is intended: an Objective-C++ helper nobody calls is the same
 # defect as a C++ one.
 if(APPLE)
-  enable_language(OBJCXX)
   set(CMAKE_OBJCXX_STANDARD 20)
   set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
   target_sources(naturalPaint PRIVATE ui/MacNativeMenu.mm)

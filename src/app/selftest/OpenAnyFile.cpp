@@ -430,9 +430,14 @@ bool runOpenAnyFileTest() {
                   d.layers[0].rgbTiles->occupiedTileCount() > 0,
               "its tile storage is engaged and holds tiles -- the pixels arrived, rather "
               "than an empty layer of the right size being reported as success");
-        // 200x140 crosses x=128 and not y=128, so 2x1 tiles.
-        check(d.layers[0].rgbTiles->occupiedTileCount() == 2,
-              "exactly the 2x1 tiles a 200x140 image spans, not a count tied to some "
+        // 200x140 crosses x=128 **and** y=128 (`core/Tile.hpp`'s kTileSize is
+        // 128, and 140 > 128), so 2x2 = 4 tiles. This line said 2x1 when it was
+        // written -- the arithmetic dropped the second tile row, and it was the
+        // one assertion in this file nobody could check without running it.
+        // app/selftest/ImageIO.cpp's neighbouring 140x140 -> 4 says the same
+        // thing from the other side: 140 crosses 128 on whichever axis it is.
+        check(d.layers[0].rgbTiles->occupiedTileCount() == 4,
+              "exactly the 2x2 tiles a 200x140 image spans, not a count tied to some "
               "other canvas (PRD C2)");
       }
 

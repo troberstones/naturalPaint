@@ -6,6 +6,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Objective-C++, for the AppKit menu bar (src/ui/MacNativeMenu.mm). Deliberately
+# NOT in the `project()` LANGUAGES list above: a language named there is probed
+# on every platform, so a Linux or Windows configure would demand an
+# Objective-C++ compiler it has no reason to own and fail over a file it was
+# never going to build.
+#
+# It has to be *here* rather than beside the source it is for, in
+# src/CMakeLists.txt, because `enable_language()` must be called from the
+# highest directory common to every target using the language. Called from the
+# subdirectory it raises no error at the call and then fails the generate step
+# with `Missing variable is: CMAKE_OBJCXX_COMPILE_OBJECT` -- a message that
+# blames the CMake installation rather than the placement. See the fuller note
+# at src/CMakeLists.txt's native-menu-bar block.
+if(APPLE)
+  enable_language(OBJCXX)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
