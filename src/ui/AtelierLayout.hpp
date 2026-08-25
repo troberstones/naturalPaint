@@ -166,7 +166,7 @@ struct AtelierBands {
   AtelierRect rightColumn;  // COLOR / BRUSH / LAYERS / HISTORY / ...
   AtelierRect statusBar;    // zoom, working space, resident/budget, view state
 
-  // 2 px `#f3f2f2` between major regions (docs/ui.md section 1). Four
+  // 2 px `#201e1d` between major regions (docs/ui.md section 1). Four
   // horizontal and two vertical at most; a rule adjacent to an empty band is
   // itself empty, so that suppressing the tab strip suppresses exactly one
   // rule and the bands still tile.

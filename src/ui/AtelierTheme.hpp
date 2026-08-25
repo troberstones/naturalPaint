@@ -25,7 +25,7 @@ namespace np {
 // | chrome base -- panels, palette, status bar   | #2d2b2b |
 // | chrome deep -- tool options, active tab, nav | #201e1d |
 // | chrome mid -- tab strip, internal fills      | #444141 |
-// | rule -- 2px between major regions            | #f3f2f2 |
+// | rule -- 2px between major regions            | #201e1d |
 // | divider -- 1px internal                      | #444141 |
 // | hairline, rulers                             | #9b9797 |
 // | text primary                                 | #f3f2f2 |
@@ -37,7 +37,7 @@ namespace np {
 constexpr uint32_t kChromeBase    = 0x2d2b2b;
 constexpr uint32_t kChromeDeep    = 0x201e1d;
 constexpr uint32_t kChromeMid     = 0x444141;
-constexpr uint32_t kRule          = 0xf3f2f2;
+constexpr uint32_t kRule          = 0x201e1d;
 constexpr uint32_t kDivider       = 0x444141;
 constexpr uint32_t kHairline      = 0x9b9797;
 constexpr uint32_t kTextPrimary   = 0xf3f2f2;
@@ -49,17 +49,37 @@ constexpr uint32_t kOnAccent      = 0x201e1d;
 
 // Four of the twelve rows above are the same value under two names, and that
 // is deliberate rather than a table that wants tidying: `divider` is a role
-// (1px internal separators) that currently resolves to `chrome mid`, and
-// `text primary` / `text secondary` resolve to `rule` / `hairline`. Asserting
-// the equalities pins the intent -- if a later revision wants a divider that
-// is not the tab-strip fill, it has to change the token and the assertion
-// together rather than discovering that half the UI moved.
+// (1px internal separators) that currently resolves to `chrome mid`,
+// `text secondary` resolves to `hairline`, and `rule` / `on-accent
+// foreground` both resolve to `chrome deep`. Asserting the equalities pins
+// the intent -- if a later revision wants a divider that is not the tab-strip
+// fill, it has to change the token and the assertion together rather than
+// discovering that half the UI moved.
+//
+// **`rule` used to be `#f3f2f2`, the same near-white as `text primary`, and
+// the pair was asserted here.** Changing it to `chrome deep` was a design
+// decision taken from four rendered candidates (near-white, chrome deep,
+// chrome mid, and no rule at all): the chrome is built from tonal steps, and
+// a near-white 2px line was the only element in it drawn as a *line* rather
+// than as a change of ground. It read as a seam laid over the layout instead
+// of a boundary belonging to it.
+//
+// The consequence, stated because it is a real one and not a side effect
+// worth discovering later: where a rule borders a `chrome deep` surface --
+// the tool options bar is one -- the rule is now invisible against that side
+// and the boundary is carried entirely by the other. That is the intended
+// reading (the bar simply ends) and is what the chosen candidate actually
+// showed, but a future revision wanting a rule visible against dark chrome
+// needs a *third* value here, not a nudge to this one.
 static_assert(kDivider == kChromeMid, "divider is the chrome-mid value in a separator role");
-static_assert(kTextPrimary == kRule, "text primary is the rule value in a type role");
+static_assert(kRule == kChromeDeep, "rule is the chrome-deep value in a separator role");
 static_assert(kTextSecondary == kHairline, "text secondary is the hairline value in a type role");
 static_assert(kOnAccent == kChromeDeep, "on-accent foreground is the chrome-deep value");
+static_assert(kTextPrimary != kRule,
+              "text primary and rule were the same near-white until the rule became a seam; if "
+              "they are equal again the divider change has been reverted by halves");
 
-// docs/ui.md section 1: "Rules: 2px #f3f2f2 between major regions, 1px
+// docs/ui.md section 1: "Rules: 2px #201e1d between major regions, 1px
 // #444141 internally."
 constexpr float kRuleThickness    = 2.0f;
 constexpr float kDividerThickness = 1.0f;

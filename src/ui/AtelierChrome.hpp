@@ -236,7 +236,7 @@ ImU32 atelierToken(uint32_t rgb) noexcept;
 void pushAtelierMono();
 void popAtelierMono();
 
-// The 2px `#f3f2f2` rules between major regions (docs/ui.md section 1). Drawn
+// The 2px `#201e1d` rules between major regions (docs/ui.md section 1). Drawn
 // on the foreground draw list, after every band's window, so that a rule is
 // never covered by the window it borders.
 void drawAtelierRules(const AtelierBands& bands);

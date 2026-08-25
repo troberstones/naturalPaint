@@ -44,7 +44,7 @@ bool runAtelierChromeTest() {
         {kChromeBase,    0x2d2b2bu, "chrome base"},
         {kChromeDeep,    0x201e1du, "chrome deep"},
         {kChromeMid,     0x444141u, "chrome mid"},
-        {kRule,          0xf3f2f2u, "rule"},
+        {kRule,          0x201e1du, "rule"},
         {kDivider,       0x444141u, "divider"},
         {kHairline,      0x9b9797u, "hairline"},
         {kTextPrimary,   0xf3f2f2u, "text primary"},

@@ -25,7 +25,7 @@ Dark chrome, light paper. The canvas is the only bright surface.
 | chrome base — panels, palette, status bar | `#2d2b2b` |
 | chrome deep — tool options, active tab, navigator | `#201e1d` |
 | chrome mid — tab strip, internal fills | `#444141` |
-| rule — 2px between major regions | `#f3f2f2` |
+| rule — 2px between major regions | `#201e1d` |
 | divider — 1px internal | `#444141` |
 | hairline, rulers | `#9b9797` |
 | text primary | `#f3f2f2` |
@@ -35,7 +35,7 @@ Dark chrome, light paper. The canvas is the only bright surface.
 | canvas paper | `#f8f4f4` |
 | on-accent foreground | `#201e1d` |
 
-Rules: **2px `#f3f2f2`** between major regions, **1px `#444141`** internally. Type is
+Rules: **2px `#201e1d`** between major regions, **1px `#444141`** internally. Type is
 Archivo (400 / 600 / 800) with `ui-monospace` for all numerics and caps labels;
 800-weight caps carry `.10–.14em` tracking.
 
