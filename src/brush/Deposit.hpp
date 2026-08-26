@@ -656,6 +656,14 @@ struct BrushTip {
   // a second, smaller stroke offset from the first, not scatter.
   float scatter = 0.0f;
 
+  // Which AXIS `scatter` above may displace a dab along -- Photoshop's own
+  // Scatter panel "Both Axes" checkbox (docs/reachability-audit.md B5).
+  // False (the default, and Photoshop's own default) confines the jitter to
+  // the PERPENDICULAR of the stroke's own tangent, so a rougher line reads as
+  // wider, not blurrier; true scatters isotropically, in a fresh direction
+  // per dab. `app/StrokeSession`'s `applyPerDabScatter()` is what reads this.
+  bool scatterBothAxes = false;
+
   // What the tip is loaded with. `paint/Palette`'s `MixboxLut::rgbToLatent()`
   // produces one from a colour; `core/Pigment`'s `latentToRgb()` projects it
   // back with no LUT at all, which is why a Pigment layer composites in a

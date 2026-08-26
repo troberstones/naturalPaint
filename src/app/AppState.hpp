@@ -242,6 +242,11 @@ struct BrushState {
   // sayable for the other seven sources and ten targets too.
   BrushLinkSet links = defaultBrushLinks();
 
+  // Mirrors `brush/Library.hpp`'s `BrushPreset::scatterBothAxes` -- see that
+  // field's own comment. No slider writes this yet; it moves only with
+  // `applyPresetToBrush()`/`presetFromBrush()`, alongside `tipBitmap`.
+  bool scatterBothAxes = false;
+
   // Which cell of the DYNAMICS matrix the LINK editor below it is showing.
   //
   // UI state on BrushState rather than on AppState proper because it is

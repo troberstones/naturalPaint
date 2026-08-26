@@ -969,6 +969,16 @@ bool runDabPreviewTest();
 // else's copyrighted work and megabytes besides.
 bool runAbrBrushesTest();
 
+// app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md B5's
+// axis defect. Asserted geometrically -- each dab's displacement is
+// projected onto the stroke's own tangent and perpendicular -- that the
+// default (Photoshop's own default, "Both Axes" unticked) confines a dab to
+// the PERPENDICULAR, that setting `BrushTip::scatterBothAxes` restores the
+// old full-circle isotropic spread by contrast on the identical stroke, and
+// that a stroke's first dab (no tangent yet) scatters along a deterministic
+// due-+y axis rather than an undefined one. Pure CPU, no document, no GPU.
+bool runScatterTest();
+
 // io/AbrBrushes' `samp` block and brush/Deposit.hpp §2c: a sampled bitmap tip
 // decoded (raw and PackBits, both subversions' header skip), matched to a
 // preset by UUID, resolving a `#Prc` `Dmtr` against the sample's own pixel

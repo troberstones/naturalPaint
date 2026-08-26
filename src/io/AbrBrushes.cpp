@@ -379,6 +379,27 @@ BrushPreset presetFromDescriptor(
   if (node.field("useScatter").asBoolean().value_or(false)) {
     addDynamicsLinks(p.links, readDynamics(node, "scatterDynamics"), DynamicTarget::Scatter, 0.0,
                      p.name, result);
+    // `addDynamicsLinks()` just above resolved the (up to two) links it added
+    // in DIAMETER units -- `targetDefaultRange(Scatter)`'s generic [0,1]
+    // span, the same math Angle and Hue share and are already correct under.
+    // Scatter alone needs `abrScatterFractionToRadii()`'s factor of two,
+    // applied here, once, to whichever Scatter links this call just added -- see
+    // that function's own header comment for why the shared math upstream is
+    // left alone rather than threading the conversion through it.
+    for (BrushLink& l : p.links.links) {
+      if (l.target != DynamicTarget::Scatter) continue;
+      l.rangeLo = abrScatterFractionToRadii(l.rangeLo);
+      l.rangeHi = abrScatterFractionToRadii(l.rangeHi);
+    }
+    // Photoshop's Scatter panel has its own "Both Axes" checkbox, a sibling
+    // of `useScatter` and `scatterDynamics` rather than something inside the
+    // latter -- confirmed against a real Kyle Webster pack (every scattering
+    // preset in both sample libraries carries `useScatter`, `bothAxes` and
+    // `scatterDynamics` as three consecutive top-level keys). Unticked
+    // (false) is Photoshop's own default and this build's fallback alike
+    // when the key is absent, so an older or hand-built descriptor with no
+    // `bothAxes` at all imports as PERPENDICULAR scatter, not isotropic.
+    p.scatterBothAxes = node.field("bothAxes").asBoolean().value_or(false);
   }
 
   // --- Dual Brush: a whole second tip, stamped through the first -----------
@@ -548,6 +569,12 @@ float abrSpacingToRadii(double percentOfDiameter) noexcept {
   // zero here would mean an unbounded dab count for any radius, so it is
   // clamped where it enters rather than where it is used.
   return clampf(radii, 0.02f, 8.0f);
+}
+
+float abrScatterFractionToRadii(float fractionOfDiameter) noexcept {
+  // fraction-of-diameter -> fraction-of-radius. See this file's header for
+  // why the input is already a clamped fraction rather than a raw percent.
+  return fractionOfDiameter * 2.0f;
 }
 
 std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, uint16_t subversion) {

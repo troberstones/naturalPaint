@@ -82,6 +82,16 @@ struct BrushPreset {
   float wetness = 1.3f;
   BrushLinkSet links;
 
+  // Mirrors `BrushTip::scatterBothAxes` -- Photoshop's Scatter panel "Both
+  // Axes" checkbox, off by default (docs/reachability-audit.md B5). Carried
+  // here so an imported or hand-saved brush keeps it; `app/StrokeSession`'s
+  // `applyPresetToBrush()`/`presetFromBrush()` copy it in lockstep with every
+  // field above, the same way `tipBitmap` below moves only in lockstep with
+  // picking a whole preset -- there is no independent slider for it yet, so
+  // it is deliberately absent from `presetMatches()`'s comparison below, for
+  // that field's own stated reason.
+  bool scatterBothAxes = false;
+
   // A `.abr` sampled bitmap tip (brush/Deposit.hpp §2c), or null for the
   // procedural round/elliptical tip every built-in and every hand-authored
   // preset has always had. Set once, by `io/AbrBrushes.cpp`, from the `samp`

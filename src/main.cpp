@@ -1544,6 +1544,11 @@ int main(int argc, char** argv) {
     // the container framing and the parameter mapping, including what an
     // import could NOT bring across. Headless and GPU-free.
     const bool abrBrushesOk = np::runAbrBrushesTest();
+    // app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md
+    // B5's axis defect. Checks the geometry directly -- tangent component
+    // ~0, perpendicular component real -- rather than a flag. Headless and
+    // GPU-free.
+    const bool scatterOk = np::runScatterTest();
     // io/AbrBrushes' `samp` block: sampled bitmap tips decoded and stamped by
     // brush/Deposit.hpp §2c in place of the procedural tip. Headless and
     // GPU-free.
@@ -2019,7 +2024,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

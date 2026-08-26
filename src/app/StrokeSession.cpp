@@ -21,6 +21,9 @@ constexpr uint64_t kScatterAngleSalt = 0x3172657474616373ULL;  // "scatter1" (LE
 // barrel cases) all go through `%.0f` degrees, and this is the one place in
 // the deposit path that turns a [0,1) draw into radians directly.
 constexpr float kTwoPi = 6.28318530717958647692f;
+// A quarter turn -- what `applyPerDabScatter()` rotates the stroke's own
+// tangent by to find its perpendicular.
+constexpr float kHalfPi = kTwoPi * 0.25f;
 
 // Folds the per-dab corrections from `strokeLocalLinks_` -- resolved against
 // VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL-DIRECTION alone, via
@@ -59,24 +62,53 @@ BrushTip applyStrokeLocalCorrection(const BrushTip& base, const DynamicResult& c
   return out;
 }
 
-// SCATTER's own direction: a fresh draw off a SALTED copy of the stroke seed,
-// keyed by dab index like every other per-dab draw. Salted rather than reused
-// from `dynamicRandomDraw(seed, dabIndex)` directly, because a brush that
-// links RANDOM to both SCATTER and FLOW (`brush/Library.cpp`'s `Dry Bristle`
-// does exactly this) would otherwise jitter and thin in visible lockstep --
-// wide exactly when faint, narrow exactly when heavy -- which reads as one
-// coupled effect rather than the two independent ones the matrix promises.
-Vec2 applyPerDabScatter(Vec2 centre, const BrushTip& tip, uint64_t seed,
-                        uint32_t dabIndex) noexcept {
+}  // namespace
+
+// SCATTER's own axis. Default (Photoshop's own default, "Both Axes"
+// unticked, docs/reachability-audit.md B5): confined to the stroke's
+// PERPENDICULAR -- `stepDx`/`stepDy` is the identical step vector
+// `dynamicDirection()` turns into DIRECTION (`depositPending()`'s own `(p -
+// prevDab)`), rotated a quarter turn, so a rougher stroke reads as WIDER
+// rather than as a second, blurrier line running along the original. One
+// random draw per dab, off a SALTED copy of the stroke seed, chooses which
+// of the two resulting directions the dab lands on -- salted rather than
+// reused from `dynamicRandomDraw(seed, dabIndex)` directly, because a brush
+// that links RANDOM to both SCATTER and FLOW (`brush/Library.cpp`'s `Dry
+// Bristle` does exactly this) would otherwise jitter and thin in visible
+// lockstep -- wide exactly when faint, narrow exactly when heavy -- which
+// reads as one coupled effect rather than the two independent ones the
+// matrix promises.
+//
+// `tip.scatterBothAxes` switches to the OLD isotropic behaviour: the same one
+// draw picks a full-circle angle instead of a side, so a dab can land
+// anywhere on a ring of radius `magnitude` around `centre` -- what this
+// function did unconditionally before B5, correct for a brush that actually
+// asks for it and wrong (a blurrier line, not a rougher one) for every brush
+// that did not.
+//
+// **The first dab's zero step vector is not a special case.** `stepDx =
+// stepDy = 0.0` is the caller's own contract for "no previous position yet"
+// (`app/StrokeSession.hpp`'s `depositPending()`, the identical convention
+// `dynamicDirection()`'s own header section states), and `std::atan2(0, 0)`
+// is `0` by the C++ standard for the signs this file ever produces -- "due
+// +x" -- so the first dab's perpendicular is due +y, exactly as deterministic
+// as every later dab's, rather than undefined.
+Vec2 applyPerDabScatter(Vec2 centre, const BrushTip& tip, uint64_t seed, uint32_t dabIndex,
+                        float stepDx, float stepDy) noexcept {
   if (tip.scatter == 0.0f) return centre;  // the identity: no branch taken,
                                            // no draw spent, for every brush
                                            // with nothing linked to SCATTER
-  const float angle = dynamicRandomDraw(seed ^ kScatterAngleSalt, dabIndex) * kTwoPi;
+  const float draw = dynamicRandomDraw(seed ^ kScatterAngleSalt, dabIndex);
   const float magnitude = tip.scatter * tip.radius;
-  return Vec2{centre.x + std::cos(angle) * magnitude, centre.y + std::sin(angle) * magnitude};
+  if (tip.scatterBothAxes) {
+    const float angle = draw * kTwoPi;
+    return Vec2{centre.x + std::cos(angle) * magnitude, centre.y + std::sin(angle) * magnitude};
+  }
+  const float perp = std::atan2(stepDy, stepDx) + kHalfPi;
+  const float side = (draw < 0.5f) ? -1.0f : 1.0f;
+  return Vec2{centre.x + std::cos(perp) * magnitude * side,
+             centre.y + std::sin(perp) * magnitude * side};
 }
-
-}  // namespace
 
 const char* strokeRouteName(StrokeRoute route) noexcept {
   switch (route) {
@@ -404,6 +436,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // here, which is the identity `applyPerDabScatter()` (below, in the deposit
   // loop) treats as "no offset" and skips outright.
   tip.scatter = dyn.at(DynamicTarget::Scatter);
+  tip.scatterBothAxes = brush.scatterBothAxes;
   // Straight through, unscaled: there is no `DynamicTarget::Opacity` in
   // brush/Dynamics' twelve, and inventing one here rather than in the matrix
   // that draws them would give the DYNAMICS panel a target it cannot show. The
@@ -539,6 +572,7 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   brush.tipBitmap = preset.tipBitmap;
   brush.dualTip = preset.dualTip;
   brush.dualBlend = preset.dualBlend;
+  brush.scatterBothAxes = preset.scatterBothAxes;
 }
 
 BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
@@ -555,6 +589,7 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   p.tipBitmap = brush.tipBitmap;
   p.dualTip = brush.dualTip;
   p.dualBlend = brush.dualBlend;
+  p.scatterBothAxes = brush.scatterBothAxes;
   return p;
 }
 
@@ -801,7 +836,7 @@ void StrokeSession::depositPending() {
     }
 
     const Vec2 centre =
-        applyPerDabScatter(p, dabTip, seed_, static_cast<uint32_t>(dabs_));
+        applyPerDabScatter(p, dabTip, seed_, static_cast<uint32_t>(dabs_), dx, dy);
 
     // The four routes differ in exactly this call, and each takes
     // `selection`. Everything around it -- the tile bookkeeping, the

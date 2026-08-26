@@ -49,6 +49,15 @@ struct BrushSpec {
   // for Size, and gated by the same `useTipDynamics` flag.
   int angleControl = 0;
   double angleJitter = 0.0;
+  // Scatter (docs/reachability-audit.md B5). `useScatter` gates whether
+  // `scatterDynamics` is APPLIED, exactly as `useTipDynamics` gates `szVr`
+  // above; `scatterJitter` is Photoshop's own percentage, OF THE DIAMETER;
+  // `bothAxes` is the Scatter panel's own checkbox, a sibling of
+  // `useScatter` rather than something inside `scatterDynamics`.
+  bool useScatter = false;
+  int scatterControl = 0;
+  double scatterJitter = 0.0;
+  bool bothAxes = false;
   // `dualBrush` present but SWITCHED OFF vs present and ON. Two flags rather
   // than one because those are genuinely different files and the importer is
   // required to tell them apart: every real preset carries a `dualBrush`
@@ -61,8 +70,13 @@ struct BrushSpec {
 
 void appendBrush(DescFixture& f, const BrushSpec& s) {
   // brushPreset: Nm, Brsh, useTipDynamics, minimumDiameter, szVr,
-  // angleDynamics [, dualBrush]
-  f.objc("brushPreset", "brushPreset", s.dualBrushPresent ? 7u : 6u);
+  // angleDynamics, useScatter, bothAxes, scatterDynamics [, dualBrush].
+  // **The count is the SUM of what two parallel changes each added.**
+  // Taking either side's number alone would under-declare the descriptor,
+  // and an Action Descriptor that promises fewer fields than it writes is
+  // not a parse error -- the reader simply stops early and the fixture
+  // silently tests less than it appears to.
+  f.objc("brushPreset", "brushPreset", s.dualBrushPresent ? 10u : 9u);
 
   f.key4("Nm  ").textv(s.name);
 
@@ -84,6 +98,23 @@ void appendBrush(DescFixture& f, const BrushSpec& s) {
   f.keyN("angleDynamics").objc("brVr", "brVr", 3);
   f.key4("bVTy").longv(s.angleControl);
   f.keyN("jitter").untf("#Prc", s.angleJitter);
+  // Third of the three fields `angleDynamics` promises. A `brVr` that declares
+  // 3 and writes 2 is not a parse error: the reader takes the NEXT top-level
+  // key as this object's missing field and every key after it lands one slot
+  // early, so a whole fixture quietly describes a different brush.
+  f.key4("Mnm ").untf("#Prc", 0.0);
+
+  // Scatter -- `useScatter` and `bothAxes` are consecutive top-level keys,
+  // siblings of `scatterDynamics` rather than fields inside it, matching what
+  // `strings` against a real Kyle Webster pack shows (io/AbrBrushes.cpp's own
+  // comment at the import site). Written unconditionally, like `szVr` above,
+  // because every real preset carries all three whether or not Scatter is
+  // switched on.
+  f.keyN("useScatter").boolv(s.useScatter);
+  f.keyN("bothAxes").boolv(s.bothAxes);
+  f.keyN("scatterDynamics").objc("brVr", "brVr", 3);
+  f.key4("bVTy").longv(s.scatterControl);
+  f.keyN("jitter").untf("#Prc", s.scatterJitter);
   f.key4("Mnm ").untf("#Prc", 0.0);
 
   // The real key carries a whole second tip (`Brsh`, `BlnM`, `Cnt `,
@@ -102,6 +133,41 @@ std::vector<uint8_t> oneBrushLibrary(const BrushSpec& s) {
   f.descriptor("null", "null", 1);
   f.key4("Brsh").vlls(1);
   appendBrush(f, s);
+  return f.bytes;
+}
+
+// A brushPreset descriptor with NO `bothAxes` key at all -- built by hand
+// rather than through `appendBrush()`, which (realistically) always writes
+// one. Some older or hand-edited `.abr` might genuinely lack it, and
+// `presetFromDescriptor()` must not mis-read a key that is not there; it must
+// fall back to Photoshop's own default, PERPENDICULAR scatter -- B5's
+// documented choice for the absent case.
+std::vector<uint8_t> oneBrushLibraryScatterNoBothAxes(int control, double jitterPercent) {
+  DescFixture f;
+  f.version();
+  f.descriptor("null", "null", 1);
+  f.key4("Brsh").vlls(1);
+
+  // brushPreset: Nm, Brsh, useTipDynamics, minimumDiameter, szVr, useScatter,
+  // scatterDynamics -- seven keys, no `bothAxes`.
+  f.objc("brushPreset", "brushPreset", 7u);
+  f.key4("Nm  ").textv("No Both Axes Key");
+  f.key4("Brsh").objc("sampledBrush", "sampledBrush", 4u);
+  f.key4("Dmtr").untf("#Pxl", 40.0);
+  f.key4("Angl").untf("#Ang", 0.0);
+  f.key4("Rndn").untf("#Prc", 100.0);
+  f.key4("Spcn").untf("#Prc", 25.0);
+  f.keyN("useTipDynamics").boolv(false);
+  f.keyN("minimumDiameter").untf("#Prc", 0.0);
+  f.key4("szVr").objc("brVr", "brVr", 3);
+  f.key4("bVTy").longv(0);
+  f.keyN("jitter").untf("#Prc", 0.0);
+  f.key4("Mnm ").untf("#Prc", 0.0);
+  f.keyN("useScatter").boolv(true);
+  f.keyN("scatterDynamics").objc("brVr", "brVr", 3);
+  f.key4("bVTy").longv(control);
+  f.keyN("jitter").untf("#Prc", jitterPercent);
+  f.key4("Mnm ").untf("#Prc", 0.0);
   return f.bytes;
 }
 
@@ -136,6 +202,23 @@ bool runAbrBrushesTest() {
     // A zero spacing would mean an unbounded dab count for any radius.
     check(abrSpacingToRadii(0.0) > 0.0f,
           "abr: a zero spacing is floored where it enters rather than where it is used");
+
+    // **The same class of bug, for Scatter (docs/reachability-audit.md B5).**
+    // Photoshop's Scatter jitter is a percentage of DIAMETER; `BrushTip::
+    // scatter` is in RADII (brush/Dynamics.hpp: "in radii"). Drop the factor
+    // of two and every imported brush scatters at HALF the distance the
+    // artist set -- still in range, still plausible, still paints, so it
+    // reads as "a slightly tighter brush" rather than as a unit bug.
+    // `abrScatterFractionToRadii()` takes the ALREADY-CLAMPED [0,1] fraction
+    // `addDynamicsLinks()` resolves a Scatter link's range to (see that
+    // function's own header comment for why), so 0.25 is 25% of a diameter,
+    // not a raw percent.
+    check(nearf(abrScatterFractionToRadii(0.25f), 0.5f, 1e-6f) &&
+              nearf(abrScatterFractionToRadii(0.5f), 1.0f, 1e-6f) &&
+              nearf(abrScatterFractionToRadii(1.0f), 2.0f, 1e-6f),
+          "abr: scatter converts fraction-of-DIAMETER to RADII -- 25% of a diameter is half a "
+          "radius, and 100% of a diameter (the jitter dynamics' own ceiling) is a FULL diameter, "
+          "two radii, not one");
   }
 
   // --- 2. Controls this build has no input for ----------------------------
@@ -479,6 +562,113 @@ bool runAbrBrushesTest() {
               "whole one");
       }
     }
+  }
+
+  // --- 9. Scatter: the unit end to end, and the axis flag -------------------
+  //
+  // docs/reachability-audit.md B5, both halves. The pure conversion is
+  // section 1's job; this is the mapping proving `presetFromDescriptor()`
+  // actually calls it, on the actual links `addDynamicsLinks()` adds, and
+  // that "Both Axes" -- a top-level sibling of `useScatter`, not a field
+  // inside `scatterDynamics` -- imports (or, absent, defaults to
+  // Photoshop's own perpendicular).
+  {
+    // useScatter OFF keeps whatever jitter/control/bothAxes the descriptor
+    // carries but does not apply them -- section 5's gating, restated for
+    // Scatter.
+    BrushSpec off;
+    off.useScatter = false;
+    off.scatterControl = 2;  // Pen Pressure
+    off.scatterJitter = 80.0;
+    off.bothAxes = true;
+    const AbrImportResult offR = importAbrBrushes(wrapAbr(oneBrushLibrary(off)));
+    check(offR.ok && offR.presets.size() == 1 &&
+              findLink(offR.presets[0].links, DynamicSource::Random, DynamicTarget::Scatter) ==
+                  kNoLink &&
+              findLink(offR.presets[0].links, DynamicSource::Pressure, DynamicTarget::Scatter) ==
+                  kNoLink,
+          "abr: useScatter OFF imports no Scatter links at all, even with jitter and a control "
+          "authored -- Photoshop keeps the values and does not apply them");
+
+    // useScatter ON, jitter only (Control: Off): one RANDOM link, and its
+    // range is the unit conversion this section exists to prove end to end.
+    BrushSpec jitterOnly;
+    jitterOnly.useScatter = true;
+    jitterOnly.scatterControl = 0;  // Off
+    jitterOnly.scatterJitter = 50.0;  // 50% of the DIAMETER
+    jitterOnly.bothAxes = false;
+    const AbrImportResult jR = importAbrBrushes(wrapAbr(oneBrushLibrary(jitterOnly)));
+    check(jR.ok && jR.presets.size() == 1, "abr: a scattering brush imports");
+    if (jR.ok && jR.presets.size() == 1) {
+      const BrushPreset& p = jR.presets[0];
+      const size_t rnd = findLink(p.links, DynamicSource::Random, DynamicTarget::Scatter);
+      check(rnd != kNoLink && p.links.links.size() == 1,
+            "abr: jitter alone (Control: Off) makes exactly ONE Scatter link, on RANDOM");
+      // 50% of a DIAMETER is 1.0 RADII, not 0.5 -- the exact half-vs-whole
+      // gap B5 describes, now checked past the whole import, not just the
+      // isolated conversion function.
+      check(rnd != kNoLink && nearf(p.links.links[rnd].rangeLo, 0.0f, 1e-4f) &&
+                nearf(p.links.links[rnd].rangeHi, 1.0f, 1e-4f),
+            "abr: a 50% Scatter jitter imports as up to 1.0 RADII of offset, not 0.5 -- half the "
+            "distance is exactly the bug this section exists to catch");
+      check(!p.scatterBothAxes,
+            "abr: `bothAxes` FALSE imports as false -- perpendicular scatter, Photoshop's own "
+            "default");
+    }
+
+    // useScatter ON, control only (Control: Pen Pressure, no jitter): one
+    // PRESSURE link, doubled the same way -- the control branch and the
+    // jitter branch must agree about which unit a Scatter link's range is in,
+    // or a brush with both composes two contributions on two different
+    // scales onto the same Add target.
+    BrushSpec controlOnly;
+    controlOnly.useScatter = true;
+    controlOnly.scatterControl = 2;  // Pen Pressure
+    controlOnly.scatterJitter = 0.0;
+    controlOnly.bothAxes = true;
+    const AbrImportResult cR = importAbrBrushes(wrapAbr(oneBrushLibrary(controlOnly)));
+    if (cR.ok && cR.presets.size() == 1) {
+      const BrushPreset& p = cR.presets[0];
+      const size_t ctrl = findLink(p.links, DynamicSource::Pressure, DynamicTarget::Scatter);
+      check(ctrl != kNoLink && p.links.links.size() == 1,
+            "abr: a control alone (no jitter) makes exactly ONE Scatter link, on PRESSURE");
+      // targetDefaultRange(Scatter) is (0,1) -- a full DIAMETER of travel at
+      // full pressure -- so doubled it is (0,2) RADII, matching the jitter
+      // branch's own unit rather than a different one.
+      check(ctrl != kNoLink && nearf(p.links.links[ctrl].rangeLo, 0.0f, 1e-4f) &&
+                nearf(p.links.links[ctrl].rangeHi, 2.0f, 1e-4f),
+            "abr: a control-driven Scatter link is ALSO in RADII -- (0,1) DIAMETER doubles to "
+            "(0,2) RADII, the same unit the jitter branch converts to");
+      check(p.scatterBothAxes,
+            "abr: `bothAxes` TRUE imports as true -- isotropic scatter, matching the checkbox");
+    }
+
+    // Both a control AND jitter: TWO links, both converted -- section 5's
+    // "two links" shape, restated for Scatter with its own unit.
+    BrushSpec both;
+    both.useScatter = true;
+    both.scatterControl = 2;  // Pen Pressure
+    both.scatterJitter = 80.0;
+    const AbrImportResult bR = importAbrBrushes(wrapAbr(oneBrushLibrary(both)));
+    if (bR.ok && bR.presets.size() == 1) {
+      const BrushPreset& p = bR.presets[0];
+      const size_t ctrl = findLink(p.links, DynamicSource::Pressure, DynamicTarget::Scatter);
+      const size_t rnd = findLink(p.links, DynamicSource::Random, DynamicTarget::Scatter);
+      check(ctrl != kNoLink && rnd != kNoLink && p.links.links.size() == 2,
+            "abr: a control AND jitter together make TWO Scatter links, both converted");
+      // 80% of a diameter is 1.6 radii.
+      check(rnd != kNoLink && nearf(p.links.links[rnd].rangeHi, 1.6f, 1e-4f),
+            "abr: an 80% jitter converts to 1.6 RADII, not 0.8");
+    }
+
+    // No `bothAxes` key in the descriptor at all -- the absent case B5 says
+    // must default to PERPENDICULAR, exercised through the real import path
+    // rather than assumed from `DescriptorRef::asBoolean()`'s own contract.
+    const AbrImportResult nB =
+        importAbrBrushes(wrapAbr(oneBrushLibraryScatterNoBothAxes(0, 50.0)));
+    check(nB.ok && nB.presets.size() == 1 && !nB.presets[0].scatterBothAxes,
+          "abr: a descriptor with NO `bothAxes` key imports scatterBothAxes as false -- absent "
+          "means perpendicular, Photoshop's own default, not isotropic");
   }
 
   std::printf("[selftest] abr brushes %s\n", ok ? "PASS" : "FAIL");

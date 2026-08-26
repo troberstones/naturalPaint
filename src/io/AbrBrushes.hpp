@@ -229,4 +229,20 @@ bool abrControlToSource(int bVTy, DynamicSource& out) noexcept;
 // which reads as "the import made everything grainy" rather than as a unit bug.
 float abrSpacingToRadii(double percentOfDiameter) noexcept;
 
+// The same class of bug as `abrSpacingToRadii()` above, for Scatter
+// (docs/reachability-audit.md B5): Photoshop's Scatter jitter is a
+// percentage of the tip's DIAMETER; `BrushTip::scatter` is in units of the
+// RADIUS (brush/Dynamics.hpp: "in radii"). Getting this wrong scatters every
+// imported brush at exactly half the distance the artist set -- plausible,
+// in range, and invisible without comparing against the original.
+//
+// Takes the ALREADY-CLAMPED [0,1] fraction-of-diameter `addDynamicsLinks()`
+// resolves a Scatter link's range to (that function's own shared angular-
+// jitter math, correct as-is for Angle in degrees and Hue in turns, the two
+// other Add targets it serves), not a raw percent -- so a jitter above 50%
+// of the diameter is not silently capped at the point THIS conversion would
+// otherwise introduce were the doubling applied before Photoshop's own
+// 0-100% jitter clamp instead of after it.
+float abrScatterFractionToRadii(float fractionOfDiameter) noexcept;
+
 }  // namespace np

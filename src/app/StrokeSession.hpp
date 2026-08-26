@@ -648,6 +648,19 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
 // paints at full strength rather than at whatever `penPressure` last held.
 DynamicInputs dynamicInputsFor(const AppState& st) noexcept;
 
+// SCATTER's own axis (reachability audit B5). `centre` is the dab's
+// pre-scatter position; `seed`/`dabIndex` are the stroke's own per-dab draw,
+// identically to every other stroke-local source; `stepDx`/`stepDy` is the
+// SAME step vector `depositPending()` already computes for DIRECTION --
+// `(p - prevDab)`, zero on the stroke's first dab. `tip.scatter` is the
+// resolved magnitude, in radii (`BrushTip::scatter`'s own comment); the
+// identity (`tip.scatter == 0.0f`) returns `centre` unchanged and spends no
+// draw. See `app/StrokeSession.cpp`'s own definition for the geometry:
+// perpendicular-to-the-stroke by default (`tip.scatterBothAxes == false`,
+// Photoshop's own default), full-circle isotropic when it is set.
+Vec2 applyPerDabScatter(Vec2 centre, const BrushTip& tip, uint64_t seed, uint32_t dabIndex,
+                        float stepDx, float stepDy) noexcept;
+
 // --- The brush library, against the live brush ------------------------------
 //
 // These three live here rather than in brush/Library.hpp because they need
