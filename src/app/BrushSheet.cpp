@@ -229,7 +229,12 @@ int runBrushSheet(const char* abrPath, const char* outPath, const char* experime
       // triangle because a triangle's corner at t=0.5 shows up as a visible
       // kink in the width of any brush with a strong PRESSURE -> Size link.
       const float pressure = std::sin(t * 3.14159265358979f);
-      stroke.setTip(brushTipFor(brush, lut, pressure));
+      // PRESSURE SMOOTHING: the same per-sample sequence `ui/MacPaintUI.cpp`
+      // uses (this file's own top comment), now including the EMA `begin()`
+      // above reset for this stroke. Damps this ramp's own instantaneous
+      // rate of change rather than the shape of the ramp itself -- the
+      // taper still runs 0->1->0, just lagged a few samples at each end.
+      stroke.setTip(brushTipFor(brush, lut, stroke.smoothPressure(pressure)));
       stroke.addPoint(x, y);
     }
     stroke.end();

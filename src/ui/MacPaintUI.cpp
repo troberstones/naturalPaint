@@ -3243,18 +3243,56 @@ void drawLinkEditor(AppState& st) {
   if (ctlSlider("Range hi", &hi, sliderLo, sliderHi)) link.rangeHi = hi;
   ImGui::Checkbox("Invert", &link.invert);
 
-  // The three easing chips. They set the SAME Curve the widget edits, so a
-  // chip and a hand-drawn curve cannot disagree -- and a curve dragged away
-  // from all three lights none of them, which is the honest answer.
-  const EasingPreset presets[3] = {EasingPreset::Linear, EasingPreset::EaseOut,
-                                   EasingPreset::SCurve};
-  const char* names[3] = {"Linear", "Ease out", "S"};
-  for (int i = 0; i < 3; ++i) {
-    if (i > 0) ImGui::SameLine();
-    const bool active = matchesPreset(link.curve, presets[i]);
+  // The easing chips. They set the SAME Curve the widget edits, so a chip and
+  // a hand-drawn curve cannot disagree -- and a curve dragged away from all of
+  // them lights none of them, which is the honest answer.
+  //
+  // **All five presets are here, including LogTaper and PowerIn.** A preset
+  // `easingCurve()` can build but no chip can select is reachable only from
+  // code, which is this codebase's own silent-no-op class (docs/reachability-
+  // audit.md): the feature exists, nothing in the application can turn it on,
+  // and nothing says so. The two paper-derived laws are the ones most worth
+  // reaching -- they are the shapes a real medium has, not shapes that were
+  // eyeballed -- so they get chips on the same row-break rule as the rest.
+  //
+  // The list itself is `brush/Dynamics.hpp`'s `easingPresetCount()`/`At()`,
+  // not a literal here: a hand-written array in this file is what let two
+  // presets ship with no chip. Only the TOOLTIP text is the panel's -- and it
+  // is a switch with no `default:`, so a sixth preset cannot reach the row
+  // without someone writing its explanation.
+  auto chipTooltip = [](EasingPreset preset) -> const char* {
+    switch (preset) {
+      case EasingPreset::Linear:
+        return "Straight through: OUT tracks IN with no shaping.";
+      case EasingPreset::EaseOut:
+        return "Quick at first, flattening toward the top.";
+      case EasingPreset::SCurve:
+        return "Slow at both ends, fast through the middle.";
+      case EasingPreset::LogTaper:
+        return "log(1+9p)/log(10) -- PaintCopilot's radius law.\n"
+               "Most of the growth in the first light third of\n"
+               "the range. On PRESSURE -> SIZE this is how a real\n"
+               "brush head spreads: it fattens fast off the paper,\n"
+               "then resists.";
+      case EasingPreset::PowerIn:
+        return "p^2.5 -- PaintCopilot's opacity law, the mirror\n"
+               "shape. Barely builds at low IN, most of the gain\n"
+               "in the top third. On PRESSURE -> FLOW that is a\n"
+               "long, honest light range before the mark goes solid.";
+    }
+    return "";
+  };
+  // Three per row: five chips do not fit the panel's width, and letting them
+  // run off the edge would hide the last ones behind a clip rather than
+  // showing them -- which would be the same unreachability wearing a chip.
+  for (size_t i = 0; i < easingPresetCount(); ++i) {
+    if (i > 0 && (i % 3) != 0) ImGui::SameLine();
+    const EasingPreset preset = easingPresetAt(i);
+    const bool active = matchesPreset(link.curve, preset);
     if (active) ImGui::PushStyleColor(ImGuiCol_Button, atelierToken(kAccent));
-    if (ImGui::Button(names[i])) link.curve = easingCurve(presets[i]);
+    if (ImGui::Button(easingPresetName(preset))) link.curve = easingCurve(preset);
     if (active) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", chipTooltip(preset));
   }
 }
 
@@ -8774,7 +8812,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // The whole source set, not pressure alone -- tilt, azimuth and barrel
       // reach the tip here (app/PenAxes.hpp converts them), which is what the
       // DYNAMICS matrix's non-pressure rows actually drive.
-      const BrushTip tip = brushTipFor(st.brush, lut, dynamicInputsFor(st));
+      const DynamicInputs live = dynamicInputsFor(st);
+      const BrushTip tip = brushTipFor(st.brush, lut, live);
       if (!g_stroke.active()) {
         g_strokeRefusal.clear();
         // **`&st.brush.links` is what makes the stroke-local dynamics sources
@@ -8806,7 +8845,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (g_stroke.active()) {
         // Per frame, from this frame's pressure -- the same granularity the
         // solver route gets, which sets one brushRadius per frame.
-        g_stroke.setTip(tip);
+        //
+        // **Smoothed, not raw.** `g_stroke.smoothPressure()` (PaintCopilot
+        // §3.2's EMA jitter filter, StrokeSession.hpp's own comment) is
+        // called here rather than beside `dynamicInputsFor()` above, on
+        // purpose: this branch only runs once `g_stroke.active()`, which on
+        // a stroke's first painting frame is true only AFTER `begin()` has
+        // already reset the filter's per-stroke state for it -- calling it
+        // any earlier would blend against the previous stroke's last
+        // reading. `tip` above (built from the raw sample, used only to
+        // decide whether `begin()` accepts the stroke) is superseded here
+        // before a single dab is ever emitted from it.
+        DynamicInputs smoothed = live;
+        smoothed.pressure = g_stroke.smoothPressure(live.pressure);
+        g_stroke.setTip(brushTipFor(st.brush, lut, smoothed));
         g_stroke.addPoint(tx, ty);
         st.lastX = tx;
         st.lastY = ty;

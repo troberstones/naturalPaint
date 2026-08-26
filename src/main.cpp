@@ -2018,6 +2018,9 @@ int main(int argc, char** argv) {
     // the pinch-to-zoom path's arithmetic -- app/WheelInput.hpp. Headless;
     // the SDL/ImGui dispatch sites this feeds are unreachable from here (F4).
     const bool wheelInputOk = np::runWheelInputTest();
+    // track10/feel (PaintCopilot §3.2, arXiv:2605.20941): the log/power
+    // pressure-response curves and the pressure EMA's per-stroke reset.
+    const bool pressureFeelOk = np::runPressureFeelTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2044,7 +2047,7 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
-                    saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk;
+                    saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

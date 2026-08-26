@@ -699,7 +699,24 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   distanceTravelled_ = 0.0f;
   initialDirection_ = 0.0f;
   initialDirectionLatched_ = false;
+  // `smoothPressure()`'s own per-stroke state -- see its header comment on
+  // why leaking the previous stroke's last smoothed pressure into this one
+  // would corrupt this stroke's very first dab.
+  smoothedPressure_ = 0.0f;
+  pressureSmoothLatched_ = false;
   return true;
+}
+
+float StrokeSession::smoothPressure(float rawPressure) noexcept {
+  if (!pressureSmoothLatched_) {
+    smoothedPressure_ = rawPressure;  // no history yet -- start AT the
+                                      // input rather than ramping up from
+                                      // 0 (this method's own header comment)
+    pressureSmoothLatched_ = true;
+  } else {
+    smoothedPressure_ = dynamicPressureEma(smoothedPressure_, rawPressure);
+  }
+  return smoothedPressure_;
 }
 
 void StrokeSession::depositPending() {

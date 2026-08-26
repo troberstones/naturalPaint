@@ -367,6 +367,38 @@ tightening one assertion rather than discovering which one was wrong.
 
 ---
 
+### B10 — Two easing presets with no chip — ~~OPEN~~ **CLOSED, and the class is now guarded**
+
+`EasingPreset::LogTaper` and `PowerIn` (PaintCopilot §3.2's `log(1+9p)/log(10)`
+radius law and `p^2.5` opacity law) were added to `brush/Dynamics.hpp`, built
+correctly by `easingCurve()`, matched correctly by `matchesPreset()`, and
+covered by nine selftest assertions — and **no chip in the LINK editor could
+select either one**. `ui/MacPaintUI.cpp`'s chip row was a hand-written
+`presets[3]`, which does not grow when the enum does. Every test passed; the
+feature was reachable only from a debugger.
+
+**Caught before the merge, not after**, which is the only reason this entry is
+short. It is nonetheless the exact shape of A1–A7 above: the code exists, the
+application cannot reach it, and nothing says so.
+
+**The fix is structural, not a fourth and fifth array entry.** The preset list
+now lives once, in `brush/Dynamics.cpp`'s `kEasingPresetOrder`, behind
+`easingPresetCount()` / `easingPresetAt()` / `easingPresetName()`. The chip row
+walks that; it owns only the tooltip text, and does so through a `switch` with
+no `default:`, so a sixth preset is a **compile error in the panel** rather
+than a chip nobody notices is missing. `selftest/PressureFeel` section 6 then
+asserts the enumeration is complete against an independently written list of
+every enum value, that no preset is listed twice, that the labels are non-empty
+and distinct, and that clicking chip *i* produces a curve `matchesPreset` lights
+for *i* and for no other — so "add a preset, forget the row" now reddens the
+suite. Verified by sabotage: dropping `LogTaper` from the order array reddens
+two assertions; collapsing both response laws to the identity reddens six.
+
+**Related, and still true generally:** `F1` records the same hand-maintained-
+list hazard for `toolImplemented()`. This is that hazard in the brush panel.
+
+---
+
 ## C. Whole subsystems built, tested, and unreachable
 
 **The common cause is menus that do not exist.** The bar is File, Edit, Layer,

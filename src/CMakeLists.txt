@@ -103,6 +103,7 @@ add_executable(naturalPaint
   app/selftest/PlaceImageAsLayer.cpp
   app/selftest/PointOps.cpp
   app/selftest/PresentTransfer.cpp
+  app/selftest/PressureFeel.cpp
   app/selftest/Probe.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp

@@ -220,21 +220,113 @@ float targetIdentity(DynamicTarget target) noexcept;
 // running beside it. One representation means the chips and the curve cannot
 // disagree, and it is what lets the design reuse the grading stack's widget
 // verbatim -- ops/PointOps.hpp's Curve, evaluated by evalCurve().
+//
+// **LogTaper and PowerIn, below, are that same argument applied to a source
+// with a real published shape.** Wen, Shen & Liang, "PaintCopilot: Modeling
+// Painting as Autonomous Artistic Continuation" (arXiv:2605.20941), section
+// 3.2 ("Pressure Control"), gives two closed-form pressure responses real
+// media brushes and this codebase's own `linkContribution()` do not yet
+// have: radius grows as `r_min + (r_max-r_min)*log(1+9p)/log(10)` and stamp
+// opacity grows as `p^2.5`. The question this file has to answer is not
+// "are the formulas right" (verified against the paper's own HTML, and
+// `pressureResponseRadiusNorm()`/`pressureResponseOpacityNorm()` below are
+// them, unmodified) but **where they belong**: as a third code path inside
+// `linkContribution()` (an `if (link.isPaperResponse) ...` branch beside the
+// curve it already evaluates), or as two more entries in the mechanism that
+// already exists for exactly this job.
+//
+// The branch loses on every axis this file's own design already committed
+// to. `linkContribution()`'s whole contract is "curve, then range" -- ONE
+// non-linearity, expressed ONE way, so that the LINK editor's plot is
+// always the complete, honest picture of what a cell does; a hard-coded
+// response the plot could not draw would be a link doing something its own
+// editor could not show. It would also have to be gated somehow (a formula
+// that fires unconditionally is not opt-in, which the next comment argues
+// it must be), and every gate is a second place `curve.empty()`'s own
+// "empty means linear" convention would need restating. The preset route
+// costs nothing beyond two more `Curve`s: `linkContribution()` is not
+// touched at all, the LINK editor's existing chip-and-plot machinery already
+// knows how to show an arbitrary curve, and a saved preset's `BrushLink`
+// serialises the resulting control points exactly like any hand-drawn one --
+// no new field, no new enum to persist, nothing `app/UserBrushLibrary.cpp`
+// has to learn about.
+//
+// **Exact control points, not a hand-eyeballed shape like EaseOut/SCurve's
+// three.** Those two are approximations of a FEELING ("ease out", "S") with
+// no formula to be exact TO. These two exist because a formula was cited, so
+// the nine control points below are that formula's own output at
+// x = 0, 1/8, 2/8, ..., 1 -- `evalCurve()`'s Hermite spline then passes
+// through the true curve at every one of those nine points exactly (it
+// interpolates control points, never approximates them), and only the
+// stretches BETWEEN knots can differ from the closed form at all.
+// `PressureFeel.cpp` (`--selftest`'s pressure-feel section) samples one of
+// those true knots (x=0.5, which is exactly on the lattice) as ground
+// truth, precisely so that comparison needs no interpolation-error
+// tolerance of its own.
 enum class EasingPreset {
   Linear,
   EaseOut,
   SCurve,
+  // PaintCopilot §3.2's radius law, `log(1+9p)/log(10)` -- concave, steep
+  // near p=0, flattening toward p=1. Meant for a Pressure -> Size link, but
+  // nothing in `Curve`'s representation restricts it to one; see this
+  // enum's own header comment.
+  LogTaper,
+  // PaintCopilot §3.2's opacity law, `p^2.5` -- convex, the mirror shape:
+  // barely building at low pressure, most of the gain in the top third.
+  // Meant for a Pressure -> Flow link (this codebase's per-dab opacity),
+  // for the identical reason.
+  PowerIn,
 };
 
 // Control points for a preset, in curve space ([0,1] x [0,1], y up).
 Curve easingCurve(EasingPreset preset) noexcept;
 
-// Whether `curve` is (within a small tolerance) one of the three presets --
+// Whether `curve` is (within a small tolerance) one of the five presets --
 // what the LINK editor uses to decide which chip to draw as active after the
 // user has dragged a control point. Returns false once the curve has been
-// edited away from all three, which is the honest answer: the chips describe
-// curves, so a curve that is none of them lights none of them.
+// edited away from all of them, which is the honest answer: the chips
+// describe curves, so a curve that is none of them lights none of them.
 bool matchesPreset(const Curve& curve, EasingPreset preset) noexcept;
+
+// **The enum, enumerated -- so the LINK editor's chip row cannot drift from
+// the preset list.** The chips used to be a hand-written array of three in
+// `ui/MacPaintUI.cpp`; adding a fourth and fifth preset here left that array
+// at three, which made the two new curves buildable from code and selectable
+// from nowhere -- a preset that exists and cannot be turned on, which is
+// exactly the silent-no-op class `docs/reachability-audit.md` catalogues.
+// The editor now walks these instead of a literal count, and
+// `easingPresetName()`'s switch has no `default:`, so a sixth preset is a
+// COMPILE error in this file rather than a chip nobody notices is missing.
+//
+// `easingPresetAt()` returns `Linear` for an out-of-range index -- the same
+// "degenerate input resolves to the identity shape" convention `easingCurve()`
+// itself uses, and unreachable through `easingPresetCount()`.
+size_t easingPresetCount() noexcept;
+EasingPreset easingPresetAt(size_t index) noexcept;
+const char* easingPresetName(EasingPreset preset) noexcept;
+
+// PaintCopilot §3.2's own closed-form pressure-response laws, verified
+// against the paper's HTML source (arXiv:2605.20941v1) before this file
+// used them. **Not called anywhere in the link-evaluation path** --
+// `EasingPreset::LogTaper`/`PowerIn` above sample these at nine points to
+// build the `Curve`s `linkContribution()` actually evaluates, and these two
+// functions exist so that sampling has a ground truth to be checked
+// against instead of nine hand-typed literals nobody re-derives.
+//
+// Both map [0,1] -> [0,1] and agree with the identity at both ends:
+// `f(0) = 0`, `f(1) = 1`. That is what lets either one sit under a
+// `BrushLink`'s existing `rangeLo..rangeHi` unchanged -- the SHAPE changes,
+// the ENDPOINTS a link's range already promises do not.
+//
+//   pressureResponseRadiusNorm(p)  = log(1 + 9p) / log(10)
+//   pressureResponseOpacityNorm(p) = p^2.5
+//
+// `p` is clamped to [0,1] first, matching `linkContribution()`'s own
+// "source is clamped before the curve sees it" contract, so neither can be
+// handed a negative base or a log of a non-positive number.
+float pressureResponseRadiusNorm(float p) noexcept;
+float pressureResponseOpacityNorm(float p) noexcept;
 
 struct BrushLink {
   DynamicSource source = DynamicSource::Pressure;
@@ -437,6 +529,40 @@ BrushLinkSet defaultBrushLinks();
 // in each contribution with its combine rule, so the result is total: all
 // twelve entries are always meaningful, whether or not anything drives them.
 DynamicResult evaluateLinks(const BrushLinkSet& set, const DynamicInputs& inputs) noexcept;
+
+// ---------------------------------------------------------------------------
+// PRESSURE SMOOTHING -- the jitter filter, PaintCopilot §3.2's other
+// contribution
+// ---------------------------------------------------------------------------
+//
+// A tablet's raw pressure channel is noisy frame to frame -- the same
+// physical push reads as a small saw-tooth, not a flat line -- and that
+// noise reaches every Pressure-sourced link this file resolves undamped
+// today. PaintCopilot's fix is a one-pole exponential moving average,
+// `p~(t) = 0.7 * p~(t-1) + 0.3 * p(t)`: it retains 70% of the previous
+// SMOOTHED value and blends in 30% of this frame's RAW sample, which damps
+// a fast, small, alternating error while still tracking a real, sustained
+// pressure change within a handful of frames (after n frames the influence
+// of a step change is `1 - 0.7^n` -- 91% resolved by frame 7, 99.9% by
+// frame 19).
+//
+// **This is a pure function of the previous smoothed value and this
+// frame's raw one, exactly like `dynamicVelocity()`/`dynamicDirection()`
+// below.** Those two also fold a running per-stroke quantity (the previous
+// dab's position) into a fresh sample, and this file's own answer for
+// where THAT state lives is `app/StrokeSession` -- `prevDabX_`/`prevDabY_`/
+// `havePrevDab_` -- never a static or a member of this pure-function file.
+// Pressure smoothing needs the identical shape for the identical reason:
+// the state (the last smoothed value, and whether one exists yet) has a
+// STROKE's lifetime, which only `StrokeSession` has, and it must be reset
+// at `begin()` or the first frame of a new stroke would smear in the
+// previous stroke's last pressure -- see `StrokeSession::smoothPressure()`.
+//
+// `previousSmoothed` and `rawPressure` are each clamped to [0,1] first (the
+// same defensive clamp `linkContribution()` applies to its own `source`),
+// so a caller cannot hand this a value outside the range every other
+// pressure consumer in this file already assumes.
+float dynamicPressureEma(float previousSmoothed, float rawPressure) noexcept;
 
 // ---------------------------------------------------------------------------
 // The stroke-local sources -- VELOCITY, FADE, NOISE, RANDOM and DIRECTION

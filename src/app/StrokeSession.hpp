@@ -761,6 +761,38 @@ class StrokeSession {
   void setTip(const BrushTip& tip) noexcept { tip_ = tip; }
   const BrushTip& tip() const noexcept { return tip_; }
 
+  // PRESSURE SMOOTHING (brush/Dynamics.hpp's `dynamicPressureEma()`, from
+  // PaintCopilot §3.2): this stroke's own exponential moving average over
+  // the once-per-FRAME raw pressure sample, before it drives `brushTipFor()`.
+  //
+  // **This is the state `dynamicPressureEma()`'s own header comment says
+  // belongs to a stroke's owner, not to that pure function.** The caller
+  // (`ui/MacPaintUI.cpp`'s canvas block, `app/BrushSheet.cpp`'s per-sample
+  // loop) calls this once per frame/sample with the RAW pressure it would
+  // otherwise have fed `brushTipFor()` directly, and feeds `brushTipFor()`
+  // the SMOOTHED result this returns instead.
+  //
+  // The first call after `begin()` returns `rawPressure` unchanged -- there
+  // is no previous smoothed value to blend from yet, and manufacturing one
+  // (starting the filter at 0, say) would make every stroke's opening dabs
+  // fade in from nothing regardless of how hard the stroke started, which
+  // is a soft-start artefact the paper's jitter filter was never meant to
+  // add. Every call after the first is the plain recursion.
+  //
+  // **Must be called AFTER `begin()`, never before, on a stroke's first
+  // painting frame.** `begin()` resets the latch below; a caller that reads
+  // this frame's smoothed pressure before calling `begin()` (to build the
+  // very tip `begin()` itself is handed) would still be blending against
+  // the PREVIOUS stroke's last smoothed value, which is exactly the
+  // cross-stroke leak the design brief for this feature calls out as "the
+  // reset...least likely to be noticed." `ui/MacPaintUI.cpp`'s canvas block
+  // avoids this by building `begin()`'s own bootstrap tip from the raw
+  // sample and only calling `smoothPressure()` afterwards, once
+  // `g_stroke.active()` is true -- the same tip is then rebuilt and handed
+  // to `setTip()` on that same frame, so the bootstrap tip is live for zero
+  // frames, never painted.
+  float smoothPressure(float rawPressure) noexcept;
+
   // One raw pointer sample, in document texel coordinates. Deposits whatever
   // dabs `brush/StrokePath` emits for it and returns **this frame's** tile
   // set -- what live feedback must recomposite, sorted (y, x) and unique.
@@ -850,6 +882,13 @@ class StrokeSession {
   // which has no position to hand it yet.
   uint64_t seed_ = 0;
   bool seedLatched_ = false;
+
+  // `smoothPressure()`'s own state, the `seed_`/`seedLatched_` shape applied
+  // to a smoothed VALUE instead of an identity -- see that method's own
+  // comment. Reset at `begin()`, exactly like `seed_` above, so a new stroke
+  // never blends against the previous one's last reading.
+  float smoothedPressure_ = 0.0f;
+  bool pressureSmoothLatched_ = false;
 
   // The previous dab's position, for VELOCITY's step distance and DIRECTION's
   // (and INITIAL DIRECTION's) step vector (the same `(p - prevDab)`

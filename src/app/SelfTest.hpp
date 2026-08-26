@@ -3511,5 +3511,30 @@ bool runZoomAndSizeTest();
 // reach the SDL/ImGui dispatch sites this replaces (F4), which is why the
 // decision logic was pulled out into functions this can call directly.
 bool runWheelInputTest();
+// track10/feel: PaintCopilot §3.2 (arXiv:2605.20941)'s two pressure-feel
+// contributions -- brush/Dynamics.hpp's own header comment on
+// `EasingPreset::LogTaper`/`PowerIn` has the curve-vs-hard-code argument in
+// full; not restated here. Covers:
+//  - `LogTaper`/`PowerIn`'s built `Curve`s: both endpoints exactly 0/1, the
+//    x=0.5 knot exactly equal to the closed-form function it was sampled
+//    from (`pressureResponseRadiusNorm()`/`pressureResponseOpacityNorm()`),
+//    a measurable, DERIVED gap from the linear interpolation at that same
+//    point (not guessed), and monotonic across a dense sweep of the whole
+//    domain -- an actual property of the built spline, not merely of the
+//    nine points that define it.
+//  - `defaultBrushLinks()`'s existing two links still resolve to Linear --
+//    the new presets are additive and change no existing brush by default.
+//  - `dynamicPressureEma()`: a held input is a fixed point, the formula's
+//    exact literals at a couple of hand-workable steps, and a spread-out
+//    convergence check (repeated application closes the gap to a held
+//    target geometrically, by the documented `1 - 0.7^n`).
+//  - `StrokeSession::smoothPressure()`: the first call after `begin()`
+//    returns the raw sample unchanged (no manufactured ramp-up), later
+//    calls follow the same recursion `dynamicPressureEma()` proves in
+//    isolation, and -- the one this section spends the most words on --
+//    the state does NOT survive an `end()`/`begin()` pair: a second
+//    stroke's first call returns exactly its own raw sample, not a value
+//    blended with the first stroke's last smoothed reading.
+bool runPressureFeelTest();
 
 }  // namespace np

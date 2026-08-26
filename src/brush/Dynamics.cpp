@@ -36,6 +36,26 @@ constexpr float kEaseOutMid = 0.75f;   // t=0.5 lifted well above the diagonal
 constexpr float kSCurveLow = 0.15f;    // t=0.25 pulled below
 constexpr float kSCurveHigh = 0.85f;   // t=0.75 pushed above
 
+// `LogTaper` and `PowerIn`, by contrast, ARE sampled from an exact formula
+// (`pressureResponseRadiusNorm()`/`pressureResponseOpacityNorm()`, defined
+// below and declared in the header) -- nine points, evenly spaced at
+// x = k/8 for k = 0..8, rather than EaseOut/SCurve's three hand-placed
+// ones. `evalCurve()` interpolates control points exactly (it is a spline
+// THROUGH them, never a least-squares fit near them), so this build simply
+// asks the formula for its own value at every knot instead of eyeballing a
+// shape -- and it is what makes x=0.5 land exactly on a knot, which
+// `PressureFeel.cpp` relies on to check the built curve against the closed
+// form with no spline-interpolation error to budget for.
+Curve sampleAt9Points(float (*response)(float)) noexcept {
+  Curve c;
+  c.reserve(9);
+  for (int i = 0; i <= 8; ++i) {
+    const float x = static_cast<float>(i) / 8.0f;
+    c.push_back({x, response(x)});
+  }
+  return c;
+}
+
 }  // namespace
 
 const char* sourceName(DynamicSource source) noexcept {
@@ -241,8 +261,65 @@ Curve easingCurve(EasingPreset preset) noexcept {
       return Curve{{0.0f, 0.0f}, {0.5f, kEaseOutMid}, {1.0f, 1.0f}};
     case EasingPreset::SCurve:
       return Curve{{0.0f, 0.0f}, {0.25f, kSCurveLow}, {0.75f, kSCurveHigh}, {1.0f, 1.0f}};
+    case EasingPreset::LogTaper:
+      return sampleAt9Points(pressureResponseRadiusNorm);
+    case EasingPreset::PowerIn:
+      return sampleAt9Points(pressureResponseOpacityNorm);
   }
   return Curve{{0.0f, 0.0f}, {1.0f, 1.0f}};
+}
+
+// The chip row's own list. Deliberately ONE array, in one file, rather than a
+// count in the UI that has to be remembered -- see the header's comment on
+// what happened the last time it was two.
+constexpr EasingPreset kEasingPresetOrder[] = {
+    EasingPreset::Linear, EasingPreset::EaseOut, EasingPreset::SCurve,
+    EasingPreset::LogTaper, EasingPreset::PowerIn,
+};
+
+size_t easingPresetCount() noexcept {
+  return sizeof(kEasingPresetOrder) / sizeof(kEasingPresetOrder[0]);
+}
+
+EasingPreset easingPresetAt(size_t index) noexcept {
+  if (index >= easingPresetCount()) return EasingPreset::Linear;
+  return kEasingPresetOrder[index];
+}
+
+const char* easingPresetName(EasingPreset preset) noexcept {
+  // No `default:` -- a sixth preset must fail to compile here (-Wswitch under
+  // -Werror), which is the whole point of routing the chips through this.
+  switch (preset) {
+    case EasingPreset::Linear:
+      return "Linear";
+    case EasingPreset::EaseOut:
+      return "Ease out";
+    case EasingPreset::SCurve:
+      return "S";
+    case EasingPreset::LogTaper:
+      return "Log";
+    case EasingPreset::PowerIn:
+      return "Pow";
+  }
+  return "Linear";
+}
+
+float pressureResponseRadiusNorm(float p) noexcept {
+  // log(1+9p)/log(10): 0 at p=0 (log(1)=0), 1 at p=1 (log(10)/log(10)=1) --
+  // both endpoints exact by construction, not rounded into place.
+  const float t = clamp01(p);
+  return std::log10(1.0f + 9.0f * t);
+}
+
+float pressureResponseOpacityNorm(float p) noexcept {
+  // p^2.5 = p^2 * sqrt(p). std::pow(p, 2.5f) is the direct reading of the
+  // paper's own exponent; this file uses the two-multiply form instead
+  // because `sqrt` is exact for the one non-integer factor of the exponent
+  // and every real toolchain's `pow(x, 2.5)` already reduces to something
+  // equivalent internally -- writing it out means this function has no
+  // hidden dependency on how aggressively a given libm optimises `pow`.
+  const float t = clamp01(p);
+  return t * t * std::sqrt(t);
 }
 
 bool matchesPreset(const Curve& curve, EasingPreset preset) noexcept {
@@ -373,6 +450,16 @@ DynamicResult evaluateLinksWhere(const BrushLinkSet& set, const DynamicInputs& i
 DynamicResult evaluateLinks(const BrushLinkSet& set,
                             const DynamicInputs& inputs) noexcept {
   return evaluateLinksWhere(set, inputs, /*filterStrokeLocal=*/false, /*wantStrokeLocal=*/false);
+}
+
+// See the header's own section comment for the state-ownership argument
+// (`app/StrokeSession` holds the previous value; this is only the step).
+float dynamicPressureEma(float previousSmoothed, float rawPressure) noexcept {
+  constexpr float kRetain = 0.7f;  // PaintCopilot §3.2's own two literals --
+  constexpr float kAdopt = 0.3f;   // not tuned here, and they sum to 1.0 so
+                                   // a held-constant input is a fixed point:
+                                   // 0.7x + 0.3x == x.
+  return kRetain * clamp01(previousSmoothed) + kAdopt * clamp01(rawPressure);
 }
 
 // ---------------------------------------------------------------------------
