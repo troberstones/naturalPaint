@@ -523,6 +523,37 @@ Anything in the title band — wordmark, undo/redo buttons, fps, document status
 line, the menu bar itself — is currently unverifiable by the harness. A sixth view
 over y=0–71 closes it.
 
+**Scouted 2026-08-25, and there is one obstacle worth knowing before anyone
+starts.** Captured `--demo-document --screenshot` at 2560x1580 and cropped
+`(0, 0, 2560, 77)` — the band holds the "naturalPaint" wordmark on the left and,
+on the right, **Undo**, **Redo**, and a **live FPS readout**. Ink-column
+measurement across rows 15–62, against the band's own background luminance of 43:
+
+| element | x range |
+|---|---|
+| Undo | 2216–2303 |
+| Redo | 2316–2401 |
+| `"%.1f fps"` (`MacPaintUI.cpp:7332`) | 2446–2550, right-aligned to the window |
+
+The fps number changes every run, so **a full-width view of this band can never
+hold a threshold** — it is not glyph-edge noise like `toolbar`'s, it is a
+different string. Two ways out, and they are not equivalent:
+
+1. **Crop short of it** — `(0, 0, 2418, 77)` clears Redo's right edge by 17 px
+   and the fps text's leftmost ink by 28 px (about 21 px in the worst case, since
+   the readout is right-aligned and a longer number grows leftward at roughly
+   10.4 px per character). Cheap, touches only `run_golden.sh`, and covers the
+   wordmark plus **Undo/Redo enablement** — which is the part actually worth
+   covering, given **D1**.
+2. **Suppress the readout on screenshot frames**, exactly as `main.cpp` already
+   feeds `(-FLT_MAX, -FLT_MAX)` for the pointer on those frames. Strictly better —
+   it removes a real nondeterminism source instead of cropping around one, and
+   makes the whole band coverable — but it touches `ui/MacPaintUI.cpp`.
+
+Either way the threshold must be **measured**, not inherited: this view contains
+text, so it cannot be exact, and `flyout` is the recorded case of a view taking a
+threshold from a rule rather than a measurement and passing on luck for two days.
+
 ### F3 — `--selftest` asserts behaviour no user can trigger
 
 `selftest/Probe.cpp` verifies NxN sample-size averaging and linear-vs-display
