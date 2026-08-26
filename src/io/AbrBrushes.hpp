@@ -100,6 +100,11 @@ struct AbrImportResult {
   // bitmap.
   size_t sampledTips = 0;
   size_t unmappedControls = 0;  // dynamics whose control has no source here
+  // Brushes with Dual Brush switched ON, which this build has no second tip
+  // to honour. Counted separately from `unmappedControls` because it is not a
+  // control at all -- it is a whole second tip, and it changes the mark far
+  // more than any single dynamics row does.
+  size_t dualBrushes = 0;
 };
 
 // Parse a whole `.abr` file.
@@ -147,9 +152,26 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp,
 // Named rather than left as a magic number because `StylusWheel` has no
 // counterpart here and the import has to say so -- it is a device axis SDL
 // does not report. `InitialDirection` and `Direction` each map onto their
-// own `DynamicSource` now (`InitialDirection`/`Direction` respectively --
-// `abrControlToSource()`'s own comment on why these are two rows in the
-// matrix rather than one, matching Photoshop's own two-entry control list).
+// own `DynamicSource` (`abrControlToSource()`'s own comment on why these are
+// two rows in the matrix rather than one, matching Photoshop's own two-entry
+// control list).
+//
+// **6 is Direction and 7 is Initial Direction, and this pair was the other
+// way round until it was checked against Photoshop itself.** The evidence for
+// 6 is direct: Kyle Webster's "Blot Bot Perfecto" carries `angleDynamics`
+// `bVTy = 6` in the file, and Photoshop's own Shape Dynamics panel shows that
+// brush's Angle Control as **Direction**. Three further readings from the same
+// brush pin the rest of the scale in place -- `szVr` 2 displays as "Pen
+// Pressure", `roundnessDynamics` 0 as "Off", and its Size/Roundness jitter
+// percentages land exactly where this importer computes them -- so the
+// disagreement is specific to this pair rather than a general off-by-one.
+//
+// **7 is inferred, not observed.** Nothing in either sample library uses it:
+// all twelve Runny Inkers and all three Spatter/Concept brushes that carry an
+// angle control carry 6. It is placed here by elimination, since Photoshop
+// offers exactly these two direction entries and one of them is now spoken
+// for. Treat a file that actually uses 7 as the first real test of that
+// guess, and re-check it against the panel before trusting it.
 enum class AbrControl {
   Off = 0,
   Fade = 1,
@@ -157,8 +179,8 @@ enum class AbrControl {
   PenTilt = 3,
   StylusWheel = 4,
   Rotation = 5,
-  InitialDirection = 6,
-  Direction = 7,
+  Direction = 6,
+  InitialDirection = 7,
 };
 
 const char* abrControlName(int bVTy) noexcept;

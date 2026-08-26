@@ -58,8 +58,10 @@ int runAbrReport(const char* path) {
     return 1;
   }
 
-  std::printf("\n%zu presets imported, %zu sampled tips NOT imported, %zu unmapped controls\n\n",
-              r.presets.size(), r.sampledTips, r.unmappedControls);
+  std::printf(
+      "\n%zu presets imported, %zu sampled tips NOT imported, %zu unmapped controls, "
+      "%zu with Dual Brush ON\n\n",
+      r.presets.size(), r.sampledTips, r.unmappedControls, r.dualBrushes);
 
   std::printf("%-40s %7s %7s %7s %7s %7s  %s\n", "name", "radius", "hard", "spacing", "round",
               "angle", "links");
@@ -127,6 +129,19 @@ int runAbrReport(const char* path) {
         "library's shape at all. No amount of dynamics tuning changes that:\n"
         "the mark being stamped is the wrong mark.\n",
         r.sampledTips, r.presets.size());
+  }
+  if (r.dualBrushes > 0) {
+    std::printf(
+        "\n**%zu of %zu brushes have Dual Brush switched ON.**\n"
+        "Photoshop stamps a SECOND tip through those, with its own blend mode,\n"
+        "spacing, scatter and count. This build has one tip per brush, so that\n"
+        "second stamp is missing entirely -- which shows up as a mark that is\n"
+        "smoother and more even than the original, since breaking up the first\n"
+        "tip's edge is most of what the second one is there to do.\n"
+        "\n"
+        "Read this the same way as the sampled-tip line above: it is a reason\n"
+        "the brush cannot look right YET, and it is not a dynamics problem.\n",
+        r.dualBrushes, r.presets.size());
   }
   return 0;
 }

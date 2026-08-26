@@ -48,12 +48,31 @@ namespace {
 
 // The sheet's geometry, chosen to match the proportions of Photoshop's own
 // picker cells so the two images can be compared without rescaling either.
+//
+// **These are MINIMA, not fixed sizes** -- see `fitCell()` below. A cell that
+// is smaller than the brush it holds does not merely crop: the overflow lands
+// in the neighbouring cell and is indistinguishable from that brush's own
+// paint. A 284 px spatter brush drawn in a 132 px cell buried the preset under
+// it completely, and the sheet still looked like a plausible sheet, which is
+// the worst way for a diagnostic tool to be wrong.
 constexpr int32_t kCellW = 600;
 constexpr int32_t kCellH = 132;
 constexpr int32_t kCols = 2;
 constexpr float kMarginX = 60.0f;   // room for the taper to start and finish
 constexpr float kAmplitude = 26.0f;  // peak-to-centre of the S-curve
 constexpr int32_t kSamples = 240;    // path points per stroke, not dabs
+
+// The largest radius any preset will actually paint with, INCLUDING what the
+// dynamics can do to it. A link onto Size can only scale within [rangeLo,
+// rangeHi] and Size is a Multiply target, so `rangeHi` bounds the growth --
+// taking the max over links is an upper bound, not a guess, and an upper
+// bound is exactly what a cell needs to be safe.
+float widestRadius(const BrushPreset& p) {
+  float grow = 1.0f;
+  for (const BrushLink& l : p.links.links)
+    if (l.target == DynamicTarget::Size && l.enabled) grow = std::max(grow, l.rangeHi);
+  return p.radius * grow;
+}
 
 // Photoshop's cell background and stroke colour, so a side-by-side comparison
 // is not also a comparison of two different colour schemes.
@@ -120,9 +139,21 @@ int runBrushSheet(const char* abrPath, const char* outPath, const char* experime
     return 1;
   }
 
+  // Grow the cell until the widest brush in the library fits inside one, with
+  // its S-curve amplitude and a dab's radius clear on every side. One size for
+  // the whole sheet rather than per row, so that two cells side by side are
+  // still the same scale and can be compared by eye without measuring.
+  float widest = 0.0f;
+  for (const BrushPreset& p : imported.presets) widest = std::max(widest, widestRadius(p));
+  const int32_t cellH = std::max(
+      kCellH, static_cast<int32_t>(std::ceil(2.0f * (widest + kAmplitude) + 24.0f)));
+  const float marginX = std::max(kMarginX, widest + 20.0f);
+  const int32_t cellW =
+      std::max(kCellW, static_cast<int32_t>(std::ceil(2.0f * marginX + 240.0f)));
+
   const int32_t rows = static_cast<int32_t>((imported.presets.size() + kCols - 1) / kCols);
-  const int32_t width = kCellW * kCols;
-  const int32_t height = kCellH * rows;
+  const int32_t width = cellW * kCols;
+  const int32_t height = cellH * rows;
 
   OpenDocument od = makeBlankOpenDocument(width, height, WorkingSpace{}, "brush-sheet");
   TileStore& tiles = *od.document.layers[0].rgbTiles;
@@ -142,9 +173,9 @@ int runBrushSheet(const char* abrPath, const char* outPath, const char* experime
     const BrushPreset& preset = imported.presets[i];
     const int32_t col = static_cast<int32_t>(i) % kCols;
     const int32_t row = static_cast<int32_t>(i) / kCols;
-    const float x0 = static_cast<float>(col * kCellW) + kMarginX;
-    const float x1 = static_cast<float>((col + 1) * kCellW) - kMarginX;
-    const float cy = static_cast<float>(row * kCellH) + static_cast<float>(kCellH) * 0.5f;
+    const float x0 = static_cast<float>(col * cellW) + marginX;
+    const float x1 = static_cast<float>((col + 1) * cellW) - marginX;
+    const float cy = static_cast<float>(row * cellH) + static_cast<float>(cellH) * 0.5f;
 
     // The preset, applied to a brush the same way selecting it in the panel
     // would -- white, in RGB mode, so the mark reads against the backdrop.

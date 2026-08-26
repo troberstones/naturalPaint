@@ -282,6 +282,33 @@ product is evaluated in two halves — the hardware half in `brushTipFor()`, the
 stroke-local half in `StrokeSession` — and a single floor under "the product"
 has no one place to stand. That split is what makes this larger than it looks.
 
+### B7 — A hardware source that idles at zero can multiply a brush out of existence
+
+`Kyle's Spatter Brushes - Supreme Spatter & Texture` imports cleanly — right
+tip, right radius (142), seven links, no notes — and paints **exactly zero
+pixels**, measured, not estimated.
+
+The mechanism is one link: `TILT->Size [0.00..1.00]`. Tilt is a *hardware*
+source, it reads `0.0` at rest, Size is a `TargetCombine::Multiply` target, and
+a link at source 0 contributes exactly its `rangeLo`. So the size multiplier is
+0.00, the radius is 0, and `dabCoverage()` returns on `!(r > 0.0f)` for every
+dab of the stroke.
+
+**This is not a preview artifact.** Anyone painting with a mouse, or with a
+stylus held upright, supplies tilt 0 and gets the same nothing — with no
+refusal, no message, and an import report that says everything arrived.
+
+It is the same shape as the `RANDOM->Size` floor of 0.00 that made Blot Bot 3
+paint nothing (fixed at `b704411`), reached through a different source, which
+is the argument that the earlier fix addressed an instance rather than the
+class. Any `rangeLo == 0` on a Multiply target is a brush that can vanish; the
+sources that idle at zero (tilt, azimuth, barrel, velocity, fade) just make it
+certain rather than occasional.
+
+Worth deciding alongside **B6** — both are questions about what a Multiply
+target's floor means, and a rule that fixes one should be checked against the
+other rather than chosen for it alone.
+
 ---
 
 ## C. Whole subsystems built, tested, and unreachable

@@ -304,6 +304,34 @@ BrushPreset presetFromDescriptor(
                      p.name, result);
   }
 
+  // --- Dual Brush: read far enough to say what was lost --------------------
+  //
+  // **A Dual Brush is a whole second tip**, stamped through the first with its
+  // own blend mode, spacing, scatter and count -- `dualBrush` carries its own
+  // `Brsh`, `BlnM`, `Cnt `, `bothAxes`, `countDynamics` and `scatterDynamics`.
+  // It is a large part of why Photoshop's ink brushes look granular rather
+  // than smooth: the second tip is what breaks up the first tip's edge.
+  //
+  // This build has no second tip, so it cannot be imported. What it must not
+  // do is stay quiet about that, which is exactly what happened until now --
+  // `dualBrush` was not read, not counted, and not mentioned, so a brush
+  // arrived looking smooth and nothing anywhere said why. That is the same
+  // silent-loss failure the sampled-tip note was written to prevent, sitting
+  // one key further down the same descriptor.
+  //
+  // Gated on `useDualBrush` rather than on the object's presence: every one of
+  // these presets carries a `dualBrush` object whether or not the feature is
+  // switched on, so reporting on presence would fire on brushes that lose
+  // nothing and make the note worthless.
+  const DescriptorRef dual = node.field("dualBrush");
+  if (dual.valid() && dual.field("useDualBrush").asBoolean().value_or(false)) {
+    ++result.dualBrushes;
+    result.notes.push_back(
+        {p.name,
+         "Dual Brush is ON and not imported -- a second tip is stamped through this brush in "
+         "Photoshop, and its absence is why the mark reads smoother than the original"});
+  }
+
   return p;
 }
 
@@ -329,7 +357,7 @@ bool abrControlToSource(int bVTy, DynamicSource& out) noexcept {
     case AbrControl::PenPressure: out = DynamicSource::Pressure; return true;
     case AbrControl::PenTilt: out = DynamicSource::Tilt; return true;
     case AbrControl::Rotation: out = DynamicSource::Barrel; return true;
-    // **Both Direction controls are now exact matches, each onto its own
+    // **Both Direction controls are exact matches, each onto its own
     // source.** Photoshop's own "Direction" is the live stroke tangent,
     // updating dab to dab -- precisely `DynamicSource::Direction`
     // (`brush/Dynamics.hpp`'s `dynamicDirection()`, resolved fresh every
@@ -338,14 +366,23 @@ bool abrControlToSource(int bVTy, DynamicSource& out) noexcept {
     // of the stroke -- precisely `DynamicSource::InitialDirection`, which
     // shares `dynamicDirection()`'s own arithmetic but is latched exactly
     // once by `app/StrokeSession` and never re-read (see that source's own
-    // section in brush/Dynamics.hpp). An earlier version of this mapping
-    // folded `InitialDirection` onto the live source as an admitted
-    // approximation -- every one of Kyle Webster's Runny Inkers (the
-    // library `--abr-report` names in `abrControlName()`'s own header
-    // comment) turned out to use `InitialDirection` and NONE used the live
-    // control, so the approximation was not a rare fallback, it was every
-    // shipped brush's actual behaviour. That gap is why
-    // `DynamicSource::InitialDirection` exists at all.
+    // section in brush/Dynamics.hpp).
+    //
+    // **Which ordinal is which was got wrong once, in the direction the
+    // evidence did not support.** The claim was that every Runny Inker used
+    // Initial Direction and none used the live control -- stated confidently,
+    // and backwards. All twelve carry `bVTy = 6`, and Photoshop shows that
+    // brush's Angle Control as "Direction" (see `AbrControl`'s own header
+    // comment for the reading and the three cross-checks that place it). So
+    // every one of them wants the LIVE tangent, turning through the whole
+    // curve, and importing them as latched froze each stroke at its opening
+    // heading -- a visibly straighter, more uniform mark than the original.
+    //
+    // The lesson worth keeping is not the swap itself: it is that this was
+    // read off an enum that looked orderly rather than off the application
+    // that writes the files, and the resulting brushes still painted, still
+    // varied, and still looked plausible. Nothing failed. It took someone
+    // opening the brush in Photoshop and comparing panels to see it.
     case AbrControl::Direction: out = DynamicSource::Direction; return true;
     case AbrControl::InitialDirection: out = DynamicSource::InitialDirection; return true;
     // Off is not "unmapped", it is "no link", and the caller checks it first.

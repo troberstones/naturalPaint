@@ -44,11 +44,19 @@ struct BrushSpec {
   int sizeControl = 0;
   double sizeJitter = 0.0;
   double minimumDiameter = 0.0;
+  // `dualBrush` present but SWITCHED OFF vs present and ON. Two flags rather
+  // than one because those are genuinely different files and the importer is
+  // required to tell them apart: every real preset carries a `dualBrush`
+  // object whether or not the feature is enabled, so an importer that keyed
+  // off the object's presence would report a loss on every brush in the
+  // library and the note would mean nothing.
+  bool dualBrushPresent = false;
+  bool dualBrushOn = false;
 };
 
 void appendBrush(DescFixture& f, const BrushSpec& s) {
-  // brushPreset: Nm, Brsh, useTipDynamics, minimumDiameter, szVr
-  f.objc("brushPreset", "brushPreset", 5);
+  // brushPreset: Nm, Brsh, useTipDynamics, minimumDiameter, szVr [, dualBrush]
+  f.objc("brushPreset", "brushPreset", s.dualBrushPresent ? 6u : 5u);
 
   f.key4("Nm  ").textv(s.name);
 
@@ -66,6 +74,15 @@ void appendBrush(DescFixture& f, const BrushSpec& s) {
   f.key4("bVTy").longv(s.sizeControl);
   f.keyN("jitter").untf("#Prc", s.sizeJitter);
   f.key4("Mnm ").untf("#Prc", 0.0);
+
+  // The real key carries a whole second tip (`Brsh`, `BlnM`, `Cnt `,
+  // `bothAxes`, ...). Only `useDualBrush` is written here, because that is the
+  // only field the importer reads -- it has no second tip to put the rest in,
+  // and a fixture that carried fields nobody reads would imply otherwise.
+  if (s.dualBrushPresent) {
+    f.keyN("dualBrush").objc("dualBrush", "dualBrush", 1);
+    f.keyN("useDualBrush").boolv(s.dualBrushOn);
+  }
 }
 
 std::vector<uint8_t> oneBrushLibrary(const BrushSpec& s) {
@@ -143,13 +160,26 @@ bool runAbrBrushesTest() {
     // been wrong for every shipped brush in the library rather than for a
     // rare edge case.
     DynamicSource live{}, initial{};
-    check(abrControlToSource(7, live) && live == DynamicSource::Direction &&
-              abrControlToSource(6, initial) && initial == DynamicSource::InitialDirection &&
+    check(abrControlToSource(6, live) && live == DynamicSource::Direction &&
+              abrControlToSource(7, initial) && initial == DynamicSource::InitialDirection &&
               live != initial,
           "abr: the two Direction controls map to two DIFFERENT sources -- the live tangent and "
           "the once-latched heading are not interchangeable");
+    // **6 is the LIVE tangent, and this line is here because it was written
+    // the other way round first.** The ordinals were taken off an enum that
+    // read plausibly rather than off Photoshop, and every brush still
+    // imported, still varied and still painted -- the only thing that caught
+    // it was opening Blot Bot Perfecto in Photoshop and reading its Angle
+    // Control off the panel. Pinning 6 by name here means the next person to
+    // touch this pair has to disagree with a specific brush rather than with
+    // a plausible-looking ordering. See `AbrControl` in io/AbrBrushes.hpp for
+    // the reading and its cross-checks.
+    check(std::strcmp(abrControlName(6), "Direction") == 0 &&
+              std::strcmp(abrControlName(7), "Initial Direction") == 0,
+          "abr: control 6 is named Direction and 7 Initial Direction -- the order Photoshop's "
+          "own panel shows for a real brush, not the order the enum looked like it should have");
     check(!abrControlToSource(0, s), "abr: Off maps to no source, and the caller checks it first");
-    check(std::strcmp(abrControlName(6), "Initial Direction") == 0 &&
+    check(std::strcmp(abrControlName(5), "Rotation") == 0 &&
               std::strcmp(abrControlName(99), "unknown control") == 0,
           "abr: every control has a name for the report, including one the enum does not cover");
   }
@@ -318,6 +348,42 @@ bool runAbrBrushesTest() {
     const AbrImportResult q = importAbrBrushes(wrapAbr(oneBrushLibrary(clean)));
     check(q.ok && q.notes.empty() && q.sampledTips == 0,
           "abr: a brush that lost nothing produces NO notes, so the report is signal");
+  }
+
+  // --- 7. Dual Brush, the loss that was silent for longest ------------------
+  //
+  // Photoshop stamps a SECOND tip through the first, with its own blend mode,
+  // spacing, scatter and count, and it is most of why an ink brush reads
+  // granular rather than smooth. Eight of the twelve Runny Inkers switch it
+  // on. This build has one tip per brush, so it cannot be honoured -- and for
+  // as long as `dualBrush` was simply never read, an imported brush came out
+  // smooth and NOTHING anywhere said why. Not a note, not a counter, not a
+  // line in `--abr-report`. The sampled-tip note two sections up exists to
+  // prevent exactly that, one descriptor key away.
+  //
+  // The discriminating pair is present-and-off vs present-and-on. Keying off
+  // the object's mere presence would fire on every preset in a real library,
+  // including ones that lose nothing, and a note that fires always carries no
+  // information at all.
+  {
+    BrushSpec off;
+    off.dualBrushPresent = true;
+    off.dualBrushOn = false;
+    const AbrImportResult a = importAbrBrushes(wrapAbr(oneBrushLibrary(off)));
+    check(a.ok && a.dualBrushes == 0 && a.notes.empty(),
+          "abr: a `dualBrush` object that is present but switched OFF loses nothing, so it is "
+          "not counted and produces no note -- every real preset carries this object");
+
+    BrushSpec on;
+    on.dualBrushPresent = true;
+    on.dualBrushOn = true;
+    const AbrImportResult b = importAbrBrushes(wrapAbr(oneBrushLibrary(on)));
+    bool saidDual = false;
+    for (const AbrImportNote& n : b.notes)
+      if (n.what.find("Dual Brush") != std::string::npos) saidDual = true;
+    check(b.ok && b.dualBrushes == 1 && saidDual,
+          "abr: Dual Brush switched ON is COUNTED and NAMED against its brush -- a second tip "
+          "this build cannot stamp is a loss, and an unreported loss is the whole failure mode");
   }
 
   std::printf("[selftest] abr brushes %s\n", ok ? "PASS" : "FAIL");

@@ -35,6 +35,10 @@ compile_commands.json
 # Recovery scratch (ADR-0008) and tile spill
 *.npscratch/
 
-# A third-party sample brush library, dropped in for import testing.
-# Not ours to redistribute.
+# Third-party sample brush libraries, dropped in for import testing.
+# Not ours to redistribute. Named individually rather than as `*.abr` so that
+# a fixture this project DOES own could still be committed deliberately --
+# but any Kyle Webster / Adobe pack added for testing belongs on this list
+# before it is opened, not after.
 runny_inkers.abr
+threeOtherBrushes.abr
