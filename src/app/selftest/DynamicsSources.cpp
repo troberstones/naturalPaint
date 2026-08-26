@@ -1307,6 +1307,92 @@ bool runDynamicsSourcesTest() {
     }
   }
 
+  // --- 9. A source the device cannot report yields IDENTITY, not its floor --
+  //
+  // The regression for docs/reachability-audit.md **B7**. `Kyle's Spatter
+  // Brushes - Supreme Spatter & Texture` carries `TILT->Size [0.00..1.00]`,
+  // and with a mouse it painted **exactly zero pixels** -- measured, not
+  // estimated. Tilt read 0.0, Size is a Multiply target, a link at source 0
+  // contributes its `rangeLo`, and 0.00 times any radius is a dab that
+  // `dabCoverage()` rejects on `!(r > 0.0f)`. Silent: no refusal, no message,
+  // and an import report saying every part of the brush arrived.
+  //
+  // Photoshop's answer is the one implemented here -- it marks a Control that
+  // needs an absent device with a warning triangle and IGNORES it.
+  {
+    BrushLinkSet tiltSize;
+    addLink(tiltSize,
+            BrushLink{DynamicSource::Tilt, DynamicTarget::Size, {}, 0.0f, 1.0f, false, true});
+
+    // The exact shape of the defect: a mouse reports no tilt.
+    DynamicInputs mouse;
+    mouse.hasTilt = false;
+    mouse.tilt = 0.0f;
+    const DynamicResult onMouse = evaluateLinks(tiltSize, mouse);
+    check(nearf(onMouse.at(DynamicTarget::Size), 1.0f, 1e-6f),
+          "availability: a TILT->Size link whose range starts at 0.00 resolves to Size 1.0 -- "
+          "IDENTITY -- when the device reports no tilt, because a control that cannot be driven "
+          "must be ignored rather than driven from a fabricated zero (audit B7: this is the "
+          "difference between a spatter brush and a brush that paints nothing at all)");
+
+    // **The discriminating half**, and the reason this is two assertions and
+    // not one. If the skip were really "treat a zero input as identity", a
+    // genuine pen lying flat at tilt 0.0 would also stop scaling, and the
+    // brush would silently ignore an axis the artist IS using. Availability
+    // and value are different questions and this pins them apart.
+    DynamicInputs penFlat;
+    penFlat.hasTilt = true;
+    penFlat.tilt = 0.0f;
+    check(nearf(evaluateLinks(tiltSize, penFlat).at(DynamicTarget::Size), 0.0f, 1e-6f),
+          "availability: the SAME link with a real pen reporting tilt 0.0 still resolves to "
+          "0.00 -- the skip is about whether the axis EXISTS, never about the value being zero");
+  }
+
+  // Which sources need a device, asserted per source rather than inferred.
+  {
+    DynamicInputs none;
+    none.hasPressure = false;
+    none.hasTilt = false;
+    none.hasBarrel = false;
+    // Azimuth rides the TILT flag: it is the direction a pen is tilted IN, so
+    // a device that cannot report tilt cannot report azimuth. Asserted here
+    // because that pairing is a fact about pens, and a future edit that gave
+    // azimuth its own flag would otherwise pass silently.
+    const bool hardwareAllUnavailable =
+        sourceUnavailable(none, DynamicSource::Pressure) &&
+        sourceUnavailable(none, DynamicSource::Tilt) &&
+        sourceUnavailable(none, DynamicSource::Azimuth) &&
+        sourceUnavailable(none, DynamicSource::Barrel);
+    check(hardwareAllUnavailable,
+          "availability: all four HARDWARE sources report unavailable on a device that reports "
+          "none of them -- azimuth included, which rides the tilt flag");
+
+    // A stroke-local source is computed from the stroke's own geometry and a
+    // seed, so it is never unavailable -- a mouse supplies it exactly as well
+    // as a pen. If one of these ever reported unavailable it would be skipped
+    // on every device, which is a whole source silently doing nothing.
+    const bool strokeLocalAlwaysAvailable =
+        !sourceUnavailable(none, DynamicSource::Velocity) &&
+        !sourceUnavailable(none, DynamicSource::Fade) &&
+        !sourceUnavailable(none, DynamicSource::Noise) &&
+        !sourceUnavailable(none, DynamicSource::Random) &&
+        !sourceUnavailable(none, DynamicSource::Direction) &&
+        !sourceUnavailable(none, DynamicSource::InitialDirection);
+    check(strokeLocalAlwaysAvailable,
+          "availability: no STROKE-LOCAL source is ever unavailable -- they come from the "
+          "stroke's own geometry and a seed, which a mouse supplies as well as a pen");
+
+    // The default-constructed inputs describe a MOUSE, deliberately: that is
+    // the device where getting this wrong is silent, so it is the one the
+    // defaults must be safe for.
+    DynamicInputs def;
+    check(sourceUnavailable(def, DynamicSource::Tilt) &&
+              sourceUnavailable(def, DynamicSource::Barrel) &&
+              !sourceUnavailable(def, DynamicSource::Pressure),
+          "availability: DEFAULT inputs describe a mouse -- no tilt, no barrel -- while pressure "
+          "stays available so the long-standing `pressure = 1.0f` neutral is unchanged");
+  }
+
   std::printf("[selftest] dynamics sources %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

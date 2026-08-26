@@ -316,7 +316,57 @@ struct DynamicInputs {
   // before that dab has happened (the same 0.0 placeholder `direction`
   // above defaults to, not a distinct convention).
   float initialDirection = 0.0f;
+
+  // --- Which pen axes the current device actually REPORTS -----------------
+  //
+  // **A source the hardware cannot supply must contribute its target's
+  // IDENTITY, not its floor.** Photoshop says this in its own UI: the Shape
+  // Dynamics panel draws a warning triangle beside a Control that needs a
+  // device you do not have, and then ignores that control rather than
+  // driving it from nothing.
+  //
+  // This build got it wrong in a way that made a real brush vanish.
+  // `Kyle's Spatter Brushes - Supreme Spatter & Texture` carries
+  // `TILT->Size [0.00..1.00]`. Tilt is a hardware source, `tilt` above reads
+  // 0.0 when no pen is tilted (or present), Size is a Multiply target, and a
+  // link at source 0 contributes exactly its `rangeLo` -- so the size
+  // multiplier was 0.00, the radius was 0, and the brush painted **exactly
+  // zero pixels** with a mouse. No refusal, no message, and an import report
+  // saying everything arrived. See docs/reachability-audit.md **B7**.
+  //
+  // Note that `pressure` above already defaults to 1.0 for precisely this
+  // reason -- "neutral when nothing is driving it". That was the right idea
+  // applied to one source by hand; these flags are the same idea stated once
+  // and applied to every source that needs a device. A value cannot express
+  // it in general, because the neutral value differs per TARGET (1 for a
+  // Multiply target, 0 for an Add one) while an input is per SOURCE -- so
+  // the absence has to be handled where the target is known, which is
+  // `evaluateLinksFiltered()`.
+  //
+  // Defaults describe a MOUSE, which is the device that cannot report any of
+  // them, because that is the case where getting this wrong is silent.
+  // `hasPressure` defaults true so that the long-standing `pressure = 1.0f`
+  // behaviour is preserved exactly -- and note it makes no difference which
+  // way that one defaults, since skipping a Pressure link yields identity
+  // 1.0 and resolving it at pressure 1.0 yields `rangeHi`, normally also 1.0.
+  bool hasPressure = true;
+  // Tilt and azimuth travel together: azimuth is the direction a pen is
+  // tilted IN, so a device that cannot report tilt cannot report azimuth
+  // either, and one flag for both is a fact about pens rather than a
+  // shortcut.
+  bool hasTilt = false;
+  bool hasBarrel = false;
 };
+
+// Whether `source` needs a device axis that `inputs` says is not being
+// reported. A link on such a source is skipped entirely by
+// `evaluateLinksFiltered()`, which leaves its target holding the combine
+// rule's identity -- Photoshop's warning-triangle behaviour, stated in code.
+//
+// Stroke-local sources (Velocity, Fade, Noise, Random, Direction, Initial
+// Direction) are never unavailable: they are computed from the stroke's own
+// geometry and a seed, so a mouse supplies them exactly as well as a pen.
+bool sourceUnavailable(const DynamicInputs& inputs, DynamicSource source) noexcept;
 
 // Uniform accessor -- the reason the sources are an enum at all. The matrix
 // walks rows generically; nothing in the panel special-cases pressure.

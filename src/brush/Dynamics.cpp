@@ -332,14 +332,34 @@ BrushLinkSet defaultBrushLinks() {
   return set;
 }
 
-DynamicResult evaluateLinks(const BrushLinkSet& set,
-                            const DynamicInputs& inputs) noexcept {
+// The one composition rule, in one place.
+//
+// **`evaluateLinks()` and `evaluateLinksFiltered()` used to be two copies of
+// this loop**, and the duplication cost exactly what duplication costs: the
+// availability skip below (audit B7) was added to the filtered copy and not
+// to the plain one, so `brushTipFor()` honoured it and a direct
+// `evaluateLinks()` call did not. A selftest written for the fix failed on
+// the OTHER function -- which is the only reason it was noticed at all,
+// since both copies were individually correct-looking. Whichever rule this
+// file gains next would have had the same two chances to be applied once.
+//
+// `filterStrokeLocal == false` means "every link, both halves"; when true,
+// only links whose `sourceIsStrokeLocal()` matches `wantStrokeLocal`.
+DynamicResult evaluateLinksWhere(const BrushLinkSet& set, const DynamicInputs& inputs,
+                                 bool filterStrokeLocal, bool wantStrokeLocal) noexcept {
   DynamicResult out{};
   for (size_t i = 0; i < kDynamicTargetCount; ++i)
     out.value[i] = targetIdentity(static_cast<DynamicTarget>(i));
 
   for (const BrushLink& link : set.links) {
     if (!link.enabled) continue;
+    if (filterStrokeLocal && sourceIsStrokeLocal(link.source) != wantStrokeLocal) continue;
+    // A source the device cannot report contributes its target's IDENTITY,
+    // which `continue` supplies by leaving the slot untouched -- and NOT its
+    // `rangeLo`, which is what resolving it at a fabricated 0.0 would give.
+    // See `sourceUnavailable()` and `DynamicInputs`' own section for the
+    // brush this made paint nothing.
+    if (sourceUnavailable(inputs, link.source)) continue;
     const float contribution = linkContribution(link, sourceValue(inputs, link.source));
     const size_t slot = static_cast<size_t>(link.target);
     if (targetCombine(link.target) == TargetCombine::Add)
@@ -348,6 +368,11 @@ DynamicResult evaluateLinks(const BrushLinkSet& set,
       out.value[slot] *= contribution;
   }
   return out;
+}
+
+DynamicResult evaluateLinks(const BrushLinkSet& set,
+                            const DynamicInputs& inputs) noexcept {
+  return evaluateLinksWhere(set, inputs, /*filterStrokeLocal=*/false, /*wantStrokeLocal=*/false);
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +488,30 @@ float dynamicDirection(float dx, float dy) noexcept {
   return degrees / 360.0f;
 }
 
+bool sourceUnavailable(const DynamicInputs& inputs, DynamicSource source) noexcept {
+  switch (source) {
+    case DynamicSource::Pressure: return !inputs.hasPressure;
+    // Azimuth is the direction a pen is tilted IN, so it rides the same flag
+    // as Tilt: a device that cannot report one cannot report the other.
+    case DynamicSource::Tilt:
+    case DynamicSource::Azimuth: return !inputs.hasTilt;
+    case DynamicSource::Barrel: return !inputs.hasBarrel;
+    // Computed from the stroke's own geometry and a seed, so a mouse
+    // supplies them exactly as well as a pen -- never unavailable.
+    case DynamicSource::Velocity:
+    case DynamicSource::Fade:
+    case DynamicSource::Noise:
+    case DynamicSource::Random:
+    case DynamicSource::Direction:
+    case DynamicSource::InitialDirection:
+      return false;
+  }
+  // No `default:` above, so adding an eleventh source is a compile error here
+  // rather than a silent "always available" -- which for a hardware source is
+  // exactly the bug this function exists to prevent.
+  return false;
+}
+
 bool sourceIsStrokeLocal(DynamicSource source) noexcept {
   switch (source) {
     case DynamicSource::Velocity:
@@ -483,21 +532,7 @@ bool sourceIsStrokeLocal(DynamicSource source) noexcept {
 
 DynamicResult evaluateLinksFiltered(const BrushLinkSet& set, const DynamicInputs& inputs,
                                     bool wantStrokeLocal) noexcept {
-  DynamicResult out{};
-  for (size_t i = 0; i < kDynamicTargetCount; ++i)
-    out.value[i] = targetIdentity(static_cast<DynamicTarget>(i));
-
-  for (const BrushLink& link : set.links) {
-    if (!link.enabled) continue;
-    if (sourceIsStrokeLocal(link.source) != wantStrokeLocal) continue;
-    const float contribution = linkContribution(link, sourceValue(inputs, link.source));
-    const size_t slot = static_cast<size_t>(link.target);
-    if (targetCombine(link.target) == TargetCombine::Add)
-      out.value[slot] += contribution;
-    else
-      out.value[slot] *= contribution;
-  }
-  return out;
+  return evaluateLinksWhere(set, inputs, /*filterStrokeLocal=*/true, wantStrokeLocal);
 }
 
 // ---------------------------------------------------------------------------

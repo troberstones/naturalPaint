@@ -62,16 +62,33 @@ constexpr float kMarginX = 60.0f;   // room for the taper to start and finish
 constexpr float kAmplitude = 26.0f;  // peak-to-centre of the S-curve
 constexpr int32_t kSamples = 240;    // path points per stroke, not dabs
 
-// The largest radius any preset will actually paint with, INCLUDING what the
-// dynamics can do to it. A link onto Size can only scale within [rangeLo,
-// rangeHi] and Size is a Multiply target, so `rangeHi` bounds the growth --
-// taking the max over links is an upper bound, not a guess, and an upper
-// bound is exactly what a cell needs to be safe.
+// The largest distance from a dab's centre that any preset can actually paint,
+// INCLUDING what the dynamics can do to it. A link onto Size can only scale
+// within [rangeLo, rangeHi] and Size is a Multiply target, so `rangeHi` bounds
+// the growth -- taking the max over links is an upper bound, not a guess, and
+// an upper bound is exactly what a cell needs to be safe.
+//
+// **A rotated bitmap tip reaches past its own radius**, which cost this
+// function a bug on its first day. `brushTipFor()` maps the LARGER of the
+// bitmap's two dimensions onto the diameter, so an un-rotated tip fits inside
+// `radius` -- but turn it and the corner swings out to the half-DIAGONAL,
+// `radius * hypot(w, h) / max(w, h)`, up to `radius * sqrt(2)` for a square
+// sample. Nine of twelve Runny Inkers and every one of the Spatter brushes
+// carry a link onto Angle, so this is the common case and not the exotic one.
+// It showed up as a spatter brush bleeding 83 stray pixels into the cell below
+// it -- small enough to read as "that brush is just noisy" rather than as an
+// overflow, which is exactly why it is worth computing rather than padding.
 float widestRadius(const BrushPreset& p) {
   float grow = 1.0f;
   for (const BrushLink& l : p.links.links)
     if (l.target == DynamicTarget::Size && l.enabled) grow = std::max(grow, l.rangeHi);
-  return p.radius * grow;
+  float reach = p.radius * grow;
+  if (p.tipBitmap && p.tipBitmap->width > 0 && p.tipBitmap->height > 0) {
+    const float w = static_cast<float>(p.tipBitmap->width);
+    const float h = static_cast<float>(p.tipBitmap->height);
+    reach *= std::hypot(w, h) / std::max(w, h);
+  }
+  return reach;
 }
 
 // Photoshop's cell background and stroke colour, so a side-by-side comparison
@@ -148,8 +165,17 @@ int runBrushSheet(const char* abrPath, const char* outPath, const char* experime
   const int32_t cellH = std::max(
       kCellH, static_cast<int32_t>(std::ceil(2.0f * (widest + kAmplitude) + 24.0f)));
   const float marginX = std::max(kMarginX, widest + 20.0f);
+  // **The stroke's TRAVEL has to scale with the brush too, not just the
+  // margins.** Sizing the margins alone left a 142 px-radius spatter brush
+  // with 240 px of path -- under two dab-diameters, three or four dabs total
+  // -- which renders as a clump and says nothing about how the brush behaves
+  // along a stroke. That is a preview that is present but useless, which is
+  // harder to notice than one that is missing. Six times the widest reach
+  // gives roughly a dozen dab-diameters of path at any brush size, so the
+  // taper and the direction sweep both have room to show.
+  const float travel = std::max(240.0f, widest * 6.0f);
   const int32_t cellW =
-      std::max(kCellW, static_cast<int32_t>(std::ceil(2.0f * marginX + 240.0f)));
+      std::max(kCellW, static_cast<int32_t>(std::ceil(2.0f * marginX + travel)));
 
   const int32_t rows = static_cast<int32_t>((imported.presets.size() + kCols - 1) / kCols);
   const int32_t width = cellW * kCols;

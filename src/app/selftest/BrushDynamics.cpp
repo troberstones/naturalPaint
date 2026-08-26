@@ -128,6 +128,20 @@ bool runBrushDynamicsTest() {
     in.tilt = 0.3f;
     in.azimuth = 0.7f;
     in.barrel = 0.5f;
+    // **This fixture has to say which DEVICE it assumes**, because the
+    // defaults describe a mouse and a mouse reports none of these three
+    // axes -- `evaluateLinks()` skips a link whose source the device cannot
+    // report, so all three would contribute Angle's identity (0) instead of
+    // their values (see `sourceUnavailable()`, audit B7).
+    //
+    // Worth noting how that failed, because only ONE of the two assertions
+    // below caught it. The sum check went red immediately. The commutativity
+    // check above it went right on PASSING -- both orders resolved to 0, and
+    // `0 == 0` is perfectly commutative. An assertion about two things
+    // agreeing cannot tell "both correct" from "both empty", which is why
+    // the sum check next to it is not redundant with it.
+    in.hasTilt = true;
+    in.hasBarrel = true;
 
     auto makeAngle = [](DynamicSource s) {
       BrushLink l;
