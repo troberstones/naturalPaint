@@ -103,6 +103,23 @@ which is what our `DynamicSource::Direction` does.
   **synthesis, not source**, and must not be cited as the patent's.
 - **Application 09/037,721** ("Use of filters attached to objects…") could not be
   resolved to a granted number. Not guessed. Needs USPTO Public Search by serial.
+- **The suggested `inventor:"Mark Zimmer" assignee:"Fractal Design"` sweep was
+  run on 2026-08-25 and found nothing beyond US 5,347,620** — but the search was
+  *not* conclusive, and the distinction matters. `patents.google.com` returned
+  **HTTP 503** on every direct fetch (both the patent page and the query URL) and
+  `patents.justia.com` returned **HTTP 403**, so the sweep fell back to indexed
+  search summaries, which are second-hand by construction. What it did establish,
+  as a useful *negative*: the "Digital painting" patents that surface first for
+  these terms are **not** in the Fractal Design lineage —
+  **US 6,870,550** (Schuster & Wilensky, **Adobe**) and **US 5,835,086**
+  (Champernowne, a lazy-region-update rendering scheme). Do not cite either as
+  Painter prior art; the Adobe one in particular is off-limits under the table
+  above unless its status is checked and found expired.
+  **Next step if this is worth reopening:** USPTO Public Search
+  (`ppubs.uspto.gov`) by inventor, or the `image-ppubs.uspto.gov/dirsearch-public/
+  print/downloadPdf/<number>` full-text endpoint, which responds where the two
+  commercial mirrors do not. Note that 5,347,620's own PDF there is an un-OCR'd
+  fax scan, so expect to read images rather than text.
 - **US 5,347,620's claim text** could not be retrieved (Google Patents omits it;
   the USPTO PDF is an un-OCR'd fax scan). Everything above is from the
   description, which is where the mechanism lives — but claim *scope* is unsourced.
