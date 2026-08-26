@@ -394,6 +394,26 @@ target_compile_options(naturalPaint PRIVATE
   -Werror=unused-function
   -Werror=unused-variable
   -Werror=unused-but-set-variable
+  # **`-Werror=switch`, and it is load-bearing for comments already in the
+  # tree.** Several files argue that a `switch` over a closed enum with no
+  # `default:` makes adding an enumerator a COMPILE error -- `sourceUnavailable()`
+  # and `easingPresetName()` in `brush/Dynamics.cpp`, `combineDualCoverage()` in
+  # `brush/Deposit.cpp`, the LINK editor's chip tooltips in `ui/MacPaintUI.cpp`.
+  # That was **false** until this line: clang enables `-Wswitch` by default, but
+  # a warning nobody reads is not a guard, and this build elevates only the three
+  # `unused-*` diagnostics above. A subagent tested it directly -- commented out a
+  # case, rebuilt, exit 0 -- which is how the gap was found rather than assumed.
+  #
+  # Adding it cost nothing: the tree already compiled clean under it, so no
+  # existing switch was relying on falling through to a trailing return. Proved
+  # it BITES rather than merely building: deleting `EasingPreset::LogTaper`'s
+  # case from `easingPresetName()` now fails with
+  # `error: enumeration value 'LogTaper' not handled in switch [-Werror,-Wswitch]`.
+  #
+  # The escape hatch is a `default:` on the one switch that genuinely wants to
+  # handle enumerators generically -- local, visible in the diff, and it says so
+  # -- not this flag removed from this file.
+  -Werror=switch
 )
 
 # goldentool -- the comparison half of the golden-image regression harness
