@@ -240,6 +240,48 @@ and `:6757` use raw `st.brush.spacing * st.sim.brushRadius`. `Deposit.hpp:359`
 claims the two routes "cannot emit dabs at different spacings from one tip" — the
 `0.1f` floor matches, the multiplier does not.
 
+### B5 — Scatter is imported in the wrong unit, and applied on the wrong axis
+
+Two independent defects that both make an imported brush scatter *less* and
+*differently* than the original, and that compound:
+
+* **Unit.** Photoshop's Scatter is a percentage of the tip's **diameter**;
+  `applyPerDabScatter()` treats its parameter as a fraction of the **radius**.
+  Every imported brush therefore scatters at half the distance the artist set.
+  This is the same class of bug as the spacing conversion in
+  `abrSpacingToRadii()` — which *is* handled, and whose selftest comment
+  explains why it would be invisible — so the machinery to get it right is
+  already present and simply was not applied here.
+* **Axis.** Photoshop scatters **perpendicular** to the stroke unless "Both
+  Axes" is ticked, and it is off by default. Ours is isotropic: the angle is
+  drawn off a salted seed, deliberately bypassing the link system. An isotropic
+  scatter smears along the stroke as well as across it, which reads as a
+  *blurrier* line rather than a *rougher* one.
+
+Both were found while building the Initial Direction / sampled-tip work and are
+recorded rather than fixed, because fixing the unit alone would double the
+scatter distance along an axis that is still wrong, and the two want to land
+together. Neither is covered by an assertion today.
+
+### B6 — Two links onto one Multiply target each contribute their own floor
+
+`addDynamicsLinks()` emits up to two links per target — a control link and a
+jitter link — and Size is a `TargetCombine::Multiply` target, so the two
+compose as a product. Each link contributes `rangeLo` at source 0, so
+Photoshop's **Minimum Diameter**, which is ONE floor beneath the final size,
+arrives as a floor per contributing row and multiplies into its own square.
+
+`--abr-report` on Runny Inkers shows the shape directly: eleven of twelve
+presets carry both `PRESSURE->Size` and `RANDOM->Size`, so eleven of twelve
+brushes paint attenuated. The user has chosen the fix — **keep the jitter,
+floor the product once** — which is an engine change to how a Multiply target
+composes, not a change to the importer. It is not yet made.
+
+The hard part is not the rule but where to apply it: since `b704411` the
+product is evaluated in two halves — the hardware half in `brushTipFor()`, the
+stroke-local half in `StrokeSession` — and a single floor under "the product"
+has no one place to stand. That split is what makes this larger than it looks.
+
 ---
 
 ## C. Whole subsystems built, tested, and unreachable
