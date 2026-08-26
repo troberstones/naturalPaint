@@ -4690,23 +4690,91 @@ void drawHistorySection(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext
   // Rows, oldest at the top -- the OPPOSITE of drawLayersSection()'s order,
   // and app/HistoryPanel.hpp says why the two panels differ. There is no
   // reversal in this loop and there must not be one.
+  //
+  // T8: this list used to draw straight into the collapsing header, so a long
+  // session grew the panel without bound. Bounded here in a fixed-height
+  // scrolling child -- the same idiom `##pick`/`##plan`/`##report` (this
+  // file, ~5397-5493) and `##toolgrid` (~7751) already use for a list that
+  // can outgrow its column. The height is `kHistoryVisibleRows` row-heights,
+  // not a pasted pixel number, so it tracks the font/theme's own line
+  // spacing instead of drifting from it if either changes; the buttons above
+  // and the redo-tail/error lines below stay outside the child so they never
+  // scroll out of view.
+  constexpr int kHistoryVisibleRows = 8;
+  const float rowH = ImGui::GetTextLineHeightWithSpacing();
+  // **The `std::max` is not defensive padding, it is the empty case.** An
+  // empty history is an expressible state -- `History::empty()` is a
+  // first-class predicate, and the "%zu state(s)" line forty lines above
+  // already branches on `rows.empty()` -- and `BeginChild()` reads a height
+  // of `0.0f` as *fill the rest of the column*
+  // (`imgui.cpp`: `if (size.y <= 0.0f) size.y = ImMax(content_avail.y + size.y, 4.0f)`).
+  // So the one case with nothing to show is the one that would have swelled
+  // to eat every panel below it. One row tall, and it draws as an empty box
+  // under a line that says "0 state(s)", which is the honest picture.
+  const float childH =
+      std::max(rowH, static_cast<float>(std::min(rows.size(),
+                                                 static_cast<size_t>(kHistoryVisibleRows))) *
+                         rowH);
+
+  // Auto-scroll follows the CURRENT row, but only right after the cursor
+  // moves -- not every frame, which would fight the user's own scrolling:
+  // they scroll up to read an old row, and the very next frame, which has
+  // nothing to do with a cursor move, would yank them straight back down.
+  // So this compares the CURRENT row's serial (stable across an amend, per
+  // History::amend()'s header, and unique per entry otherwise) against the
+  // one seen last frame.
+  //
+  // **The trigger holds for two frames, not one, and the reason is a clamp
+  // against a number that does not exist yet.** `SetScrollHereY()` only sets
+  // `ImGuiWindow::ScrollTarget`; Dear ImGui turns that into a real scroll
+  // position at this child's NEXT `Begin()`, and the last thing it does there
+  // is `scroll = ImMin(scroll, window->ScrollMax)`
+  // (`CalcNextScrollFromScrollTargetAndClamp()` in `imgui.cpp`). `ScrollMax`
+  // comes from the content size measured on the PREVIOUS frame -- and on the
+  // frame a child first exists that is **0**, so any target whatsoever
+  // clamps to the top.
+  //
+  // That is not a corner case here, it is the common one: the panel is
+  // usually first drawn on a document that already has history, so "the
+  // child's first frame" and "the cursor serial changed from 0" are the same
+  // frame. Screenshot-measured on this build: 1 frame leaves the list showing
+  // row 1; 2 lands on the CURRENT row. The second frame is the one that has a
+  // real `ScrollMax` to clamp against.
+  //
+  // `s_followCursorFrames` is the holdover, and a `static` local is correct
+  // here for the same reason `pendingControlsScrollPx` (~7853) is one -- this
+  // function has exactly one HISTORY panel to remember it for.
+  static uint64_t s_lastCursorSerial = 0;
+  static int s_followCursorFrames = 0;
+  uint64_t currentSerial = 0;
+  for (const HistoryPanelRow& row : rows)
+    if (row.state == HistoryRowState::Current) currentSerial = row.serial;
+  if (currentSerial != s_lastCursorSerial) s_followCursorFrames = 2;
+  s_lastCursorSerial = currentSerial;
+  const bool followCursor = s_followCursorFrames > 0;
+  if (s_followCursorFrames > 0) --s_followCursorFrames;
+
   uint64_t clickedEntry = 0;
-  for (const HistoryPanelRow& row : rows) {
-    ImGui::PushID(static_cast<int>(row.serial));
-    const bool redoable = row.state == HistoryRowState::Redoable;
-    if (redoable) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(150, 150, 150, 255));
-    const std::string text = historyRowText(row);
-    if (ImGui::Selectable(text.c_str(), row.state == HistoryRowState::Current))
-      clickedEntry = row.serial;
-    if (redoable) ImGui::PopStyleColor();
-    // A row is a whole sentence built from an edit label a user typed part of
-    // ("rename layer 2 to ..."), so it has no bounded width and a docked column
-    // will clip some of them. A row is a list item rather than a label, so it
-    // is clipped rather than wrapped -- and the full text is one hover away,
-    // which is the part that was missing.
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text.c_str());
-    ImGui::PopID();
+  if (ImGui::BeginChild("##historyrows", ImVec2(0.0f, childH), true)) {
+    for (const HistoryPanelRow& row : rows) {
+      ImGui::PushID(static_cast<int>(row.serial));
+      const bool redoable = row.state == HistoryRowState::Redoable;
+      if (redoable) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(150, 150, 150, 255));
+      const std::string text = historyRowText(row);
+      if (ImGui::Selectable(text.c_str(), row.state == HistoryRowState::Current))
+        clickedEntry = row.serial;
+      if (redoable) ImGui::PopStyleColor();
+      // A row is a whole sentence built from an edit label a user typed part of
+      // ("rename layer 2 to ..."), so it has no bounded width and a docked column
+      // will clip some of them. A row is a list item rather than a label, so it
+      // is clipped rather than wrapped -- and the full text is one hover away,
+      // which is the part that was missing.
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text.c_str());
+      if (followCursor && row.state == HistoryRowState::Current) ImGui::SetScrollHereY();
+      ImGui::PopID();
+    }
   }
+  ImGui::EndChild();
 
   const std::string tail = historyRedoTailNote(h);
   if (!tail.empty()) ImGui::TextWrapped("%s", tail.c_str());

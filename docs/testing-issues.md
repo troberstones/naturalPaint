@@ -234,7 +234,7 @@ of this.
 
 ---
 
-## T8 — HISTORY panel grows without a scroll region · open
+## T8 — HISTORY panel grows without a scroll region · CLOSED
 
 **Reported.** The HISTORY section of the right panel grows as more is done;
 it should have a scroll bar.
@@ -246,9 +246,26 @@ anywhere in it. Other panels in the same file do use one (`##pick`,
 simply does not use it. `MacPaintUI.cpp:7815` already records a related
 symptom: HISTORY was "off the bottom of the window at the default size".
 
-**Work.** A fixed-height `BeginChild` with a scroll region, auto-scrolled to
-the cursor so the current state stays visible as it grows. Check LAYERS and
-COMPS for the same omission while in there.
+**Resolution, 2026-08-26.** Bounded to `kHistoryVisibleRows` (8) row-heights
+in a `##historyrows` child, with the buttons and the redo-tail/error lines
+left outside it so they never scroll away. Height is row-count times
+`GetTextLineHeightWithSpacing()`, not a pixel constant.
+
+**The auto-scroll needed two frames, not one, and the reason is worth
+keeping.** `SetScrollHereY()` only sets `ScrollTarget`; the clamp that turns
+it into a scroll position ends with
+`scroll = ImMin(scroll, window->ScrollMax)`, and `ScrollMax` comes from the
+content size measured on the *previous* frame — which is **0** on the frame a
+child first exists. Since the panel is normally first drawn on a document
+that already has history, "the child's first frame" and "the cursor serial
+changed" are usually the *same* frame, so a one-frame trigger clamps to the
+top every time. Proved by sabotage: with the holdover cut to 1, the list sits
+on "new document · PAST" and the CURRENT row is off the bottom; with 2, it
+lands on CURRENT.
+
+**LAYERS and COMPS share the defect.** `drawLayersSection()` and
+`drawCompsSection()` have no `BeginChild` either. Deliberately left alone —
+tracked as **T11**.
 
 ---
 
@@ -361,3 +378,25 @@ arithmetic on four floats, so the geometry can be a pure function that
 `--selftest` drives directly, with the widget layer doing nothing but
 sampling the modifiers. That is the split `app/ControlsLayout` and
 `app/CurveEdit` already use.
+
+---
+
+## T11 — LAYERS and COMPS have no scroll region either · open
+
+**Verified** while closing **T8**: across the whole of `ui/MacPaintUI.cpp`
+only `##pick`, `##plan`, `##report`, `##toolgrid` and the new
+`##historyrows` use `ImGui::BeginChild`. `drawLayersSection()` and
+`drawCompsSection()` draw straight into their headers, so both grow without
+bound exactly as HISTORY did.
+
+LAYERS is the more pressing of the two: a document can carry far more layers
+than a session carries comps, and unlike history its row order is
+most-recent-*first*, so growth pushes the oldest rows down rather than the
+newest ones out of view.
+
+**Work.** The same treatment T8 got. **Reuse T8's two-frame auto-scroll
+finding** rather than rediscovering it — the ImGui clamp behaviour is a
+property of `BeginChild`, not of the history panel, so any of these that
+wants to follow a selection will hit it. LAYERS should follow the *selected*
+layer; COMPS probably needs no follow at all, and should not grow one just
+for symmetry.
