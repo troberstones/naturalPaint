@@ -53,12 +53,6 @@ from being added on top of the working one.
 **Reported.** Shift adds to selections, but there is no way to remove from
 one. Use the Photoshop hotkey — possibly Ctrl.
 
-**Resolution, 2026-08-26.** Confirmed working by the reporter once the key
-was named: it is **Option**, not Ctrl. Nothing to fix. Kept here because the
-next person to look for a Ctrl binding should find this entry rather than
-add one. The remaining selection-modifier work is **T10**, which is a
-different set of gestures.
-
 **Verified — subtract is implemented, and the hotkey is Option, not Ctrl.**
 Adobe's own documentation gives the three modifiers: **Shift** adds,
 **Option/Alt** subtracts, **Shift+Option** intersects.
@@ -70,18 +64,14 @@ Adobe's own documentation gives the three modifiers: **Shift** adds,
 st.marqueeCombine = selectionCombineFromModifiers(mods.KeyShift, mods.KeyAlt);
 ```
 
-So this build already agrees with Photoshop, and Ctrl is not the key in
-either.
+**Resolution, 2026-08-26.** Confirmed working by the reporter once the key
+was named. Nothing to fix. Kept here so the next person hunting for a Ctrl
+binding finds this entry instead of adding one.
 
-**Work.** Find out why holding Option does not subtract in practice. Three
-things to eliminate, cheapest first: whether `ImGuiIO::KeyAlt` is populated
-at all on this backend; whether another Option handler pre-empts the marquee
-(`MacPaintUI.cpp:8287` reads `KeyCtrl && KeyAlt`, `8418` and `8714` read
-`KeyAlt` alone, though in other tool contexts); and whether the latch at
-mouse-down is reached before the modifier is sampled. **Then** consider
-whether the modifiers are discoverable at all — Photoshop also puts four
-combine buttons in the options bar, and a modifier no one can see is close to
-a feature that does not exist.
+**One thing it leaves behind.** Photoshop also puts four combine buttons in
+the options bar. Every modifier here is invisible until someone is told about
+it — which is how this entry came to be filed at all. Discoverability is
+tracked with **T10**, not here.
 
 ---
 
