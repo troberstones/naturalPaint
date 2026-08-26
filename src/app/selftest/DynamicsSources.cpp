@@ -681,6 +681,88 @@ bool runDynamicsSourcesTest() {
     }
   }
 
+  // ======================================================================
+  // 8. brushTipFor() resolves the HARDWARE sources only
+  // ======================================================================
+  //
+  // **This section exists because a P0 lived here with a fully green suite.**
+  // `brushTipFor()` used to resolve the WHOLE link set, and `StrokeSession`
+  // then folded the stroke-local half on again per dab -- so every
+  // VELOCITY/FADE/NOISE/RANDOM link was applied twice. `DynamicInputs`
+  // defaults those four to 0, and a link at source 0 contributes exactly its
+  // `rangeLo`, so the spurious second factor was the link's own floor.
+  //
+  // Nothing in 4442 assertions noticed. The reason is worth stating: every
+  // existing assertion about `brushTipFor()` used a link set whose stroke-local
+  // floors happened to be irrelevant, and every assertion about deposition
+  // asked whether paint landed, not how MUCH relative to what was asked for.
+  // A brush at 30% of its size still paints.
+  //
+  // The two cases below are the ones that bite, and the second is the one that
+  // shipped: an imported Photoshop brush whose minimum size is 0.00 painted
+  // NOTHING AT ALL -- no refusal, no message, a perfectly healthy link set.
+  {
+    std::printf("  -- 8. brushTipFor() resolves hardware sources only --\n");
+    const MixboxLut noLut;
+    DynamicInputs in;
+    in.pressure = 1.0f;
+
+    BrushState floored;
+    floored.radius = 20.0f;
+    floored.links = BrushLinkSet{};
+    addLink(floored.links, BrushLink{DynamicSource::Pressure, DynamicTarget::Size, {}, 0.0f, 1.0f,
+                                     false, true});
+    addLink(floored.links, BrushLink{DynamicSource::Random, DynamicTarget::Size, {}, 0.5f, 1.0f,
+                                     false, true});
+    const BrushTip tipFloored = brushTipFor(floored, noLut, in);
+    std::printf("  [measured] radius with a RANDOM->Size floor of 0.50: %.4f (asked for %.4f)\n",
+                static_cast<double>(tipFloored.radius), static_cast<double>(floored.radius));
+    check(std::fabs(tipFloored.radius - floored.radius) < 1e-4f,
+          "hardware-only: a RANDOM->Size link does NOT shrink the tip brushTipFor() returns -- "
+          "the stroke-local half is StrokeSession's to apply, per dab, and applying it here too "
+          "multiplies the link's floor in a second time");
+
+    // The floor of 0.00 case, kept separate because it is not a degree worse
+    // than the one above -- it is a different outcome. Any floor scales the
+    // brush down; a floor of zero switches it off, and a zero radius deposits
+    // nothing (brush/Deposit.hpp: "a radius of 0 or less deposits nothing at
+    // all"). Kyle's Runny Inkers ships exactly this brush.
+    BrushState zeroFloor;
+    zeroFloor.radius = 20.0f;
+    zeroFloor.links = BrushLinkSet{};
+    addLink(zeroFloor.links, BrushLink{DynamicSource::Pressure, DynamicTarget::Size, {}, 0.0f,
+                                       1.0f, false, true});
+    addLink(zeroFloor.links, BrushLink{DynamicSource::Random, DynamicTarget::Size, {}, 0.0f, 1.0f,
+                                       false, true});
+    const BrushTip tipZero = brushTipFor(zeroFloor, noLut, in);
+    std::printf("  [measured] radius with a RANDOM->Size floor of 0.00: %.4f\n",
+                static_cast<double>(tipZero.radius));
+    check(tipZero.radius > 1e-4f,
+          "hardware-only: a RANDOM->Size link whose range starts at 0.00 does not reduce the tip "
+          "to a ZERO radius, which deposits nothing -- the shipped-brush case where a healthy "
+          "link set painted an invisible stroke and no assertion anywhere saw it");
+
+    // And the equality the split rests on, checked rather than assumed:
+    // resolving the two halves separately and composing must equal resolving
+    // the whole set in one pass. app/StrokeSession.cpp's own comment claims
+    // this from TargetCombine being commutative and associative; this is that
+    // claim as an assertion, on a link set that has both halves live.
+    DynamicInputs both = in;
+    both.random = 0.37f;
+    const float whole = evaluateLinks(floored.links, both).at(DynamicTarget::Size);
+    const float hardware =
+        evaluateLinksFiltered(floored.links, both, /*wantStrokeLocal=*/false).at(DynamicTarget::Size);
+    const float local =
+        evaluateLinksFiltered(floored.links, both, /*wantStrokeLocal=*/true).at(DynamicTarget::Size);
+    std::printf("  [measured] whole %.6f vs hardware %.6f * local %.6f = %.6f\n",
+                static_cast<double>(whole), static_cast<double>(hardware),
+                static_cast<double>(local), static_cast<double>(hardware * local));
+    check(std::fabs(whole - hardware * local) < 1e-6f,
+          "hardware-only: the two partial resolutions compose back to the whole-set answer, so "
+          "splitting them costs nothing -- the property that makes applying each half EXACTLY "
+          "once both necessary and sufficient");
+  }
+
   std::printf("[selftest] dynamics sources %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

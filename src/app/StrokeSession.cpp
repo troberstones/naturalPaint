@@ -321,7 +321,30 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // whichever layer kind it lands on -- which is the reason the two hardcoded
   // curves were pulled into one place before, and the reason the link set that
   // replaced them is read in one place now.
-  const DynamicResult dyn = evaluateLinks(brush.links, inputs);
+  //
+  // **The four HARDWARE sources only, and the filter is load-bearing rather
+  // than an optimisation.** This file's own section comment above
+  // `applyStrokeLocal()` states the split everything downstream depends on: a
+  // tip arrives at `setTip()` "already resolved against the four hardware
+  // sources", and `StrokeSession` folds the stroke-local four
+  // (VELOCITY/FADE/NOISE/RANDOM) on per DAB, because those are sampled at a
+  // position that does not exist yet when this runs.
+  //
+  // This line used to read `evaluateLinks(brush.links, inputs)` -- the WHOLE
+  // set -- and the consequence was that every stroke-local link was applied
+  // TWICE: once here against `DynamicInputs`' defaults, and once per dab with
+  // its real value. A source defaulted to 0 makes its link contribute exactly
+  // `rangeLo`, so the spurious extra factor was the link's own floor. An
+  // imported Photoshop brush with a 30% minimum size painted at 30% of the
+  // size it asked for, and one whose floor was 0.00 painted **nothing at all**
+  // -- silently, with a completely healthy link set and no refusal anywhere.
+  //
+  // Measured over Kyle's Runny Inkers (`--brush-sheet`, peak stroke width per
+  // brush): the attenuation matched each brush's RANDOM -> Size floor across
+  // all twelve, the one brush in the library with no such link was the only
+  // one at full width, and the brush whose floor is 0.00 was invisible.
+  const DynamicResult dyn = evaluateLinksFiltered(brush.links, inputs,
+                                                  /*wantStrokeLocal=*/false);
   const float sizeMul = dyn.at(DynamicTarget::Size);
   const float flowMul = dyn.at(DynamicTarget::Flow);
 

@@ -20,6 +20,8 @@
 #include <string_view>
 #include <vector>
 
+#include "app/AbrReport.hpp"
+#include "app/BrushSheet.hpp"
 #include "app/AppState.hpp"
 #include "app/FixedStep.hpp"
 #include "app/Keymap.hpp"
@@ -1034,12 +1036,29 @@ int main(int argc, char** argv) {
   // way, so the existing flags keep first claim on their own spellings rather
   // than this step inventing a `--` end-of-flags escape hatch nothing has
   // asked for yet.
+  // --abr-report <file.abr> : import an .abr headlessly and print exactly what
+  // survived the import, then exit. No SDL, no GPU, no window. This exists
+  // because "the brushes do not feel right" has two very different causes --
+  // the dynamics graph being misread, or the TIP never arriving at all -- and
+  // guessing between them from a painted stroke is hopeless.
+  const char* abrReportPath = nullptr;
+  // --brush-sheet <file.abr> <out.png> : paint every imported preset with
+  // Photoshop's own preview stroke and write one contact sheet. Also headless.
+  const char* brushSheetAbr = nullptr;
+  const char* brushSheetOut = nullptr;
+  const char* brushSheetExperiment = nullptr;
   std::vector<std::string> positionalPaths;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
     if (a == "--selftest") {
       selfTest = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') selfTestOut = argv[++i];
+    } else if (a == "--abr-report") {
+      if (i + 1 < argc) abrReportPath = argv[++i];
+    } else if (a == "--brush-sheet") {
+      if (i + 1 < argc) brushSheetAbr = argv[++i];
+      if (i + 1 < argc) brushSheetOut = argv[++i];
+      if (i + 1 < argc && argv[i + 1][0] != '-') brushSheetExperiment = argv[++i];
     } else if (a == "--modes") {
       modeTest = true;
     } else if (a == "--diag") {
@@ -1182,6 +1201,14 @@ int main(int argc, char** argv) {
     // not touch, and out of scope for D4, which is about a bare filename
     // opening nothing, not about diagnosing an unrecognised flag.
   }
+
+  // Before SDL, deliberately: an .abr is a file and a parser, and nothing in
+  // the report needs a device, a window or a surface. Putting it here means it
+  // runs in milliseconds on a headless box and cannot be perturbed by anything
+  // the GPU path does.
+  if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
+  if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
+    return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
 
   if (!SDL_Init(SDL_INIT_VIDEO)) {
     std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

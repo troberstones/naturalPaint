@@ -1,6 +1,8 @@
 add_executable(naturalPaint
   main.cpp
   app/BrushLibraryFile.cpp
+  app/AbrReport.cpp
+  app/BrushSheet.cpp
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
   app/CompPanel.cpp
