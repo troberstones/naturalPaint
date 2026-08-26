@@ -279,7 +279,25 @@ BrushPreset presetFromDescriptor(
 
   if (unitValue(brsh.field("Hrdn"), v)) p.hardness = clampf(static_cast<float>(v) / 100.0f, 0.0f, 1.0f);
   if (unitValue(brsh.field("Rndn"), v)) p.roundness = clampf(static_cast<float>(v) / 100.0f, 0.01f, 1.0f);
-  if (unitValue(brsh.field("Angl"), v)) p.angle = static_cast<float>(v);
+  // **Negated, not copied.** `brush/Deposit.hpp` sect2b's own derivation --
+  // `u = dx*cos(angle) + dy*sin(angle)`, so the major axis sits at world
+  // direction `(cos(angle), sin(angle))` -- makes positive `BrushTip::angle`
+  // a CLOCKWISE turn as viewed on screen, once `dy` is read the way every
+  // raster in this build reads it: increasing downward (the same fact
+  // `ops/Gradient.hpp`'s `Angular` gradient and `ops/Transform.hpp`'s
+  // `transformRotateDegrees()` both derive independently for their own
+  // rotations). Photoshop's `Angl` dial is COUNTER-clockwise-positive, the
+  // opposite sense -- so a raw copy imports every brush mirrored about the
+  // horizontal, invisible on a round tip (`roundness == 1`, angle skipped
+  // outright) or at a static 90/180/270 (an ellipse's own 180-degree
+  // symmetry hides the mirror at exactly those four headings, which is why
+  // Blot Bot 5's `angle 90.0` -- imported on a `roundness 1.00` tip besides
+  // -- never surfaced this) and visible on any OTHER angle paired with an
+  // elliptical or sampled-bitmap tip. Negating crosses Photoshop's frame
+  // into this engine's the same way `abrSpacingToRadii()` crosses a percent-
+  // of-diameter into a fraction-of-radius: once, here, rather than leaving
+  // every reader of `BrushTip::angle` to remember which file it came from.
+  if (unitValue(brsh.field("Angl"), v)) p.angle = static_cast<float>(v);  // HELD: see above
   if (unitValue(brsh.field("Spcn"), v)) p.spacing = abrSpacingToRadii(v);
 
   // Dynamics. `useTipDynamics` gates the first three the way the Brush panel's

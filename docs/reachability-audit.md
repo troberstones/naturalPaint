@@ -328,6 +328,43 @@ count, and it is recorded here rather than patched in the panel, because a
 UI-only fix would let the control claim a per-layer property the engine cannot
 actually hold. Found while auditing the right column against its own design.
 
+### B9 — OPEN QUESTION: which way does Photoshop's `Angl` dial turn?
+
+Half of this is settled and half is not, and the unsettled half is why nothing
+has been changed.
+
+**Settled:** `BrushTip::angle` is **clockwise-positive as seen on screen**.
+`brush/Deposit.hpp`'s rotation puts the major axis at world direction
+`(cos a, sin a)`, and `dy` increases downward in every raster this build owns.
+`ops/Gradient.hpp` and `ops/Transform.hpp` derive the same fact independently
+for their own rotations.
+
+**Not settled:** whether Photoshop's `Angl` is the opposite (counter-clockwise
+positive). If it is, `io/AbrBrushes.cpp` must negate on import, and every
+imported brush pairing a non-zero `Angl` with a non-round tip is currently
+mirrored about the horizontal.
+
+**Why it is recorded instead of fixed.** The claim that Photoshop is CCW-positive
+was asserted from memory, in a task brief, and then came back as a conclusion in
+the work that brief produced — with no independent source anywhere in the loop.
+This project has already shipped one control ordinal backwards from exactly that
+kind of confident recollection (see `AbrControl` in `io/AbrBrushes.hpp`), and it
+survived a fully green suite for the same reason this would: everything still
+imports, still varies, still paints.
+
+**It is currently unobservable either way**, which is the only reason it is not
+urgent. No preset in either sample pack pairs a non-zero static `Angl` with an
+elliptical or bitmap tip — Blot Bot 5's `angle 90.0` sits on a `roundness 1.00`
+tip, where angle is skipped outright, and a 90° error on an ellipse is hidden by
+its own 180° symmetry anyway.
+
+**How to close it:** open any brush in Photoshop's Brush Tip Shape panel, set
+Roundness below 100% so the tip is visibly elliptical, set Angle to something
+without symmetry (30°, say), and look at which way it leans. That single
+observation decides it. `selftest/AbrBrushes` currently pins the angle's
+MAGNITUDE with `fabs` and deliberately asserts no sign, so closing this means
+tightening one assertion rather than discovering which one was wrong.
+
 ---
 
 ## C. Whole subsystems built, tested, and unreachable

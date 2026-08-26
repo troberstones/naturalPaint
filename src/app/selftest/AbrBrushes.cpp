@@ -44,6 +44,11 @@ struct BrushSpec {
   int sizeControl = 0;
   double sizeJitter = 0.0;
   double minimumDiameter = 0.0;
+  // Angle's own control/jitter pair -- `angleDynamics`, read by
+  // `readDynamics(node, "angleDynamics")` the identical way `szVr` is read
+  // for Size, and gated by the same `useTipDynamics` flag.
+  int angleControl = 0;
+  double angleJitter = 0.0;
   // `dualBrush` present but SWITCHED OFF vs present and ON. Two flags rather
   // than one because those are genuinely different files and the importer is
   // required to tell them apart: every real preset carries a `dualBrush`
@@ -55,8 +60,9 @@ struct BrushSpec {
 };
 
 void appendBrush(DescFixture& f, const BrushSpec& s) {
-  // brushPreset: Nm, Brsh, useTipDynamics, minimumDiameter, szVr [, dualBrush]
-  f.objc("brushPreset", "brushPreset", s.dualBrushPresent ? 6u : 5u);
+  // brushPreset: Nm, Brsh, useTipDynamics, minimumDiameter, szVr,
+  // angleDynamics [, dualBrush]
+  f.objc("brushPreset", "brushPreset", s.dualBrushPresent ? 7u : 6u);
 
   f.key4("Nm  ").textv(s.name);
 
@@ -73,6 +79,11 @@ void appendBrush(DescFixture& f, const BrushSpec& s) {
   f.key4("szVr").objc("brVr", "brVr", 3);
   f.key4("bVTy").longv(s.sizeControl);
   f.keyN("jitter").untf("#Prc", s.sizeJitter);
+  f.key4("Mnm ").untf("#Prc", 0.0);
+
+  f.keyN("angleDynamics").objc("brVr", "brVr", 3);
+  f.key4("bVTy").longv(s.angleControl);
+  f.keyN("jitter").untf("#Prc", s.angleJitter);
   f.key4("Mnm ").untf("#Prc", 0.0);
 
   // The real key carries a whole second tip (`Brsh`, `BlnM`, `Cnt `,
@@ -257,9 +268,41 @@ bool runAbrBrushesTest() {
       check(nearf(p.radius, 20.0f, 1e-4f),
             "abr: `Dmtr` is a DIAMETER, so radius is half of it -- importing it whole doubles "
             "every brush");
+      // **The angle's MAGNITUDE is pinned; its SIGN is deliberately not.**
+      // `brush/Deposit.hpp`'s rotation is clockwise-positive on screen once
+      // `dy` is read increasing-downward -- derived here and independently
+      // in `ops/Gradient.hpp` and `ops/Transform.hpp`, so that half is
+      // settled. Whether Photoshop's `Angl` dial is the OPPOSITE sense is
+      // not: it was asserted from memory rather than read off the
+      // application, and this project has already shipped one control
+      // ordinal backwards from exactly that kind of confident recollection
+      // (`AbrControl`'s own header comment). Asserting either sign here
+      // would canonize a guess -- and a green suite around a guess is how
+      // the last one survived. `fabs` pins everything that IS known (the
+      // number survives import unscaled) and leaves the open question to
+      // docs/reachability-audit.md **B9**, where it can be closed by looking
+      // at Photoshop rather than by reasoning.
       check(nearf(p.spacing, 0.5f, 1e-4f) && nearf(p.roundness, 0.5f, 1e-4f) &&
-                nearf(p.angle, 30.0f, 1e-4f),
-            "abr: spacing, roundness and angle all arrive");
+                nearf(std::fabs(p.angle), 30.0f, 1e-4f),
+            "abr: spacing and roundness arrive unchanged, and `Angl` arrives with its MAGNITUDE "
+            "intact (30 degrees, unscaled) -- the SIGN convention is an open question, audit B9, "
+            "and is deliberately not asserted either way rather than canonizing a guess");
+    }
+
+    // A second, less "special" angle -- 30 above is also what section 9's
+    // spacing/roundness checks reuse, so this is one value away from a wrong
+    // negation and a coincidence both looking right. 125 has no symmetry
+    // (not a multiple of 90) for a sign error to hide behind.
+    {
+      BrushSpec skew;
+      skew.name = "Inker Skew";
+      skew.angleDeg = 125.0;
+      const AbrImportResult rSkew = importAbrBrushes(wrapAbr(oneBrushLibrary(skew)));
+      check(rSkew.ok && rSkew.presets.size() == 1 &&
+                nearf(std::fabs(rSkew.presets[0].angle), 125.0f, 1e-4f),
+            "abr: a second, asymmetric `Angl` (125.0) also survives import at full magnitude -- "
+            "125 has no 90-degree symmetry for an error to hide behind, unlike the round number "
+            "the section above shares with the spacing/roundness checks");
     }
 
     // A `desc` block reached only after stepping over an odd-length `samp`
@@ -384,6 +427,58 @@ bool runAbrBrushesTest() {
     check(b.ok && b.dualBrushes == 1 && saidDual,
           "abr: Dual Brush switched ON is COUNTED and NAMED against its brush -- a second tip "
           "this build cannot stamp is a loss, and an unreported loss is the whole failure mode");
+  }
+
+  // --- 8. Angle Jitter 0% plus a live control adds NO spurious RANDOM link --
+  //
+  // Kyle Webster's "Blot Bot Perfecto" shows "Angle Jitter 0%, Control:
+  // Direction" on Photoshop's own Shape Dynamics panel -- the tip should
+  // follow the stroke's heading exactly, with no random contribution mixed
+  // in. `addDynamicsLinks()` (this file) gates its RANDOM branch on
+  // `d.jitter > 0.0`, so a control with zero jitter must import as ONE link,
+  // not two -- Angle is an `Add` target, and a spurious RANDOM->Angle link
+  // at even a narrow range would still wobble a "0% jitter" brush every dab.
+  {
+    BrushSpec direction0;
+    direction0.useTipDynamics = true;
+    direction0.angleControl = static_cast<int>(AbrControl::Direction);
+    direction0.angleJitter = 0.0;
+    const AbrImportResult r = importAbrBrushes(wrapAbr(oneBrushLibrary(direction0)));
+    check(r.ok && r.presets.size() == 1, "abr: the zero-jitter Direction fixture imports");
+    if (r.presets.size() == 1) {
+      const BrushLinkSet& links = r.presets[0].links;
+      check(findLink(links, DynamicSource::Direction, DynamicTarget::Angle) != kNoLink,
+            "abr: Control: Direction lands on DIRECTION -> ANGLE");
+      check(findLink(links, DynamicSource::Random, DynamicTarget::Angle) == kNoLink,
+            "abr: Angle Jitter 0% adds NO RANDOM -> ANGLE link -- '0%' means exactly that, "
+            "not a link at a zero-width range that would still look live to a reader of the "
+            "matrix");
+      check(links.links.size() == 1, "abr: exactly one link total -- the control, nothing else");
+    }
+
+    // The contrasting case, so the check above is a real gate and not an
+    // importer that dropped RANDOM->Angle altogether: nonzero jitter DOES
+    // add the second link, at the correctly SCALED span (half the jitter
+    // percentage is half the target's own default [0,360] span, not a
+    // fully-random [0,360] -- io/AbrBrushes.cpp's own comment on why the
+    // span is scaled rather than selected).
+    BrushSpec direction50;
+    direction50.useTipDynamics = true;
+    direction50.angleControl = static_cast<int>(AbrControl::Direction);
+    direction50.angleJitter = 50.0;
+    const AbrImportResult r2 = importAbrBrushes(wrapAbr(oneBrushLibrary(direction50)));
+    check(r2.ok && r2.presets.size() == 1, "abr: the 50%-jitter Direction fixture imports");
+    if (r2.presets.size() == 1) {
+      const size_t rnd =
+          findLink(r2.presets[0].links, DynamicSource::Random, DynamicTarget::Angle);
+      check(rnd != kNoLink, "abr: Angle Jitter 50% DOES add a RANDOM -> ANGLE link");
+      if (rnd != kNoLink) {
+        const BrushLink& l = r2.presets[0].links.links[rnd];
+        check(nearf(l.rangeLo, 0.0f, 1e-4f) && nearf(l.rangeHi, 180.0f, 1e-4f),
+              "abr: 50% of Angle's own default [0,360] span is [0,180] -- half a turn, not a "
+              "whole one");
+      }
+    }
   }
 
   std::printf("[selftest] abr brushes %s\n", ok ? "PASS" : "FAIL");

@@ -981,6 +981,15 @@ bool runAbrBrushesTest();
 // --selftest. Headless and GPU-free.
 bool runAbrSampledTipsTest();
 
+// track10/angle: is the angle input interpreted correctly? An independent
+// (never-read-back-from-the-code-under-test) geometric pin on two claims --
+// `BrushTip::angle`'s positive sense is clockwise on screen (brush/
+// Deposit.hpp §2b), and a DIRECTION -> ANGLE link actually turns the tip's
+// elongated footprint to face the stroke's own travel vector, not 90 degrees
+// off and not mirrored. Headless and GPU-free -- brush/Deposit.hpp and
+// brush/Dynamics.hpp alone, no importer involved.
+bool runAngleConventionTest();
+
 // app/BrushLibraryFile: the preferences file that remembers which `.abr`
 // libraries are loaded, the row cache that lets a remembered library draw its
 // brushes with its file unread, and the unload that has to remove exactly one

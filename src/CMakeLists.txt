@@ -33,6 +33,7 @@ add_executable(naturalPaint
   app/selftest/BaseLayerAlpha.cpp
   app/selftest/AbrBrushes.cpp
   app/selftest/AbrSampledTips.cpp
+  app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
   app/selftest/BrushDynamics.cpp

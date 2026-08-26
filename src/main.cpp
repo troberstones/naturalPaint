@@ -1548,6 +1548,10 @@ int main(int argc, char** argv) {
     // brush/Deposit.hpp §2c in place of the procedural tip. Headless and
     // GPU-free.
     const bool abrSampledTipsOk = np::runAbrSampledTipsTest();
+    // track10/angle: an independent geometric pin -- BrushTip::angle is
+    // clockwise-positive on screen, and DIRECTION->Angle actually faces the
+    // tip along the stroke's travel vector. Headless and GPU-free.
+    const bool angleConventionOk = np::runAngleConventionTest();
     // app/BrushLibraryFile: the preferences file for imported `.abr` libraries,
     // the row cache that makes launch pay nothing for them, and unload.
     // Headless and GPU-free.
@@ -2025,7 +2029,7 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
-                    saveReadbackOk && zoomAndSizeOk;
+                    saveReadbackOk && zoomAndSizeOk && angleConventionOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
