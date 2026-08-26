@@ -218,9 +218,32 @@ Resources makeResources(WGPUDevice device, WGPUTextureFormat format) {
   sd.addressModeU = WGPUAddressMode_ClampToEdge;
   sd.addressModeV = WGPUAddressMode_ClampToEdge;
   sd.addressModeW = WGPUAddressMode_ClampToEdge;
-  sd.magFilter = WGPUFilterMode_Linear;
+  // **NEAREST when magnified, LINEAR when minified, and the split is the whole
+  // point.**
+  //
+  // `magFilter` is what runs when the canvas is zoomed IN -- one document texel
+  // covering many screen pixels -- and it is the only filter a painter ever
+  // sees as "blur". Linear there interpolates between texel centres, so a hard
+  // one-texel edge becomes a soft ramp several screen pixels wide and a
+  // zoomed-in canvas stops showing what is actually stored. Nearest shows the
+  // texel, which is what a paint application is for: at 800% the user is
+  // looking at individual texels ON PURPOSE, usually to fix one.
+  //
+  // `minFilter` stays Linear, and that is not an oversight. It runs when the
+  // canvas is zoomed OUT, where one screen pixel covers many document texels
+  // and nearest picks exactly one of them arbitrarily -- which shimmers as the
+  // view pans and drops thin strokes entirely between sample points. That is
+  // aliasing, not crispness, and it makes a zoomed-out canvas lie about what is
+  // on it in the opposite direction. Photoshop, Krita and Aseprite all make
+  // this same split for this same reason.
+  //
+  // `mipmapFilter` is Nearest to match: the document texture is created with
+  // `mipLevelCount = 1` (ui/DocumentTexture), so there is no chain to filter
+  // between and this value never selects anything -- Nearest simply says so
+  // rather than implying a chain exists.
+  sd.magFilter = WGPUFilterMode_Nearest;
   sd.minFilter = WGPUFilterMode_Linear;
-  sd.mipmapFilter = WGPUMipmapFilterMode_Linear;
+  sd.mipmapFilter = WGPUMipmapFilterMode_Nearest;
   sd.maxAnisotropy = 1;
   r.sampler = wgpuDeviceCreateSampler(device, &sd);
 
