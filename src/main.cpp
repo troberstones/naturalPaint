@@ -22,6 +22,7 @@
 
 #include "app/AbrReport.hpp"
 #include "app/BrushSheet.hpp"
+#include "app/StrokePreview.hpp"
 #include "app/AppState.hpp"
 #include "app/FixedStep.hpp"
 #include "app/Keymap.hpp"
@@ -1047,6 +1048,21 @@ int main(int argc, char** argv) {
   const char* brushSheetAbr = nullptr;
   const char* brushSheetOut = nullptr;
   const char* brushSheetExperiment = nullptr;
+  // --stroke-preview <out.png> [radius] [spacing] : write the BRUSH EDITOR's
+  // own TEST STROKE strip for the DEFAULT brush, at the exact size the panel
+  // draws it. Headless, like the two above.
+  //
+  // **This exists because the panel's copy cannot be looked at from a test.**
+  // `app/StrokePreview`'s whole claim is that it paints through the real
+  // `StrokeSession` rather than drawing an impression of a stroke, and
+  // `--selftest` asserts that numerically -- but "does this actually read as a
+  // brush stroke at 288x96" is a question only an eye answers, and without
+  // this flag answering it means launching the GUI, opening a panel and
+  // photographing it. Same argument `--brush-sheet` already makes for the
+  // sheet it writes.
+  const char* strokePreviewOut = nullptr;
+  float strokePreviewRadius = -1.0f;
+  float strokePreviewSpacing = -1.0f;
   std::vector<std::string> positionalPaths;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a(argv[i]);
@@ -1059,6 +1075,10 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
       if (i + 1 < argc) brushSheetOut = argv[++i];
       if (i + 1 < argc && argv[i + 1][0] != '-') brushSheetExperiment = argv[++i];
+    } else if (a == "--stroke-preview") {
+      if (i + 1 < argc) strokePreviewOut = argv[++i];
+      if (i + 1 < argc && argv[i + 1][0] != '-') strokePreviewRadius = std::atof(argv[++i]);
+      if (i + 1 < argc && argv[i + 1][0] != '-') strokePreviewSpacing = std::atof(argv[++i]);
     } else if (a == "--modes") {
       modeTest = true;
     } else if (a == "--diag") {
@@ -1209,6 +1229,8 @@ int main(int argc, char** argv) {
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
+  if (strokePreviewOut != nullptr)
+    return np::runStrokePreviewDump(strokePreviewOut, strokePreviewRadius, strokePreviewSpacing);
 
   if (!SDL_Init(SDL_INIT_VIDEO)) {
     std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -2026,6 +2048,7 @@ int main(int argc, char** argv) {
     // track10/feel (PaintCopilot §3.2, arXiv:2605.20941): the log/power
     // pressure-response curves and the pressure EMA's per-stroke reset.
     const bool pressureFeelOk = np::runPressureFeelTest();
+  const bool strokePreviewOk = np::runStrokePreviewTest();
     // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp), US 5,347,620:
     // the tiled grain field, `F = clamp(P*S*O1 - G, 0, 1)`, grain OFF as a
     // bit-exact no-op, `app/DabPreview` agreeing with a real `depositDab()`
@@ -2060,7 +2083,7 @@ int main(int argc, char** argv) {
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
                     saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
-                    grainOk;
+                    grainOk && strokePreviewOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

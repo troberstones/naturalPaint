@@ -3551,6 +3551,20 @@ bool runWheelInputTest();
 //    the state does NOT survive an `end()`/`begin()` pair: a second
 //    stroke's first call returns exactly its own raw sample, not a value
 //    blended with the first stroke's last smoothed reading.
+// app/StrokePreview -- the BRUSH EDITOR's TEST STROKE strip.
+//
+// Mostly assertions of one shape: change a setting a single dab CANNOT
+// express -- spacing, scatter, a stroke-local source, direction, grain -- and
+// require the rasterised strip to change. A preview that ignored any of them
+// would pass "does it draw something" forever, and those settings are most of
+// what the panel's sliders control (app/StrokePreview.hpp §1).
+//
+// Also covers the cache, because a preview whose cache stopped invalidating is
+// indistinguishable from a slider that does nothing -- which is the complaint
+// the feature exists to answer -- and `brushTipEqual()`, the complete tip
+// comparison that key leans on.
+bool runStrokePreviewTest();
+
 bool runPressureFeelTest();
 
 // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp): US 5,347,620's tiled

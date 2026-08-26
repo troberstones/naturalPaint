@@ -252,6 +252,32 @@ float combineDualCoverage(DualBrushBlend mode, float base, float second) noexcep
   return base;  // unreachable for a valid enumerator; see DualBrushBlend's own comment.
 }
 
+bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept {
+  // **The completeness guard is the structured binding, not a `sizeof`.** A
+  // structured binding must name EVERY member of an aggregate -- too few or too
+  // many and it does not compile -- so adding a field to `BrushTip` is a build
+  // error pointing at this line, and the fix is to name it here and compare it
+  // below. Every binding is then used in the comparison, so the two cannot
+  // drift apart: a named-but-uncompared field would be an unused binding, which
+  // `-Werror=unused-variable` (src/CMakeLists.txt) rejects.
+  //
+  // A `static_assert(sizeof(BrushTip) == N)` was written here first and is NOT
+  // good enough: adding a `float` after `sizeFloorPx` landed it in the struct's
+  // existing tail padding, left `sizeof` at 136, and the guard passed while the
+  // new field went uncompared. Tested, not assumed -- which is the only reason
+  // the weaker version is not still here.
+  const auto& [radius, hardness, roundness, angle, bitmap, dualTip, dualBlend, flow, spacing,
+               scatter, scatterBothAxes, grain, pigment, linearRgb, opacity, sizeFloorPx] = a;
+  // `bitmap` and `dualTip` compare by POINTER, which is `dabPreviewTipsEqual()`'s
+  // established convention; its comment carries the argument.
+  return radius == b.radius && hardness == b.hardness && roundness == b.roundness &&
+         angle == b.angle && bitmap == b.bitmap && dualTip == b.dualTip &&
+         dualBlend == b.dualBlend && flow == b.flow && spacing == b.spacing &&
+         scatter == b.scatter && scatterBothAxes == b.scatterBothAxes &&
+         grainParamsEqual(grain, b.grain) && pigment == b.pigment &&
+         linearRgb == b.linearRgb && opacity == b.opacity && sizeFloorPx == b.sizeFloorPx;
+}
+
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   const float base = singleTipCoverage(tip, dx, dy);
   if (tip.dualTip == nullptr) return base;

@@ -121,6 +121,7 @@ add_executable(naturalPaint
   app/selftest/SelectMenu.cpp
   app/selftest/Shaper.cpp
   app/selftest/SolverPersistence.cpp
+  app/selftest/StrokePreview.cpp
   app/selftest/StrokeBridge.cpp
   app/selftest/StrokeSpeed.cpp
   app/selftest/Support.cpp
@@ -137,6 +138,7 @@ add_executable(naturalPaint
   app/QuitSequence.cpp
   app/Snapping.cpp
   app/StrokeBake.cpp
+  app/StrokePreview.cpp
   app/StrokeSession.cpp
   app/UserBrushLibrary.cpp
   app/ViewTransform.cpp

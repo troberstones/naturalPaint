@@ -847,6 +847,32 @@ struct BrushTip {
 // clamps the result, brush/Deposit.cpp).
 float combineDualCoverage(DualBrushBlend mode, float base, float second) noexcept;
 
+// Whether two tips would deposit the IDENTICAL mark. Bit equality on every
+// scalar; `bitmap` and `dualTip` by POINTER, which is `dabPreviewTipsEqual()`'s
+// own established convention and its comment carries the argument (two
+// different bitmaps can share every scalar, and comparing pixel content on a
+// cache-key path would be the expensive thing the key exists to avoid).
+//
+// **This is the COMPLETE comparison, and a structured binding is what keeps it
+// complete.** `app/DabPreview`'s own `dabPreviewTipsEqual()` compares
+// only the subset a single dab's appearance depends on -- deliberately, since
+// spacing and scatter cannot change one dab -- and that subset was already
+// missed once when `grain` landed. `app/StrokePreview` paints a whole STROKE,
+// so its cache key depends on every field here including the ones a dab
+// ignores, and a field added without being compared would leave that cache
+// handing back the previous brush's stroke with nothing going red. The
+// implementation destructures a tip with a structured binding, which must name
+// every member of an aggregate -- so a new field fails to compile there, and
+// naming it without comparing it fails too (an unused binding, which
+// `-Werror=unused-variable` rejects). Same shape of guard `-Werror=switch`
+// gives the enums (src/CMakeLists.txt).
+//
+// A `sizeof` assertion was tried first and is not sufficient: a `float` added
+// after the last member landed in existing tail padding and left `sizeof`
+// unchanged, so the guard passed with the field uncompared. Found by running
+// that sabotage, not by reasoning about it.
+bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept;
+
 // The dab's coverage profile at an offset from its centre, in [0,1]. See §2
 // for the profile, §2b for the ellipse and §2c for a sampled bitmap tip.
 //

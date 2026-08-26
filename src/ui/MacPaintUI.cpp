@@ -23,6 +23,7 @@
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
 #include "app/DabPreview.hpp"
+#include "app/StrokePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/FilterOps.hpp"
 #include "app/HistoryPanel.hpp"
@@ -2925,23 +2926,82 @@ class DabPreviewTexture {
   uint64_t uploads_ = 0;
 };
 
-DabPreviewCache g_dabPreview;
-DabPreviewTexture g_dabPreviewTexture;
 
-// 4a's TIP PREVIEW block: the image, its frame, its cell dividers, and the one
-// line of text that says what scale it is drawn at.
+// --- The test stroke's texture ---------------------------------------------
 //
-// The frame and the dividers are `ImDrawList` primitives over the image rather
-// than texels inside it, deliberately: they are chrome, they take the chrome's
-// own tokens, and baking them into the image would make the "outermost covered
-// texel tracks radius" assertion in `--selftest` have to know where the chrome
-// stops. What `ImDrawList` cannot do is the falloff ramp, which is the whole
-// reason there is a texture here at all.
-void drawTipPreview(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
-  const std::array<BrushTip, kDabPreviewCells> tips =
-      dabPreviewTipsFor(st.brush, lut, dynamicInputsFor(st));
-  const DabPreviewImage& img = g_dabPreview.imageFor(tips);
-  const WGPUTextureView view = g_dabPreviewTexture.viewFor(gpu, img, g_dabPreview.generation());
+// `DabPreviewTexture` above is not reused because it hard-codes its extent on
+// first upload and has no resize path -- its own comment says so, and says
+// this is where a second size would have to enter the key. Rather than give
+// that class a size key it does not need (the dab strip genuinely never
+// changes size), this is the same thirty lines at the stroke strip's own
+// dimensions. The policy is identical and stated once, there: cache on a key,
+// upload only on a miss, keep the counters public so a test can prove the
+// cache invalidates.
+class StrokePreviewTexture {
+ public:
+  WGPUTextureView viewFor(GpuContext& gpu, const StrokePreviewImage& img, uint64_t generation) {
+    if (img.width <= 0 || img.height <= 0 || img.rgba.empty()) return nullptr;
+    if (texture_ == nullptr) {
+      WGPUTextureDescriptor td = {};
+      td.label = sv("brush test stroke preview");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height), 1};
+      td.format = WGPUTextureFormat_RGBA8Unorm;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+      width_ = img.width;
+      height_ = img.height;
+    }
+    if (generation != uploaded_) {
+      WGPUTexelCopyTextureInfo dst = {};
+      dst.texture = texture_;
+      dst.mipLevel = 0;
+      dst.aspect = WGPUTextureAspect_All;
+      WGPUTexelCopyBufferLayout layout = {};
+      layout.bytesPerRow = static_cast<uint32_t>(width_) * 4u;
+      layout.rowsPerImage = static_cast<uint32_t>(height_);
+      const WGPUExtent3D extent = {static_cast<uint32_t>(width_),
+                                   static_cast<uint32_t>(height_), 1};
+      wgpuQueueWriteTexture(gpu.queue, &dst, img.rgba.data(), img.rgba.size(), &layout, &extent);
+      uploaded_ = generation;
+      ++uploads_;
+    }
+    return view_;
+  }
+
+  uint64_t uploads() const noexcept { return uploads_; }
+
+ private:
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  int width_ = 0;
+  int height_ = 0;
+  uint64_t uploaded_ = 0;
+  uint64_t uploads_ = 0;
+};
+
+StrokePreviewCache g_strokePreview;
+StrokePreviewTexture g_strokePreviewTexture;
+
+// 4a's TEST STROKE footer, finally present -- `app/StrokePreview` paints one
+// real stroke through a real `app/StrokeSession` and this file only uploads
+// and places it. That header carries every decision (the path, the taper, the
+// integer scale, the pigment route) and none is repeated here.
+//
+// **This sits where the three-dab TIP PREVIEW used to.** The dab preview is
+// not deleted -- `app/BrushRowIcon` still draws every library row with it, and
+// a 40 px row has no space for a stroke -- but in the editor it answered
+// strictly less than this does: spacing, scatter, direction, velocity, fade,
+// the dual tip's second stamp, dab overlap, grain and the Minimum Diameter
+// floor are all invisible in a stationary dab, and between them that is most
+// of what the panel's sliders control. `app/StrokePreview` §1 lists them.
+void drawTestStroke(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
+  const StrokePreviewImage& img = g_strokePreview.imageFor(st.brush, lut);
+  const WGPUTextureView view =
+      g_strokePreviewTexture.viewFor(gpu, img, g_strokePreview.generation());
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 o = ImGui::GetCursorScreenPos();
@@ -2949,43 +3009,34 @@ void drawTipPreview(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   const float h = static_cast<float>(img.height);
 
   if (view != nullptr) {
-    // ImGui's own pipeline, not ui/CanvasQuad: these bytes are already
-    // display-referred sRGB (app/DabPreview's `DabPreviewImage`), and the
-    // surface is non-sRGB, so the gamma applied is 1.0 and they arrive
-    // untouched -- exactly like the chrome around them.
     dl->AddImage(reinterpret_cast<ImTextureID>(view), o, ImVec2(o.x + w, o.y + h));
   } else {
-    // No adapter, or a texture that could not be made. Say so rather than
-    // leaving a gap that reads as "this brush deposits nothing".
     dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), atelierToken(kChromeDeep));
-  }
-  for (int c = 1; c < kDabPreviewCells; ++c) {
-    const float x = o.x + static_cast<float>(c * kDabPreviewCell);
-    dl->AddLine(ImVec2(x, o.y), ImVec2(x, o.y + h), atelierToken(kDivider),
-                kDividerThickness);
   }
   dl->AddRect(o, ImVec2(o.x + w, o.y + h), atelierToken(kDivider), 0.0f, 0, kDividerThickness);
   ImGui::Dummy(ImVec2(w, h));
 
-  // The three pressures and the scale, said in numbers, because a picture of
-  // three dabs does not say which pressures they are -- and because §3's whole
-  // claim is that the preview is at a *stated* ratio rather than fitted.
+  // The numbers a picture cannot say. DABS is the one worth reading while
+  // dragging Spacing: it is literally what that slider changes, and watching
+  // it fall from 2186 to 22 explains the picture faster than the picture does.
   pushAtelierMono();
-  if (img.scale <= 1.0f)
-    ImGui::TextDisabled("PRESSURE %.2f  %.2f  %.2f   1:1", kDabPreviewPressures[0],
-                        kDabPreviewPressures[1], kDabPreviewPressures[2]);
-  else
-    ImGui::TextDisabled("PRESSURE %.2f  %.2f  %.2f   1:%.1f", kDabPreviewPressures[0],
-                        kDabPreviewPressures[1], kDabPreviewPressures[2],
-                        static_cast<double>(img.scale));
+  if (img.refused) {
+    ImGui::TextDisabled("REFUSED  %s", img.refusal.c_str());
+  } else if (img.scale <= 1) {
+    ImGui::TextDisabled("1:1   %zu dabs", img.dabs);
+  } else {
+    ImGui::TextDisabled("1:%d   %zu dabs", img.scale, img.dabs);
+  }
   popAtelierMono();
   if (ImGui::IsItemHovered() || ImGui::IsMouseHoveringRect(o, ImVec2(o.x + w, o.y + h)))
     ImGui::SetTooltip(
-        "One dab on empty paper, at three pen pressures.\n"
-        "radius %.0f / %.0f / %.0f px -- the same falloff the brush deposits.",
-        static_cast<double>(img.radii[0]), static_cast<double>(img.radii[1]),
-        static_cast<double>(img.radii[2]));
+        "One test stroke on empty paper -- the same S-curve and the same\n"
+        "0 -> 1 -> 0 pressure taper `--brush-sheet` paints every imported\n"
+        "preset with, painted here by the real stroke engine.\n"
+        "%zu dabs, %zu texels covered.",
+        img.dabs, img.texels);
 }
+
 
 // One labelled row of the matrix's own geometry: a 54 px row label, twelve
 // equal cells, a 34 px live-value gutter. Shared by the header row and the
@@ -3417,7 +3468,7 @@ void drawBrushRowTooltip(AppState& st, GpuContext& gpu, const MixboxLut& lut,
     dl->AddImage(reinterpret_cast<ImTextureID>(view), o, ImVec2(o.x + w, o.y + h));
   } else {
     // No adapter, or a texture that could not be made. Say so with a filled
-    // rectangle rather than a gap, for drawTipPreview()'s reason: a gap reads
+    // rectangle rather than a gap, for drawTestStroke()'s reason: a gap reads
     // as "this brush deposits nothing".
     dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), atelierToken(kChromeDeep));
   }
@@ -3869,7 +3920,7 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   // The preview goes ABOVE the sliders, which is 4a's own order and is also
   // the useful one: a slider drag is judged by what happens above it, and a
   // preview below the controls is under the hand that is dragging them.
-  drawTipPreview(st, gpu, lut);
+  drawTestStroke(st, gpu, lut);
   // kBrushRadiusMin/Max (app/AppState.hpp): the one range for this field,
   // also read by the options bar's SIZE slider. See that constant's comment.
   ctlSlider("Radius", &st.brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");

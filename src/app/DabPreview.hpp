@@ -160,8 +160,23 @@
 // **No stroke.** This is one dab, not a test stroke. A stroke needs spacing,
 // a path, and the overlap arithmetic `brush/RgbDeposit.hpp` §2 is about, and
 // it would answer a different question ("what does a line look like") in a
-// space one seventh the size. The design's TEST STROKE footer is still not
-// built and this is not a substitute for it.
+// space one seventh the size.
+//
+// **That footer now exists**: `app/StrokePreview` paints one through a real
+// `app/StrokeSession`, and it is what the BRUSH EDITOR draws. This module
+// stayed, because `app/BrushRowIcon` gives every library row a 40 px cell that
+// a stroke has no room in -- but the editor's copy is gone, because a stroke
+// answers strictly more there. `app/StrokePreview.hpp` §1 lists what: spacing,
+// scatter, direction, velocity, fade, the dual tip's second stamp, dab
+// overlap, grain and the Minimum Diameter floor are every one of them
+// invisible in a stationary dab.
+//
+// One consequence worth carrying: `dabPreviewTipsEqual()` below is a
+// DELIBERATELY NARROWER comparison than `brushTipEqual()` (brush/Deposit.hpp),
+// because a dab's appearance genuinely does not depend on spacing or scatter.
+// Do not "fix" one to match the other -- they answer different questions, and
+// the complete one carries the structured-binding guard precisely so the
+// narrow one does not have to.
 //
 // **No paper texture, no wetness, no granulation.** `brush/Deposit` simulates
 // none of those (its own §0 says so at length), so a preview that showed them
