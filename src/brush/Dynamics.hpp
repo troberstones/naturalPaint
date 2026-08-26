@@ -483,6 +483,62 @@ struct DynamicResult {
 // serialises, and what makes "12 LINKS" a `size()` rather than a scan.
 struct BrushLinkSet {
   std::vector<BrushLink> links;
+
+  // **The floor UNDER a Multiply target's whole resolved product, one entry
+  // per `DynamicTarget`, in that target's own units.** Default 0.0f, which
+  // means "no floor" -- `std::max(product, 0.0f)` cannot lower a product that
+  // is never negative to begin with (`linkContribution()` already clamps its
+  // own output there), so a `BrushLinkSet` no code ever writes into this array
+  // applies no floor at all and costs nothing. That covers every hand-
+  // authored preset today (`defaultBrushLinks()`, every `brush/Library.cpp`
+  // built-in) and every `.abr` import with no Minimum Diameter.
+  //
+  // **Why this cannot live on a `BrushLink` the way `rangeLo` does.**
+  // Photoshop's own Minimum Diameter is a property of the TARGET (Size), not
+  // of any one link driving it -- it bounds the PRODUCT of every link on that
+  // column, control and jitter alike, not either contribution on its own.
+  // docs/reachability-audit.md **B6** is the worked argument for why folding
+  // it into each link's own `rangeLo` instead (this importer's old behaviour)
+  // makes two links on one target squeeze the floor into its own SQUARE: at
+  // source 0, a control link and a jitter link each contribute their floor
+  // verbatim, and a Multiply target folds `lo1 * lo2`, not `max(lo1, lo2)` or
+  // the floor once. Eleven of twelve Runny Inkers carry both `PRESSURE->Size`
+  // and `RANDOM->Size`, so eleven of twelve painted attenuated to the floor's
+  // own square rather than the floor Photoshop's dialog actually promises.
+  //
+  // **Only meaningful on a `TargetCombine::Multiply` target, and today only
+  // written for ONE of the nine.** An `Add` target's identity is 0.0, not
+  // 1.0, and "the minimum an OFFSET may be" is not a control Photoshop's own
+  // Shape Dynamics panel has for Angle, Scatter or Hue -- there is no
+  // "Minimum Angle Jitter" to import in the first place, so those three
+  // slots are unused and asserted unused (`app/selftest/MultiplyFloor.cpp`'s
+  // own `addTargetSlotsStayZero` section) rather than silently ignored.
+  // Roundness carries the identical squared-floor shape Size does
+  // (`io/AbrBrushes.cpp`'s `addDynamicsLinks()` is one function serving
+  // both, fed `minimumRoundness` for one and `minimumDiameter` for the
+  // other) and is NOT fixed by this array today -- recorded here rather
+  // than left for a reader to rediscover, since naming one instance of a
+  // general defect and stopping there is exactly what B7 warns B6 against.
+  // Only `[Size]` is ever written (`addDynamicsLinks()`, gated on
+  // `target == DynamicTarget::Size`) and only `[Size]` is ever read
+  // (`app/StrokeSession.cpp`'s `BrushTip::sizeFloorPx`, `ui/MacPaintUI.cpp`'s
+  // solver route).
+  //
+  // **Applied exactly ONCE, at the LAST multiply -- never inside
+  // `evaluateLinksWhere()`, and never against a partial product.** That loop
+  // resolves one link at a time and has no notion of "the last one"; worse,
+  // since commit `b704411` no single call even sees the WHOLE product for a
+  // stroke on a layer: `app/StrokeSession::brushTipFor()` resolves the four
+  // hardware sources once per frame, and `applyStrokeLocalCorrection()`
+  // resolves the stroke-local ones once per dab, at two different times.
+  // Applying `max()` in EITHER half on its own, rather than once at the point
+  // where both are already folded into one radius, double-applies the floor
+  // whenever a Multiply contribution exceeds 1.0 -- legal today, since the
+  // LINK editor's own range slider goes to 2.0. `BrushTip::sizeFloorPx`'s own
+  // comment (brush/Deposit.hpp) carries the worked counter-example that
+  // proves it, and `app/selftest/MultiplyFloor.cpp` turns that example into
+  // an assertion rather than leaving it only argued here.
+  float multiplyFloor[kDynamicTargetCount] = {};
 };
 
 // Index of the link driving `target` from `source`, or `kNoLink`.

@@ -51,6 +51,13 @@ constexpr float kHalfPi = kTwoPi * 0.25f;
 // already the emitted dab stream by the time `depositPending()` executes),
 // so a stroke-local spacing correction at this point would have no consumer
 // -- it could not un-emit or re-emit a dab that has already been decided.
+// **Does NOT apply `base.sizeFloorPx`.** `out = base;` below carries it
+// through unchanged (the floor in pixels does not move just because the
+// stroke-local half of the product is about to multiply `radius` again), and
+// it stays unapplied until `depositPending()`'s own single `std::max()` after
+// this function returns -- see `BrushTip::sizeFloorPx`'s comment for why
+// applying it here, before that multiply, would be the wrong half of the
+// counter-example it works through.
 BrushTip applyStrokeLocalCorrection(const BrushTip& base, const DynamicResult& corr) noexcept {
   BrushTip out = base;
   out.radius *= corr.at(DynamicTarget::Size);
@@ -384,6 +391,16 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
 
   BrushTip tip;
   tip.radius = brush.radius * sizeMul;
+  // The floor UNDER this product, in pixels -- computed from `brush.radius`
+  // itself, the UNSCALED base radius, while it is still the value in hand
+  // (the line just above already multiplied it by `sizeMul` into `tip.radius`).
+  // Deliberately not applied to `tip.radius` here; see `BrushTip::sizeFloorPx`'s
+  // own comment (brush/Deposit.hpp) for the whole argument, including the
+  // worked counter-example for why applying `max()` at this point -- before
+  // the stroke-local half of the product has had its own turn -- is wrong
+  // rather than merely early.
+  tip.sizeFloorPx =
+      brush.links.multiplyFloor[static_cast<size_t>(DynamicTarget::Size)] * brush.radius;
   tip.hardness = brush.hardness * dyn.at(DynamicTarget::Hardness);
   // **These two used to be dropped here**, and brush/Deposit.hpp §2b is the
   // whole account of what that cost: two sliders, two DYNAMICS columns, a
@@ -856,6 +873,21 @@ void StrokeSession::depositPending() {
           evaluateLinksFiltered(*strokeLocalLinks_, local, /*wantStrokeLocal=*/true);
       dabTip = applyStrokeLocalCorrection(tip_, corr);
     }
+
+    // The floor, applied exactly once, HERE -- the one point downstream of
+    // BOTH halves of the Multiply product: `brushTipFor()`'s hardware half,
+    // baked into `tip_.radius`/`tip_.sizeFloorPx` back at `setTip()` time,
+    // and the stroke-local half just folded in above by
+    // `applyStrokeLocalCorrection()` when there is one (when there is not,
+    // `dabTip` is `tip_` unconditionally, and this is still the correct --
+    // and only -- place to floor a product with no second half). See
+    // `BrushTip::sizeFloorPx`'s own comment (brush/Deposit.hpp) for the
+    // worked counter-example this ordering exists to satisfy. A no-op for
+    // every brush with no Minimum Diameter: `sizeFloorPx` is 0.0f there, and
+    // `std::max(x, 0.0f)` cannot lower an `x` that `linkContribution()`
+    // already never lets go negative.
+    dabTip.radius = std::max(dabTip.radius, dabTip.sizeFloorPx);
+    lastDabRadius_ = dabTip.radius;
 
     const Vec2 centre =
         applyPerDabScatter(p, dabTip, seed_, static_cast<uint32_t>(dabs_), dx, dy);

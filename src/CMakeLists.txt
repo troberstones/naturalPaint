@@ -93,6 +93,7 @@ add_executable(naturalPaint
   app/selftest/MenuModel.cpp
   app/selftest/MergeFamily.cpp
   app/selftest/MipPyramid.cpp
+  app/selftest/MultiplyFloor.cpp
   app/selftest/NpaintFormat.cpp
   app/selftest/OpenAnyFile.cpp
   app/selftest/OpStack.cpp

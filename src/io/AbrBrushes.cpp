@@ -158,17 +158,51 @@ AbrDynamics readDynamics(const DescriptorRef& owner, const char* key) {
 // exactly it, and the header says so.
 //
 // `floorPercent` is the target's own minimum -- `minimumDiameter` for size,
-// `minimumRoundness` for roundness -- which is Photoshop's name for exactly
-// what `BrushLink::rangeLo` is.
+// `minimumRoundness` for roundness. It used to be Photoshop's name for
+// exactly what `BrushLink::rangeLo` is; for Size (docs/reachability-audit.md
+// B6) it is now Photoshop's name for `BrushLinkSet::multiplyFloor[Size]`
+// instead -- a floor under the TARGET's whole product, not under any one
+// link's own range, which is what keeps a control link and a jitter link on
+// the same target from each contributing their own copy of it. Roundness has
+// not made that move yet; see this function's own `sizeFloorsAtEngine`.
 void addDynamicsLinks(BrushLinkSet& links, const AbrDynamics& d, DynamicTarget target,
                       double floorPercent, const std::string& brushName,
                       AbrImportResult& result) {
   if (!d.present) return;
 
   const bool angular = targetCombine(target) == TargetCombine::Add;
+  // **Size decomposes the floor out of the range entirely (docs/
+  // reachability-audit.md B6); Roundness does not, yet.** Both are
+  // non-angular (Multiply) targets and both can carry a Photoshop minimum
+  // (`minimumDiameter`, `minimumRoundness`) into this same function, so both
+  // USED to bake that minimum straight into `lo` below and hand it to every
+  // link this call adds -- which is exactly the squaring B6 describes, the
+  // moment a control AND a jitter both land on the one target. Size is fixed
+  // here because it is the instance the audit measured (eleven of twelve
+  // Runny Inkers carry both `PRESSURE->Size` and `RANDOM->Size`) and the
+  // instance `BrushLinkSet::multiplyFloor` is wired all the way to a pixel
+  // radius (`app/StrokeSession.cpp`'s `BrushTip::sizeFloorPx`). Roundness
+  // carries the identical shape and is left on the old behaviour rather than
+  // silently changed alongside Size -- see `BrushLinkSet::multiplyFloor`'s
+  // own comment on why that gap is named rather than just left.
+  const bool sizeFloorsAtEngine = target == DynamicTarget::Size;
   float lo = 0.0f, hi = 1.0f;
-  if (angular) targetDefaultRange(target, lo, hi);
-  else lo = clampf(static_cast<float>(floorPercent) / 100.0f, 0.0f, 1.0f);
+  if (angular) {
+    targetDefaultRange(target, lo, hi);
+  } else if (sizeFloorsAtEngine) {
+    // The honest range: a control link spans Size's own whole [0,1], with
+    // NOTHING of Photoshop's Minimum Diameter folded in. That floor now
+    // lives once, on `links.multiplyFloor[Size]`, applied downstream of
+    // every link this function adds rather than baked into each one's own
+    // `rangeLo` -- see `BrushLinkSet::multiplyFloor`'s own comment for the
+    // whole argument.
+    lo = 0.0f;
+    hi = 1.0f;
+    links.multiplyFloor[static_cast<size_t>(target)] =
+        clampf(static_cast<float>(floorPercent) / 100.0f, 0.0f, 1.0f);
+  } else {
+    lo = clampf(static_cast<float>(floorPercent) / 100.0f, 0.0f, 1.0f);
+  }
 
   DynamicSource source{};
   if (d.control != static_cast<int>(AbrControl::Off)) {
@@ -191,8 +225,16 @@ void addDynamicsLinks(BrushLinkSet& links, const AbrDynamics& d, DynamicTarget t
   }
 
   // Jitter is a random variation DOWNWARD from full: 74% jitter means the
-  // value ranges over the bottom 26%..100%. Bounded below by the target's own
-  // minimum, which is what Photoshop's Minimum Diameter does to Size Jitter.
+  // value ranges over the bottom 26%..100%. For every non-angular target
+  // EXCEPT Size, still bounded below by that same target's own minimum
+  // (Roundness's old, unfixed behaviour -- see this function's own comment
+  // on `sizeFloorsAtEngine`). For Size, deliberately NOT bounded here any
+  // more: `lo` above is `sizeFloorsAtEngine`'s honest 0.0f, and the
+  // Minimum Diameter this jitter link used to have blended into its own
+  // `rangeLo` now lives once, on `links.multiplyFloor[Size]`, set above --
+  // folding it in again here would be the second half of the squaring B6
+  // describes, just with the jitter link supplying its own copy instead of
+  // the control link's.
   if (d.jitter > 0.0) {
     BrushLink l;
     l.source = DynamicSource::Random;
@@ -209,6 +251,13 @@ void addDynamicsLinks(BrushLinkSet& links, const AbrDynamics& d, DynamicTarget t
       const float scale = clampf(static_cast<float>(d.jitter) / 100.0f, 0.0f, 1.0f);
       l.rangeLo = lo0 * scale;
       l.rangeHi = hi0 * scale;
+    } else if (sizeFloorsAtEngine) {
+      // The honest depth: how far this jitter dips, `1 - jitter/100`, with no
+      // `max()` against the floor -- `links.multiplyFloor[Size]` above
+      // already carries the floor once, and this link no longer needs to
+      // know it exists.
+      l.rangeLo = clampf(1.0f - static_cast<float>(d.jitter) / 100.0f, 0.0f, 1.0f);
+      l.rangeHi = 1.0f;
     } else {
       l.rangeLo = std::max(lo, clampf(1.0f - static_cast<float>(d.jitter) / 100.0f, 0.0f, 1.0f));
       l.rangeHi = 1.0f;

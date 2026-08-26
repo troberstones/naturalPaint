@@ -64,6 +64,7 @@
 //     preset My Custom Wash
 //     scalars 30.5 0.62 0.18 0.7 12 1.1 2.4
 //     grain 1 24 24 0.35 1
+//     floor 0 0.2
 //     link 0 4 0.2 1 0 1
 //     point 0 0
 //     point 0.4 0.15
@@ -157,6 +158,27 @@
 // The two cases look identical until the numbers are checked against the
 // enum's current range, which is exactly why the range check -- not merely
 // "did it parse" -- is what decides preserve-versus-drop here.
+//
+// ==========================================================================
+// 2b. `floor` -- a per-TARGET line, not a per-link one
+// ==========================================================================
+//
+// `floor <targetOrdinal> <value>`, one line per non-zero entry of
+// `BrushLinkSet::multiplyFloor` (brush/Dynamics.hpp) -- Photoshop's Minimum
+// Diameter, docs/reachability-audit.md B6, once this build stopped folding
+// it into every link's own `rangeLo` and started keeping it once, per
+// target. It has no `point` lines of its own (it names a target, not a
+// curve) and is emitted, like `link`, only when there is something to say --
+// a preset with no Minimum Diameter writes no `floor` line at all, so it
+// round-trips through this build byte-identical to how it would have before
+// this key existed.
+//
+// The target ordinal is range-checked exactly as a `link`'s two ordinals are
+// (§2 above), and for the identical reason: a future build's thirteenth
+// `DynamicTarget` writing its own floor is correct data this build cannot
+// evaluate but must not destroy, so an out-of-range ordinal is preserved
+// verbatim rather than dropped. Malformed numbers are dropped outright, the
+// same as a malformed `link`.
 //
 // ==========================================================================
 // 3. What decides overwrite versus a new preset: `BrushPreset::builtin`

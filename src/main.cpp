@@ -1544,6 +1544,11 @@ int main(int argc, char** argv) {
     // the container framing and the parameter mapping, including what an
     // import could NOT bring across. Headless and GPU-free.
     const bool abrBrushesOk = np::runAbrBrushesTest();
+    // docs/reachability-audit.md B6 and B7: a Multiply target's floor applied
+    // exactly once, downstream of both halves of app/StrokeSession's
+    // hardware/stroke-local split, rather than once per contributing link or
+    // once per half. Headless and GPU-free.
+    const bool multiplyFloorOk = np::runMultiplyFloorTest();
     // app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md
     // B5's axis defect. Checks the geometry directly -- tangent component
     // ~0, perpendicular component real -- rather than a flag. Headless and
@@ -2039,7 +2044,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

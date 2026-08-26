@@ -40,6 +40,18 @@ bool linksEqual(const BrushLink& a, const BrushLink& b) {
 }  // namespace
 
 bool linkSetsEqual(const BrushLinkSet& a, const BrushLinkSet& b) {
+  // `multiplyFloor` is not part of any `BrushLink`, so the per-cell walk
+  // below cannot see it -- checked first, and directly, or two sets that
+  // differ ONLY in their Minimum Diameter floor would compare equal, which
+  // would make `presetMatches()` (below) tell the Brush Editor a live brush
+  // still matches a saved preset it has actually drifted from. Nothing in
+  // this build's UI edits `multiplyFloor` today (only `io/AbrBrushes.cpp`'s
+  // importer and `app/UserBrushLibrary.cpp`'s file reader ever write it), so
+  // this is dormant rather than reachable right now -- but a correctness
+  // function that is only accidentally correct is the exact kind of gap
+  // this codebase's own audit exists to name rather than leave for later.
+  for (size_t t = 0; t < kDynamicTargetCount; ++t)
+    if (a.multiplyFloor[t] != b.multiplyFloor[t]) return false;
   if (a.links.size() != b.links.size()) return false;
   // Matched by CELL rather than by position: `addLink()` replaces in place and
   // `removeLink()` erases, so two sets that hold the same links can hold them

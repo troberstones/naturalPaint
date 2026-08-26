@@ -276,7 +276,7 @@ recorded rather than fixed, because fixing the unit alone would double the
 scatter distance along an axis that is still wrong, and the two want to land
 together. Neither is covered by an assertion today.
 
-### B6 — Two links onto one Multiply target each contribute their own floor
+### B6 — Two links onto one Multiply target each contribute their own floor — ~~OPEN~~ **CLOSED, with the magnitude claim corrected**
 
 `addDynamicsLinks()` emits up to two links per target — a control link and a
 jitter link — and Size is a `TargetCombine::Multiply` target, so the two
@@ -288,12 +288,59 @@ arrives as a floor per contributing row and multiplies into its own square.
 presets carry both `PRESSURE->Size` and `RANDOM->Size`, so eleven of twelve
 brushes paint attenuated. The user has chosen the fix — **keep the jitter,
 floor the product once** — which is an engine change to how a Multiply target
-composes, not a change to the importer. It is not yet made.
+composes, not a change to the importer.
 
-The hard part is not the rule but where to apply it: since `b704411` the
-product is evaluated in two halves — the hardware half in `brushTipFor()`, the
-stroke-local half in `StrokeSession` — and a single floor under "the product"
-has no one place to stand. That split is what makes this larger than it looks.
+**FIXED, and the paragraph above is wrong about the size of it.** The mechanism
+landed: the importer emits honest ranges (control `[0,1]`, jitter
+`[1-jitter, 1]` as a depth), `BrushLinkSet::multiplyFloor[Size]` carries
+Photoshop's Minimum Diameter once, `brushTipFor()` computes it into
+`BrushTip::sizeFloorPx` without applying it, and each consumer applies one
+`std::max()` at its own last multiply. The two-halves split — the hardware half
+in `brushTipFor()`, the stroke-local half in `StrokeSession` — is what made
+this larger than it looks, and it is resolved by *carrying* the floor rather
+than applying it early: applying `max()` in both halves is only idempotent
+while every contribution is ≤ 1, and `rangeHi` goes to 2.0 on the LINK editor's
+own slider.
+
+**But the "eleven of twelve paint attenuated" claim was an inference from the
+arithmetic at source 0, never a measurement, and it is wrong twice over.**
+Rendered `--brush-sheet` on the real pack from both sides of the change and
+counted lit pixels per cell:
+
+- **Only FIVE of twelve presets carry a non-zero Minimum Diameter at all** —
+  one at 3%, two at 5%, two at 10%. The other seven have `minDiameter == 0`, so
+  the "squaring" was `0 × jitterLo = 0`: there was nothing to square. Those
+  seven render **bit-identical** across the fix, and the five that changed are
+  *exactly* the five with a real minimum. Clean correspondence, nothing else
+  moved.
+- **"Attenuated" is only half of what the old shape did.** Baking the floor into
+  the control link made it `lerp(minDia, 1, p)`, which *inflates* every
+  mid-pressure size as well as lifting the bottom. For Blot Bot 8/9
+  (minDia 10%, jitter `[0.31, 1]`), new÷old radius runs 0.99 at p=0.9, 0.91 at
+  0.5, **0.81 at 0.3** — then crosses over to 1.39 at 0.1 and 3.23 at 0. So the
+  fix makes these brushes *thinner* through the body of a stroke and *fatter* in
+  the tails, which is what Photoshop's own model says: a plain pressure factor
+  with one floor under the product.
+
+Measured net across all twelve cells: **+0.9%**. Individual brushes moved both
+ways — ×1.72 and ×1.03 up, ×0.99, ×0.98 and ×0.78 down. The two brushes with
+*identical* Size configuration moved in opposite directions, because one paints
+a sparse stroke dominated by its thin tails (where the floor lifts) and the
+other a dense one dominated by its body (where the old inflation is removed).
+
+The fix is still right — it is Photoshop's model rather than an approximation
+of it, and it is what lets **B7**'s tilt-0 case thin to its minimum instead of
+vanishing. It is simply not the large visual correction this entry promised.
+Recorded at length because the entry was written from arithmetic and believed
+for weeks; see the standing note that absence- and magnitude-claims rot.
+
+**Roundness carries the identical defect and is deliberately NOT fixed.**
+`addDynamicsLinks()` is one function serving both Size (`minimumDiameter`) and
+Roundness (`minimumRoundness`), both Multiply targets that can take a control
+link and a jitter link at once. Generalising would need a parallel
+`BrushTip::roundnessFloor` and its own consumer wiring. Named in
+`BrushLinkSet::multiplyFloor`'s comment and in `addDynamicsLinks()` itself
+rather than left to be rediscovered.
 
 ### B7 — A hardware source that idles at zero can multiply a brush out of existence
 

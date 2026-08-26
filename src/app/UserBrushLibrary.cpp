@@ -334,6 +334,37 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       continue;
     }
 
+    if (key == "floor") {
+      // `floor <targetOrdinal> <value>` -- one line per non-zero entry of
+      // `pending.links.multiplyFloor` (brush/Dynamics.hpp), a per-TARGET
+      // floor rather than a per-LINK field, so it is its own key rather than
+      // a seventh number on `link`'s line -- exactly this file's own §1 rule
+      // ("new scalar data must arrive as a new key, never an eighth field"),
+      // restated for `link`'s six instead of `scalars`' seven.
+      float n[2];
+      if (!takeFloats(rest, 2, n)) {
+        // Genuinely unparsable -- dropped outright, same treatment as an
+        // unparsable `link` line two blocks up.
+        pointMode = PointMode::None;
+        continue;
+      }
+      const int tgtOrd = static_cast<int>(n[0]);
+      if (tgtOrd < 0 || tgtOrd >= static_cast<int>(kDynamicTargetCount)) {
+        // §2's forward-compatible case, restated for a per-target floor: a
+        // future build's thirteenth `DynamicTarget` writing its own floor is
+        // correct data this build cannot evaluate but has no reason to
+        // destroy. No `point` lines can follow a `floor` (it names a target,
+        // not a curve), so this needs no `PreserveBlock` -- the single line
+        // is the whole record.
+        pendingUnknown.push_back(line);
+        pointMode = PointMode::None;
+        continue;
+      }
+      pending.links.multiplyFloor[static_cast<size_t>(tgtOrd)] = n[1];
+      pointMode = PointMode::None;
+      continue;
+    }
+
     // A key this version does not know, inside a preset's scope.
     pendingUnknown.push_back(line);
     pointMode = PointMode::None;
@@ -401,6 +432,16 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
     out += "grain " + std::string(p.grain.enabled ? "1" : "0") + " " +
            std::to_string(p.grain.periodX) + " " + std::to_string(p.grain.periodY) + " " +
            f9(p.grain.depth) + " " + f9(p.grain.strength) + "\n";
+    // One `floor <targetOrdinal> <value>` line per non-zero
+    // `multiplyFloor` entry -- omitted entirely when zero (the default "no
+    // floor" every preset with no Minimum Diameter has), so a preset that
+    // predates this key, or simply never had one, round-trips through this
+    // build byte-identical to before `multiplyFloor` existed.
+    for (size_t t = 0; t < kDynamicTargetCount; ++t) {
+      if (p.links.multiplyFloor[t] == 0.0f) continue;
+      out += "floor " + std::to_string(static_cast<int>(t)) + " " +
+             f9(p.links.multiplyFloor[t]) + "\n";
+    }
     for (const BrushLink& link : p.links.links) {
       out += "link " + std::to_string(static_cast<int>(link.source)) + " " +
              std::to_string(static_cast<int>(link.target)) + " " + f9(link.rangeLo) + " " +

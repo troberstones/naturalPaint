@@ -818,6 +818,28 @@ class StrokeSession {
 
   const std::string& label() const noexcept { return label_; }
 
+  // **The most recently deposited dab's own radius, AFTER `BrushTip::
+  // sizeFloorPx` has been applied** -- `tip()` above is deliberately not
+  // this: it returns `tip_`, the tip as `setTip()`/`begin()` left it, which
+  // is only the HARDWARE half of a Multiply product on Size and is never
+  // floored (`brush/Deposit.hpp`'s own comment on why). A dab's actual
+  // radius also folds in whatever stroke-local correction
+  // `depositPending()`'s own per-dab loop resolved, and floors the RESULT
+  // of that -- a number `tip_`/`tip()` alone cannot answer, and the number
+  // `docs/reachability-audit.md` **B6** is actually about.
+  //
+  // Exists for exactly one reason: `applyStrokeLocalCorrection()` has
+  // internal linkage (StrokeSession.cpp's own anonymous namespace) and
+  // `depositPending()` is private, so nothing outside this class can observe
+  // the per-dab product `app/selftest/MultiplyFloor.cpp` needs to check
+  // without painting a stroke and measuring its footprint back out of tile
+  // data -- imprecise, and a test of `dabCoverage()`'s falloff shape as much
+  // as of the floor. This is the direct number instead, the same discipline
+  // `dabCount()`/`texelsWritten()` above already apply to two other
+  // internals a caller has no other way to see. 0.0f before any dab has
+  // ever been deposited by this session.
+  float lastDabRadius() const noexcept { return lastDabRadius_; }
+
  private:
   void depositPending();
 
@@ -827,6 +849,10 @@ class StrokeSession {
   // guarded by a count rather than by `Layer::id`.
   size_t layerCount_ = 0;
   BrushTip tip_{};
+  // See `lastDabRadius()`'s own comment above -- written once per dab, at the
+  // end of `depositPending()`'s per-dab loop, after the floor has been
+  // applied.
+  float lastDabRadius_ = 0.0f;
   std::string label_;
   // Latched at `begin()`, compared against on every frame. See `begin()`.
   StrokeRoute route_ = StrokeRoute::None;

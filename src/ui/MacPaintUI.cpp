@@ -9002,7 +9002,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         const float flowMul = dyn.at(DynamicTarget::Flow);
 
         applyToolToBrush(st);
-        st.sim.brushRadius = st.brush.radius * sizeMul;
+        // The floor, applied once, right here -- `evaluateLinks()` just above
+        // already resolves the WHOLE link set in one call (this route has no
+        // separate per-dab stroke-local pass the way `app/StrokeSession`
+        // does: `sim::PaintSim` advances by frame, not by dab), so `sizeMul`
+        // above is already the complete product and this is its one and only
+        // multiply to floor. `st.brush.links.multiplyFloor[Size]` is
+        // `brush/Dynamics.hpp`'s own per-target floor, in the target's [0,1]
+        // units; `st.brush.radius` is the unscaled base radius the fraction
+        // is against -- the same pairing `app/StrokeSession.cpp`'s
+        // `brushTipFor()` computes into `BrushTip::sizeFloorPx`, restated
+        // here because this route never builds a `BrushTip` to carry it on.
+        // See that field's own comment (brush/Deposit.hpp) for the worked
+        // counter-example proving a floor belongs at the LAST multiply, not
+        // folded into an intermediate one.
+        st.sim.brushRadius =
+            std::max(st.brush.radius * sizeMul,
+                     st.brush.radius *
+                         st.brush.links.multiplyFloor[static_cast<size_t>(DynamicTarget::Size)]);
         st.sim.brushPigment *= flowMul;
         st.sim.brushWater *= flowMul;
 

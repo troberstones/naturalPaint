@@ -424,14 +424,39 @@ bool runAbrBrushesTest() {
       const size_t rnd = findLink(links, DynamicSource::Random, DynamicTarget::Size);
       check(ctrl != kNoLink && rnd != kNoLink,
             "abr: the control lands on PRESSURE and the jitter on RANDOM");
-      // Photoshop's Minimum Diameter IS this model's rangeLo, which is the
-      // single most satisfying correspondence in the whole mapping.
-      check(ctrl != kNoLink && nearf(links.links[ctrl].rangeLo, 0.20f, 1e-4f),
-            "abr: `minimumDiameter` IS rangeLo -- Photoshop's minimum-diameter control and "
-            "this model's output floor are the same idea under two names");
-      // 80% jitter varies down to 20% of full.
+      // **`minimumDiameter` is no longer rangeLo -- docs/reachability-audit.md
+      // B6.** It used to be, and both links carried it: a control link and a
+      // jitter link on the same Multiply target each contributing their own
+      // copy of the floor makes the floor its own SQUARE at source 0 (0.20 *
+      // 0.20 = 0.04, a brush promising "never below 20%" actually bottoming
+      // out at 4%). The control link's range is now the honest [0,1] -- Size's
+      // whole span, nothing folded in -- and the floor lives once, on
+      // `links.multiplyFloor[Size]`, checked below.
+      check(ctrl != kNoLink && nearf(links.links[ctrl].rangeLo, 0.0f, 1e-4f) &&
+                nearf(links.links[ctrl].rangeHi, 1.0f, 1e-4f),
+            "abr: the control link's range is Size's honest [0,1] -- the minimum diameter is no "
+            "longer blended into it");
+      // 80% jitter varies down to 20% of full -- the DEPTH of the dip, not a
+      // floor. No `max()` against `minimumDiameter` any more: with it still
+      // folded in here too, this line and the control link's `rangeLo` would
+      // both carry 20% independently, and Size being a Multiply target would
+      // square them into 4% for exactly the reason the control link's own
+      // check just above does not.
       check(rnd != kNoLink && nearf(links.links[rnd].rangeLo, 0.20f, 1e-4f),
-            "abr: an 80% jitter varies down to 20% of full, floored by the minimum");
+            "abr: an 80% jitter varies down to 20% of full -- its own depth, not a floor");
+      // The floor itself: recorded once, on the SET, not on either link.
+      check(nearf(links.multiplyFloor[static_cast<size_t>(DynamicTarget::Size)], 0.20f, 1e-4f),
+            "abr: `minimumDiameter` 20% lands on `links.multiplyFloor[Size]` -- Photoshop's "
+            "minimum-diameter control and this model's output floor are still the same idea "
+            "under two names, just no longer folded into a link's own range");
+      // And nowhere else: every other target's slot stays at the "no floor"
+      // default, `addDynamicsLinks()` having been asked for Size alone here.
+      size_t nonzero = 0;
+      for (size_t t = 0; t < kDynamicTargetCount; ++t)
+        if (links.multiplyFloor[t] != 0.0f) ++nonzero;
+      check(nonzero == 1,
+            "abr: exactly one target's floor is set -- a Size-only fixture touches no other "
+            "slot of `multiplyFloor`, including the Add-target ones the header says stay unused");
     }
   }
 

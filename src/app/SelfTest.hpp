@@ -969,6 +969,22 @@ bool runDabPreviewTest();
 // else's copyrighted work and megabytes besides.
 bool runAbrBrushesTest();
 
+// docs/reachability-audit.md B6 and B7: a Multiply target's floor, applied
+// exactly once rather than once per contributing link. `BrushLinkSet::
+// multiplyFloor` (brush/Dynamics.hpp), `BrushTip::sizeFloorPx`
+// (brush/Deposit.hpp) and the three sites that consume it
+// (`app/StrokeSession.cpp`'s `depositPending()` and `app/DabPreview.cpp`'s
+// `dabPreviewTipsFor()`, both through `brushTipFor()`; `ui/MacPaintUI.cpp`'s
+// solver route, which never builds a `BrushTip` at all). The centrepiece is
+// the worked counter-example proving the floor may not be applied in both
+// halves of the product `app/StrokeSession`'s hardware/stroke-local split
+// creates: with `rangeHi` legally above 1.0, flooring twice overshoots the
+// correct answer. Also covers the io/AbrBrushes importer's honest-range
+// decomposition (that assertion lives in `AbrBrushes.cpp`'s own section 5,
+// not restated here) and the `app/UserBrushLibrary.cpp` persistence of the
+// new per-target floor.
+bool runMultiplyFloorTest();
+
 // app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md B5's
 // axis defect. Asserted geometrically -- each dab's displacement is
 // projected onto the stroke's own tangent and perpendicular -- that the
