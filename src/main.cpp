@@ -1552,6 +1552,11 @@ int main(int argc, char** argv) {
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
     const bool angleConventionOk = np::runAngleConventionTest();
+    // io/AbrBrushes' Dual Brush support: a second tip composited into
+    // brush/Deposit.hpp §2d's dabCoverage() by Multiply/Overlay, and what an
+    // import still cannot honour (an unsupported blend mode, the second tip's
+    // own spacing/scatter/count). Headless and GPU-free.
+    const bool abrDualBrushOk = np::runAbrDualBrushTest();
     // app/BrushLibraryFile: the preferences file for imported `.abr` libraries,
     // the row cache that makes launch pay nothing for them, and unload.
     // Headless and GPU-free.
@@ -2014,7 +2019,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && abrSampledTipsOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

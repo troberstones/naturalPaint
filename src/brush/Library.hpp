@@ -119,6 +119,24 @@ struct BrushPreset {
   // own failure mode (the source file moved or was edited) and was scoped out
   // of this step rather than built in a hurry.
   std::shared_ptr<const BrushTipBitmap> tipBitmap;
+
+  // A Dual Brush's second tip (brush/Deposit.hpp §2d) -- Photoshop's own
+  // second tip, stamped through this one and combined by `dualBlend`. Null
+  // for every built-in, every hand-authored preset, and any `.abr` brush
+  // whose Dual Brush is off or whose blend mode this build does not
+  // composite (`io/AbrBrushes.hpp`'s `dualBrushes`/`dualBrushUnsupportedBlend`
+  // counters).
+  //
+  // Threaded exactly like `tipBitmap` above -- set once by `io/AbrBrushes.cpp`,
+  // carried by pointer through `applyPresetToBrush()`/`presetFromBrush()`/
+  // `brushTipFor()`, never deep-copied -- and not persisted by
+  // `UserBrushLibraryStore` for the identical reason: `.abr`-derived,
+  // reproducible for free by re-reading the file, and a duplicate of a
+  // dual-brush preset therefore reloads next launch with its second tip gone,
+  // exactly as a duplicate sampled-tip preset reloads with its bitmap gone.
+  std::shared_ptr<const BrushTip> dualTip;
+  // Only meaningful when `dualTip` is set.
+  DualBrushBlend dualBlend = DualBrushBlend::Multiply;
 };
 
 struct BrushLibrary {
@@ -159,6 +177,11 @@ BrushLibrary defaultBrushLibrary();
 // cannot currently fail differently from the ones already made. Revisit if a
 // future control ever lets a bitmap tip be swapped independently of picking a
 // whole preset.
+//
+// `dualTip`/`dualBlend` are excluded for the identical reason and by the
+// identical argument: both move only in lockstep with a whole preset, so the
+// eight fields already checked can never agree while either of those two
+// disagree.
 bool presetMatches(const BrushPreset& preset, float radius, float hardness, float spacing,
                    float roundness, float angle, float load, float wetness,
                    const BrushLinkSet& links);

@@ -305,6 +305,87 @@
 // it by half a texel for free.
 //
 // ==========================================================================
+// 2d. Dual Brush: a second tip, composited into the same one number
+// ==========================================================================
+//
+// Photoshop's Dual Brush stamps a SECOND tip through the first, combined by a
+// blend mode -- Multiply and Overlay are the two `io/AbrBrushes.cpp` reads and
+// the two `dabCoverage()` implements. It is most of why an ink brush reads
+// granular rather than smooth: the second tip is what breaks up the first
+// tip's edge, and until this section existed `io/AbrBrushes.cpp` could only
+// detect that a preset wanted one and say it could not be honoured.
+//
+// **The representation is a nested `BrushTip`, and the obvious question is
+// recursion: can a dual brush have a dual brush?** Photoshop's own Dual Brush
+// panel has no such control -- there is nowhere in the UI to pick a THIRD
+// tip -- but `BrushTip::dualTip` is a plain field on an untrusted-file-derived
+// struct, and nothing in the C++ type stops a second level from being built.
+// The answer is **no, enforced structurally, not by convention**: the coverage
+// function that reads a tip's shape (`singleTipCoverage()`, brush/Deposit.cpp)
+// never looks at that tip's own `.dualTip` at all. `dabCoverage()` calls it
+// once on `tip` and, when `tip.dualTip` is set, once more on `*tip.dualTip` --
+// and that second call runs the identical function, which still does not
+// consult `.dualTip`. So even a `BrushTip` built with two or three levels of
+// nesting composites as if it had exactly one; the deeper levels are inert
+// data, never visited by the one function that would need to visit them to
+// matter. `io/AbrBrushes.cpp`'s own reader repeats the same discipline on the
+// way in: the helper that reads a `Brsh`-shaped tip object never looks for a
+// nested `dualBrush` key on the object it is given, so a hand-crafted `.abr`
+// that puts a `dualBrush` inside a `dualBrush` cannot make one arrive here
+// either. Two independent refusals of the same recursion, at import time and
+// at composite time, because only one of them running is a promise and this
+// is not a place for a promise.
+//
+// **Only shape fields are read from the nested tip.** `dabCoverage()`'s helper
+// reads `radius`/`roundness`/`angle`/`hardness`/`bitmap` off `*tip.dualTip`,
+// exactly as it reads them off `tip` itself -- so a dual tip squashes, rotates
+// and samples a bitmap by the identical rules §2b and §2c already state, with
+// no second convention to keep in sync. Nothing else on the nested `BrushTip`
+// is read for compositing: not `pigment`, `linearRgb`, `flow`, `opacity` (a
+// dual brush loads no colour of its own in Photoshop, it only reshapes the
+// mark) and not `spacing`/`scatter` (see below).
+//
+// **The two tips are sampled at the SAME offset, `(dx, dy)` from one shared
+// dab centre.** That is exact for `Cnt 1` with no scatter -- Photoshop stamps
+// the second tip once, centred on the first, in that configuration, and this
+// is the identical answer. It is an approximation for anything else: a real
+// Dual Brush also has its OWN spacing, its own scatter and its own count
+// (`useScatter`/`Cnt `/`bothAxes`/`countDynamics`/`scatterDynamics` on the
+// descriptor), which would stamp the second tip several times per dab of the
+// first, jittered around it. None of that reaches this function -- there is
+// no per-dab loop here to multiply, `depositDab()` calls `dabCoverage()`
+// exactly once per texel per dab regardless of what the tip carries -- so
+// `io/AbrBrushes.cpp` reads those five keys only far enough to say, per
+// brush, that this gap exists (`AbrImportResult::dualBrushCadenceNotHonoured`)
+// rather than silently painting a smoother mark than Photoshop's Count and
+// Scatter would. Landing shape compositing correctly and saying plainly what
+// is not yet landed was chosen over landing all four pieces half working.
+//
+// **Combining is per-texel, on the coverage SCALAR, not on any RGBA notion of
+// blending.** A coverage value is already the one number `depositDab()` folds
+// into `deltaMass`, so Multiply (`base * second`) and Overlay (the standard
+// two-branch formula, base as the "bottom" layer since it is the primary
+// tip's own shape and the second tip is what Photoshop describes as blending
+// ONTO it) are defined directly on that scalar in [0,1] rather than routed
+// through `core/Blend.hpp`'s pixel/layer blend modes, which combine four-
+// channel premultiplied colour and have no notion of a bare coverage float.
+//
+// **The zero-base short-circuit is what keeps `dabPixelBounds()` correct
+// without widening it for a larger second tip.** Both formulas give exactly
+// `0` when `base == 0` (Multiply trivially; Overlay's `base < 0.5` branch is
+// `2 * base * second`, which is `0` for any `second` when `base == 0`), so a
+// dual tip with a LARGER radius than the primary can never make a dab paint
+// outside the primary tip's own disc -- `dabCoverage()` returns exactly `0`
+// there rather than computing an unreachable nonzero value. `dabPixelBounds()`
+// therefore needs no dual-brush case at all: it already reports every texel
+// where the PRIMARY tip's own coverage can be nonzero (§3, fact 1), and that
+// is now also every texel where the COMBINED coverage can be nonzero. The
+// implementation makes this exact rather than approximate: `dabCoverage()`
+// returns the base tip's own coverage function's `0.0f` literal without ever
+// evaluating the second tip, so a texel outside the primary's disc costs
+// nothing extra even when the second tip is a bitmap.
+//
+// ==========================================================================
 // 3. Which tiles a dab touches, and why the set is complete
 // ==========================================================================
 //
@@ -492,6 +573,17 @@ struct BrushTipBitmap {
   std::vector<uint8_t> alpha;
 };
 
+// How a Dual Brush's second tip combines with the first (§2d), Photoshop's
+// `BlnM` on the `dualBrush` descriptor. Only these two: `io/AbrBrushes.cpp`
+// reads every other `BlnM` value it recognises as UNSUPPORTED rather than
+// guessing (`AbrImportResult::dualBrushUnsupportedBlend`), so this enum never
+// needs an "other" member -- a `BrushTip::dualTip` is never set for a blend
+// mode this build cannot compute.
+enum class DualBrushBlend {
+  Multiply,
+  Overlay,
+};
+
 // One stamp of the brush tip: its shape, its load, and what it is loaded with.
 //
 // `spacing` is carried here rather than left to the caller because it belongs
@@ -531,6 +623,21 @@ struct BrushTip {
   // `hardness` does not, because a scanned mark has no core-to-rim falloff of
   // its own for a fraction to describe.
   std::shared_ptr<const BrushTipBitmap> bitmap;
+
+  // A Dual Brush's second tip (§2d), or null for every tip that has none --
+  // every built-in, every hand-authored preset, and a `.abr` brush whose Dual
+  // Brush is off or whose `BlnM` this build does not composite. Only its
+  // SHAPE fields (`radius`/`hardness`/`roundness`/`angle`/`bitmap`) are read;
+  // its own `pigment`/`flow`/`opacity`/`spacing`/`scatter`/`dualTip` are not
+  // (§2d). **Never itself carries a non-null `dualTip`** -- not enforced by a
+  // constructor check, because the function that would need to enforce it,
+  // `dabCoverage()`'s shape helper, simply never reads that far, which is the
+  // stronger guarantee (§2d's whole argument).
+  std::shared_ptr<const BrushTip> dualTip;
+
+  // How `dualTip`'s coverage combines with this tip's own (§2d). Meaningless
+  // when `dualTip` is null.
+  DualBrushBlend dualBlend = DualBrushBlend::Multiply;
 
   // Mass laid down per dab where coverage is 1. Not clamped to [0,1] here --
   // a flow above 1 is a legitimate "one dab saturates the paper" tip, and the
@@ -597,6 +704,12 @@ struct BrushTip {
 // mapping and the bitmap's own pixels decide coverage outright and
 // `tip.hardness` plays no part.
 //
+// **When `tip.dualTip` is set** (§2d), this is `tip`'s own coverage by the
+// rule above, combined with `*tip.dualTip`'s coverage (by the SAME rule,
+// applied to the nested tip) through `tip.dualBlend`. Still in [0,1], still
+// exactly 0.0f wherever `tip`'s OWN coverage is 0.0f, which is what keeps
+// `dabPixelBounds()` correct without a dual-brush case of its own.
+//
 // **This is the one function that decides what a dab looks like**, and it has
 // exactly two callers by design: `depositDab()` below, and `app/DabPreview`,
 // which shows a user what one dab will do. A preview with its own falloff
@@ -646,6 +759,13 @@ PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float 
 // Still an over-approximation and still uncorrected for `roundness`, for the
 // same reason §2b gives for the ellipse: roundness only ever shrinks a
 // bitmap tip's visible footprint below this box, never grows it.
+//
+// **Computed from `tip` alone, with no `tip.dualTip` case, deliberately.** §2d
+// derives why: `dabCoverage()` is exactly 0 wherever `tip`'s OWN coverage is
+// 0, for both Multiply and Overlay, regardless of the second tip's radius --
+// so a dual tip strictly larger than the primary still cannot make a dab
+// paint outside the box computed here. Widening this function for a second
+// tip would be defending against a case that cannot occur.
 struct PixelBounds {
   int32_t x0 = 0, y0 = 0, x1 = -1, y1 = -1;
   bool empty() const noexcept { return x1 < x0 || y1 < y0; }

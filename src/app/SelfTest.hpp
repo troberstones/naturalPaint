@@ -989,6 +989,20 @@ bool runAbrSampledTipsTest();
 // off and not mirrored. Headless and GPU-free -- brush/Deposit.hpp and
 // brush/Dynamics.hpp alone, no importer involved.
 bool runAngleConventionTest();
+// io/AbrBrushes' Dual Brush support and brush/Deposit.hpp §2d: a SECOND tip,
+// read through the same `Brsh`-shaped reader the primary tip uses, combined
+// per-texel with the primary tip's own coverage by `BlnM` (Multiply and
+// Overlay, the two this build composites), threaded through
+// `BrushPreset`/`BrushState`/`BrushTip` the same route `tipBitmap` already
+// takes, and refused to recurse -- a nested tip's own `.dualTip` is never
+// read, at import time or at composite time. Also covers what this step does
+// NOT honour: a Dual Brush blend mode other than Multiply/Overlay (counted
+// and named, never silently dropped), and the second tip's own spacing,
+// scatter and count (also counted and named, never silently approximated
+// without saying so). Every byte is synthetic, the same discipline
+// app/selftest/AbrBrushes.cpp and app/selftest/AbrSampledTips.cpp already
+// hold themselves to. Headless and GPU-free.
+bool runAbrDualBrushTest();
 
 // app/BrushLibraryFile: the preferences file that remembers which `.abr`
 // libraries are loaded, the row cache that lets a remembered library draw its

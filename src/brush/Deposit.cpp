@@ -83,9 +83,15 @@ float bitmapDabCoverage(const BrushTipBitmap& bmp, const BrushTip& tip, float dx
   return sampleBitmapCoverage(bmp, bx, by);
 }
 
-}  // namespace
-
-float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
+// A single tip's own coverage profile -- §2/§2b/§2c, and everything
+// `dabCoverage()` did before §2d existed, verbatim. **Deliberately does not
+// read `tip.dualTip` or `tip.dualBlend`, and that omission is the whole of
+// §2d's no-recursion guarantee**: `dabCoverage()` below calls this once on its
+// own `tip` and, when a dual tip is present, once more on `*tip.dualTip` --
+// and because this function never looks past the tip it is handed, a second
+// (or third) level of nesting on that inner tip is never visited, regardless
+// of what is stored there.
+float singleTipCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   const float r = tip.radius;
   if (!(r > 0.0f)) return 0.0f;
 
@@ -148,6 +154,47 @@ float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   // division in this function, unreachable for the hard-disc tip.
   const float u = (d - h) / (1.0f - h);
   return 1.0f - u * u * (3.0f - 2.0f * u);
+}
+
+// Header §2d: Photoshop's `BlnM` on the `dualBrush` descriptor, applied
+// directly to the coverage scalar rather than routed through
+// `core/Blend.hpp`'s four-channel pixel/layer blend modes, which have no
+// notion of a bare [0,1] coverage float. `base` is the PRIMARY tip's own
+// coverage -- the "bottom" of the two, matching Photoshop's own description
+// of the second tip as blending ONTO the first.
+//
+// Both formulas are exactly `0` when `base == 0` (Multiply trivially;
+// Overlay's `base < 0.5` branch is `2 * base * second`) -- the identity §2d's
+// `dabPixelBounds()` argument rests on, so it is stated here rather than only
+// in the header, next to the two lines that make it true.
+float combineDualCoverage(DualBrushBlend mode, float base, float second) noexcept {
+  switch (mode) {
+    case DualBrushBlend::Multiply:
+      return base * second;
+    case DualBrushBlend::Overlay:
+      return base < 0.5f ? 2.0f * base * second
+                         : 1.0f - 2.0f * (1.0f - base) * (1.0f - second);
+  }
+  return base;  // unreachable for a valid enumerator; see DualBrushBlend's own comment.
+}
+
+}  // namespace
+
+float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
+  const float base = singleTipCoverage(tip, dx, dy);
+  if (tip.dualTip == nullptr) return base;
+
+  // §2d: exactly 0, not merely computed-and-equal-to-0 -- this is what keeps
+  // `dabPixelBounds()` correct without a dual-brush case of its own, AND what
+  // skips sampling the second tip (a bitmap sample is real work) for every
+  // texel the primary tip's own disc already excludes.
+  if (!(base > 0.0f)) return 0.0f;
+
+  // §2d's no-recursion guarantee: `singleTipCoverage()` never reads
+  // `dualTip->dualTip`, so this call cannot recurse regardless of what a
+  // malformed or hand-built `BrushTip` tree stores past this level.
+  const float second = singleTipCoverage(*tip.dualTip, dx, dy);
+  return std::clamp(combineDualCoverage(tip.dualBlend, base, second), 0.0f, 1.0f);
 }
 
 PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float deltaMass,

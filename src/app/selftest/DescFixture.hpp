@@ -100,6 +100,14 @@ struct DescFixture {
   DescFixture& longv(int32_t v) { return code("long").u32v(static_cast<uint32_t>(v)); }
   DescFixture& compv(int64_t v) { return code("comp").u64v(static_cast<uint64_t>(v)); }
   DescFixture& boolv(bool v) { return code("bool").u8v(v ? 1u : 0u); }
+  // An `enum` value: the type key, then a Key for its type id and a Key for
+  // its value id -- `io/Descriptor.cpp`'s `readKey()` called twice, matching
+  // `DescriptorRef::asEnumerated()`'s `{typeId, valueId}` pair. Both ids go
+  // through `key4()`, the zero-length form, since every enum this build reads
+  // (Photoshop's `BlnM`) is a plain four-character code.
+  DescFixture& enumv(const char* typeId, const char* valueId) {
+    return code("enum").key4(typeId).key4(valueId);
+  }
   DescFixture& tdta(const std::vector<uint8_t>& payload) {
     code("tdta").u32v(static_cast<uint32_t>(payload.size()));
     for (const uint8_t byte : payload) u8v(byte);

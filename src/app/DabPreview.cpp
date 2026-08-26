@@ -166,9 +166,15 @@ bool dabPreviewTipsEqual(const BrushTip& a, const BrushTip& b) noexcept {
   // presets), and without this the cache would hand back one brush's dab
   // image for another's -- the exact failure `generation()`'s own doc comment
   // says this class exists to make impossible.
+  //
+  // `dualTip` compares by pointer for the identical reason, and `dualBlend`
+  // is checked alongside it rather than assumed to move in lockstep: two
+  // presets could in principle share one second tip but combine it by a
+  // different `BlnM`, and that changes what `dabCoverage()` draws (§2d) even
+  // though `dualTip`'s own pointer is unchanged.
   return a.radius == b.radius && a.hardness == b.hardness && a.flow == b.flow &&
          a.roundness == b.roundness && a.angle == b.angle && a.pigment == b.pigment &&
-         a.bitmap == b.bitmap;
+         a.bitmap == b.bitmap && a.dualTip == b.dualTip && a.dualBlend == b.dualBlend;
 }
 
 const DabPreviewImage& DabPreviewCache::imageFor(

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 
 #include "io/Descriptor.hpp"
@@ -216,27 +217,64 @@ void addDynamicsLinks(BrushLinkSet& links, const AbrDynamics& d, DynamicTarget t
   }
 }
 
-BrushPreset presetFromDescriptor(
-    const DescriptorRef& node, AbrImportResult& result,
-    const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& sampledTips) {
-  BrushPreset p;
-  if (const auto nm = node.field("Nm  ").asText()) p.name = std::string(*nm);
-  if (p.name.empty()) p.name = "Untitled brush";
-
-  const DescriptorRef brsh = node.field("Brsh");
-
-  // The tip. `sampledData` is a UUID naming a bitmap in the `samp` block --
-  // resolved here against the samples `importAbrBrushes()` already decoded,
-  // so the lookup (and its one failure note) happens once, in the one place
-  // that has both the descriptor and the samples in hand.
-  const DescriptorRef sampledDataRef = brsh.field("sampledData");
+// One `Brsh`-shaped tip object -- DIAMETER, ANGLE, ROUNDNESS, SPACING and,
+// optionally, a sampled bitmap resolved by UUID against the `samp` block's
+// decoded samples. Shared between a preset's PRIMARY tip (`node.field("Brsh")`)
+// and a Dual Brush's SECOND tip (`node.field("dualBrush").field("Brsh")`) --
+// the two are the identical shape on the wire, direct inspection of a real
+// Kyle Webster pack having found `Dmtr`/`Angl`/`Rndn`/`Spcn`/`sampledData` on
+// both -- so this is one function rather than two, exactly as this file's own
+// header says to prefer.
+//
+// **Never reads a `dualBrush` key off `brsh`.** Photoshop's own UI cannot put
+// a Dual Brush inside a Dual Brush's own tip -- there is no such panel -- but
+// this reads untrusted bytes, and `brush/Deposit.hpp` §2d's no-recursion
+// guarantee is stated twice on purpose: once here, at import time (this
+// function simply never looks), and once more in `dabCoverage()` at composite
+// time (which would ignore a second level even if one somehow arrived). A
+// hand-crafted `.abr` nesting `dualBrush` inside `dualBrush` cannot make a
+// three-tip chain either way.
+//
+// `readHardness` is false for a Dual Brush's second tip: Photoshop's own Dual
+// Brush panel has no Hardness slider at all, so there is no `Hrdn` key on
+// that shape to read (confirmed by the nine-key inspection of `dualBrush`
+// this step was scoped against: `Brsh` carries `Dmtr`, `Angl`, `Rndn`, `Spcn`
+// and, optionally, `sampledData` -- no `Hrdn` among them). `hardness` in the
+// result is then simply `defaultHardness`, unread and unclamped further.
+//
+// `noteLabel` distinguishes the sampled-tip-not-imported / percentage-diameter
+// notes' wording between the brush's own tip (empty string, identical text to
+// before this function existed) and its Dual Brush tip ("Dual Brush's "), so
+// a report reader does not have to guess which of the two shapes lost a
+// bitmap.
+struct AbrTipShape {
+  float radius;
+  float hardness;
+  float roundness = 1.0f;
+  float angle = 0.0f;
+  float spacing = 0.25f;
   std::shared_ptr<const BrushTipBitmap> bitmap;
+};
+
+AbrTipShape readAbrTipShape(
+    const DescriptorRef& brsh, float defaultRadius, float defaultHardness, bool readHardness,
+    const std::string& brushName, const char* noteLabel, AbrImportResult& result,
+    const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& sampledTips) {
+  AbrTipShape t;
+  t.radius = defaultRadius;
+  t.hardness = defaultHardness;
+
+  // `sampledData` is a UUID naming a bitmap in the `samp` block -- resolved
+  // here against the samples `importAbrBrushes()` already decoded, so the
+  // lookup (and its one failure note) happens once, in the one place that has
+  // both the descriptor and the samples in hand.
+  const DescriptorRef sampledDataRef = brsh.field("sampledData");
   if (sampledDataRef.valid()) {
     bool found = false;
     if (const auto idText = sampledDataRef.asText()) {
       const auto it = sampledTips.find(std::string(*idText));
       if (it != sampledTips.end()) {
-        bitmap = it->second;
+        t.bitmap = it->second;
         found = true;
       }
     }
@@ -248,14 +286,15 @@ BrushPreset presetFromDescriptor(
       // same outcome -- the shape did not arrive.
       ++result.sampledTips;
       result.notes.push_back(
-          {p.name, "sampled bitmap tip not imported -- it will paint with the round procedural tip"});
+          {brushName, std::string(noteLabel) +
+                          "sampled bitmap tip not imported -- it will paint with the round "
+                          "procedural tip"});
     }
   }
-  p.tipBitmap = bitmap;
 
   double v = 0.0;
   // Diameter is in pixels; radius is half of it. A `#Prc` diameter is a
-  // percentage of the sampled tip's own size -- resolvable now that `bitmap`
+  // percentage of the sampled tip's own size -- resolvable now that `t.bitmap`
   // above carries that size, against whichever of its width/height is larger
   // (brush/Deposit.hpp §2c point 2, the same convention `dabCoverage()` uses
   // to map the tip circle onto the bitmap's rectangle, so `Dmtr` and the
@@ -264,41 +303,61 @@ BrushPreset presetFromDescriptor(
   const DescriptorRef dmtr = brsh.field("Dmtr");
   if (const auto uf = dmtr.asUnitFloat()) {
     if (uf->unit == "#Prc") {
-      if (bitmap) {
-        const float nativeMax = static_cast<float>(std::max(bitmap->width, bitmap->height));
+      if (t.bitmap) {
+        const float nativeMax = static_cast<float>(std::max(t.bitmap->width, t.bitmap->height));
         const float pct = static_cast<float>(uf->value);
-        p.radius = clampf(nativeMax * (pct / 100.0f) * 0.5f, 0.5f, 4096.0f);
+        t.radius = clampf(nativeMax * (pct / 100.0f) * 0.5f, 0.5f, 4096.0f);
       } else {
         result.notes.push_back(
-            {p.name, "diameter is a percentage of a sampled tip; size not imported"});
+            {brushName,
+             std::string(noteLabel) + "diameter is a percentage of a sampled tip; size not imported"});
       }
     } else if (uf->value > 0.0) {
-      p.radius = clampf(static_cast<float>(uf->value) * 0.5f, 0.5f, 4096.0f);
+      t.radius = clampf(static_cast<float>(uf->value) * 0.5f, 0.5f, 4096.0f);
     }
   }
 
-  if (unitValue(brsh.field("Hrdn"), v)) p.hardness = clampf(static_cast<float>(v) / 100.0f, 0.0f, 1.0f);
-  if (unitValue(brsh.field("Rndn"), v)) p.roundness = clampf(static_cast<float>(v) / 100.0f, 0.01f, 1.0f);
-  // **Negated, not copied.** `brush/Deposit.hpp` sect2b's own derivation --
-  // `u = dx*cos(angle) + dy*sin(angle)`, so the major axis sits at world
-  // direction `(cos(angle), sin(angle))` -- makes positive `BrushTip::angle`
-  // a CLOCKWISE turn as viewed on screen, once `dy` is read the way every
-  // raster in this build reads it: increasing downward (the same fact
-  // `ops/Gradient.hpp`'s `Angular` gradient and `ops/Transform.hpp`'s
-  // `transformRotateDegrees()` both derive independently for their own
-  // rotations). Photoshop's `Angl` dial is COUNTER-clockwise-positive, the
-  // opposite sense -- so a raw copy imports every brush mirrored about the
-  // horizontal, invisible on a round tip (`roundness == 1`, angle skipped
-  // outright) or at a static 90/180/270 (an ellipse's own 180-degree
-  // symmetry hides the mirror at exactly those four headings, which is why
-  // Blot Bot 5's `angle 90.0` -- imported on a `roundness 1.00` tip besides
-  // -- never surfaced this) and visible on any OTHER angle paired with an
-  // elliptical or sampled-bitmap tip. Negating crosses Photoshop's frame
-  // into this engine's the same way `abrSpacingToRadii()` crosses a percent-
-  // of-diameter into a fraction-of-radius: once, here, rather than leaving
-  // every reader of `BrushTip::angle` to remember which file it came from.
-  if (unitValue(brsh.field("Angl"), v)) p.angle = static_cast<float>(v);  // HELD: see above
-  if (unitValue(brsh.field("Spcn"), v)) p.spacing = abrSpacingToRadii(v);
+  if (readHardness && unitValue(brsh.field("Hrdn"), v))
+    t.hardness = clampf(static_cast<float>(v) / 100.0f, 0.0f, 1.0f);
+  if (unitValue(brsh.field("Rndn"), v)) t.roundness = clampf(static_cast<float>(v) / 100.0f, 0.01f, 1.0f);
+  // **`Angl` is copied, NOT negated, and that is an open question rather than
+  // a decision.** `BrushTip::angle` is clockwise-positive as seen on screen --
+  // `brush/Deposit.hpp` sect2b's rotation puts the major axis at world
+  // direction `(cos a, sin a)` and `dy` increases downward, the same fact
+  // `ops/Gradient.hpp` and `ops/Transform.hpp` derive independently for their
+  // own rotations. That half is settled. Whether Photoshop's `Angl` dial is
+  // the OPPOSITE sense is NOT: it was asserted from memory rather than read
+  // off the application, and this file has already carried one control
+  // ordinal backwards from exactly that kind of confident recollection (see
+  // `AbrControl` in the header). If Photoshop is CCW-positive this line needs
+  // a `-`, and every brush pairing a non-zero `Angl` with a non-round tip is
+  // currently mirrored. Unobservable in both sample packs today, since none
+  // pairs a non-zero static `Angl` with an elliptical or bitmap tip.
+  // docs/reachability-audit.md **B9** names the one observation that closes
+  // it. `selftest/AbrBrushes` pins the MAGNITUDE with `fabs` and asserts no
+  // sign, deliberately, so that a guess is not canonized here.
+  if (unitValue(brsh.field("Angl"), v)) t.angle = static_cast<float>(v);
+  if (unitValue(brsh.field("Spcn"), v)) t.spacing = abrSpacingToRadii(v);
+
+  return t;
+}
+
+BrushPreset presetFromDescriptor(
+    const DescriptorRef& node, AbrImportResult& result,
+    const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& sampledTips) {
+  BrushPreset p;
+  if (const auto nm = node.field("Nm  ").asText()) p.name = std::string(*nm);
+  if (p.name.empty()) p.name = "Untitled brush";
+
+  const AbrTipShape primary = readAbrTipShape(node.field("Brsh"), p.radius, p.hardness,
+                                              /*readHardness=*/true, p.name, "", result,
+                                              sampledTips);
+  p.tipBitmap = primary.bitmap;
+  p.radius = primary.radius;
+  p.hardness = primary.hardness;
+  p.roundness = primary.roundness;
+  p.angle = primary.angle;
+  p.spacing = primary.spacing;
 
   // Dynamics. `useTipDynamics` gates the first three the way the Brush panel's
   // own Shape Dynamics checkbox does: with it off, Photoshop keeps the authored
@@ -322,20 +381,14 @@ BrushPreset presetFromDescriptor(
                      p.name, result);
   }
 
-  // --- Dual Brush: read far enough to say what was lost --------------------
+  // --- Dual Brush: a whole second tip, stamped through the first -----------
   //
-  // **A Dual Brush is a whole second tip**, stamped through the first with its
-  // own blend mode, spacing, scatter and count -- `dualBrush` carries its own
-  // `Brsh`, `BlnM`, `Cnt `, `bothAxes`, `countDynamics` and `scatterDynamics`.
-  // It is a large part of why Photoshop's ink brushes look granular rather
-  // than smooth: the second tip is what breaks up the first tip's edge.
-  //
-  // This build has no second tip, so it cannot be imported. What it must not
-  // do is stay quiet about that, which is exactly what happened until now --
-  // `dualBrush` was not read, not counted, and not mentioned, so a brush
-  // arrived looking smooth and nothing anywhere said why. That is the same
-  // silent-loss failure the sampled-tip note was written to prevent, sitting
-  // one key further down the same descriptor.
+  // `dualBrush` carries its own `Brsh` (a second tip: `Dmtr`/`Angl`/`Rndn`/
+  // `Spcn`, optionally `sampledData`), a `BlnM` blend mode, and its own
+  // `useScatter`/`Cnt `/`bothAxes`/`countDynamics`/`scatterDynamics` -- nine
+  // keys total, verified by direct inspection. It is a large part of why
+  // Photoshop's ink brushes look granular rather than smooth: the second tip
+  // is what breaks up the first tip's edge.
   //
   // Gated on `useDualBrush` rather than on the object's presence: every one of
   // these presets carries a `dualBrush` object whether or not the feature is
@@ -343,11 +396,84 @@ BrushPreset presetFromDescriptor(
   // nothing and make the note worthless.
   const DescriptorRef dual = node.field("dualBrush");
   if (dual.valid() && dual.field("useDualBrush").asBoolean().value_or(false)) {
-    ++result.dualBrushes;
-    result.notes.push_back(
-        {p.name,
-         "Dual Brush is ON and not imported -- a second tip is stamped through this brush in "
-         "Photoshop, and its absence is why the mark reads smoother than the original"});
+    // `BlnM` first: whether a second tip is worth building at all depends on
+    // whether this build can composite it, and the three outcomes below
+    // (built / understood-but-unsupported / nothing usable) are told apart by
+    // what this enumerated read produces.
+    const auto blendEnum = dual.field("BlnM").asEnumerated();
+    std::optional<DualBrushBlend> blend;
+    if (blendEnum) {
+      // **`Mltp`/`Ovrl` cross-checked against `psd_tools.terminology`
+      // (Adobe's own Action Descriptor `BlnM` enumeration, independently
+      // reverse-engineered), not against a real `.abr`** -- this build's
+      // PLAN.md forbids shipping one, and no `dualBrush.BlnM` field has been
+      // read from a real Kyle Webster file the way `AbrControl`'s own header
+      // reads a real `bVTy` off "Blot Bot Perfecto". Treat this pair with the
+      // same "inferred, not observed" caution that header gives control 7,
+      // and re-check against a real file's bytes before trusting it further.
+      if (blendEnum->valueId == "Mltp") blend = DualBrushBlend::Multiply;
+      else if (blendEnum->valueId == "Ovrl") blend = DualBrushBlend::Overlay;
+    }
+
+    const DescriptorRef dualBrsh = dual.field("Brsh");
+    if (blend.has_value() && dualBrsh.valid()) {
+      // The second tip's own shape, through the SAME reader the primary tip
+      // uses (`readAbrTipShape()`, this file's own comment on why it is one
+      // function). `readHardness=false`: Photoshop's Dual Brush panel has no
+      // Hardness slider, so there is no authored value to read, and `1.0f`
+      // (a hard edge) is the default here -- a REASONED default, not a
+      // measured one: it matches "Hard Round", Photoshop's own default
+      // second-tip preset, but was not checked against a real file's second
+      // tip, sampled or procedural.
+      const AbrTipShape second = readAbrTipShape(dualBrsh, p.radius, /*defaultHardness=*/1.0f,
+                                                 /*readHardness=*/false, p.name, "Dual Brush's ",
+                                                 result, sampledTips);
+      auto dualTip = std::make_shared<BrushTip>();
+      dualTip->radius = second.radius;
+      dualTip->hardness = second.hardness;
+      dualTip->roundness = second.roundness;
+      dualTip->angle = second.angle;
+      dualTip->spacing = second.spacing;  // parsed, but see dualBrushCadenceNotHonoured below
+      dualTip->bitmap = second.bitmap;
+      // `dualTip->dualTip` stays null (its default): `readAbrTipShape()` never
+      // looked for a nested `dualBrush` key to begin with (this function's own
+      // comment), so there is nothing to have carried across even if it had.
+      p.dualTip = dualTip;
+      p.dualBlend = *blend;
+
+      // The second tip's OWN spacing/scatter/count -- distinct from the
+      // primary tip's (brush/Deposit.hpp §2d) and not honoured by this
+      // build's compositing, which stamps `dualTip` once, centred on every
+      // dab of the first. Read only far enough to say whether that loses
+      // anything for THIS brush: Count 1 with scatter off is the one
+      // configuration where "stamped once, centred" is not an approximation.
+      const bool scatterOn = dual.field("useScatter").asBoolean().value_or(false);
+      const int32_t count = dual.field("Cnt ").asInteger().value_or(1);
+      if (scatterOn || count != 1) {
+        ++result.dualBrushCadenceNotHonoured;
+        result.notes.push_back(
+            {p.name,
+             "Dual Brush's own spacing, scatter and count are not honoured -- its second tip is "
+             "stamped once, centred on every dab of the first, rather than scattered its own "
+             "number of times"});
+      }
+    } else if (blendEnum.has_value()) {
+      // A `BlnM` was read -- a real enumerated value, not absence -- and it is
+      // not one of the two this build composites. Falls back to the primary
+      // tip alone, exactly like `dualBrushes` below, but this is the more
+      // informative diagnosis and gets its own counter and note so a reader
+      // can tell the two apart (this file's own header on `AbrImportResult`).
+      ++result.dualBrushUnsupportedBlend;
+      result.notes.push_back(
+          {p.name, "Dual Brush's blend mode '" + blendEnum->typeId + "." + blendEnum->valueId +
+                       "' is not implemented -- painting with the primary tip alone"});
+    } else {
+      ++result.dualBrushes;
+      result.notes.push_back(
+          {p.name,
+           "Dual Brush is ON and not imported -- a second tip is stamped through this brush in "
+           "Photoshop, and its absence is why the mark reads smoother than the original"});
+    }
   }
 
   return p;

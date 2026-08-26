@@ -36,6 +36,11 @@ std::array<BrushTip, kDabPreviewCells> brushRowIconTips(const BrushRow& row,
   // stops being `kNoPresetIndex`, which is the same "not loaded yet" honesty
   // the links clear above already states for dynamics.
   as.tipBitmap.reset();
+  // Identical reasoning, for the identical field shape: a `BrushRow` carries
+  // no Dual Brush second tip either (brush/Library.hpp's own comment on
+  // `BrushPreset::dualTip`), so this row's icon must not preview whatever
+  // dual tip happens to be loaded on the live brush right now.
+  as.dualTip.reset();
   DynamicInputs in;
   return dabPreviewTipsFor(as, lut, in);
 }

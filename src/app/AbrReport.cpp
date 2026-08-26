@@ -60,8 +60,10 @@ int runAbrReport(const char* path) {
 
   std::printf(
       "\n%zu presets imported, %zu sampled tips NOT imported, %zu unmapped controls, "
-      "%zu with Dual Brush ON\n\n",
-      r.presets.size(), r.sampledTips, r.unmappedControls, r.dualBrushes);
+      "%zu with no Dual Brush tip at all, %zu with an unsupported Dual Brush blend mode, "
+      "%zu with a Dual Brush whose spacing/scatter/count are not honoured\n\n",
+      r.presets.size(), r.sampledTips, r.unmappedControls, r.dualBrushes,
+      r.dualBrushUnsupportedBlend, r.dualBrushCadenceNotHonoured);
 
   std::printf("%-40s %7s %7s %7s %7s %7s  %s\n", "name", "radius", "hard", "spacing", "round",
               "angle", "links");
@@ -132,16 +134,37 @@ int runAbrReport(const char* path) {
   }
   if (r.dualBrushes > 0) {
     std::printf(
-        "\n**%zu of %zu brushes have Dual Brush switched ON.**\n"
+        "\n**%zu of %zu brushes have Dual Brush switched ON with no second tip this build "
+        "could bring across at all.**\n"
         "Photoshop stamps a SECOND tip through those, with its own blend mode,\n"
-        "spacing, scatter and count. This build has one tip per brush, so that\n"
-        "second stamp is missing entirely -- which shows up as a mark that is\n"
+        "spacing, scatter and count. Neither the shape nor the blend mode arrived for these,\n"
+        "so that second stamp is missing entirely -- which shows up as a mark that is\n"
         "smoother and more even than the original, since breaking up the first\n"
         "tip's edge is most of what the second one is there to do.\n"
         "\n"
         "Read this the same way as the sampled-tip line above: it is a reason\n"
         "the brush cannot look right YET, and it is not a dynamics problem.\n",
         r.dualBrushes, r.presets.size());
+  }
+  if (r.dualBrushUnsupportedBlend > 0) {
+    std::printf(
+        "\n**%zu of %zu brushes have a Dual Brush blend mode this build does not "
+        "composite.**\n"
+        "The second tip's SHAPE was read; its `BlnM` just names a mode other than\n"
+        "Multiply or Overlay, the two brush/Deposit.hpp's dabCoverage() implements.\n"
+        "These paint with the primary tip alone, same as the line above, but the\n"
+        "second tip itself is not the problem -- see the notes for which mode.\n",
+        r.dualBrushUnsupportedBlend, r.presets.size());
+  }
+  if (r.dualBrushCadenceNotHonoured > 0) {
+    std::printf(
+        "\n**%zu of %zu brushes have a Dual Brush whose own spacing/scatter/count is not "
+        "honoured.**\n"
+        "Their second tip DOES paint, composited by Multiply or Overlay -- but it is\n"
+        "stamped once, centred on every dab of the first, rather than scattered its\n"
+        "own number of times. These brushes will read less granular than Photoshop's\n"
+        "even with the second tip's shape correct.\n",
+        r.dualBrushCadenceNotHonoured, r.presets.size());
   }
   return 0;
 }

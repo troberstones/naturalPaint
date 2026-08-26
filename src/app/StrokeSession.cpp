@@ -372,6 +372,14 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // loaded mid-stroke, and there is no such target for the same reason there
   // is no `DynamicTarget::Pigment`.
   tip.bitmap = brush.tipBitmap;
+  // Straight through, unscaled by any dynamic, for the identical reason
+  // `tip.bitmap` above is: a Dual Brush's second tip (brush/Deposit.hpp §2d)
+  // is not a thing SIZE/ROUNDNESS/ANGLE dynamics resolve against per dab --
+  // those three still apply to the PRIMARY tip through `tip.radius`/
+  // `tip.roundness`/`tip.angle` above, and (§2d) the nested tip inherits none
+  // of them, exactly as it inherited none of them from the descriptor either.
+  tip.dualTip = brush.dualTip;
+  tip.dualBlend = brush.dualBlend;
   // `BrushState::load` is "pigment concentration" and ranges 0..2.5; a tip's
   // `flow` is "mass laid down per dab where coverage is 1" and is deliberately
   // not clamped to [0,1] (brush/Deposit.hpp: "a flow above 1 is a legitimate
@@ -529,6 +537,8 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   brush.wetness = preset.wetness;
   brush.links = preset.links;
   brush.tipBitmap = preset.tipBitmap;
+  brush.dualTip = preset.dualTip;
+  brush.dualBlend = preset.dualBlend;
 }
 
 BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
@@ -543,6 +553,8 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   p.wetness = brush.wetness;
   p.links = brush.links;
   p.tipBitmap = brush.tipBitmap;
+  p.dualTip = brush.dualTip;
+  p.dualBlend = brush.dualBlend;
   return p;
 }
 

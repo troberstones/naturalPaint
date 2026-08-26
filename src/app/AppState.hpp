@@ -223,6 +223,14 @@ struct BrushState {
   // not comparing it separately.
   std::shared_ptr<const BrushTipBitmap> tipBitmap;
 
+  // A Dual Brush's second tip (brush/Deposit.hpp §2d), or null for every tip
+  // that has none. Moves only in lockstep with a whole preset -- set by
+  // `applyPresetToBrush()`, read by `presetFromBrush()` and by
+  // `brushTipFor()` -- for the identical reason `tipBitmap` above gives.
+  std::shared_ptr<const BrushTip> dualTip;
+  // Only meaningful when `dualTip` is set.
+  DualBrushBlend dualBlend = DualBrushBlend::Multiply;
+
   // Every input-drives-parameter relationship this brush has (brush/Dynamics).
   //
   // **This replaced `bool pressureSize` / `bool pressureFlow`, which were

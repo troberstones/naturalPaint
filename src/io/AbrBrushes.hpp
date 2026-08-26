@@ -100,11 +100,40 @@ struct AbrImportResult {
   // bitmap.
   size_t sampledTips = 0;
   size_t unmappedControls = 0;  // dynamics whose control has no source here
-  // Brushes with Dual Brush switched ON, which this build has no second tip
-  // to honour. Counted separately from `unmappedControls` because it is not a
-  // control at all -- it is a whole second tip, and it changes the mark far
-  // more than any single dynamics row does.
+
+  // Brushes with Dual Brush switched ON where this import could build NO
+  // second tip at all -- either the `dualBrush` object carries no usable
+  // `Brsh`, or its `BlnM` could not even be read as an enumerated value.
+  // Counted separately from `unmappedControls` because it is not a control at
+  // all -- it is a whole second tip, and it changes the mark far more than
+  // any single dynamics row does.
+  //
+  // **Not** incremented for a `BlnM` that WAS read but names a blend mode
+  // this build does not composite -- see `dualBrushUnsupportedBlend` below,
+  // kept apart on purpose: a reader of `--abr-report` should be able to tell
+  // "no second tip arrived at all" from "a second tip arrived and this build
+  // still would not draw it as Photoshop does."
   size_t dualBrushes = 0;
+
+  // Dual Brush switched ON, a second tip WAS built (Multiply or Overlay --
+  // `brush/Deposit.hpp` §2d), but its `BlnM` named a blend mode this build
+  // does not implement compositing for. The brush paints with the primary
+  // tip alone, exactly as `dualBrushes` above, but the diagnosis differs and
+  // is worth telling apart: this is "we understood the request and refuse to
+  // guess," not "nothing came across."
+  size_t dualBrushUnsupportedBlend = 0;
+
+  // Dual Brush switched ON with a blend mode this build DOES composite, but
+  // the second tip's own spacing, scatter and count (`useScatter`, `Cnt `,
+  // `bothAxes`, `countDynamics`, `scatterDynamics`) are not honoured --
+  // `brush/Deposit.hpp` §2d stamps the second tip once, centred on every dab
+  // of the first, rather than its own number of times with its own jitter.
+  // **Not** counted for a brush whose Dual Brush asks for exactly that
+  // (Count 1, scatter off): for that one configuration, stamping once,
+  // centred, is not an approximation, it is the exact answer, and a note that
+  // fired on it would carry no information -- the same discipline
+  // `useDualBrush`'s own "present but off" case already applies below.
+  size_t dualBrushCadenceNotHonoured = 0;
 };
 
 // Parse a whole `.abr` file.

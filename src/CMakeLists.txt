@@ -32,6 +32,7 @@ add_executable(naturalPaint
   app/selftest/ApplyPass.cpp
   app/selftest/BaseLayerAlpha.cpp
   app/selftest/AbrBrushes.cpp
+  app/selftest/AbrDualBrush.cpp
   app/selftest/AbrSampledTips.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
