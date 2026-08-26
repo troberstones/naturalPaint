@@ -48,6 +48,13 @@ const char* sourceName(DynamicSource source) noexcept {
     case DynamicSource::Fade: return "FADE";
     case DynamicSource::Noise: return "NOISE";
     case DynamicSource::Random: return "RANDOM";
+    case DynamicSource::Direction: return "DIRECTION";
+    // Not "INITIAL DIRECTION": every row label here is one unspaced word
+    // (matching PRESSURE, DIRECTION and the rest), and this row is drawn
+    // immediately below DIRECTION's in the matrix's own enum order, so
+    // "INITIAL" alone reads as "the initial [heading]" in context without
+    // needing the second word repeated.
+    case DynamicSource::InitialDirection: return "INITIAL";
   }
   return "?";
 }
@@ -67,7 +74,19 @@ const char* sourceDisplay(DynamicSource source, float normalised, char* out,
     case DynamicSource::Tilt:
       std::snprintf(out, cap, "%.0f\xC2\xB0", clamp01(normalised) * 90.0f);
       return out;
+    // Direction and InitialDirection share AZIMUTH's plain 0-360, unsigned
+    // convention -- see `dynamicDirection()`'s own comment on why (there is
+    // no "rest orientation" for a heading the way there is for barrel
+    // rotation, so there is nothing to centre a signed range on). Unlike
+    // RANDOM above, InitialDirection's idle reading (0.0, "no stroke has
+    // established a heading yet") IS meaningful between strokes -- it is
+    // wrong only in the sense every stroke-local source's frame-sampled
+    // idle value is "wrong" (VELOCITY/FADE/DIRECTION's own comments), not
+    // in RANDOM's sense of "any number here is stale before you finish
+    // reading it" -- so it gets the plain degree treatment, not the em dash.
     case DynamicSource::Azimuth:
+    case DynamicSource::Direction:
+    case DynamicSource::InitialDirection:
       std::snprintf(out, cap, "%.0f\xC2\xB0", clamp01(normalised) * 360.0f);
       return out;
     // Barrel rotation is signed -- a pen can be twirled either way from its
@@ -261,6 +280,8 @@ float sourceValue(const DynamicInputs& inputs, DynamicSource source) noexcept {
     case DynamicSource::Fade: return inputs.fade;
     case DynamicSource::Noise: return inputs.noise;
     case DynamicSource::Random: return inputs.random;
+    case DynamicSource::Direction: return inputs.direction;
+    case DynamicSource::InitialDirection: return inputs.initialDirection;
   }
   return 0.0f;
 }
@@ -423,12 +444,33 @@ float dynamicFade(float distanceAlongStroke) noexcept {
   return clamp01(distanceAlongStroke / kFadeLengthPx);
 }
 
+float dynamicDirection(float dx, float dy) noexcept {
+  // `std::atan2(0, 0)` is `0` by contract (IEEE754's own special case, which
+  // this project's toolchain follows), so a stroke's first dab -- which
+  // `app/StrokeSession` calls this with `dx = dy = 0.0` for, having no
+  // previous dab to difference against -- and a dab that landed exactly on
+  // the previous one both resolve to the SAME 0.0 heading through this one
+  // formula, with no branch here to keep in sync with the caller's own
+  // "no previous position" convention (`dynamicVelocity()`'s identical
+  // shape, one function up).
+  const float radians = std::atan2(dy, dx);
+  // radians -> degrees, then wrapped into [0, 360) rather than left signed:
+  // this header's own comment on why (AZIMUTH's convention, not BARREL's --
+  // a heading has no rest orientation to be signed about).
+  constexpr float kRadToDeg = 57.295779513082322865f;  // 180 / pi
+  float degrees = radians * kRadToDeg;
+  if (degrees < 0.0f) degrees += 360.0f;
+  return degrees / 360.0f;
+}
+
 bool sourceIsStrokeLocal(DynamicSource source) noexcept {
   switch (source) {
     case DynamicSource::Velocity:
     case DynamicSource::Fade:
     case DynamicSource::Noise:
     case DynamicSource::Random:
+    case DynamicSource::Direction:
+    case DynamicSource::InitialDirection:
       return true;
     case DynamicSource::Pressure:
     case DynamicSource::Tilt:

@@ -1544,6 +1544,10 @@ int main(int argc, char** argv) {
     // the container framing and the parameter mapping, including what an
     // import could NOT bring across. Headless and GPU-free.
     const bool abrBrushesOk = np::runAbrBrushesTest();
+    // io/AbrBrushes' `samp` block: sampled bitmap tips decoded and stamped by
+    // brush/Deposit.hpp §2c in place of the procedural tip. Headless and
+    // GPU-free.
+    const bool abrSampledTipsOk = np::runAbrSampledTipsTest();
     // app/BrushLibraryFile: the preferences file for imported `.abr` libraries,
     // the row cache that makes launch pay nothing for them, and unload.
     // Headless and GPU-free.
@@ -2006,7 +2010,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && abrSampledTipsOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

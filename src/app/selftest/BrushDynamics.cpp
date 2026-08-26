@@ -308,11 +308,14 @@ bool runBrushDynamicsTest() {
           "dynamics: every source has a row label and every target a two-letter head and a "
           "full name -- a nameless one would be an invisible column");
 
-    // The counts the panel lays out against. 8 rows x 12 columns is not a
-    // number the matrix can discover at run time; it is baked into the column
-    // widths at 322 px.
-    check(kDynamicSourceCount == 8 && kDynamicTargetCount == 12,
-          "dynamics: the matrix is 8 sources x 12 targets, the shape the 322 px column was "
+    // The counts the panel lays out against. 10 rows x 12 columns is not a
+    // number the matrix can discover at run time; the column count is baked
+    // into the width at 322 px (the row count is not baked into a width the
+    // same way -- rows stack vertically -- but is still asserted here so a
+    // source added to the enum without a name, an abbreviation and the rest
+    // this section checks cannot go unnoticed).
+    check(kDynamicSourceCount == 10 && kDynamicTargetCount == 12,
+          "dynamics: the matrix is 10 sources x 12 targets, the shape the 322 px column was "
           "laid out for");
 
     check(sourceName(static_cast<DynamicSource>(kDynamicSourceCount))[0] == '?' &&

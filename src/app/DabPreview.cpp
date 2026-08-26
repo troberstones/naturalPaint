@@ -158,8 +158,17 @@ std::array<BrushTip, kDabPreviewCells> dabPreviewTipsFor(const BrushState& brush
 }
 
 bool dabPreviewTipsEqual(const BrushTip& a, const BrushTip& b) noexcept {
+  // `bitmap` compares by POINTER (shared_ptr's own `==`), not by pixel
+  // content -- consistent with every other field here being bit equality
+  // rather than a tolerance. Two different `BrushTipBitmap`s can otherwise
+  // share every scalar checked below (radius, hardness, roundness, angle and
+  // even pigment happening to match across two different sampled-tip
+  // presets), and without this the cache would hand back one brush's dab
+  // image for another's -- the exact failure `generation()`'s own doc comment
+  // says this class exists to make impossible.
   return a.radius == b.radius && a.hardness == b.hardness && a.flow == b.flow &&
-         a.roundness == b.roundness && a.angle == b.angle && a.pigment == b.pigment;
+         a.roundness == b.roundness && a.angle == b.angle && a.pigment == b.pigment &&
+         a.bitmap == b.bitmap;
 }
 
 const DabPreviewImage& DabPreviewCache::imageFor(

@@ -239,15 +239,26 @@ bool runDynamicsSourcesTest() {
           "sources: PRESSURE, TILT, AZIMUTH and BARREL each move when the AppState field "
           "behind them moves -- dynamicInputsFor() reads all four, not a subset");
 
-    // The four stroke-local sources: each must vary across a realistic
-    // sequence of (stepDist, distance, dabIndex) -- what a real stroke would
-    // hand them. Table-shaped on purpose: a reader adding a ninth source
-    // later sees exactly what row to add.
+    // The six stroke-local sources: each must vary across a realistic
+    // sequence of (stepDist, distance, dabIndex, heading) -- what a real
+    // stroke would hand them. Table-shaped on purpose: a reader adding an
+    // eleventh source later sees exactly what row to add.
+    //
+    // INITIAL DIRECTION shares this table's DIRECTION row rather than
+    // getting its own generator call: `DynamicSource::InitialDirection`'s
+    // resolved VALUE is `dynamicDirection()` too (brush/Dynamics.hpp's own
+    // "INITIAL DIRECTION" section -- there is no second arithmetic
+    // function, only a different CALLER discipline, which lives in
+    // `app/StrokeSession` and is proved in section 10 below, not here).
+    // This table's whole job is proving the GENERATOR is not a hard-coded
+    // constant, and INITIAL DIRECTION's generator IS DIRECTION's, so
+    // reusing `directions` below is not a shortcut, it is the honest
+    // reflection of that shared arithmetic.
     struct Row {
       const char* name;
       bool varies;
     };
-    std::vector<float> velocities, fades, noises, randoms;
+    std::vector<float> velocities, fades, noises, randoms, directions;
     const uint64_t tableSeed = strokeSeedFromStart(1.0f, 1.0f);
     float dist = 0.0f;
     for (uint32_t i = 0; i < 40; ++i) {
@@ -260,6 +271,18 @@ bool runDynamicsSourcesTest() {
       fades.push_back(dynamicFade(dist));
       noises.push_back(dynamicNoiseAt(tableSeed, dist));
       randoms.push_back(dynamicRandomDraw(tableSeed, i));
+      // A heading that sweeps from 30 to 264 degrees -- varying, like every
+      // other row, but deliberately never crossing DIRECTION's own wrap
+      // point at 0/360 (due "+x"; see `dynamicDirection()`'s header
+      // comment). `spans()` below is a plain hi-minus-lo over the
+      // NORMALISED value, which reads a wrap as a spurious near-1.0 span
+      // regardless of whether the underlying heading actually moved -- this
+      // table wants to know whether the SOURCE varies, not to re-litigate
+      // the wrap, which section 9 below tests directly and on purpose.
+      const float headingDeg = 30.0f + 6.0f * static_cast<float>(i);
+      const float headingRad = headingDeg * 0.017453292519943295f;  // pi/180
+      directions.push_back(
+          dynamicDirection(std::cos(headingRad), std::sin(headingRad)));
     }
     auto spans = [](const std::vector<float>& v) {
       float lo = v[0], hi = v[0];
@@ -269,7 +292,7 @@ bool runDynamicsSourcesTest() {
       }
       return hi - lo;
     };
-    const Row rows[8] = {
+    const Row rows[10] = {
         {"PRESSURE", low.pressure != high.pressure},
         {"TILT", low.tilt != high.tilt},
         {"AZIMUTH", low.azimuth != high.azimuth},
@@ -278,6 +301,8 @@ bool runDynamicsSourcesTest() {
         {"FADE", spans(fades) > 0.05f},
         {"NOISE", spans(noises) > 0.05f},
         {"RANDOM", spans(randoms) > 0.3f},
+        {"DIRECTION", spans(directions) > 0.05f},
+        {"INITIAL", spans(directions) > 0.05f},
     };
     bool allVary = true;
     for (const Row& r : rows) {
@@ -285,7 +310,7 @@ bool runDynamicsSourcesTest() {
       if (!r.varies) allVary = false;
     }
     check(allVary,
-          "sources: all eight vary across a realistic sequence -- the table that would have "
+          "sources: all ten vary across a realistic sequence -- the table that would have "
           "caught VELOCITY, FADE, NOISE and RANDOM stuck at their old hard 0.0, and must catch "
           "a future source silently returning a constant");
 
@@ -319,11 +344,13 @@ bool runDynamicsSourcesTest() {
     probe.fade = 0.66f;
     probe.noise = 0.77f;
     probe.random = 0.88f;
+    probe.direction = 0.99f;
+    probe.initialDirection = 0.15f;
     const struct {
       DynamicSource source;
       float expected;
       const char* name;
-    } dispatch[8] = {
+    } dispatch[10] = {
         {DynamicSource::Pressure, probe.pressure, "PRESSURE"},
         {DynamicSource::Tilt, probe.tilt, "TILT"},
         {DynamicSource::Azimuth, probe.azimuth, "AZIMUTH"},
@@ -332,6 +359,8 @@ bool runDynamicsSourcesTest() {
         {DynamicSource::Fade, probe.fade, "FADE"},
         {DynamicSource::Noise, probe.noise, "NOISE"},
         {DynamicSource::Random, probe.random, "RANDOM"},
+        {DynamicSource::Direction, probe.direction, "DIRECTION"},
+        {DynamicSource::InitialDirection, probe.initialDirection, "INITIAL"},
     };
     bool dispatchOk = true;
     for (const auto& d : dispatch) {
@@ -403,6 +432,51 @@ bool runDynamicsSourcesTest() {
               cellUnbuildableReason(DynamicSource::Random, DynamicTarget::Wetness) != nullptr,
           "targets: WETNESS refuses every source, hardware and stroke-local alike -- its "
           "problem is that no CPU route reads it at all, not a timing mismatch");
+
+    // DIRECTION on its own: it is a fifth stroke-local source, added after
+    // the four above, so `sourceIsStrokeLocal()` gaining a new `true` arm
+    // that a copy-paste missed would leave this specific cell reading as
+    // buildable when it must not -- the same defect shape the four-source
+    // check above exists to catch, restated for the newest source rather
+    // than assumed to fall out of it for free.
+    check(cellUnbuildableReason(DynamicSource::Direction, DynamicTarget::Hue) != nullptr &&
+              cellUnbuildableReason(DynamicSource::Direction, DynamicTarget::Saturation) !=
+                  nullptr &&
+              cellUnbuildableReason(DynamicSource::Direction, DynamicTarget::Value) != nullptr,
+          "targets: DIRECTION into HUE/SATURATION/VALUE is refused at the CELL too -- it "
+          "resolves once per DAB exactly like VELOCITY/FADE/NOISE/RANDOM, so it hits the "
+          "identical frame-vs-dab mismatch");
+    check(cellUnbuildableReason(DynamicSource::Direction, DynamicTarget::Angle) == nullptr,
+          "targets: DIRECTION into ANGLE -- the cell this whole source exists for -- is fully "
+          "buildable");
+
+    // INITIAL DIRECTION restates the identical pair once more -- a sixth
+    // stroke-local source, and `sourceIsStrokeLocal()` is asserted directly
+    // for it below too, rather than trusted to this refusal alone: a source
+    // marked stroke-local by MISTAKE (never latched, never fed a real
+    // heading) would still refuse these three cells correctly while
+    // resolving ANGLE to a permanent 0.0 -- wrong in a way this refusal
+    // check alone cannot see, which is exactly why section 10 below proves
+    // the resolved VALUE too, not only its timing classification.
+    check(cellUnbuildableReason(DynamicSource::InitialDirection, DynamicTarget::Hue) !=
+                  nullptr &&
+              cellUnbuildableReason(DynamicSource::InitialDirection, DynamicTarget::Saturation) !=
+                  nullptr &&
+              cellUnbuildableReason(DynamicSource::InitialDirection, DynamicTarget::Value) !=
+                  nullptr,
+          "targets: INITIAL DIRECTION into HUE/SATURATION/VALUE is refused at the CELL too -- "
+          "it resolves once per DAB (the first one with a real step vector), not once per "
+          "FRAME, so it hits the identical frame-vs-dab mismatch");
+    check(cellUnbuildableReason(DynamicSource::InitialDirection, DynamicTarget::Angle) ==
+              nullptr,
+          "targets: INITIAL DIRECTION into ANGLE is fully buildable");
+    check(sourceIsStrokeLocal(DynamicSource::InitialDirection),
+          "targets: INITIAL DIRECTION classifies as STROKE-LOCAL, asserted directly rather "
+          "than only inferred from the HSV refusal above -- commit b704411's own P0 (a "
+          "stroke-local link resolved at the wrong granularity, silently, with 4442 green "
+          "assertions around it) is exactly the failure mode a source classified into the "
+          "wrong half produces, and this is the one line that would catch it for this source "
+          "specifically");
 
     // Scatter and Concentration: cheap, local to the dab, exercised through a
     // REAL stroke -- StrokeSession's per-dab loop, with `strokeLocalLinks`
@@ -761,6 +835,476 @@ bool runDynamicsSourcesTest() {
           "hardware-only: the two partial resolutions compose back to the whole-set answer, so "
           "splitting them costs nothing -- the property that makes applying each half EXACTLY "
           "once both necessary and sufficient");
+  }
+
+  // ======================================================================
+  // 9. DIRECTION -- the tangent source: normalisation, the wrap point, the
+  //    first-dab default, and that a link actually turns a real stroke
+  // ======================================================================
+  //
+  // Sections 5 and 6 above already fold DIRECTION into the generic
+  // nine-source table and the per-cell HSV refusal. This section is what
+  // proves the source ITSELF, the way sections 2-4 do for VELOCITY, FADE and
+  // NOISE: the pure function's own arithmetic, and -- because "the generator
+  // is right" and "the dispatch that reaches a real stroke is right" are two
+  // different claims, exactly the gap section 5's own comment names -- a
+  // real `StrokeSession` actually turning a tip because of it.
+  {
+    // --- 9a. Cardinal headings, exactly -------------------------------
+    check(dynamicDirection(1.0f, 0.0f) == 0.0f,
+          "direction: due +x (heading 0 deg) normalises to exactly 0.0 -- the wrap point "
+          "itself, by construction");
+    check(nearf(dynamicDirection(0.0f, 1.0f), 0.25f, 1e-6f),
+          "direction: due +y (heading 90 deg) normalises to exactly 0.25");
+    check(nearf(dynamicDirection(-1.0f, 0.0f), 0.5f, 1e-6f),
+          "direction: due -x (heading 180 deg) normalises to exactly 0.5");
+    check(nearf(dynamicDirection(0.0f, -1.0f), 0.75f, 1e-6f),
+          "direction: due -y (heading -90/270 deg) normalises to exactly 0.75 -- the negative "
+          "atan2 branch, wrapped forward by a full turn rather than left signed");
+
+    // --- 9b. The first-dab / zero-motion default -----------------------
+    check(dynamicDirection(0.0f, 0.0f) == 0.0f,
+          "direction: (0,0) -- what app/StrokeSession.cpp passes for a stroke's first dab, "
+          "which has no previous position to difference against -- resolves to 0.0, the same "
+          "'nothing has happened yet' reading DynamicInputs' own defaults use everywhere else");
+
+    // --- 9c. Purity: no hidden state, called out of order ---------------
+    const float a1 = dynamicDirection(3.0f, 4.0f);
+    const float mid = dynamicDirection(-2.0f, 1.0f);
+    const float a2 = dynamicDirection(3.0f, 4.0f);
+    check(a1 == a2,
+          "direction: the SAME (dx, dy) pair returns the bit-identical float on a second call, "
+          "with a DIFFERENT call in between -- a pure function of its two arguments, holding no "
+          "memory of a stroke's opening heading the way a frozen Photoshop 'Initial Direction' "
+          "would need to");
+    check(a1 != mid, "direction: two different headings resolve to two different values");
+
+    // --- 9d. The wrap point does not reach the canvas --------------------
+    //
+    // brush/Dynamics.hpp's own `dynamicDirection()` comment argues that the
+    // ENCODING's seam at heading 0 deg is invisible once `Angle`'s default
+    // [0,360) range and `dabCoverage()`'s exactly-360-periodic cos/sin have
+    // both been applied. Checked here rather than only argued: two headings
+    // a fraction of a degree either side of the wrap resolve to normalised
+    // values near opposite ends of [0,1), but their Angle-link
+    // CONTRIBUTIONS -- what actually reaches `dabCoverage()` -- differ by a
+    // fraction of a degree too, once the comparison is taken modulo a full
+    // turn rather than read as a raw difference.
+    {
+      BrushLinkSet dirLinks;
+      BrushLink dirToAngle;
+      dirToAngle.source = DynamicSource::Direction;
+      dirToAngle.target = DynamicTarget::Angle;
+      targetDefaultRange(DynamicTarget::Angle, dirToAngle.rangeLo, dirToAngle.rangeHi);
+      addLink(dirLinks, dirToAngle);
+
+      const float justBelow = dynamicDirection(1.0f, -0.001f);  // heading ~ -0.057 deg
+      const float justAbove = dynamicDirection(1.0f, 0.001f);   // heading ~ +0.057 deg
+      DynamicInputs inBelow, inAbove;
+      inBelow.direction = justBelow;
+      inAbove.direction = justAbove;
+      const float angleBelow = evaluateLinksFiltered(dirLinks, inBelow, /*wantStrokeLocal=*/true)
+                                   .at(DynamicTarget::Angle);
+      const float angleAbove = evaluateLinksFiltered(dirLinks, inAbove, /*wantStrokeLocal=*/true)
+                                   .at(DynamicTarget::Angle);
+      float wrapped = std::fabs(angleAbove - angleBelow);
+      if (wrapped > 180.0f) wrapped = 360.0f - wrapped;
+      std::printf(
+          "  direction: heading -0.057deg -> Angle %.4f, +0.057deg -> Angle %.4f, wrapped "
+          "difference %.4f deg\n",
+          static_cast<double>(angleBelow), static_cast<double>(angleAbove),
+          static_cast<double>(wrapped));
+      // 0.2 deg is generous against the ~0.114 deg physical gap between the
+      // two probe headings (2 * 0.057 deg, the sum of the two offsets from
+      // due-+x) -- loose enough to absorb the atan2/trig rounding this
+      // comparison goes through twice, tight enough that a real 360 deg
+      // seam (the raw, un-wrapped difference, ~359.9 deg) would still miss
+      // it by three orders of magnitude.
+      check(wrapped < 0.2f,
+            "direction: two headings a fraction of a degree either side of the encoding's wrap "
+            "point resolve to Angle contributions that are ALSO only a fraction of a degree "
+            "apart, once compared modulo a full turn -- the seam is in the [0,1) NUMBER, not "
+            "in the rotation dabCoverage() actually draws");
+    }
+
+    // --- 9e. End to end: a real stroke, actually turning ------------------
+    //
+    // 9a-9d prove the source. This proves the wiring: that a
+    // DIRECTION -> ANGLE link, run through a real `StrokeSession`, visibly
+    // rotates an elliptical tip's footprint.
+    {
+      BrushLinkSet dirAngleLinks;
+      BrushLink dirToAngle;
+      dirToAngle.source = DynamicSource::Direction;
+      dirToAngle.target = DynamicTarget::Angle;
+      targetDefaultRange(DynamicTarget::Angle, dirToAngle.rangeLo, dirToAngle.rangeHi);
+      addLink(dirAngleLinks, dirToAngle);
+
+      BrushTip ellip;
+      ellip.radius = 22.0f;
+      ellip.hardness = 0.4f;
+      ellip.flow = 0.5f;
+      // Visibly non-round. ANGLE has NO effect at roundness 1.0
+      // (brush/Deposit.cpp's own round-tip branch skips the rotation
+      // arithmetic outright, deliberately, to keep every existing round-tip
+      // stroke bit-identical), so this is the one setting that makes this
+      // section able to see anything at all.
+      ellip.roundness = 0.35f;
+
+      // A perfectly STRAIGHT stroke moving due +x the whole way: DIRECTION
+      // is 0.0 at the first dab (9b) and 0.0 at every dab after it (9a's
+      // own due-+x case, since every step is along +x), so an ANGLE link
+      // over the full [0,360) range contributes exactly the Add identity,
+      // 0.0, throughout. WITH the link and WITHOUT it must therefore
+      // deposit BYTE-IDENTICAL tiles -- the strongest check available, and
+      // one that would catch a first-dab default other than the documented
+      // 0.0 (brush/Dynamics.hpp's own choice), since any other value would
+      // rotate the first dab's footprint and desync the two streams from
+      // their very first tile.
+      auto straightStroke = [&](const BrushLinkSet* useLinks) {
+        OpenDocument od = makeDoc(512, 512);
+        StrokeSession s;
+        std::string e;
+        s.begin(od, 1, ellip, Tool::Brush, &e, useLinks);
+        for (int i = 0; i <= 40; ++i) s.addPoint(60.0f + 6.0f * static_cast<float>(i), 256.0f);
+        s.end();
+        return snapshotBytes(*od.document.layers[1].pigmentTiles);
+      };
+      const TileBytes straightWith = straightStroke(&dirAngleLinks);
+      const TileBytes straightWithout = straightStroke(nullptr);
+      check(!straightWith.empty() && straightWith == straightWithout,
+            "direction: a stroke moving due +x the whole way deposits BYTE-IDENTICAL paint "
+            "with and without a DIRECTION -> ANGLE link -- the heading never leaves 0.0, so "
+            "the link contributes exactly its Add identity at every dab, first included");
+
+      // The sine-wave path (this file's own `paintPath()`) constantly
+      // changes heading, so the same comparison on a curving stroke must
+      // come out the OTHER way: if it did not, DIRECTION -> ANGLE would be
+      // silently inert on every path, straight or curved, which the check
+      // above alone cannot rule out (an inert link is byte-identical on
+      // EVERY stroke, not only a straight one).
+      auto curvyStroke = [&](const BrushLinkSet* useLinks) {
+        OpenDocument od = makeDoc(512, 512);
+        StrokeSession s;
+        std::string e;
+        s.begin(od, 1, ellip, Tool::Brush, &e, useLinks);
+        paintPath(s, 60.0f, 256.0f);
+        s.end();
+        return snapshotBytes(*od.document.layers[1].pigmentTiles);
+      };
+      const TileBytes curvyWith = curvyStroke(&dirAngleLinks);
+      const TileBytes curvyWithout = curvyStroke(nullptr);
+      check(!curvyWith.empty() && curvyWith != curvyWithout,
+            "direction: the SAME elliptical tip on a CURVING stroke deposits DIFFERENT paint "
+            "with a DIRECTION -> ANGLE link than without -- the control the straight-stroke "
+            "check above is measured against, ruling out a link that is simply never applied");
+
+      // Replayed determinism, restated for this specific link -- the same
+      // property section 7 proves for the other four stroke-local sources.
+      // DIRECTION needs no seed and holds no generator state at all, so this
+      // is not expected to be interesting, but an assertion nobody wrote is
+      // an assertion nobody has ever run.
+      const TileBytes curvyReplayed = curvyStroke(&dirAngleLinks);
+      check(curvyWith == curvyReplayed,
+            "direction: the curving DIRECTION -> ANGLE stroke replays BIT-IDENTICAL -- pure "
+            "geometry in, pure geometry out, nothing for undo or the golden harness to desync");
+    }
+
+    // --- 9f. brushTipFor() must not resolve DIRECTION at all --------------
+    //
+    // The defect the section above numbered "8" exists to close -- a
+    // stroke-local link silently applied twice, once at frame granularity
+    // and once per dab -- is exactly as available to DIRECTION as it was to
+    // the original four. A `BrushState` with a DIRECTION -> ANGLE link, run
+    // through `brushTipFor()` ALONE (the hardware-only path a stroke's very
+    // first frame takes, before `StrokeSession` ever resolves a dab), must
+    // leave ANGLE at exactly its authored value, because
+    // `DynamicInputs.direction` never leaves its struct default (0.0) on
+    // that path -- `dynamicInputsFor()`'s own comment on why.
+    {
+      BrushState withDir;
+      // A nonzero authored angle, so a spurious ADD-identity failure (a
+      // nonzero contribution leaking in from the hardware path) would move
+      // this measurably away from 15, not merely away from a suspicious 0.
+      withDir.angle = 15.0f;
+      BrushLink dirToAngle;
+      dirToAngle.source = DynamicSource::Direction;
+      dirToAngle.target = DynamicTarget::Angle;
+      targetDefaultRange(DynamicTarget::Angle, dirToAngle.rangeLo, dirToAngle.rangeHi);
+      addLink(withDir.links, dirToAngle);
+
+      const MixboxLut noLut;
+      DynamicInputs in;
+      in.pressure = 1.0f;
+      const BrushTip resolved = brushTipFor(withDir, noLut, in);
+      std::printf(
+          "  [measured] tip.angle with a DIRECTION -> ANGLE link, hardware path only: %.4f "
+          "(authored %.4f)\n",
+          static_cast<double>(resolved.angle), static_cast<double>(withDir.angle));
+      check(nearf(resolved.angle, withDir.angle, 1e-4f),
+            "direction: brushTipFor()'s hardware-only path leaves ANGLE exactly at its "
+            "authored value with a DIRECTION link installed -- DIRECTION contributes nothing "
+            "here because it never resolves before a dab's position exists, and "
+            "StrokeSession's per-dab correction is the only place it may apply");
+
+      // The composition identity, restated once more for this source
+      // specifically (the section above proves it generically, on a
+      // RANDOM -> Size link): resolving the two halves separately and
+      // folding them with Angle's OWN combine rule (Add, not Multiply) must
+      // equal one whole-set resolution.
+      DynamicInputs both = in;
+      both.direction = 0.4f;
+      const float whole = evaluateLinks(withDir.links, both).at(DynamicTarget::Angle);
+      const float hardware = evaluateLinksFiltered(withDir.links, both, /*wantStrokeLocal=*/false)
+                                 .at(DynamicTarget::Angle);
+      const float local = evaluateLinksFiltered(withDir.links, both, /*wantStrokeLocal=*/true)
+                              .at(DynamicTarget::Angle);
+      std::printf("  [measured] whole %.6f vs hardware %.6f + local %.6f = %.6f\n",
+                  static_cast<double>(whole), static_cast<double>(hardware),
+                  static_cast<double>(local), static_cast<double>(hardware + local));
+      check(nearf(whole, hardware + local, 1e-4f),
+            "direction: the two partial ANGLE resolutions ADD back to the whole-set answer "
+            "(Angle's own combine rule), confirming DIRECTION splits the same way the other "
+            "four stroke-local sources already do");
+    }
+  }
+
+  // ======================================================================
+  // 10. INITIAL DIRECTION -- the latch: once, from the second dab, held
+  //     for the rest of the stroke
+  // ======================================================================
+  //
+  // Shares DIRECTION's own arithmetic entirely (`dynamicDirection()`,
+  // section 9's own pure-function checks already cover it) -- what this
+  // section proves is `app/StrokeSession`'s CALLING DISCIPLINE around that
+  // arithmetic: latch once, at the first dab with a real step vector, and
+  // never re-read the generator again for the rest of the stroke. Section
+  // 6 above already asserts `sourceIsStrokeLocal(InitialDirection)` and the
+  // HSV cell refusal directly; this section is the end-to-end half.
+  {
+    // --- 10a. The distinguishing case: a curving stroke where live
+    //     DIRECTION and latched INITIAL DIRECTION demonstrably disagree ---
+    //
+    // Without this, a future refactor that quietly merged the two sources
+    // back into one (same generator, after all) would pass every other
+    // check in this file: section 9's pure-function checks never touch
+    // `StrokeSession`, and 10b below only proves INITIAL DIRECTION differs
+    // from an EXACT reference, not from DIRECTION specifically.
+    BrushTip ellip;
+    ellip.radius = 22.0f;
+    ellip.hardness = 0.4f;
+    ellip.flow = 0.5f;
+    // ANGLE has no visible effect at roundness 1.0 (brush/Deposit.cpp's own
+    // round-tip branch skips the rotation arithmetic outright) -- section
+    // 9e's own reasoning, restated for this section's own tip.
+    ellip.roundness = 0.35f;
+    {
+      BrushLinkSet liveLinks;
+      BrushLink liveToAngle;
+      liveToAngle.source = DynamicSource::Direction;
+      liveToAngle.target = DynamicTarget::Angle;
+      targetDefaultRange(DynamicTarget::Angle, liveToAngle.rangeLo, liveToAngle.rangeHi);
+      addLink(liveLinks, liveToAngle);
+
+      BrushLinkSet latchedLinks;
+      BrushLink latchedToAngle;
+      latchedToAngle.source = DynamicSource::InitialDirection;
+      latchedToAngle.target = DynamicTarget::Angle;
+      targetDefaultRange(DynamicTarget::Angle, latchedToAngle.rangeLo, latchedToAngle.rangeHi);
+      addLink(latchedLinks, latchedToAngle);
+
+      auto curvyStroke = [&](const BrushLinkSet* links) {
+        OpenDocument od = makeDoc(512, 512);
+        StrokeSession s;
+        std::string e;
+        s.begin(od, 1, ellip, Tool::Brush, &e, links);
+        paintPath(s, 60.0f, 256.0f);
+        s.end();
+        return snapshotBytes(*od.document.layers[1].pigmentTiles);
+      };
+      const TileBytes live = curvyStroke(&liveLinks);
+      const TileBytes latched = curvyStroke(&latchedLinks);
+      check(!live.empty() && !latched.empty() && live != latched,
+            "initial direction: the SAME curving stroke, SAME elliptical tip, deposits "
+            "DIFFERENT paint through a DIRECTION -> ANGLE link than through an INITIAL "
+            "DIRECTION -> ANGLE link -- live Direction keeps turning through the whole path, "
+            "latched Initial Direction locks after its second dab, and a sine wave is exactly "
+            "the path shape that makes the two visibly disagree. A future refactor merging "
+            "the two sources back into one would redden this line first");
+
+      // Replayed determinism, restated for the latch specifically: nothing
+      // about `initialDirectionLatched_` is time- or clock-derived, so the
+      // same stroke run twice must still agree exactly -- section 7's and
+      // 9e's own property, extended to this source.
+      const TileBytes latchedReplayed = curvyStroke(&latchedLinks);
+      check(latched == latchedReplayed,
+            "initial direction: the latched curving stroke replays BIT-IDENTICAL -- the latch "
+            "is `app/StrokeSession` member state, not a clock or a counter, so a second run "
+            "reaches the identical value the first one latched");
+    }
+
+    // --- 10b. The latch is EXACT, not merely "different from live" --------
+    //
+    // 10a proves disagreement, which a latch that fired on the wrong dab,
+    // or re-latched partway through, would ALSO produce -- disagreement
+    // alone does not prove the held value is the RIGHT one. This proves the
+    // resolved angle is exactly the heading of the stroke's own opening
+    // step, and stays exactly that for the rest of the stroke.
+    //
+    // A STRAIGHT, non-axis-aligned path -- deliberately not the sine wave,
+    // for section 8's ("Dry Bristle") own reason: a predictable path is
+    // what isolated-texel sampling needs. Every dab `brush/StrokePath`
+    // emits for a straight input lands exactly on that line
+    // (`StrokePath.cpp`'s own `mirror()` comment: "for collinear input this
+    // makes the extrapolated point collinear too, so the curve degenerates
+    // to a straight line"), so the heading between ANY two consecutive dabs
+    // is the line's own slope -- known without running anything.
+    // `dynamicDirection(lineDx, lineDy)` IS the value every dab past the
+    // first must latch to, computed here independently of `StrokeSession`
+    // rather than read back from it.
+    {
+      constexpr float kLineDx = 5.0f, kLineDy = 2.0f;  // an ordinary heading,
+                                                       // not a multiple of
+                                                       // 90 deg, so this
+                                                       // exercises the
+                                                       // general case
+      const float expectedInitialDeg = dynamicDirection(kLineDx, kLineDy) * 360.0f;
+
+      BrushTip fixedTip = ellip;
+      // The independently-computed answer, assigned straight onto the
+      // tip's own authored angle -- no link, no `brushTipFor()` detour,
+      // nothing this test could get backwards by routing it through the
+      // wrong half of the dynamics system. Every dab of this reference
+      // stroke paints at EXACTLY this one angle, including its first.
+      fixedTip.angle = expectedInitialDeg;
+
+      BrushLinkSet latchedLinks;
+      BrushLink latchedToAngle;
+      latchedToAngle.source = DynamicSource::InitialDirection;
+      latchedToAngle.target = DynamicTarget::Angle;
+      targetDefaultRange(DynamicTarget::Angle, latchedToAngle.rangeLo, latchedToAngle.rangeHi);
+      addLink(latchedLinks, latchedToAngle);
+
+      constexpr float kOriginX = 100.0f, kOriginY = 300.0f;
+      auto straightStroke = [&](const BrushTip& tip, const BrushLinkSet* links) {
+        OpenDocument od = makeDoc(1024, 1024);
+        StrokeSession s;
+        std::string e;
+        s.begin(od, 1, tip, Tool::Brush, &e, links);
+        for (int i = 0; i <= 59; ++i)
+          s.addPoint(kOriginX + kLineDx * static_cast<float>(i),
+                     kOriginY + kLineDy * static_cast<float>(i));
+        s.end();
+        return od;
+      };
+      OpenDocument latchedDoc = straightStroke(ellip, &latchedLinks);
+      OpenDocument fixedDoc = straightStroke(fixedTip, nullptr);
+
+      const auto massAt = [](const OpenDocument& doc, int32_t x, int32_t y) -> float {
+        const PixelCoord at{x, y};
+        const PigmentTile* t = doc.document.layers[1].pigmentTiles->find(tileCoordAt(at));
+        return t != nullptr ? t->readTexel(tileLocalOffset(at)).mass : 0.0f;
+      };
+
+      // Sampled far along the line -- i in [40, 59] puts the sample point
+      // at line-distance >= 40 * hypot(kLineDx, kLineDy) ~= 215 px from the
+      // stroke's start, far outside `ellip.radius` (22 px -- the distance
+      // `BrushTip`'s own contract puts coverage at EXACTLY zero beyond), so
+      // nothing sampled here can be affected by dab 0's angle -- the one
+      // dab where the latched stroke (unlatched placeholder, 0.0) and the
+      // fixed reference (pinned to `expectedInitialDeg` from dab 0 onward)
+      // are KNOWN to differ. Any dab from the second on must agree exactly,
+      // by construction, if the latch does what it claims.
+      int compared = 0, agreeing = 0;
+      bool sawPaint = false;
+      for (int i = 40; i <= 59; ++i) {
+        const int32_t cx = static_cast<int32_t>(kOriginX + kLineDx * static_cast<float>(i));
+        const int32_t cy = static_cast<int32_t>(kOriginY + kLineDy * static_cast<float>(i));
+        for (int32_t ddx = -3; ddx <= 3; ++ddx) {
+          for (int32_t ddy = -3; ddy <= 3; ++ddy) {
+            ++compared;
+            const float a = massAt(latchedDoc, cx + ddx, cy + ddy);
+            const float b = massAt(fixedDoc, cx + ddx, cy + ddy);
+            if (a > 0.0f) sawPaint = true;
+            // 1e-4 is far below the smallest real disagreement and far
+            // above the half-float storage step -- section 8's own
+            // Dry Bristle comment derives it once; reused verbatim here.
+            if (std::fabs(a - b) <= 1e-4f) ++agreeing;
+          }
+        }
+      }
+      std::printf(
+          "  initial direction: %d of %d sampled texels far from the stroke's start agree "
+          "between the latch and the independently-computed reference (%.3f deg)\n",
+          agreeing, compared, static_cast<double>(expectedInitialDeg));
+      check(sawPaint && compared == agreeing,
+            "initial direction: far from the stroke's first dab, the latched stroke and a "
+            "reference stroke pinned to the INDEPENDENTLY COMPUTED opening heading -- not "
+            "read back from StrokeSession, derived from the line's own slope -- deposit "
+            "EXACTLY the same mass, texel for texel. This is what tells a correct latch apart "
+            "from a value that merely differs from live DIRECTION without being right");
+    }
+
+    // --- 10c. brushTipFor() must not resolve INITIAL DIRECTION at all -----
+    //
+    // The defect section "8" above exists to close -- a stroke-local link
+    // silently applied twice, once at frame granularity and once per dab --
+    // is exactly as available to INITIAL DIRECTION as it was to the
+    // original four, and to DIRECTION after them (section 9's own "9f").
+    // A `BrushState` with an INITIAL DIRECTION -> ANGLE link, run through
+    // `brushTipFor()` ALONE (the hardware-only path a stroke's very first
+    // frame takes, before `StrokeSession` ever resolves a dab, let alone
+    // latches one), must leave ANGLE at exactly its authored value, because
+    // `DynamicInputs.initialDirection` never leaves its struct default
+    // (0.0) on that path.
+    {
+      BrushState withInit;
+      // A nonzero authored angle, so a spurious ADD-identity failure (a
+      // nonzero contribution leaking in from the hardware path) would move
+      // this measurably away from 15, not merely away from a suspicious 0.
+      withInit.angle = 15.0f;
+      BrushLink initToAngle;
+      initToAngle.source = DynamicSource::InitialDirection;
+      initToAngle.target = DynamicTarget::Angle;
+      targetDefaultRange(DynamicTarget::Angle, initToAngle.rangeLo, initToAngle.rangeHi);
+      addLink(withInit.links, initToAngle);
+
+      const MixboxLut noLut;
+      DynamicInputs in;
+      in.pressure = 1.0f;
+      const BrushTip resolved = brushTipFor(withInit, noLut, in);
+      std::printf(
+          "  [measured] tip.angle with an INITIAL DIRECTION -> ANGLE link, hardware path "
+          "only: %.4f (authored %.4f)\n",
+          static_cast<double>(resolved.angle), static_cast<double>(withInit.angle));
+      check(nearf(resolved.angle, withInit.angle, 1e-4f),
+            "initial direction: brushTipFor()'s hardware-only path leaves ANGLE exactly at "
+            "its authored value with an INITIAL DIRECTION link installed -- it never resolves "
+            "before a dab's position exists (let alone a SECOND one to latch from), and "
+            "StrokeSession's per-dab loop, which owns the latch, is the only place it may "
+            "apply");
+
+      // The composition identity, restated once more for this source
+      // specifically (section 9's "9f" proves it for DIRECTION, section 8
+      // for RANDOM): resolving the two halves separately and folding them
+      // with Angle's OWN combine rule (Add, not Multiply) must equal one
+      // whole-set resolution.
+      DynamicInputs both = in;
+      both.initialDirection = 0.4f;
+      const float whole = evaluateLinks(withInit.links, both).at(DynamicTarget::Angle);
+      const float hardware =
+          evaluateLinksFiltered(withInit.links, both, /*wantStrokeLocal=*/false)
+              .at(DynamicTarget::Angle);
+      const float local = evaluateLinksFiltered(withInit.links, both, /*wantStrokeLocal=*/true)
+                              .at(DynamicTarget::Angle);
+      std::printf("  [measured] whole %.6f vs hardware %.6f + local %.6f = %.6f\n",
+                  static_cast<double>(whole), static_cast<double>(hardware),
+                  static_cast<double>(local), static_cast<double>(hardware + local));
+      check(nearf(whole, hardware + local, 1e-4f),
+            "initial direction: the two partial ANGLE resolutions ADD back to the whole-set "
+            "answer, confirming INITIAL DIRECTION splits the same way the other five "
+            "stroke-local sources already do");
+    }
   }
 
   std::printf("[selftest] dynamics sources %s\n", ok ? "PASS" : "FAIL");

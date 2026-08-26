@@ -269,7 +269,9 @@ std::array<BrushTip, kDabPreviewCells> dabPreviewTipsFor(const BrushState& brush
 // Compares only the fields `rasteriseDabPreview()` reads. `spacing` and
 // `opacity` are deliberately absent: nothing in a one-dab preview depends on
 // them, and keying on them would re-rasterise 4096 texels because a slider the
-// image cannot show moved.
+// image cannot show moved. `bitmap` (brush/Deposit.hpp §2c) IS compared, by
+// pointer: `dabCoverage()` reads it, so a preview cache that ignored it would
+// hand back one sampled-tip brush's picture for another's.
 bool dabPreviewTipsEqual(const BrushTip& a, const BrushTip& b) noexcept;
 
 // The preview, rasterised only when the tip actually changed.

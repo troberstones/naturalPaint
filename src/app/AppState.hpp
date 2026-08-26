@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -212,6 +213,15 @@ struct BrushState {
   // round tip does not care, an elliptical one does. DynamicTarget::Angle
   // drives it, and Photoshop's `Angl` imports straight into it.
   float angle = 0.0f;
+
+  // A `.abr` sampled bitmap tip (brush/Deposit.hpp §2c), or null for the
+  // procedural round/elliptical tip every other field above already
+  // describes. Moves only in lockstep with a whole preset -- set by
+  // `applyPresetToBrush()`, read by `presetFromBrush()` and by
+  // `brushTipFor()` -- because there is no slider that swaps a bitmap on its
+  // own, the same reason `brush/Library.hpp`'s `presetMatches()` gives for
+  // not comparing it separately.
+  std::shared_ptr<const BrushTipBitmap> tipBitmap;
 
   // Every input-drives-parameter relationship this brush has (brush/Dynamics).
   //

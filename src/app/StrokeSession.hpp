@@ -614,28 +614,35 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
 
 // This frame's live HARDWARE source sample, read off AppState.
 //
-// **Four of the eight are still at their struct defaults here, and that is
-// no longer a gap.** VELOCITY, FADE, NOISE and RANDOM are properties of a
-// stroke in progress -- how fast it moved, how far it has travelled, a value
-// that should drift smoothly or be redrawn fresh -- not of a pen sampled once
-// per render frame before a stroke's geometry even exists. `AppState` has
-// nowhere a "this frame's raw pointer position" could live before this
-// function runs (the canvas block's local `tx, ty` are not written back to
-// `AppState` until after it), so this function structurally cannot resolve
-// them, and does not try to. They are resolved once per DAB instead, inside
-// `StrokeSession`'s own deposit loop, from data the session already owns:
-// consecutive dab positions for VELOCITY, cumulative arc length for FADE,
-// and the stroke's own seed for NOISE and RANDOM (`brush/Dynamics.hpp`'s
-// `dynamicVelocity()`, `dynamicFade()`, `dynamicNoiseAt()`,
-// `dynamicRandomDraw()`).
+// **Six of the ten are still at their struct defaults here, and that is
+// no longer a gap.** VELOCITY, FADE, NOISE, RANDOM, DIRECTION and INITIAL
+// DIRECTION are properties of a stroke in progress -- how fast it moved, how
+// far it has travelled, a value that should drift smoothly or be redrawn
+// fresh, which way it is currently heading, which way it was originally
+// headed -- not of a pen sampled once per render frame before a stroke's
+// geometry even exists. `AppState` has nowhere a "this frame's raw pointer
+// position" could live before this function runs (the canvas block's local
+// `tx, ty` are not written back to `AppState` until after it), so this
+// function structurally cannot resolve them, and does not try to. They are
+// resolved once per DAB instead, inside `StrokeSession`'s own deposit loop,
+// from data the session already owns: consecutive dab positions for
+// VELOCITY and DIRECTION (INITIAL DIRECTION reads the same step vector
+// DIRECTION does, but only once -- see brush/Dynamics.hpp's own section),
+// cumulative arc length for FADE, and the stroke's own seed for NOISE and
+// RANDOM (`brush/Dynamics.hpp`'s `dynamicVelocity()`, `dynamicFade()`,
+// `dynamicNoiseAt()`, `dynamicRandomDraw()`, `dynamicDirection()`).
 //
-// The 0.0 this function still hands back for all four is therefore a
+// The 0.0 this function still hands back for all six is therefore a
 // truthful idle reading, not a placeholder -- "not moving" (Velocity),
 // "just started" (Fade) and "at the seed's own resting sample" (Noise) are
 // exactly what 0.0 means, the same way Pressure's 1.0 fallback and Tilt's 0.0
-// are the truthful readings for "no pen has ever reported in." RANDOM alone
-// has no such resting value (see `sourceDisplay()`'s em-dash treatment of
-// it), which is a property of RANDOM, not of this function.
+// are the truthful readings for "no pen has ever reported in." DIRECTION's
+// and INITIAL DIRECTION's 0.0 are the same idle reading one step further --
+// "no heading yet" / "no heading LATCHED yet" -- the same answer a stroke
+// that has not moved gets from VELOCITY, since a direction only exists once
+// two dab positions do. RANDOM alone has no such resting value (see
+// `sourceDisplay()`'s em-dash treatment of it), which is a property of
+// RANDOM, not of this function.
 //
 // Pressure falls back to 1.0 when no pen has ever been seen, so a mouse
 // paints at full strength rather than at whatever `penPressure` last held.
@@ -704,8 +711,9 @@ class StrokeSession {
   //
   // `strokeLocalLinks`, latched alongside the tool and the route: the brush's
   // own link set, read again per DAB inside the deposit loop to resolve
-  // VELOCITY, FADE, NOISE and RANDOM (`dynamicInputsFor()`'s own comment on
-  // why those four cannot be resolved here, before a dab's position exists).
+  // VELOCITY, FADE, NOISE, RANDOM, DIRECTION and INITIAL DIRECTION
+  // (`dynamicInputsFor()`'s own comment on why those six cannot be resolved
+  // here, before a dab's position exists).
   // **Defaulted to `nullptr` so every existing caller compiles unchanged** --
   // a session built without it behaves exactly as it did before this
   // parameter existed, because §1's frame-level `brushTipFor()` already
@@ -808,18 +816,20 @@ class StrokeSession {
   size_t dabs_ = 0;
   size_t texels_ = 0;
 
-  // --- VELOCITY, FADE, NOISE, RANDOM's own per-stroke state -------------
+  // --- VELOCITY, FADE, NOISE, RANDOM, DIRECTION, INITIAL DIRECTION's own
+  //     per-stroke state ------------------------------------------------
   //
   // Latched/reset at `begin()`, updated once per dab inside `depositPending()`
   // -- never inside `addPoint()` directly, because `addPoint()` can hand
   // `path_` several samples that resolve to zero, one or several dabs, and
-  // these four are stroke-DAB-local, not stroke-SAMPLE-local (brush/
+  // these six are stroke-DAB-local, not stroke-SAMPLE-local (brush/
   // Dynamics.hpp's own section comment on why RANDOM must be a fresh draw per
   // dab and not per input event).
 
-  // The brush's link set, for resolving VELOCITY/FADE/NOISE/RANDOM-sourced
-  // links per dab. Null unless `begin()`'s caller passed one -- see `begin()`
-  // for why a null one is the default and today's live-paint behaviour.
+  // The brush's link set, for resolving VELOCITY/FADE/NOISE/RANDOM/DIRECTION/
+  // INITIAL-DIRECTION-sourced links per dab. Null unless `begin()`'s caller
+  // passed one -- see `begin()` for why a null one is the default and today's
+  // live-paint behaviour.
   const BrushLinkSet* strokeLocalLinks_ = nullptr;
 
   // The stroke's seed (brush/Dynamics.hpp's `strokeSeedFromStart()`), latched
@@ -828,9 +838,12 @@ class StrokeSession {
   uint64_t seed_ = 0;
   bool seedLatched_ = false;
 
-  // The previous dab's position, for VELOCITY's step distance, and whether
-  // one exists yet -- false only before the stroke's first dab, which is
-  // `dynamicVelocity()`'s documented "no previous position" case.
+  // The previous dab's position, for VELOCITY's step distance and DIRECTION's
+  // (and INITIAL DIRECTION's) step vector (the same `(p - prevDab)`
+  // difference, kept as components instead of collapsed to a length), and
+  // whether one exists yet -- false only before the stroke's first dab,
+  // which is `dynamicVelocity()`'s and `dynamicDirection()`'s shared "no
+  // previous position" case.
   float prevDabX_ = 0.0f, prevDabY_ = 0.0f;
   bool havePrevDab_ = false;
 
@@ -840,6 +853,17 @@ class StrokeSession {
   // measurement too, since a ramp measured in raw samples would run at a
   // different physical length depending on the render frame rate.
   float distanceTravelled_ = 0.0f;
+
+  // INITIAL DIRECTION's own latch, the `seed_`/`seedLatched_` shape applied
+  // to a resolved VALUE instead of an identity -- brush/Dynamics.hpp's
+  // "INITIAL DIRECTION" section is the argument; this is where it lives.
+  // Latched one dab LATER than `seed_` (at the first dab `havePrevDab_` is
+  // true for, not the stroke's very first dab), because unlike a stroke's
+  // start position -- always available, even for a single-dab stroke -- a
+  // HEADING needs two positions, and the first dab alone never has a second
+  // one to difference against.
+  float initialDirection_ = 0.0f;
+  bool initialDirectionLatched_ = false;
 };
 
 }  // namespace np

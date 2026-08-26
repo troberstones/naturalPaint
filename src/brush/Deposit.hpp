@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "brush/StrokePath.hpp"
@@ -230,6 +231,80 @@
 // axis of 2 px, already a hairline -- and at zero it would divide by zero.
 //
 // ==========================================================================
+// 2c. A sampled tip is a second SOURCE of shape, not a second falloff
+// ==========================================================================
+//
+// `io/AbrBrushes.cpp` reads Photoshop's `samp` block -- a UUID-keyed
+// greyscale bitmap per brush, usually PackBits-compressed -- and now attaches
+// the decoded pixels to a preset as `BrushTipBitmap`. This section is about
+// what `dabCoverage()` does with one, and the governing decision is that it
+// is a REPLACEMENT for §2's radial profile, not an addition to it: a bitmap
+// tip's coverage comes entirely from its own pixels, so `hardness` (which has
+// no meaning for a mark that was scanned rather than computed) is ignored
+// outright when `BrushTip::bitmap` is set, exactly as the round branch below
+// ignores `roundness`/`angle` when they are at their identity.
+//
+// **The mapping keeps two things a user already turns**, applied in the same
+// order and with the same sign convention as the procedural ellipse, so a
+// brush that happens to carry both a bitmap and a Photoshop `Rndn`/`Angl`
+// (most of Kyle Webster's inkers do not; one of twelve in the pack this was
+// built against does) is not a special case:
+//
+//   1. The query offset `(dx, dy)` is rotated by `angle` and its second axis
+//      divided by `roundness`, **identically** to §2b's `u`/`v` -- so a
+//      bitmap tip squashes and rotates the same way a circle does, rather
+//      than needing a second rotation convention nobody would notice differs
+//      from the first until a brush imported with both looked wrong.
+//   2. The rotated, squashed `(u, v)` is then a coordinate in an **isotropic
+//      frame where the tip's own bounding square is `[-radius, radius]` on
+//      each axis** -- and that square is mapped onto the bitmap's native
+//      `width x height` rectangle, independently per axis, so a landscape
+//      sample and a portrait one both fill their tip circle along their own
+//      long side. `radius` therefore means the same thing it always has --
+//      the semi-MAJOR axis, `BrushTip::roundness`'s own comment -- for a
+//      bitmap tip too: whichever of `width`/`height` is larger maps onto
+//      `radius` exactly, and the other maps onto a shorter half-extent in
+//      proportion.
+//
+// A point that rotates and squashes onto bitmap coordinates outside
+// `[0,width] x [0,height]` has **zero** coverage -- there is no "outside the
+// disc" test for a bitmap tip because the bitmap's own rectangle already is
+// one, unlike the round/elliptical branch's explicit `d2 < r2` gate. That
+// matters for `dabPixelBounds()`: a non-square bitmap's un-rotated footprint
+// is already a rectangle inscribed in the `radius`-square (by construction,
+// per point 2 above), but a ROTATED one is not -- a `120 x 93` sample turned
+// 45 degrees needs more horizontal reach than its own un-rotated width. So
+// `dabPixelBounds()` computes a bitmap tip's half-extents from the standard
+// axis-aligned-bounding-box-of-a-rotated-rectangle formula
+// (`|w cos| + |h sin|`, `|w sin| + |h cos|`) rather than reusing `radius`
+// symmetrically -- the one place this feature could not simply inherit §2b's
+// "bounds stay a `radius`-square, tightening is not worth it" argument,
+// because for the procedural ellipse that square is provably a superset
+// (roundness only ever shrinks the minor axis) and for a rotated rectangle it
+// provably is not.
+//
+// **The greyscale-to-coverage polarity was measured, not assumed.** A
+// scanned brush tip is intuitively "dark mark on light paper", which reads as
+// "0 is the ink" -- and that is backwards for a Photoshop `.abr`. Rendered as
+// ASCII art, the smallest sample in Kyle Webster's Runny Inkers pack (a round
+// dot, 14x14) is a solid block of value-255 texels inside the circle and
+// value-0 outside it: **255 is full coverage, 0 is none**, the same sense as
+// every other coverage value this module produces. Guessing the opposite
+// would have painted every imported sampled brush as its own photographic
+// negative -- a solid dot importing as a ring -- and nothing short of this
+// check would have said so, because an inverted mask is still a plausible-
+// looking brush shape.
+//
+// **Sampling is bilinear**, because a sampled tip is drawn at whatever
+// `radius` the SIZE dynamics resolve to this dab, almost never the sample's
+// own native pixel dimensions, and nearest-neighbour resampling of a hand-
+// scanned mark magnifies badly (a soft charcoal edge turns into visible
+// stair-steps). The four texels a query point falls between are clamped to
+// the bitmap's own edge rather than treated as transparent outside it, which
+// is what keeps the mapped rectangle's own border crisp instead of feathering
+// it by half a texel for free.
+//
+// ==========================================================================
 // 3. Which tiles a dab touches, and why the set is complete
 // ==========================================================================
 //
@@ -397,6 +472,26 @@ inline constexpr float kMaxMass = 1.0f;
 // use and not only at the one importer that happens to share the number.
 inline constexpr float kMinRoundness = 0.01f;
 
+// A sampled tip's decoded pixels -- §2c. Built once by `io/AbrBrushes.cpp`
+// from a `.abr`'s `samp` block and shared from there on, never copied: a
+// preset carrying one is duplicated by `presetFromBrush()`, applied to the
+// live brush by `applyPresetToBrush()` and read into a fresh `BrushTip` by
+// `app/StrokeSession::brushTipFor()` on every dab of every stroke, and a deep
+// copy at any one of those points would be the per-dab allocation
+// CONTEXT.md's *Lightweight* exists to refuse. Immutable once built, which is
+// what makes sharing it safe without a lock: nothing in this codebase ever
+// mutates a `BrushTipBitmap` after `io/AbrBrushes.cpp` returns it.
+struct BrushTipBitmap {
+  int32_t width = 0;
+  int32_t height = 0;
+
+  // Row-major, top-to-bottom, one byte per texel, size `width * height`.
+  // **255 is full coverage, 0 is none** -- the same sense as `dabCoverage()`'s
+  // own return value, and §2c records the ASCII-art check against a real
+  // sample that pinned this polarity down rather than assumed it.
+  std::vector<uint8_t> alpha;
+};
+
 // One stamp of the brush tip: its shape, its load, and what it is loaded with.
 //
 // `spacing` is carried here rather than left to the caller because it belongs
@@ -428,6 +523,14 @@ struct BrushTip {
   // skipped outright for a round tip, because rotating a circle is arithmetic
   // that can only introduce a rounding.
   float angle = 0.0f;
+
+  // A sampled bitmap tip (§2c), or null for the procedural round/elliptical
+  // profile `dabCoverage()` computes from `hardness`/`roundness`/`angle`
+  // above. Shared, not owned -- see `BrushTipBitmap`'s own comment. `radius`,
+  // `roundness` and `angle` still apply to a bitmap tip (§2c point 1); only
+  // `hardness` does not, because a scanned mark has no core-to-rim falloff of
+  // its own for a fraction to describe.
+  std::shared_ptr<const BrushTipBitmap> bitmap;
 
   // Mass laid down per dab where coverage is 1. Not clamped to [0,1] here --
   // a flow above 1 is a legitimate "one dab saturates the paper" tip, and the
@@ -485,12 +588,14 @@ struct BrushTip {
 };
 
 // The dab's coverage profile at an offset from its centre, in [0,1]. See §2
-// for the profile and §2b for the ellipse.
+// for the profile, §2b for the ellipse and §2c for a sampled bitmap tip.
 //
 // Exactly 0.0f for every offset at or beyond the tip's rim, exactly 1.0f
 // inside `tip.hardness` of the way to it, and a smoothstep between them --
 // where "the rim" is the circle of `tip.radius` for a round tip and §2b's
-// ellipse for any other.
+// ellipse for any other -- **unless `tip.bitmap` is set**, in which case §2c's
+// mapping and the bitmap's own pixels decide coverage outright and
+// `tip.hardness` plays no part.
 //
 // **This is the one function that decides what a dab looks like**, and it has
 // exactly two callers by design: `depositDab()` below, and `app/DabPreview`,
@@ -533,6 +638,14 @@ PigmentTexel depositTexel(const PigmentTexel& dst, const Latent& pigment, float 
 // A texel is sampled at its **centre**, `(x + 0.5, y + 0.5)`, which is the
 // convention that makes a dab centred exactly on a tile corner symmetric
 // across all four of the tiles it lands on -- the boundary case §3 tests.
+//
+// **For a bitmap tip (§2c) the half-extents are not symmetric** when
+// `tip.angle != 0`: a rotated non-square sample's axis-aligned bounding box is
+// wider than its own un-rotated footprint, so this computes it from the
+// rotated-rectangle formula rather than reusing `tip.radius` on both axes.
+// Still an over-approximation and still uncorrected for `roundness`, for the
+// same reason §2b gives for the ellipse: roundness only ever shrinks a
+// bitmap tip's visible footprint below this box, never grows it.
 struct PixelBounds {
   int32_t x0 = 0, y0 = 0, x1 = -1, y1 = -1;
   bool empty() const noexcept { return x1 < x0 || y1 < y0; }

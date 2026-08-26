@@ -27,6 +27,15 @@ std::array<BrushTip, kDabPreviewCells> brushRowIconTips(const BrushRow& row,
   // target, so all three pressure cells come out identical: the pressure
   // family collapsed to a point, which is what "not loaded yet" looks like.
   as.links = BrushLinkSet{};
+  // **Cleared for the identical reason.** `BrushRow` (app/BrushLibraryFile.hpp
+  // §4) is deliberately the CHEAP half of a preset -- seven scalars, no
+  // bitmap, matching how it already carries no links -- so a row for a
+  // procedural brush must not preview with whatever sampled tip happens to be
+  // loaded on `live` right now. Left unset, this row's icon shows the round
+  // procedural tip until the library is actually picked and `presetIndex`
+  // stops being `kNoPresetIndex`, which is the same "not loaded yet" honesty
+  // the links clear above already states for dynamics.
+  as.tipBitmap.reset();
   DynamicInputs in;
   return dabPreviewTipsFor(as, lut, in);
 }

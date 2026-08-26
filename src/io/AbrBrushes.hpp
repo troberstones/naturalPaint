@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -10,27 +11,70 @@
 
 namespace np {
 
-// Reading Photoshop `.abr` brush libraries into `brush/Library`'s presets.
+// Reading Photoshop `.abr` brush libraries into `brush/Library`'s presets --
+// the parameters AND, now, the tips.
 //
-// The parameters, not the tips. **A `.abr` from any modern brush pack is
-// mostly a set of SAMPLED BITMAP tips** -- the `samp` block -- and this build
-// has no bitmap tip: `brush/Deposit.hpp`'s `dabCoverage()` is a procedural
-// radial profile. So an imported brush arrives with its name, its size, its
-// spacing, its roundness and angle, and its whole dynamics graph, and it
-// paints with this application's round tip rather than with the shape that
-// makes the original recognisable.
+// **A `.abr` from any modern brush pack is mostly a set of SAMPLED BITMAP
+// tips** -- the `samp` block, a UUID-keyed greyscale bitmap per brush,
+// usually PackBits-compressed. This reader decodes it and attaches the
+// result to the preset as a `BrushTipBitmap` (`brush/Deposit.hpp` §2c), which
+// `dabCoverage()` samples in place of its procedural radial profile. Ten of
+// Kyle Webster's twelve Runny Inkers carry one; before this, all ten painted
+// with this application's round tip regardless of what the brush pack drew.
 //
-// That is worth being blunt about, because it decides whether the feature is
-// useful to you: importing Kyle Webster's inkers gives you twelve brushes that
-// behave like the originals and do not look like them. The reader below
-// reports the tip it could not bring across, per brush, rather than leaving
-// that to be discovered.
+// **Three ways a sampled tip can still fail to arrive**, and each is counted
+// in `AbrImportResult::sampledTips` and named in `notes` exactly as before --
+// the brush then paints with the round procedural tip, and the import says
+// so rather than leaving that to be discovered:
+//
+//   * the `desc` block's `sampledData` id names no sample this file's `samp`
+//     block actually contains (a corrupt or hand-edited file);
+//   * the sample decoded to something this reader does not trust -- a
+//     truncated PackBits stream, a degenerate `width`/`height`, dimensions
+//     large enough that decoding one would be an unbounded allocation from an
+//     untrusted file;
+//   * the sample's depth is not 8 bits. Every sample found by direct
+//     inspection of a real Kyle Webster pack (see below) is 8-bit greyscale,
+//     and the openly-published `abrupng` reader this format was checked
+//     against refuses anything else outright -- but that is corroboration
+//     from one file and one other reader, not proof of Adobe's own rule, so a
+//     different depth is refused by name rather than reinterpreted.
+//
+// A `Dmtr` (diameter) of `#Prc` -- a percentage rather than a pixel count --
+// used to be refused outright: a percentage of WHAT is not knowable from the
+// descriptor alone. It is knowable once the sample's own pixel dimensions are
+// known, so a `#Prc` diameter on a brush whose sample decoded successfully is
+// now resolved against it (see `presetFromDescriptor()`'s own comment); one
+// with no usable sample is still refused, for the same reason as before.
 //
 // The format: a 2-byte version and 2-byte subversion, then a series of `8BIM`
 // sections -- `samp` (the bitmap tips), `patt` (patterns), `desc` (the brush
-// parameters, as one Action Descriptor) and `phry` (the hierarchy). Only
-// version 6 is read; 1 and 2 are a different, much older layout that no modern
-// pack uses, and are refused by name rather than guessed at.
+// parameters, as one Action Descriptor) and `phry` (the hierarchy), in that
+// order in every file this reader has been driven against, though the walk
+// below does not assume it. Only version 6 is read; 1 and 2 are a different,
+// much older layout that no modern pack uses, and are refused by name rather
+// than guessed at. The `samp` record framing this reader implements --
+// per-brush length, a 37-byte `$`-prefixed UUID key, a subversion-dependent
+// header skip (47 bytes for subversion 1, 301 for subversion 2), a
+// `top`/`left`/`bottom`/`right` bounds rectangle, a depth and a compression
+// flag, 4-byte-aligned between records -- is **not** published by Adobe.
+// It was derived two ways and cross-checked against each other: reading the
+// openly-published Rust `abrupng` project's parser (github.com/scurest/abrupng,
+// `src/abr/abr6.rs`, MIT-licensed, no relation to this codebase and not
+// vendored into it), and a byte-for-byte walk, in a throwaway script outside
+// this build, of a real 2.4 MB Kyle Webster pack -- the same file
+// `io/Descriptor.hpp`'s own header says was not available when THAT module
+// was written; it was, by the time this one was. Both gave the same field
+// offsets and the same three decoded sample dimensions (37x52, 14x14,
+// 120x93), and the PackBits-decoded byte counts matched `width * height`
+// exactly for all three, which is what "cross-checked" means concretely here.
+// **What that does NOT establish**: this reader's own C++ has never been run
+// against that file or any other real `.abr` -- this build's PLAN.md forbids
+// compiling during this step, so agreement was checked in the derivation, not
+// by executing the code below. `--selftest`'s coverage of this file is
+// therefore entirely synthetic fixtures, same as every other section of this
+// module, and the caveat `io/Descriptor.hpp`'s own header states applies here
+// with the same force it always did.
 
 // What a single brush lost on the way in. One line per brush that lost
 // something, so the import can say what it did rather than only what it took.
@@ -48,7 +92,13 @@ struct AbrImportResult {
 
   // Counters for the summary line, so a caller does not have to walk `notes`
   // to say something useful.
-  size_t sampledTips = 0;    // brushes whose tip is a bitmap we cannot use
+  // Brushes whose `sampledData` named a bitmap tip this import could NOT
+  // bring across (see this file's header for the three ways that happens).
+  // **Not** every brush with a sampled tip -- the whole point of this step
+  // was making most of those succeed. A brush counted here paints with the
+  // round procedural tip; every other sampled-tip brush paints with its own
+  // bitmap.
+  size_t sampledTips = 0;
   size_t unmappedControls = 0;  // dynamics whose control has no source here
 };
 
@@ -59,14 +109,47 @@ struct AbrImportResult {
 // parses a file format from the internet.
 AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes);
 
+// --- The `samp` block, exposed so it can be tested without a whole `.abr` --
+
+// One decoded sample: the id its `samp` record carries (the 36-character
+// UUID text, with the on-disk record's leading `$` stripped -- see this
+// file's header) and the bitmap, or a null bitmap when the record's own
+// header did not describe something this reader trusts (§ this file's header
+// again, the three failure modes).
+struct AbrSampledTip {
+  std::string id;
+  std::shared_ptr<const BrushTipBitmap> bitmap;
+};
+
+// Parses every brush sample out of one `samp` block's body (the bytes AFTER
+// its own `8BIM samp <length>` framing -- `importAbrBrushes()` hands this the
+// same subspan its top-level 8BIM walk already located). `subversion` is the
+// `.abr`'s own subversion word, because it changes the fixed-size header this
+// reader skips between a sample's UUID key and its bounds rectangle -- 47
+// bytes for subversion 1, 301 for anything else, matching `abrupng`'s own
+// `abr6.rs` (this file's header names it).
+//
+// **Never refuses outright.** A `samp` block is Photoshop's own internal
+// format, not something a hostile actor hand-crafts the way a `.abr`'s
+// user-visible `desc` names and numbers invite -- but it is still bytes from
+// a file this build did not write, so one malformed record is skipped (its id
+// omitted if even the 37-byte key does not fit) and the walk resumes at the
+// next 4-byte-aligned boundary, rather than abandoning every sample the file
+// describes for one bad one. Reads no byte outside `samp`, for the same
+// reason and by the same discipline as `importAbrBrushes()` itself.
+std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp,
+                                               uint16_t subversion);
+
 // --- The mapping, exposed so it can be tested without a file ---------------
 
 // Photoshop's brush dynamics "Control" dropdown, the `bVTy` integer.
 //
-// Named rather than left as a magic number because three of the eight have no
-// counterpart here and the import has to say so: Photoshop can drive a
-// parameter from the stroke's DIRECTION, which this build does not compute,
-// and from a stylus wheel, which is a device axis SDL does not report.
+// Named rather than left as a magic number because `StylusWheel` has no
+// counterpart here and the import has to say so -- it is a device axis SDL
+// does not report. `InitialDirection` and `Direction` each map onto their
+// own `DynamicSource` now (`InitialDirection`/`Direction` respectively --
+// `abrControlToSource()`'s own comment on why these are two rows in the
+// matrix rather than one, matching Photoshop's own two-entry control list).
 enum class AbrControl {
   Off = 0,
   Fade = 1,

@@ -674,10 +674,12 @@ BrushLibraryLoadResult BrushLibraryStore::readInto(RememberedLibrary& entry, Bru
   result.status = entry.displayName() + ": " + std::to_string(imported.presets.size()) +
                   " brush" + (imported.presets.size() == 1 ? "" : "es") + " loaded";
   if (imported.sampledTips > 0) {
-    // PRD G9, and io/AbrBrushes.hpp's own blunt paragraph: a sampled tip is a
-    // bitmap this build has no tip for, so those brushes behave like the
-    // originals and do not look like them. Said in the one line the pane shows
-    // by default, not only in the notes nobody expands.
+    // PRD G9. `io/AbrBrushes.cpp` now imports most sampled bitmap tips
+    // (brush/Deposit.hpp §2c) -- this counter is the brushes it still could
+    // NOT bring across (io/AbrBrushes.hpp's header names the three ways),
+    // which is why the line only appears at all when that count is nonzero.
+    // Said in the one line the pane shows by default, not only in the notes
+    // nobody expands.
     result.status += " (" + std::to_string(imported.sampledTips) +
                      " with a bitmap tip that will paint round)";
   }

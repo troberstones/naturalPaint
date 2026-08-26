@@ -6,10 +6,100 @@
 #include "core/Blend.hpp"
 
 namespace np {
+namespace {
+
+float degToRad(float deg) noexcept { return deg * 0.017453292519943295f; }
+
+// Document pixels per native bitmap texel, for a tip currently at `radius`
+// (header §2c point 2): whichever of the bitmap's own width/height is larger
+// maps onto `radius` exactly, so this is the one number that scales both axes
+// consistently. Zero when the bitmap is degenerate (should not occur --
+// io/AbrBrushes.cpp never builds a zero-dimension `BrushTipBitmap` -- but a
+// tip is untrusted-file-derived data by the time it reaches here, so this is
+// checked rather than assumed).
+float bitmapTipScale(const BrushTipBitmap& bmp, float radius) noexcept {
+  const float nativeHalfMax =
+      0.5f * static_cast<float>(std::max(bmp.width, bmp.height));
+  return nativeHalfMax > 0.0f ? radius / nativeHalfMax : 0.0f;
+}
+
+// Bilinear sample of a bitmap tip's coverage, `bx`/`by` already checked by
+// the caller to lie in `[0,width] x [0,height]`. Texel-CENTRE convention,
+// `(x+0.5, y+0.5)`, matching `dabPixelBounds()` -- so a query landing exactly
+// on a stored texel's centre returns that texel's value with zero blend,
+// which is what lets `--selftest` assert exact fixture values rather than
+// only a tolerance. The four texels around a query are clamped to the
+// bitmap's own edge (not treated as transparent beyond it), which is what
+// keeps the mapped rectangle's own border crisp rather than feathering it by
+// half a texel for free.
+float sampleBitmapCoverage(const BrushTipBitmap& bmp, float bx, float by) noexcept {
+  const float fx = bx - 0.5f;
+  const float fy = by - 0.5f;
+  const int32_t w = bmp.width;
+  const int32_t h = bmp.height;
+  const int32_t x0 = static_cast<int32_t>(std::floor(fx));
+  const int32_t y0 = static_cast<int32_t>(std::floor(fy));
+  const float tx = fx - static_cast<float>(x0);
+  const float ty = fy - static_cast<float>(y0);
+  const auto at = [&](int32_t x, int32_t y) -> float {
+    x = std::clamp(x, 0, w - 1);
+    y = std::clamp(y, 0, h - 1);
+    return static_cast<float>(
+               bmp.alpha[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)]) /
+           255.0f;
+  };
+  const float top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * tx;
+  const float bot = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * tx;
+  return top + (bot - top) * ty;
+}
+
+// Header §2c: rotate and squash exactly as §2b does, then map the isotropic
+// `[-radius, radius]` square onto the bitmap's own rectangle, independently
+// per axis. Zero outside `[0,width] x [0,height]` -- a bitmap tip's own
+// rectangle IS its "outside the disc" test, so there is no separate radial
+// gate the way the procedural branch has one.
+float bitmapDabCoverage(const BrushTipBitmap& bmp, const BrushTip& tip, float dx,
+                        float dy) noexcept {
+  const float scale = bitmapTipScale(bmp, tip.radius);
+  if (!(scale > 0.0f)) return 0.0f;
+
+  float u = dx;
+  float v = dy;
+  if (tip.angle != 0.0f) {
+    const float t = degToRad(tip.angle);
+    const float c = std::cos(t);
+    const float s = std::sin(t);
+    u = dx * c + dy * s;
+    v = -dx * s + dy * c;
+  }
+  const float rn = std::clamp(tip.roundness, kMinRoundness, 1.0f);
+  v /= rn;
+
+  const float bx = static_cast<float>(bmp.width) * 0.5f + u / scale;
+  const float by = static_cast<float>(bmp.height) * 0.5f + v / scale;
+  if (bx < 0.0f || by < 0.0f || bx > static_cast<float>(bmp.width) ||
+      by > static_cast<float>(bmp.height))
+    return 0.0f;
+  return sampleBitmapCoverage(bmp, bx, by);
+}
+
+}  // namespace
 
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   const float r = tip.radius;
   if (!(r > 0.0f)) return 0.0f;
+
+  // A sampled tip replaces the whole procedural profile below -- header
+  // §2c's opening argument. The size/alpha check guards a `BrushTipBitmap`
+  // that failed to decode cleanly (io/AbrBrushes.cpp never hands one back in
+  // that state, but a tip is untrusted-file-derived data by the time it
+  // reaches here, and falling through to the round tip is a safer failure
+  // than indexing an empty `alpha`).
+  if (tip.bitmap != nullptr && tip.bitmap->width > 0 && tip.bitmap->height > 0 &&
+      tip.bitmap->alpha.size() ==
+          static_cast<size_t>(tip.bitmap->width) * static_cast<size_t>(tip.bitmap->height)) {
+    return bitmapDabCoverage(*tip.bitmap, tip, dx, dy);
+  }
 
   // --- The offset, in the tip's own frame (header §2b) --------------------
   //
@@ -106,12 +196,41 @@ PixelBounds dabPixelBounds(const BrushTip& tip, Vec2 centre, int32_t canvasW,
   // Texel (x,y) is sampled at (x+0.5, y+0.5), so coverage can be non-zero only
   // for |x + 0.5 - cx| < r. Floor/ceil of the open interval, then clipped.
   const float r = tip.radius;
+
+  // Symmetric for every existing tip -- round, elliptical, angled -- exactly
+  // as before this pair existed (header §2b's "not tightened" argument).
+  // **Only a bitmap tip (§2c) can make these two different from each other
+  // and from `r`**: a rotated non-square sample's axis-aligned box is wider
+  // than its own un-rotated footprint, computed here from the standard
+  // rotated-rectangle formula rather than reused symmetrically. The `.bitmap`
+  // branch below is therefore the only place `dabPixelBounds()` can disagree
+  // with the identical computation it did before this feature existed.
+  float halfX = r;
+  float halfY = r;
+  if (tip.bitmap != nullptr && tip.bitmap->width > 0 && tip.bitmap->height > 0) {
+    const float scale = bitmapTipScale(*tip.bitmap, r);
+    if (scale > 0.0f) {
+      const float bw = static_cast<float>(tip.bitmap->width) * 0.5f * scale;
+      const float bh = static_cast<float>(tip.bitmap->height) * 0.5f * scale;
+      if (tip.angle != 0.0f) {
+        const float t = degToRad(tip.angle);
+        const float c = std::abs(std::cos(t));
+        const float s = std::abs(std::sin(t));
+        halfX = bw * c + bh * s;
+        halfY = bw * s + bh * c;
+      } else {
+        halfX = bw;
+        halfY = bh;
+      }
+    }
+  }
+
   const auto lo = [](float v) { return static_cast<int32_t>(std::floor(v)); };
   const auto hi = [](float v) { return static_cast<int32_t>(std::ceil(v)); };
-  b.x0 = std::max<int32_t>(0, lo(centre.x - r - 0.5f));
-  b.y0 = std::max<int32_t>(0, lo(centre.y - r - 0.5f));
-  b.x1 = std::min<int32_t>(canvasW - 1, hi(centre.x + r - 0.5f));
-  b.y1 = std::min<int32_t>(canvasH - 1, hi(centre.y + r - 0.5f));
+  b.x0 = std::max<int32_t>(0, lo(centre.x - halfX - 0.5f));
+  b.y0 = std::max<int32_t>(0, lo(centre.y - halfY - 0.5f));
+  b.x1 = std::min<int32_t>(canvasW - 1, hi(centre.x + halfX - 0.5f));
+  b.y1 = std::min<int32_t>(canvasH - 1, hi(centre.y + halfY - 0.5f));
   return b;
 }
 

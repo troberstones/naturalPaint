@@ -2,9 +2,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "brush/Deposit.hpp"
 #include "brush/Dynamics.hpp"
 
 namespace np {
@@ -79,6 +81,44 @@ struct BrushPreset {
   float load = 0.9f;
   float wetness = 1.3f;
   BrushLinkSet links;
+
+  // A `.abr` sampled bitmap tip (brush/Deposit.hpp §2c), or null for the
+  // procedural round/elliptical tip every built-in and every hand-authored
+  // preset has always had. Set once, by `io/AbrBrushes.cpp`, from the `samp`
+  // block's decoded pixels; never built anywhere else.
+  //
+  // **Not persisted by `app/UserBrushLibraryStore`, deliberately, and this is
+  // the same call app/BrushLibraryFile.hpp §4 already made for a preset's
+  // OTHER expensive-to-derive half.** That header's row cache stores a
+  // preset's seven scalars and rasterises an icon from them on demand,
+  // explicitly leaving `BrushLinkSet` -- "the expensive half... the half a
+  // library row does not draw" -- to be re-read from the `.abr` the next time
+  // it is actually picked. A decoded bitmap is the same shape of cost for the
+  // same reason: it is `.abr`-derived, it can be kilobytes per brush, and it
+  // is reproducible for free by reading the file again, which is exactly what
+  // `useLibrary()` already does once per session. Threading it through
+  // `UserBrushLibraryStore`'s line-based `scalars`/`link`/`point` format --
+  // itself frozen positional fields, `app/UserBrushLibrary.hpp` §1 -- would
+  // mean inventing binary-blob-in-a-text-file framing for state that already
+  // has a durable, canonical home: the `.abr` file on disk.
+  //
+  // **The one case this does not cover, stated rather than left to be
+  // discovered:** `Duplicate` on a sampled-tip preset copies this pointer
+  // (`presetFromBrush()`), so the duplicate previews and paints with the same
+  // bitmap right up until `Save`. `UserBrushLibraryStore::serialize()` then
+  // writes the duplicate's seven scalars and links only -- there is no slot
+  // for a bitmap in that format, by the design above -- so a saved duplicate
+  // of a sampled-tip brush reloads next launch as the round procedural tip.
+  // That is a real gap and not a subtle one, but it is a **narrower** one than
+  // it looks: it costs a re-Duplicate from the still-loaded library, and it
+  // only bites a preset the user chose to fork in the first place, versus
+  // every session paying to keep every imported library's bitmaps resident
+  // for brushes that may never be picked. Closing it is future work -- most
+  // plausibly a fourth `UserBrushLibraryStore` line naming the source `.abr`
+  // and the sample id to re-resolve on load, which is a real feature with its
+  // own failure mode (the source file moved or was edited) and was scoped out
+  // of this step rather than built in a hurry.
+  std::shared_ptr<const BrushTipBitmap> tipBitmap;
 };
 
 struct BrushLibrary {
@@ -107,6 +147,18 @@ BrushLibrary defaultBrushLibrary();
 // values arrives from a slider or from `applyPreset()`, so two that should be
 // equal are bit-equal; a tolerance would make a brush nudged by less than the
 // tolerance read as unedited and lose the change on the next pick.
+//
+// **Takes no `tipBitmap` parameter, and that is not an oversight.** Every
+// path that can change `BrushState::tipBitmap` -- `applyPresetToBrush()`,
+// `presetFromBrush()` -- copies it in lockstep with every field this function
+// already compares, and there is no slider or independent mutator that can
+// move it on its own (unlike, say, `radius`, which a slider changes without
+// touching anything else). So the eight fields already checked can never
+// agree while `tipBitmap` disagrees, for as long as that stays true; adding a
+// ninth parameter here would touch every call site for a comparison that
+// cannot currently fail differently from the ones already made. Revisit if a
+// future control ever lets a bitmap tip be swapped independently of picking a
+// whole preset.
 bool presetMatches(const BrushPreset& preset, float radius, float hardness, float spacing,
                    float roundness, float angle, float load, float wetness,
                    const BrushLinkSet& links);

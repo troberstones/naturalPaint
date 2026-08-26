@@ -2987,7 +2987,7 @@ void drawTipPreview(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
 
 // One labelled row of the matrix's own geometry: a 54 px row label, twelve
 // equal cells, a 34 px live-value gutter. Shared by the header row and the
-// eight source rows so the columns cannot drift between them.
+// ten source rows so the columns cannot drift between them.
 constexpr float kMatrixLabelW = 54.0f;
 constexpr float kMatrixGutterW = 34.0f;
 constexpr float kMatrixRowH = 19.0f;
@@ -3142,11 +3142,12 @@ void drawDynamicsMatrix(AppState& st) {
     dl->AddLine(ImVec2(gx, o.y), ImVec2(gx, o.y + kMatrixRowH), ruleCol, 1.0f);
     // RANDOM genuinely is redrawn per dab now (`dynamicRandomDraw()`,
     // `app/StrokeSession`'s deposit loop), so it has no value between dabs;
-    // its em dash is drawn muted for the same reason. VELOCITY, FADE and
-    // NOISE are also stroke-local -- `live` here is `dynamicInputsFor()`'s
-    // per-FRAME hardware sample, which cannot see a dab in progress, so this
-    // gutter shows their truthful idle reading (0.0, "not moving" / "just
-    // started" / "at rest") rather than what the stroke is doing right now.
+    // its em dash is drawn muted for the same reason. VELOCITY, FADE, NOISE,
+    // DIRECTION and INITIAL DIRECTION are also stroke-local -- `live` here is
+    // `dynamicInputsFor()`'s per-FRAME hardware sample, which cannot see a
+    // dab in progress, so this gutter shows their truthful idle reading (0.0,
+    // "not moving" / "just started" / "at rest" / "no heading yet" / "no
+    // heading LATCHED yet") rather than what the stroke is doing right now.
     dl->AddText(ImVec2(o.x + width - 5.0f - vsz.x, o.y + (kMatrixRowH - vsz.y) * 0.5f),
                 source == DynamicSource::Random ? mutedCol : textCol, val);
 
@@ -8720,6 +8721,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // exact defect class docs/reachability-audit.md exists to remove. It is
         // one argument, and it is the whole difference between "implemented" and
         // "reachable".
+        //
+        // Direction, and Initial Direction after it, added later as this
+        // same link set's fifth and sixth stroke-local sources, needed no
+        // second argument here -- each rides this identical
+        // `&st.brush.links` pointer into `StrokeSession::begin()`, so each
+        // was reachable from the live canvas from the moment
+        // `sourceIsStrokeLocal()` learned about it, with no change to this
+        // block at all.
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
                             &g_strokeRefusal, &st.brush.links)) {
           st.paintingThisFrame = false;

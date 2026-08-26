@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
+#include <unordered_map>
 
 #include "io/Descriptor.hpp"
 
@@ -27,6 +29,81 @@ bool readU32(std::span<const uint8_t> b, size_t at, uint32_t& out) noexcept {
 
 float clampf(float v, float lo, float hi) noexcept {
   return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// A sampled tip's own pixel count is bounded here, before a single byte is
+// decoded, for the reason io/Descriptor.hpp's `DescriptorParseOptions::
+// maxNodes` gives of itself: a hostile `top`/`left`/`bottom`/`right` is four
+// numbers this reader has not verified yet, and multiplying two of them
+// straight into an allocation size is how a 60-byte file claims a multi-
+// gigabyte bitmap. 4096 px is far past anything a real sampled tip needs --
+// the largest sample found by direct inspection of a real Kyle Webster pack
+// (this file's header) is 120x93 -- and 4096x4096 at one byte per texel is a
+// bounded 16 MiB, not the unbounded allocation a raw `width * height` would
+// be for an adversarial rectangle.
+inline constexpr uint32_t kMaxSampledTipDimension = 4096;
+
+// Photoshop's per-scanline RLE for `samp` image data: `height` big-endian
+// u16 compressed-byte-counts, then that many PackBits-compressed bytes,
+// decoded as ONE continuous stream (not re-synchronised at each scanline
+// boundary) to exactly `expected` bytes.
+//
+// **Decoding as one stream rather than one call per row is deliberate, not a
+// shortcut.** A PackBits run or literal never straddles Photoshop's own row
+// boundaries in a well-formed file -- Adobe's own encoder does not emit one
+// that does -- so decoding scanline-by-scanline and decoding the whole
+// concatenated stream in one pass produce identical bytes for every well-
+// formed file, and the single-pass form is what the openly-published
+// `abrupng` reader this framing was cross-checked against does too (this
+// file's header). Where the two approaches WOULD diverge -- a malformed
+// stream where a run crosses a row boundary -- this form still cannot read
+// past `end`, because every byte access below is checked against it first;
+// it can only decode fewer than `expected` bytes and report the shortfall,
+// never more.
+bool decodePackBits(std::span<const uint8_t> body, size_t off, size_t end, uint32_t height,
+                    size_t expected, std::vector<uint8_t>& out) noexcept {
+  if (off > end || end > body.size()) return false;
+
+  // The row-length table: `height` u16s, big-endian, summed for the total
+  // compressed byte count -- `abrupng`'s own `read_rle_data()` does the same
+  // ("We just need the total length"), which is what makes decoding as one
+  // stream rather than `height` separate calls correct rather than merely
+  // convenient (see this function's own comment above).
+  if (static_cast<uint64_t>(height) * 2u > end - off) return false;
+  uint64_t total = 0;
+  size_t p = off;
+  for (uint32_t i = 0; i < height; ++i) {
+    uint16_t rowLen = 0;
+    if (!readU16(body, p, rowLen)) return false;
+    total += rowLen;
+    p += 2;
+  }
+  if (total > end - p) return false;
+  const size_t dataEnd = p + static_cast<size_t>(total);
+
+  out.clear();
+  out.reserve(expected);
+  while (p < dataEnd && out.size() < expected) {
+    const int8_t n = static_cast<int8_t>(body[p]);
+    ++p;
+    if (n == -128) {
+      continue;  // NOP: PackBits' own no-op control byte
+    } else if (n < 0) {
+      // Run: repeat the next byte (-n + 1) times.
+      if (p >= dataEnd) return false;
+      const size_t count = static_cast<size_t>(-static_cast<int>(n) + 1);
+      const uint8_t b = body[p];
+      ++p;
+      for (size_t k = 0; k < count && out.size() < expected; ++k) out.push_back(b);
+    } else {
+      // Literal: the next (n + 1) bytes, verbatim.
+      const size_t count = static_cast<size_t>(n) + 1;
+      if (p + count > dataEnd) return false;
+      out.insert(out.end(), body.data() + p, body.data() + p + count);
+      p += count;
+    }
+  }
+  return out.size() == expected;
 }
 
 // A `UntF` read that does not care which unit tag it carries.
@@ -139,29 +216,62 @@ void addDynamicsLinks(BrushLinkSet& links, const AbrDynamics& d, DynamicTarget t
   }
 }
 
-BrushPreset presetFromDescriptor(const DescriptorRef& node, AbrImportResult& result) {
+BrushPreset presetFromDescriptor(
+    const DescriptorRef& node, AbrImportResult& result,
+    const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& sampledTips) {
   BrushPreset p;
   if (const auto nm = node.field("Nm  ").asText()) p.name = std::string(*nm);
   if (p.name.empty()) p.name = "Untitled brush";
 
   const DescriptorRef brsh = node.field("Brsh");
 
-  // The tip. `sampledData` is a UUID pointing into the `samp` block's bitmap;
-  // its presence is exactly "this brush's shape is a picture we cannot use".
-  if (brsh.field("sampledData").valid()) {
-    ++result.sampledTips;
-    result.notes.push_back(
-        {p.name, "sampled bitmap tip not imported -- it will paint with the round procedural tip"});
+  // The tip. `sampledData` is a UUID naming a bitmap in the `samp` block --
+  // resolved here against the samples `importAbrBrushes()` already decoded,
+  // so the lookup (and its one failure note) happens once, in the one place
+  // that has both the descriptor and the samples in hand.
+  const DescriptorRef sampledDataRef = brsh.field("sampledData");
+  std::shared_ptr<const BrushTipBitmap> bitmap;
+  if (sampledDataRef.valid()) {
+    bool found = false;
+    if (const auto idText = sampledDataRef.asText()) {
+      const auto it = sampledTips.find(std::string(*idText));
+      if (it != sampledTips.end()) {
+        bitmap = it->second;
+        found = true;
+      }
+    }
+    if (!found) {
+      // Covers all three of this file's header's failure modes alike: an id
+      // this `samp` block does not contain, a record that did not decode to
+      // something trusted, or (here) a `sampledData` whose value was not even
+      // `TEXT`. One bucket, because to the brush it claims to be they are the
+      // same outcome -- the shape did not arrive.
+      ++result.sampledTips;
+      result.notes.push_back(
+          {p.name, "sampled bitmap tip not imported -- it will paint with the round procedural tip"});
+    }
   }
+  p.tipBitmap = bitmap;
 
   double v = 0.0;
   // Diameter is in pixels; radius is half of it. A `#Prc` diameter is a
-  // percentage of the sampled tip's own size, which is a number that only
-  // exists inside the `samp` block -- so it is refused rather than guessed.
+  // percentage of the sampled tip's own size -- resolvable now that `bitmap`
+  // above carries that size, against whichever of its width/height is larger
+  // (brush/Deposit.hpp §2c point 2, the same convention `dabCoverage()` uses
+  // to map the tip circle onto the bitmap's rectangle, so `Dmtr` and the
+  // painted size agree about what "100%" means). Still refused, exactly as
+  // before, when there is no bitmap to measure it against.
   const DescriptorRef dmtr = brsh.field("Dmtr");
   if (const auto uf = dmtr.asUnitFloat()) {
     if (uf->unit == "#Prc") {
-      result.notes.push_back({p.name, "diameter is a percentage of a sampled tip; size not imported"});
+      if (bitmap) {
+        const float nativeMax = static_cast<float>(std::max(bitmap->width, bitmap->height));
+        const float pct = static_cast<float>(uf->value);
+        p.radius = clampf(nativeMax * (pct / 100.0f) * 0.5f, 0.5f, 4096.0f);
+      } else {
+        result.notes.push_back(
+            {p.name, "diameter is a percentage of a sampled tip; size not imported"});
+      }
     } else if (uf->value > 0.0) {
       p.radius = clampf(static_cast<float>(uf->value) * 0.5f, 0.5f, 4096.0f);
     }
@@ -219,15 +329,32 @@ bool abrControlToSource(int bVTy, DynamicSource& out) noexcept {
     case AbrControl::PenPressure: out = DynamicSource::Pressure; return true;
     case AbrControl::PenTilt: out = DynamicSource::Tilt; return true;
     case AbrControl::Rotation: out = DynamicSource::Barrel; return true;
+    // **Both Direction controls are now exact matches, each onto its own
+    // source.** Photoshop's own "Direction" is the live stroke tangent,
+    // updating dab to dab -- precisely `DynamicSource::Direction`
+    // (`brush/Dynamics.hpp`'s `dynamicDirection()`, resolved fresh every
+    // dab). Its "Initial Direction" samples the heading ONCE, at the
+    // stroke's opening step, and holds that single value fixed for the rest
+    // of the stroke -- precisely `DynamicSource::InitialDirection`, which
+    // shares `dynamicDirection()`'s own arithmetic but is latched exactly
+    // once by `app/StrokeSession` and never re-read (see that source's own
+    // section in brush/Dynamics.hpp). An earlier version of this mapping
+    // folded `InitialDirection` onto the live source as an admitted
+    // approximation -- every one of Kyle Webster's Runny Inkers (the
+    // library `--abr-report` names in `abrControlName()`'s own header
+    // comment) turned out to use `InitialDirection` and NONE used the live
+    // control, so the approximation was not a rare fallback, it was every
+    // shipped brush's actual behaviour. That gap is why
+    // `DynamicSource::InitialDirection` exists at all.
+    case AbrControl::Direction: out = DynamicSource::Direction; return true;
+    case AbrControl::InitialDirection: out = DynamicSource::InitialDirection; return true;
     // Off is not "unmapped", it is "no link", and the caller checks it first.
     case AbrControl::Off:
-    // The three with no input here. Stylus Wheel is a device axis SDL does not
-    // report; both Direction controls need the stroke's own heading, which
-    // nothing in this build computes yet -- brush/StrokePath has the geometry
-    // to derive it, so this is a gap rather than an impossibility.
+    // Stylus Wheel is a device axis SDL does not report, so there is no
+    // input this build could read to drive it from -- unlike the two
+    // Direction controls above, this one is genuinely absent, not merely
+    // resolved by a different mechanism.
     case AbrControl::StylusWheel:
-    case AbrControl::InitialDirection:
-    case AbrControl::Direction:
       return false;
   }
   return false;
@@ -240,6 +367,94 @@ float abrSpacingToRadii(double percentOfDiameter) noexcept {
   // zero here would mean an unbounded dab count for any radius, so it is
   // clamped where it enters rather than where it is used.
   return clampf(radii, 0.02f, 8.0f);
+}
+
+std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, uint16_t subversion) {
+  std::vector<AbrSampledTip> out;
+
+  // Subversion-dependent, per `abrupng`'s own `abr6.rs` (this file's header):
+  // the bytes between a record's UUID key and its bounds rectangle changed
+  // shape once between subversion 1 and subversion 2, and this reader has no
+  // use for what is in them either way, so they are skipped rather than
+  // parsed.
+  const size_t skipAmt = (subversion == 1) ? 47 : 301;
+
+  size_t off = 0;
+  while (off + 4 <= samp.size()) {
+    uint32_t recLen = 0;
+    if (!readU32(samp, off, recLen)) break;
+    const size_t bodyStart = off + 4;
+    if (recLen > samp.size() - bodyStart) break;  // truncated record: stop, keep what decoded
+    const size_t bodyEnd = bodyStart + recLen;
+
+    AbrSampledTip tip;
+    // The key: a literal '$' then a 36-character UUID, 37 bytes, at the very
+    // start of the record body -- confirmed by direct inspection of a real
+    // pack (this file's header) and not otherwise documented. Missing or
+    // short is not fatal to the record; it just means this sample cannot be
+    // named, so it can be decoded but never matched by a preset's
+    // `sampledData`.
+    if (recLen >= 37 && samp[bodyStart] == '$') {
+      tip.id.assign(reinterpret_cast<const char*>(samp.data() + bodyStart + 1), 36);
+    }
+
+    size_t hoff = bodyStart + skipAmt;
+    // 16 (rect) + 2 (depth) + 1 (compression byte) must fit before bodyEnd.
+    if (hoff + 19 <= bodyEnd) {
+      uint32_t top = 0, left = 0, bottom = 0, right = 0;
+      readU32(samp, hoff, top);
+      readU32(samp, hoff + 4, left);
+      readU32(samp, hoff + 8, bottom);
+      readU32(samp, hoff + 12, right);
+      hoff += 16;
+      uint16_t depth = 0;
+      readU16(samp, hoff, depth);
+      hoff += 2;
+      const uint8_t compressed = samp[hoff];
+      hoff += 1;
+
+      // `right > left && bottom > top` rather than trusting the subtraction:
+      // both are u32 reads from an untrusted file, and an inverted rect would
+      // underflow into a near-4-billion width rather than a negative one.
+      // depth == 8: this file's header states what that limit rests on.
+      if (right > left && bottom > top && depth == 8 && right - left <= kMaxSampledTipDimension &&
+          bottom - top <= kMaxSampledTipDimension) {
+        const uint32_t w = right - left;
+        const uint32_t h = bottom - top;
+        const size_t expected = static_cast<size_t>(w) * static_cast<size_t>(h);
+
+        std::vector<uint8_t> alpha;
+        bool decoded = false;
+        if (compressed != 0) {
+          decoded = decodePackBits(samp, hoff, bodyEnd, h, expected, alpha);
+        } else if (hoff + expected <= bodyEnd) {
+          alpha.assign(samp.data() + hoff, samp.data() + hoff + expected);
+          decoded = true;
+        }
+
+        if (decoded && alpha.size() == expected) {
+          auto bmp = std::make_shared<BrushTipBitmap>();
+          bmp->width = static_cast<int32_t>(w);
+          bmp->height = static_cast<int32_t>(h);
+          bmp->alpha = std::move(alpha);
+          tip.bitmap = std::move(bmp);
+        }
+      }
+    }
+
+    if (!tip.id.empty() && tip.bitmap != nullptr) out.push_back(std::move(tip));
+
+    // 4-byte-aligned between records (`abrupng`'s own `(end_pos + 3) & !3`,
+    // this file's header) -- NOT the 2-byte word-alignment the top-level 8BIM
+    // walk below uses. Getting this wrong desynchronises onto the middle of
+    // the next record's own bytes and every sample after the first bad one is
+    // garbage that happens to still decode.
+    const size_t nextOff = (bodyEnd + 3) & ~static_cast<size_t>(3);
+    if (nextOff <= off) break;  // no forward progress: malformed, stop rather than loop
+    off = nextOff;
+  }
+
+  return out;
 }
 
 AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
@@ -259,9 +474,16 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     return result;
   }
 
-  // Walk the 8BIM sections for `desc`.
+  // Walk the 8BIM sections for `samp` and `desc`. Both are located here
+  // rather than each reading past the other, because a real file (and this
+  // module's own `wrapAbr` fixture) puts `samp` BEFORE `desc` -- so a walk
+  // that stopped at the first section it specifically wanted would need to
+  // run twice, once per section, and disagree with itself about where `off`
+  // resumes. One pass, one `off`, every section keeps its own start/length.
   size_t off = 4;
   size_t descAt = 0, descLen = 0;
+  size_t sampAt = 0, sampLen = 0;
+  bool haveDesc = false;
   while (off + 12 <= bytes.size()) {
     if (std::memcmp(bytes.data() + off, "8BIM", 4) != 0) break;
     char key[5] = {0};
@@ -273,18 +495,34 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     // rather than clamping, since a clamped block would parse as a shorter
     // descriptor and silently import half a library.
     if (len > bytes.size() - body) break;
-    if (std::strcmp(key, "desc") == 0) {
+    if (std::strcmp(key, "desc") == 0 && !haveDesc) {
       descAt = body;
       descLen = len;
-      break;
+      haveDesc = true;
+    } else if (std::strcmp(key, "samp") == 0) {
+      sampAt = body;
+      sampLen = len;
     }
     off = body + len;
-    if (len % 2 != 0) ++off;  // sections are word-aligned
+    if (len % 2 != 0) ++off;  // 8BIM sections are word-aligned (2 bytes) --
+                              // NOT `samp`'s own internal 4-byte record
+                              // alignment; see `parseAbrSampledTips()`.
   }
 
   if (descLen == 0) {
     result.error = "no `desc` block: this .abr carries no brush parameters.";
     return result;
+  }
+
+  // Decoded before the descriptor is walked, so `presetFromDescriptor()` can
+  // resolve a `sampledData` id against real pixels rather than deferring it.
+  // Absent or empty `samp` decodes to an empty map, same as a `.abr` with
+  // only procedural brushes -- every `sampledData` lookup then misses, which
+  // is the existing "not imported" path and not a new failure mode.
+  std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>> tipsById;
+  if (sampLen > 0) {
+    for (AbrSampledTip& tip : parseAbrSampledTips(bytes.subspan(sampAt, sampLen), subversion))
+      tipsById.emplace(std::move(tip.id), std::move(tip.bitmap));
   }
 
   const DescriptorParseResult parsed =
@@ -302,7 +540,7 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
   }
 
   for (size_t i = 0; i < list.childCount(); ++i)
-    result.presets.push_back(presetFromDescriptor(list.child(i), result));
+    result.presets.push_back(presetFromDescriptor(list.child(i), result, tipsById));
 
   result.ok = true;
   return result;

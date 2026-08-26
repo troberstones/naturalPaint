@@ -24,7 +24,7 @@ namespace np {
 // draws it and app/StrokeSession feeds it, but neither is needed to test it.
 
 // ---------------------------------------------------------------------------
-// Sources -- the eight normalised inputs, sampled once per dab
+// Sources -- the ten normalised inputs, sampled once per dab
 // ---------------------------------------------------------------------------
 //
 // **Every source is normalised to [0,1] here even when the panel displays it
@@ -40,6 +40,20 @@ namespace np {
 // uniform accessor rather than the `bool pressureSize` / `bool pressureFlow`
 // pair in app/AppState.hpp's BrushState, which cannot express "tilt drives
 // angle" at all.
+//
+// **This enum's ordinals are frozen and append-only.** `app/
+// UserBrushLibrary.cpp` persists a `BrushLink` as `link <srcOrd> <tgtOrd> ...`
+// -- a bare integer, not a name -- and re-reads it with
+// `static_cast<DynamicSource>(srcOrd)` after only a range check against
+// `kDynamicSourceCount`. Renumbering an existing value, or inserting a new one
+// before the end, would silently repoint every saved preset's links at the
+// wrong source the next time this build loaded them. `DIRECTION` and
+// `INITIAL_DIRECTION` are therefore appended after `Random`, at ordinals 8
+// and 9, rather than sorted in alongside the other angular sources;
+// `UserBrushLibrary.hpp`'s own comment on the preserve-verbatim path for an
+// out-of-range ordinal already used "a future build added a ninth
+// `DynamicSource`" as its illustration of exactly this rule, before either
+// of these two existed to be that ninth and tenth.
 enum class DynamicSource {
   Pressure,
   Tilt,
@@ -49,9 +63,32 @@ enum class DynamicSource {
   Fade,
   Noise,
   Random,
+  // The stroke's own tangent -- the heading from the previous dab to this
+  // one, RE-SAMPLED EVERY DAB. Stroke-local like the four above it
+  // (`sourceIsStrokeLocal()`), for the identical reason: a dab's direction
+  // of travel is not known until its own position is, so this cannot be
+  // sampled once per frame the way Pressure/Tilt/Azimuth/Barrel are. See
+  // this header's own "DIRECTION" section, below the other four
+  // stroke-local sources, for the normalisation, the wrap point, and the
+  // first-dab default.
+  Direction,
+  // The heading of the stroke's OPENING step, SAMPLED ONCE and held for
+  // every dab after -- Photoshop's own "Initial Direction" control, and a
+  // genuinely different signal from `Direction` above rather than a mode
+  // of it: one varies continuously with the path, the other is a single
+  // number fixed for the stroke's whole life once it exists. Kept as a
+  // second row rather than a per-link flag on `Direction` for the same
+  // reason `Pressure` and `Velocity` are two rows and not one with a
+  // "which sampling" toggle -- `sourceValue()` stays a plain table lookup,
+  // the matrix keeps its "a cell is a link, a row is a signal" contract,
+  // and `BrushLink`'s six persisted fields (`app/UserBrushLibrary.cpp`)
+  // gain no seventh just for this. See this header's own
+  // "INITIAL DIRECTION" section, below `DIRECTION`'s, for the latch and
+  // the first-dab placeholder.
+  InitialDirection,
 };
 
-inline constexpr size_t kDynamicSourceCount = 8;
+inline constexpr size_t kDynamicSourceCount = 10;
 
 // Row label in the matrix, and the name in the LINK editor's source popup.
 const char* sourceName(DynamicSource source) noexcept;
@@ -159,13 +196,14 @@ const char* targetUnbuildableReason(DynamicTarget target) noexcept;
 // the pre-shift sRGB triple, so there is nothing left to re-shift inside the
 // per-dab stroke-local correction loop the way Scatter, Flow and the rest
 // are. A link from PRESSURE, TILT, AZIMUTH or BARREL to one of these three
-// is fully live today; a link from VELOCITY, FADE, NOISE or RANDOM would
-// resolve every dab against the same frame-level `dynamicInputsFor()`
-// default (0.0) and therefore paint a CONSTANT shift, indistinguishable from
-// -- and no better than -- the ORIGINAL `Dry Bristle` defect this whole audit
-// item exists to fix. Refusing the twelve cells this describes (three
-// targets times four stroke-local sources) is what keeps that defect from
-// reappearing in a corner of the matrix nobody happened to test.
+// is fully live today; a link from VELOCITY, FADE, NOISE, RANDOM, DIRECTION
+// or INITIAL DIRECTION would resolve every dab against the same frame-level
+// `dynamicInputsFor()` default (0.0) and therefore paint a CONSTANT shift,
+// indistinguishable from -- and no better than -- the ORIGINAL `Dry Bristle`
+// defect this whole audit item exists to fix. Refusing the eighteen cells
+// this describes (three targets times six stroke-local sources) is what
+// keeps that defect from reappearing in a corner of the matrix nobody
+// happened to test.
 const char* cellUnbuildableReason(DynamicSource source, DynamicTarget target) noexcept;
 
 // The identity element for a target's combine rule: 1.0 for Multiply, 0.0 for
@@ -265,6 +303,19 @@ struct DynamicInputs {
   float fade = 0.0f;
   float noise = 0.0f;
   float random = 0.0f;
+  // The stroke's tangent heading, normalised -- see `dynamicDirection()`.
+  // Defaults to 0.0f for the same reason every other stroke-local field does:
+  // `dynamicInputsFor()` never sets it (it is a per-FRAME hardware sample and
+  // Direction is a per-DAB one), so a brush driven straight through
+  // `brushTipFor()` with no stroke in progress sees the same "nothing is
+  // happening yet" reading Velocity/Fade/Noise do.
+  float direction = 0.0f;
+  // The LATCHED heading of the stroke's opening step -- see this header's
+  // own "INITIAL DIRECTION" section for who computes it and when (once, at
+  // the first dab a real step vector exists for) and what the field reads
+  // before that dab has happened (the same 0.0 placeholder `direction`
+  // above defaults to, not a distinct convention).
+  float initialDirection = 0.0f;
 };
 
 // Uniform accessor -- the reason the sources are an enum at all. The matrix
@@ -338,16 +389,17 @@ BrushLinkSet defaultBrushLinks();
 DynamicResult evaluateLinks(const BrushLinkSet& set, const DynamicInputs& inputs) noexcept;
 
 // ---------------------------------------------------------------------------
-// The stroke-local sources -- VELOCITY, FADE, NOISE and RANDOM
+// The stroke-local sources -- VELOCITY, FADE, NOISE, RANDOM and DIRECTION
 // ---------------------------------------------------------------------------
 //
 // The other four (Pressure, Tilt, Azimuth, Barrel) are hardware readings:
 // `app/StrokeSession::dynamicInputsFor()` samples them straight off a pen,
-// once per render frame, before a stroke's geometry is even known. These four
+// once per render frame, before a stroke's geometry is even known. These five
 // cannot be -- they are properties of the stroke itself (how fast it moved,
 // how far it has travelled, a value that should wander smoothly or jump
-// freshly along it) -- so they are resolved once per DAB, inside the deposit
-// loop, and are pure functions here rather than anything read off AppState.
+// freshly along it, which way it is currently heading) -- so they are
+// resolved once per DAB, inside the deposit loop, and are pure functions here
+// rather than anything read off AppState.
 //
 // **Why NOISE and RANDOM may not call `rand()`, seed `std::mt19937` from the
 // clock, or hold any mutable generator state at all.** `core/History` (ADR-
@@ -463,8 +515,124 @@ inline constexpr float kFadeLengthPx = 480.0f;  // 20 radii of the 24 px default
                                                 // running out, not a click
 float dynamicFade(float distanceAlongStroke) noexcept;
 
-// Whether `source` is one of the four resolved once per dab rather than once
-// per frame -- see this section's own comment for why the split exists.
+// DIRECTION: the stroke's own tangent -- the heading from the previous dab to
+// this one, so a dab can orient itself to the path it is travelling along
+// (`DynamicTarget::Angle`, an Add target, is what a link normally puts this
+// on). Unlike NOISE and RANDOM this needs no seed and holds no state at all:
+// it is a pure function of the one step just taken, `(dx, dy) = thisDab -
+// previousDab`, so there is nothing here for a replay or an undo to desync --
+// the determinism argument above does not even apply, because there is no
+// generator to keep in lockstep.
+//
+// **Normalisation and the wrap point.** `std::atan2(dy, dx)` answers in
+// (-180 deg, 180 deg]; this negates none of that range but shifts it into
+// [0 deg, 360 deg) by adding 360 deg to a negative result, then divides by
+// 360 -- the same "plain 0-360, no sign" convention `sourceDisplay()` already
+// uses for AZIMUTH (contrast BARREL, which is deliberately signed about a
+// rest orientation Direction has none of: there is no "twist away from
+// centre" for a heading, every direction is as valid a rest state as any
+// other). That choice puts the encoding's one unavoidable seam -- ANY
+// wrap of a periodic quantity into a half-open interval has exactly one --
+// at a heading of due "+x" (dx > 0, dy = 0), where the normalised value jumps
+// from just under 1.0 to just over 0.0. **The seam does not reach the
+// canvas.** With `targetDefaultRange()`'s own [0 deg, 360 deg) span and a
+// linear curve, the resolved `Angle` contribution is `normalised * 360 deg`
+// -- i.e. exactly the wrapped heading in degrees -- and `brush/Deposit.cpp`'s
+// `dabCoverage()` feeds that straight into `cos`/`sin`, which are exactly
+// 360 deg-periodic. 359.998 deg and 0.002 deg are two different floats but
+// the identical rotation to a hundredth of a degree, so a stroke whose
+// heading drifts through due-east rotates its tip continuously; only the
+// intermediate NUMBER jumps, never the paint. `--selftest` checks this
+// directly rather than only arguing it, by comparing the two headings'
+// resolved contributions modulo 360 deg.
+//
+// **The first dab.** There is no previous dab to take a tangent from, so
+// there is no "correct" heading to report -- unlike VELOCITY's 0.0, which is
+// the same formula's own honest answer for a step of length zero, a
+// direction is not defined at a single point. This function does not special-
+// case it: the caller (`app/StrokeSession::depositPending()`) passes
+// `dx = dy = 0.0` for a stroke's first dab, exactly as it already passes
+// `stepDistancePx = 0.0` to `dynamicVelocity()` for the same dab, and
+// `std::atan2(0, 0)` is `0` by the C++ standard's own contract for the
+// signs this file ever produces (`p.x - p.x` and `p.y - p.y` are `+0.0` in
+// IEEE754, never `-0.0`) -- so "no tangent yet" resolves to the SAME 0.0
+// normalised value a stroke that stalled mid-path would report, which is the
+// one answer consistent with every other stroke-local source's "nothing has
+// happened yet reads as the resting value" convention (`DynamicInputs`'
+// own defaults, `dynamicVelocity()`'s own comment on 0 distance / 0 speed).
+// A brush with a Direction link therefore paints its FIRST dab at the tip's
+// own authored angle, unrotated, and only starts turning with the stroke
+// from the second dab on, once a real heading exists.
+float dynamicDirection(float dx, float dy) noexcept;
+
+// ---------------------------------------------------------------------------
+// INITIAL DIRECTION -- DIRECTION, sampled once and held
+// ---------------------------------------------------------------------------
+//
+// There is no `dynamicInitialDirection()` function here, and that is
+// deliberate rather than an omission: the arithmetic that turns a step
+// vector into a heading is `dynamicDirection()`, unchanged. What differs is
+// entirely a matter of CALLING DISCIPLINE, which is `app/StrokeSession`'s to
+// enforce, not this file's -- exactly as `strokeSeedFromStart()` is one
+// function whether it is called once (it is) or, hypothetically, called
+// fresh every dab (it would still be the same hash). `StrokeSession` is
+// therefore the only place this source's behaviour actually lives: it calls
+// `dynamicDirection()` on the FIRST dab that has a real step vector, keeps
+// the result in a member (`initialDirection_`), and hands that SAME cached
+// float to `DynamicInputs::initialDirection` for every dab after, live or
+// not -- the `seed_` / `seedLatched_` shape, restated for a resolved value
+// instead of an identity.
+//
+// **Why the latch cannot happen at the stroke's first dab.** That dab has
+// no previous position (`dynamicDirection()`'s own first-dab case, `dx = dy
+// = 0.0`, normalises to 0.0 -- "due +x"), and latching THAT would freeze
+// every stroke's initial angle at due +x forever, which is worse than
+// resolving live: at least a live Direction link eventually turns to face
+// the path, where a wrongly-latched one never would. So the latch happens
+// one dab later than the seed does -- at the first dab where `havePrevDab_`
+// is true, i.e. the stroke's SECOND dab, once a real `(dx, dy)` exists to
+// feed `dynamicDirection()`.
+//
+// **What the first dab itself uses.** Before the latch fires, `local.
+// initialDirection` reads its `DynamicInputs` struct default, 0.0 -- the
+// identical placeholder `Direction` itself uses for the identical dab, for
+// the identical reason (this section's comment two paragraphs up: no
+// tangent exists yet, and 0.0 is the one answer every other stroke-local
+// source's "nothing has happened yet" convention already agrees on). The
+// difference from `Direction` is what happens NEXT: `Direction` corrects
+// itself on the very next dab and every one after; `InitialDirection`
+// corrects itself exactly once, on the very next dab, and then holds that
+// correction for the rest of the stroke -- so the first dab's placeholder
+// angle is a one-dab-only approximation, never a permanent one. A brush
+// with an InitialDirection link therefore paints its first dab unrotated
+// (same as a Direction link would), locks onto the true opening heading at
+// its second dab, and never turns again for the rest of the stroke.
+//
+// **Why this is stroke-local (`sourceIsStrokeLocal()` returns true) and not
+// a hardware source, even though its resolved VALUE is constant across a
+// whole stroke the way a hardware source's often is not.**
+// `sourceIsStrokeLocal()` does not ask "does this value change dab to dab"
+// -- Pressure can hold perfectly still for a whole stroke and is still a
+// hardware source, while this holds a computed constant and is not. It asks
+// "CAN this be known before `app/StrokeSession` exists", which is what
+// decides whether `brushTipFor()`'s once-per-FRAME `dynamicInputsFor()`
+// sample could ever supply it. It cannot: like `Direction`, this needs a
+// step vector between two DAB positions, which does not exist at frame
+// granularity, before a stroke's own geometry does. Marking it a hardware
+// source would route an `InitialDirection` link through `brushTipFor()`'s
+// `wantStrokeLocal=false` filter, which resolves against `DynamicInputs.
+// initialDirection`'s unlatched 0.0 default FOREVER -- a constant shift
+// indistinguishable from the original `Dry Bristle` defect this whole audit
+// item exists to close, and precisely the bug commit b704411 fixed for the
+// other five: a stroke-local source resolved at the wrong granularity does
+// not merely give a slightly wrong answer, it silently never resolves the
+// real one at all. `--selftest` asserts `sourceIsStrokeLocal(
+// InitialDirection)` directly rather than only through the HUE/SATURATION/
+// VALUE refusal the other five share, for exactly this reason.
+//
+// Six resolved once per dab rather than once per frame in total now, this
+// source included -- see this section's own comment for why the split
+// exists.
 bool sourceIsStrokeLocal(DynamicSource source) noexcept;
 
 // `evaluateLinks()` restricted to the links whose source's

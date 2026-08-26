@@ -130,8 +130,24 @@ bool runAbrBrushesTest() {
     check(!abrControlToSource(4, s),
           "abr: Stylus Wheel is UNMAPPED rather than folded onto barrel -- they are different "
           "physical inputs and sharing a cell would silently misreport one");
-    check(!abrControlToSource(6, s) && !abrControlToSource(7, s),
-          "abr: both Direction controls are unmapped -- nothing here computes stroke heading");
+    // **This assertion used to claim the exact opposite, and it was right at
+    // the time.** Until `DynamicSource::Direction` and
+    // `DynamicSource::InitialDirection` existed, nothing here computed a
+    // stroke heading and both controls were honestly unmapped. Now each maps
+    // onto its OWN source, and asserting that they land on DIFFERENT sources
+    // is the point: folding both onto the live tangent would import every
+    // brush that asked to be oriented ONCE as one that re-orients every dab,
+    // which paints a visibly different mark while looking like the import
+    // worked. Every one of Kyle Webster's Runny Inkers uses Initial
+    // Direction and none uses the live control, so that collapse would have
+    // been wrong for every shipped brush in the library rather than for a
+    // rare edge case.
+    DynamicSource live{}, initial{};
+    check(abrControlToSource(7, live) && live == DynamicSource::Direction &&
+              abrControlToSource(6, initial) && initial == DynamicSource::InitialDirection &&
+              live != initial,
+          "abr: the two Direction controls map to two DIFFERENT sources -- the live tangent and "
+          "the once-latched heading are not interchangeable");
     check(!abrControlToSource(0, s), "abr: Off maps to no source, and the caller checks it first");
     check(std::strcmp(abrControlName(6), "Initial Direction") == 0 &&
               std::strcmp(abrControlName(99), "unknown control") == 0,
@@ -273,7 +289,15 @@ bool runAbrBrushesTest() {
     BrushSpec sampled;
     sampled.sampled = true;
     sampled.useTipDynamics = true;
-    sampled.sizeControl = 6;  // Initial Direction -- no source here
+    // **Stylus Wheel, and deliberately not Initial Direction.** This fixture
+    // used to reach for control 6 as its example of "no source here", which
+    // was true until `DynamicSource::InitialDirection` existed and silently
+    // stopped being true the moment it did -- at which point this whole
+    // section asserted nothing, because a brush that lost NOTHING produces no
+    // notes and no unmapped count. Stylus Wheel is a device axis SDL does not
+    // report at all, so it is absent for a reason no new source can quietly
+    // resolve, which is what makes it the durable choice here.
+    sampled.sizeControl = 4;  // Stylus Wheel -- genuinely no input to drive it
     const AbrImportResult r = importAbrBrushes(wrapAbr(oneBrushLibrary(sampled)));
     check(r.ok && r.sampledTips == 1,
           "abr: a sampled bitmap tip is COUNTED as not imported -- the brush will paint with "
@@ -283,7 +307,7 @@ bool runAbrBrushesTest() {
     bool saidTip = false, saidControl = false;
     for (const AbrImportNote& n : r.notes) {
       if (n.what.find("sampled bitmap") != std::string::npos) saidTip = true;
-      if (n.what.find("Initial Direction") != std::string::npos) saidControl = true;
+      if (n.what.find("Stylus Wheel") != std::string::npos) saidControl = true;
     }
     check(saidTip && saidControl,
           "abr: and both are named in the notes, against the brush that lost them");

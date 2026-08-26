@@ -125,14 +125,18 @@
 //     "not promoted to an unknown line... re-emitting a row this build could
 //     not read would keep a corrupt line alive in the file forever."
 //   * `link 11 4 0.2 1 0 1` -- six fields, all six parse, but a future build
-//     added a ninth `DynamicSource` and this one only knows eight
-//     (`kDynamicSourceCount`). This is not corrupt -- it is correct data from
-//     a build newer than this one, describing a link this build cannot
-//     evaluate but has no reason to destroy. Kept **verbatim**, along with
-//     its `point` lines, as an unknown block scoped to the preset it
-//     belongs to, and written back out unchanged on the next save by this
-//     build. A user who round-trips a preset through this build must not
-//     come back to find the newer build's tenth link missing.
+//     added an eleventh `DynamicSource` and this one only knows ten
+//     (`kDynamicSourceCount` -- 10 as of `DynamicSource::InitialDirection`,
+//     appended after `Direction` at ordinal 9; this example's ordinal 11 has
+//     been out of range since before Direction or InitialDirection existed
+//     and stays out of range after both, which is exactly why 11 rather
+//     than 8 or 9 illustrates the case). This is not corrupt -- it is
+//     correct data from a build newer than this one, describing a link this
+//     build cannot evaluate but has no reason to destroy. Kept **verbatim**,
+//     along with its `point` lines, as an unknown block scoped to the
+//     preset it belongs to, and written back out unchanged on the next save
+//     by this build. A user who round-trips a preset through this build
+//     must not come back to find the newer build's twelfth link missing.
 //
 // The two cases look identical until the numbers are checked against the
 // enum's current range, which is exactly why the range check -- not merely

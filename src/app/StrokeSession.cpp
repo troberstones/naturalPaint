@@ -23,9 +23,10 @@ constexpr uint64_t kScatterAngleSalt = 0x3172657474616373ULL;  // "scatter1" (LE
 constexpr float kTwoPi = 6.28318530717958647692f;
 
 // Folds the per-dab corrections from `strokeLocalLinks_` -- resolved against
-// VELOCITY/FADE/NOISE/RANDOM alone, via `evaluateLinksFiltered()` -- onto a
-// tip already resolved against the four hardware sources
-// (`brushTipFor()`'s own `dyn`, baked into `base` at `setTip()` time).
+// VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL-DIRECTION alone, via
+// `evaluateLinksFiltered()` -- onto a tip already resolved against the four
+// hardware sources (`brushTipFor()`'s own `dyn`, baked into `base` at
+// `setTip()` time).
 //
 // **Multiplying/adding the stroke-local factor onto the already-resolved
 // field, rather than re-running `evaluateLinks()` on the WHOLE link set with
@@ -326,9 +327,10 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // than an optimisation.** This file's own section comment above
   // `applyStrokeLocal()` states the split everything downstream depends on: a
   // tip arrives at `setTip()` "already resolved against the four hardware
-  // sources", and `StrokeSession` folds the stroke-local four
-  // (VELOCITY/FADE/NOISE/RANDOM) on per DAB, because those are sampled at a
-  // position that does not exist yet when this runs.
+  // sources", and `StrokeSession` folds the stroke-local six
+  // (VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL-DIRECTION) on per DAB,
+  // because those are sampled at a position that does not exist yet when
+  // this runs.
   //
   // This line used to read `evaluateLinks(brush.links, inputs)` -- the WHOLE
   // set -- and the consequence was that every stroke-local link was applied
@@ -362,6 +364,14 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // therefore a no-op for a brush with no links.
   tip.roundness = brush.roundness * dyn.at(DynamicTarget::Roundness);
   tip.angle = brush.angle + dyn.at(DynamicTarget::Angle);
+  // Straight through, unscaled by any dynamic: a sampled tip's PIXELS are not
+  // a thing SIZE/ROUNDNESS/ANGLE dynamics resolve against per dab -- those
+  // three still apply, through `tip.radius`/`tip.roundness`/`tip.angle` above,
+  // exactly as they do for the procedural tip (brush/Deposit.hpp §2c). What
+  // would NOT make sense is a `DynamicTarget` that swaps which bitmap is
+  // loaded mid-stroke, and there is no such target for the same reason there
+  // is no `DynamicTarget::Pigment`.
+  tip.bitmap = brush.tipBitmap;
   // `BrushState::load` is "pigment concentration" and ranges 0..2.5; a tip's
   // `flow` is "mass laid down per dab where coverage is 1" and is deliberately
   // not clamped to [0,1] (brush/Deposit.hpp: "a flow above 1 is a legitimate
@@ -518,6 +528,7 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   brush.load = preset.load;
   brush.wetness = preset.wetness;
   brush.links = preset.links;
+  brush.tipBitmap = preset.tipBitmap;
 }
 
 BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
@@ -531,6 +542,7 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   p.load = brush.load;
   p.wetness = brush.wetness;
   p.links = brush.links;
+  p.tipBitmap = brush.tipBitmap;
   return p;
 }
 
@@ -626,10 +638,11 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   dabs_ = 0;
   texels_ = 0;
 
-  // VELOCITY/FADE/NOISE/RANDOM's own state, for the identical reason: a
-  // second stroke that inherited the first's seed, previous position or
-  // travelled distance would draw correlated noise and measure velocity
-  // against a point on a different path entirely.
+  // VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL-DIRECTION's own state, for
+  // the identical reason: a second stroke that inherited the first's seed,
+  // previous position, travelled distance or LATCHED heading would draw
+  // correlated noise, measure velocity, read a heading and lock its initial
+  // angle against a point on a different path entirely.
   strokeLocalLinks_ = strokeLocalLinks;
   seed_ = 0;
   seedLatched_ = false;
@@ -637,6 +650,8 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   prevDabY_ = 0.0f;
   havePrevDab_ = false;
   distanceTravelled_ = 0.0f;
+  initialDirection_ = 0.0f;
+  initialDirectionLatched_ = false;
   return true;
 }
 
@@ -695,9 +710,9 @@ void StrokeSession::depositPending() {
   // `for (dab : dabs) { call the singular form; accumulate; } sortUniqueTiles()`
   // -- with no per-dab hook a caller could use to vary the tip. This loop
   // reproduces that shape by hand so it CAN vary the tip: VELOCITY, FADE,
-  // NOISE and RANDOM (brush/Dynamics.hpp) are stroke-local sources that must
-  // be resolved once per dab, not once per frame, and the only place a dab's
-  // own index and position exist is here.
+  // NOISE, RANDOM, DIRECTION and INITIAL DIRECTION (brush/Dynamics.hpp) are
+  // stroke-local sources that must be resolved once per dab, not once per
+  // frame, and the only place a dab's own index and position exist is here.
   //
   // **This is provably a no-op when `strokeLocalLinks_` is null** -- the
   // default every existing caller of `begin()` still gets. With it null,
@@ -727,9 +742,37 @@ void StrokeSession::depositPending() {
     // `dynamicVelocity()`'s documented "no previous position" contract --
     // and FADE/NOISE's running arc length, both measured dab-to-dab rather
     // than sample-to-sample (this file's own member comments on why).
-    const float stepDist =
-        havePrevDab_ ? std::hypot(p.x - prevDabX_, p.y - prevDabY_) : 0.0f;
+    //
+    // DIRECTION's own step vector is the same `(p - prevDab)` difference
+    // `stepDist` is the magnitude of, kept as its two signed components
+    // rather than collapsed to a distance -- `dynamicDirection()` needs the
+    // heading, not the length. Zeroed on the first dab for the identical
+    // reason `stepDist` is: `brush/Dynamics.hpp`'s own comment on
+    // `dynamicDirection()` is what makes `std::atan2(0, 0)` the documented,
+    // not accidental, answer for "no previous position yet".
+    const float dx = havePrevDab_ ? p.x - prevDabX_ : 0.0f;
+    const float dy = havePrevDab_ ? p.y - prevDabY_ : 0.0f;
+    const float stepDist = havePrevDab_ ? std::hypot(dx, dy) : 0.0f;
     distanceTravelled_ += stepDist;
+
+    // INITIAL DIRECTION's own latch -- the `seed_`/`seedLatched_` shape,
+    // restated for a resolved VALUE instead of an identity (brush/
+    // Dynamics.hpp's own "INITIAL DIRECTION" section is the argument this
+    // is the code for). Fires once, on the first dab this stroke has a
+    // real `(dx, dy)` for -- one dab LATER than `seed_`'s own latch, since
+    // a heading needs a second position and the stroke's very first dab
+    // never has one (`havePrevDab_` is false there, exactly the case this
+    // guards against re-latching on).
+    //
+    // Computed unconditionally, like `stepDist` and `distanceTravelled_`
+    // just above, so this is provably a no-op when `strokeLocalLinks_` is
+    // null for the identical reason those are: nothing below reads
+    // `initialDirection_` in that case, and a member write nobody reads
+    // cannot change what gets deposited.
+    if (havePrevDab_ && !initialDirectionLatched_) {
+      initialDirection_ = dynamicDirection(dx, dy);
+      initialDirectionLatched_ = true;
+    }
 
     BrushTip dabTip = tip_;
     if (strokeLocalLinks_ != nullptr) {
@@ -738,6 +781,8 @@ void StrokeSession::depositPending() {
       local.fade = dynamicFade(distanceTravelled_);
       local.noise = dynamicNoiseAt(seed_, distanceTravelled_);
       local.random = dynamicRandomDraw(seed_, static_cast<uint32_t>(dabs_));
+      local.direction = dynamicDirection(dx, dy);
+      local.initialDirection = initialDirection_;
       const DynamicResult corr =
           evaluateLinksFiltered(*strokeLocalLinks_, local, /*wantStrokeLocal=*/true);
       dabTip = applyStrokeLocalCorrection(tip_, corr);

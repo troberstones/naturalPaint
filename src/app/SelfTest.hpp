@@ -969,6 +969,18 @@ bool runDabPreviewTest();
 // else's copyrighted work and megabytes besides.
 bool runAbrBrushesTest();
 
+// io/AbrBrushes' `samp` block and brush/Deposit.hpp §2c: a sampled bitmap tip
+// decoded (raw and PackBits, both subversions' header skip), matched to a
+// preset by UUID, resolving a `#Prc` `Dmtr` against the sample's own pixel
+// dimensions, and sampled by `dabCoverage()`/`dabPixelBounds()` in place of
+// the procedural profile -- plus the two places a live bitmap tip could leak
+// into the wrong picture (`DabPreviewCache`, an unloaded `BrushRow`'s icon)
+// found while wiring this in. Every byte is synthetic, built the same way
+// app/selftest/AbrBrushes.cpp's own fixtures are; a real `.abr`'s bytes
+// informed the framing (see io/AbrBrushes.hpp's header) but never touch
+// --selftest. Headless and GPU-free.
+bool runAbrSampledTipsTest();
+
 // app/BrushLibraryFile: the preferences file that remembers which `.abr`
 // libraries are loaded, the row cache that lets a remembered library draw its
 // brushes with its file unread, and the unload that has to remove exactly one
