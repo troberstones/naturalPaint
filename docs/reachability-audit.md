@@ -210,28 +210,41 @@ a surface with no history, no save and no export.** Every MEDIUM, SOLVER and
 BOARD TILT control governs those pixels. This is the largest single gap in the
 audit and probably the most important item in this file.
 
-### B2 — The WET / Water slider reaches no layer deposit
+### B2 — The WET / Water slider reaches no layer deposit — **half closed**
 
-Written by the options bar (`AtelierChrome.cpp:555`) and the BRUSH panel
-(`MacPaintUI.cpp:3316`). Its only consumer is `applyToolToBrush()`, whose sole call
-site (`MacPaintUI.cpp:6733`) is **inside the solver branch**. `brushTipFor()` never
-reads `brush.wetness`, and `BrushTip` has no water field.
+**The silence is fixed; the capability is not.** Both writers of
+`st.brush.wetness` — the options bar (`AtelierChrome.cpp:721`) and the BRUSH
+panel (`MacPaintUI.cpp:3909`) — now draw the control `BeginDisabled` when
+`wetnessReachesSolver(route)` (`app/StrokeSession.hpp:347`) says this route
+ignores it, which is the same honest treatment Opacity already had. Re-verified
+2026-08-25 against both call sites and the golden `toolbar` view, where the
+control renders greyed with a document layer selected.
 
-With any document open and a paintable layer selected, WET does nothing. Contrast
-**Opacity**, three lines away at `:3337`, which is drawn `BeginDisabled` with a
-caption naming the route that ignores it. The panel applies the honest treatment
-to Opacity and not to Water — which is ignored on *more* routes.
+**Still true, and it is the substantive half:** `brushTipFor()` never reads
+`brush.wetness`, `BrushTip` has no water field, and the only consumer is
+`applyToolToBrush()` inside the solver branch. On any layer route WET still does
+nothing — it now *says* so instead of pretending, which is a different and
+lesser fix than making wetness reach a layer deposit.
 
-### B3 — Two brush-size sliders with different ranges
+### B3 — Two brush-size sliders with different ranges — ~~OPEN~~ **CLOSED**
 
-Options bar: `2.0f–90.0f` (`AtelierChrome.cpp:528`). BRUSH panel: `1.0f–200.0f`
-(`MacPaintUI.cpp:3308`). Set 150 px in the panel, touch the options bar, and it
-clamps to 90.
+Was: options bar `2.0f–90.0f`, BRUSH panel `1.0f–200.0f`, so setting 150 px in
+the panel and then touching the options bar clamped it to 90.
 
-`AtelierChrome.cpp:540` states the rule being broken, for the LOAD slider directly
-below it: *"one field behind two widgets with two ranges is two clamps, and the
-narrower one silently truncates what the other set."* LOAD, WET and HARD all obey
-it. SIZE does not.
+Both now read the single `kBrushRadiusMin`/`kBrushRadiusMax` pair from
+`app/AppState.hpp` (`AtelierChrome.cpp:675`, `MacPaintUI.cpp:3875`), and
+`selftest/ChromeConsistency.cpp` asserts that they share it rather than merely
+agreeing today. This is the rule `AtelierChrome.cpp` already stated for the LOAD
+slider — *"one field behind two widgets with two ranges is two clamps, and the
+narrower one silently truncates what the other set"* — now obeyed by SIZE too.
+
+**The visible trace of this fix is why the `toolbar` golden reference moved.**
+At radius 20 the grab's travel fraction went from `(20-2)/88 = 0.2045` to
+`(20-1)/199 = 0.0955`; over the 256 px of grab travel inside a 276 px track that
+predicts a 28.0 px leftward shift, and the measured shift is 28 px (grab left
+edge 252 → 224). Recorded here because a golden reference re-blessed without that
+arithmetic is a defect being canonised, and this project has done that once
+already.
 
 ### B4 — `DynamicTarget::Spacing` applies on layer strokes but not solver strokes
 
