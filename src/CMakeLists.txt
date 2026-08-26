@@ -64,6 +64,7 @@ add_executable(naturalPaint
   app/selftest/ExportStates.cpp
   app/selftest/Eyedropper.cpp
   app/selftest/FieldAllocation.cpp
+  app/selftest/FileDialog.cpp
   app/selftest/FilterMenu.cpp
   app/selftest/Filters.cpp
   app/selftest/FloodFill.cpp
@@ -210,6 +211,7 @@ add_executable(naturalPaint
   ui/Fonts.cpp
   ui/AtelierTheme.cpp
   ui/CanvasQuad.cpp
+  ui/FileDialog.cpp
   ui/AtelierLayout.cpp
   ui/AtelierChrome.cpp
   ui/MenuModel.cpp

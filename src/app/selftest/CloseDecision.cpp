@@ -248,8 +248,9 @@ bool runCloseDecisionTest() {
   }
 
   // Save on a document that has never been saved cannot pick a file: this
-  // build has no native file picker, so the decision hands back to the
-  // caller's Save As flow rather than inventing a path.
+  // module has no business choosing one, so the decision hands back to the
+  // caller's Save As flow -- which now opens an `NSSavePanel`
+  // (ui/FileDialog.hpp) -- rather than inventing a path.
   {
     DocumentSession session;
     session.add(dirtyDoc("Untitled work", "stroke"));

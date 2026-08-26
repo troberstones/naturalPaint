@@ -3584,4 +3584,24 @@ bool runPressureFeelTest();
 // the paper.
 bool runGrainTest();
 
+// The OS file panel (ui/FileDialog.hpp), which replaced the typed-path modal
+// that Open, Save As, Save a Copy, Import Image and Import Brushes shared.
+//
+// The panel itself is out of reach here -- it needs a window and a person --
+// so this asserts the parts that fail *silently* rather than visibly. Chiefly:
+// that **SDL's own `validate_filters()`** accepts every filter pattern this
+// build ships, because a pattern it rejects does not degrade to an unfiltered
+// panel, it stops the panel from appearing at all and File > Open looks like a
+// menu item that does nothing; that no pattern carries a `*`, which the cocoa
+// backend reads as "do not filter" for the whole panel rather than for the one
+// row; that the offered extensions are derived from io/Capabilities' live
+// table, so a build without OpenImageIO cannot offer to open an EXR it cannot
+// read; that a saved document's first offered extension is `.npaint`, because
+// macOS appends the first one to a bare filename; and that the mailbox
+// carrying the answer back from SDL's callback thread hands each outcome over
+// exactly once, drops a callback with no request behind it, and cannot be left
+// stranded -- a stranded request refuses every later panel for the rest of the
+// session, with no panel anywhere to say why.
+bool runFileDialogTest();
+
 }  // namespace np

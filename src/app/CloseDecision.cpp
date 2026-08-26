@@ -173,11 +173,17 @@ CloseOutcome resolveDocumentClose(DocumentSession& session, PendingClose& pendin
   }
 
   if (!doc->hasPath()) {
-    // There is no native file picker in this build (ui/MacPaintUI.cpp says so
-    // at length), so this module cannot choose a destination and must not
-    // invent one. The pending close is kept alive and the caller is told to
-    // run the Save As flow it already has; answering `Save` again once the
+    // This module cannot choose a destination and must not invent one --
+    // that is true whether the file name comes from a text field or from an
+    // `NSSavePanel` (ui/FileDialog.hpp), and it is why this returns rather
+    // than guessing. The pending close is kept alive and the caller is told
+    // to run the Save As flow it already has; answering `Save` again once the
     // document has a path finishes the close.
+    //
+    // The caller's half of this contract is in `drawDocumentDialogs()`, and
+    // it is a slightly sharper obligation now that the panel is the OS's: it
+    // must treat the close as still waiting for the whole time the panel is
+    // out, which is asynchronous and spans many frames.
     pending.awaitingDestination = true;
     out.needsDestination = true;
     out.status = "'" + name + "' has never been saved -- choose a file for it.";

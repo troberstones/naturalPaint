@@ -2,6 +2,7 @@
 
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
+#include "ui/FileDialog.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
 
@@ -4964,6 +4965,24 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   static char presetNameBuf[96] = "";
   static char exportPathBuf[512] = "";
   static std::string status;
+  // Whether the OS save panel raised by "Choose..." below is still out.
+  //
+  // **Drained here, above the early return, and that placement is the whole
+  // point.** The panel is asynchronous and this popup can be closed while it
+  // is still up; if the drain lived inside the popup body it would never run
+  // for that user, ui/FileDialog's one-at-a-time mailbox would stay pending
+  // for the rest of the session, and every File > Open afterwards would be
+  // refused with no panel anywhere to explain why.
+  static bool exportPathPanelInFlight = false;
+  if (exportPathPanelInFlight) {
+    if (const std::optional<FileDialogOutcome> picked = takeFileDialogOutcome()) {
+      exportPathPanelInFlight = false;
+      if (picked->chose)
+        std::snprintf(exportPathBuf, sizeof(exportPathBuf), "%s", picked->path.c_str());
+      else if (!picked->error.empty())
+        status = picked->error;
+    }
+  }
 
   if (g_exportAsRequested) {
     g_exportAsRequested = false;
@@ -5147,6 +5166,25 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   ImGui::Separator();
   ImGui::SetNextItemWidth(360.0f);
   ImGui::InputText("Output file", exportPathBuf, sizeof(exportPathBuf));
+  ImGui::SameLine();
+  if (ImGui::Button("Choose...")) {
+    // **One filter row, naming the format this panel is currently set to** --
+    // not the whole writable list. macOS appends the *first* allowed type to
+    // a bare filename, so offering every writable extension here would let it
+    // append `.exr` to a file `exportDocumentWithRequestToFile()` is about to
+    // write as a PNG, and the mismatch would only show up when something
+    // tried to read it back.
+    //
+    // The field stays: this fills it in rather than replacing it, because an
+    // export path is often typed as a variation on the last one.
+    const FileDialogFilterRow row{imageFormatName(request.format),
+                                  imageFormatExtension(request.format)};
+    if (requestFileDialogWithFilter(FileDialogPurpose::ExportImage,
+                                    fileDialogDirectoryOf(exportPathBuf), row))
+      exportPathPanelInFlight = true;
+    else
+      status = "A file panel is already open; finish or cancel it first.";
+  }
   const bool canExport = activeDoc != nullptr && validation.ok && exportPathBuf[0] != '\0';
   if (!canExport) ImGui::BeginDisabled();
   if (ImGui::Button("Export...")) {
@@ -5468,23 +5506,27 @@ void drawExportStatesDialog(AppState& st) {
 // app/DocumentLifecycle.hpp and is exercised headlessly by --selftest; this is
 // the widgets, the same split step 7 and app/CurveEdit already use.
 //
-// **There is no native file picker in this codebase**, and adding one is a
-// platform-integration job (NSOpenPanel behind an interface) rather than part
-// of a lifecycle step. So Open, Save As and Save a Copy take a typed path in a
-// small modal. That is deliberately spartan rather than pretending: the
-// operations underneath are the real ones, and swapping the text field for a
-// panel later changes this function and nothing else.
+// This comment used to open by saying **there is no native file picker in
+// this codebase**, that adding one was "a platform-integration job (NSOpenPanel
+// behind an interface) rather than part of a lifecycle step", and that Open,
+// Save As and Save a Copy therefore took a typed path in a small modal.
+//
+// That is no longer true, and the platform-integration job turned out to be
+// nobody's: SDL3's vendored copy already ships an AppKit backend for exactly
+// this (`src/dialog/cocoa/SDL_cocoadialog.m` -- a real `NSOpenPanel` /
+// `NSSavePanel`, presented as a sheet), and this configuration already links
+// it. ui/FileDialog wraps it, and every action in this enum now opens the
+// OS's own panel. **The typed-path modal is gone**; the field, its pre-fill
+// rule and its 512-byte buffer went with it.
+//
+// What did not change is the shape around it, and that is deliberate: the
+// enum, the request flag, `applyDocumentPathAction()` and the status line are
+// all exactly as they were. A panel is one more way of producing a string, so
+// the five actions that consume one did not need to know which way it came.
 //
 // Which state lives where follows app/AppState.hpp's rule: the session and
-// the recent list are on AppState; the text buffer, the pending action and
-// the last status line are function-local, because they are widget state.
-// `ImportImage` reuses this same typed-path modal rather than growing a second
-// path-entry UI beside it. There is still no native file picker in this
-// codebase (see above), and inventing a *second* spartan one -- with its own
-// buffer, its own pre-fill rule and its own error line -- would double the
-// thing that has to be replaced when a real panel arrives, for no benefit
-// today. The modal's verb, its pre-fill and the status it leaves behind are
-// the only things that vary by action, and each of those is one line.
+// the recent list are on AppState; the pending action and the last status
+// line are function-local, because they are widget state.
 //
 // **`ImportBrushes` is the third caller**, and it is here rather than in the
 // BRUSH LIBRARY pane for exactly the reason `ImportImage` is: the `+` in that
@@ -5510,9 +5552,64 @@ std::string g_docStatus;
 // future action wording its success differently.
 bool g_docPathActionOk = false;
 
+// Which action the panel *currently on screen* is for.
+//
+// Separate from `g_docPathAction`, and it has to be. `g_docPathAction` is set
+// by whoever raises the request, and the OS panel is asynchronous -- so a
+// second request arriving while a panel is up (the native menu bar still
+// works while a sheet is presented) would rewrite `g_docPathAction` under the
+// panel the user is looking at, and the file they then pick would be applied
+// as the *new* action. Save As followed by Open, answered once, would open
+// the file the user meant to save over. This records what was actually asked,
+// at the moment it was asked, and is what the outcome is applied as.
+//
+// `None` means no panel of ours is in flight, which is also how this
+// function's poll knows an outcome in the mailbox belongs to the Export As
+// panel rather than to it.
+DocPathAction g_docPathInFlight = DocPathAction::None;
+
+// The action a failed one is offered a second go at, and the popup that
+// offers it. See `drawDocumentDialogs()`.
+DocPathAction g_docPathProblemAction = DocPathAction::None;
+constexpr const char* kDocPathProblemPopup = "File problem";
+
+// The word for an action, in the user's terms. One place, because it is now
+// read by three: the panel's title and accept button (through
+// ui/FileDialog's plan), the failure popup's heading, and the status line.
+const char* docPathActionVerb(DocPathAction action) {
+  switch (action) {
+    case DocPathAction::Open: return "open";
+    case DocPathAction::SaveAs: return "save";
+    case DocPathAction::SaveCopy: return "save a copy of";
+    case DocPathAction::ImportImage: return "import";
+    case DocPathAction::ImportBrushes: return "import";
+    case DocPathAction::None: return "use";
+  }
+  return "use";
+}
+
+// The panel each action wants. Total, and with no `default:` -- an action
+// added here without a panel is a build failure (`-Werror=switch`), not an
+// action whose menu item quietly does nothing.
+//
+// `None` maps to `OpenDocument` and is never requested: the request site
+// checks the flag first. It is here because a `switch` that returns from
+// every case still has to have every case.
+FileDialogPurpose fileDialogPurposeFor(DocPathAction action) {
+  switch (action) {
+    case DocPathAction::Open: return FileDialogPurpose::OpenDocument;
+    case DocPathAction::SaveAs: return FileDialogPurpose::SaveDocument;
+    case DocPathAction::SaveCopy: return FileDialogPurpose::SaveCopy;
+    case DocPathAction::ImportImage: return FileDialogPurpose::ImportImage;
+    case DocPathAction::ImportBrushes: return FileDialogPurpose::ImportBrushes;
+    case DocPathAction::None: return FileDialogPurpose::OpenDocument;
+  }
+  return FileDialogPurpose::OpenDocument;
+}
+
 // Forward-declared up beside the BRUSH LIBRARY pane, which is drawn earlier in
 // this file. Sets the same two globals File > Open does, so the `+` cannot
-// end up with a second modal of its own.
+// end up with a second panel of its own.
 void requestBrushLibraryImport() {
   g_docPathAction = DocPathAction::ImportBrushes;
   g_docPathRequested = true;
@@ -5668,8 +5765,21 @@ CloseOutcome answerPendingClose(AppState& st, CloseAnswer answer) {
   return outcome;
 }
 
+// Whether a file panel of `drawDocumentDialogs()`'s is in the middle of
+// asking something -- from the frame the request is raised, through the panel
+// being up, through the frame its answer is applied, and on through the
+// failure popup if that answer could not be carried out.
+//
+// The pending-close path (app/CloseDecision.hpp) waits on this, and the
+// window it has to cover is wider than "a panel is on screen": a request
+// raised this frame has no panel yet, and an answer that failed has none any
+// more but is still being asked about.
+bool docPathDialogBusy() {
+  return g_docPathRequested || g_docPathInFlight != DocPathAction::None ||
+         ImGui::IsPopupOpen(kDocPathProblemPopup);
+}
+
 void drawDocumentDialogs(AppState& st) {
-  static char pathBuf[512] = "";
   // Why not `g_docStatus`: a failed save has to stay legible in the dialog
   // until the user does something about it, and `g_docStatus` is overwritten
   // by every other document operation and is drawn one line high beside the
@@ -5806,63 +5916,87 @@ void drawDocumentDialogs(AppState& st) {
     (void)answerPendingClose(st, closeAnswerForKey(CloseKey::Escape));
   }
 
+  // --- The OS file panel ---------------------------------------------------
+  //
+  // Raised on a flag and serviced here, rather than by `performMenuAction()`
+  // calling into SDL where the menu item is handled. That was already the rule
+  // (ui/MenuModel.hpp's `MenuEffect::Deferred`, asserted by
+  // app/selftest/MenuModel.cpp) and the native panel makes it a harder one:
+  // `SDL_ShowFileDialogWithProperties()` is documented main-thread-only, and a
+  // native menu callback fires from inside SDL's Cocoa pump with no frame in
+  // progress.
   if (g_docPathRequested) {
     g_docPathRequested = false;
     g_docStatus.clear();
-    // Pre-fill with the active document's own path, so Save As on an already
-    // saved document starts from its name rather than from nothing.
-    //
-    // **Except for an import**, which is reading someone else's file: offering
-    // the open document's own `.npaint` path as the image to import is not a
-    // useful starting point, and one careless Return away from a refusal that
-    // names the wrong mistake. It starts empty instead.
-    if (g_docPathAction == DocPathAction::ImportImage ||
-        g_docPathAction == DocPathAction::ImportBrushes) {
-      pathBuf[0] = '\0';
-    } else if (const OpenDocument* d = st.documents.active()) {
-      std::snprintf(pathBuf, sizeof(pathBuf), "%s", d->path.c_str());
+    // Where the panel opens. The typed-path modal pre-filled the field with
+    // the active document's own path; a panel gets the *folder* only, because
+    // that is all SDL's backend exposes (ui/FileDialog.hpp says what that
+    // costs). An import is reading someone else's file, so the open
+    // document's folder is a guess with nothing behind it and the OS's own
+    // last-used directory is the better one.
+    std::string startDir;
+    if (g_docPathAction != DocPathAction::ImportImage &&
+        g_docPathAction != DocPathAction::ImportBrushes) {
+      if (const OpenDocument* d = st.documents.active())
+        startDir = fileDialogDirectoryOf(d->path);
     }
-    ImGui::OpenPopup("Document path");
+    if (requestFileDialog(fileDialogPurposeFor(g_docPathAction), startDir)) {
+      g_docPathInFlight = g_docPathAction;
+    } else {
+      // A panel is already up -- ours or the Export As one. Saying so is the
+      // point: a menu item that appears to do nothing is the defect this
+      // whole audit exists about, and the panel the user cannot see may be
+      // behind the window.
+      g_docStatus = "A file panel is already open; finish or cancel it first.";
+    }
   }
-  if (ImGui::BeginPopupModal("Document path", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    const char* verb = g_docPathAction == DocPathAction::Open          ? "Open"
-                       : g_docPathAction == DocPathAction::SaveAs      ? "Save As"
-                       : g_docPathAction == DocPathAction::SaveCopy    ? "Save a Copy"
-                       : g_docPathAction == DocPathAction::ImportImage ? "Import Image"
-                                                                      : "Import Brushes";
-    ImGui::Text("%s", verb);
-    // Says what the field now accepts, because the widening is invisible
-    // otherwise: the modal looks exactly as it did when it took `.npaint`
-    // alone. The second sentence is the half users get wrong -- a picture opens
-    // into a document that is bound to no file, so Save As is how it acquires
-    // one (app/OpenAnyFile.hpp argues why binding it to the picture would be a
-    // trap).
-    if (g_docPathAction == DocPathAction::Open)
-      ImGui::TextDisabled(
-          "A .npaint document, or any image this build reads. Which one is decided by "
-          "the file's contents, not its name.\nAn image opens as a new, unsaved document; "
-          "use Save As to give it a .npaint of its own.");
-    if (g_docPathAction == DocPathAction::SaveCopy)
-      ImGui::TextDisabled("Writes elsewhere; this document stays bound to its own file.");
-    if (g_docPathAction == DocPathAction::ImportImage)
-      ImGui::TextDisabled("Adds the image to this document as a new RGB layer, on top.");
-    if (g_docPathAction == DocPathAction::ImportBrushes)
-      ImGui::TextDisabled(
-          "A Photoshop .abr library. Its brushes join the BRUSH LIBRARY pane and are\n"
-          "remembered for next launch; the file itself is re-read only when one is picked.");
-    ImGui::SetNextItemWidth(480.0f);
-    ImGui::InputText("Path", pathBuf, sizeof(pathBuf));
-    if (ImGui::Button(verb)) {
-      applyDocumentPathAction(st, g_docPathAction, pathBuf);
-      if (g_docPathActionOk) ImGui::CloseCurrentPopup();
+  // The outcome, once the user has answered. Guarded on our own in-flight
+  // marker rather than on the mailbox alone, because the Export As panel
+  // shares that mailbox and its answer is not ours to apply.
+  if (g_docPathInFlight != DocPathAction::None) {
+    if (const std::optional<FileDialogOutcome> picked = takeFileDialogOutcome()) {
+      const DocPathAction action = g_docPathInFlight;
+      g_docPathInFlight = DocPathAction::None;
+      if (picked->chose) {
+        applyDocumentPathAction(st, action, picked->path);
+        if (!g_docPathActionOk) {
+          // The typed-path modal kept itself up on a refusal, with the reason
+          // under the field, and the argument for that has not changed: the
+          // one thing the user needs to read must not be left sitting one
+          // line high beside the menus while they are looking at the canvas.
+          // There is no field to keep up any more, so this is the smallest
+          // thing that keeps the property -- the reason, and a second go at
+          // it that does not make them find the menu item again.
+          g_docPathProblemAction = action;
+          ImGui::OpenPopup(kDocPathProblemPopup);
+        }
+      } else if (!picked->error.empty()) {
+        g_docStatus = picked->error;
+      } else {
+        // Cancelled. Not an error, and deliberately not reported as one --
+        // `g_docStatus` was cleared when the panel was raised, so the status
+        // line simply goes quiet.
+      }
+    }
+  }
+  if (ImGui::BeginPopupModal(kDocPathProblemPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Could not %s that file.", docPathActionVerb(g_docPathProblemAction));
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", g_docStatus.c_str());
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+    if (ImGui::Button("Choose Another File...")) {
+      // Read before the popup closes; `g_docPathProblemAction` is not cleared
+      // by closing, but the request below overwrites `g_docPathAction` and
+      // the two are easy to confuse from a distance.
+      const DocPathAction retry = g_docPathProblemAction;
+      ImGui::CloseCurrentPopup();
+      g_docPathAction = retry;
+      g_docPathRequested = true;
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-    if (!g_docStatus.empty()) {
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
-      ImGui::TextWrapped("%s", g_docStatus.c_str());
-      ImGui::PopStyleColor();
-    }
     ImGui::EndPopup();
   }
 
@@ -5874,7 +6008,16 @@ void drawDocumentDialogs(AppState& st) {
   // dismissal -- and a pending close left dangling behind one of them would
   // block every subsequent close for the rest of the session with "is already
   // waiting for an answer".
-  if (st.pendingClose.awaitingDestination && !ImGui::IsPopupOpen("Document path")) {
+  //
+  // **The test is not `IsPopupOpen("Document path")` any more, and getting it
+  // wrong would be silent.** That popup no longer exists; a native panel is
+  // not an ImGui popup, so the old test would have read "false" on the very
+  // frame the panel went up, resolved this block immediately, and backed out
+  // of every close-with-save before the user had seen a file panel at all.
+  // `docPathDialogBusy()` is true from the moment the request is raised until
+  // its outcome has been applied, and stays true while the failure popup is
+  // up.
+  if (st.pendingClose.awaitingDestination && !docPathDialogBusy()) {
     const OpenDocument* target = st.documents.find(st.pendingClose.document);
     st.pendingClose.awaitingDestination = false;
     if (target != nullptr && target->hasPath() && !target->isDirty()) {

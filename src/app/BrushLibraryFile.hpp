@@ -285,9 +285,11 @@
 // `app/DabPreview`, `app/LayerPanel` and `app/ControlsLayout`, and it is what
 // lets every claim above be asserted headlessly.
 //
-// **No native file dialog**, because this codebase has none (see
-// `ui/MacPaintUI.cpp`'s document-lifecycle block). Import takes a typed path
-// through the same modal Open, Save As and Import Image use.
+// **No file dialog of its own.** Import goes through the one panel Open,
+// Save As and Import Image use (ui/FileDialog.hpp, raised from
+// `ui/MacPaintUI.cpp`'s document-lifecycle block) -- a real `NSOpenPanel`
+// filtered to `.abr`. This module still takes a path and nothing else, which
+// is what lets every claim above be asserted headlessly.
 //
 // **No writing of `.abr`.** Export is not a thing this reads toward.
 namespace np {

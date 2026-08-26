@@ -50,6 +50,7 @@
 #include "sim/PaintSim.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/CanvasQuad.hpp"
+#include "ui/FileDialog.hpp"
 #include "ui/MacNativeMenu.hpp"
 #include "ui/MacPaintUI.hpp"
 #include "ui/AtelierChrome.hpp"
@@ -1245,6 +1246,15 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // ---- the OS file panel's parent (ui/FileDialog) -------------------------
+  //
+  // Not cosmetic, and ui/FileDialog.hpp says why: with a window, SDL's cocoa
+  // backend presents the panel as a *sheet* and returns immediately; without
+  // one it falls back to `[dialog runModal]`, which is application-modal and
+  // blocks the calling thread -- i.e. it would stop the render loop below
+  // dead for as long as the panel is up.
+  np::setFileDialogParentWindow(window);
+
   // ---- the native menu bar (ui/MacNativeMenu, ui/MenuModel) ---------------
   //
   // A no-op off Apple, where the ImGui menu bar in the title band is the whole
@@ -2056,6 +2066,11 @@ int main(int argc, char** argv) {
     // rather than dab-local offset -- the assertion a grain that moved with
     // the brush would fail.
     const bool grainOk = np::runGrainTest();
+    // The OS file panel (ui/FileDialog.hpp): SDL's own validator on every
+    // filter pattern this build ships, the filter lists derived from
+    // io/Capabilities rather than hard-coded, and the cross-thread mailbox
+    // that carries the chosen path back from SDL's callback.
+    const bool fileDialogOk = np::runFileDialogTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2083,7 +2098,7 @@ int main(int argc, char** argv) {
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
                     saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
-                    grainOk && strokePreviewOk;
+                    grainOk && strokePreviewOk && fileDialogOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
