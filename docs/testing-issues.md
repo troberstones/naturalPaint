@@ -195,8 +195,28 @@ property nobody checked.
 
 **Work.** Give the windowed process a measured budget of its own, the way
 `--selftest` has one for the headless path, so this cannot drift again
-unnoticed. Then decide whether 482 MB at idle is acceptable — see **T7**,
-which is where it comes from.
+unnoticed.
+
+**Where the 482 MB comes from is OPEN, and the obvious answer is wrong.** This
+entry originally ended "see T7, which is where it comes from". It is not.
+`sim::PaintSim` is never constructed at idle — proved by a temporary
+`fprintf` at the top of `PaintSim::init()`, which fires once under
+`--diag 1` (`[PROBE] PaintSim::init 1024x1024`) and **zero** times across ten
+seconds of idle GUI, while `footprint` on that same process still reads
+404 MB IOAccelerator. See T7 for why the solver was never the suspect it
+looked like.
+
+Leads for whoever picks this up, none of them proven:
+
+* The allocation appears **inside the render loop**, not in `GpuContext::init()`
+  or `ImGui_ImplWGPU_Init()`.
+* `ui/CanvasQuad.cpp` rebuilds bind groups and a vertex buffer per frame
+  (`:413`, `:449`, `:461`) — but it also **releases** them (`:421`, `:488`,
+  `:491`), so this is churn rather than a leak, and a leak is not what the
+  numbers show: RSS is flat at 155.5 MB across repeated samples.
+* wgpu-native's own allocator pools and the 2560×1580 HIGH_PIXEL_DENSITY
+  surface are unexamined. Testing whether the figure scales with window size
+  would separate render targets from pools in one run.
 
 **Note the third number.** The status bar's "402 MB / 512 MB" is the
 **History** byte budget (`ui/AtelierChrome.cpp:828`), not memory in use. It
@@ -204,33 +224,52 @@ is easy to read as a RAM meter and it is not one. Worth relabelling.
 
 ---
 
-## T7 — The solver canvas is allocated at startup, whether or not it is used · open
+## T7 — "The solver is allocated at startup" · CLOSED (it never was)
 
 **Reported.** Is a simulation canvas being allocated when the app runs?
 
-**Verified — yes, and it is where T6's 482 MB goes.** `sim::PaintSim` holds
-**13 ping-pong fields** (`PaintSim.hpp:484-494`: `water_, pigC_, pigR_,
-depC_, depR_, sat_, aux_`, `lbmA_, lbmB_, lbmC_`, `brushVol_, brushC_,
-brushR_`) — each of which is **two** textures — plus five single textures
-(`paper_`, `selection_`, `canvas_`, `grayscale_`, `graded_`). That is **31
-textures**, and the default canvas is 1024×1024. At `rgba16float` one texel
-is 8 bytes, so one full-size texture is 8 MiB and the floor is roughly
-**248 MiB** before any backend overhead, mipmaps or the swapchain.
+**Answered, 2026-08-26: no. It has been lazily allocated all along, and this
+entry asserted the opposite.**
 
-It is allocated at launch, before any document exists and whether or not the
-user ever paints.
+`main.cpp:1304` leaves `std::unique_ptr<PaintSim> sim` **null** on the
+interactive path, with a comment that already said why — "the interactive path
+leaves it null and defers construction to MacPaintUI's canvas … so idle RSS
+with nothing painted stays near zero rather than paying for the sim on every
+launch". Construction happens only in `ensurePaintSim()`
+(`sim/PaintSim.cpp:1621`), and outside the test flags its one caller
+(`MacPaintUI.cpp:9238`) is gated on a paint tool actually depositing. The
+decision is written up in `docs/adr/0001-lazy-allocation-gated-by-idle-budget.md`,
+which was checked in long before this entry was filed.
 
-**Work.** Options, cheapest first, and they are not exclusive:
+Per-mode laziness — item 4 of the original work list — is also already built
+and asserted: `inkFieldsAllocated()` / `oilFieldsAllocated()` are checked
+absent by default, allocated on `setMode()`, and freed on switching away
+(`app/selftest/FieldAllocation.cpp`).
 
-* Allocate the mode-specific fields lazily. `lbmA_/lbmB_/lbmC_` and the
-  `brush*_` triple are already described as mode-specific and reallocated on
-  mode change; if a mode is never entered, its fields need never exist.
-* Allocate the solver on first paint rather than at launch.
-* Reconsider the 1024×1024 default, which is a guess that costs 8 MiB per
-  texture.
+**How this entry came to be wrong, because the mechanism matters more than the
+mistake.** T6 measured 482 MB of GPU allocation at idle. That measurement was
+real. This entry then *counted textures in the header* — 13 `PingPong` fields
+× 2, plus 5 singles, at 1024×1024 rgba16float ≈ 248 MiB — and presented the
+arithmetic as the explanation. Nobody checked whether the object existed.
 
-Measure before and after with `footprint`, not `ps` — RSS does not see any
-of this.
+That is the failure `docs/reachability-audit.md`'s R13 note already describes,
+arriving from the other direction: **a magnitude derived from a header reads
+exactly like a magnitude measured from a process.** The B6 entry in the audit
+was wrong the same way, and this document's own preamble was written to stop
+it. It did not, because the preamble guards the *Reported* line and this was
+an error in the *Verified* line.
+
+**What is genuinely true and was worth finding.** With a document open — the
+state at launch — `strokeRouteFor()` sends `Tool::Brush` to `RgbDeposit`,
+the CPU path, because a fresh document's default layer is RGB
+(`core/Document.hpp:211`). The solver is still reachable: `Tool::Water`
+returns `StrokeRoute::PaintSim` unconditionally (`StrokeSession.cpp:153`),
+and Brush/DryBrush route there whenever there is no target layer. So the
+fluid engine is not stranded — but the *default* brush on the *default*
+document does not touch it, which is the same canvas-versus-document split
+**T5** is about, seen from the routing table.
+
+**No work.** The 482 MB question moves to **T6**, where it started.
 
 ---
 
