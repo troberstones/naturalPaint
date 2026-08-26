@@ -434,6 +434,71 @@ BrushPreset presetFromDescriptor(
       // and re-check against a real file's bytes before trusting it further.
       if (blendEnum->valueId == "Mltp") blend = DualBrushBlend::Multiply;
       else if (blendEnum->valueId == "Ovrl") blend = DualBrushBlend::Overlay;
+      // **`CBrn` -- Color Burn. HIGH confidence, TWO independent sources,
+      // both giving the identical terse id in the identical enum family
+      // `Mltp`/`Ovrl` already came from:**
+      //   1. `psd_tools/terminology.py`'s `Enum` class -- the SAME class,
+      //      not a sibling one -- carries `ColorBurn = b"CBrn"` alongside
+      //      `Multiply = b"Mltp"` and `Overlay = b"Ovrl"`.
+      //   2. `ag-psd` (Agamnentzar/ag-psd, `src/descriptor.ts`)'s `BlnM`
+      //      enum -- built specifically to decode/encode THIS field
+      //      (`db.BlnM` for a `dualBrush`, `fx['Md  ']` for a layer effect,
+      //      the same enum both places) -- has `'color burn': 'CBrn'`.
+      // No caution needed the way `hMix` below needs it: this id is short,
+      // matches the naming convention of every other original-era mode in
+      // both tables (`Drkn`, `Lghn`, `Scrn`, `Dfrn`, `Xclu`...), and both
+      // sources that use it are purpose-built for exactly this field.
+      else if (blendEnum->valueId == "CBrn") blend = DualBrushBlend::ColorBurn;
+      // **`hMix` -- Hard Mix. MEDIUM confidence, and the caveat is worth
+      // keeping rather than smoothing over.** `psd_tools/constants.py`'s
+      // `BlendMode` enum (a DIFFERENT table from `terminology.py`'s `Enum`
+      // above -- it serialises a PSD layer record's fixed 4-byte
+      // blend-mode-key field, not an Action Descriptor value) has
+      // `HARD_MIX = b"hMix"`. That table is NOT purpose-built for `BlnM`
+      // and its vocabulary provably differs from `terminology.py`'s for the
+      // SAME concept -- it spells Color Burn `b"idiv"`, not `CBrn` -- so
+      // `hMix` being real in ONE Adobe wire format does not by itself prove
+      // it is what `dualBrush.BlnM` emits. Independently, `ag-psd`'s `BlnM`
+      // enum (the one built for this exact field, cited above) spells Hard
+      // Mix the LONG way, `'hard mix': 'hardMix'`, alongside every other
+      // "second-generation" mode added after the original terse set
+      // (`linearBurn`, `darkerColor`, `linearDodge`, `lighterColor`,
+      // `vividLight`, `linearLight`, `pinLight`, `blendSubtraction`,
+      // `blendDivide`) -- a pattern `hMix` breaks and `hardMix` fits.
+      //
+      // **The tie is broken by the bytes, first-hand.** Scanned both sample
+      // packs directly: `threeOtherBrushes.abr` contains the literal
+      // `hMix` twice and `hardMix` zero times, and both occurrences sit at
+      // the end of the same key run every Dual Brush descriptor in these
+      // files has -- `Dmtr Hrdn Angl Rndn Spcn Intr flipX flipY
+      // sampledData`, then `BlnM enum`, then `useScatter` -- so this is
+      // `dualBrush.BlnM` and not some other descriptor's blend field. `hMix`
+      // is therefore the spelling that actually occurs; `hardMix` is kept as
+      // an accepted alias only because `ag-psd` documents it and accepting an
+      // id that never arrives costs nothing, while refusing one that does
+      // costs a brush. The MEANING was never in question either way -- both
+      // spellings mean Hard Mix in every source checked, and none suggests a
+      // third reading.
+      else if (blendEnum->valueId == "hMix" || blendEnum->valueId == "hardMix")
+        blend = DualBrushBlend::HardMix;
+      // **`linearHeight` -- deliberately NOT mapped.** `ag-psd`'s `BlnM`
+      // enum (again, the table built for this exact field) has
+      // `'linear height': 'linearHeight'`, with its own "// used in ABR"
+      // comment -- so this id is confirmed real and confirmed to appear in
+      // exactly this context, not a typo for "Linear Light". Confirmed
+      // first-hand too: `runny_inkers.abr` carries `linearHeight` twice, both
+      // times at the end of the same Dual Brush key run described for `hMix`
+      // above, so it genuinely is a `dualBrush.BlnM` value and not a
+      // Texture-panel field that merely looks like one. But "Linear
+      // Height" is not one of Photoshop's paint/layer blend modes at all:
+      // the Krita `abr_brush_importer` plugin's own texture-mode table
+      // (`kpp_writer.py`, `_map_ps_texture_mode()`) lists "Height" and
+      // "Linear Height" as TEXTURE-panel compositing modes -- how a
+      // pattern's grayscale HEIGHT MAP blends into a stroke, not how two
+      // coverage discs blend into each other. No source found gives that a
+      // per-pixel formula, so this id is left unmapped and falls through to
+      // `dualBrushUnsupportedBlend` below, honestly, rather than reusing one
+      // of the four color-blend formulas as a guess.
     }
 
     const DescriptorRef dualBrsh = dual.field("Brsh");

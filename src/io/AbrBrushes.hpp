@@ -115,8 +115,9 @@ struct AbrImportResult {
   // still would not draw it as Photoshop does."
   size_t dualBrushes = 0;
 
-  // Dual Brush switched ON, a second tip WAS built (Multiply or Overlay --
-  // `brush/Deposit.hpp` §2d), but its `BlnM` named a blend mode this build
+  // Dual Brush switched ON, a second tip WAS built (Multiply, Overlay, Color
+  // Burn or Hard Mix -- `brush/Deposit.hpp` §2d), but its `BlnM` named a blend
+  // mode this build
   // does not implement compositing for. The brush paints with the primary
   // tip alone, exactly as `dualBrushes` above, but the diagnosis differs and
   // is worth telling apart: this is "we understood the request and refuse to

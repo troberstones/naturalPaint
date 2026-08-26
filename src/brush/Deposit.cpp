@@ -156,6 +156,20 @@ float singleTipCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   return 1.0f - u * u * (3.0f - 2.0f * u);
 }
 
+}  // namespace
+
+// Not in the anonymous namespace above, and declared in brush/Deposit.hpp --
+// **exposed so `--selftest` can drive it directly**, the same discipline
+// `core/LayerGeometry.hpp`'s `translatedTileStore()` already uses for a
+// tile-level operation a higher-level entry point would otherwise hide. The
+// reason this one specifically needs it: `dabCoverage()` below never calls
+// this function with `base == 0` at all (its own short-circuit, a few lines
+// down, returns `0.0f` before evaluating any blend mode) -- so the `base ==
+// 0` identity this function's own comment documents for EVERY member,
+// including Hard Mix's explicit guard, would otherwise be provable only by
+// inspection, and a regression in the guard would go unnoticed by any test
+// that can only observe `dabCoverage()`'s already-masked output.
+//
 // Header §2d: Photoshop's `BlnM` on the `dualBrush` descriptor, applied
 // directly to the coverage scalar rather than routed through
 // `core/Blend.hpp`'s four-channel pixel/layer blend modes, which have no
@@ -163,10 +177,48 @@ float singleTipCoverage(const BrushTip& tip, float dx, float dy) noexcept {
 // coverage -- the "bottom" of the two, matching Photoshop's own description
 // of the second tip as blending ONTO the first.
 //
-// Both formulas are exactly `0` when `base == 0` (Multiply trivially;
-// Overlay's `base < 0.5` branch is `2 * base * second`) -- the identity §2d's
-// `dabPixelBounds()` argument rests on, so it is stated here rather than only
-// in the header, next to the two lines that make it true.
+// **Reusing Photoshop's per-CHANNEL formulas on a bare coverage scalar is a
+// MODELLING decision, not algebra**, and it is made the same way for all
+// four members: a coverage value is "how much of the dab lands here," not a
+// colour channel, and nothing forces the two to share a formula. It is done
+// anyway because the alternative is a second, invented blend vocabulary that
+// nobody asked for, and because -- for three of the four members below -- the
+// standard formula already happens to preserve the one property this module
+// actually needs.
+//
+// **All four are exactly `0` when `base == 0`**, and that is what §2d's
+// `dabPixelBounds()` argument rests on -- restated here, next to the lines
+// that make each one true, rather than only in the header:
+//   * Multiply: trivially, `0 * second == 0`.
+//   * Overlay: the `base < 0.5` branch is `2 * base * second`, which is `0`
+//     for any `second` when `base == 0`.
+//   * Color Burn: at `base == 0` the formula is `1 - min(1, 1/second)`. For
+//     every `second` in `(0, 1]`, `1/second >= 1`, so the `min` clamps to `1`
+//     and the whole expression is `0` -- the STANDARD formula already has
+//     this identity, nothing added for it.
+//   * Hard Mix: the ONE mode where the standard formula does NOT have the
+//     identity for free -- `base + second >= 1` is true at `base == 0,
+//     second == 1`, which the bare formula would answer `1`, painting where
+//     the primary tip has no coverage at all. The `base > 0.0f` guard in that
+//     case is not part of Photoshop's own formula; it is this function's own
+//     fix, made explicitly rather than left to the `dabCoverage()` caller's
+//     own short-circuit (which also holds, defense in depth, but this
+//     function documents and asserts the identity as its own).
+//
+// **Hard Mix's threshold is binary, and that is a real cost, not a bug left
+// in.** Every other coverage this module produces is continuous --
+// `singleTipCoverage()`'s smoothstep (§2) exists specifically so a dab's rim
+// antialiases -- and Hard Mix's `>= 1.0f ? 1.0f : 0.0f` throws that away at
+// the COMBINED mark's own edge: wherever `base + second` crosses `1`, the
+// output jumps from 0 to 1 with no smoothstep between, however soft `base`
+// and `second` individually are. That is not a modelling mistake for a Dual
+// Brush -- it is what Photoshop's own Hard Mix does in a layer stack as much
+// as here, it is why Hard Mix reads as a harsh, posterised mode there too,
+// and for a Dual Brush specifically it is why a preset using it looks
+// grittier than the identical two tips combined by Multiply or Overlay: the
+// binary threshold is what breaks the primary tip's smooth rim into a
+// jagged one, which this file's header calls "most of why an ink brush
+// reads granular rather than smooth" (§2d, opening paragraph).
 float combineDualCoverage(DualBrushBlend mode, float base, float second) noexcept {
   switch (mode) {
     case DualBrushBlend::Multiply:
@@ -174,11 +226,31 @@ float combineDualCoverage(DualBrushBlend mode, float base, float second) noexcep
     case DualBrushBlend::Overlay:
       return base < 0.5f ? 2.0f * base * second
                          : 1.0f - 2.0f * (1.0f - base) * (1.0f - second);
+    case DualBrushBlend::ColorBurn:
+      // Standard Photoshop Color Burn, `base` as the "bottom": darkens
+      // `base` by `second`. The three-way form (rather than the bare
+      // `1 - (1-base)/second`) matches the reference this was checked
+      // against (Ryan Juckett's published HLSL translation of Photoshop's
+      // blend modes): `base >= 1` saturates white to stay white without
+      // dividing, and `second <= 0` is the formula's own pole, defined here
+      // as `0` -- darkening by NOTHING darkens NOTHING, not everything, which
+      // is also the branch's analytic continuation: as `second -> 0+`,
+      // `(1-base)/second -> +infinity`, `min(1, .) -> 1`, and `1 - 1 == 0`,
+      // so `0` is the limit, not an arbitrary choice made to avoid a
+      // division by zero.
+      if (base >= 1.0f) return 1.0f;
+      if (second <= 0.0f) return 0.0f;
+      return 1.0f - std::min(1.0f, (1.0f - base) / second);
+    case DualBrushBlend::HardMix:
+      // Standard Photoshop Hard Mix: a hard threshold on the sum,
+      // `(base + second >= 1) ? 1 : 0` (same reference as Color Burn above).
+      // The `base > 0.0f` guard is this function's own addition -- see the
+      // block comment above for why the bare threshold does not already
+      // satisfy `combineDualCoverage(HardMix, 0, second) == 0`.
+      return (base > 0.0f && base + second >= 1.0f) ? 1.0f : 0.0f;
   }
   return base;  // unreachable for a valid enumerator; see DualBrushBlend's own comment.
 }
-
-}  // namespace
 
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {
   const float base = singleTipCoverage(tip, dx, dy);

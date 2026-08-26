@@ -574,14 +574,28 @@ struct BrushTipBitmap {
 };
 
 // How a Dual Brush's second tip combines with the first (§2d), Photoshop's
-// `BlnM` on the `dualBrush` descriptor. Only these two: `io/AbrBrushes.cpp`
-// reads every other `BlnM` value it recognises as UNSUPPORTED rather than
-// guessing (`AbrImportResult::dualBrushUnsupportedBlend`), so this enum never
+// `BlnM` on the `dualBrush` descriptor. Four members, each cross-checked
+// against an independent source before being added rather than assumed from
+// the shape of its wire id -- see `io/AbrBrushes.cpp`'s comment on the
+// `BlnM` mapping for where each of the four came from and at what
+// confidence. `io/AbrBrushes.cpp` still reads every OTHER `BlnM` value it
+// recognises as UNSUPPORTED rather than guessing
+// (`AbrImportResult::dualBrushUnsupportedBlend`), so this enum still never
 // needs an "other" member -- a `BrushTip::dualTip` is never set for a blend
 // mode this build cannot compute.
+//
+// **`linearHeight` is a real `BlnM` id and is deliberately NOT a member
+// here.** It was one of three ids this enum grew to resolve; `io/AbrBrushes.cpp`
+// found a source for what it names -- Photoshop's Texture panel's "Linear
+// Height" compositing, a grayscale height-map blend -- but that is not a
+// colour/coverage blend mode at all, so no source gives it a per-pixel
+// formula that belongs in `combineDualCoverage()` below. A wrong guess here
+// would paint; staying in `dualBrushUnsupportedBlend` does not.
 enum class DualBrushBlend {
   Multiply,
   Overlay,
+  ColorBurn,
+  HardMix,
 };
 
 // One stamp of the brush tip: its shape, its load, and what it is loaded with.
@@ -701,6 +715,22 @@ struct BrushTip {
     return px > 0.1f ? px : 0.1f;
   }
 };
+
+// §2d's blend step in isolation, one `DualBrushBlend` enumerator against a
+// bare pair of coverage scalars -- `dabCoverage()` below is `combineDualCoverage`'s
+// only production caller, but this is declared here (defined outside the
+// anonymous namespace in brush/Deposit.cpp, unlike `singleTipCoverage()` and
+// friends) **so `--selftest` can drive it directly**, the same discipline
+// `core/LayerGeometry.hpp`'s `translatedTileStore()` uses for the same
+// reason: `dabCoverage()` never calls this with `base == 0` at all (its own
+// short-circuit intercepts that case first), so the `base == 0` identity
+// this function's own comment documents for every member -- Hard Mix's
+// explicit guard included -- is otherwise provable only by inspection.
+//
+// `base` is the PRIMARY tip's own coverage, `second` the nested `dualTip`'s.
+// Both expected in [0,1]; not clamped here (`dabCoverage()`'s own caller
+// clamps the result, brush/Deposit.cpp).
+float combineDualCoverage(DualBrushBlend mode, float base, float second) noexcept;
 
 // The dab's coverage profile at an offset from its centre, in [0,1]. See §2
 // for the profile, §2b for the ellipse and §2c for a sampled bitmap tip.

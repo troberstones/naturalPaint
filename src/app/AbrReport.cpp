@@ -151,7 +151,8 @@ int runAbrReport(const char* path) {
         "\n**%zu of %zu brushes have a Dual Brush blend mode this build does not "
         "composite.**\n"
         "The second tip's SHAPE was read; its `BlnM` just names a mode other than\n"
-        "Multiply or Overlay, the two brush/Deposit.hpp's dabCoverage() implements.\n"
+        "Multiply, Overlay, Color Burn or Hard Mix, the four brush/Deposit.hpp's\n"
+        "dabCoverage() implements.\n"
         "These paint with the primary tip alone, same as the line above, but the\n"
         "second tip itself is not the problem -- see the notes for which mode.\n",
         r.dualBrushUnsupportedBlend, r.presets.size());
@@ -160,10 +161,10 @@ int runAbrReport(const char* path) {
     std::printf(
         "\n**%zu of %zu brushes have a Dual Brush whose own spacing/scatter/count is not "
         "honoured.**\n"
-        "Their second tip DOES paint, composited by Multiply or Overlay -- but it is\n"
-        "stamped once, centred on every dab of the first, rather than scattered its\n"
-        "own number of times. These brushes will read less granular than Photoshop's\n"
-        "even with the second tip's shape correct.\n",
+        "Their second tip DOES paint, composited by Multiply, Overlay, Color Burn\n"
+        "or Hard Mix -- but it is stamped once, centred on every dab of the first,\n"
+        "rather than scattered its own number of times. These brushes will read\n"
+        "less granular than Photoshop's even with the second tip's shape correct.\n",
         r.dualBrushCadenceNotHonoured, r.presets.size());
   }
   return 0;

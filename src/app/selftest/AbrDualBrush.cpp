@@ -79,7 +79,13 @@ void appendDualBrush(DescFixture& f, const DualBrushSpec& d) {
     f.key4("Brsh");
     appendDualTip(f, d.tip);
   }
-  if (d.haveBlend) f.key4("BlnM").enumv(d.blendTypeId, d.blendValueId);
+  // `enumvLong()`, not `enumv()`: two of this file's own fixtures now use
+  // `BlnM` value ids longer than four characters ("hardMix", "linearHeight"),
+  // which `enumv()`'s `key4()`-only encoding would silently truncate --
+  // `enumvLong()`'s own comment (app/selftest/DescFixture.hpp) is a strict
+  // superset, so every existing 4-character value id here (`Mltp`, `Ovrl`,
+  // `CBrn`, `Scrn`...) round-trips identically through it.
+  if (d.haveBlend) f.key4("BlnM").enumvLong(d.blendTypeId, d.blendValueId);
   if (d.haveScatter) f.keyN("useScatter").boolv(d.useScatter);
   if (d.haveCount) f.key4("Cnt ").longv(d.count);
 }
@@ -225,6 +231,129 @@ bool runAbrDualBrushTest() {
     mulSelf.dualBlend = DualBrushBlend::Multiply;
     check(dabCoverage(mulSelf, 5.0f, 0.0f) == 0.25f,
           "abr-dual/coverage: Multiply(0.5, 0.5) == 0.25 exactly");
+  }
+
+  // ==========================================================================
+  std::printf("  -- A2. Color Burn and Hard Mix, on combineDualCoverage() directly --\n");
+  // ==========================================================================
+  {
+    // `combineDualCoverage()` is exercised DIRECTLY here rather than through
+    // `dabCoverage()`, for one specific reason: `dabCoverage()`'s own
+    // `base == 0` short-circuit (brush/Deposit.cpp, right before its call
+    // into this function) means production code NEVER calls
+    // `combineDualCoverage()` with `base == 0` at all -- so a test that can
+    // only observe `dabCoverage()`'s output cannot tell "the mode's own
+    // formula preserves the identity" from "the wrapper masked it," and for
+    // Hard Mix those are genuinely different things (see below). That is
+    // also why this function is declared in brush/Deposit.hpp and defined
+    // outside the anonymous namespace in brush/Deposit.cpp, instead of
+    // staying a `namespace {}` local the way `singleTipCoverage()` does.
+    //
+    // 1e-6f tolerance throughout this block: every value below reaches its
+    // result through at most four float32 operations (a subtract, a
+    // divide-or-multiply, a min, a subtract) starting from operands with one
+    // or two decimal digits, none of which are exact binary fractions except
+    // 0.5. float32 epsilon is ~1.19e-7; four compounded roundings on
+    // order-1 values bound the error at a handful of epsilons, so 1e-6 is
+    // roughly 8x that worst case -- tight enough to catch a wrong formula,
+    // loose enough not to flake on legitimate rounding.
+    constexpr float kArithTol = 1e-6f;
+
+    // --- base == 0 for all four members, asserted EXACTLY (no tolerance) ---
+    //
+    // Multiply and Overlay: `0 * second` and the `base < 0.5` branch's
+    // `2 * 0 * second` are both exactly 0.0f for any finite `second` --
+    // IEEE754 float multiplication by an exact 0 is exact.
+    check(combineDualCoverage(DualBrushBlend::Multiply, 0.0f, 0.7f) == 0.0f,
+          "abr-dual/coverage2: combineDualCoverage(Multiply, base=0, .) == 0 exactly, direct");
+    check(combineDualCoverage(DualBrushBlend::Overlay, 0.0f, 0.7f) == 0.0f,
+          "abr-dual/coverage2: combineDualCoverage(Overlay, base=0, .) == 0 exactly, direct");
+    // Color Burn at base==0: `1 - min(1, (1-0)/second) == 1 - min(1, 1/second)`.
+    // For every `second` in (0,1], `1/second >= 1`, so `min` clamps to `1`
+    // and `1 - 1 == 0` -- EXACT for second==1.0 (1/1==1.0 exactly) and for
+    // second==0.5 (1/0.5==2.0 exactly, a power-of-two divide). The STANDARD
+    // formula already has this identity; nothing was added to get it.
+    check(combineDualCoverage(DualBrushBlend::ColorBurn, 0.0f, 1.0f) == 0.0f,
+          "abr-dual/coverage2: combineDualCoverage(ColorBurn, base=0, second=1) == 0 exactly -- "
+          "the unmodified standard formula already has this identity");
+    check(combineDualCoverage(DualBrushBlend::ColorBurn, 0.0f, 0.5f) == 0.0f,
+          "abr-dual/coverage2: combineDualCoverage(ColorBurn, base=0, second=0.5) == 0 exactly, "
+          "same reason");
+    // Hard Mix at base==0, second==1: THIS is the case the bare Photoshop
+    // formula gets wrong -- `base + second == 0 + 1 == 1 >= 1`, so an
+    // unguarded `(base+second>=1)?1:0` returns 1.0f here, painting where the
+    // primary tip has no coverage at all. The `base > 0.0f` guard added in
+    // this function's own HardMix case is what makes this 0.0f instead.
+    check(combineDualCoverage(DualBrushBlend::HardMix, 0.0f, 1.0f) == 0.0f,
+          "abr-dual/coverage2: combineDualCoverage(HardMix, base=0, second=1) == 0 exactly -- the "
+          "ONE member whose bare per-channel formula would answer 1 here (0+1>=1), caught by this "
+          "function's own base>0 guard rather than left to dabCoverage()'s short-circuit alone");
+
+    // --- Color Burn, second == 0 edge, both branches of the guard ---
+    //
+    // base < 1, second <= 0: the formula's own pole, defined as 0 (header
+    // comment's "darkening by NOTHING darkens NOTHING" and its analytic
+    // limit as second -> 0+).
+    check(combineDualCoverage(DualBrushBlend::ColorBurn, 0.5f, 0.0f) == 0.0f,
+          "abr-dual/coverage2: ColorBurn(base=0.5, second=0) == 0 exactly -- the second==0 pole, "
+          "defined rather than left undefined");
+    // base >= 1: saturates to white regardless of second, INCLUDING
+    // second==0 -- a full-coverage primary tip stays fully covered even
+    // where the second tip contributes nothing, which is the OTHER branch of
+    // the same guard and must not be confused with the pole above.
+    check(combineDualCoverage(DualBrushBlend::ColorBurn, 1.0f, 0.0f) == 1.0f,
+          "abr-dual/coverage2: ColorBurn(base=1, second=0) == 1 exactly -- base saturation is "
+          "checked BEFORE the second==0 pole, so these two zero-ish inputs give different answers "
+          "for different reasons");
+
+    // --- Two hand-computed interior points per new mode ---
+    //
+    // Color Burn point 1: base=0.6, second=0.5.
+    //   (1 - 0.6) / 0.5 = 0.4 / 0.5 = 0.8
+    //   1 - min(1, 0.8) = 1 - 0.8 = 0.2
+    check(nearf(combineDualCoverage(DualBrushBlend::ColorBurn, 0.6f, 0.5f), 0.2f, kArithTol),
+          "abr-dual/coverage2: ColorBurn(0.6, 0.5) == 0.2, by hand: (1-0.6)/0.5=0.8, 1-0.8=0.2");
+    // Color Burn point 2: base=0.5, second=0.8.
+    //   (1 - 0.5) / 0.8 = 0.5 / 0.8 = 0.625
+    //   1 - min(1, 0.625) = 0.375
+    check(nearf(combineDualCoverage(DualBrushBlend::ColorBurn, 0.5f, 0.8f), 0.375f, kArithTol),
+          "abr-dual/coverage2: ColorBurn(0.5, 0.8) == 0.375, by hand: (1-0.5)/0.8=0.625, "
+          "1-0.625=0.375");
+    // Hard Mix point 1: base=0.6, second=0.5. Sum 1.1 >= 1 -> 1.0.
+    check(combineDualCoverage(DualBrushBlend::HardMix, 0.6f, 0.5f) == 1.0f,
+          "abr-dual/coverage2: HardMix(0.6, 0.5) == 1.0, by hand: 0.6+0.5=1.1 >= 1");
+    // Hard Mix point 2: base=0.4, second=0.5. Sum 0.9 < 1 -> 0.0.
+    check(combineDualCoverage(DualBrushBlend::HardMix, 0.4f, 0.5f) == 0.0f,
+          "abr-dual/coverage2: HardMix(0.4, 0.5) == 0.0, by hand: 0.4+0.5=0.9 < 1");
+    // Hard Mix at the exact boundary, base=0.5, second=0.5: sum is EXACTLY
+    // 1.0f (both dyadic, no rounding), and the formula's own comparison is
+    // `>=`, so this lands on the `1.0f` side, not the `0.0f` side -- pins
+    // down which side of the threshold the boundary itself falls on.
+    check(combineDualCoverage(DualBrushBlend::HardMix, 0.5f, 0.5f) == 1.0f,
+          "abr-dual/coverage2: HardMix(0.5, 0.5) == 1.0 exactly -- the sum lands EXACTLY on the "
+          "threshold, and Photoshop's `>=` puts it on the covered side");
+
+    // --- Distinctness: all four modes, same inputs, four different answers ---
+    //
+    // base=0.6, second=0.5 (the Color Burn point 1 and Hard Mix point 1
+    // above, reused): Multiply 0.6*0.5=0.30; Overlay (base>=0.5 branch)
+    // 1-2*(1-0.6)*(1-0.5)=1-2*0.4*0.5=1-0.4=0.60; ColorBurn 0.20 (above);
+    // HardMix 1.00 (above). Four genuinely different numbers -- this is the
+    // check that a fixture collapsing to 0 or 1 everywhere cannot fake: if
+    // any two of these formulas were accidentally swapped or aliased, at
+    // least one of the six pairwise comparisons below would fail.
+    const float mul = combineDualCoverage(DualBrushBlend::Multiply, 0.6f, 0.5f);
+    const float ovl = combineDualCoverage(DualBrushBlend::Overlay, 0.6f, 0.5f);
+    const float cbn = combineDualCoverage(DualBrushBlend::ColorBurn, 0.6f, 0.5f);
+    const float hmx = combineDualCoverage(DualBrushBlend::HardMix, 0.6f, 0.5f);
+    check(nearf(mul, 0.30f, kArithTol) && nearf(ovl, 0.60f, kArithTol) &&
+              nearf(cbn, 0.20f, kArithTol) && hmx == 1.0f,
+          "abr-dual/coverage2: sanity -- all four hand-computed values at base=0.6, second=0.5 "
+          "match their derivations above");
+    check(mul != ovl && mul != cbn && mul != hmx && ovl != cbn && ovl != hmx && cbn != hmx,
+          "abr-dual/coverage2: ...and all four are PAIRWISE DISTINCT -- the same two input "
+          "coverages produce four different combined values, one per mode, not four names for one "
+          "number");
   }
 
   {
@@ -377,6 +506,47 @@ bool runAbrDualBrushTest() {
     check(ro.ok && ro.presets.size() == 1 && ro.presets[0].dualTip != nullptr &&
               ro.presets[0].dualBlend == DualBrushBlend::Overlay,
           "abr-dual: `BlnM` 'Ovrl' reads as Overlay, and a second tip still builds");
+
+    // `BlnM` 'CBrn' -- Color Burn, sourced from `psd_tools.terminology`'s
+    // `Enum` class (the SAME class `Mltp`/`Ovrl` came from) and independently
+    // from `ag-psd`'s `BlnM` enum (io/AbrBrushes.cpp's own comment on the
+    // mapping has both citations). A second tip must arrive, not just a
+    // recognised enumerator, exactly as Mltp/Ovrl do above.
+    spec.blendValueId = "CBrn";
+    const AbrImportResult rcb = importAbrBrushes(wrapAbrDesc(oneDualBrushDesc("Dual ColorBurn", spec)));
+    check(rcb.ok && rcb.presets.size() == 1 && rcb.presets[0].dualTip != nullptr &&
+              rcb.presets[0].dualBlend == DualBrushBlend::ColorBurn,
+          "abr-dual: `BlnM` 'CBrn' reads as Color Burn, and a second tip still builds");
+    check(rcb.dualBrushUnsupportedBlend == 0,
+          "abr-dual: ...and does NOT increment dualBrushUnsupportedBlend -- this preset now "
+          "arrives with a working dual tip instead of falling back to the primary tip alone");
+
+    // `BlnM` 'hMix' -- Hard Mix, at the spelling this build's own task brief
+    // reports as OBSERVED on the wire in a real sample pack. io/AbrBrushes.cpp's
+    // comment on the mapping records the caveat: this exact spelling was not
+    // independently reproduced by this search (it lives in a DIFFERENT psd_tools
+    // table, for a different wire format, not in the `BlnM`-specific one), so
+    // this accepts it on the brief's own reported observation while ALSO
+    // accepting the spelling every `BlnM`-specific source gives instead.
+    spec.blendValueId = "hMix";
+    const AbrImportResult rhm = importAbrBrushes(wrapAbrDesc(oneDualBrushDesc("Dual HardMix", spec)));
+    check(rhm.ok && rhm.presets.size() == 1 && rhm.presets[0].dualTip != nullptr &&
+              rhm.presets[0].dualBlend == DualBrushBlend::HardMix,
+          "abr-dual: `BlnM` 'hMix' reads as Hard Mix, and a second tip still builds");
+    check(rhm.dualBrushUnsupportedBlend == 0,
+          "abr-dual: ...and does NOT increment dualBrushUnsupportedBlend");
+
+    // `BlnM` 'hardMix' -- the SAME concept, the long-form spelling `ag-psd`'s
+    // `BlnM` enum actually gives (the table purpose-built for this exact
+    // field). Both spellings must land on the identical enumerator: a real
+    // file is expected to use exactly one of the two, never both, but this
+    // build should not care which.
+    spec.blendValueId = "hardMix";
+    const AbrImportResult rhm2 =
+        importAbrBrushes(wrapAbrDesc(oneDualBrushDesc("Dual HardMix2", spec)));
+    check(rhm2.ok && rhm2.presets.size() == 1 && rhm2.presets[0].dualTip != nullptr &&
+              rhm2.presets[0].dualBlend == DualBrushBlend::HardMix,
+          "abr-dual: `BlnM` 'hardMix' (the long-form spelling) ALSO reads as Hard Mix");
   }
 
   {
@@ -405,6 +575,42 @@ bool runAbrDualBrushTest() {
         sawScreenNote = true;
     check(sawScreenNote, "abr-dual: ...and the note NAMES the raw blend mode, so a reader can "
                          "tell which one without re-deriving it");
+  }
+
+  {
+    // `BlnM` 'linearHeight' -- the third id this step set out to resolve,
+    // and the one left UNSUPPORTED on purpose. `ag-psd`'s `BlnM` enum (the
+    // table built for this exact field) confirms the id is real and even
+    // carries a "used in ABR" comment on it, so this is not a garbled or
+    // misread wire value -- but what it names is Photoshop's Texture panel's
+    // "Linear Height" compositing (a grayscale height-map blend, per the
+    // Krita `abr_brush_importer` plugin's own texture-mode table), not a
+    // colour/coverage blend mode, and no source gives it a per-pixel
+    // formula. Exercised the identical way `Scrn` is above: read as a real
+    // enumerated value, refused BY NAME, counted as understood-but-unsupported
+    // rather than silently dropped.
+    DualBrushSpec spec;
+    spec.present = true;
+    spec.on = true;
+    spec.haveBlend = true;
+    spec.blendValueId = "linearHeight";
+    spec.tip.present = true;
+
+    const AbrImportResult r =
+        importAbrBrushes(wrapAbrDesc(oneDualBrushDesc("Dual LinearHeight", spec)));
+    check(r.ok && r.presets.size() == 1 && r.presets[0].dualTip == nullptr,
+          "abr-dual: `BlnM` 'linearHeight' builds NO second tip -- not sourced to a coverage "
+          "formula, so it is not guessed at");
+    check(r.dualBrushUnsupportedBlend == 1 && r.dualBrushes == 0,
+          "abr-dual: ...counted as UNSUPPORTED BLEND, the same honest bucket 'Scrn' lands in "
+          "above, not silently folded into Multiply, ColorBurn or any other implemented mode");
+    bool sawHeightNote = false;
+    for (const AbrImportNote& n : r.notes)
+      if (n.what.find("linearHeight") != std::string::npos &&
+          n.what.find("not implemented") != std::string::npos)
+        sawHeightNote = true;
+    check(sawHeightNote, "abr-dual: ...and the note names 'linearHeight' by its own wire id, not "
+                         "as a guessed English name for a formula this build does not have");
   }
 
   {

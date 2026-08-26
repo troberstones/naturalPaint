@@ -108,6 +108,29 @@ struct DescFixture {
   DescFixture& enumv(const char* typeId, const char* valueId) {
     return code("enum").key4(typeId).key4(valueId);
   }
+  // An `enum` value whose VALUE id may be longer than four characters --
+  // Photoshop's "second-generation" `BlnM` ids (`hardMix`, `linearHeight`,
+  // `vividLight`...) are exactly this shape, and `enumv()` above cannot write
+  // them: it forces the value id through `key4()`, which reads -- and
+  // therefore writes -- exactly four bytes, silently TRUNCATING anything
+  // longer (`"hardMix"` becomes the four bytes `"hard"`) rather than failing
+  // loudly. That is `keyN()`'s own "a reader that special-cases 4 gets
+  // wrong" case, hit here as a writer bug instead of a reader one -- found
+  // by a fixture whose value id came back truncated in a real `--selftest`
+  // run, not by inspection.
+  //
+  // Same shape as `enumv()` otherwise: `code("enum")`, the type id through
+  // `key4()` (every `BlnM` TYPE id this build reads is the literal
+  // four-character type "BlnM" itself, never long), then the VALUE id
+  // through `keyN()`'s explicit-length form -- which `io/Descriptor.cpp`'s
+  // `readKey()` reads identically to the zero-length form when the value
+  // happens to be exactly four characters (`declared == 4` and `declared ==
+  // 0` both resolve to `n == 4`), so this is a strict superset of `enumv()`,
+  // not a second convention with its own edge cases.
+  DescFixture& enumvLong(const char* typeId, const char* valueId) {
+    code("enum").key4(typeId);
+    return keyN(valueId);
+  }
   DescFixture& tdta(const std::vector<uint8_t>& payload) {
     code("tdta").u32v(static_cast<uint32_t>(payload.size()));
     for (const uint8_t byte : payload) u8v(byte);
