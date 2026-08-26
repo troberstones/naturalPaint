@@ -295,6 +295,15 @@ struct BrushState {
   // Read only by the RGB deposit route. The pigment route caps at `kMaxMass`,
   // a property of the paper rather than of the stroke.
   float opacity = 1.0f;
+
+  // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) -- OFF by default,
+  // `GrainParams`'s own default. The BRUSH EDITOR's PAPER GRAIN section
+  // (`ui/MacPaintUI.cpp`'s `drawBrushSection()`) is the one control surface
+  // that writes this; `brushTipFor()` copies it straight into the tip it
+  // builds, unscaled by any DYNAMICS target -- there is no
+  // `DynamicTarget::Grain` for the identical reason there is no
+  // `DynamicTarget::Opacity` (`opacity`'s own comment above).
+  GrainParams grain;
 };
 
 // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4): zoom/pan plus

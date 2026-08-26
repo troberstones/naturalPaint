@@ -2021,6 +2021,13 @@ int main(int argc, char** argv) {
     // track10/feel (PaintCopilot §3.2, arXiv:2605.20941): the log/power
     // pressure-response curves and the pressure EMA's per-stroke reset.
     const bool pressureFeelOk = np::runPressureFeelTest();
+    // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp), US 5,347,620:
+    // the tiled grain field, `F = clamp(P*S*O1 - G, 0, 1)`, grain OFF as a
+    // bit-exact no-op, `app/DabPreview` agreeing with a real `depositDab()`
+    // on a grained dab, and the field keyed on absolute document position
+    // rather than dab-local offset -- the assertion a grain that moved with
+    // the brush would fail.
+    const bool grainOk = np::runGrainTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2047,7 +2054,8 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
-                    saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk;
+                    saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
+                    grainOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

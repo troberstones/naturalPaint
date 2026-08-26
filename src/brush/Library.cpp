@@ -55,10 +55,11 @@ bool linkSetsEqual(const BrushLinkSet& a, const BrushLinkSet& b) {
 
 bool presetMatches(const BrushPreset& preset, float radius, float hardness, float spacing,
                    float roundness, float angle, float load, float wetness,
-                   const BrushLinkSet& links) {
+                   const BrushLinkSet& links, const GrainParams& grain) {
   return preset.radius == radius && preset.hardness == hardness && preset.spacing == spacing &&
          preset.roundness == roundness && preset.angle == angle && preset.load == load &&
-         preset.wetness == wetness && linkSetsEqual(preset.links, links);
+         preset.wetness == wetness && linkSetsEqual(preset.links, links) &&
+         grainParamsEqual(preset.grain, grain);
 }
 
 std::string uniquePresetName(const BrushLibrary& lib, const std::string& wanted) {

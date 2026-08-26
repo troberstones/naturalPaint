@@ -147,6 +147,20 @@ struct BrushPreset {
   std::shared_ptr<const BrushTip> dualTip;
   // Only meaningful when `dualTip` is set.
   DualBrushBlend dualBlend = DualBrushBlend::Multiply;
+
+  // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp). Unlike `tipBitmap`
+  // and `dualTip` above, this DOES have its own slider (the BRUSH EDITOR's
+  // PAPER GRAIN section) and is therefore compared by `presetMatches()`
+  // below, the same as `radius`/`hardness`/every other field a control moves
+  // independently -- and persisted by `app/UserBrushLibraryStore`, as its own
+  // `grain` line rather than as a fourth `scalars` count: growing that line's
+  // required field count would make an OLDER `user-presets.txt` (seven
+  // floats, no eighth) fail to parse at all under `takeFloats()`'s
+  // exact-count contract, dropping the whole preset it belongs to. A new,
+  // separate keyword an older build does not recognise is instead preserved
+  // verbatim by that parser's own forward-compatible "a key this version does
+  // not know" branch -- no code needed here to earn that.
+  GrainParams grain;
 };
 
 struct BrushLibrary {
@@ -192,9 +206,18 @@ BrushLibrary defaultBrushLibrary();
 // identical argument: both move only in lockstep with a whole preset, so the
 // eight fields already checked can never agree while either of those two
 // disagree.
+//
+// **`grain` IS a parameter here, unlike `tipBitmap`/`dualTip` above, and for
+// the mirror-image reason: it has its own control** (the BRUSH EDITOR's
+// PAPER GRAIN section, `ui/MacPaintUI.cpp`) that moves it independently of
+// picking a whole preset, exactly as `radius` and every scalar already
+// checked does. Leaving it out would mean dragging the GRAIN slider alone
+// left the preset header lying that nothing had changed -- the identical
+// failure this function's own header paragraph exists to prevent for every
+// other independently-driven field.
 bool presetMatches(const BrushPreset& preset, float radius, float hardness, float spacing,
                    float roundness, float angle, float load, float wetness,
-                   const BrushLinkSet& links);
+                   const BrushLinkSet& links, const GrainParams& grain);
 
 // Whether two link sets describe the same relationships. Order-insensitive:
 // the set is a flat vector, but a matrix cell is a cell, so two sets holding

@@ -442,6 +442,9 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // that draws them would give the DYNAMICS panel a target it cannot show. The
   // clamp to a legal alpha is `RgbStroke::begin()`'s, at the point of use.
   tip.opacity = brush.opacity;
+  // Straight through, unscaled: no `DynamicTarget::Grain` exists, for
+  // `tip.opacity`'s own reason immediately above.
+  tip.grain = brush.grain;
 
   // **The foreground, not `defaultPalette()[brush.pigment]`.** This used to
   // read the palette row directly, which was the same thing right up until
@@ -573,6 +576,7 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   brush.dualTip = preset.dualTip;
   brush.dualBlend = preset.dualBlend;
   brush.scatterBothAxes = preset.scatterBothAxes;
+  brush.grain = preset.grain;
 }
 
 BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
@@ -590,6 +594,7 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   p.dualTip = brush.dualTip;
   p.dualBlend = brush.dualBlend;
   p.scatterBothAxes = brush.scatterBothAxes;
+  p.grain = brush.grain;
   return p;
 }
 
@@ -597,7 +602,7 @@ bool brushIsEdited(const BrushState& brush) {
   if (brush.brushLibrary.active >= brush.brushLibrary.presets.size()) return false;
   const BrushPreset& p = brush.brushLibrary.presets[brush.brushLibrary.active];
   return !presetMatches(p, brush.radius, brush.hardness, brush.spacing, brush.roundness,
-                        brush.angle, brush.load, brush.wetness, brush.links);
+                        brush.angle, brush.load, brush.wetness, brush.links, brush.grain);
 }
 
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,

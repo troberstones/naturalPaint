@@ -77,7 +77,23 @@ PigmentTexel dabPreviewTexel(const BrushTip& tip, float scale, int cell, int px,
   // are indistinguishable once rasterised -- mass 0 draws as paper either way
   // -- and they are NOT indistinguishable to the assertion that compares this
   // against a real deposited tile, which is the assertion that matters.
-  const float deltaMass = tip.flow * dabPreviewCoverageAt(tip, scale, cell, px, py);
+  //
+  // **`grainCoverageAt(tip.grain, ..., px, py)` -- the same call
+  // `depositDab()`'s own loop makes, at the same point, on `(px, py)` playing
+  // the absolute coordinate a real deposit's `(x, y)` would be.**
+  // brush/Deposit.hpp §2e states the convention this stands on: this preview
+  // has no `Document` and therefore no true absolute position, so it treats
+  // its own preview-texel grid as if it WERE the document's, with this cell's
+  // top-left at document (0,0). That is what makes the identity below
+  // provable rather than merely plausible: build a real `PigmentTileStore`,
+  // `depositDab()` one dab into a canvas sized `kDabPreviewCell x
+  // kDabPreviewCell` centred at this cell's own dab centre, and its texel
+  // `(x, y)` is the bit-identical integer pair as this function's `(px, py)`
+  // for cell 0 -- so grain, keyed on that integer pair in both places, agrees
+  // too. `--selftest`'s grain section builds exactly that pair and compares.
+  const float cov = grainCoverageAt(tip.grain, dabPreviewCoverageAt(tip, scale, cell, px, py),
+                                    px, py);
+  const float deltaMass = tip.flow * cov;
   if (!(deltaMass > 0.0f)) return PigmentTexel{};
   return depositTexel(PigmentTexel{}, tip.pigment, deltaMass);
 }
@@ -172,9 +188,16 @@ bool dabPreviewTipsEqual(const BrushTip& a, const BrushTip& b) noexcept {
   // presets could in principle share one second tip but combine it by a
   // different `BlnM`, and that changes what `dabCoverage()` draws (§2d) even
   // though `dualTip`'s own pointer is unchanged.
+  //
+  // `grain` is checked too, by value (`grainParamsEqual()`, brush/Grain.hpp)
+  // -- `dabPreviewTexel()` now reads it (brush/Deposit.hpp §2e), so a GRAIN
+  // slider moved with every other field unchanged must still redraw. Missing
+  // this would be the identical failure `bitmap`'s own comment describes:
+  // the cache handing back a picture for the paper this brush no longer has.
   return a.radius == b.radius && a.hardness == b.hardness && a.flow == b.flow &&
          a.roundness == b.roundness && a.angle == b.angle && a.pigment == b.pigment &&
-         a.bitmap == b.bitmap && a.dualTip == b.dualTip && a.dualBlend == b.dualBlend;
+         a.bitmap == b.bitmap && a.dualTip == b.dualTip && a.dualBlend == b.dualBlend &&
+         grainParamsEqual(a.grain, b.grain);
 }
 
 const DabPreviewImage& DabPreviewCache::imageFor(

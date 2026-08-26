@@ -3994,6 +3994,66 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     ImGui::EndGroup();
   }
 
+  // --- PAPER GRAIN ---------------------------------------------------------
+  // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) -- docs/
+  // reachability-audit.md's B10 caught exactly this mistake once already: a
+  // feature built and wired into the deposit with no control anywhere in the
+  // chrome to turn it on. This is that control.
+  //
+  // Closed by default, not because grain is unimportant but because it is
+  // OFF by default (`GrainParams::enabled`) and a header that opens on a
+  // section doing nothing yet reads as broken before anyone has touched it --
+  // the same call `ImGuiTreeNodeFlags_DefaultOpen`'s absence makes for every
+  // other collapsed-by-default section in this column.
+  //
+  // **Named "PAPER GRAIN" rather than plain "GRAIN"**, deliberately distinct
+  // from the watercolour solver's own "Grain block" slider two panels over
+  // (`drawMediumSection()`'s `st.sim.grainBlock`, an unrelated granulation-
+  // blocking parameter on the fluid model): the two are different mechanisms
+  // on different routes (this one on the CPU pigment deposit, that one on
+  // `sim::PaintSim`), and a user who has seen one "Grain" slider elsewhere
+  // must not read this one as the same control moved.
+  if (ImGui::CollapsingHeader("PAPER GRAIN")) {
+    // **Reaches exactly one route** -- brush/Deposit.hpp §2e's own stated
+    // scope: `depositDab()` (the Pigment layer's CPU deposit) and its
+    // preview. `brush/RgbDeposit.cpp` calls `dabCoverage()` directly and was
+    // left untouched by that step, so an RGB layer's stroke ignores this
+    // section entirely, same disabled-rather-than-hidden honesty OPACITY and
+    // WET already give a route that cannot use them, and for the identical
+    // reason: a painter who turns this on and sees no change on an RGB layer
+    // is told why instead of concluding the slider is broken.
+    const OpenDocument* od = st.documents.active();
+    const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
+    const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
+    const bool honoured = route == StrokeRoute::CpuDeposit;
+    ImGui::BeginDisabled(!honoured);
+    ImGui::Checkbox("Enabled", &st.brush.grain.enabled);
+    ImGui::BeginDisabled(!st.brush.grain.enabled);
+    // One slider drives both `periodX` and `periodY` -- `GrainParams`'s own
+    // comment on why the struct keeps them separate (the patent's NR/NC are
+    // independent) while this, the only control surface that writes them,
+    // chooses to move them together: a rectangular-period paper is a real
+    // thing but not a distinction this panel's first control needs to offer,
+    // and one slider is one fewer number for a painter reaching for "make
+    // the paper coarser" to reconcile.
+    int period = st.brush.grain.periodX;
+    if (ctlSliderInt("Scale", &period, 4, 96)) {
+      st.brush.grain.periodX = period;
+      st.brush.grain.periodY = period;
+    }
+    ctlSlider("Depth", &st.brush.grain.depth, 0.0f, 1.0f);
+    ctlSlider("Strength", &st.brush.grain.strength, 0.0f, 2.0f);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    if (!honoured)
+      ImGui::TextDisabled("Grain reaches the Pigment layer deposit; this stroke goes to %s.",
+                          strokeRouteName(route));
+    else if (st.brush.grain.enabled)
+      ImGui::TextDisabled("Deep valleys fill; peaks get skipped, at the same pressure.");
+    else
+      ImGui::TextDisabled("Off: every dab covers exactly what its falloff says, paper or not.");
+  }
+
   // --- DYNAMICS ----------------------------------------------------------
   if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
     pushAtelierMono();

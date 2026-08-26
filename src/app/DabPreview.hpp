@@ -215,7 +215,13 @@ float dabPreviewCoverageAt(const BrushTip& tip, float scale, int cell, int px, i
 
 // What one dab leaves at that texel on **empty paper**: `depositTexel()`
 // applied to a zero texel with `tip.flow * coverage` of mass, which is
-// literally the body of `depositDab()`'s inner loop.
+// literally the body of `depositDab()`'s inner loop -- **including its §2e
+// grain step**, applied to `dabPreviewCoverageAt()`'s result at `(px, py)`
+// standing in for the absolute document coordinate a real deposit would use
+// (brush/Deposit.hpp §2e's own comment on this preview's convention).
+// `dabPreviewCoverageAt()` itself stays exactly `dabCoverage()`, ungrained --
+// grain is layered on here, one level up, the same split `depositDab()`'s own
+// loop keeps between the tip's shape and what modulates it afterward.
 //
 // Returned as a `PigmentTexel` rather than as a colour so that `--selftest`
 // can compare it against a real deposited tile's texel field by field. The
@@ -269,9 +275,11 @@ std::array<BrushTip, kDabPreviewCells> dabPreviewTipsFor(const BrushState& brush
 // Compares only the fields `rasteriseDabPreview()` reads. `spacing` and
 // `opacity` are deliberately absent: nothing in a one-dab preview depends on
 // them, and keying on them would re-rasterise 4096 texels because a slider the
-// image cannot show moved. `bitmap` (brush/Deposit.hpp §2c) IS compared, by
-// pointer: `dabCoverage()` reads it, so a preview cache that ignored it would
-// hand back one sampled-tip brush's picture for another's.
+// image cannot show moved. `grain` (brush/Deposit.hpp §2e) IS compared, by
+// value: `dabPreviewTexel()` reads it now, so a paper-only edit with every
+// other field held still must redraw. `bitmap` (brush/Deposit.hpp §2c) IS
+// compared, by pointer: `dabCoverage()` reads it, so a preview cache that
+// ignored it would hand back one sampled-tip brush's picture for another's.
 bool dabPreviewTipsEqual(const BrushTip& a, const BrushTip& b) noexcept;
 
 // The preview, rasterised only when the tip actually changed.

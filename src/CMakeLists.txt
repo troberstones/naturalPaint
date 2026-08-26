@@ -71,6 +71,7 @@ add_executable(naturalPaint
   app/selftest/AtelierChrome.cpp
   app/selftest/ActiveLayer.cpp
   app/selftest/FormatSupport.cpp
+  app/selftest/Grain.cpp
   app/selftest/Gradient.cpp
   app/selftest/GuidesGridSnap.cpp
   app/selftest/Histogram.cpp
@@ -142,6 +143,7 @@ add_executable(naturalPaint
   app/ZoomAndSize.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
+  brush/Grain.cpp
   brush/Library.cpp
   brush/PigmentErase.cpp
   brush/RgbDeposit.cpp

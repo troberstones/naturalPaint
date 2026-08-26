@@ -3537,4 +3537,21 @@ bool runWheelInputTest();
 //    blended with the first stroke's last smoothed reading.
 bool runPressureFeelTest();
 
+// Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp): US 5,347,620's tiled
+// grain field and its `F = clamp(P*S*O1 - G, 0, 1)` overlay fraction, headless
+// and GPU-free. Proves, in order: the field is a pure, deterministic function
+// of its inputs; it tiles exactly at its own period; the formula's clamp
+// endpoints; that a peak texel gets STRICTLY less coverage than a valley
+// texel under the identical pressure, with the gap quantified rather than
+// merely signed; that grain OFF costs not one extra floating-point operation
+// against the identical stroke with the parameter left at its default; that
+// `app/DabPreview` and a real `depositDab()` agree on a grained dab, texel for
+// texel, the same identity `runDabPreviewTest()` already proves for an
+// ungrained one; and -- the one assertion the whole feature stands or falls
+// on -- that the SAME brush stroke painted at two different absolute document
+// positions picks up DIFFERENT grain, because a field keyed on the dab's own
+// offset instead of the page would be a texture printed on the brush, not on
+// the paper.
+bool runGrainTest();
+
 }  // namespace np

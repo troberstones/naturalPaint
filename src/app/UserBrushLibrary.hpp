@@ -63,17 +63,19 @@
 //     naturalPaint-user-presets 1
 //     preset My Custom Wash
 //     scalars 30.5 0.62 0.18 0.7 12 1.1 2.4
+//     grain 1 24 24 0.35 1
 //     link 0 4 0.2 1 0 1
 //     point 0 0
 //     point 0.4 0.15
 //     point 1 1
 //     preset Detail Liner 2
 //     scalars 6 0.9 0.08 1 0 1.2 0.5
+//     grain 0 24 24 0.35 1
 //
 // `preset` opens a scope exactly as `library` does in the sibling file: the
 // rest of the line is the name (no quoting, no escaping -- app/
-// BrushLibraryFile.hpp §1's reasoning again), and every `scalars`/`link`/
-// `point` line belongs to the most recent `preset` line above it.
+// BrushLibraryFile.hpp §1's reasoning again), and every `scalars`/`grain`/
+// `link`/`point` line belongs to the most recent `preset` line above it.
 //
 // **No `row` line and no cached scalars-only form.** app/BrushLibraryFile's
 // `BrushRow` exists so a pane can draw a brush's icon and name without its
@@ -92,6 +94,20 @@
 // by `scalars` -- wait, more precisely, as garbage that fails to parse as the
 // eighth float and is dropped as a malformed record (see below), which is
 // why new scalar data must arrive as a new key, never an eighth field.
+//
+// **`grain 1 24 24 0.35 1` -- enabled, periodX, periodY, depth, strength
+// (`BrushPreset::grain`, brush/Grain.hpp's `GrainParams`) -- is exactly that:
+// a NEW key added after `scalars` already had a file format in the wild,
+// rather than an eighth `scalars` field.** Growing `scalars`' required count
+// would fail `takeFloats(rest, 7, n)`'s exact-count parse against every
+// `user-presets.txt` written before this feature existed and drop the whole
+// preset it belongs to (§ this section's own paragraph above, restated for
+// the case that actually arrived). A `preset` block with no `grain` line at
+// all -- every file on disk before this feature shipped -- leaves
+// `pending.grain` at its default-constructed value, which is grain OFF, the
+// answer every such brush already had. A malformed `grain` line is treated
+// like a malformed `link` line (below), not like a malformed `scalars` one:
+// it costs only itself, not the whole preset.
 //
 // ==========================================================================
 // 2. A link, and why its ordinals are load-bearing

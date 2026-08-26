@@ -254,6 +254,33 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       continue;
     }
 
+    if (key == "grain") {
+      // A SEPARATE keyword rather than an eighth `scalars` field --
+      // `BrushPreset::grain`'s own comment gives the reason: growing
+      // `scalars`' required count would make a FILE WRITTEN BEFORE this field
+      // existed (seven floats, no eighth) fail `takeFloats(rest, 7, ...)`'s
+      // exact-count parse and drop the whole preset. A new keyword an older
+      // reader of THIS file does not know is instead caught by the "a key
+      // this version does not know" branch at the bottom of this loop and
+      // preserved verbatim -- no code is needed here to protect a newer
+      // build's save against an older build's read.
+      //
+      // Malformed is treated like a malformed `link` line, not like a
+      // malformed `scalars` one: `pending.grain` simply keeps its
+      // default-constructed value (grain OFF), which is always a legal
+      // brush, rather than the whole preset being dropped for one bad line.
+      float n[5];
+      if (takeFloats(rest, 5, n)) {
+        pending.grain.enabled = n[0] != 0.0f;
+        pending.grain.periodX = static_cast<int32_t>(n[1]);
+        pending.grain.periodY = static_cast<int32_t>(n[2]);
+        pending.grain.depth = n[3];
+        pending.grain.strength = n[4];
+      }
+      pointMode = PointMode::None;
+      continue;
+    }
+
     if (key == "link") {
       float n[6];
       if (!takeFloats(rest, 6, n)) {
@@ -367,6 +394,13 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
     out += "preset " + sanitizeOneLine(p.name) + "\n";
     out += "scalars " + f9(p.radius) + " " + f9(p.hardness) + " " + f9(p.spacing) + " " +
            f9(p.roundness) + " " + f9(p.angle) + " " + f9(p.load) + " " + f9(p.wetness) + "\n";
+    // A preset with grain OFF still writes this line (with `enabled` 0) --
+    // consistent with `scalars` above always being written regardless of
+    // whether a value sits at its default, and simpler than a second code
+    // path for "nothing to say here".
+    out += "grain " + std::string(p.grain.enabled ? "1" : "0") + " " +
+           std::to_string(p.grain.periodX) + " " + std::to_string(p.grain.periodY) + " " +
+           f9(p.grain.depth) + " " + f9(p.grain.strength) + "\n";
     for (const BrushLink& link : p.links.links) {
       out += "link " + std::to_string(static_cast<int>(link.source)) + " " +
              std::to_string(static_cast<int>(link.target)) + " " + f9(link.rangeLo) + " " +

@@ -670,7 +670,7 @@ bool runAbrSampledTipsTest() {
     differentBmp->alpha.assign(9, 1);
     other.tipBitmap = differentBmp;
     check(presetMatches(other, brush.radius, brush.hardness, brush.spacing, brush.roundness,
-                        brush.angle, brush.load, brush.wetness, brush.links),
+                        brush.angle, brush.load, brush.wetness, brush.links, brush.grain),
           "abr-samp/roundtrip: presetMatches() DELIBERATELY cannot tell `other`'s different "
           "bitmap apart from `brush`'s -- documented on BrushPreset::tipBitmap and on "
           "presetMatches() itself, because nothing today can move a live bitmap independently "

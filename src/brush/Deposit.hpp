@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 
+#include "brush/Grain.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/Pigment.hpp"
 #include "core/SelectionMask.hpp"
@@ -36,15 +37,22 @@
 //   Delivered here          A stroke reaches a Layer. A Pigment layer holds
 //                           hand-painted content. `Mix` is visible. A stroke
 //                           is one undo step. The dirty-tile path carries an
-//                           in-progress stroke to the screen.
+//                           in-progress stroke to the screen. §2e: paper
+//                           tooth -- a tiled height field that thins coverage
+//                           at a peak and fills a valley, OFF by default.
 //
 //   NOT delivered here      Any fluid behaviour whatsoever: no water, no
 //                           diffusion, no edge darkening, no granulation, no
-//                           paper tooth, no wet-in-wet. A dab deposited here
-//                           is a stamp with a falloff, and it stays exactly
-//                           where it was stamped forever. Watercolour and oil
-//                           still live only in `sim::PaintSim`'s texture and
-//                           still never reach a `Layer`.
+//                           wet-in-wet. A dab deposited here is a stamp with a
+//                           falloff (modulated by grain, when a brush has it
+//                           on), and it stays exactly where it was stamped
+//                           forever. Watercolour and oil still live only in
+//                           `sim::PaintSim`'s texture and still never reach a
+//                           `Layer`. **Paper tooth used to be on this list --
+//                           it no longer is, and this line is the correction,
+//                           not a silent edit**, per this task's own rule
+//                           about a claim that goes stale: §2e below is what
+//                           changed and why.
 //
 //   Still owed              The solver readback. Until it lands, the medium a
 //                           user can *keep* in a document is "flat pigment",
@@ -386,6 +394,45 @@
 // nothing extra even when the second tip is a bitmap.
 //
 // ==========================================================================
+// 2e. Grain: paper tooth, applied OUTSIDE `dabCoverage()`, on purpose
+// ==========================================================================
+//
+// US 5,347,620's grain mechanism (`brush/Grain.hpp`'s own header, which
+// carries the full argument and the licensing accounting) modulates coverage
+// per TEXEL at the texel's ABSOLUTE document position -- deep valleys of a
+// tiled height field fill, peaks get skipped. `dabCoverage(tip, dx, dy)`
+// above takes only a dab-RELATIVE offset; it does not, and structurally
+// cannot without breaking its own "exactly two callers, no private state"
+// contract, know where on the page this dab is.
+//
+// **The resolution: grain does NOT become a third argument to
+// `dabCoverage()`.** It is applied to that function's RESULT, at the two
+// places in this codebase that already iterate an absolute integer texel
+// coordinate -- `depositDab()`'s inner loop below, and
+// `app/DabPreview.cpp`'s `dabPreviewTexel()`, which iterates its own
+// preview-absolute `(px, py)`. This is exactly the treatment the selection
+// already gets (§4): `sel` is not a `dabCoverage()` parameter either, it is
+// folded into `deltaMass` in the loop that has a `Selection*` to read. Grain
+// joins it as a second post-`dabCoverage()` modulation rather than becoming a
+// second shape system living inside the falloff function.
+//
+// `brush/RgbDeposit.cpp` calls `dabCoverage()` directly too, and does NOT
+// gain grain from this section -- it is a separate call site this change does
+// not touch, so an RGB layer's brush stroke still ignores paper entirely.
+// Stated as a gap rather than silently left: closing it is folding the same
+// `grainCoverageAt()` call into that file's own loop, which has the identical
+// absolute `(x, y)` available, and was left out of this step's scope by the
+// task that specified it (the pigment route, `brush/Deposit.cpp`, by name).
+//
+// **`BrushTip::grain` below is OFF by default** (`GrainParams::enabled`,
+// brush/Grain.hpp), and `grainCoverageAt()` returns its `coverage` input
+// utterly unchanged when it is -- no floating-point operation added to the
+// deposit's inner loop at all for the overwhelming majority of brushes that
+// have never turned grain on, which is what keeps every brush painted before
+// this feature existed, `--pigment-stroke-demo` and the `canvas` golden
+// reference depositing the identical floats they always did.
+//
+// ==========================================================================
 // 3. Which tiles a dab touches, and why the set is complete
 // ==========================================================================
 //
@@ -531,10 +578,14 @@
 // upside down (`color/ core/ ops/ app/ io/ ui/ gfx/ paint/ sim/ brush/` are
 // directory groupings, never namespaces, but they still have a direction).
 //
-// **No pressure, tilt, jitter, texture or scatter.** `BrushTip` is what the
-// deposit reads. `app/AppState`'s `BrushState` already turns pressure into a
-// radius and a flow multiplier for the solver path; a second copy of that
-// mapping here would be a second place for it to drift.
+// **No pressure or tilt.** `BrushTip` is what the deposit reads.
+// `app/AppState`'s `BrushState` already turns pressure into a radius and a
+// flow multiplier for the solver path; a second copy of that mapping here
+// would be a second place for it to drift. (Jitter/scatter and paper texture
+// -- `BrushTip::scatter`, §2e's `BrushTip::grain` -- are, by now, things this
+// module DOES read; this bullet is trimmed rather than deleted so a reader
+// comparing it against an older revision can see what moved off the list and
+// when, instead of the list quietly shrinking with no trace.)
 namespace np {
 
 // The cap on stored mass, and therefore on a Pigment layer's alpha.
@@ -677,6 +728,15 @@ struct BrushTip {
   // wider, not blurrier; true scatters isotropically, in a fresh direction
   // per dab. `app/StrokeSession`'s `applyPerDabScatter()` is what reads this.
   bool scatterBothAxes = false;
+
+  // Paper tooth (§2e, `brush/Grain.hpp`) -- OFF by default
+  // (`GrainParams::enabled`), which is what keeps every `BrushTip` this
+  // codebase already builds by naming its fields (this struct's own aggregate
+  // initialisation, `--pigment-stroke-demo`, most of `--selftest`) depositing
+  // exactly the coverage `dabCoverage()` returned, unmodified. Applied at
+  // `depositDab()`'s own loop and at `app/DabPreview`, never inside
+  // `dabCoverage()` itself -- §2e is the whole argument for why.
+  GrainParams grain;
 
   // What the tip is loaded with. `paint/Palette`'s `MixboxLut::rgbToLatent()`
   // produces one from a colour; `core/Pigment`'s `latentToRgb()` projects it
@@ -839,6 +899,15 @@ struct DepositCount {
 // history entry is copied here, once per dab that touches it, and the entry's
 // copy is left exactly as it was. That is the whole of what makes one stroke
 // cost its own tiles and not the layer's.
+//
+// **`tip.grain` (§2e) modulates `dabCoverage()`'s result before it becomes a
+// mass**, keyed by each texel's own absolute canvas coordinate -- the loop
+// below already has it, which is §2e's whole resolution of the "grain needs
+// a position `dabCoverage()` does not take" problem. A texel `dabCoverage()`
+// itself says is outside the tip (`rawCov == 0`) is skipped before grain is
+// even evaluated, so grain can thin or empty a texel already inside the
+// footprint, and never add one outside it -- §3's containment fact is
+// unaffected by whether a brush has grain on.
 DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centre,
                         int32_t canvasW, int32_t canvasH, const Selection* selection,
                         std::vector<TileCoord>* touchedOut);

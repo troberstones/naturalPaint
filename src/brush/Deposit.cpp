@@ -406,8 +406,21 @@ DepositCount depositDab(PigmentTileStore& store, const BrushTip& tip, Vec2 centr
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float cov = dabCoverage(tip, dx, dy);
-          if (!(cov > 0.0f)) continue;
+          const float rawCov = dabCoverage(tip, dx, dy);
+          if (!(rawCov > 0.0f)) continue;
+
+          // §2e: grain modulates the tip's own coverage at this texel's
+          // ABSOLUTE canvas position -- `x`/`y` here, not `dx`/`dy` above,
+          // which is why this cannot live inside `dabCoverage()` itself. A
+          // texel `dabCoverage()` already excluded never reaches this line
+          // (the `continue` above), so grain can only thin or empty a texel
+          // already inside the footprint §3 bounds, never add one outside
+          // it. `grainCoverageAt()` returns `rawCov` bit-identical when
+          // `tip.grain` is off (its own default), which is what keeps this
+          // line a no-op for every brush that has not turned grain on.
+          const float cov = grainCoverageAt(tip.grain, rawCov, x, y);
+          if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
+
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
           // A texel the selection excludes is not written AT ALL -- not written
           // with zero mass, not counted, and its tile not created on its
