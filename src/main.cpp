@@ -2013,6 +2013,11 @@ int main(int argc, char** argv) {
     // anchor math and the brush-size gesture/bracket-key range, both as pure
     // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
     const bool zoomAndSizeOk = np::runZoomAndSizeTest();
+    // track10/input ("make Mac trackpad input feel right"): the notch-vs-
+    // precise wheel classifier, the panel scroll's discount/smoothing, and
+    // the pinch-to-zoom path's arithmetic -- app/WheelInput.hpp. Headless;
+    // the SDL/ImGui dispatch sites this feeds are unreachable from here (F4).
+    const bool wheelInputOk = np::runWheelInputTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2039,7 +2044,7 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
-                    saveReadbackOk && zoomAndSizeOk && angleConventionOk;
+                    saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

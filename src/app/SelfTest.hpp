@@ -3501,4 +3501,15 @@ bool runSaveReadbackTest();
 //    with no zoom handler.
 bool runZoomAndSizeTest();
 
+// track10/input ("make Mac trackpad input feel right"): app/WheelInput.hpp's
+// pure functions -- the notch-vs-precise classifier
+// (`wheelDeltaIsPrecise()`), the panel scroll's discount and exponential
+// smoothing (`wheelScrollPixels()`/`smoothedScrollStep()`), and the pinch
+// path (`zoomFactorForPinch()`/`canvasPanForPreciseWheel()`), the latter
+// composed with this same file's `panForAnchoredZoom()` to prove the anchor
+// property specifically for a pinch gesture. Headless: `--selftest` cannot
+// reach the SDL/ImGui dispatch sites this replaces (F4), which is why the
+// decision logic was pulled out into functions this can call directly.
+bool runWheelInputTest();
+
 }  // namespace np

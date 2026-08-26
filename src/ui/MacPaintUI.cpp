@@ -35,6 +35,7 @@
 #include "app/Snapping.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "app/ViewTransform.hpp"
+#include "app/WheelInput.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
 #include "core/LayerCompOps.hpp"
@@ -51,6 +52,7 @@
 #include "ui/DocumentTexture.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacNativeMenu.hpp"
+#include "ui/MacTrackpadGestures.hpp"
 #include "ui/MenuModel.hpp"
 #include "ui/ToolCursor.hpp"
 
@@ -7539,13 +7541,45 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // meaningful once this frame's content has been laid out -- so the wheel
     // read here applies to the scroll range the PREVIOUS frame established,
     // which is the range the user was looking at when they turned the wheel.
+    //
+    // track10/input: this used to be one line, `SetScrollY(GetScrollY() -
+    // wheel*step)`, and it was both "much too fast" and "choppy" on a
+    // trackpad for the same reason -- see app/WheelInput.hpp's header
+    // comment for what the vendored SDL3 actually hands this app and why a
+    // trackpad's fractional, high-frequency deltas were getting the exact
+    // same notch-sized multiplier a single deliberate wheel click gets.
+    // `pendingControlsScrollPx` is a smoothing pool, not a second copy of
+    // the scroll position: `wheelScrollPixels()` converts this frame's
+    // wheel delta (discounted if it came from a precise device) into pixels
+    // and adds them to the pool; `smoothedScrollStep()` then releases a
+    // fraction of the pool every frame, so several oversized samples in a
+    // row blend into motion instead of each landing as its own hard jump.
+    // A `static` local rather than `AppState` -- this build has exactly one
+    // window and one controls column, so there is nothing a second instance
+    // would ever need to keep separate, and the alternative is a field nothing
+    // else in `CanvasView` or `AppState` has any other reason to carry.
+    static float pendingControlsScrollPx = 0.0f;
     const float wheel = ImGui::GetIO().MouseWheel;
     if (wheel != 0.0f && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
         ImGui::GetScrollMaxY() > 0.0f) {
       const float step =
           controlsWheelScrollStep(ImGui::GetWindowHeight(), ImGui::GetFontSize());
-      ImGui::SetScrollY(std::clamp(ImGui::GetScrollY() - wheel * step, 0.0f,
-                                   ImGui::GetScrollMaxY()));
+      pendingControlsScrollPx += wheelScrollPixels(wheel, step);
+    }
+    if (pendingControlsScrollPx != 0.0f) {
+      const SmoothedStep s =
+          smoothedScrollStep(pendingControlsScrollPx, ImGui::GetIO().DeltaTime);
+      const float scrollMax = ImGui::GetScrollMaxY();
+      const float target = std::clamp(ImGui::GetScrollY() - s.appliedPx, 0.0f, scrollMax);
+      // Stop pushing once a bound is actually hit, in the direction that hit
+      // it -- otherwise the remainder keeps pointing the way that was
+      // blocked, and reversing direction right after hitting the top or
+      // bottom would have to burn through it before the scrollbar visibly
+      // responds.
+      const bool blockedAtBound =
+          (target == 0.0f && s.appliedPx > 0.0f) || (target == scrollMax && s.appliedPx < 0.0f);
+      ImGui::SetScrollY(target);
+      pendingControlsScrollPx = blockedAtBound ? 0.0f : s.remainingPx;
     }
     for (const ControlsSectionSpec& spec : controlsSections()) {
       // The board is a shallow-water idea: only the watercolour solver reads
@@ -8000,9 +8034,42 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                         paintOrigin.y, avail.y, texH);
       st.view.zoom = newZoom;
     };
-    // --- zoom on wheel, anchored under the cursor ---
-    if (hovered && ImGui::GetIO().MouseWheel != 0.0f)
-      applyZoomFactor(1.0f + ImGui::GetIO().MouseWheel * 0.12f, mouse);
+    // --- wheel over the canvas: a NOTCHED wheel zooms (unchanged from
+    // before this track); a precise trackpad/Magic Mouse sample pans
+    // instead of zooming. app/WheelInput.hpp's header comment is where the
+    // two devices are told apart and where the "reuse the anchor, don't
+    // reinvent the arithmetic" argument for `applyZoomFactor` already lives
+    // one paragraph above this block; what is new here is only the branch.
+    // Every major macOS creative app treats a plain two-finger scroll as
+    // PAN and reserves an actual pinch for zoom (Preview, Photos,
+    // Photoshop) -- before this track, EVERY wheel sample over the canvas
+    // reached the single `applyZoomFactor` call below, so a two-finger
+    // scroll (a precise, high-frequency sample stream) was reinterpreted as
+    // dozens of zoom steps a second, which is the canvas's share of this
+    // track's "much too fast" bug.
+    if (hovered) {
+      const float wheelY = ImGui::GetIO().MouseWheel;
+      const float wheelX = ImGui::GetIO().MouseWheelH;
+      if (wheelDeltaIsPrecise(wheelY) || wheelDeltaIsPrecise(wheelX)) {
+        const CanvasPanDelta pan = canvasPanForPreciseWheel(wheelX, wheelY);
+        st.view.panX += pan.dx;
+        st.view.panY += pan.dy;
+      } else if (wheelY != 0.0f) {
+        applyZoomFactor(1.0f + wheelY * 0.12f, mouse);
+      }
+    }
+    // --- pinch-to-zoom, anchored under the cursor the same way the wheel
+    // above is. `pollPinchMagnification()` (ui/MacTrackpadGestures.hpp) is
+    // drained every frame regardless of `hovered` -- a pinch that started
+    // over a side panel must not leave a stale sample to be misread as
+    // "just started" the next time the cursor happens to be over the
+    // canvas, the same reasoning `toolZoomsView`'s callers already apply to
+    // clicks. SDL3, as vendored in this build, has no path for this at all
+    // -- see ui/MacTrackpadGestures.hpp for exactly what was checked before
+    // reaching past it.
+    const float pinchMagnification = pollPinchMagnification();
+    if (hovered && pinchMagnification != 0.0f)
+      applyZoomFactor(zoomFactorForPinch(pinchMagnification), mouse);
     const ImVec2 viewportCenter(paintOrigin.x + avail.x * 0.5f, paintOrigin.y + avail.y * 0.5f);
     if (st.requestZoomIn) {
       applyZoomFactor(kZoomStepFactor, viewportCenter);

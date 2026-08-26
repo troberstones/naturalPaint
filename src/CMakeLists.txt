@@ -127,6 +127,7 @@ add_executable(naturalPaint
   app/selftest/Transform.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
+  app/selftest/WheelInput.cpp
   app/selftest/ZoomAndSize.cpp
   app/FilterOps.cpp
   app/OpenAnyFile.cpp
@@ -136,6 +137,7 @@ add_executable(naturalPaint
   app/StrokeSession.cpp
   app/UserBrushLibrary.cpp
   app/ViewTransform.cpp
+  app/WheelInput.cpp
   app/ZoomAndSize.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
@@ -256,6 +258,19 @@ if(APPLE)
   set_source_files_properties(ui/MacNativeMenu.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(naturalPaint PRIVATE "-framework Cocoa")
   message(STATUS "naturalPaint: native AppKit menu bar (ui/MacNativeMenu.mm)")
+
+  # ---- pinch-to-zoom (ui/MacTrackpadGestures.mm) -----------------------------
+  #
+  # track10/input: SDL 3.2.24 as vendored here has no pinch/magnification event
+  # on any platform (see ui/MacTrackpadGestures.hpp's header comment for what
+  # was checked before reaching this conclusion), so this is the same "reach
+  # past SDL for one AppKit feature" pattern as the native menu bar immediately
+  # above -- same language, same ARC rationale (a local `NSEvent` monitor block
+  # captured for the app's whole lifetime), same explicit Cocoa link for the
+  # same reason (this file `#import`s <Cocoa/Cocoa.h> directly).
+  target_sources(naturalPaint PRIVATE ui/MacTrackpadGestures.mm)
+  set_source_files_properties(ui/MacTrackpadGestures.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  message(STATUS "naturalPaint: native pinch-to-zoom (ui/MacTrackpadGestures.mm)")
 endif()
 
 target_include_directories(naturalPaint PRIVATE
