@@ -60,11 +60,21 @@ bool runControlsLayoutTest() {
     // Every enumerator appears exactly once. Written against the list of
     // enumerators rather than against a count, so a section added to the enum
     // and forgotten in the list fails here rather than being invisible.
+    //
+    // `kAll` used to have 11 entries against 12 `ControlsSection` values --
+    // `BrushLibrary` was missing, so neither "appears once" nor "the lookup
+    // agrees" was ever checked for it; a sabotage that duplicated BRUSH EDITOR
+    // in place of BRUSH LIBRARY would have passed this block silently (it
+    // would still have failed the ordering/role checks below by accident, but
+    // for the wrong reason). All 12 enumerators, matching the count asserted
+    // just above.
     const ControlsSection kAll[] = {
-        ControlsSection::Color,  ControlsSection::Layers,    ControlsSection::History,
-        ControlsSection::Comps,  ControlsSection::Grade,
-        ControlsSection::Brush,  ControlsSection::Pigment,   ControlsSection::Medium,
-        ControlsSection::BoardTilt, ControlsSection::Grid,   ControlsSection::Solver};
+        ControlsSection::Color,      ControlsSection::Layers,     ControlsSection::History,
+        ControlsSection::Comps,      ControlsSection::Grade,      ControlsSection::BrushLibrary,
+        ControlsSection::Brush,      ControlsSection::Pigment,    ControlsSection::Medium,
+        ControlsSection::BoardTilt,  ControlsSection::Grid,       ControlsSection::Solver};
+    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 12,
+                  "kAll must list every ControlsSection enumerator");
     bool eachOnce = true;
     for (const ControlsSection s : kAll) {
       size_t seen = 0;

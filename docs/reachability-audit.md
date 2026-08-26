@@ -309,6 +309,25 @@ Worth deciding alongside **B6** — both are questions about what a Multiply
 target's floor means, and a rule that fixes one should be checked against the
 other rather than chosen for it alone.
 
+### B8 — Medium is a global mode, and the design says it is a per-layer property
+
+`docs/ui.md` §3.4 resolves this explicitly: medium (watercolour / oil / ink) "is
+chosen at Media-layer creation and editable in layer properties; it is not a
+global mode, because it is a per-layer property now."
+
+`drawMediumSection()` (`src/ui/MacPaintUI.cpp:4024`) is gated on `st.mode`, a
+single `PaintMode` on `AppState`, and its own comment concedes the consequence:
+switching medium switches the whole solver. So a document cannot hold an oil
+layer and a watercolour layer at once, which is the thing the design decided it
+should.
+
+This is a data-model gap wearing a UI symptom — closing it needs `core::Layer`
+to carry a medium and the solver to become per-layer aware. It is the same
+missing-model problem `docs/ui.md` §3.2 already names for wet state and fill
+count, and it is recorded here rather than patched in the panel, because a
+UI-only fix would let the control claim a per-layer property the engine cannot
+actually hold. Found while auditing the right column against its own design.
+
 ---
 
 ## C. Whole subsystems built, tested, and unreachable
