@@ -22,7 +22,7 @@ Nothing here is scheduled or assigned. Status is one of **open**,
 
 ---
 
-## T1 — No way to deselect · open
+## T1 — No way to deselect · CLOSED (was never broken)
 
 **Reported.** There is no way to deselect. Photoshop uses ⌘D.
 
@@ -42,19 +42,22 @@ and they need a repro to tell apart:
 * **The native key equivalent is not firing**, while the menu item itself
   works when clicked.
 
-**Work.** Reproduce first and say which of the two it is. Do not "add a ⌘D
-binding" — there is one, and adding a second would leave the real fault in
-place while appearing to close the item. Related to **T5**: if the selection
-was made on the painting canvas rather than on a document, neither the menu
-item nor the shortcut has anything to act on, and that is the same defect
-seen from a different angle.
+**Resolution, 2026-08-26.** Confirmed working by the reporter. Nothing to
+fix. Kept because the entry is the evidence that stopped a second ⌘D binding
+from being added on top of the working one.
 
 ---
 
-## T2 — No way to subtract from a selection · open
+## T2 — No way to subtract from a selection · CLOSED (was never broken)
 
 **Reported.** Shift adds to selections, but there is no way to remove from
 one. Use the Photoshop hotkey — possibly Ctrl.
+
+**Resolution, 2026-08-26.** Confirmed working by the reporter once the key
+was named: it is **Option**, not Ctrl. Nothing to fix. Kept here because the
+next person to look for a Ctrl binding should find this entry rather than
+add one. The remaining selection-modifier work is **T10**, which is a
+different set of gestures.
 
 **Verified — subtract is implemented, and the hotkey is Option, not Ctrl.**
 Adobe's own documentation gives the three modifiers: **Shift** adds,
@@ -302,3 +305,69 @@ There is **no `NSPasteboard` and no `SDL_GetClipboard*` call anywhere in
    is an estimate someone once made, not a fact.
 3. **The preset that combines them**, which is trivial once 1 and 2 exist and
    impossible before.
+
+---
+
+## T10 — The three selection-drag gestures are missing · open
+
+**Reported.** While drawing a selection: **Shift** should constrain it to a
+square/circle; **Space** should move the in-progress region (start a circle,
+hold Space to reposition it, release, carry on drawing from the new origin);
+and **Option pressed *after* the drag has started** should draw the shape
+from its centre rather than from the corner.
+
+**Verified — none of the three exists.** The rectangular and elliptical
+marquee case (`ui/MacPaintUI.cpp:8596`) is a plain two-corner drag: on click
+it stores `marqueeX0/Y0`, every frame it overwrites `marqueeX1/Y1` with the
+cursor, and on release it takes the min/max as the bounding box. No modifier
+is read between those two events, and there is no anchor-offset state for
+Space to move.
+
+**The design is already half-anticipated, and this is the part to get
+right.** `MacPaintUI.cpp:8584` explains why the combine mode is latched at
+mouse-down:
+
+> Latched at mouse-down for every tool … Shift is also the constrain
+> modifier, so "which boolean" is a question asked once, at the start, and
+> not re-read from a hand that moved during the drag.
+
+That is exactly Photoshop's rule, and it generalises to Option too. So:
+
+| Modifier | Held **before** mouse-down | Held **during** the drag |
+|---|---|---|
+| Shift | add to selection (latched, works) | constrain to square/circle |
+| Option | subtract (latched, works) | draw from centre |
+| Shift+Option | intersect (latched, works) | both of the above |
+| Space | — | move the in-progress region |
+
+The latch that already exists is what makes this safe: the combine mode is
+answered once and cannot be changed by a hand that moves, so the live reads
+added for constrain and from-centre cannot corrupt it.
+
+**Work.**
+
+* **Constrain.** Square/circle off the larger of the two deltas, keeping the
+  sign, so the shape follows the direction of travel rather than jumping
+  quadrant.
+* **From centre.** Treat `marqueeX0/Y0` as the centre instead of a corner.
+  It must be switchable **mid-drag in both directions** — press and release
+  Option repeatedly and the shape should track — which means the anchor stays
+  stored as-is and the interpretation changes, rather than the anchor being
+  rewritten.
+* **Space-move.** Needs new state: the offset applied to the anchor. On Space
+  down, record the cursor; while held, add the delta to *both* anchor and
+  current point so the shape's size is unchanged; on release, keep the offset
+  and carry on. The classic bug is applying the delta to only one of the two,
+  which silently resizes the shape while it moves.
+* All three apply to the **ellipse** as well as the rectangle, and the
+  ellipse's centre/radii derivation already sits on the bounding box, so it
+  should need nothing extra.
+* Lasso and polygon lasso are out of scope: Photoshop does not constrain
+  them, though Space-move does apply to the polygon lasso and can follow
+  later.
+
+Worth asserting headlessly: constrain, from-centre and space-offset are
+arithmetic on four floats, so the geometry can be a pure function that
+`--selftest` drives directly, with the widget layer doing nothing but
+sampling the modifiers. That is the split `app/ControlsLayout` and
+`app/CurveEdit` already use.
