@@ -10,6 +10,7 @@
 #include "brush/Library.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
+#include "app/ControlsColumnLayout.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
 #include "app/QuitSequence.hpp"
@@ -837,6 +838,18 @@ struct AppState {
   // (PRD A2, ADR-0001), and --selftest's idle-RSS measurement would notice.
   RecentDocuments recentDocuments;
   bool recentDocumentsLoaded = false;
+
+  // T12: which sections the right-hand column shows and in what order, as the
+  // user arranged them (app/ControlsColumnLayout.hpp for the model, the file
+  // and the repair rules a file from another build goes through).
+  //
+  // Lazy exactly as `recentDocuments` above is, and for the same reason -- but
+  // note this one is read on the first frame that draws the column, which in
+  // a windowed session is frame 1. The laziness is therefore worth almost
+  // nothing at runtime and everything to `--selftest`, whose headless path
+  // never draws a column and so must never touch a preferences file.
+  ControlsColumnLayout controlsColumn;
+  bool controlsColumnLoaded = false;
 
   // PRD G6/G7's imported `.abr` brush libraries, remembered across launches
   // (app/BrushLibraryFile.hpp for the file, the row cache and the lazy read).

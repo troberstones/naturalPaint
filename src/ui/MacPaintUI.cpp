@@ -21,6 +21,7 @@
 #include "app/BrushRowIcon.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CompPanel.hpp"
+#include "app/ControlsColumnLayout.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
 #include "app/DabPreview.hpp"
@@ -7604,6 +7605,93 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
   }
 }
 
+// The name of the popup that edits which sections the column shows and in
+// what order. A file-local constant rather than a literal in three places --
+// `OpenPopup`, `BeginPopup` and any future `IsPopupOpen` have to agree
+// exactly, and a typo in one of them opens nothing with no diagnostic.
+constexpr const char* kColumnConfigPopup = "##columnconfig";
+
+// The "PANELS" affordance and its popup: a checkbox and a pair of arrows per
+// section, plus reset.
+//
+// **This lives outside the column it configures**, which is what makes
+// hiding every section a legal state rather than a trap -- app/
+// ControlsColumnLayout.hpp's header says the model deliberately does not
+// force a section to stay visible, and this is the other half of that
+// bargain. An empty column is recoverable because the way out was never in
+// the column.
+//
+// Every mutation is deferred to after the row loop. `moveUp`/`moveDown`
+// reorder the very vector being iterated, so applying one inside the loop
+// would walk an invalidated sequence -- and the visible symptom (a row
+// drawn twice, or skipped) looks like a drawing bug rather than the
+// iterator bug it is.
+void drawColumnConfig(AppState& st) {
+  pushAtelierMono();
+  const bool clicked = ImGui::SmallButton("PANELS");
+  popAtelierMono();
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Choose which sections this column shows, and their order.");
+  if (clicked) ImGui::OpenPopup(kColumnConfigPopup);
+
+  if (!ImGui::BeginPopup(kColumnConfigPopup)) return;
+
+  enum class Act { None, Up, Down, Toggle, Reset };
+  Act act = Act::None;
+  ControlsSection target = ControlsSection::Color;
+  bool toggleTo = false;
+
+  const std::vector<ControlsColumnEntry>& entries = st.controlsColumn.entries();
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const ControlsColumnEntry& entry = entries[i];
+    const ControlsSectionSpec& spec = controlsSectionSpec(entry.section);
+    ImGui::PushID(static_cast<int>(i));
+
+    bool visible = entry.visible;
+    if (ImGui::Checkbox("##vis", &visible)) {
+      act = Act::Toggle;
+      target = entry.section;
+      toggleTo = visible;
+    }
+    ImGui::SameLine();
+    // Disabled at the ends rather than absent, so the two arrows keep their
+    // positions and the rows stay a column instead of jittering.
+    ImGui::BeginDisabled(i == 0);
+    if (ImGui::ArrowButton("##up", ImGuiDir_Up)) { act = Act::Up; target = entry.section; }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(i + 1 >= entries.size());
+    if (ImGui::ArrowButton("##down", ImGuiDir_Down)) { act = Act::Down; target = entry.section; }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::TextUnformatted(spec.title);
+    popAtelierMono();
+    ImGui::PopID();
+  }
+
+  ImGui::Separator();
+  if (ImGui::SmallButton("Reset to default order")) act = Act::Reset;
+
+  if (act != Act::None) {
+    switch (act) {
+      case Act::Up:     st.controlsColumn.moveUp(target); break;
+      case Act::Down:   st.controlsColumn.moveDown(target); break;
+      case Act::Toggle: st.controlsColumn.setVisible(target, toggleTo); break;
+      case Act::Reset:  st.controlsColumn.resetToDefault(); break;
+      case Act::None:   break;
+    }
+    // Written on every change rather than at quit. A layout is cheap to
+    // write and there is no moment this app is guaranteed to reach on the
+    // way out -- app/DocumentLifecycle's recent-documents list is persisted
+    // the same way and for the same reason.
+    std::string err;
+    if (!st.controlsColumn.saveToFile(defaultControlsColumnLayoutFilePath(), &err))
+      std::fprintf(stderr, "[panel-layout] save failed: %s\n", err.c_str());
+  }
+  ImGui::EndPopup();
+}
+
 void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
            const MixboxLut& lut, uint32_t canvasW, uint32_t canvasH) {
   // First, before any branch can skip it: last frame's cursor request is not
@@ -8047,7 +8135,33 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       ImGui::SetScrollY(target);
       pendingControlsScrollPx = blockedAtBound ? 0.0f : s.remainingPx;
     }
-    for (const ControlsSectionSpec& spec : controlsSections()) {
+    // T12: read the user's arrangement on the first frame that draws the
+    // column, not at startup -- see AppState::controlsColumnLoaded. A missing
+    // file is the ordinary first-run case and yields the default order, so
+    // there is nothing to report and no error branch here.
+    if (!st.controlsColumnLoaded) {
+      st.controlsColumnLoaded = true;
+      st.controlsColumn.loadFromFile(defaultControlsColumnLayoutFilePath(), nullptr);
+    }
+    drawColumnConfig(st);
+
+    // **The user's sequence, not `controlsSections()`.** That list is now the
+    // default and the repair target rather than the column's contents; its
+    // header always said the list was data so the order could be asserted
+    // headlessly, and this is that seam being used for what it described.
+    //
+    // Taken by value, because a section's own body can reach a mutation of
+    // this vector -- the PANELS popup above is drawn from the same frame --
+    // and a reference would be walking a sequence something below it may
+    // reorder. Twelve entries; the copy is not worth a reader's doubt.
+    const std::vector<ControlsColumnEntry> columnEntries = st.controlsColumn.entries();
+    for (const ControlsColumnEntry& entry : columnEntries) {
+      // Hidden by the user. Distinct from the mode gate below: that one is
+      // the app saying a section has no subject right now, this one is the
+      // user saying they do not want it. Both end in `continue`, and keeping
+      // them separate is what stops one from being read as the other.
+      if (!entry.visible) continue;
+      const ControlsSectionSpec& spec = controlsSectionSpec(entry.section);
       // The board is a shallow-water idea: only the watercolour solver reads
       // `tiltX/tiltY`, and the section was inside the WATER branch before this
       // step. A section can be absent when its subject is; it is still in the
