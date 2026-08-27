@@ -46,6 +46,25 @@ enum class LayerKind {
   Adjustment,
   Text,
   Flats,
+  // **A group** (PLAN.md Phase 5 step 11's follow-on, PRD C7/C12; io/NpaintFile
+  // and docs/document-format.md: "a group is a part with no image channels and
+  // `np:kind='group'`"). Added at the END of this enum, deliberately, even
+  // though nothing here reads `LayerKind` as a number -- `layerKindName()` and
+  // `layerKindFromName()` are the only two functions that cross the enum/string
+  // boundary, and every other consumer switches on the *name*. Appending is
+  // simply the smallest diff against seven kinds' worth of existing comments
+  // that talk about "the seven kinds"; it carries no ordinal meaning (see this
+  // header's own rule against keying anything by one).
+  //
+  // A Group holds **no pixels of any kind** -- `rgbTiles` and `pigmentTiles`
+  // are both `nullopt`, exactly Adjustment's contract -- and its own `ops` is
+  // never evaluated by core/Composite (a Group is skipped from the accumulator
+  // exactly as Media/Strokes/Text/Flats are). What it owns instead is what
+  // every other layer already carries generically: `name`, `visible`,
+  // `opacity` and `groupTag` below. See `groupTag`'s own comment for how a
+  // member finds its group, and core/Composite.hpp's group section for what
+  // `visible`/`opacity` do to a group's members.
+  Group,
 };
 
 // Small enough to be `inline` in-header, matching TileStore.hpp/Tile.hpp's
@@ -59,6 +78,12 @@ inline const char* layerKindName(LayerKind kind) {
     case LayerKind::Adjustment: return "Adjustment";
     case LayerKind::Text: return "Text";
     case LayerKind::Flats: return "Flats";
+    // Lower-case where every other kind is capitalised -- `kChannelKindName`
+    // ("selection") already set this precedent for a non-ordinary-layer `np:kind`,
+    // and docs/document-format.md's own sketch for a group spells it this way,
+    // predating this enum value. Matching a published spec string is worth more
+    // than matching a capitalisation habit.
+    case LayerKind::Group: return "group";
   }
   return "?";
 }
@@ -95,6 +120,7 @@ inline std::optional<LayerKind> layerKindFromName(std::string_view name) {
   if (name == "Adjustment") return LayerKind::Adjustment;
   if (name == "Text") return LayerKind::Text;
   if (name == "Flats") return LayerKind::Flats;
+  if (name == "group") return LayerKind::Group;
   return std::nullopt;
 }
 
@@ -372,18 +398,60 @@ struct Layer {
   // cannot yet mean "the brush refuses"; that is stated rather than faked.
   bool locked = false;
 
-  // The EXR *part* name (`L0002`) of the group this layer belongs to, or
-  // empty for a top-level layer. docs/document-format.md:
-  // "Groups have no native concept. A group is a part with no image channels
-  // and `np:kind='group'`; members carry `np:parent` naming it."
+  // **The `groupTag` of the group this layer belongs to** (PLAN.md Phase 5's
+  // C7/C12 follow-on), or empty for a top-level layer.
   //
-  // A part name rather than a Layer index, because that is what the format
-  // stores and because an index would be invalidated by every reorder. This
-  // build creates no groups (there is no `LayerKind::Group`, and CONTEXT.md's
-  // seven kinds do not include one), so this is always empty in a document
-  // this build authored -- but a document authored by a build that *does*
-  // have groups round-trips its parent links through here untouched.
+  // **A correction to this member's own history.** Until this step the comment
+  // here said `parent` names the *EXR part name* (`L0002`) of the group, quoting
+  // docs/document-format.md's aspirational sketch verbatim -- written when this
+  // build could create no groups and never had to make the idea work. It does
+  // not: a part name is assigned by io/NpaintFile lazily, at save time
+  // (`NpaintCarry::layerPartNames`), so a document that groups two layers and
+  // has never been saved has no part name for the group to carry yet. Exactly
+  // the hazard io/CompSerial.hpp already argues for `np:comps`: "a comp names
+  // layers by `core::Layer::id`, which is an in-memory identity with no
+  // meaning to any other tool" -- and the fix here is the same shape, simpler.
+  //
+  // So: `parent` holds a Group layer's own `groupTag` (below), not a part
+  // name. That string is stable from the moment the group is created, is
+  // never reused within a document (`Document::nextGroupId`), and needs no
+  // translation at all at the file boundary -- `np:parent` is written and read
+  // as this value **verbatim**, unlike a part-name scheme which would have
+  // needed a join table the way `np:comps` needs one for `Layer::id`. See
+  // `groupTag`'s own comment for the rest of the argument, and
+  // core/LayerSetOps.cpp for the two operations that write this field
+  // (`GroupLayers`, `UngroupLayers`).
+  //
+  // A document authored by a build with a different, incompatible group
+  // scheme (a real part-name reference, say) round-trips whatever string it
+  // finds here untouched regardless -- this member has always been carried
+  // verbatim by any code that does not specifically resolve it, which is
+  // exactly PRD I10's guarantee and is what makes the redefinition safe: no
+  // build before this one ever wrote a non-empty `parent`, so there is no
+  // existing document whose meaning this change alters.
   std::string parent;
+
+  // **A Group layer's own stable identity** (see `parent` above), non-empty
+  // if and only if `kind == LayerKind::Group`.
+  //
+  // `"G" + Document::nextGroupId` at the moment the group is created --
+  // monotonic, never reused within one document, and **not** `Layer::id`.
+  // Deliberately a second, separate counter rather than reusing `id`: `id` is
+  // assigned *lazily*, only by `core::normalizeLayerIds()` (called solely from
+  // `captureLayerComp()`), and core/Layer.hpp's own comment on `id` states the
+  // property that assignment protects -- "a document that never uses a comp
+  // carries zeros here for its whole life". Grouping does not touch comps and
+  // must not force every layer in a grouped document to acquire an id merely
+  // because two of them were grouped; `groupTag` is assigned eagerly, to the
+  // Group layer alone, the moment it is created, and nothing else in the
+  // document is touched.
+  //
+  // Persisted as `np:groupId`, written **only on a Group-kind part** -- the
+  // same rule `np:mask` follows for Adjustment parts (io/NpaintFile.cpp), and
+  // for the same reason: it is meaningless on any other kind, so writing it
+  // everywhere would cost every document a byte-identity regression for no
+  // reader.
+  std::string groupTag;
 
   // **A stable identity for this layer within its document** (PLAN.md Phase 5
   // step 12, layer comps; PRD C14). Monotonic within one `Document`, never

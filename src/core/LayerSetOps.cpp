@@ -138,6 +138,7 @@ const std::vector<LayerSetCommand>& allLayerSetCommands() {
   static const std::vector<LayerSetCommand> kAll = {
       LayerSetCommand::DeleteLayers,          LayerSetCommand::DuplicateLayers,
       LayerSetCommand::MoveLayersUp,          LayerSetCommand::MoveLayersDown,
+      LayerSetCommand::GroupLayers,           LayerSetCommand::UngroupLayers,
       LayerSetCommand::ShowLayers,            LayerSetCommand::HideLayers,
       LayerSetCommand::LockLayers,            LayerSetCommand::UnlockLayers,
       LayerSetCommand::ClipLayers,            LayerSetCommand::UnclipLayers,
@@ -163,6 +164,8 @@ const char* layerSetCommandLabel(LayerSetCommand command) noexcept {
     case LayerSetCommand::DuplicateLayers:        return "Duplicate Layers";
     case LayerSetCommand::MoveLayersUp:           return "Move Layers Up";
     case LayerSetCommand::MoveLayersDown:         return "Move Layers Down";
+    case LayerSetCommand::GroupLayers:            return "Group Layers";
+    case LayerSetCommand::UngroupLayers:          return "Ungroup Layers";
     case LayerSetCommand::ShowLayers:             return "Show Layers";
     case LayerSetCommand::HideLayers:             return "Hide Layers";
     case LayerSetCommand::LockLayers:             return "Lock Layers";
@@ -213,6 +216,41 @@ const char* labelForCommand(LayerSetCommand command) noexcept {
     default:                           return nullptr;
   }
 }
+
+// --- Grouping (section 5) ---------------------------------------------------
+
+// The contiguous run of layers directly below `groupIndex` whose `parent`
+// names that group -- section 5's invariant, read back rather than assumed.
+// A downward scan, so a same-tag layer that is NOT contiguous with the group
+// (a state this file's own operations never produce, but a hand-built
+// `Document` might) is simply not included, which is the same "absent means
+// neutral" answer core/Mask.hpp gives a missing tile: it does not crash and
+// it does not guess.
+//
+// Returns `[groupIndex + 1, groupIndex]` (an empty, well-formed range with
+// `first > second`) for a group with no members -- callers check `first <=
+// second` before iterating rather than special-casing size 0.
+std::pair<size_t, size_t> groupMemberSpan(const Document& doc, size_t groupIndex) {
+  const std::string& tag = doc.layers[groupIndex].groupTag;
+  size_t first = groupIndex;
+  while (first > 0 && doc.layers[first - 1].parent == tag) --first;
+  if (first == groupIndex) return {groupIndex + 1, groupIndex};  // no members
+  return {first, groupIndex - 1};
+}
+
+// One contiguous block of layers, moved as a unit by `GroupLayers`. An
+// ordinary selected layer is a span of one; a selected Group layer is itself
+// plus its own (already contiguous, however deeply nested) member run --
+// section 5's "nesting falls out of moving spans".
+struct LayerSpan {
+  size_t first = 0, last = 0;  // inclusive, in the ORIGINAL document
+  // Index, within the extracted block, of the element that was actually
+  // selected by the user -- the one whose `parent` gets rewritten to the new
+  // group's tag. For an ordinary layer this is the span's only element; for a
+  // Group it is the LAST element (the group's own entry sits at the top of
+  // its own contiguous run, by this file's own placement rule).
+  size_t selectedOffset = 0;
+};
 
 // (axis, edge, to-canvas) for the twelve align commands; `false` when the
 // command is not an align.
@@ -291,6 +329,16 @@ bool layerSetCommandAvailable(const Document& doc, LayerSetCommand command,
       return sel.indices.back() + 1 < count;
     case LayerSetCommand::MoveLayersDown:
       return sel.indices.front() > 0;
+    // Ungroup is meaningless on anything but a Group -- the same "this
+    // gesture makes no sense on this row at all" test the header applies to
+    // Move Up on the top layer. Whether it can actually SUCCEED (a locked
+    // layer in the way, a clip that would land at index 0) is a refusal,
+    // decided in `applyLayerSetOp()`, not here.
+    case LayerSetCommand::UngroupLayers:
+      for (const size_t index : sel.indices) {
+        if (doc.layers[index].kind != LayerKind::Group) return false;
+      }
+      return true;
     // The bottom layer has nothing below it to be clipped by -- the same
     // property-of-the-row rule `app::layerCommandAvailable()` applies to the
     // single-selection Clip. Unclipping is never unavailable.
@@ -525,6 +573,183 @@ LayerSetOpResult applyLayerSetOp(Document& doc, LayerSetCommand command,
         std::vector<size_t> moved;
         for (const size_t i : ascending) moved.push_back(i - 1);
         out.selection = makeLayerSelection(std::move(moved));
+        break;
+      }
+      case LayerSetCommand::GroupLayers: {
+        // Section 5's two pre-checks: a locked member freezes its place in
+        // the stack, and grouping an already-grouped layer is refused rather
+        // than silently re-parented.
+        for (const size_t index : ascending) {
+          if (scratch.layers[index].locked) {
+            return refuse("group layers refused: " + describeLayer(scratch, index) +
+                          " is locked, and grouping moves a layer's place in the stack "
+                          "exactly as a reorder does. Unlock it first. Nothing was changed.");
+          }
+          if (!scratch.layers[index].parent.empty()) {
+            return refuse("group layers refused: " + describeLayer(scratch, index) +
+                          " is already inside a group. Ungroup it first, or select its "
+                          "containing group instead of its members directly. Nothing was "
+                          "changed.");
+          }
+        }
+
+        // One span per selected index -- an ordinary layer is a span of
+        // itself, a Group is itself plus its own contiguous member run.
+        // `sp.last == index` always (section 5), so spans share `ascending`'s
+        // strictly increasing order and, being non-overlapping, their
+        // `.first` values are strictly increasing too.
+        std::vector<LayerSpan> spans;
+        spans.reserve(n);
+        for (const size_t index : ascending) {
+          LayerSpan sp;
+          sp.last = index;
+          if (scratch.layers[index].kind == LayerKind::Group) {
+            const auto [memberFirst, memberLast] = groupMemberSpan(scratch, index);
+            sp.first = (memberFirst <= memberLast) ? memberFirst : index;
+          } else {
+            sp.first = index;
+          }
+          sp.selectedOffset = sp.last - sp.first;
+          spans.push_back(sp);
+        }
+        for (size_t k = 1; k < spans.size(); ++k) {
+          if (spans[k].first <= spans[k - 1].last) {
+            return refuse("group layers refused: the selection overlaps itself around " +
+                          describeLayer(scratch, spans[k].last) +
+                          " -- selecting both a group and one of its own members is not "
+                          "a set this command can move as one block. Nothing was changed.");
+          }
+        }
+
+        // The group's identity is assigned now, before anything moves --
+        // `makeGroupLayer()` only consumes `doc.nextGroupId`, which is
+        // position-independent.
+        Layer group = makeGroupLayer(scratch, defaultNewGroupName(scratch));
+        const std::string groupName = group.name;
+
+        // Extract every span, DESCENDING by `.first`, so an as-yet-unextracted
+        // span's indices stay valid -- section 3's own rule for Delete,
+        // applied to ranges instead of single indices.
+        std::vector<std::vector<Layer>> blocks(spans.size());
+        for (size_t k = spans.size(); k-- > 0;) {
+          std::vector<Layer> block;
+          block.reserve(spans[k].last - spans[k].first + 1);
+          for (size_t idx = spans[k].first; idx <= spans[k].last; ++idx)
+            block.push_back(std::move(scratch.layers[idx]));
+          scratch.layers.erase(scratch.layers.begin() + static_cast<ptrdiff_t>(spans[k].first),
+                               scratch.layers.begin() + static_cast<ptrdiff_t>(spans[k].last) + 1);
+          blocks[k] = std::move(block);
+        }
+
+        // Reassemble in ORIGINAL ascending order -- k = 0, 1, 2, ... -- which
+        // is the one line a reversal bug would change to `k = spans.size();
+        // k-- > 0` and silently swap the members' relative order. Marks each
+        // span's originally-selected element (`selectedOffset` within its own
+        // block) as it goes, so the group tag lands on exactly the layer the
+        // user selected -- the group's own entry for a re-nested span, the
+        // sole element for an ordinary one.
+        std::vector<Layer> members;
+        std::vector<size_t> relabel;
+        for (size_t k = 0; k < blocks.size(); ++k) {
+          relabel.push_back(members.size() + spans[k].selectedOffset);
+          for (Layer& l : blocks[k]) members.push_back(std::move(l));
+        }
+        for (const size_t offset : relabel) members[offset].parent = group.groupTag;
+
+        // The topmost span's own `.first`, adjusted for every block already
+        // removed below it -- `blocks.back()` is the topmost span's own
+        // extracted block, so everything before it in `members` is exactly
+        // "how many layers sat below the topmost span's start and are now
+        // gone".
+        const size_t insertPos = spans.back().first - (members.size() - blocks.back().size());
+
+        scratch.layers.insert(scratch.layers.begin() + static_cast<ptrdiff_t>(insertPos),
+                              std::make_move_iterator(members.begin()),
+                              std::make_move_iterator(members.end()));
+        const size_t groupIndex = insertPos + members.size();
+        scratch.layers.insert(scratch.layers.begin() + static_cast<ptrdiff_t>(groupIndex),
+                              std::move(group));
+
+        // The one post-condition `moveLayer()`/`setLayerClipped()` cannot
+        // check for us, because neither is what moved these layers --
+        // core/Layer.hpp: a clipped layer has nothing below index 0 to be
+        // clipped by.
+        if (!scratch.layers.empty() && scratch.layers[0].clipped) {
+          return refuse(
+              "group layers refused: this would move a clipped layer to the bottom of the "
+              "stack, where core::setLayerClipped() and moveLayer() both refuse to put one "
+              "directly -- there is nothing below index 0 for it to be clipped by. Nothing "
+              "was changed.");
+        }
+
+        out.editLabel = "group " + plural(n, "layer", "layers") + " into \"" + groupName + "\"";
+        out.selection = singleLayerSelection(groupIndex);
+        break;
+      }
+      case LayerSetCommand::UngroupLayers: {
+        for (const size_t index : ascending) {
+          if (scratch.layers[index].kind != LayerKind::Group) {
+            return refuse("ungroup layers refused: " + describeLayer(scratch, index) +
+                          " is not a group. Nothing was changed.");
+          }
+          if (scratch.layers[index].locked) {
+            return refuse("ungroup layers refused: " + describeLayer(scratch, index) +
+                          " is locked, and ungrouping removes it exactly as deleting it "
+                          "would. Unlock it first. Nothing was changed.");
+          }
+        }
+
+        // Descending, Delete's own idiom: removing one group's single entry
+        // (net -1 length) must not invalidate a not-yet-processed group's
+        // index, and every not-yet-processed group in `descending` sits
+        // BELOW every already-processed one, so it never does.
+        struct UngroupedSpan { size_t memberFirst = 0, count = 0; };
+        std::vector<UngroupedSpan> recorded;
+        recorded.reserve(n);
+        for (const size_t groupIndex : descending) {
+          const auto [memberFirst, memberLast] = groupMemberSpan(scratch, groupIndex);
+          const std::string outerParent = scratch.layers[groupIndex].parent;
+          std::vector<Layer> members;
+          if (memberFirst <= memberLast) {
+            members.reserve(memberLast - memberFirst + 1);
+            for (size_t idx = memberFirst; idx <= memberLast; ++idx) {
+              Layer m = std::move(scratch.layers[idx]);
+              // Nesting-aware promotion: a member of the ungrouped group
+              // becomes a member of ITS OWN parent (possibly none), never a
+              // top-level layer regardless of nesting depth -- section 5.
+              m.parent = outerParent;
+              members.push_back(std::move(m));
+            }
+          }
+          recorded.push_back({memberFirst, members.size()});
+          // Extract the whole [memberFirst, groupIndex] span (members plus
+          // the group's own marker entry) and reinsert just the members, in
+          // the SAME relative order, at `memberFirst` -- the symmetric
+          // extract-then-splice `GroupLayers` above uses. The one line
+          // (`members.begin(), members.end()` vs `members.rbegin(),
+          // members.rend()`) a reversal bug would change.
+          scratch.layers.erase(
+              scratch.layers.begin() + static_cast<ptrdiff_t>(memberFirst),
+              scratch.layers.begin() + static_cast<ptrdiff_t>(groupIndex) + 1);
+          scratch.layers.insert(scratch.layers.begin() + static_cast<ptrdiff_t>(memberFirst),
+                                std::make_move_iterator(members.begin()),
+                                std::make_move_iterator(members.end()));
+        }
+
+        // Every promoted member's FINAL index, adjusting each recorded
+        // position for the net -1 shift every later (lower) group's own
+        // splice contributes -- `recorded[k]` was measured before the
+        // `(recorded.size() - 1 - k)` splices that came after it in this
+        // descending walk, each of which sits strictly below it and shifts
+        // it down by exactly one.
+        std::vector<size_t> selIdx;
+        for (size_t k = 0; k < recorded.size(); ++k) {
+          const size_t shift = recorded.size() - 1 - k;
+          const size_t start = recorded[k].memberFirst - shift;
+          for (size_t j = 0; j < recorded[k].count; ++j) selIdx.push_back(start + j);
+        }
+        out.editLabel = "ungroup " + plural(n, "group", "groups");
+        out.selection = makeLayerSelection(std::move(selIdx));
         break;
       }
       case LayerSetCommand::ShowLayers:

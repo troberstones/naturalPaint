@@ -110,8 +110,36 @@ part 4   "S0001"          coverage                   ← a saved selection
 - **Part names must be unique**, and EXR requires a `name` on every part in a multi-part
   file. Layer names are not unique — two layers may both be "Layer 1" — so the part name
   is a stable synthetic id (`L0001`) and the user-facing name lives in `np:name`.
-- **Groups have no native concept.** A group is a part with no image channels and
-  `np:kind="group"`; members carry `np:parent` naming it.
+- **Groups have no native concept.** A group is a part and `np:kind="group"`; members
+  carry `np:parent` naming it.
+
+  > ✅ **Delivered, PLAN.md Phase 5's C7/C12 follow-on, and one correction to this
+  > paragraph's own wording, measured the same way the `UINT8[n]` correction below was.**
+  > "No image channels" does not work, for the identical reason an Adjustment part's own
+  > line in the part-1 example above does not: a zero-channel `ImageSpec` makes this
+  > OpenImageIO's OpenEXR plugin refuse the file at `open()` with "Missing or empty channel
+  > list in header". A group part therefore carries the same one dummy `mask` channel an
+  > Adjustment part does (`io/NpaintFile.cpp`'s `buildGroupLayerPart()`, a thin wrapper over
+  > `buildAdjustmentLayerPart()`), with `np:mask` — not the channel's presence — saying
+  > whether the layer actually has one.
+  >
+  > **`np:parent` is not the part name it names**, either, and this is the second
+  > correction: a part name is assigned by `io/NpaintFile` lazily, at save time, so an
+  > in-memory document that has never been saved has no part name for a freshly created
+  > group to carry yet — exactly the hazard `np:comps` already solves for `Layer::id` by
+  > joining it to a part name inside its own attribute rather than keying by the part name
+  > directly. A group's join is simpler because it has only two parties (a member and its
+  > one group) rather than an attribute naming every layer at once: each Group layer gets
+  > its own stable `np:groupId` string the moment it is created (`core::makeGroupLayer()`),
+  > and a member's `np:parent` holds that string **verbatim** — read and written with no
+  > translation to or from a part name at all, on either side of the file boundary.
+  >
+  > Nesting is real (a Group's own `np:parent` may itself name another group), and this
+  > build's own groups are **pass-through, not isolated** — a group's `visible`/`opacity`
+  > scale every member uniformly, but a member still blends directly against whatever is
+  > beneath the *group* in the stack, under its own blend mode, rather than into an
+  > offscreen accumulator first. `core::groupCoverage()` (core/Composite.hpp) is the whole
+  > of the argument for not building the isolated form yet.
 - **Some attributes must match across all parts** — `displayWindow`,
   `pixelAspectRatio`, `chromaticities`. Document-level `np:*` attributes live in part 0.
 - **Use only OIIO-representable attribute types**: `string`, `int`, `float`, and

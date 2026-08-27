@@ -90,6 +90,7 @@ add_executable(naturalPaint
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
+  app/selftest/LayerGroup.cpp
   app/selftest/LayerMask.cpp
   app/selftest/LayerMultiSelect.cpp
   app/selftest/LayerPanel2a.cpp

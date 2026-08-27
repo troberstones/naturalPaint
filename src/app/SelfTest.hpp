@@ -2474,6 +2474,19 @@ bool runMergeFamilyTest();
 // five `.npaint` files.
 bool runLayerCompTest();
 
+// PLAN.md Phase 5's C7/C12 follow-on ("layer grouping": PRD C7, P0). The
+// model (`LayerKind::Group`, `Layer::groupTag`), core/LayerSetOps'
+// `GroupLayers`/`UngroupLayers` span-splice and its order-preservation proof,
+// core/Composite's pass-through fold (visibility and opacity reaching a
+// group's children, and nested groups multiplying coverage), a hand-built
+// cycle proven to terminate rather than hang, undo/redo through the same
+// funnel every other set command uses, and the `.npaint` round trip --
+// including what a build that does not recognise a group's `np:kind` does
+// with one (carried verbatim and warned about by name, simulated with a
+// synthetic future kind since there is no stale binary in this tree to run).
+// Headless and GPU-free; writes and removes six `.npaint` files.
+bool runLayerGroupTest();
+
 // PLAN.md Phase 5 step 13 ("**Export comps to files, and layers to files** --
 // one shared loop: set a document state, composite, write through phase 4's
 // Export As presets with a name template"); PRD I16 and I17.

@@ -167,6 +167,18 @@ Layer makePigmentLayer(std::string name);
 // factory could exist without handing a user a layer that a save would empty.
 Layer makeAdjustmentLayer(std::string name);
 
+// A default name for a new group: "Group N", `defaultNewLayerName()`'s own
+// rule restricted to Group-kind layers -- see core/LayerOps.cpp.
+std::string defaultNewGroupName(const Document& doc);
+
+// A new, empty Group (PLAN.md Phase 5's C7/C12 follow-on): no tile storage of
+// any kind and an empty op stack, Adjustment's shape, plus a freshly minted
+// `groupTag` a member can point at. Takes `Document&` rather than just a name
+// because that tag has to come from `doc.nextGroupId` -- see
+// `Layer::groupTag`'s comment in core/Layer.hpp for why it cannot be assigned
+// lazily the way `Layer::id` is.
+Layer makeGroupLayer(Document& doc, std::string name);
+
 // Inserts `layer` at `index`, shifting everything from `index` up. `index ==
 // layers.size()` appends (i.e. puts it on top); a larger index is refused by
 // name rather than clamped, because a clamped out-of-range insert is

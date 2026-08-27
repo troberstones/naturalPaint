@@ -38,6 +38,60 @@ float layerCoverage(const Layer& layer) noexcept {
   return o < 1.0f ? o : 1.0f;
 }
 
+namespace {
+// Resolves a `Layer::parent` string to the index of the Group layer it names,
+// or `nullopt` when it does not resolve to any live Group in `doc` -- an
+// empty tag, a dangling one, or one that now names a non-Group layer (a
+// hand-built fixture, or a `.npaint` this build did not write). Linear in
+// the layer count; groups are rare and this is not called per texel.
+std::optional<size_t> resolveGroupByTag(const Document& doc, const std::string& tag) {
+  if (tag.empty()) return std::nullopt;
+  for (size_t i = 0; i < doc.layers.size(); ++i) {
+    if (doc.layers[i].kind == LayerKind::Group && doc.layers[i].groupTag == tag) return i;
+  }
+  return std::nullopt;
+}
+}  // namespace
+
+GroupAncestryResult groupAncestry(const Document& doc, size_t index) noexcept {
+  GroupAncestryResult out;
+  if (index >= doc.layers.size()) return out;
+  std::unordered_set<size_t> visited;
+  std::string tag = doc.layers[index].parent;
+  // Bounded by the layer count rather than by `visited` alone, belt-and-braces
+  // against the one shape `visited` cannot catch on its own: none, since
+  // `visited` already refuses to revisit an index. The explicit cap is here
+  // so the loop's termination does not rest on `unordered_set` alone being
+  // correct -- cheap insurance, and `--selftest` exercises the case it is for.
+  for (size_t hops = 0; hops < doc.layers.size() && !tag.empty(); ++hops) {
+    const std::optional<size_t> parentIdx = resolveGroupByTag(doc, tag);
+    if (!parentIdx.has_value()) break;  // dangling tag: no more ancestors
+    if (!visited.insert(*parentIdx).second) {
+      // Revisiting a group already on this walk: a cycle. Hide rather than
+      // loop -- `layerCoverage()`'s own answer to a NaN opacity.
+      out.coverage = 0.0f;
+      out.cyclic = true;
+      return out;
+    }
+    const Layer& g = doc.layers[*parentIdx];
+    out.coverage *= layerCoverage(g);
+    if (out.coverage <= 0.0f) return out;  // already invisible; nothing more to learn
+    tag = g.parent;
+  }
+  return out;
+}
+
+float groupCoverage(const Document& doc, size_t index) noexcept {
+  return groupAncestry(doc, index).coverage;
+}
+
+float layerCoverage(const Document& doc, size_t index) noexcept {
+  if (index >= doc.layers.size()) return 0.0f;
+  const float own = layerCoverage(doc.layers[index]);
+  if (own <= 0.0f) return 0.0f;  // skip the ancestor walk when it cannot matter
+  return own * groupCoverage(doc, index);
+}
+
 std::vector<PointOp> layerPointOps(const OpStack& ops) {
   std::vector<PointOp> out;
   // detectRuns() has already dropped disabled entries and split at non-PointA
@@ -419,7 +473,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       if ((!adjBlend.has_value() || *adjBlend != BlendMode::Normal) && warningsOut != nullptr)
         warningsOut->push_back(adjustmentLayerBlendWarning(i, layer));
 
-      const float coverage = layerCoverage(layer);
+      const float coverage = layerCoverage(doc, i);
       const std::vector<PointOp> ops = layerPointOps(layer.ops);
       // Both skips are exact no-ops rather than identity arithmetic: opacity 0
       // and an empty stack must leave the accumulator byte-for-byte untouched.
@@ -499,7 +553,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     // allocates a closure, so doing it per texel would dominate the walk.
     const std::vector<PointOp> ops = layerPointOps(layer.ops);
 
-    const float coverage = layerCoverage(layer);
+    const float coverage = layerCoverage(doc, i);
 
     // Resolved once per layer for the same reason as everything above it: the
     // per-*tile* lookup is hoisted out of the texel loops below, so a masked
@@ -539,7 +593,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     for (const size_t mi : clips.members[i]) {
       const Layer& m = doc.layers[mi];
       ClipMember cm;
-      cm.coverage = layerCoverage(m);
+      cm.coverage = layerCoverage(doc, mi);
       cm.ops = layerPointOps(m.ops);
       cm.maskTiles = m.mask.has_value() ? &*m.mask : nullptr;
       if (m.kind == LayerKind::Adjustment) {
@@ -631,7 +685,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       // `lowerCoverage * Plow`, exactly what the lower layer would have
       // contributed on its own.
       const Layer& lower = doc.layers[i - 1];
-      const float lowerCoverage = layerCoverage(lower);
+      const float lowerCoverage = layerCoverage(doc, i - 1);
       const std::vector<PointOp> lowerOps = layerPointOps(lower.ops);
       // Both halves of the pair carry their own mask, and each one modulates
       // only its own coverage -- `covLow` and `covUp` in this file's header

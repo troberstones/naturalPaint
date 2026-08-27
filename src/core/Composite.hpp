@@ -667,6 +667,89 @@ namespace np {
 // canvas.
 float layerCoverage(const Layer& layer) noexcept;
 
+// --- Groups (PLAN.md Phase 5's C7/C12 follow-on; PRD C7) -------------------
+//
+// **The one decision this build makes about groups, stated once and made
+// structural rather than implied**: a group here is **pass-through, not
+// isolated**. There is no offscreen accumulator anywhere in this file for a
+// group the way §§12-17 build one for a clipping run -- a group's members
+// blend directly into the *document's* accumulator, against whatever sits
+// beneath the group in the stack, each still under its own blend mode. What a
+// group contributes is strictly less than an isolated group would: its own
+// `visible`/`opacity` scale every member uniformly, nothing more.
+//
+// **Why pass-through and not isolated, argued rather than merely chosen.** An
+// isolated group needs exactly the machinery §§12-17 built for a clipping
+// run -- open an accumulator, fold every member into it under its own mode,
+// close it back to premultiplied -- except the "base" a clipping run folds
+// against is a real layer with real alpha, while an isolated group's base
+// would be *transparent black*, which changes what several of that
+// machinery's lazy-open guarantees mean (a clipping run's "no member
+// contributes" case returns the base unchanged; an isolated group's has
+// nothing to return unchanged *to*) and interacts with `Mix` pairs and nested
+// clip runs inside the group in ways §§12-17 never had to answer because a
+// clipping run's members are never composited against one another, only
+// against the base. None of that is a small addition, and PRD C12 (P0, what
+// this step actually owes) asks only that a group's "visibility, opacity...
+// affect how its children composite" -- it does not ask for isolation, and
+// nothing in this codebase's PRD demands non-`normal` blend modes compose
+// differently inside a group than outside one. Pass-through delivers the
+// P0 sentence exactly, at the cost of one multiply per layer, with no new
+// accumulator and no new interaction to prove correct against every existing
+// one (`Mix`, clipping, masks) at once. Isolation is a real, separate
+// feature -- Photoshop's own "Pass Through" vs "Normal" group blend menu --
+// and is not built here; if it is ever wanted, `LayerKind::Group` is where
+// the choice belongs (a bool member, or a second kind), not a flag threaded
+// through this file's walk, so that a file from a build with only one of the
+// two behaviours cannot be misread as having the other.
+//
+// **Nesting is real**: a Group's own `Layer::parent` may itself name another
+// Group, and `groupCoverage()` walks the whole ancestor chain, multiplying
+// every ancestor's own coverage in. A three-deep nest at 50% each composites
+// its members at 12.5% of what they would show top-level -- the same
+// "coverage multiplies" rule opacity and a mask already follow at every other
+// point in this file.
+//
+// **Cycle safety.** `Layer::parent` is a plain string on a plain aggregate
+// (core/Layer.hpp), so nothing stops a hand-built `Document` -- or a `.npaint`
+// this build did not write -- from describing a group that is its own
+// ancestor. `groupCoverage()` walks with a bounded visit count (never more
+// than `doc.layers.size()` hops) and returns 0.0f the moment it would revisit
+// a group, which is the same choice `layerCoverage()` makes for a NaN
+// opacity: hide rather than loop. `--selftest` constructs a two-group cycle
+// directly (this build's own `GroupLayers` cannot create one -- see
+// core/LayerSetOps.cpp) and asserts the walk terminates and reports 0.0f.
+struct GroupAncestryResult {
+  // Every ancestor Group's coverage, multiplied together; 1.0f for a
+  // top-level layer (the empty product), and exactly 0.0f the instant a cycle
+  // is detected -- see this section's cycle-safety paragraph.
+  float coverage = 1.0f;
+  // True the instant a `parent` chain revisits a group already on the walk.
+  // Exposed (rather than folded silently into `coverage == 0.0f`, which a
+  // hidden or zero-opacity ancestor also produces) so a caller that wants to
+  // *say* a document is malformed, rather than merely render it dark, can.
+  bool cyclic = false;
+};
+
+// Resolves `doc.layers[index]`'s full ancestor chain of groups. A layer with
+// an empty `parent`, or one that does not resolve to any Group-kind layer in
+// `doc` (a dangling tag -- e.g. from a group deleted since, or a hand-built
+// fixture), has no ancestor there and the walk simply stops, exactly as an
+// absent mask reads as 1.0 rather than as an error (core/Mask.hpp's own
+// precedent for "absent means neutral").
+GroupAncestryResult groupAncestry(const Document& doc, size_t index) noexcept;
+
+// `groupAncestry(doc, index).coverage`, spelled out because it is the one
+// field every call site below actually wants.
+float groupCoverage(const Document& doc, size_t index) noexcept;
+
+// `layerCoverage(doc.layers[index])`, scaled by every ancestor group's own
+// coverage. **The one function the walk and the probe both call in place of
+// the single-`Layer` overload above**, so "what a group's own visibility and
+// opacity do to its children" has exactly one implementation rather than one
+// per caller -- `mixedPairTexel()`'s own reason for existing, applied here.
+float layerCoverage(const Document& doc, size_t index) noexcept;
+
 // The layer's **mask** sample at one document pixel, or exactly 1.0f when the
 // layer has no mask, no mask tile there, or a sample that says 1.0 -- three
 // different things in storage (core/Mask.hpp) and one thing here.

@@ -28,21 +28,24 @@ bool runLayerMultiSelectTest() {
   // needs told outright.
   // ======================================================================
   std::printf("  C12 asks for \"move, transform, group, delete and set properties as a set\". "
-              "BUILT: move (reorder AND translate), delete, set properties (visible, locked, "
-              "clipped, opacity, blend, colour label, link).\n");
+              "BUILT: move (reorder AND translate), delete, group/ungroup, set properties "
+              "(visible, locked, clipped, opacity, blend, colour label, link).\n");
   std::printf("  REFUSED -- **transform**: there is no geometric transform of a layer anywhere "
               "in this codebase and this step did not add one. What it added is an "
               "integer-pixel translate, the one case that needs no resampling. Rotate, scale, "
               "skew and sub-pixel offset each need a filter-kernel choice, a premultiplied-alpha "
               "rule and -- on a Pigment layer -- a decision about whether a latent triple may be "
               "interpolated at all (DESIGN-imaging.md 3). That is phase 6.\n");
-  std::printf("  REFUSED -- **group**: there is no LayerKind::Group. CONTEXT.md's seven kinds do "
-              "not include one, io/NpaintFile records that groups have no native concept in the "
-              "format either, and core::Layer::parent has carried a group part name since phase "
-              "4 with nothing ever acting on it. Grouping needs a kind, a compositor that renders "
-              "or folds a group, an honoured parent link and a channel-less part writer; writing "
-              "`parent` alone would produce files whose layers claim membership in a group "
-              "nothing composites.\n");
+  std::printf("  **group**: the MODEL is built, and NOTHING REACHES IT YET. This section used "
+              "to print group as refused for want of a LayerKind::Group, a compositor, an "
+              "honoured parent link and a channel-less part writer; all four now exist (see "
+              "app/selftest/LayerGroup.cpp for the model, the composite integration and the "
+              "`.npaint` round trip). But there is no LAYERS-panel gesture and no menu item "
+              "that issues GroupLayers or UngroupLayers, so a user cannot group anything. "
+              "Printing this as delivered would make it exactly the defect "
+              "docs/reachability-audit.md is named after -- a whole subsystem built, tested "
+              "and unreachable -- which is why C7 stays open in that document until the "
+              "panel work lands.\n");
   std::printf("  PRD C13 is delivered in FULL rather than partially: align and distribute both "
               "move pixels, because core::Layer still has no position -- the same wall "
               "core/LayerComp.hpp hit at step 12. The two primitives it named as missing (a "
@@ -706,9 +709,10 @@ bool runLayerMultiSelectTest() {
     bool everyLabelled = true;
     for (const LayerSetCommand c : all)
       if (std::strcmp(layerSetCommandLabel(c), "?") == 0) everyLabelled = false;
-    check(all.size() == 34 && everyLabelled,
-          "every one of the 34 set commands has a menu label -- the LAYERS panel and the "
-          "Layer > Selection menu both walk this one list");
+    check(all.size() == 36 && everyLabelled,
+          "every one of the 36 set commands has a menu label -- the LAYERS panel and the "
+          "Layer > Selection menu both walk this one list (34, plus GroupLayers and "
+          "UngroupLayers)");
     OpenDocument od = makeFive();
     check(!layerSetCommandAvailable(od.document, LayerSetCommand::DeleteLayers, LayerSelection{}) &&
               !layerSetCommandAvailable(od.document, LayerSetCommand::DeleteLayers, sel({9})),

@@ -69,6 +69,16 @@ constexpr const char* kAttrMask = "np:mask";
 // already use and one of the three docs/document-format.md measured as
 // surviving this OpenImageIO. Written **only when true** -- see the writer.
 constexpr const char* kAttrClipped = "np:clipped";
+// **A Group layer's own stable identity** (PLAN.md Phase 5's C7/C12
+// follow-on; core/Layer.hpp's `groupTag`). Written **only on a Group-kind
+// part**, `np:mask`'s own rule and reason: meaningless on any other kind, so
+// writing it everywhere would cost every non-grouped document a byte-identity
+// regression for no reader. `np:parent` (below) is what a MEMBER carries --
+// this is what the GROUP ITSELF carries, and the two are read back verbatim
+// and joined by string equality, never translated through an EXR part name
+// (see `Layer::parent`'s own comment for why a part name cannot be this
+// join's key).
+constexpr const char* kAttrGroupId = "np:groupId";
 // The colour label and the link group (PLAN.md Phase 5 step 11; PRD C15).
 //
 // **Scalars, and deliberately not a third string carrier.**
@@ -250,7 +260,8 @@ bool isLayerAttributeRecognised(const std::string& name) {
   return name == kAttrKind || name == kAttrName || name == kAttrBlend ||
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
          name == kAttrParent || name == kAttrOps || name == kAttrMask ||
-         name == kAttrClipped || name == kAttrLabel || name == kAttrLink;
+         name == kAttrClipped || name == kAttrLabel || name == kAttrLink ||
+         name == kAttrGroupId;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -666,6 +677,30 @@ NpaintRawPart buildAdjustmentLayerPart(const Layer& layer, const std::string& pa
       words[i] = MaskTile::kRevealWord;
   }
   return part;
+}
+
+// A **Group** layer's part (PLAN.md Phase 5's C7/C12 follow-on; PRD C7).
+//
+// docs/document-format.md's own sketch for a group predates this build's
+// implementation and says "no image channels" -- and that sketch is wrong for
+// the identical, already-measured reason `buildAdjustmentLayerPart()`'s own
+// comment gives: an `ImageSpec` with zero channels makes this OpenImageIO's
+// OpenEXR plugin refuse the whole file at `open()` with "Missing or empty
+// channel list in header", before a byte is written. Rather than re-measure
+// what Adjustment already proved, this function reuses its exact answer: one
+// `mask` channel, unconditionally, real content when the layer actually has
+// a mask and `MaskTile::kRevealWord` filling it when not -- and, exactly as
+// for Adjustment, `np:mask` (not the channel's presence) is what says which.
+//
+// A Group has no `ops` for `np:mask`'s sibling `np:ops` to carry (see
+// `makeGroupLayer()`), so nothing else about this part differs from
+// Adjustment's shape at all; it is a thin wrapper rather than a shared helper
+// because the two are one call each and a shared helper would need a kind
+// parameter purely to pick the return value's `part.channelNames` (identical
+// either way) -- not worth the indirection for the one line that differs
+// between them, `np:kind`, which the caller writes.
+NpaintRawPart buildGroupLayerPart(const Layer& layer, const std::string& partName) {
+  return buildAdjustmentLayerPart(layer, partName);
 }
 
 // An alpha channel's part (PRD E11, E13): one `coverage` channel over the
@@ -1429,7 +1464,7 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
   for (size_t i = 0; i < doc.layers.size(); ++i) {
     const Layer& layer = doc.layers[i];
     if (layer.kind != LayerKind::RGB && layer.kind != LayerKind::Pigment &&
-        layer.kind != LayerKind::Adjustment) {
+        layer.kind != LayerKind::Adjustment && layer.kind != LayerKind::Group) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") is a " + layerKindName(layer.kind) +
                   " layer, and this build has no on-disk representation for that kind -- "
@@ -1439,6 +1474,23 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
                   "list. Saving would drop the layer entirely, so nothing was written. Remove "
                   "the layer, or convert it to an RGB or Pigment layer, to save this "
                   "document.");
+    }
+    if (layer.kind == LayerKind::Group &&
+        (layer.rgbTiles.has_value() || layer.pigmentTiles.has_value())) {
+      return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
+                  "\") is Group-kind but carries pixel tile storage, which core/Layer.hpp's "
+                  "own contract says cannot happen -- a Group holds no pixels of its own. "
+                  "Its part in the file has no channel to put them in, so writing it would "
+                  "drop them. Nothing was written; this is a malformed document rather than "
+                  "an unsupported one.");
+    }
+    if (layer.kind == LayerKind::Group && layer.groupTag.empty()) {
+      return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
+                  "\") is Group-kind but has no `groupTag` -- every Group `core::makeGroupLayer()` "
+                  "creates gets one immediately, so an empty tag here means this Layer was "
+                  "constructed directly rather than through it. Without a tag no member's "
+                  "`np:parent` could ever name this part, which would silently ungroup every "
+                  "member on the next load. Nothing was written.");
     }
     if (layer.kind == LayerKind::RGB && !layer.rgbTiles.has_value()) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
@@ -1790,6 +1842,7 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     switch (layer.kind) {
       case LayerKind::Pigment: part = buildPigmentLayerPart(layer, layerNames[i]); break;
       case LayerKind::Adjustment: part = buildAdjustmentLayerPart(layer, layerNames[i]); break;
+      case LayerKind::Group: part = buildGroupLayerPart(layer, layerNames[i]); break;
       default: part = buildLayerPart(layer, layerNames[i]); break;
     }
     part.attributes.push_back(stringAttr(kAttrKind, layerKindName(layer.kind)));
@@ -1807,11 +1860,16 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // which `--selftest` asserts against HEAD rather than assuming.
     if (layer.ops.size() > 0)
       part.attributes.push_back(stringAttr(kAttrOps, serializeOpStack(layer.ops)));
-    // Adjustment parts only: the `mask` channel is always present on one, so
-    // its presence cannot say whether the layer has a mask. See
-    // buildAdjustmentLayerPart().
-    if (layer.kind == LayerKind::Adjustment)
+    // Adjustment AND Group parts: both reuse `buildAdjustmentLayerPart()`'s
+    // shape (a `mask` channel always present, `buildGroupLayerPart()` is a
+    // thin wrapper over it), so its presence cannot say whether the layer has
+    // a mask on either kind. See buildAdjustmentLayerPart().
+    if (layer.kind == LayerKind::Adjustment || layer.kind == LayerKind::Group)
       part.attributes.push_back(intAttr(kAttrMask, layer.mask.has_value() ? 1 : 0));
+    // Group parts only: the group's own stable identity, verbatim -- see
+    // `kAttrGroupId`'s own comment for why no translation happens here.
+    if (layer.kind == LayerKind::Group)
+      part.attributes.push_back(stringAttr(kAttrGroupId, layer.groupTag));
     // **Written only when the layer is actually clipped** (PLAN.md Phase 5
     // step 9), for the reason `np:ops` and `np:mask` each state in their own
     // way: a document with no clipped layer has to keep producing the bytes
@@ -2209,6 +2267,13 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     const bool isAdjustmentLayer = isLayerPartName(part.name) && namedKind &&
                                    kind->stringValue == layerKindName(LayerKind::Adjustment) &&
                                    adjustmentChannels && tileAligned;
+    // A Group part: `np:kind = "group"` and Adjustment's own one-channel
+    // shape -- `buildGroupLayerPart()` is a thin wrapper over
+    // `buildAdjustmentLayerPart()`, so the reader's test is the identical
+    // `adjustmentChannels` predicate under a different `np:kind`.
+    const bool isGroupLayer = isLayerPartName(part.name) && namedKind &&
+                              kind->stringValue == layerKindName(LayerKind::Group) &&
+                              adjustmentChannels && tileAligned;
     // An alpha channel part (PRD E11, E13): `S####`, `np:kind = "selection"`,
     // and exactly one HALF channel named `coverage`. Matched by name like every
     // other channel here even though there is only one of them -- a part whose
@@ -2282,7 +2347,7 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       continue;
     }
 
-    if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer) {
+    if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer && !isGroupLayer) {
       std::string reason;
       if (isChannelPartName(part.name)) {
         // An `S####` part that failed the test above. Worth its own sentence
@@ -2299,14 +2364,20 @@ NpaintLoadResult loadNpaint(const std::string& path) {
         reason = "its np:kind attribute is not a string";
       } else if (kind->stringValue != layerKindName(LayerKind::RGB) &&
                  kind->stringValue != layerKindName(LayerKind::Pigment) &&
-                 kind->stringValue != layerKindName(LayerKind::Adjustment)) {
+                 kind->stringValue != layerKindName(LayerKind::Adjustment) &&
+                 kind->stringValue != layerKindName(LayerKind::Group)) {
         reason = "its np:kind is \"" + kind->stringValue +
-                 "\", and this build can only hold RGB, Pigment and Adjustment layers (see "
-                 "io/NpaintFile.hpp's deferrals)";
+                 "\", and this build can only hold RGB, Pigment, Adjustment and group layers "
+                 "(see io/NpaintFile.hpp's deferrals)";
       } else if (kind->stringValue == layerKindName(LayerKind::Adjustment)) {
         reason = "it declares np:kind \"Adjustment\" but its channels are not exactly one "
                  "named mask, in half -- an Adjustment layer holds no pixels, so its part "
                  "carries only the one channel EXR requires it to have";
+      } else if (kind->stringValue == layerKindName(LayerKind::Group)) {
+        reason = "it declares np:kind \"group\" but its channels are not exactly one named "
+                 "mask, in half -- a Group holds no pixels, so its part carries only the one "
+                 "channel EXR requires it to have (buildGroupLayerPart() shares Adjustment's "
+                 "shape)";
       } else if (kind->stringValue == layerKindName(LayerKind::Pigment)) {
         reason = "it declares np:kind \"Pigment\" but its channels are not exactly "
                  "docs/document-format.md's eleven -- R, G, B, A, pig.c0, pig.c1, pig.c2, "
@@ -2377,6 +2448,26 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       if (pigmentMaskIdx.has_value()) {
         maskIdx = (*pigmentMaskIdx)[kPigmentChannelCount];
         hasMaskChannel = true;
+      }
+    } else if (isGroupLayer) {
+      layer.kind = LayerKind::Group;
+      // Adjustment's own reading of the one channel: `np:mask`, not the
+      // channel's presence, says whether the layer has one.
+      const NpaintAttribute* hasMask = findAttr(part.attributes, kAttrMask);
+      if (hasMask != nullptr && hasMask->type == NpaintAttribute::Type::Int &&
+          hasMask->intValue != 0) {
+        maskIdx = 0;
+        hasMaskChannel = true;
+      }
+      // The group's own stable identity, read back verbatim -- no
+      // translation, `kAttrGroupId`'s own comment. A Group part with no
+      // `np:groupId` at all (carried from a hand-built fixture, say) reads
+      // as an empty tag, which `core::groupAncestry()` treats as "resolves
+      // to nothing" for any member that happened to name it, the same
+      // "absent means neutral" rule as an unresolvable `np:parent`.
+      if (const NpaintAttribute* g = findAttr(part.attributes, kAttrGroupId);
+          g != nullptr && g->type == NpaintAttribute::Type::String) {
+        layer.groupTag = g->stringValue;
       }
     } else {
       layer.kind = LayerKind::RGB;

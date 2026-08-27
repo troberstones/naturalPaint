@@ -1908,6 +1908,14 @@ int main(int argc, char** argv) {
     // correct answers, in BOTH NP_USE_OIIO configurations. Headless and
     // GPU-free; writes and removes five `.npaint` files.
     const bool layerCompOk = np::runLayerCompTest();
+    // PLAN.md Phase 5's C7/C12 follow-on (PRD C7, P0): layer groups. The
+    // model, core/LayerSetOps' span-splice Group/Ungroup commands and their
+    // order-preservation proof, core/Composite's pass-through coverage fold
+    // (including nesting and a hand-built cycle proven not to hang), undo
+    // through the existing command funnel, and the `.npaint` round trip with
+    // its older-build degradation. Headless and GPU-free; writes and removes
+    // six `.npaint` files.
+    const bool layerGroupOk = np::runLayerGroupTest();
     // Phase 5 step 13 ("Export comps to files, and layers to files -- one
     // shared loop"; PRD I16, I17): io/ExportStates' name template and its
     // path refusals, the pre-flight that decides collisions and overwrites
@@ -2108,7 +2116,7 @@ int main(int argc, char** argv) {
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
                     controlsLayoutOk && controlsColumnLayoutOk &&
-                    incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
+                    incrementalCompositeOk && mergeFamilyOk && layerCompOk && layerGroupOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
