@@ -253,7 +253,36 @@ and `:6757` use raw `st.brush.spacing * st.sim.brushRadius`. `Deposit.hpp:359`
 claims the two routes "cannot emit dabs at different spacings from one tip" — the
 `0.1f` floor matches, the multiplier does not.
 
-### B5 — Scatter is imported in the wrong unit, and applied on the wrong axis
+### B5 — Scatter is imported in the wrong unit, and applied on the wrong axis — ~~OPEN~~ **CLOSED, and every sentence below it was already false**
+
+**Both halves landed in `ee796a6`** ("Scatter in the right unit, on the right
+axis, and a descriptor field I lost in the merge"), which is an ancestor of
+this file's own tree. Verified 2026-08-27 by reading the tree, not the entry:
+
+* **Unit.** `abrScatterFractionToRadii()` (`io/AbrBrushes.hpp:247`,
+  `.cpp:688`) returns `fractionOfDiameter * 2.0f`, applied at `.cpp:440-441`
+  to every `Scatter` link — the same place `abrSpacingToRadii()` does the
+  analogous spacing conversion, which is exactly where the entry below
+  *predicted* it should go.
+* **Axis.** `applyPerDabScatter()` (`app/StrokeSession.cpp:103`) is
+  perpendicular by default and isotropic only under `scatterBothAxes`, which
+  `io/AbrBrushes.cpp:451` imports as
+  `field("bothAxes").asBoolean().value_or(false)` — Photoshop's own default.
+* **"Neither is covered by an assertion today."** Also false, and the most
+  wrong of the four: `app/selftest/Scatter.cpp` asserts the
+  perpendicular/isotropic split *geometrically*, by projecting displacement
+  onto the tangent, rather than by trusting the flag; `selftest/AbrBrushes.cpp`
+  asserts the unit end-to-end from a fixture descriptor. Both were sabotage-
+  verified again on 2026-08-27: dropping the `* 2.0f` reddens four assertions,
+  forcing the isotropic branch reddens three.
+
+**This entry cost a task to disprove, and that is the point of recording it.**
+The work was dispatched as an investigation rather than a fix, precisely
+because the axis half looked already-done on a five-minute read — and the
+investigation came back with *no code change at all*. Had it been briefed as
+"apply the factor of two", the agent would have doubled a conversion that was
+already correct and shipped a real defect while reporting success. That is not
+hypothetical: it is B6's exact failure, one entry below.
 
 Two independent defects that both make an imported brush scatter *less* and
 *differently* than the original, and that compound:
