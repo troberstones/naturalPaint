@@ -368,4 +368,44 @@ size_t layersHiddenFromSelection(const Document& doc, const LayerSelection& sel,
   return sel.size() - restrictSelectionToFilter(doc, sel, filter).size();
 }
 
+// --- Group nesting -----------------------------------------------------------
+
+std::vector<std::string> layerGroupAncestry(const Document& doc, size_t layerIndex) noexcept {
+  std::vector<std::string> chain;
+  if (layerIndex >= doc.layers.size()) return chain;
+  std::string tag = doc.layers[layerIndex].parent;
+  // Bounded exactly as core::groupAncestry(): never more hops than there are
+  // layers, and a tag already on the chain stops the walk -- the identical
+  // cycle guard, applied here to a chain of tags instead of to a coverage
+  // product.
+  for (size_t hops = 0; !tag.empty() && hops < doc.layers.size(); ++hops) {
+    bool seen = false;
+    for (const std::string& t : chain)
+      if (t == tag) seen = true;
+    if (seen) break;
+    chain.push_back(tag);
+    std::string next;
+    for (const Layer& l : doc.layers) {
+      if (l.kind == LayerKind::Group && l.groupTag == tag) {
+        next = l.parent;
+        break;
+      }
+    }
+    tag = next;
+  }
+  return chain;
+}
+
+size_t layerGroupDepth(const Document& doc, size_t layerIndex) noexcept {
+  return layerGroupAncestry(doc, layerIndex).size();
+}
+
+bool layerHiddenByCollapsedGroup(const Document& doc, size_t layerIndex,
+                                 const std::set<std::string>& collapsedGroupTags) noexcept {
+  if (collapsedGroupTags.empty()) return false;
+  for (const std::string& tag : layerGroupAncestry(doc, layerIndex))
+    if (collapsedGroupTags.count(tag) != 0) return true;
+  return false;
+}
+
 }  // namespace np

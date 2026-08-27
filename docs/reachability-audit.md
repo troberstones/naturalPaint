@@ -502,7 +502,7 @@ There is **no Filter menu, no Image menu and no Select menu.**
 | **C4** | Channels panel + quick mask | Q11, E12, E13 | `core/Channels.hpp` reaches `Document.hpp` and `NpaintFile.cpp` — channels are **saved and loaded** — but no UI file. `ControlsSection` has no Channels slot, though its own comment cites the design's "… / LAYERS / CHANNELS" column |
 | **C5** | Selection refine — grow, shrink, feather, colour range, luminance range | E4, E9 | Five proven engines; callers only in `selftest/SelectionRefine.cpp` and `selftest/Blur.cpp`. **No Select menu to put them in** |
 | **C6** | Cached / out-of-core tile residency | A7 | Every production site assigns `TileResidencyMode::Eager` (`DocumentLifecycle.cpp:291,346,385`; `Journal.cpp:803`); `Cached` only at `selftest/TileResidency.cpp:212` |
-| **C7** | Layer grouping | **C12, P0** | Not unwired — **unwritten**. No Group/Ungroup in `LayerCommand` (`app/LayerEditor.hpp:68-116`) or `LayerSetCommand` (`core/LayerSetOps.hpp:239-284`) |
+| ~~**C7**~~ | ~~Layer grouping~~ | **C12, P0** | **CLOSED 2026-08-27.** Was "unwritten" — no Group/Ungroup in `LayerSetCommand`. Both now exist, and because `ui/MacPaintUI.cpp` walks `core::allLayerSetCommands()` generically they became reachable on both surfaces the moment they joined the enum (see the scatter-round note below: this document briefly claimed otherwise, wrongly). The panel's nesting indent, guides and collapse triangle are `app/LayerPanel`'s `layerGroupDepth()` / `layerHiddenByCollapsedGroup()` |
 
 ---
 
@@ -706,20 +706,48 @@ comparisons. Proven to fail two ways: blanking the wordmark, and — the one
 worth keeping — **forcing Redo to draw enabled when it should be greyed**,
 which moves 2464 px and which no other view notices.
 
-**C7 — layer groups** is **half** closed, and the half matters. The model,
-the composite integration and the `.npaint` round trip exist and are
-tested. **No LAYERS gesture and no menu item issues `GroupLayers`, so a user
-still cannot group anything**, and the entry above stays open until that
-lands. The delivered selftest narration printed "**group** is BUILT"; that
-was corrected before landing, because announcing an unreachable subsystem as
-delivered — in the narration about the document that catalogues unreachable
-subsystems — is the failure mode itself.
+**C7 — layer groups** was recorded here as **half** closed, on the claim
+that "no LAYERS gesture and no menu item issues `GroupLayers`, so a user
+still cannot group anything". **That claim was false when it was written.**
+`ui/MacPaintUI.cpp`'s "Multi-selection" section and the `Layer` > Selection
+menu have both walked `core::allLayerSetCommands()` generically since
+PLAN.md Phase 5 step 11 — they enumerate the command list, ask
+`layerSetCommandAvailable()`, and call `runLayerSetCommand()` on click. The
+moment `GroupLayers`/`UngroupLayers` joined that enum they appeared on both
+surfaces with no UI code change at all, which is why the model commit
+touched `app/LayerPanel.cpp` and never `MacPaintUI.cpp`.
+`--demo-document --ui-multiselect-demo "select:0.1,group"` prints
+`Group Layers ok (revision 2, 4 layers)` through the identical
+`applyLayerSetCommand()` funnel a click uses.
+
+The correction is worth recording as more than a typo, because of **who**
+made the error. The delivered narration said "**group** is BUILT"; that was
+overwritten with "the MODEL is built, and NOTHING REACHES IT YET" — a
+sharper-sounding claim, asserted without ever grepping the two surfaces it
+was about, in the entry of the document that exists to catalogue exactly
+this. The generic command walk is *the mechanism this document has been
+arguing for*, and it was working; the reviewer looked straight past it. An
+absence-claim costs a `grep` to check and is worthless unchecked, whoever
+writes it — the R13 note applies to the auditor too, not only to the
+audited.
+
+What was genuinely missing was the **other** half of reachability:
+feedback. A group row read identically to any other layer, a member gave no
+sign of being *inside* anything, and a twenty-layer group could not be
+closed, which defeats the panel's bounded scroll region (T11). That half is
+what task/group-ui delivered — `layerGroupAncestry()`, `layerGroupDepth()`
+and `layerHiddenByCollapsedGroup()` in `app/LayerPanel`, drawn as an indent,
+a per-level guide and a disclosure triangle, with 68 assertions in
+`app/selftest/LayerGroupPanel.cpp`. **C7 is now closed**, and the entry
+above is updated.
 
 **B5** was already fixed and is corrected in place above.
 
 **The pattern across all five.** Two of the five entries dispatched were
 already stale (B5 entirely, C3 noticed in passing while checking C2). One
 delivered work whose *report* was wrong in a way the code was not (C2's
-cache rationale). One delivered correct work with an overclaiming narration
-(C7). The tree disagreed with this document in some way on four of five —
-which is the note under R13 arriving on schedule, not a surprise.
+cache rationale). One — C7 — was delivered correctly and then had a
+**correct** narration replaced with a false one by the review. The tree
+disagreed with this document in some way on four of five, and the review
+disagreed with the tree on the fifth; both are the note under R13 arriving
+on schedule, not a surprise.

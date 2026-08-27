@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -363,6 +364,46 @@ struct LayerFilter {
 };
 
 bool layerMatchesFilter(const Document& doc, size_t layerIndex, const LayerFilter& filter);
+
+// --- Group nesting: depth, and which rows a collapsed group hides ----------
+//
+// PRD C7's model (core/LayerSetOps.hpp section 5) shipped `GroupLayers` and
+// `UngroupLayers` with no UI gesture reaching either -- docs/reachability-
+// audit.md's C7. This is the other half that came with reachability: a flat
+// row list where a group looked like any other layer would not read as
+// "reachable" at all, it would read as a command with no feedback. A member
+// has to read as INSIDE its group, and a group of twenty has to be able to
+// close so it does not defeat drawLayersSection()'s bounded scroll region
+// (T11).
+//
+// Both functions below walk `Layer::parent` exactly as `core::groupAncestry()`
+// does (core/Composite.hpp), and are bounded and cycle-safe for the identical
+// reason: a hand-built `Document`, or a foreign `.npaint` this build did not
+// write, is not bound by what this build's own `GroupLayers` would ever
+// produce.
+
+// The chain of group tags `doc.layers[layerIndex]` sits inside, immediate
+// parent first, outermost ancestor last. Empty for a top-level layer and for
+// an out-of-range index. A tag already on the chain stops the walk rather
+// than looping -- the same cycle-safety `core::groupAncestry()` proves, read
+// here as "however many groups are certain, not infinitely many".
+std::vector<std::string> layerGroupAncestry(const Document& doc, size_t layerIndex) noexcept;
+
+// `layerGroupAncestry(doc, layerIndex).size()` -- how many indentation steps
+// this row draws. A Group layer's own depth is how deep IT nests; a member
+// sitting directly inside it reads one step deeper again.
+size_t layerGroupDepth(const Document& doc, size_t layerIndex) noexcept;
+
+// True when `layerIndex` should be hidden because SOME ancestor group in its
+// chain is collapsed. A Group layer's own tag is never matched against
+// itself here -- collapsing a group hides its members, not the row that
+// collapsed it, which is what keeps the control reachable to open again.
+//
+// Collapse state is a panel concern, not a document one -- ui/MacPaintUI.cpp
+// argues why it is session-only rather than round-tripped through `.npaint`
+// -- so it is passed in as a plain set of tags rather than read off `doc`.
+bool layerHiddenByCollapsedGroup(const Document& doc, size_t layerIndex,
+                                 const std::set<std::string>& collapsedGroupTags) noexcept;
 
 // The layers the panel draws, as **model indices ascending** (bottom-first).
 // The panel walks the result in reverse, which is the same single reversal

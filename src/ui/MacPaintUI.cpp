@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -301,6 +302,28 @@ struct LayerEditorUiState {
   // drawn, not on the frame the double-click set `renaming` -- so this is
   // consumed (set false) the first time the field is drawn after it is set.
   bool renameFieldFocusPending = false;
+
+  // **Which groups are collapsed** (PRD C7's UI half). Keyed on
+  // `Layer::groupTag`, the same stable string a member's `parent` names.
+  //
+  // Session-only, deliberately -- NOT round-tripped through `.npaint`. Three
+  // reasons, in order of how much they alone would settle it: (1) it is view
+  // state, the same category `g_layers.filter` and `g_layers.selection`
+  // already are, and neither of those is saved either -- a `.npaint` that
+  // remembered which rows a search box had hidden would be a strange
+  // precedent to set for this one. (2) round-tripping it would mean a new
+  // `np:` attribute on the Group part, a writer, a reader, an older-build
+  // degradation story and a place in the format table (docs/document-format.md)
+  // -- real cost for a control that changes nothing about the picture. (3) a
+  // tag is per-session already: it is never persisted as a *reference* from
+  // outside `Document::layers` (core/LayerSetOps.hpp's own argument for why
+  // link-group numbers need no counter to undo), so keying UI state on it
+  // outlives exactly one session's worth of grouping, which is what this
+  // state is for. A tag whose group has since been ungrouped, or that
+  // belongs to a document that has since closed, simply never matches
+  // anything in `layerHiddenByCollapsedGroup()` again -- nothing prunes it
+  // and nothing needs to.
+  std::set<std::string> collapsedGroups;
 };
 LayerEditorUiState g_layers;
 
@@ -1808,6 +1831,8 @@ constexpr float kLayerEyeW       = 14.0f;
 constexpr float kLayerLockW      = 12.0f;
 constexpr float kLayerMaskChipW  = 12.0f;
 constexpr float kLayerOpacityW   = 52.0f;
+constexpr float kLayerGroupIndentW = 10.0f;  // per nesting level (PRD C7's UI half)
+constexpr float kLayerDisclosureW  = 10.0f;  // the collapse/expand triangle, Group rows only
 
 // The four shades the token table does not carry, declared here for
 // `kMatrixColumnAlt`'s reason one section down: ui/AtelierTheme.hpp holds
@@ -1877,6 +1902,20 @@ void drawClipBracket(ImDrawList* dl, ImVec2 min, float w, float h, ImU32 col) {
   const float x = min.x + w * 0.45f;
   dl->AddLine(ImVec2(x, min.y), ImVec2(x, min.y + h), col, 1.0f);
   dl->AddLine(ImVec2(x, min.y + h - 1.0f), ImVec2(x + w * 0.5f, min.y + h - 1.0f), col, 1.0f);
+}
+
+// The collapse/expand triangle on a Group row (PRD C7's UI half): pointing
+// right when collapsed (there is more here, closed), pointing down when
+// expanded -- the same two states a disclosure triangle draws everywhere
+// else, so nothing about it has to be learned.
+void drawDisclosureTriangle(ImDrawList* dl, ImVec2 c, float s, ImU32 col, bool expanded) {
+  const float r = s * 0.32f;
+  if (expanded)
+    dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.6f), ImVec2(c.x + r, c.y - r * 0.6f),
+                          ImVec2(c.x, c.y + r * 0.7f), col);
+  else
+    dl->AddTriangleFilled(ImVec2(c.x - r * 0.6f, c.y - r), ImVec2(c.x - r * 0.6f, c.y + r),
+                          ImVec2(c.x + r * 0.7f, c.y), col);
 }
 
 // One line of text, clipped to a rectangle rather than wrapped or ellipsised.
@@ -2011,7 +2050,15 @@ void drawLayersSection(AppState& st) {
   // still owns the single reversal in the codebase and nothing here computes
   // `count - 1 - row` a second time.
   const size_t count = doc.layers.size();
-  const std::vector<size_t> visibleRows = layersMatchingFilter(doc, g_layers.filter);
+  // Filtered rows, minus whatever a collapsed group is hiding (PRD C7's UI
+  // half). The two are independent concerns kept in one pass here rather
+  // than merged into `app::layersMatchingFilter()` itself: that function is
+  // the design's own PRD C15 filter, text-and-kind, and collapse is neither
+  // -- app/LayerPanel.hpp's `layerHiddenByCollapsedGroup()` is deliberately a
+  // second predicate, not a third field bolted onto `LayerFilter`.
+  std::vector<size_t> visibleRows;
+  for (const size_t i : layersMatchingFilter(doc, g_layers.filter))
+    if (!layerHiddenByCollapsedGroup(doc, i, g_layers.collapsedGroups)) visibleRows.push_back(i);
 
   // --- The header band -----------------------------------------------------
   //
@@ -2367,6 +2414,19 @@ void drawLayersSection(AppState& st) {
         drawClipBracket(dl, ImVec2(x, o.y), kLayerClipIndent, rowH, atelierToken(kHairline));
         x += kLayerClipIndent;
       }
+      // **A group's members read as INSIDE it** (PRD C7's UI half, this
+      // task's own reachability requirement): one indent step, plus a
+      // vertical guide, per level of `app::layerGroupDepth()` -- the same
+      // "this one belongs to that one" reading `drawClipBracket()` above
+      // already gives the clip indent, applied to nesting instead. A group
+      // nested two deep draws two guides and indents its own row twice; its
+      // members read one step deeper again.
+      const size_t groupDepth = layerGroupDepth(doc, i);
+      for (size_t lvl = 0; lvl < groupDepth; ++lvl) {
+        const float guideX = x + (static_cast<float>(lvl) + 0.5f) * kLayerGroupIndentW;
+        dl->AddLine(ImVec2(guideX, o.y), ImVec2(guideX, o.y + rowH), atelierToken(kHairline), 1.0f);
+      }
+      x += static_cast<float>(groupDepth) * kLayerGroupIndentW;
       x += kLayerRowPadX;
 
       // The two icon slots. Colours first, because all three states of the lock
@@ -2384,6 +2444,24 @@ void drawLayersSection(AppState& st) {
       drawPadlockGlyph(dl, ImVec2(x + kLayerLockW * 0.5f, iconY), kLayerLockW, lockCol,
                        layer.locked);
       x += kLayerLockW + kLayerRowGap;
+
+      // The collapse/expand triangle -- Group rows only. An ordinary row
+      // reserves no slot for one and no gap either: indentation is what this
+      // panel spends on "you are one level in", not a blank triangle on
+      // every row that is not a group. The actual `InvisibleButton()` is
+      // issued later, alongside the eye and the padlock, for the identical
+      // overlap-ordering reason their own comment gives -- so a click on the
+      // triangle can never also select or drag the row.
+      const bool isGroupRow = layer.kind == LayerKind::Group;
+      ImVec2 discAt(x, o.y);
+      bool groupCollapsed = false;
+      if (isGroupRow) {
+        groupCollapsed = g_layers.collapsedGroups.count(layer.groupTag) != 0;
+        discAt = ImVec2(x, o.y + (rowH - kLayerDisclosureW) * 0.5f);
+        drawDisclosureTriangle(dl, ImVec2(x + kLayerDisclosureW * 0.5f, iconY), kLayerDisclosureW,
+                               textCol, !groupCollapsed);
+        x += kLayerDisclosureW + kLayerRowGap;
+      }
 
       // The kind glyph, muted on a hidden layer along with the name, so a hidden
       // row reads as hidden from its leading edge rather than only from the word
@@ -2482,7 +2560,7 @@ void drawLayersSection(AppState& st) {
         popAtelierMono();
       }
 
-      // ---- the two icon buttons, last, so they take the mouse ---------------
+      // ---- the icon buttons, last, so they take the mouse -------------------
       ImGui::SetCursorScreenPos(eyeAt);
       if (ImGui::InvisibleButton("##vis", ImVec2(kLayerEyeW, kLayerEyeW)))
         run(setLayerVisible(doc, i, !layer.visible));
@@ -2498,6 +2576,26 @@ void drawLayersSection(AppState& st) {
                           "this padlock itself still work.",
                           layer.locked ? "Locked -- click to unlock"
                                        : "Unlocked -- click to lock");
+      if (isGroupRow) {
+        ImGui::SetCursorScreenPos(discAt);
+        if (ImGui::InvisibleButton("##disclosure", ImVec2(kLayerDisclosureW, kLayerDisclosureW))) {
+          if (groupCollapsed)
+            g_layers.collapsedGroups.erase(layer.groupTag);
+          else
+            g_layers.collapsedGroups.insert(layer.groupTag);
+          // `visibleRows` was built at the top of this function, before this
+          // click, so it still names rows this group's new collapse state
+          // says should not be drawn (or is now missing ones that should).
+          // Nothing about `doc.layers` changed, but the row SET this frame
+          // is walking did -- the identical staleness `structureChanged`
+          // already exists to stop the loop for, reused here rather than
+          // given a second flag that means the same thing.
+          structureChanged = true;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("%s", groupCollapsed ? "Expand group -- show its members"
+                                                  : "Collapse group -- hide its members");
+      }
 
       // Selection, decided after the icon buttons so that a click they claimed is
       // not also a click on the row. Multi-select (PRD C12): plain click replaces
@@ -2684,6 +2782,16 @@ void drawLayersSection(AppState& st) {
     const LayerSelection visible =
         restrictSelectionToFilter(doc, g_layers.selection, g_layers.filter);
     for (const LayerSetCommand command : allLayerSetCommands()) {
+      // **Enabled exactly when `core::layerSetCommandAvailable()` says so,
+      // and no second rule** -- core/LayerSetOps.hpp's own line: "Every
+      // other reason a command may not go ahead ... is a REFUSAL, offered
+      // and answered with a sentence." `GroupLayers` on a member that is
+      // already inside a group is exactly that: available (there is a
+      // selection to try), refused by `applyLayerSetOp()` when pressed, and
+      // the refusal -- "already inside a group" -- lands in the message
+      // band below by name, through the same `g_layers.lastError` every
+      // other refusal in this section already uses. Nothing here special-
+      // cases Group or Ungroup.
       const bool available = layerSetCommandAvailable(doc, command, visible);
       ImGui::BeginDisabled(!available);
       if (ImGui::SmallButton(layerSetCommandLabel(command))) runLayerSetCommand(st, command);

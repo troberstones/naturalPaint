@@ -2487,6 +2487,20 @@ bool runLayerCompTest();
 // Headless and GPU-free; writes and removes six `.npaint` files.
 bool runLayerGroupTest();
 
+// task/group-ui, the LAYERS panel's own half of PRD C7: docs/reachability-
+// audit.md's C7 stayed open because nothing issued `GroupLayers`/
+// `UngroupLayers` -- which turned out to already be false (ui/MacPaintUI.cpp's
+// pre-existing generic `core::allLayerSetCommands()` walk picked both up the
+// moment they joined that list; `--ui-multiselect-demo select:0.1,group`
+// proves it). What was actually missing, and what this covers: a group row
+// distinguishable from an ordinary one, its members indenting to read as
+// inside it (nesting included, ordered immediate-parent-first), and the
+// collapsed-row predicate a disclosure triangle drives -- hiding exactly a
+// collapsed group's descendants, never the row that collapsed it, and never
+// an unrelated sibling. Headless and GPU-free; app/LayerPanel's pure half,
+// the same split that file already draws for every other row property.
+bool runLayerGroupPanelTest();
+
 // PLAN.md Phase 5 step 13 ("**Export comps to files, and layers to files** --
 // one shared loop: set a document state, composite, write through phase 4's
 // Export As presets with a name template"); PRD I16 and I17.

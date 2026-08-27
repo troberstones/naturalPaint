@@ -378,6 +378,16 @@ void runUiMultiSelectDemo(np::OpenDocument& od, std::string_view script) {
       {"duplicate", np::LayerSetCommand::DuplicateLayers},
       {"up", np::LayerSetCommand::MoveLayersUp},
       {"down", np::LayerSetCommand::MoveLayersDown},
+      // PRD C7's UI half: the two tokens this table was missing when
+      // `GroupLayers`/`UngroupLayers` joined `core::allLayerSetCommands()`.
+      // Nothing else about this demo needed to change -- both commands
+      // already ran through the identical `applyLayerSetCommand()` funnel
+      // every other entry here does; the panel's own "Multi-selection"
+      // section and the `Layer` > Selection menu already offered them too,
+      // by walking that same list generically. This table was simply
+      // incomplete.
+      {"group", np::LayerSetCommand::GroupLayers},
+      {"ungroup", np::LayerSetCommand::UngroupLayers},
       {"show", np::LayerSetCommand::ShowLayers},
       {"hide", np::LayerSetCommand::HideLayers},
       {"lock", np::LayerSetCommand::LockLayers},
@@ -1916,6 +1926,12 @@ int main(int argc, char** argv) {
     // its older-build degradation. Headless and GPU-free; writes and removes
     // six `.npaint` files.
     const bool layerGroupOk = np::runLayerGroupTest();
+    // task/group-ui: the LAYERS panel's own half of PRD C7 -- the row-depth,
+    // ancestry-ordering and collapsed-row predicate app/LayerPanel's pure
+    // half adds, plus the CLI-provable finding that the command-issuing half
+    // (a LAYERS gesture / a menu item) already existed before this step,
+    // through ui/MacPaintUI.cpp's pre-existing generic command walk.
+    const bool layerGroupPanelOk = np::runLayerGroupPanelTest();
     // Phase 5 step 13 ("Export comps to files, and layers to files -- one
     // shared loop"; PRD I16, I17): io/ExportStates' name template and its
     // path refusals, the pre-flight that decides collisions and overwrites
@@ -2117,6 +2133,7 @@ int main(int argc, char** argv) {
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
                     controlsLayoutOk && controlsColumnLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk && layerGroupOk &&
+                    layerGroupPanelOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
