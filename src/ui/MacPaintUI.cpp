@@ -4775,10 +4775,19 @@ void drawHistorySection(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext
   // So the one case with nothing to show is the one that would have swelled
   // to eat every panel below it. One row tall, and it draws as an empty box
   // under a line that says "0 state(s)", which is the honest picture.
+  //
+  // **Plus the child's own vertical padding**, which this calculation shipped
+  // without and which drawLayersSection() (T11) caught by screenshot on a
+  // panel showing two rows against an eight-row cap. `BeginChild()` sizes the
+  // OUTER box, but a bordered child's rows are laid out inside the style's
+  // `WindowPadding`, so N row-heights of box holds slightly less than N rows
+  // of content -- and the panel grows a scrollbar for content that fits.
+  // Counted once here rather than left to be clipped off the bottom.
   const float childH =
       std::max(rowH, static_cast<float>(std::min(rows.size(),
                                                  static_cast<size_t>(kHistoryVisibleRows))) *
-                         rowH);
+                         rowH) +
+      2.0f * ImGui::GetStyle().WindowPadding.y;
 
   // Auto-scroll follows the CURRENT row, but only right after the cursor
   // moves -- not every frame, which would fight the user's own scrolling:
