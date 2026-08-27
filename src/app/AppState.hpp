@@ -938,6 +938,16 @@ struct AppState {
   std::optional<Guide> pendingGuide;
 
   float frameMs = 0.0f;
+
+  // docs/reachability-audit.md F2: true for the whole life of a `--screenshot
+  // <path> [frames]` run, set once in main() right after this struct is
+  // constructed. MacPaintUI's title bar reads it to freeze the live fps
+  // readout at a fixed string instead of the real, run-varying number --
+  // the same reasoning as main.cpp's `(-FLT_MAX, -FLT_MAX)` mouse
+  // suppression on screenshot frames: a live number is a nondeterminism
+  // source a golden view could never hold a threshold against, since it is
+  // a different string run to run rather than stable glyph-edge noise.
+  bool screenshotCliActive = false;
 };
 
 }  // namespace np

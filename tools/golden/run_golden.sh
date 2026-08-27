@@ -85,6 +85,18 @@
 #     Both criteria must hold. Noise is few-pixels-at-moderate-magnitude; a
 #     regression is either many pixels or one pixel moved far, and those are
 #     different axes.
+#   titlebar: exact (0, 0), measured rather than assumed even though this
+#     view holds text -- see the view-table comment above for why the fps
+#     readout that would otherwise have made that impossible is frozen at
+#     the source. Two separate measurement batches, each diffed against its
+#     own batch's first launch (197 120 px crop): 11 comparisons across 12
+#     launches, then 19 more comparisons across a fresh 20-launch batch -- 30
+#     comparisons total, every one 0 mismatched px at max channel diff 0.
+#     `toolbar` contains text too and still flakes (one glyph edge,
+#     coin-flip rate); this view did not reproduce that in 30 tries, so it
+#     is blessed at exact equality the same way `canvas`/`tools`/`flyout`
+#     were, rather than borrowing `toolbar`'s (48, 16) out of caution with
+#     nothing measured to justify it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -166,8 +178,28 @@ measure_n="${2:-10}"
 #     4 separately-launched captures diffed against the first: 0 mismatched
 #     px, max channel diff 0, every time -- exact-zero, the same as
 #     toolbar/tools/canvas, so it is blessed at (0, 0) rather than skipped.
-view_names=(toolbar layers canvas tools flyout)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo")
+#   titlebar  -- docs/reachability-audit.md F2: the y=0..71 title band, never
+#     covered before this view -- when the native menu bar landed and removed
+#     seven labels from it, all five views of the day still passed. Full
+#     window width (0, 0, 2560, 77) under --demo-document, the same demo
+#     `toolbar` uses: the naturalPaint wordmark at the left, and at the
+#     right, Undo (enabled -- --demo-document leaves an undoable edit on the
+#     stack), Redo (disabled) and the fps readout.
+#
+#     The fps text changes every real run -- `"%.1f fps"`, MacPaintUI.cpp,
+#     right-aligned -- so a byte-equality view over the full band could never
+#     hold a threshold; it is a different string run to run, not glyph-edge
+#     noise like `toolbar`'s. Fixed at the source instead of cropped around:
+#     `AppState::screenshotCliActive`, set once for the life of a
+#     `--screenshot` run, makes MacPaintUI print a fixed "-- fps" on those
+#     frames rather than the live number -- the same reasoning as
+#     main.cpp's `(-FLT_MAX, -FLT_MAX)` mouse suppression on screenshot
+#     frames, which already covers hover/press tint for this same reason.
+#     That is strictly better than cropping short of the readout: it removes
+#     a real nondeterminism source rather than cropping around one, and
+#     leaves the whole band, not just the wordmark and Undo/Redo, coverable.
+view_names=(toolbar layers canvas tools flyout titlebar)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -254,11 +286,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # (revision 2's later, no-scrollbar shrink-to-fit correction) to this
 # revision's 100x350 (taller, to bring two of the new flyout groups' own
 # corner-triangle badges into frame -- see the view-table comment above).
-view_crop_x=(0    1916 920  0   0)
-view_crop_y=(77   1075 1037 220 700)
-view_crop_w=(1400 640  384  100 400)
-view_crop_h=(166  190  192  350 350)
-view_frames=(90 90 90 90 90)
+view_crop_x=(0    1916 920  0   0   0)
+view_crop_y=(77   1075 1037 220 700 0)
+view_crop_w=(1400 640  384  100 400 2560)
+view_crop_h=(166  190  192  350 350 77)
+view_frames=(90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -291,7 +323,7 @@ view_frames=(90 90 90 90 90)
 # than a second number invented for it. `canvas` and `tools` stay exact
 # because they genuinely contain no text, and `tools` was re-measured at
 # exactly 0 after the palette grew to 28 cells.
-view_threshold=(48 96 0 0 48)
+view_threshold=(48 96 0 0 48 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -307,7 +339,7 @@ view_threshold=(48 96 0 0 48)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16)
+view_max_changed_px=(16 64 0 0 16 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

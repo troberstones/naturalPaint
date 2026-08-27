@@ -2228,6 +2228,10 @@ int main(int argc, char** argv) {
   }
 
   np::AppState st;
+  // docs/reachability-audit.md F2: set once, for the whole run -- see
+  // AppState::screenshotCliActive's own comment for why the title bar's fps
+  // readout needs to know this.
+  st.screenshotCliActive = (screenshotPath != nullptr);
 
   // PLAN.md Phase 4 step 9 (app/Journal, ADR-0008, PRD O5-O10).
   //
