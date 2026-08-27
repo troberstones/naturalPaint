@@ -607,6 +607,107 @@ bool runOpenAnyFileTest() {
           "an unrecognised file is refused rather than attempted twice");
   }
 
+  // --- G2. drop destination: the enum the drop *point* resolves to ---------
+  //
+  // `DropDestination::Unspecified` is the value every caller written before
+  // this enum existed still gets (it is the default argument on both
+  // `dropActionFor()` and `applyDroppedFiles()`), and OpenAnyFile.hpp's own
+  // comment on that value is a promise: "identical to before", not "close to
+  // before". This section asserts that promise directly rather than trusting
+  // it, alongside the one case a destination is allowed to change the answer.
+  std::printf("-- G2. drag and drop: destination changes only the tab-strip case --\n");
+  {
+    for (const FileKind k :
+        {FileKind::NpaintDocument, FileKind::Image, FileKind::Unknown}) {
+      for (const bool open : {false, true}) {
+        check(dropActionFor(k, open) == dropActionFor(k, open, DropDestination::Unspecified),
+              "Unspecified reproduces the old two-argument rule exactly, for every "
+              "kind/open combination");
+      }
+    }
+
+    // The one case destination changes the answer: the tab strip always
+    // opens a picture as a new document, even with one already open.
+    check(dropActionFor(FileKind::Image, true, DropDestination::TabStrip) ==
+              DropAction::OpenAsDocument,
+          "a picture dropped on the tab strip opens as a new document, even though a "
+          "document is already open -- the whole point of this feature");
+    check(dropActionFor(FileKind::Image, false, DropDestination::TabStrip) ==
+              DropAction::OpenAsDocument,
+          "...and still opens with nothing open, same as every other destination");
+
+    // The canvas still means "add a layer" when a document is open --
+    // ActiveDocument computes what Unspecified always has for that case.
+    check(dropActionFor(FileKind::Image, true, DropDestination::ActiveDocument) ==
+              DropAction::ImportAsLayer,
+          "a picture dropped on the canvas still becomes a layer when a document is open "
+          "-- the destination did not change what the canvas has always meant");
+    check(dropActionFor(FileKind::Image, false, DropDestination::ActiveDocument) ==
+              DropAction::OpenAsDocument,
+          "...and opens as a document when nothing is open -- there is no canvas to add to");
+
+    // A .npaint is never a layer, and an unrecognised file is never opened,
+    // regardless of where either lands.
+    for (const DropDestination d :
+        {DropDestination::Unspecified, DropDestination::TabStrip,
+         DropDestination::ActiveDocument}) {
+      check(dropActionFor(FileKind::NpaintDocument, false, d) == DropAction::OpenAsDocument &&
+                dropActionFor(FileKind::NpaintDocument, true, d) == DropAction::OpenAsDocument,
+            "a .npaint always opens, whatever the destination and whether a document is "
+            "already open -- a document is never a layer");
+      check(dropActionFor(FileKind::Unknown, false, d) == DropAction::Refuse &&
+                dropActionFor(FileKind::Unknown, true, d) == DropAction::Refuse,
+            "an unrecognised file is refused regardless of destination");
+    }
+  }
+
+  // --- G3. dropDestinationForPoint: the hit test, without a window ---------
+  //
+  // Bands built by hand, not by `atelierLayout()` -- this section is testing
+  // the classifier's own point-in-rect arithmetic, and `atelierLayout()`'s
+  // own arithmetic is app/selftest/AtelierChrome.cpp's job. Half-open rects
+  // throughout ([x, x+w)), matching every other rect test in this codebase.
+  std::printf("-- G3. drag and drop: classifying a point against the bands --\n");
+  {
+    // Only the two rectangles the classifier reads. The other bands used to
+    // be set here too, which was misleading: it suggested the hit test knew
+    // about the title bar and the tool palette, when in fact anything that is
+    // neither of these two is Unspecified BY FALLTHROUGH, which is exactly
+    // what the "20, 200" and "700, 200" cases below prove.
+    DropBands bands;
+    bands.tabStrip = DropBandRect{0.0f, 36.0f, 800.0f, 34.0f};
+    bands.canvas = DropBandRect{52.0f, 116.0f, 600.0f, 400.0f};
+
+    check(dropDestinationForPoint(400.0f, 50.0f, bands) == DropDestination::TabStrip,
+          "a point inside the tab strip band classifies as TabStrip");
+    check(dropDestinationForPoint(400.0f, 300.0f, bands) == DropDestination::ActiveDocument,
+          "a point inside the canvas band classifies as ActiveDocument");
+    check(dropDestinationForPoint(20.0f, 200.0f, bands) == DropDestination::Unspecified,
+          "a point on the tool palette -- neither band -- classifies as Unspecified");
+    check(dropDestinationForPoint(700.0f, 200.0f, bands) == DropDestination::Unspecified,
+          "...the same for the right-hand column");
+    check(dropDestinationForPoint(400.0f, 10.0f, bands) == DropDestination::Unspecified,
+          "...the title bar");
+    check(dropDestinationForPoint(400.0f, 520.0f, bands) == DropDestination::Unspecified,
+          "...and the status bar");
+
+    check(dropDestinationForPoint(0.0f, 36.0f, bands) == DropDestination::TabStrip,
+          "the tab strip band's own top-left corner is inside it (half-open: the top "
+          "edge counts)");
+    check(dropDestinationForPoint(0.0f, 70.0f, bands) == DropDestination::Unspecified,
+          "one point past its bottom edge (y=70, h=34 from y=36) is not");
+
+    // ui/AtelierLayout.cpp collapses the tab strip to zero height when
+    // `showTabStrip` is false (no document open, so nothing was drawn there)
+    // -- an empty rect must never match, or a drop would be classified
+    // against a band the chrome never actually rendered this frame.
+    DropBands noTabStrip = bands;
+    noTabStrip.tabStrip = DropBandRect{0.0f, 36.0f, 800.0f, 0.0f};
+    check(dropDestinationForPoint(400.0f, 36.0f, noTabStrip) == DropDestination::Unspecified,
+          "a zero-height tab strip band never matches, exactly as ui/AtelierLayout produces "
+          "it when there is no document open to name");
+  }
+
   // --- H. a whole drop, including twelve files at once ---------------------
   std::printf("-- H. drag and drop: one gesture, however many files --\n");
   {
@@ -640,6 +741,27 @@ bool runOpenAnyFileTest() {
     check(busy.count() == 1 &&
               busy.active()->document.layers.size() == layersBefore + 12,
           "...all of them in the document that was already there");
+
+    // The same twelve, dropped on the TAB STRIP of a session that already has
+    // a document open: twelve new documents, not one document with eleven
+    // more layers -- OpenAnyFile.hpp's applyDroppedFiles() comment argues why
+    // this is not folded into the "first opens, rest import" batching the
+    // no-destination case uses: the tab strip means "a new document" and that
+    // does not stop being true for file #2 just because file #1 already ran.
+    DocumentSession busyTabStrip;
+    OpenDocument* preExisting =
+        busyTabStrip.add(makeBlankOpenDocument(64, 64, WorkingSpace{}, "busy"));
+    const DropOutcome tabStripBatch = applyDroppedFiles(busyTabStrip, &recent, twelve,
+                                                        DropDestination::TabStrip);
+    check(tabStripBatch.opened == 12 && tabStripBatch.imported == 0,
+          "twelve pictures dropped on the tab strip: twelve documents opened, none "
+          "imported -- not the 'one document, eleven layers' rule a canvas drop uses");
+    check(busyTabStrip.count() == 13,
+          "...thirteen documents in the session: the one that was already open, plus the "
+          "twelve just opened");
+    check(preExisting->document.layers.size() == 1,
+          "...and the document that was already open is untouched -- still its one "
+          "original layer, because nothing was imported into it");
 
     // A mixture, resolved file by file in delivery order.
     DocumentSession mixed;

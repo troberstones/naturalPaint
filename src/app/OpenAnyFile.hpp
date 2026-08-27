@@ -208,27 +208,115 @@ enum class DropAction {
   Refuse,
 };
 
-// **The routing rule**, as a pure function of what the file is and whether
-// there is a document to put it in -- so it is asserted directly rather than
-// through a window, a pointer position or a modifier key that a test would have
-// to fake.
+// Where a drop landed, in terms the routing rule below can act on --
+// `main.cpp`'s job is to reduce an SDL window-relative point to one of these
+// three (via `dropDestinationForPoint()`, below) and hand the result over;
+// this module never sees a coordinate.
+enum class DropDestination {
+  // The drop point was not classified as either of the two below -- no
+  // position was available (a caller that predates this enum), or the point
+  // landed on chrome that is neither the tab strip nor the canvas (the title
+  // bar, the tool palette, the options bar, the right-hand column, the status
+  // bar). **This is the value every existing call site keeps by default, and
+  // `dropActionFor()`/`applyDroppedFiles()` treat it as exactly the old,
+  // position-blind rule** (see `dropActionFor()`'s table below) -- so the
+  // compatibility guarantee is not "close to before", it is "identical to
+  // before", and app/selftest/OpenAnyFile.cpp section G asserts that by
+  // calling the two-argument rule and this one side by side.
+  Unspecified,
+  // Dropped on docs/ui.md section 2's 34px tab strip band
+  // (`AtelierBands::tabStrip`).
+  TabStrip,
+  // Dropped on the canvas region (`AtelierBands::canvas`) -- the document
+  // itself, rulers and navigator included.
+  ActiveDocument,
+};
+
+// Classifies a **window-relative** point (the space `SDL_DropEvent::x/y` and
+// `AtelierBands` both live in -- see this header's .cpp for the coordinate
+// argument, proven from SDL3's own source rather than assumed) against the
+// two bands the routing rule cares about.
 //
-//   .npaint            -> always OpenAsDocument
-//   image, no document -> OpenAsDocument
-//   image, document    -> ImportAsLayer
-//   unrecognised       -> Refuse
+// Pure geometry: no ImGui, no window, so `--selftest` drives it with
+// hand-built rectangles.
 //
-// **Why a `.npaint` is never imported.** The two gestures are not symmetric for
-// it. Importing a document would decode its *composite* -- part 0, a derived
-// product -- into one flat RGB layer, throwing away every layer, every latent
-// and every bit of pigment basis, and it would look like it worked. Opening is
-// the only reading of "here is a document" that is not lossy.
+// **Takes its own two rectangles rather than `ui::AtelierBands`, and that is
+// a layering decision, not a convenience.** This header would otherwise be
+// the ONLY file under `src/app/` that includes anything from `src/ui/` --
+// measured, the whole tree over. The established direction is the other way:
+// five `ui/` headers include `app/`, and none of `app/` has ever reached back.
+// Depending on `AtelierBands` here would have inverted that for a
+// point-in-rect test, and `ui/AtelierLayout.hpp` is deliberately kept to
+// `<cstddef>` plus the theme for the same kind of reason. `main.cpp` already
+// has both the bands and this struct in scope; copying four floats twice
+// there is cheaper than an edge in the dependency graph.
 //
-// **Why an image imports when a document is open.** That is what the gesture
-// means in every application that has it: dragging a photograph onto a canvas
-// puts the photograph on the canvas. Opening it instead would leave the user's
-// work behind a new tab they did not ask for. With nothing open there is no
-// canvas to put it on, so the same drag can only sensibly mean "open this".
+// A `tabStrip` of zero height is a real state, not a degenerate one:
+// `ui/AtelierChrome` draws no tab strip when `showTabStrip` is false (no
+// document open), and an empty rect never matches -- which is what makes a
+// drop with nothing open fall through without this function needing to know
+// *why* the band is empty.
+struct DropBandRect {
+  float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+  bool empty() const noexcept { return w <= 0.0f || h <= 0.0f; }
+  // Half-open in both axes ([x, x+w)), matching every other rect test in this
+  // codebase -- so two abutting bands cannot both claim the shared edge.
+  bool contains(float px, float py) const noexcept {
+    return !empty() && px >= x && px < x + w && py >= y && py < y + h;
+  }
+};
+
+struct DropBands {
+  DropBandRect tabStrip;
+  DropBandRect canvas;
+};
+
+DropDestination dropDestinationForPoint(float x, float y, const DropBands& bands) noexcept;
+
+// **The routing rule**, as a pure function of what the file is, whether there
+// is a document to put it in, and where the drop landed -- so it is asserted
+// directly rather than through a window or a pointer position a test would
+// have to fake.
+//
+//   .npaint                          -> always OpenAsDocument, wherever it lands
+//   image, TabStrip                  -> always OpenAsDocument, document open or not
+//   image, ActiveDocument or         -> documentIsOpen ? ImportAsLayer : OpenAsDocument
+//     Unspecified
+//   unrecognised                     -> Refuse, wherever it lands
+//
+// **`Unspecified` and `ActiveDocument` compute the same thing.** That is
+// deliberate, not an oversight: before this enum existed the rule was exactly
+// "import when a document is open, else open" with no notion of position, and
+// a canvas drop has always meant the same thing that fallback already
+// expressed. Giving `Unspecified` its own branch that happened to compute the
+// same answer would be two copies of one rule with no test able to tell them
+// apart; giving it none is what "preserves exactly today's behaviour" means
+// as code rather than as a promise -- and why the sabotage-proofing for that
+// promise breaks a `case` in `dropActionFor()`'s image branch, not a
+// destination check.
+//
+// **Why a `.npaint` is never imported, wherever it lands.** The two gestures
+// are not symmetric for it. Importing a document would decode its
+// *composite* -- part 0, a derived product -- into one flat RGB layer,
+// throwing away every layer, every latent and every bit of pigment basis, and
+// it would look like it worked. Opening is the only reading of "here is a
+// document" that is not lossy. That holds regardless of destination: a
+// `.npaint` dropped on the canvas is still never flattened into it.
+//
+// **Why an image imports when a document is open and the drop did not name
+// the tab strip.** That is what the gesture means in every application that
+// has it: dragging a photograph onto a canvas puts the photograph on the
+// canvas. Opening it instead would leave the user's work behind a new tab
+// they did not ask for. With nothing open there is no canvas to put it on, so
+// the same drag can only sensibly mean "open this".
+//
+// **Why the tab strip overrides that, even with a document open.** The user
+// picked a location that means something specific in this chrome -- "the row
+// of open documents" -- and Photoshop, Preview and every other tabbed editor
+// treats a drop there as "open a new one", not as a shorthand for the canvas
+// two bands below it. A rule that ignored the tab strip and imported anyway
+// would make the band a decoration a drop can land on without it mattering,
+// which is the same silent-no-op shape this module exists to keep out.
 //
 // **No modifier key**, deliberately. A held Option during a drag is not
 // reliable input -- SDL learns modifier state from key events, and on macOS a
@@ -239,8 +327,10 @@ enum class DropAction {
 // `File > Open...` always opens a new document from any file, and
 // `File > Import Image...` always adds any decodable file to the open one --
 // including a `.npaint`, whose composite decodes like any other EXR. So both
-// directions are available for every file; the drop just picks the likely one.
-DropAction dropActionFor(FileKind kind, bool documentIsOpen);
+// directions are available for every file; the drop just picks the likely one
+// -- and now the drop *point* is a third way to say which.
+DropAction dropActionFor(FileKind kind, bool documentIsOpen,
+                         DropDestination destination = DropDestination::Unspecified);
 
 // What a whole drop did. One of these per *gesture*, not per file.
 struct DropOutcome {
@@ -270,18 +360,37 @@ struct DropOutcome {
 };
 
 // Applies `dropActionFor()` to `paths` **in order**, re-asking "is a document
-// open?" after each one.
+// open?" after each one, with `destination` fixed for the whole call -- one
+// gesture drops at one point, so it is asked once, not per file.
 //
 // That single sentence is the answer to "what happens when twelve files are
 // dropped at once", and it is deliberately not a special case:
 //
-//  * Twelve pictures onto an empty session: the first opens as a document, the
-//    other eleven land in it as layers. One document, twelve layers, one status
-//    line -- rather than twelve tabs or, worse, one file used and eleven
-//    silently dropped.
-//  * Twelve pictures onto an open document: twelve layers.
-//  * Three `.npaint`s: three tabs, because a document is never a layer.
-//  * A mixture resolves file by file, in the order the system delivered them.
+//  * Twelve pictures onto an empty session, `destination` `Unspecified` or
+//    `ActiveDocument`: the first opens as a document, the other eleven land
+//    in it as layers. One document, twelve layers, one status line -- rather
+//    than twelve tabs or, worse, one file used and eleven silently dropped.
+//  * Twelve pictures onto an open document, same two destinations: twelve
+//    layers.
+//  * **Twelve pictures dropped on the tab strip, document open or not:
+//    twelve tabs.** This is the one place multiplicity changes with
+//    destination, and it is argued here because it is the choice this whole
+//    feature exists to make: `dropActionFor()` returns `OpenAsDocument` for
+//    *every* image when `destination` is `TabStrip`, and this function does
+//    not special-case a batch to collapse that into "one document, eleven
+//    layers" the way the no-destination path does. The tab strip's whole
+//    meaning is "a new document, in its own tab" -- that is true for the
+//    first file dropped there and it does not stop being true for the second
+//    through twelfth just because a document now happens to exist; treating
+//    file #2 differently from file #1 only because #1 already ran would make
+//    the outcome depend on drop order rather than drop location, which is the
+//    one thing this feature was asked to make dependable. A user who wants
+//    the "one document, many layers" reading already has it: drop on the
+//    canvas instead.
+//  * Three `.npaint`s: three tabs, wherever they land -- a document is never
+//    a layer, full stop.
+//  * A mixture resolves file by file, in the order the system delivered them,
+//    every one of them judged against the same `destination`.
 //
 // **No modal is opened, ever.** The drop already carries the file name, which
 // is the only thing the path modal exists to ask for, so putting one up would
@@ -296,7 +405,12 @@ struct DropOutcome {
 // `session` gains the opened documents; the last thing opened or imported into
 // becomes active, which is `DocumentSession::add()`'s own behaviour and the
 // same rule app/ImportImage follows for the layer it adds.
+//
+// `destination` defaults to `Unspecified`, which is what every call site that
+// predates this parameter still gets -- see `DropDestination::Unspecified`'s
+// own comment for the compatibility guarantee this default carries.
 DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
-                              const std::vector<std::string>& paths);
+                              const std::vector<std::string>& paths,
+                              DropDestination destination = DropDestination::Unspecified);
 
 }  // namespace np

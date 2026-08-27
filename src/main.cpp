@@ -2509,6 +2509,16 @@ int main(int argc, char** argv) {
   // no-files case that says nothing happened.
   std::vector<std::string> droppedFiles;
 
+  // Where the gesture's files were released, window-relative -- the space
+  // `SDL_DropEvent::x/y` and `ui/AtelierLayout`'s `AtelierBands` both live in
+  // (app/OpenAnyFile.cpp's `dropDestinationForPoint()` comment has the full
+  // coordinate-space argument for why no scaling belongs between them).
+  // Updated on every `SDL_EVENT_DROP_FILE` of the gesture rather than read
+  // once, because `SDL_EVENT_DROP_BEGIN` never carries a position
+  // (`SDL_DropEvent::x/y`'s own doc comment says so) and this is the first
+  // event of a gesture that reliably does.
+  float dropX = 0.0f, dropY = 0.0f;
+
   // Frame counter, used only by --screenshot: the first frames are not
   // representative (ImGui lays out docked panels on frame 1).
   uint64_t frameIndex = 0;
@@ -2553,14 +2563,47 @@ int main(int argc, char** argv) {
             // until DROP_COMPLETE would read freed memory for every file but
             // the last, and would do it only for multi-file drops.
             if (e.drop.data != nullptr) droppedFiles.emplace_back(e.drop.data);
+            // SDL3's `SDL_SendDrop()` (src/events/SDL_dropevents.c) stamps
+            // every `DROP_FILE` event of a gesture with the position last
+            // reported by `DROP_POSITION` -- which macOS's Cocoa backend
+            // refreshes immediately before delivering the files
+            // (`-performDragOperation:`) -- so this is the real release
+            // point, not a stale one.
+            dropX = e.drop.x;
+            dropY = e.drop.y;
           } else {
+            // Classify the release point into a destination *here*, from the
+            // live chrome geometry, and hand the caller an enum rather than a
+            // coordinate. `showTabStrip` mirrors ui/MacPaintUI.cpp's own call
+            // exactly (`!st.documents.empty()`) -- if it disagreed, a drop
+            // could be classified against a tab strip band the chrome never
+            // actually drew this frame. The hit test itself is a pure
+            // function in app/OpenAnyFile, driven by `--selftest` without a
+            // window; nothing here does more than measure the window and call
+            // it.
+            int winW = 0, winH = 0;
+            SDL_GetWindowSize(window, &winW, &winH);
+            const np::AtelierBands dropBands =
+                np::atelierLayout(0.0f, 0.0f, static_cast<float>(winW),
+                                  static_cast<float>(winH), !st.documents.empty());
+            // The two bands the routing rule cares about, copied into
+            // app/OpenAnyFile's own struct -- see DropBandRect's comment for
+            // why that module takes rectangles rather than AtelierBands.
+            np::DropBands dropRects;
+            dropRects.tabStrip = np::DropBandRect{dropBands.tabStrip.x, dropBands.tabStrip.y,
+                                                  dropBands.tabStrip.w, dropBands.tabStrip.h};
+            dropRects.canvas = np::DropBandRect{dropBands.canvas.x, dropBands.canvas.y,
+                                                dropBands.canvas.w, dropBands.canvas.h};
+            const np::DropDestination dest =
+                np::dropDestinationForPoint(dropX, dropY, dropRects);
+
             // The whole gesture, resolved at once. Every decision -- open or
             // import, in what order, what a refusal says -- belongs to
             // app/OpenAnyFile, which `--selftest` exercises without a window;
-            // nothing here does more than hand over the list and show the
-            // sentence that comes back.
-            const np::DropOutcome dropped =
-                np::applyDroppedFiles(st.documents, &st.recentDocuments, droppedFiles);
+            // nothing here does more than hand over the list, the
+            // destination, and show the sentence that comes back.
+            const np::DropOutcome dropped = np::applyDroppedFiles(
+                st.documents, &st.recentDocuments, droppedFiles, dest);
             droppedFiles.clear();
             np::setDocumentStatusLine(dropped.status);
             // Only a `.npaint` open adds a recent entry (app/OpenAnyFile.hpp

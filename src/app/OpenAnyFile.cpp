@@ -222,13 +222,65 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
 
 // --- Drag and drop ---------------------------------------------------------
 
-DropAction dropActionFor(FileKind kind, bool documentIsOpen) {
+// **The coordinate-space argument**, so the next reader does not have to
+// re-derive it from scratch or, worse, trust that it was checked.
+//
+// `SDL_DropEvent::x/y` and `SDL_MouseMotionEvent::x/y` carry the identical
+// doc comment in SDL3's own `SDL_events.h` -- "relative to window" -- and
+// this project already depends on the mouse half of that pairing: main.cpp's
+// `--pen-demo` writes synthetic coordinates straight into `ImGuiIO::MousePos`
+// at values it reads out of `atelierLayout()`, with no scale factor anywhere
+// between the two, and main.cpp's own `--split-demo` comment states outright
+// that "ImGui's `DisplaySize` is exactly `SDL_GetWindowSize()`" -- the
+// *logical* size, not `SDL_GetWindowSizeInPixels()`'s framebuffer one, which
+// this window's `SDL_WINDOW_HIGH_PIXEL_DENSITY` flag makes a real, non-1:1
+// distinction on a Retina display.
+//
+// That is one working half of the pairing, not a proof for the other, so the
+// other was read rather than inferred: SDL3's Cocoa backend
+// (`src/video/cocoa/SDL_cocoawindow.m`, `-performDragOperation:` and
+// `-draggingUpdated:`) computes the drop position as
+// `x = point.x; y = sdlwindow->h - point.y;` from `[sender draggingLocation]`
+// -- an `NSPoint` in the content view's own coordinate system, i.e. Cocoa
+// points, never backing-store pixels -- flipped against `sdlwindow->h`, which
+// is `SDL_Window::h` (`src/video/SDL_sysvideo.h`), the same logical field
+// `SDL_GetWindowSize()` reads. (`SDL_Window` keeps the pixel size in a
+// separate field, `last_pixel_w`/`last_pixel_h`, that this path never
+// touches.) `SDL_SendDrop()` (`src/events/SDL_dropevents.c`) then caches
+// that position in a static and stamps it onto every `SDL_EVENT_DROP_FILE`
+// event of the gesture, not just `SDL_EVENT_DROP_POSITION` -- which is what
+// makes reading `e.drop.x/y` on `DROP_FILE` (main.cpp does, below) sound: the
+// value is not "wherever the pointer happened to be", it is the same location
+// `draggingUpdated:` last reported, in the same units `atelierLayout()` uses.
+//
+// So both halves resolve to the same space -- SDL's logical window
+// coordinates, which is also `AtelierBands`' own space by that header's
+// comment -- and **no scale conversion is applied anywhere in this path,
+// because none is needed.** A build where that ever stopped being true would
+// show it as every drop landing in the band above or left of the one the
+// user actually released over, on a Retina display only -- exactly the
+// silent, hard-to-notice failure this comment exists to keep out from the
+// start rather than debug once shipped.
+DropDestination dropDestinationForPoint(float x, float y, const DropBands& bands) noexcept {
+  if (bands.tabStrip.contains(x, y)) return DropDestination::TabStrip;
+  if (bands.canvas.contains(x, y)) return DropDestination::ActiveDocument;
+  return DropDestination::Unspecified;
+}
+
+DropAction dropActionFor(FileKind kind, bool documentIsOpen, DropDestination destination) {
   switch (kind) {
-    // Never a layer: importing one would flatten a whole document into a single
-    // RGB layer via its composite, and would look like it worked. See
-    // OpenAnyFile.hpp.
+    // Never a layer, wherever it lands: importing one would flatten a whole
+    // document into a single RGB layer via its composite, and would look like
+    // it worked. See OpenAnyFile.hpp.
     case FileKind::NpaintDocument: return DropAction::OpenAsDocument;
     case FileKind::Image:
+      // The tab strip means "a new document" even when one is already open --
+      // that is the one place `destination` changes the answer. Every other
+      // destination, including `Unspecified`, computes the rule this function
+      // has always had: import when there is somewhere to import into, else
+      // open. See OpenAnyFile.hpp's "Unspecified and ActiveDocument compute
+      // the same thing" for why that is one branch and not two.
+      if (destination == DropDestination::TabStrip) return DropAction::OpenAsDocument;
       return documentIsOpen ? DropAction::ImportAsLayer : DropAction::OpenAsDocument;
     case FileKind::Unknown: return DropAction::Refuse;
   }
@@ -250,7 +302,8 @@ constexpr size_t kMaxNamedProblems = 8;
 }  // namespace
 
 DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
-                              const std::vector<std::string>& paths) {
+                              const std::vector<std::string>& paths,
+                              DropDestination destination) {
   DropOutcome out;
   if (paths.empty()) {
     // Reachable: SDL raises SDL_EVENT_DROP_BEGIN when a drag merely enters the
@@ -295,7 +348,7 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
       }
     }
 
-    switch (dropActionFor(kind, documentIsOpen)) {
+    switch (dropActionFor(kind, documentIsOpen, destination)) {
       case DropAction::ImportAsLayer: {
         OpenDocument* target = session.active();
         // `documentIsOpen` was true a few lines ago and nothing between here
