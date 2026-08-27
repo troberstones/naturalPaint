@@ -355,7 +355,7 @@ tracked as **T11**.
 
 ---
 
-## T9 — New Document has no size dialog · open
+## T9 — New Document has no size dialog · open (model landed, dialog not)
 
 **Reported.** Making a new document should let you set the resolution — a
 simple dialog with standard presets, a way to make new presets, and a preset
@@ -489,7 +489,7 @@ for symmetry.
 
 ---
 
-## T12 — The right column is a fixed list; it should be the user's · in progress
+## T12 — The right column is a fixed list; it should be the user's · CLOSED
 
 **Reported.** Break up the side panel: let the user choose what shows in the
 right panel, allow re-ordering, and save it in the user's preferences.
@@ -598,3 +598,32 @@ assertions passed under either rule**, because their good lines happened to
 be in default order, so both rules rebuilt the default. Six assertions, and
 the disagreement was invisible to all but one that had to be written on
 purpose — with a surviving order the default does not have.
+
+---
+
+## T12 is closed, and it changes what the next feature costs
+
+Landed 2026-08-27. The column now draws `AppState::controlsColumn`; PANELS
+chooses membership and order; the arrangement persists.
+
+**The part worth carrying forward is what it did to the cost of adding a
+section.** Before, a new panel meant an enumerator, a spec row, a drawer, and
+an argument about where in a fixed list it belonged — that last one being the
+expensive part, because the order was a shared global decision. Now the order
+is the user's, the spec row only supplies a *default* position, and the
+missing-section repair rule means every existing user's saved file picks the
+new section up automatically instead of hiding it.
+
+So `docs/reachability-audit.md`'s **C2** (Histogram, PRD D2, P0) and **C4**
+(Channels, PRD Q11/E12/E13) are now mostly "write the drawer". C4 is the
+pointed one: `ControlsLayout.hpp`'s own comment already cites the design's
+"COLOR / BRUSH SET. / LAYERS / CHANNELS" column, and `ControlsSection` has no
+Channels slot — measured, still zero today.
+
+**And a correction to that audit, made while checking it.** **C3** (pixel
+probe unreachable) is **stale**: `core/Probe.hpp` is included by
+`app/AppState.hpp` now, wired when the eyedropper landed as R7. **C2 is not
+stale** — `core/Histogram.hpp` is still included by nothing but its own `.cpp`
+and `selftest/Support.hpp`, verified the same way in the same minute. Two
+entries in one section, one rotted and one did not, which is the argument
+that document already makes about itself.
