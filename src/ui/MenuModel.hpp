@@ -608,8 +608,10 @@ const MenuItemSpec& menuItemSpec(MenuAction action) noexcept;
 // two menu bars incapable of disagreeing about what a command does.
 //
 // `param` is the family index for the six family actions and is ignored by the
-// other thirty-five. `canvasW`/`canvasH` are the solver's dimensions, needed
-// only by `NewDocument`.
+// other thirty-five. `canvasW`/`canvasH` are the solver's dimensions --
+// unused now that `NewDocument` opens ui/NewDocumentDialog.hpp's modal (T9)
+// instead of reading them directly, but kept on this signature rather than
+// threaded out, since every other action already ignores them the same way.
 //
 // Safe to call outside an ImGui frame: every action that opens a modal is
 // `MenuEffect::Deferred` and sets a flag instead.

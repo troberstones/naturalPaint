@@ -119,12 +119,16 @@ bool writeFileAtomically(const std::string& path, const std::string& contents,
 
 const std::vector<DocumentPreset>& builtinDocumentPresets() {
   static const std::vector<DocumentPreset> kBuiltins = {
-      {"Web (1280 x 720)", 1280, 720, true},
-      {"HD (1920 x 1080)", 1920, 1080, true},
-      {"4K UHD (3840 x 2160)", 3840, 2160, true},
-      {"Square (2048 x 2048)", 2048, 2048, true},
-      {"US Letter @ 300dpi (2550 x 3300)", 2550, 3300, true},
-      {"A4 @ 300dpi (2480 x 3508)", 2480, 3508, true},
+      // **No dimensions in the names.** The row that shows a preset also
+      // shows its size (ui/NewDocumentDialog.cpp), so a name carrying its
+      // own "(1280 x 720)" printed the size twice on every row. The name
+      // says what the preset is FOR; the numbers beside it say how big.
+      {"Web", 1280, 720, true},
+      {"HD", 1920, 1080, true},
+      {"4K UHD", 3840, 2160, true},
+      {"Square", 2048, 2048, true},
+      {"US Letter @ 300dpi", 2550, 3300, true},
+      {"A4 @ 300dpi", 2480, 3508, true},
   };
   return kBuiltins;
 }

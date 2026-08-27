@@ -12,6 +12,7 @@
 #include "app/CloseDecision.hpp"
 #include "app/ControlsColumnLayout.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "app/DocumentPresets.hpp"
 #include "app/Journal.hpp"
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
@@ -850,6 +851,14 @@ struct AppState {
   // never draws a column and so must never touch a preferences file.
   ControlsColumnLayout controlsColumn;
   bool controlsColumnLoaded = false;
+
+  // T9: the user's saved File > New sizes (app/DocumentPresets.hpp). Lazy
+  // exactly as `recentDocuments`/`controlsColumn` above, and for the same
+  // reason -- read the first time the New Document dialog opens, not at
+  // startup, so `--selftest`'s headless run (which never opens that dialog)
+  // never touches `document-presets.txt`.
+  DocumentPresetStore documentPresets;
+  bool documentPresetsLoaded = false;
 
   // PRD G6/G7's imported `.abr` brush libraries, remembered across launches
   // (app/BrushLibraryFile.hpp for the file, the row cache and the lazy read).

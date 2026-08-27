@@ -424,7 +424,9 @@ bool runMenuModelTest() {
     const MenuAction kModals[] = {
         MenuAction::Open,     MenuAction::ImportImage, MenuAction::SaveAs,
         MenuAction::SaveCopy, MenuAction::Revert,      MenuAction::RecoverDocuments,
-        MenuAction::ExportAs, MenuAction::ExportStates, MenuAction::AddGuide};
+        MenuAction::ExportAs, MenuAction::ExportStates, MenuAction::AddGuide,
+        // T9: New Document now opens ui/NewDocumentDialog.hpp's modal too.
+        MenuAction::NewDocument};
     bool allDeferred = true;
     for (const MenuAction a : kModals)
       if (menuActionEffect(a) != MenuEffect::Deferred) {
@@ -432,7 +434,7 @@ bool runMenuModelTest() {
         std::printf("      not deferred: %s\n", menuActionName(a));
       }
     check(allDeferred,
-          "modal: all nine modal-opening actions are Deferred -- Inline for any of them "
+          "modal: all ten modal-opening actions are Deferred -- Inline for any of them "
           "means ImGui::OpenPopup() from an AppKit callback with no frame in progress");
 
     // Add Guide... is called out on its own because it is the one that was
