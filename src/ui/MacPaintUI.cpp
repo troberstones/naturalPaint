@@ -7805,7 +7805,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // opens in the system bar, outside this process's window, and
         // `app/Screenshot` photographs the window. The flag is still accepted
         // and still works on Linux and Windows. `tools/golden/run_golden.sh`
-        // does not use it -- its five views are --demo-document,
+        // does not use it -- its six views are --demo-document (used twice,
+        // once for `toolbar` and once for the `titlebar` view added by F2),
         // --ui-layer-demo, --pigment-stroke-demo, --marquee-demo and
         // --flyout-demo -- so no golden capture depends on it.
         if (st.openLayerMenu && menu.label == "Layer") ImGui::OpenPopup("Layer");
@@ -7845,8 +7846,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // wire it to, and a button that does nothing is worse than a gap.
     History* titleHistory = activeForBar != nullptr ? &activeForBar->history : nullptr;
     char status[64];
-    std::snprintf(status, sizeof(status), "%.1f fps",
-                  st.frameMs > 0.0f ? 1000.0f / st.frameMs : 0.0f);
+    // docs/reachability-audit.md F2: frozen to a fixed string on a
+    // `--screenshot` run -- see AppState::screenshotCliActive.
+    if (st.screenshotCliActive) {
+      std::snprintf(status, sizeof(status), "-- fps");
+    } else {
+      std::snprintf(status, sizeof(status), "%.1f fps",
+                    st.frameMs > 0.0f ? 1000.0f / st.frameMs : 0.0f);
+    }
     const float undoW = ImGui::CalcTextSize("Undo").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float redoW = ImGui::CalcTextSize("Redo").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float statusW = ImGui::CalcTextSize(status).x;
