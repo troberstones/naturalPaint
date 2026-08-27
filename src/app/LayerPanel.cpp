@@ -36,6 +36,12 @@ const char* layerKindGlyph(LayerKind kind) noexcept {
     case LayerKind::Adjustment: return "\xE2\x96\xA4";  // U+25A4 square, horizontal fill
     case LayerKind::Text: return "T";
     case LayerKind::Flats: return "\xE2\x96\xA9";       // U+25A9 square, orthogonal fill
+    // ASCII, `Text`'s own choice: a Group is not one of the design's seven
+    // rows (it is created by the `Layer > Group` gesture, not the `NEW`
+    // popup -- `newLayerKindMenu()` below still lists exactly seven), so this
+    // glyph has no design mock to match and no reason to cost a font-merge
+    // codepoint the way the other new-since-1a marks do.
+    case LayerKind::Group: return "G";
   }
   return "?";
 }
@@ -54,6 +60,10 @@ uint32_t layerKindRailRgb(LayerKind kind) noexcept {
     case LayerKind::Adjustment: return 0x8a7a3e;  // ochre
     case LayerKind::Text: return 0x6f6f6f;        // neutral grey
     case LayerKind::Flats: return 0xa05a7a;       // mauve
+    // Not one of the design's seven rails (see `layerKindGlyph()`'s own
+    // note); distinct from all seven anyway, cheaply, so a future row for it
+    // is not stuck picking a colour under time pressure.
+    case LayerKind::Group: return 0x5a8a5a;       // moss green
   }
   // Unreachable while every enumerator is covered, which `-Wswitch` and
   // `--selftest` both check. A grey rather than a colour, so a kind added
@@ -100,6 +110,13 @@ const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
     case LayerKind::Flats:
       return "Not built yet. A Flats layer here has no regions: the kind has no fill list to "
              "hold them.";
+    case LayerKind::Group:
+      // Not "unbuildable" in the sense the other four are -- a Group is real
+      // and fully built. It simply is not one of `newLayerKindMenu()`'s seven
+      // entries, so this arm exists only to keep the switch exhaustive; no
+      // caller reaches it through that menu.
+      return "Not offered here -- a Group is created from a multi-selection via Layer > "
+             "Group, not from the New Layer popup.";
   }
   return nullptr;
 }

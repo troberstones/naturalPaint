@@ -20,9 +20,9 @@
 // (1) WHAT C12 ASKS FOR, VERB BY VERB, AND WHICH TWO ARE REFUSED
 // ==========================================================================
 //
-// C12 names five verbs. Three are built here and two are refused by name, in
-// core/LayerComp.hpp's style -- stated where a reader will look for them rather
-// than left to be discovered as an absence:
+// C12 names five verbs. Four are built here (as of this step) and one is
+// refused by name, in core/LayerComp.hpp's style -- stated where a reader
+// will look for them rather than left to be discovered as an absence:
 //
 //   **move**       BUILT, in both senses the word has here. Reorder (Move Up /
 //                  Move Down over a set) and translate (align/distribute, via
@@ -44,23 +44,29 @@
 //                  §3 makes a document-level invariant rather than a coding
 //                  detail. That is PLAN.md phase 6 ("Filter and transform it").
 //
-//   **group**      **REFUSED.** There is no `LayerKind::Group`: CONTEXT.md's
-//                  seven kinds do not include one, `core::Layer::parent` has
-//                  carried a group part name since Phase 4 and has never been
-//                  acted on by anything, and io/NpaintFile.hpp already records
-//                  that "groups have no native concept" in the format either --
-//                  a group is a part with no image channels that this build
-//                  cannot construct. Grouping a multi-selection is therefore
-//                  not a selection feature at all: it is a new layer kind, a
-//                  compositor that renders a group offscreen or folds it, a
-//                  `parent` link that is finally honoured, and a writer that
-//                  emits a channel-less part. Building a `parent` write here
-//                  without the other three would produce documents whose layers
-//                  claim membership in a group nothing composites -- a file
-//                  that is wrong rather than incomplete.
+//   **group**      **BUILT** (PLAN.md Phase 5's C7/C12 follow-on). This
+//                  section used to say "REFUSED", and the argument for the
+//                  refusal was that grouping "is not a selection feature at
+//                  all: it is a new layer kind, a compositor..., a `parent`
+//                  link that is finally honoured, and a writer that emits a
+//                  channel-less part" -- naming all four things this step had
+//                  to build before a single `LayerSetCommand` could exist
+//                  honestly. All four are now real: `LayerKind::Group`
+//                  (core/Layer.hpp), `core::groupCoverage()`
+//                  (core/Composite.hpp, a **pass-through** fold -- see its own
+//                  comment for why not an isolated one), `Layer::parent`
+//                  resolved against `Layer::groupTag` rather than left inert,
+//                  and io/NpaintFile's Group part (one dummy channel, exactly
+//                  Adjustment's `buildAdjustmentLayerPart()` shape -- a
+//                  channel-less part is provably unwritable through this
+//                  OpenImageIO, measured at the Adjustment step and true here
+//                  for the identical reason). `GroupLayers`/`UngroupLayers`
+//                  below are the two commands; see this file's own
+//                  implementation for the span-splice that keeps nesting
+//                  correct and the order-preservation `--selftest` proves.
 //
-// Both refusals are printed by `--selftest` on every run rather than living
-// only here.
+// The one refusal that remains (`transform`, above) is printed by
+// `--selftest` on every run rather than living only here.
 //
 // ==========================================================================
 // (2) THE SELECTION IS A SET OF **INDICES**, and why not ids
@@ -177,6 +183,85 @@
 // argues why the survivor of a deleted pair keeps its number rather than having
 // it scrubbed. `linkedLayers()` below is the single place that turns a number
 // into a set and it applies that rule, so no caller can see a dangling link.
+//
+// ==========================================================================
+// (5) GROUPING: the span-splice, nesting, and why ungroup cannot reorder
+// ==========================================================================
+//
+// **A layer's group membership is `Layer::parent`, and `GroupLayers` is the
+// only thing in this build that writes a non-empty one.** core/Composite.hpp
+// argues the pass-through/isolated choice; this section is the mechanics of
+// building and undoing the link, which is where the "classic bug" lives (an
+// ungroup that reverses its children).
+//
+// **`GroupLayers` moves layers; it does not merely tag them.** The selected
+// layers are collected into one **contiguous run**, positioned where the
+// topmost selected layer was, and the new Group layer is placed directly
+// above that run (`doc.layers` is bottom-to-top, so "above" is the higher
+// index -- the one nearer the top of the panel). Two consequences follow and
+// both are deliberate:
+//
+//   * **A group's members are always exactly the contiguous run directly
+//     below it.** This is an invariant every mutator here maintains, not
+//     merely usually true -- `ungroupLayers()`'s own correctness rests on it,
+//     because it lets "find this group's members" be a downward scan rather
+//     than a document-wide search keyed on `parent` alone (which a stray,
+//     non-contiguous same-tag entry from a hand-built fixture could fool).
+//   * A selection is refused, by name, if any member already carries a
+//     non-empty `parent` -- **grouping a layer that is already grouped is
+//     refused**, rather than silently re-parenting it or silently leaving it
+//     where it is. The fix the refusal names is "ungroup it first". This
+//     keeps the contiguity invariant provable without a second, recursive
+//     case: a selected **Group** layer's whole span (itself plus its own
+//     contiguous members, however deeply those nest) moves as one opaque
+//     block, so **nesting falls out of moving spans rather than needing its
+//     own code path** -- grouping an existing group alongside an ordinary
+//     layer nests it one level deeper, and nothing inside that span is
+//     touched, read, or re-validated in the process.
+//
+// **Locked layers refuse `GroupLayers`**, core/LayerOps.hpp's own reason for
+// refusing `moveLayer()`: grouping relocates a layer's position in the stack
+// exactly as a move does, and "a locked layer's ... own place in the stack
+// is frozen" would be a decoration if grouping could move one anyway.
+//
+// **The post-condition that cannot arise from a `moveLayer()` call, so it is
+// checked here instead:** after the splice, a **clipped** layer must not have
+// landed at index 0 -- `core::setLayerClipped()` and `moveLayer()` both
+// refuse to create that state directly (core/Layer.hpp), and a span-splice
+// that bypasses both must not become the back door into it. Checked once,
+// after the whole scratch document is built, and refused by name if it
+// happened -- the same "the atomic trial and the single history entry"
+// discipline section 3 already applies to the delete/duplicate/move family.
+//
+// **Cycles cannot arise from `GroupLayers` alone.** A new group's tag does
+// not exist until the group is created, so nothing already in the document
+// can reference it, and the operation never re-parents an *existing* Group
+// layer's own `parent` (it only ever sets it on a layer being newly wrapped).
+// core/Composite.hpp's `groupAncestry()` is nonetheless written to survive a
+// cycle it did not create -- a hand-built `Document`, or a `.npaint` this
+// build did not write, is not bound by what this file's own operations would
+// ever produce, and PRD I10 material can carry exactly that.
+//
+// **`UngroupLayers` is the mirror of `GroupLayers`' own extract-then-splice,
+// and it is where the "classic bug" -- an ungroup that reverses or reorders
+// its children -- actually lives.** It locates the group's contiguous member
+// span (the same downward scan `GroupLayers` relies on), reparents each
+// member's `parent` to the group's own `parent` (nesting-aware promotion -- a
+// member of a nested group becomes a member of the **outer** group, not a
+// top-level layer), then **extracts the whole span and reinserts it, in the
+// same relative order, at the position the group occupied**. The extract and
+// reinsert are not load-bearing for correctness on their own -- a group's
+// members are already contiguous and already in their final relative order,
+// so erasing just the one group entry in place would reach the same result
+// -- but the explicit span move is what `GroupLayers` itself does, symmetric
+// code for the symmetric operation, and it is deliberately kept rather than
+// simplified away: it is the one place in this pair of commands where writing
+// the member list in the wrong order (`rbegin()`/`rend()` instead of
+// `begin()`/`end()`, the single-character mistake this docstring exists to
+// name) reverses the document a user sees. `--selftest` asserts the ordering
+// end to end -- group a non-contiguous selection, ungroup it, and check the
+// members come back in the SAME relative order they went in, not reversed --
+// and the sabotage proof breaks exactly that one call.
 namespace np {
 
 // A multi-selection: indices into `Document::layers`, **sorted ascending and
@@ -242,6 +327,10 @@ enum class LayerSetCommand {
   DuplicateLayers,
   MoveLayersUp,
   MoveLayersDown,
+  // PRD C7/C12. Section 5 gives the span-splice, the locked/clipped guards,
+  // and the ordering argument.
+  GroupLayers,
+  UngroupLayers,
   // Flags, as a set. Show/Hide rather than one Toggle, because a toggle over a
   // mixed selection has no defensible meaning -- half the rows would invert and
   // the user would have to look to find out what happened.

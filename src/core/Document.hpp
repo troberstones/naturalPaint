@@ -180,6 +180,22 @@ struct Document {
   // comps were stripped by another tool, say) still cannot re-issue a live id.
   uint64_t nextLayerId = 1;
 
+  // **The next value `core::makeGroupLayer()` will hand out for
+  // `Layer::groupTag`** (PLAN.md Phase 5's C7/C12 follow-on). A separate
+  // counter from `nextLayerId` above, deliberately -- see `Layer::groupTag`'s
+  // own comment for why grouping must not force every layer in a document to
+  // acquire a `Layer::id`. Monotonic, never reused within one `Document`, and
+  // assigned **eagerly** (every Group layer gets one immediately, unlike `id`,
+  // which stays 0 until a comp is captured) -- so a document with a group
+  // always has a nonzero counter here, and a document with none carries the
+  // default `1` for its whole life and costs io/NpaintFile nothing to write
+  // (there is no `np:*` attribute for this counter itself; each Group layer's
+  // own `groupTag` is what persists, as `np:groupId`, and this counter is
+  // reconstructed on load by advancing past every `groupTag` found -- the
+  // identical "raise the counter past every id seen" rule
+  // `core::normalizeLayerIds()` already applies to `nextLayerId`).
+  uint64_t nextGroupId = 1;
+
   // Blank-document factory (PLAN.md Phase 2 step 5; PRD C7 (P0): "A document
   // can be created blank, not only opened from a file"). Builds a Document
   // of the given size and working space with exactly one layer.

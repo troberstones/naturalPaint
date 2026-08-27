@@ -233,7 +233,12 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
       const std::optional<BlendMode> named = blendModeFromName(layer.blend);
       if (named.has_value() && blendModeInfo(*named).compositesPixels) modes[i] = *named;
       ops[i] = layerPointOps(layer.ops);
-      coverages[i] = layerCoverage(layer);
+      // `layerCoverage(doc, i)`, not the single-`Layer` overload: a layer
+      // inside a group must read the same coverage here that it composites
+      // with, or the eyedropper reports a colour the export does not produce
+      // -- the exact failure mode this file's own header already states for
+      // every other piece of core/Composite's arithmetic it calls.
+      coverages[i] = layerCoverage(doc, i);
     }
     // The clipping group layer `li` is the base of, folded at one texel --
     // core/Composite.hpp §13, through that file's own three bracket functions

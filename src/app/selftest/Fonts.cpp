@@ -54,7 +54,7 @@ bool runFontsTest() {
   bool allListed = true;
   for (const LayerKind kind :
        {LayerKind::Pigment, LayerKind::RGB, LayerKind::Media, LayerKind::Strokes,
-        LayerKind::Adjustment, LayerKind::Text, LayerKind::Flats}) {
+        LayerKind::Adjustment, LayerKind::Text, LayerKind::Flats, LayerKind::Group}) {
     for (const uint32_t cp : decodeUtf8(layerKindGlyph(kind))) {
       if (cp < 0x0100u) continue;  // ImGui's default range draws these already
       if (std::find(required.begin(), required.end(), cp) == required.end()) allListed = false;
@@ -68,7 +68,10 @@ bool runFontsTest() {
   }
   check(allListed,
         "every above-U+00FF kind glyph and command icon is in requiredUiCodepoints()");
-  // Six of the seven kinds need a merge source (Text's 'T' is ASCII). Nine
+  // Six of the eight kinds need a merge source (Text's 'T' and Group's 'G'
+  // are both ASCII -- `LayerKind::Group` is new since this comment first
+  // said "seven kinds"; it deliberately reused Text's own trick rather than
+  // spending a codepoint, see app/LayerPanel.cpp's own note). Nine
   // command icons are new codepoints -- the toolbar's twelve buttons draw
   // fifteen distinct glyphs, not twelve, because the three creation commands
   // deliberately reuse their kind's own glyph (`layerCommandGlyph()`) rather
@@ -84,9 +87,20 @@ bool runFontsTest() {
   // The tripwire. `layerKindGlyph()` returns "?" for a kind it has no case
   // for, so casting one past the last real kind must still be "?" -- if a
   // kind is added, this stops being true and the list above stops being a
-  // complete walk. Without this the walk silently covers seven of eight.
-  check(std::string(layerKindGlyph(static_cast<LayerKind>(7))) == "?",
-        "LayerKind still has exactly 7 values, so the walk above is complete");
+  // complete walk. Without this the walk silently covers eight of nine.
+  //
+  // **This literal moved once already** -- it used to read
+  // `static_cast<LayerKind>(7)` and assert "exactly 7 values", back when
+  // `LayerKind::Group` (ordinal 7) did not exist. A raw ordinal cast is
+  // exactly the pattern this codebase warns against elsewhere ("never key
+  // anything by enum ordinal") for data; it survives here, once, as the one
+  // deliberate use of an ordinal *as* an ordinal -- probing "one past every
+  // real value" -- and it had to move the moment a real value took the slot
+  // it used to probe. There is no way to spell "one past the end" without a
+  // number, so the tripwire is this comment plus this assertion, not the
+  // literal alone.
+  check(std::string(layerKindGlyph(static_cast<LayerKind>(8))) == "?",
+        "LayerKind still has exactly 8 values, so the walk above is complete");
 
   // The three creation icons are their kind's own glyph, verbatim -- not a
   // second copy of it, so the toolbar button and the row it produces can

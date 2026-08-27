@@ -86,6 +86,61 @@ Layer makeAdjustmentLayer(std::string name) {
   return layer;
 }
 
+std::string defaultNewGroupName(const Document& doc) {
+  // `defaultNewLayerName()`'s own scan, restricted to Group-kind layers so a
+  // document with "Layer 3" and "Group 3" both on screen is not a collision --
+  // the two are different columns a user reads, exactly as app/LayerPanel
+  // already draws a layer's kind glyph beside its name.
+  long highest = 0;
+  for (const Layer& layer : doc.layers) {
+    if (layer.kind != LayerKind::Group) continue;
+    if (layer.name.rfind("Group ", 0) != 0) continue;
+    const std::string digits = layer.name.substr(6);
+    if (digits.empty()) continue;
+    bool allDigits = true;
+    for (const char c : digits)
+      if (c < '0' || c > '9') allDigits = false;
+    if (!allDigits) continue;
+    long value = 0;
+    for (const char c : digits) {
+      value = value * 10 + (c - '0');
+      if (value > 1000000) break;
+    }
+    if (value > highest) highest = value;
+  }
+  return "Group " + std::to_string(highest + 1);
+}
+
+Layer makeGroupLayer(Document& doc, std::string name) {
+  Layer layer;
+  layer.kind = LayerKind::Group;
+  // No `rgbTiles`, no `pigmentTiles`: a Group holds no pixels, Adjustment's
+  // own contract. `ops` stays empty and, unlike Adjustment's, is never
+  // evaluated by core/Composite for this kind at all -- there is nothing
+  // "beneath" a group that is not already beneath each of its members
+  // individually, so a Group's own op stack has no operation defined for it
+  // yet and core/LayerOps.hpp's five op-stack mutators simply have nowhere
+  // useful to point one; nothing here refuses adding one, for PRD I10's usual
+  // reason (a kind this build does not act on must still round-trip whatever
+  // a file, or a test, puts there).
+  layer.name = std::move(name);
+  layer.visible = true;
+  layer.opacity = 1.0f;
+  // **Takes `Document&`, not just a name, and that is the one way this
+  // factory differs from `makeRgbLayer()`/`makePigmentLayer()`/
+  // `makeAdjustmentLayer()`.** A Group needs a stable identity the moment it
+  // exists so a member can point at it (`Layer::parent`), and unlike
+  // `Layer::id` that identity cannot wait for a lazy pass -- see
+  // `Layer::groupTag`'s own comment. `doc.nextGroupId` is bumped here,
+  // unconditionally, so two groups created in the same document never share a
+  // tag even if one is later discarded (undone) without ever being
+  // committed -- the same "never reissue" rule `Document::nextLayerId`
+  // follows for the opposite reason (a comp might still name the discarded
+  // id); here it is simply the cheaper, always-correct rule.
+  layer.groupTag = "G" + std::to_string(doc.nextGroupId++);
+  return layer;
+}
+
 LayerOpResult addLayer(Document& doc, size_t index, Layer layer) {
   if (index > doc.layers.size()) {
     return layerOpFail(
