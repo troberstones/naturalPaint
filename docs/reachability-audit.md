@@ -687,3 +687,39 @@ Not a commitment — a starting argument.
 5. **C1 + C5** — a Filter menu and a Select menu unlock ~98 already-tested entry points between them. Highest ratio of reach to effort in the file.
 6. **B1** — the solver canvas. Large, architectural, and the one that most affects what naturalPaint is *for*.
 7. **A6, C4, C7** — dynamics, channels, layer groups.
+
+---
+
+## Scatter round, 2026-08-27 — C2 closed, C7 half closed, F2 closed
+
+**C2 — Histogram** is reachable: a HISTOGRAM section in the controls column
+over the existing `core/Histogram.hpp` engine. The cache is keyed on the
+stroke as well as the revision, because `computeHistogram()` measured
+**12.9 ms** on a 1024×1024 document and `app/StrokeSession.cpp:938` bumps
+`revision` on every frame that deposits tiles — a revision-only cache would
+have recomputed the whole document on every frame of every stroke.
+
+**F2 — the title band** has a sixth golden view. The live fps readout is
+frozen on `--screenshot` frames rather than cropped around, so the whole
+band is covered. Threshold measured at exact (0, 0) over 30 launch
+comparisons. Proven to fail two ways: blanking the wordmark, and — the one
+worth keeping — **forcing Redo to draw enabled when it should be greyed**,
+which moves 2464 px and which no other view notices.
+
+**C7 — layer groups** is **half** closed, and the half matters. The model,
+the composite integration and the `.npaint` round trip exist and are
+tested. **No LAYERS gesture and no menu item issues `GroupLayers`, so a user
+still cannot group anything**, and the entry above stays open until that
+lands. The delivered selftest narration printed "**group** is BUILT"; that
+was corrected before landing, because announcing an unreachable subsystem as
+delivered — in the narration about the document that catalogues unreachable
+subsystems — is the failure mode itself.
+
+**B5** was already fixed and is corrected in place above.
+
+**The pattern across all five.** Two of the five entries dispatched were
+already stale (B5 entirely, C3 noticed in passing while checking C2). One
+delivered work whose *report* was wrong in a way the code was not (C2's
+cache rationale). One delivered correct work with an overclaiming narration
+(C7). The tree disagreed with this document in some way on four of five —
+which is the note under R13 arriving on schedule, not a surprise.

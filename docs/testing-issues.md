@@ -355,7 +355,7 @@ tracked as **T11**.
 
 ---
 
-## T9 — New Document has no size dialog · open (model landed, dialog not)
+## T9 — New Document has no size dialog · CLOSED
 
 **Reported.** Making a new document should let you set the resolution — a
 simple dialog with standard presets, a way to make new presets, and a preset
