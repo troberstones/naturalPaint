@@ -660,6 +660,21 @@ bool runSelectionBoundaryTest();
 // golden image -- can catch one written backwards.
 bool runSelectionToolsTest();
 
+// docs/testing-issues.md T10 ("The three selection-drag gestures are
+// missing"): app/SelectionDrag.hpp's pure geometry behind Shift-constrain,
+// Option-from-centre and Space-move on the rectangle/ellipse marquee drag.
+// Headless and GPU-free -- arithmetic on a handful of floats, no ImGui
+// involvement, the same split app/CurveEdit.hpp's own doc comment describes.
+//
+// What a golden image cannot catch here: a constrained square that jumps to
+// the wrong quadrant on a drag toward the upper-left (the sign-preservation
+// mistake `std::max` without `std::copysign` makes), a from-centre toggle
+// that only works in one direction because the anchor got rewritten instead
+// of reinterpreted, and the classic Space-move bug of translating only one
+// of the anchor/current pair -- which still visibly "moves" the shape, just
+// while quietly resizing it too.
+bool runSelectionDragTest();
+
 // The LAYERS panel as design "naturalPaint Panels" turn 2, option 2a specifies
 // it -- app/LayerPanel's half of it, which is nearly all of it. Headless and
 // GPU-free.

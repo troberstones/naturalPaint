@@ -16,6 +16,7 @@ add_executable(naturalPaint
   app/Keymap.cpp
   app/PenAxes.cpp
   app/Screenshot.cpp
+  app/SelectionDrag.cpp
   app/LayerEditor.cpp
   app/LayerPanel.cpp
   app/Latency.cpp
@@ -116,6 +117,7 @@ add_executable(naturalPaint
   app/selftest/Scatter.cpp
   app/selftest/Selection.cpp
   app/selftest/SelectionBoundary.cpp
+  app/selftest/SelectionDrag.cpp
   app/selftest/SelectionRefine.cpp
   app/selftest/SelectionShapes.cpp
   app/selftest/SelectionTools.cpp

@@ -34,6 +34,7 @@
 #include "app/LayerPanel.hpp"
 #include "app/OpenAnyFile.hpp"
 #include "app/QuitSequence.hpp"
+#include "app/SelectionDrag.hpp"
 #include "app/Snapping.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "app/ViewTransform.hpp"
@@ -8666,20 +8667,43 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             st.marqueeDragging = true;
             st.marqueeX0 = tx;
             st.marqueeY0 = ty;
+            // A Space-move offset from whatever drag last used this field
+            // has no meaning for a brand-new drag (app/SelectionDrag.hpp's
+            // own doc comment on SelectionMoveState).
+            st.marqueeMove = SelectionMoveState{};
           }
           if (st.marqueeDragging) {
             st.marqueeX1 = tx;
             st.marqueeY1 = ty;
+
+            // T10 (docs/testing-issues.md): live modifier reads for drag
+            // GEOMETRY only -- deliberately separate from `st.marqueeCombine`
+            // above, which latches Shift/Option at mouse-down to answer a
+            // different question (which boolean) that a moving hand must not
+            // be allowed to re-answer mid-drag. Shift/Option here only ever
+            // shape app/SelectionDrag.hpp's pure box math; they never touch
+            // `marqueeCombine`.
+            updateSelectionMove(st.marqueeMove, ImGui::IsKeyDown(ImGuiKey_Space), tx, ty);
+            const SelectionDragBox box = computeSelectionDragBox(
+                st.marqueeX0, st.marqueeY0, st.marqueeX1, st.marqueeY1,
+                st.marqueeMove.offsetX, st.marqueeMove.offsetY, mods.KeyShift, mods.KeyAlt);
+            st.marqueeBoxX0 = box.x0;
+            st.marqueeBoxY0 = box.y0;
+            st.marqueeBoxX1 = box.x1;
+            st.marqueeBoxY1 = box.y1;
+
             if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
               st.marqueeDragging = false;
               if (od != nullptr) {
                 // Clamped to the canvas: a drag that left the window would
                 // otherwise select texels the document does not have, and
                 // every consumer would then walk tiles holding nothing.
-                const float x0 = std::clamp(std::min(st.marqueeX0, st.marqueeX1), 0.0f, texW);
-                const float y0 = std::clamp(std::min(st.marqueeY0, st.marqueeY1), 0.0f, texH);
-                const float x1 = std::clamp(std::max(st.marqueeX0, st.marqueeX1), 0.0f, texW);
-                const float y1 = std::clamp(std::max(st.marqueeY0, st.marqueeY1), 0.0f, texH);
+                // `box` is already sorted (SelectionDragBox's own contract),
+                // so this is a plain clamp, not a further min/max.
+                const float x0 = std::clamp(box.x0, 0.0f, texW);
+                const float y0 = std::clamp(box.y0, 0.0f, texH);
+                const float x1 = std::clamp(box.x1, 0.0f, texW);
+                const float y1 = std::clamp(box.y1, 0.0f, texH);
                 std::optional<Selection> drawn;
                 if (x1 - x0 >= 1.0f && y1 - y0 >= 1.0f) {
                   drawn = st.brush.tool == Tool::Marquee
@@ -8687,7 +8711,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                               // The drag's bounding box is the ellipse's
                               // bounding box, which is how every editor reads
                               // an ellipse drag -- centre and radii, not two
-                              // points on the curve.
+                              // points on the curve. T10's constrain/from-
+                              // centre/space-move gestures all resolve to
+                              // `box` above before this point is reached, so
+                              // the ellipse needs nothing extra for any of
+                              // them.
                               : selectEllipse((x0 + x1) * 0.5f, (y0 + y1) * 0.5f,
                                               (x1 - x0) * 0.5f, (y1 - y0) * 0.5f);
                 }
@@ -9373,11 +9401,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
     if (st.marqueeDragging &&
         (st.brush.tool == Tool::Marquee || st.brush.tool == Tool::EllipseMarquee)) {
-      // The live rubber band, from the drag's own corners.
-      drawMarchingAnts(dl, xform, std::min(st.marqueeX0, st.marqueeX1),
-                       std::min(st.marqueeY0, st.marqueeY1),
-                       std::max(st.marqueeX0, st.marqueeX1),
-                       std::max(st.marqueeY0, st.marqueeY1));
+      // The live rubber band. T10: `marqueeBoxX0..Y1` is this frame's
+      // computeSelectionDragBox() result, already carrying Shift-constrain/
+      // Option-from-centre/Space-move -- not the drag's raw corners -- so
+      // this preview and what mouse-up actually commits can never disagree.
+      drawMarchingAnts(dl, xform, st.marqueeBoxX0, st.marqueeBoxY0, st.marqueeBoxX1,
+                       st.marqueeBoxY1);
     } else if (st.marqueeDragging || st.polygonLassoActive) {
       // The lasso path as it is being drawn.
       //
