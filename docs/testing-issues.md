@@ -206,17 +206,64 @@ seconds of idle GUI, while `footprint` on that same process still reads
 404 MB IOAccelerator. See T7 for why the solver was never the suspect it
 looked like.
 
-Leads for whoever picks this up, none of them proven:
+### Narrowed 2026-08-27 — three measurements, and two of the old leads are dead
 
-* The allocation appears **inside the render loop**, not in `GpuContext::init()`
-  or `ImGui_ImplWGPU_Init()`.
-* `ui/CanvasQuad.cpp` rebuilds bind groups and a vertex buffer per frame
-  (`:413`, `:449`, `:461`) — but it also **releases** them (`:421`, `:488`,
-  `:491`), so this is churn rather than a leak, and a leak is not what the
-  numbers show: RSS is flat at 155.5 MB across repeated samples.
-* wgpu-native's own allocator pools and the 2560×1580 HIGH_PIXEL_DENSITY
-  surface are unexamined. Testing whether the figure scales with window size
-  would separate render targets from pools in one run.
+**1. It does not scale with the window.** A temporary `NP_PROBE_WINDOW` hook
+on `SDL_CreateWindow` (reverted; the tree is clean) ran the GUI at three
+sizes, each sampled after 9 s idle:
+
+| Window | Device pixels @2× | IOAccelerator (graphics) |
+|---|---|---|
+| 640×480 | 1280×960 | **399 MB** |
+| 1480×940 (shipping) | 2960×1880 | **401 MB** |
+| 2400×1500 | 4800×3000 | **404 MB** |
+
+An 11.7× change in area moves the figure by **1.25%**. A triple-buffered
+swapchain across that range would differ by ~158 MB on its own, so **the
+surface is not in this number** — the HIGH_PIXEL_DENSITY-surface lead is
+refuted, not merely unproven.
+
+**2. It is one-shot at startup, not accumulation.** Sampled at ~1, 2, 4, 8
+and 16 s in a single run: 407, 404, 404, 406, 404 MB. Flat from the first
+second. That also disposes of the `ui/CanvasQuad` per-frame-churn lead —
+there is nothing left for churn to explain.
+
+**3. It is 48 identical 8 MiB allocations.** `vmmap`, resident-size histogram
+of the 154 `IOAccelerator (graphics)` regions:
+
+| Count | Size | Subtotal |
+|---|---|---|
+| **48** | **8192 K** | **384 MiB** |
+| 1 | 8224 K | 8 MiB |
+| 48 | 32 K | 1.5 MiB |
+| 23 | 16 K | 0.4 MiB |
+| rest | ≤2 MiB each | ~10 MiB |
+
+**95% of the total is 48 allocations of exactly 8 MiB**, all
+`SM=SHM PURGE=N`, all non-volatile.
+
+**What this rules out on our side.** 8 MiB is exactly a 1024×1024
+RGBA16Float texture, which is suggestive — but the interactive path has only
+four `wgpuDeviceCreateTexture` call sites outside `sim/PaintSim` (proven
+unconstructed, above), and none can produce 48 of them:
+
+| Site | Size | Ceiling |
+|---|---|---|
+| `ui/DocumentTexture.cpp:98` "document composite" | RGBA16F, doc-sized | **`kVisibleDocumentCap` = 2** slots (`DocumentTexture.hpp:452`) |
+| `ui/NaturalPaintUI.cpp:114` tile mip chain | `kTileSize` = **128** → 128 KiB | wrong order of magnitude |
+| `ui/MacPaintUI.cpp:2890`, `:2954` brush previews | RGBA8, `app/DabPreview` constants | kilobytes |
+| `color/LutBake.cpp:59` 3-D LUT | size³ RGBA16F | ~2 MiB at 64³ |
+
+So 384 MiB in 8 MiB units is **not accounted for by naturalPaint's own
+textures**, and the remaining suspect is wgpu-native's / Metal's allocator
+behaviour.
+
+**Deliberately NOT concluded.** "8 MiB is a common suballocator block size"
+is a plausible story and it is *exactly* the kind of header-derived
+arithmetic that made T7 wrong. The next person should prove it — instrument
+allocation at the wgpu boundary, or vary our own texture demand and see
+whether the count of 8 MiB regions moves — rather than inherit this
+paragraph as a finding.
 
 **Note the third number.** The status bar's "402 MB / 512 MB" is the
 **History** byte budget (`ui/AtelierChrome.cpp:828`), not memory in use. It
