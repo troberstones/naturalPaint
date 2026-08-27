@@ -163,16 +163,16 @@ struct DocumentPreset {
 // plus one larger option on each axis for anyone who wants to scale down
 // rather than up:
 //
-//   * "Web (1280 x 720)"              -- HD-ready screen work at 720p.
-//   * "HD (1920 x 1080)"              -- the default screen/video frame.
-//   * "4K UHD (3840 x 2160)"          -- exact 2x of the 1080p entry, for
+//   * "Web" (1280 x 720)              -- HD-ready screen work at 720p.
+//   * "HD" (1920 x 1080)              -- the default screen/video frame.
+//   * "4K UHD" (3840 x 2160)          -- exact 2x of the 1080p entry, for
 //                                        anyone painting at delivery res.
-//   * "Square (2048 x 2048)"          -- a power-of-two square painters
+//   * "Square" (2048 x 2048)          -- a power-of-two square painters
 //                                        reach for regardless of final
 //                                        export target (icon work, texture
 //                                        painting, social crops).
-//   * "US Letter @ 300dpi (2550 x 3300)"  -- 8.5x11in at a real print DPI.
-//   * "A4 @ 300dpi (2480 x 3508)"         -- 210x297mm at the same DPI, the
+//   * "US Letter @ 300dpi" (2550 x 3300)  -- 8.5x11in at a real print DPI.
+//   * "A4 @ 300dpi" (2480 x 3508)         -- 210x297mm at the same DPI, the
 //                                        non-US equivalent so the built-in
 //                                        set is not US-only.
 //

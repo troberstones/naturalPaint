@@ -5,6 +5,7 @@
 #include "ui/FileDialog.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
+#include "ui/NewDocumentDialog.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -7419,8 +7420,13 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       break;
 
     case MenuAction::NewDocument:
-      st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
-                                             static_cast<int32_t>(canvasH), WorkingSpace{}));
+      // T9: used to silently inherit the solver canvas's dimensions
+      // (`canvasW`/`canvasH` are now unused by this case, but stay on
+      // `performMenuAction`'s signature since every other action shares it).
+      // Opens ui/NewDocumentDialog.hpp's modal instead, which is where a size
+      // actually gets chosen -- a preset, a hand-typed size, or the
+      // clipboard's own resolution.
+      requestNewDocumentDialog();
       g_docStatus.clear();
       break;
 
@@ -8057,6 +8063,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
+
+  // docs/testing-issues.md T9 ("New Document has no size dialog"), out here
+  // for the same ID-stack reason as every dialog below: a popup opened from a
+  // menu item has to be begun outside the menu bar's ID stack.
+  drawNewDocumentDialog(st);
 
   // PLAN.md Phase 4 step 7 ("Export As"), defined out here for the same
   // reason the Add Guide popup above is: a popup opened from a menu item has
@@ -10036,8 +10047,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // changed them -- a zoom readout one frame stale, which is exactly the
   // juddering docs/ui.md section 5 asks the monospace numerics to prevent.
   if (drawAtelierTabStrip(st, bands, g_split, &g_docStatus)) {
-    st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
-                                           static_cast<int32_t>(canvasH), WorkingSpace{}));
+    // **The same dialog File > New raises, not a second way to make a
+    // document.** This used to call `makeBlankOpenDocument(canvasW, canvasH)`
+    // directly, which sized the new document from the *solver canvas* -- a
+    // number the user never chose and which has nothing to do with the
+    // document they are asking for. That is docs/testing-issues.md T5's
+    // canvas-versus-document conflation, and with T9's dialog in the tree it
+    // would have left two "new document" affordances producing different
+    // sizes from the same intent.
+    requestNewDocumentDialog();
     g_docStatus.clear();
   }
   drawAtelierOptionsBar(st, bands, g_strokeRefusal);

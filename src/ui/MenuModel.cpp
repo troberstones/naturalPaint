@@ -33,7 +33,11 @@ const MenuItemSpec* specTable() {
 
     set(MenuAction::NewCanvas, "New Canvas", "Cmd+N",
         MenuKeyEquivalent{'n', kMenuModCmd, "clear_canvas"});
-    set(MenuAction::NewDocument, "New Document", "");
+    // "..." per this file's own convention for anything that opens a dialog
+    // rather than acting on the spot (see the five refine ops below) -- T9's
+    // ui/NewDocumentDialog.hpp modal, per menuActionEffect()'s Deferred case
+    // for this action further down in this file.
+    set(MenuAction::NewDocument, "New Document...", "");
     set(MenuAction::Open, "Open...", "");
     family(MenuAction::OpenRecentEntry);
     set(MenuAction::ClearRecentMenu, "Clear Menu", "");
@@ -385,6 +389,13 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::ExportStates:
     case MenuAction::RecoverDocuments:
     case MenuAction::AddGuide:
+      return MenuEffect::Deferred;
+
+    // T9: New Document now opens ui/NewDocumentDialog.hpp's modal (a preset
+    // list, an editable size, and a From Clipboard path) instead of silently
+    // inheriting the solver canvas's size. Deferred for the identical reason
+    // as the four above -- see requestNewDocumentDialog()'s own comment.
+    case MenuAction::NewDocument:
       return MenuEffect::Deferred;
 
     // Also modals, but of a different sort: these raise the file-path dialog
