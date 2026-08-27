@@ -1884,6 +1884,13 @@ int main(int argc, char** argv) {
     // label-on-the-right run beside it and both clip counts printed. Headless
     // and GPU-free; writes no files.
     const bool controlsLayoutOk = np::runControlsLayoutTest();
+    // app/ControlsColumnLayout: the headless model behind a configurable
+    // right-hand controls column -- which sections appear, in what order,
+    // and that it survives a relaunch. The exactly-once invariant under
+    // every mutation, the four round-trip repair rules, and a real save/load
+    // round trip under $NP_PANEL_LAYOUT. Headless, GPU-free and ImGui-free;
+    // the ImGui affordance itself is a concurrent, separate change.
+    const bool controlsColumnLayoutOk = np::runControlsColumnLayoutTest();
     // The incremental composite (core/DirtyTiles + core/Composite's region
     // walk + ui/DocumentTexture's sub-rectangle upload): that the dirty set is
     // complete, that a non-tile-local change is classified as one, and that
@@ -2091,7 +2098,7 @@ int main(int argc, char** argv) {
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
-                    controlsLayoutOk &&
+                    controlsLayoutOk && controlsColumnLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&
                     pigmentSelectionOk && bucketRefusalOk &&

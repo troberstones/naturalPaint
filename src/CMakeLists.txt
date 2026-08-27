@@ -6,6 +6,7 @@ add_executable(naturalPaint
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
   app/CompPanel.cpp
+  app/ControlsColumnLayout.cpp
   app/ControlsLayout.cpp
   app/CurveEdit.cpp
   app/DabPreview.cpp
@@ -47,6 +48,7 @@ add_executable(naturalPaint
   app/selftest/ClippingMask.cpp
   app/selftest/CloseDecision.cpp
   app/selftest/ColorSpace.cpp
+  app/selftest/ControlsColumnLayout.cpp
   app/selftest/ControlsLayout.cpp
   app/selftest/CowTile.cpp
   app/selftest/CreateBlank.cpp

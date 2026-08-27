@@ -2289,6 +2289,45 @@ bool runLayerEditorTest();
 // Headless, GPU-free and ImGui-free; writes no files.
 bool runControlsLayoutTest();
 
+// app/ControlsColumnLayout -- the headless model behind a CONFIGURABLE
+// right-hand controls column: which sections appear, in what order, and
+// whether that survives a relaunch. Where app/ControlsLayout above asserts
+// the *default* order and open set never change, this is the model that
+// lets a user rearrange and hide sections away from that default and get it
+// back the same way tomorrow. The ImGui affordance for doing so is a
+// concurrent, separate change (src/ui/MacPaintUI.cpp); nothing here draws
+// anything.
+//
+// What is asserted:
+//  - **The invariant that matters most**: the sequence holds every
+//    `ControlsSection` enumerator exactly once, across every mutator
+//    (`moveTo()`/`moveUp()`/`moveDown()`/`setVisible()`/`resetToDefault()`),
+//    every `parse()`, and every disk round trip -- including an out-of-range
+//    move index (clamped, not refused) and hiding every section at once
+//    (legal, not force-corrected).
+//  - **Stable text keys, not ordinals**: every enumerator's persistence key
+//    is unique, round-trips through `controlsSectionFromKey()`, and an
+//    unrecognised string is rejected rather than aliasing some section.
+//  - **The four round-trip repair rules, each in isolation**: an unknown
+//    section name is ignored; a section this build's file predates is
+//    APPENDED in `controlsSections()`'s own relative order rather than
+//    vanishing; a duplicated section keeps its first occurrence and drops
+//    the rest; and a malformed line -- or a file that is not this format at
+//    all -- invalidates the WHOLE file rather than half-applying it,
+//    falling back to `resetToDefault()`'s layout. An empty or missing file
+//    resolves to the default through the identical "every section missing"
+//    path as the append rule, not a separate special case.
+//  - **A real save/load round trip**, entirely under `$NP_PANEL_LAYOUT` so
+//    the developer's real `~/Library/Application Support/naturalPaint/` is
+//    never touched, plus the same durability shape app/
+//    selftest/UserBrushLibrary.cpp proves for its own file: a stale `.tmp`
+//    left beside the real path is consumed by the next real save, and a
+//    `.tmp` abandoned mid-write afterward cannot corrupt the real file.
+//
+// Headless, GPU-free and ImGui-free; writes files only under a
+// `$NP_PANEL_LAYOUT`-redirected temp directory it removes before returning.
+bool runControlsColumnLayoutTest();
+
 // ---------------------------------------------------------------------------
 // The incremental composite
 // ---------------------------------------------------------------------------
