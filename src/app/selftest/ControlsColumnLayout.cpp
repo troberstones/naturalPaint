@@ -11,9 +11,10 @@ namespace {
 // selftest/ControlsLayout.cpp's own `kAll` plays for `controlsSections()`.
 constexpr ControlsSection kAllSections[] = {
     ControlsSection::Color,        ControlsSection::Layers,     ControlsSection::History,
-    ControlsSection::Comps,        ControlsSection::Grade,      ControlsSection::BrushLibrary,
-    ControlsSection::Brush,        ControlsSection::Pigment,    ControlsSection::Medium,
-    ControlsSection::BoardTilt,    ControlsSection::Grid,       ControlsSection::Solver,
+    ControlsSection::Comps,        ControlsSection::Grade,      ControlsSection::Histogram,
+    ControlsSection::BrushLibrary, ControlsSection::Brush,      ControlsSection::Pigment,
+    ControlsSection::Medium,       ControlsSection::BoardTilt,  ControlsSection::Grid,
+    ControlsSection::Solver,
 };
 
 bool exactlyOnceEach(const ControlsColumnLayout& layout) {
@@ -164,7 +165,7 @@ bool runControlsColumnLayoutTest() {
     for (const ControlsSection s : kAllSections) vis.setVisible(s, false);
     check(vis.visibleSections().empty() && exactlyOnceEach(vis),
           "panel layout: hiding every section is legal -- visibleSections() is empty but "
-          "entries() still holds all twelve");
+          "entries() still holds all thirteen");
     vis.setVisible(ControlsSection::Layers, true);
     vis.setVisible(ControlsSection::Color, true);
     check(vis.visibleSections().size() == 2 &&
@@ -231,6 +232,7 @@ bool runControlsColumnLayoutTest() {
         "section history 1\n"
         "section comps 1\n"
         "section grade 0\n"
+        "section histogram 0\n"
         "section brush_library 0\n"
         "section brush 0\n"
         "section pigment 0\n"
@@ -274,6 +276,43 @@ bool runControlsColumnLayoutTest() {
     check(missing.isVisible(ControlsSection::Grid) && missing.isVisible(ControlsSection::Solver),
           "panel layout: repair 4b -- an appended section is visible by default, matching what "
           "resetToDefault() would have given it");
+
+    // 4b-2. The concrete case C2 (docs/reachability-audit.md; PRD D2, P0)
+    // exists to close: a layout file written by a build from BEFORE
+    // HISTOGRAM existed -- every OTHER current section present and
+    // accounted for, HISTOGRAM simply never mentioned because its author's
+    // build had no such enumerator -- must still load with HISTOGRAM
+    // present. This is the exact scenario every real user's saved
+    // panel-layout.txt is in the instant this section ships: without the
+    // missing-section repair, HISTOGRAM would silently never appear for
+    // anyone who already has a layout file on disk, which is the "feature
+    // that exists that nothing reaches" defect class this step exists to
+    // close, one level up (the file would reach it; the repair is what
+    // makes the column draw it).
+    ControlsColumnLayout predatesHistogram;
+    predatesHistogram.parse(
+        "naturalPaint-panel-layout 1\n"
+        "section color 1\n"
+        "section layers 1\n"
+        "section history 1\n"
+        "section comps 1\n"
+        "section grade 0\n"
+        "section brush_library 0\n"
+        "section brush 0\n"
+        "section pigment 0\n"
+        "section medium 0\n"
+        "section board_tilt 0\n"
+        "section grid 0\n"
+        "section solver 0\n");  // no "section histogram" line anywhere
+    check(exactlyOnceEach(predatesHistogram),
+          "panel layout: repair 4b-2 -- **a file written before HISTOGRAM existed still loads "
+          "with HISTOGRAM present** -- the specific new-section case this repair rule exists for");
+    check(predatesHistogram.isVisible(ControlsSection::Histogram),
+          "panel layout: repair 4b-2 -- and it is visible, matching what resetToDefault() would "
+          "have given a section this old file never had a chance to hide");
+    check(predatesHistogram.entries().back().section == ControlsSection::Histogram,
+          "panel layout: repair 4b-2 -- appended at the end, since it is the only section this "
+          "file is missing");
 
     // 4c. Duplicate section name -- the first occurrence wins.
     ControlsColumnLayout dup;

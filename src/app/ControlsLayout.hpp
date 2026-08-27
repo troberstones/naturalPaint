@@ -99,6 +99,14 @@ enum class ControlsSection {
   // a history row is an edit *to* it, so LAYERS reads before either.
   Comps,
   Grade,
+  // C2 (docs/reachability-audit.md; PRD D2, P0): a per-channel/luminance
+  // distribution of the open document's composite, read from core/Histogram
+  // .hpp's `computeHistogram()` -- a built and tested engine that had no UI
+  // caller at all before this section. A `View` role like GRADE just above
+  // it and for the same reason: what it draws is a fresh read of the canvas,
+  // never anything `Document` persists, so it earns no place among the
+  // document sections above.
+  Histogram,
   // The brush library (brush/Library.hpp) -- which brush, as opposed to what
   // that brush is. Immediately above BRUSH, because picking is what you do
   // before editing and the editor's header names what the pane above chose.

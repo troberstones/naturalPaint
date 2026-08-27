@@ -16,6 +16,11 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
       {ControlsSection::History, R::Document, "HISTORY", true},
       {ControlsSection::Comps, R::Document, "COMPS", true},
       {ControlsSection::Grade, R::View, "GRADE", false},
+      // View role, right beside GRADE for the same reason (see the header):
+      // closed by default too, so a document that is merely open does not
+      // pay this section's per-open recompute cost until someone asks for
+      // it.
+      {ControlsSection::Histogram, R::View, "HISTOGRAM", false},
       {ControlsSection::Pigment, R::Simulation, "PIGMENT", false},
       {ControlsSection::Medium, R::Simulation, "MEDIUM", false},
       {ControlsSection::BoardTilt, R::Simulation, "BOARD TILT", false},
