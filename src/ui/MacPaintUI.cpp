@@ -2036,312 +2036,375 @@ void drawLayersSection(AppState& st) {
 
   const float lineH = ImGui::GetTextLineHeight();
   const float rowH = kLayerRowPadY * 2.0f + lineH * 2.0f + kLayerLineGap;
+
+  // T11: bounded scroll region, the same idiom drawHistorySection() (T8)
+  // uses for `##historyrows` -- see that function's comment for the two
+  // findings this reuses rather than rediscovers.
+  //
+  // **The floor is not defensive padding, it is the empty case.** A document
+  // with zero layers is representable (app/LayerEditor.cpp: "removing the
+  // last layer is allowed", core/LayerOps.hpp), and `BeginChild()` reads a
+  // height of `0.0f` as *fill the rest of the column*
+  // (`imgui.cpp`: `if (size.y <= 0.0f) size.y = ImMax(content_avail.y + size.y, 4.0f);`).
+  // Without `std::max` here, the one state with nothing to show would be the
+  // one that swallows every section below LAYERS.
+  //
+  // **A third finding, not in drawHistorySection() (T8) to reuse, found while
+  // screenshotting this one for T11's own verification list.** `BeginChild()`
+  // sizes an OUTER box; a bordered child's rows still sit inside the current
+  // style's `WindowPadding`, so a box sized to exactly N row-heights is a few
+  // pixels short of them once that padding is subtracted back out, and shows
+  // a scrollbar for content that fits. `##historyrows` has the identical gap
+  // -- confirmed by screenshot on this build, `min(2, 8)` rows -- so this
+  // is not new to LAYERS, only newly caught here. Added back in rather than
+  // carried over silently, so the two rows' worth of padding is counted once
+  // instead of clipped off the bottom.
+  constexpr int kLayersVisibleRows = 8;
+  const float childH =
+      std::max(rowH, static_cast<float>(std::min(visibleRows.size(),
+                                                 static_cast<size_t>(kLayersVisibleRows))) *
+                         rowH) +
+      2.0f * ImGui::GetStyle().WindowPadding.y;
+
+  // Auto-scroll follows the SELECTED layer -- triggered by a change in
+  // `selected`, not every frame, so it never fights the user's own scroll.
+  // **The trigger holds for two frames, not one**, because `SetScrollHereY()`
+  // only sets `ScrollTarget`; ImGui turns that into a position at the next
+  // `Begin()` of this child by clamping `scroll = ImMin(scroll,
+  // window->ScrollMax)` (`CalcNextScrollFromScrollTargetAndClamp()` in
+  // imgui.cpp), and `ScrollMax` comes from the content size measured on the
+  // PREVIOUS frame -- which is 0 on the frame this child first exists, so a
+  // one-frame trigger clamps to the top instead of moving anything. See
+  // drawHistorySection()'s longer comment on `s_followCursorFrames` for the
+  // full derivation; this is the same clamp, not a different bug.
+  static size_t s_lastSelectedLayer = SIZE_MAX;
+  static int s_followSelectionFrames = 0;
+  if (selected != s_lastSelectedLayer) s_followSelectionFrames = 2;
+  s_lastSelectedLayer = selected;
+  const bool followSelection = s_followSelectionFrames > 0;
+  if (s_followSelectionFrames > 0) --s_followSelectionFrames;
+
   // Rows sit flush against each other, separated by the design's 1px divider
   // rather than by ImGui's inter-item gap.
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
-  for (size_t vr = visibleRows.size(); vr-- > 0 && !structureChanged;) {
-    const size_t i = visibleRows[vr];
-    const Layer& layer = doc.layers[i];
-    ImGui::PushID(static_cast<int>(i));
+  if (ImGui::BeginChild("##layerrows", ImVec2(0.0f, childH), true)) {
+    // This child's own draw list, fetched fresh rather than reusing the outer
+    // `dl` captured before this function had a child window: clipping and
+    // scroll offset are both properties of the draw list a command lands in,
+    // so drawing rows through the panel's own list would neither clip to this
+    // box nor move when it scrolls.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (size_t vr = visibleRows.size(); vr-- > 0 && !structureChanged;) {
+      const size_t i = visibleRows[vr];
+      const Layer& layer = doc.layers[i];
+      ImGui::PushID(static_cast<int>(i));
 
-    const ImVec2 o = ImGui::GetCursorScreenPos();
-    const bool inSelection = g_layers.selection.contains(i);
-    const bool renamingThis = g_layers.renaming.has_value() && *g_layers.renaming == i;
+      const ImVec2 o = ImGui::GetCursorScreenPos();
+      const bool inSelection = g_layers.selection.contains(i);
+      const bool renamingThis = g_layers.renaming.has_value() && *g_layers.renaming == i;
 
-    // The row-wide hit target, submitted FIRST and marked overlappable so the
-    // eye and lock buttons drawn on top of it still take their own clicks.
-    // `SetNextItemAllowOverlap()` is what makes that ordering safe: the row
-    // only claims the mouse when the previous frame's hovered id was the row
-    // itself, so a click landing on the eye can never also select the row.
-    ImGui::SetNextItemAllowOverlap();
-    // `InvisibleButton()` asserts on a zero-width item, and a controls column
-    // measured at zero width during a layout pass is a real state -- the same
-    // degenerate input `controlsWheelScrollStep()` guards against.
-    ImGui::InvisibleButton("##row", ImVec2(std::max(1.0f, panelW), rowH));
-    // **Hover is asked of the rectangle, not of the item**, and that is not a
-    // shortcut -- it is the whole of the design's lock affordance. The eye and
-    // the padlock are separate items sitting on top of this one, so
-    // `IsItemHovered()` goes false the moment the pointer reaches either of
-    // them: the padlock would dim exactly as you moved to click it, which is
-    // the opposite of "the slot reads as a control". `AllowWhenBlockedByActiveItem`
-    // keeps the wash on through a drag of the row itself.
-    const bool rowHovered =
-        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
-        ImGui::IsMouseHoveringRect(o, ImVec2(o.x + panelW, o.y + rowH));
-    // Selection on **press**, not on release, which is what the retired
-    // `Selectable(..., ImGuiSelectableFlags_AllowDoubleClick)` did and is what
-    // makes the double-click test below work at all: `IsMouseDoubleClicked()`
-    // is true only on the frame of the second *press*, so a rename started from
-    // an InvisibleButton's release value would never fire. Pressing also begins
-    // a drag, which is the order every editor uses -- the row you drag is the
-    // row that became selected under your finger.
-    const bool rowClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-    const bool rowRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
-    const bool rowDoubleClicked = rowClicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+      // The row-wide hit target, submitted FIRST and marked overlappable so the
+      // eye and lock buttons drawn on top of it still take their own clicks.
+      // `SetNextItemAllowOverlap()` is what makes that ordering safe: the row
+      // only claims the mouse when the previous frame's hovered id was the row
+      // itself, so a click landing on the eye can never also select the row.
+      ImGui::SetNextItemAllowOverlap();
+      // `InvisibleButton()` asserts on a zero-width item, and a controls column
+      // measured at zero width during a layout pass is a real state -- the same
+      // degenerate input `controlsWheelScrollStep()` guards against.
+      ImGui::InvisibleButton("##row", ImVec2(std::max(1.0f, panelW), rowH));
+      // Right here, and not further down after the eye/lock buttons: those
+      // are their own tiny items and would overwrite the cursor bookkeeping
+      // `SetScrollHereY()` reads with their own small rect. This "##row"
+      // InvisibleButton's rect is the whole row, which is the rect that
+      // should end up on screen.
+      if (followSelection && i == selected) ImGui::SetScrollHereY();
+      // **Hover is asked of the rectangle, not of the item**, and that is not a
+      // shortcut -- it is the whole of the design's lock affordance. The eye and
+      // the padlock are separate items sitting on top of this one, so
+      // `IsItemHovered()` goes false the moment the pointer reaches either of
+      // them: the padlock would dim exactly as you moved to click it, which is
+      // the opposite of "the slot reads as a control". `AllowWhenBlockedByActiveItem`
+      // keeps the wash on through a drag of the row itself.
+      const bool rowHovered =
+          ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+          ImGui::IsMouseHoveringRect(o, ImVec2(o.x + panelW, o.y + rowH));
+      // Selection on **press**, not on release, which is what the retired
+      // `Selectable(..., ImGuiSelectableFlags_AllowDoubleClick)` did and is what
+      // makes the double-click test below work at all: `IsMouseDoubleClicked()`
+      // is true only on the frame of the second *press*, so a rename started from
+      // an InvisibleButton's release value would never fire. Pressing also begins
+      // a drag, which is the order every editor uses -- the row you drag is the
+      // row that became selected under your finger.
+      const bool rowClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+      const bool rowRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+      const bool rowDoubleClicked = rowClicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
 
-    // **Drag to reorder.** The dragged payload is the model index; the drop
-    // target is whichever row's rectangle the pointer released over, refined by
-    // which half of that row it was in (`app::layerDropTargetIndex()` turns
-    // "row + half" into the `to` `core::moveLayer()` wants). Not offered while
-    // renaming -- a text field and a drag source on the same item would fight
-    // over the mouse.
-    if (!renamingThis) {
-      if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
-        ImGui::SetDragDropPayload("NP_LAYER_ROW", &i, sizeof(size_t));
-        ImGui::TextUnformatted(layerRowTitle(layer, i).c_str());
-        ImGui::EndDragDropSource();
-      }
-      if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("NP_LAYER_ROW")) {
-          const size_t from = *static_cast<const size_t*>(payload->Data);
-          const bool droppedAboveMidpoint = ImGui::GetMousePos().y < (o.y + rowH * 0.5f);
-          const size_t to = layerDropTargetIndex(i, droppedAboveMidpoint, count);
-          if (from != to) run(moveLayer(doc, from, to));
-          structureChanged = true;
+      // **Drag to reorder.** The dragged payload is the model index; the drop
+      // target is whichever row's rectangle the pointer released over, refined by
+      // which half of that row it was in (`app::layerDropTargetIndex()` turns
+      // "row + half" into the `to` `core::moveLayer()` wants). Not offered while
+      // renaming -- a text field and a drag source on the same item would fight
+      // over the mouse.
+      if (!renamingThis) {
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
+          ImGui::SetDragDropPayload("NP_LAYER_ROW", &i, sizeof(size_t));
+          ImGui::TextUnformatted(layerRowTitle(layer, i).c_str());
+          ImGui::EndDragDropSource();
         }
-        ImGui::EndDragDropTarget();
-      }
-    }
-
-    // **Right-click context menu.** Selects the row first, the same way a
-    // left-click does, so a command chosen from the menu acts on the row the
-    // user right-clicked rather than whatever was selected before -- and so
-    // `runLayerCommand()` below, which always acts on
-    // `OpenDocument::activeLayer`, is acting on the right one.
-    if (rowRightClicked) {
-      g_layers.selection = singleLayerSelection(i);
-      selected = i;
-    }
-    if (ImGui::BeginPopupContextItem("layerRowContext")) {
-      for (const LayerCommand command : allLayerCommands()) {
-        // CaptureComp captures the whole stack, not this row -- it belongs to
-        // the COMPS panel and the `Layer` menu, not a per-row menu whose every
-        // other entry is about the layer under the cursor.
-        if (command == LayerCommand::CaptureComp) continue;
-        const bool available = layerCommandAvailable(doc, command, i);
-        if (ImGui::MenuItem(layerCommandLabel(command), nullptr, false, available)) {
-          runLayerCommand(st, command);
-          structureChanged = true;
+        if (ImGui::BeginDragDropTarget()) {
+          if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("NP_LAYER_ROW")) {
+            const size_t from = *static_cast<const size_t*>(payload->Data);
+            const bool droppedAboveMidpoint = ImGui::GetMousePos().y < (o.y + rowH * 0.5f);
+            const size_t to = layerDropTargetIndex(i, droppedAboveMidpoint, count);
+            if (from != to) run(moveLayer(doc, from, to));
+            structureChanged = true;
+          }
+          ImGui::EndDragDropTarget();
         }
       }
-      // **Add Op, for now.** The full op-stack editor lives in Layer
-      // Properties -- but *adding* one is a single gesture with no parameters
-      // to show yet (`app::makeNewOp()` always builds a disabled PointA op), so
-      // it gets a fast path here rather than waiting for the dialog.
-      if (ImGui::BeginMenu("Add Op")) {
-        for (const PointOpKind kind :
-             {PointOpKind::Levels, PointOpKind::Curves, PointOpKind::Exposure,
-              PointOpKind::Saturation, PointOpKind::Grayscale, PointOpKind::ChannelMixer}) {
-          if (ImGui::MenuItem(pointOpKindName(kind))) {
-            run(addLayerOp(doc, i, makeNewOp(kind)));
+
+      // **Right-click context menu.** Selects the row first, the same way a
+      // left-click does, so a command chosen from the menu acts on the row the
+      // user right-clicked rather than whatever was selected before -- and so
+      // `runLayerCommand()` below, which always acts on
+      // `OpenDocument::activeLayer`, is acting on the right one.
+      if (rowRightClicked) {
+        g_layers.selection = singleLayerSelection(i);
+        selected = i;
+      }
+      if (ImGui::BeginPopupContextItem("layerRowContext")) {
+        for (const LayerCommand command : allLayerCommands()) {
+          // CaptureComp captures the whole stack, not this row -- it belongs to
+          // the COMPS panel and the `Layer` menu, not a per-row menu whose every
+          // other entry is about the layer under the cursor.
+          if (command == LayerCommand::CaptureComp) continue;
+          const bool available = layerCommandAvailable(doc, command, i);
+          if (ImGui::MenuItem(layerCommandLabel(command), nullptr, false, available)) {
+            runLayerCommand(st, command);
             structureChanged = true;
           }
         }
-        ImGui::EndMenu();
+        // **Add Op, for now.** The full op-stack editor lives in Layer
+        // Properties -- but *adding* one is a single gesture with no parameters
+        // to show yet (`app::makeNewOp()` always builds a disabled PointA op), so
+        // it gets a fast path here rather than waiting for the dialog.
+        if (ImGui::BeginMenu("Add Op")) {
+          for (const PointOpKind kind :
+               {PointOpKind::Levels, PointOpKind::Curves, PointOpKind::Exposure,
+                PointOpKind::Saturation, PointOpKind::Grayscale, PointOpKind::ChannelMixer}) {
+            if (ImGui::MenuItem(pointOpKindName(kind))) {
+              run(addLayerOp(doc, i, makeNewOp(kind)));
+              structureChanged = true;
+            }
+          }
+          ImGui::EndMenu();
+        }
+        ImGui::EndPopup();
       }
-      ImGui::EndPopup();
-    }
 
-    // **Stop the row, not just the loop.** A drop or a command from the row's
-    // own menu has already run by this point, and Delete/Merge/Flatten shrink
-    // `doc.layers` -- so `layer`, a reference into that vector, no longer names
-    // what it did and `i` may be past the end. Everything below reads both. The
-    // loop condition tests the same flag, but only on the *next* iteration,
-    // which is one row's worth of reads too late.
-    if (structureChanged) {
+      // **Stop the row, not just the loop.** A drop or a command from the row's
+      // own menu has already run by this point, and Delete/Merge/Flatten shrink
+      // `doc.layers` -- so `layer`, a reference into that vector, no longer names
+      // what it did and `i` may be past the end. Everything below reads both. The
+      // loop condition tests the same flag, but only on the *next* iteration,
+      // which is one row's worth of reads too late.
+      if (structureChanged) {
+        ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + rowH));
+        ImGui::PopID();
+        break;
+      }
+
+      // ---- the row's paint, over the hit target ----------------------------
+      if (inSelection)
+        dl->AddRectFilled(o, ImVec2(o.x + panelW, o.y + rowH), atelierToken(kRowSelected));
+      else if (rowHovered)
+        dl->AddRectFilled(o, ImVec2(o.x + panelW, o.y + rowH), atelierToken(kLayerRowHover));
+      dl->AddLine(ImVec2(o.x, o.y + rowH - 1.0f), ImVec2(o.x + panelW, o.y + rowH - 1.0f), divCol,
+                  kDividerThickness);
+
+      // The kind rail, and the clipped row's indent.
+      dl->AddRectFilled(o, ImVec2(o.x + kLayerRailW, o.y + rowH),
+                        atelierToken(layerKindRailRgb(layer.kind)));
+      float x = o.x + kLayerRailW;
+      if (layer.clipped) {
+        drawClipBracket(dl, ImVec2(x, o.y), kLayerClipIndent, rowH, atelierToken(kHairline));
+        x += kLayerClipIndent;
+      }
+      x += kLayerRowPadX;
+
+      // The two icon slots. Colours first, because all three states of the lock
+      // are decided here and the design's rest/hover/locked ramp is the whole
+      // point of the slot.
+      const ImU32 eyeCol = layer.visible ? textCol : mutedCol;
+      const ImU32 lockCol = layer.locked ? mutedCol
+                            : rowHovered ? mutedCol
+                                         : atelierToken(kLayerLockRest);
+      const float iconY = o.y + rowH * 0.5f;
+      const ImVec2 eyeAt(x, o.y + (rowH - kLayerEyeW) * 0.5f);
+      drawEyeGlyph(dl, ImVec2(x + kLayerEyeW * 0.5f, iconY), kLayerEyeW, eyeCol, layer.visible);
+      x += kLayerEyeW + kLayerRowGap;
+      const ImVec2 lockAt(x, o.y + (rowH - kLayerLockW) * 0.5f);
+      drawPadlockGlyph(dl, ImVec2(x + kLayerLockW * 0.5f, iconY), kLayerLockW, lockCol,
+                       layer.locked);
+      x += kLayerLockW + kLayerRowGap;
+
+      // The kind glyph, muted on a hidden layer along with the name, so a hidden
+      // row reads as hidden from its leading edge rather than only from the word
+      // HIDDEN at the far end of a metadata line the panel may have clipped.
+      const ImU32 nameCol = layer.visible ? textCol : mutedCol;
+      const std::string glyph = layerKindGlyphForFont(layer.kind);
+      const float glyphW = std::max(11.0f, ImGui::CalcTextSize(glyph.c_str()).x);
+      dl->AddText(ImVec2(x, o.y + kLayerRowPadY), nameCol, glyph.c_str());
+      x += glyphW + kLayerRowGap;
+
+      // The trailing slot, measured before the text column so the two cannot
+      // overlap. `LINKED+n` is the design's own occupant of it (§6.1: "LINKED+n
+      // takes the trailing slot, so nothing in the worst case is truncated"); the
+      // mask chip sits beside it when the layer has both.
+      float trailingX = o.x + panelW - kLayerRowPadX;
+      const std::string linkBadge = layerLinkBadgeText(doc, i);
+      if (!linkBadge.empty()) {
+        pushAtelierMono();
+        const ImVec2 sz = ImGui::CalcTextSize(linkBadge.c_str());
+        trailingX -= sz.x + 8.0f;
+        dl->AddRect(ImVec2(trailingX, o.y + (rowH - sz.y) * 0.5f - 2.0f),
+                    ImVec2(trailingX + sz.x + 6.0f, o.y + (rowH + sz.y) * 0.5f + 2.0f), divCol);
+        dl->AddText(ImVec2(trailingX + 3.0f, o.y + (rowH - sz.y) * 0.5f), mutedCol,
+                    linkBadge.c_str());
+        popAtelierMono();
+        trailingX -= kLayerRowGap;
+      }
+      if (layer.mask.has_value()) {
+        // A half-filled square: the mask indicator, and deliberately not a
+        // thumbnail. `layerRowSubLine()` already says `MASK` in the metadata
+        // line; what this adds is that the marker survives the line being
+        // clipped, which at 322 px it often is. It says nothing about the mask's
+        // *contents* -- there is no way to paint one yet, and a thumbnail that
+        // was always uniform would be worse than none.
+        trailingX -= kLayerMaskChipW;
+        const ImVec2 lo(trailingX, o.y + (rowH - kLayerMaskChipW) * 0.5f);
+        const ImVec2 hi(lo.x + kLayerMaskChipW, lo.y + kLayerMaskChipW);
+        dl->AddRectFilled(lo, ImVec2(hi.x, (lo.y + hi.y) * 0.5f), atelierToken(kRule));
+        dl->AddRectFilled(ImVec2(lo.x, (lo.y + hi.y) * 0.5f), hi, atelierToken(kChromeDeep));
+        dl->AddRect(lo, hi, atelierToken(kHairline));
+        trailingX -= kLayerRowGap;
+      }
+
+      // The colour label chip (PRD C15), immediately before the name as the
+      // design places it. Drawn only for a label this build has a swatch for; an
+      // unrecognised one from a newer build shows as text in the metadata line
+      // instead, because painting it in some default colour would make two
+      // different labels look like one (app/LayerPanel.hpp).
+      float textX = x;
+      if (const std::optional<LayerLabelSwatch> swatch = layerColorLabelSwatch(layer.colorLabel)) {
+        dl->AddRectFilled(ImVec2(textX, o.y + kLayerRowPadY + 1.0f),
+                          ImVec2(textX + kLayerRailW, o.y + kLayerRowPadY + lineH - 1.0f),
+                          ImGui::GetColorU32(ImVec4(swatch->r, swatch->g, swatch->b, 1.0f)));
+        textX += kLayerRailW + 4.0f;
+      }
+      const float textW = std::max(20.0f, trailingX - textX);
+
+      if (renamingThis) {
+        // **Inline rename.** The field replaces the name line entirely rather
+        // than sitting beside it -- two editable widgets for one value on screen
+        // at once is what the properties dialog's own "Name" field would
+        // otherwise become the moment this row is also the selection.
+        ImGui::SetCursorScreenPos(ImVec2(textX, o.y + kLayerRowPadY - 1.0f));
+        if (g_layers.renameFieldFocusPending) {
+          ImGui::SetKeyboardFocusHere();
+          g_layers.renameFieldFocusPending = false;
+        }
+        ImGui::SetNextItemWidth(textW);
+        const bool committed =
+            ImGui::InputText("##inlineRename", g_layers.renameFieldBuf,
+                             sizeof(g_layers.renameFieldBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+        if (committed) {
+          run(setLayerName(doc, i, g_layers.renameFieldBuf));
+          g_layers.renaming.reset();
+        } else if (ImGui::IsItemDeactivated()) {
+          // Lost focus without Enter -- a click elsewhere, Tab, or Escape.
+          // Cancel: the buffer is simply never written back.
+          g_layers.renaming.reset();
+        }
+      } else {
+        drawClippedText(dl, ImVec2(textX, o.y + kLayerRowPadY), textW, nameCol,
+                        layerRowTitle(layer, i).c_str());
+      }
+
+      // The metadata line, in the monospace face docs/ui.md section 1 puts caps
+      // labels in -- `app::layerRowSubLine()` verbatim, which is where `(!)`,
+      // `(display-referred)`, `MASK`, `n OPS`, `CLIPPED`, `HIDDEN`, `LOCKED` and
+      // the colour label's own name all come from. Nothing is assembled here, so
+      // every one of those markers is covered by the assertions that already
+      // exist for that function.
+      {
+        pushAtelierMono();
+        const std::string sub = layerRowSubLine(layer);
+        drawClippedText(dl, ImVec2(textX, o.y + kLayerRowPadY + lineH + kLayerLineGap), textW,
+                        inSelection ? atelierToken(kLayerSelMeta) : mutedCol, sub.c_str());
+        popAtelierMono();
+      }
+
+      // ---- the two icon buttons, last, so they take the mouse ---------------
+      ImGui::SetCursorScreenPos(eyeAt);
+      if (ImGui::InvisibleButton("##vis", ImVec2(kLayerEyeW, kLayerEyeW)))
+        run(setLayerVisible(doc, i, !layer.visible));
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Visibility. Allowed even on a locked layer --\n"
+                          "hiding a layer changes nothing about it.");
+      ImGui::SetCursorScreenPos(lockAt);
+      if (ImGui::InvisibleButton("##lock", ImVec2(kLayerLockW, kLayerLockW)))
+        run(setLayerLocked(doc, i, !layer.locked));
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s. A locked layer refuses edits that change its\n"
+                          "pixels or its place in the stack -- visibility and\n"
+                          "this padlock itself still work.",
+                          layer.locked ? "Locked -- click to unlock"
+                                       : "Unlocked -- click to lock");
+
+      // Selection, decided after the icon buttons so that a click they claimed is
+      // not also a click on the row. Multi-select (PRD C12): plain click replaces
+      // the selection, ctrl-click (cmd-click on this platform) toggles one row,
+      // shift-click extends from the primary row to this one. `selected` follows
+      // the row that was clicked in every case, so the controls above the list
+      // always describe a row the user just touched.
+      if (rowClicked) {
+        const ImGuiIO& io = ImGui::GetIO();
+        std::vector<size_t> next;
+        if (io.KeyShift) {
+          const size_t lo = std::min(selected, i);
+          const size_t hi = std::max(selected, i);
+          for (size_t k = lo; k <= hi; ++k) next.push_back(k);
+        } else if (io.KeyCtrl || io.KeySuper) {
+          next = g_layers.selection.indices;
+          const auto at = std::find(next.begin(), next.end(), i);
+          if (at != next.end())
+            next.erase(at);
+          else
+            next.push_back(i);
+          // A selection is never empty: ctrl-clicking the only selected row
+          // leaves it selected rather than leaving the panel with no primary row
+          // for the opacity meter and the blend combo to describe.
+          if (next.empty()) next.push_back(i);
+        } else {
+          next.push_back(i);
+        }
+        g_layers.selection = makeLayerSelection(std::move(next));
+        selected = i;
+        if (rowDoubleClicked) {
+          g_layers.renaming = i;
+          std::snprintf(g_layers.renameFieldBuf, sizeof(g_layers.renameFieldBuf), "%s",
+                        layer.name.c_str());
+          g_layers.renameFieldFocusPending = true;
+        }
+      }
+
       ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + rowH));
       ImGui::PopID();
-      break;
     }
-
-    // ---- the row's paint, over the hit target ----------------------------
-    if (inSelection)
-      dl->AddRectFilled(o, ImVec2(o.x + panelW, o.y + rowH), atelierToken(kRowSelected));
-    else if (rowHovered)
-      dl->AddRectFilled(o, ImVec2(o.x + panelW, o.y + rowH), atelierToken(kLayerRowHover));
-    dl->AddLine(ImVec2(o.x, o.y + rowH - 1.0f), ImVec2(o.x + panelW, o.y + rowH - 1.0f), divCol,
-                kDividerThickness);
-
-    // The kind rail, and the clipped row's indent.
-    dl->AddRectFilled(o, ImVec2(o.x + kLayerRailW, o.y + rowH),
-                      atelierToken(layerKindRailRgb(layer.kind)));
-    float x = o.x + kLayerRailW;
-    if (layer.clipped) {
-      drawClipBracket(dl, ImVec2(x, o.y), kLayerClipIndent, rowH, atelierToken(kHairline));
-      x += kLayerClipIndent;
-    }
-    x += kLayerRowPadX;
-
-    // The two icon slots. Colours first, because all three states of the lock
-    // are decided here and the design's rest/hover/locked ramp is the whole
-    // point of the slot.
-    const ImU32 eyeCol = layer.visible ? textCol : mutedCol;
-    const ImU32 lockCol = layer.locked ? mutedCol
-                          : rowHovered ? mutedCol
-                                       : atelierToken(kLayerLockRest);
-    const float iconY = o.y + rowH * 0.5f;
-    const ImVec2 eyeAt(x, o.y + (rowH - kLayerEyeW) * 0.5f);
-    drawEyeGlyph(dl, ImVec2(x + kLayerEyeW * 0.5f, iconY), kLayerEyeW, eyeCol, layer.visible);
-    x += kLayerEyeW + kLayerRowGap;
-    const ImVec2 lockAt(x, o.y + (rowH - kLayerLockW) * 0.5f);
-    drawPadlockGlyph(dl, ImVec2(x + kLayerLockW * 0.5f, iconY), kLayerLockW, lockCol,
-                     layer.locked);
-    x += kLayerLockW + kLayerRowGap;
-
-    // The kind glyph, muted on a hidden layer along with the name, so a hidden
-    // row reads as hidden from its leading edge rather than only from the word
-    // HIDDEN at the far end of a metadata line the panel may have clipped.
-    const ImU32 nameCol = layer.visible ? textCol : mutedCol;
-    const std::string glyph = layerKindGlyphForFont(layer.kind);
-    const float glyphW = std::max(11.0f, ImGui::CalcTextSize(glyph.c_str()).x);
-    dl->AddText(ImVec2(x, o.y + kLayerRowPadY), nameCol, glyph.c_str());
-    x += glyphW + kLayerRowGap;
-
-    // The trailing slot, measured before the text column so the two cannot
-    // overlap. `LINKED+n` is the design's own occupant of it (§6.1: "LINKED+n
-    // takes the trailing slot, so nothing in the worst case is truncated"); the
-    // mask chip sits beside it when the layer has both.
-    float trailingX = o.x + panelW - kLayerRowPadX;
-    const std::string linkBadge = layerLinkBadgeText(doc, i);
-    if (!linkBadge.empty()) {
-      pushAtelierMono();
-      const ImVec2 sz = ImGui::CalcTextSize(linkBadge.c_str());
-      trailingX -= sz.x + 8.0f;
-      dl->AddRect(ImVec2(trailingX, o.y + (rowH - sz.y) * 0.5f - 2.0f),
-                  ImVec2(trailingX + sz.x + 6.0f, o.y + (rowH + sz.y) * 0.5f + 2.0f), divCol);
-      dl->AddText(ImVec2(trailingX + 3.0f, o.y + (rowH - sz.y) * 0.5f), mutedCol,
-                  linkBadge.c_str());
-      popAtelierMono();
-      trailingX -= kLayerRowGap;
-    }
-    if (layer.mask.has_value()) {
-      // A half-filled square: the mask indicator, and deliberately not a
-      // thumbnail. `layerRowSubLine()` already says `MASK` in the metadata
-      // line; what this adds is that the marker survives the line being
-      // clipped, which at 322 px it often is. It says nothing about the mask's
-      // *contents* -- there is no way to paint one yet, and a thumbnail that
-      // was always uniform would be worse than none.
-      trailingX -= kLayerMaskChipW;
-      const ImVec2 lo(trailingX, o.y + (rowH - kLayerMaskChipW) * 0.5f);
-      const ImVec2 hi(lo.x + kLayerMaskChipW, lo.y + kLayerMaskChipW);
-      dl->AddRectFilled(lo, ImVec2(hi.x, (lo.y + hi.y) * 0.5f), atelierToken(kRule));
-      dl->AddRectFilled(ImVec2(lo.x, (lo.y + hi.y) * 0.5f), hi, atelierToken(kChromeDeep));
-      dl->AddRect(lo, hi, atelierToken(kHairline));
-      trailingX -= kLayerRowGap;
-    }
-
-    // The colour label chip (PRD C15), immediately before the name as the
-    // design places it. Drawn only for a label this build has a swatch for; an
-    // unrecognised one from a newer build shows as text in the metadata line
-    // instead, because painting it in some default colour would make two
-    // different labels look like one (app/LayerPanel.hpp).
-    float textX = x;
-    if (const std::optional<LayerLabelSwatch> swatch = layerColorLabelSwatch(layer.colorLabel)) {
-      dl->AddRectFilled(ImVec2(textX, o.y + kLayerRowPadY + 1.0f),
-                        ImVec2(textX + kLayerRailW, o.y + kLayerRowPadY + lineH - 1.0f),
-                        ImGui::GetColorU32(ImVec4(swatch->r, swatch->g, swatch->b, 1.0f)));
-      textX += kLayerRailW + 4.0f;
-    }
-    const float textW = std::max(20.0f, trailingX - textX);
-
-    if (renamingThis) {
-      // **Inline rename.** The field replaces the name line entirely rather
-      // than sitting beside it -- two editable widgets for one value on screen
-      // at once is what the properties dialog's own "Name" field would
-      // otherwise become the moment this row is also the selection.
-      ImGui::SetCursorScreenPos(ImVec2(textX, o.y + kLayerRowPadY - 1.0f));
-      if (g_layers.renameFieldFocusPending) {
-        ImGui::SetKeyboardFocusHere();
-        g_layers.renameFieldFocusPending = false;
-      }
-      ImGui::SetNextItemWidth(textW);
-      const bool committed =
-          ImGui::InputText("##inlineRename", g_layers.renameFieldBuf,
-                           sizeof(g_layers.renameFieldBuf), ImGuiInputTextFlags_EnterReturnsTrue);
-      if (committed) {
-        run(setLayerName(doc, i, g_layers.renameFieldBuf));
-        g_layers.renaming.reset();
-      } else if (ImGui::IsItemDeactivated()) {
-        // Lost focus without Enter -- a click elsewhere, Tab, or Escape.
-        // Cancel: the buffer is simply never written back.
-        g_layers.renaming.reset();
-      }
-    } else {
-      drawClippedText(dl, ImVec2(textX, o.y + kLayerRowPadY), textW, nameCol,
-                      layerRowTitle(layer, i).c_str());
-    }
-
-    // The metadata line, in the monospace face docs/ui.md section 1 puts caps
-    // labels in -- `app::layerRowSubLine()` verbatim, which is where `(!)`,
-    // `(display-referred)`, `MASK`, `n OPS`, `CLIPPED`, `HIDDEN`, `LOCKED` and
-    // the colour label's own name all come from. Nothing is assembled here, so
-    // every one of those markers is covered by the assertions that already
-    // exist for that function.
-    {
-      pushAtelierMono();
-      const std::string sub = layerRowSubLine(layer);
-      drawClippedText(dl, ImVec2(textX, o.y + kLayerRowPadY + lineH + kLayerLineGap), textW,
-                      inSelection ? atelierToken(kLayerSelMeta) : mutedCol, sub.c_str());
-      popAtelierMono();
-    }
-
-    // ---- the two icon buttons, last, so they take the mouse ---------------
-    ImGui::SetCursorScreenPos(eyeAt);
-    if (ImGui::InvisibleButton("##vis", ImVec2(kLayerEyeW, kLayerEyeW)))
-      run(setLayerVisible(doc, i, !layer.visible));
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Visibility. Allowed even on a locked layer --\n"
-                        "hiding a layer changes nothing about it.");
-    ImGui::SetCursorScreenPos(lockAt);
-    if (ImGui::InvisibleButton("##lock", ImVec2(kLayerLockW, kLayerLockW)))
-      run(setLayerLocked(doc, i, !layer.locked));
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s. A locked layer refuses edits that change its\n"
-                        "pixels or its place in the stack -- visibility and\n"
-                        "this padlock itself still work.",
-                        layer.locked ? "Locked -- click to unlock"
-                                     : "Unlocked -- click to lock");
-
-    // Selection, decided after the icon buttons so that a click they claimed is
-    // not also a click on the row. Multi-select (PRD C12): plain click replaces
-    // the selection, ctrl-click (cmd-click on this platform) toggles one row,
-    // shift-click extends from the primary row to this one. `selected` follows
-    // the row that was clicked in every case, so the controls above the list
-    // always describe a row the user just touched.
-    if (rowClicked) {
-      const ImGuiIO& io = ImGui::GetIO();
-      std::vector<size_t> next;
-      if (io.KeyShift) {
-        const size_t lo = std::min(selected, i);
-        const size_t hi = std::max(selected, i);
-        for (size_t k = lo; k <= hi; ++k) next.push_back(k);
-      } else if (io.KeyCtrl || io.KeySuper) {
-        next = g_layers.selection.indices;
-        const auto at = std::find(next.begin(), next.end(), i);
-        if (at != next.end())
-          next.erase(at);
-        else
-          next.push_back(i);
-        // A selection is never empty: ctrl-clicking the only selected row
-        // leaves it selected rather than leaving the panel with no primary row
-        // for the opacity meter and the blend combo to describe.
-        if (next.empty()) next.push_back(i);
-      } else {
-        next.push_back(i);
-      }
-      g_layers.selection = makeLayerSelection(std::move(next));
-      selected = i;
-      if (rowDoubleClicked) {
-        g_layers.renaming = i;
-        std::snprintf(g_layers.renameFieldBuf, sizeof(g_layers.renameFieldBuf), "%s",
-                      layer.name.c_str());
-        g_layers.renameFieldFocusPending = true;
-      }
-    }
-
-    ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + rowH));
-    ImGui::PopID();
   }
+  ImGui::EndChild();
   ImGui::PopStyleVar();
 
   // --- The messages --------------------------------------------------------
@@ -4905,52 +4968,85 @@ void drawCompsSection(AppState& st) {
   size_t restore = rows.size(), remove = rows.size(), moveUp = rows.size(),
          moveDown = rows.size();
 
-  for (const CompPanelRow& row : rows) {
-    ImGui::PushID(static_cast<int>(row.index));
-    if (ImGui::Selectable(compRowText(row).c_str(), selected == row.index))
-      selected = row.index;
-    if (ImGui::IsItemHovered() && compRowIsPartial(row))
-      ImGui::SetTooltip("%zu of this comp's %zu layers are still in the document.\n"
-                        "Restoring applies those and reports the rest -- a comp is\n"
-                        "matched by layer id, never by position, so nothing lands\n"
-                        "on a layer it was not captured from.",
-                        row.stillHere, row.captured);
-    ImGui::Indent();
-    ImGui::BeginDisabled(!row.known);
-    if (ImGui::SmallButton("Restore")) restore = row.index;
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !row.known)
-      ImGui::SetTooltip("This comp was written by a build whose comp format this\n"
-                        "one does not read. It is kept and written back unchanged\n"
-                        "(PRD I10), but its contents cannot be applied.");
-    ImGui::SameLine();
-    // **Up the panel is DOWN the index here**, the opposite of the LAYERS
-    // panel, because this list is not reversed. The arithmetic is
-    // app/CompPanel's rather than this loop's, for app/LayerPanel.hpp's stated
-    // reason -- a second place that knows a direction is how "up" ends up
-    // moving a thing down, and this loop had that bug before the two functions
-    // existed.
-    const size_t upTo = compRowMoveUpTarget(row.index, rows.size());
-    const size_t downTo = compRowMoveDownTarget(row.index, rows.size());
-    ImGui::BeginDisabled(upTo == kNoCompRow);
-    if (ImGui::SmallButton("Up")) moveUp = row.index;
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(downTo == kNoCompRow);
-    if (ImGui::SmallButton("Down")) moveDown = row.index;
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Delete")) remove = row.index;
+  // T11: bounded scroll region, the same idiom drawHistorySection() (T8) and
+  // drawLayersSection() (also T11) use for `##historyrows` / `##layerrows`.
+  // No follow-the-selection here -- the entry that scoped this work says
+  // COMPS should not grow one just for symmetry, and nothing here changes
+  // `selected` except a click, which is already on screen when it happens.
+  //
+  // A comp row is not one line the way a HISTORY row is: it is a Selectable
+  // plus an indented button row, and a THIRD line -- the rename field --
+  // only when it is the selected row. `rowH` below is built from the same
+  // two theme metrics ImGui itself sizes those two lines from
+  // (GetTextLineHeightWithSpacing() for the Selectable, GetFrameHeightWithSpacing()
+  // for the SmallButton row) rather than a pasted pixel number, for the same
+  // reason drawHistorySection() gives for its own row metric -- it tracks the
+  // theme rather than drifting from it. It is an approximation (the rename
+  // field's extra line is not counted), which only means a row with its
+  // rename field open scrolls slightly tighter than the others; the box
+  // stays a fixed height and stays scrollable either way.
+  // The `WindowPadding` term is drawLayersSection()'s own T11 finding, not
+  // rediscovered here: a bordered child's rows sit inside the current
+  // style's `WindowPadding`, so a box sized to exactly N row-heights is a
+  // few pixels short of them once that padding comes back out, and shows a
+  // scrollbar for content that fits.
+  constexpr int kCompsVisibleRows = 4;
+  const float compRowH = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing();
+  const float compsChildH =
+      std::max(compRowH, static_cast<float>(std::min(rows.size(),
+                                                     static_cast<size_t>(kCompsVisibleRows))) *
+                             compRowH) +
+      2.0f * ImGui::GetStyle().WindowPadding.y;
 
-    if (selected == row.index && row.known) {
-      std::snprintf(renameBuf, sizeof(renameBuf), "%s", row.name.c_str());
-      if (ctlInputText("Comp name", renameBuf, sizeof(renameBuf),
-                       ImGuiInputTextFlags_EnterReturnsTrue))
-        run(renameLayerComp(doc, row.index, renameBuf));
+  if (ImGui::BeginChild("##compsrows", ImVec2(0.0f, compsChildH), true)) {
+    for (const CompPanelRow& row : rows) {
+      ImGui::PushID(static_cast<int>(row.index));
+      if (ImGui::Selectable(compRowText(row).c_str(), selected == row.index))
+        selected = row.index;
+      if (ImGui::IsItemHovered() && compRowIsPartial(row))
+        ImGui::SetTooltip("%zu of this comp's %zu layers are still in the document.\n"
+                          "Restoring applies those and reports the rest -- a comp is\n"
+                          "matched by layer id, never by position, so nothing lands\n"
+                          "on a layer it was not captured from.",
+                          row.stillHere, row.captured);
+      ImGui::Indent();
+      ImGui::BeginDisabled(!row.known);
+      if (ImGui::SmallButton("Restore")) restore = row.index;
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !row.known)
+        ImGui::SetTooltip("This comp was written by a build whose comp format this\n"
+                          "one does not read. It is kept and written back unchanged\n"
+                          "(PRD I10), but its contents cannot be applied.");
+      ImGui::SameLine();
+      // **Up the panel is DOWN the index here**, the opposite of the LAYERS
+      // panel, because this list is not reversed. The arithmetic is
+      // app/CompPanel's rather than this loop's, for app/LayerPanel.hpp's stated
+      // reason -- a second place that knows a direction is how "up" ends up
+      // moving a thing down, and this loop had that bug before the two functions
+      // existed.
+      const size_t upTo = compRowMoveUpTarget(row.index, rows.size());
+      const size_t downTo = compRowMoveDownTarget(row.index, rows.size());
+      ImGui::BeginDisabled(upTo == kNoCompRow);
+      if (ImGui::SmallButton("Up")) moveUp = row.index;
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::BeginDisabled(downTo == kNoCompRow);
+      if (ImGui::SmallButton("Down")) moveDown = row.index;
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Delete")) remove = row.index;
+
+      if (selected == row.index && row.known) {
+        std::snprintf(renameBuf, sizeof(renameBuf), "%s", row.name.c_str());
+        if (ctlInputText("Comp name", renameBuf, sizeof(renameBuf),
+                         ImGuiInputTextFlags_EnterReturnsTrue))
+          run(renameLayerComp(doc, row.index, renameBuf));
+      }
+      ImGui::Unindent();
+      ImGui::PopID();
     }
-    ImGui::Unindent();
-    ImGui::PopID();
   }
+  ImGui::EndChild();
 
   if (restore < rows.size()) {
     LayerCompRestoreReport report;
