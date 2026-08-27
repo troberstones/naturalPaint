@@ -2082,6 +2082,15 @@ int main(int argc, char** argv) {
     // io/Capabilities rather than hard-coded, and the cross-thread mailbox
     // that carries the chosen path back from SDL's callback.
     const bool fileDialogOk = np::runFileDialogTest();
+    // app/DocumentPresets (docs/testing-issues.md T9, piece 1): the sizes
+    // File > New offers, the built-in set, and user-defined presets --
+    // add/rename/remove, persisted, atomically. Headless and GPU-free.
+    const bool documentPresetsOk = np::runDocumentPresetsTest();
+    // io/ClipboardImage (docs/testing-issues.md T9, piece 2): the system-
+    // pasteboard bridge the "New from Clipboard" preset needs. Runs after
+    // SDL_Init(SDL_INIT_VIDEO) above, so the live pasteboard queries this
+    // section makes are real, not stubbed.
+    const bool clipboardImageOk = np::runClipboardImageTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2109,7 +2118,8 @@ int main(int argc, char** argv) {
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
                     saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
-                    grainOk && strokePreviewOk && fileDialogOk;
+                    grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
+                    clipboardImageOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

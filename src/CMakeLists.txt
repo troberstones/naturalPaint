@@ -45,6 +45,7 @@ add_executable(naturalPaint
   app/selftest/Channels.cpp
   app/selftest/ChromeConsistency.cpp
   app/selftest/Clipboard.cpp
+  app/selftest/ClipboardImage.cpp
   app/selftest/ClippingMask.cpp
   app/selftest/CloseDecision.cpp
   app/selftest/ColorSpace.cpp
@@ -57,6 +58,7 @@ add_executable(naturalPaint
   app/selftest/Descriptor.cpp
   app/selftest/Document.cpp
   app/selftest/DocumentLifecycle.cpp
+  app/selftest/DocumentPresets.cpp
   app/selftest/DocumentResidency.cpp
   app/selftest/DocumentTexture.cpp
   app/selftest/DocumentTransform.cpp
@@ -145,6 +147,7 @@ add_executable(naturalPaint
   app/StrokeBake.cpp
   app/StrokePreview.cpp
   app/StrokeSession.cpp
+  app/DocumentPresets.cpp
   app/UserBrushLibrary.cpp
   app/ViewTransform.cpp
   app/WheelInput.cpp
@@ -186,6 +189,7 @@ add_executable(naturalPaint
   gfx/ShaderLoader.cpp
   io/AbrBrushes.cpp
   io/Capabilities.cpp
+  io/ClipboardImage.cpp
   io/CompSerial.cpp
   io/Descriptor.cpp
   io/Export.cpp

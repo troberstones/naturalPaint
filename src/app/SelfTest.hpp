@@ -3658,4 +3658,49 @@ bool runGrainTest();
 // session, with no panel anywhere to say why.
 bool runFileDialogTest();
 
+// app/DocumentPresets: the sizes File > New offers (docs/testing-issues.md
+// T9, piece 1 -- the dialog itself is not this build's change; this is
+// everything under it). Headless and GPU-free.
+//
+// Covered: the built-in list is well-formed (every entry passes
+// validateDocumentPresetSize(), no two share a name); the round trip of a
+// hand-built file through parse()/serialize(); a missing file falling back
+// to "just the built-ins" (the normal first-run case); a malformed `size`
+// line dropping only the preset it belongs to, with every sibling preset in
+// the same file surviving -- proven by a file with three presets, the
+// middle one sabotaged; a truncated/garbage file falling back to the
+// built-ins rather than crashing or half-applying; a zero, negative, or
+// absurdly large size refused at LOAD (never reaching a value
+// Document::createBlank() would receive), for both a hand-edited file and
+// the interactive add() path; that a user preset can never carry a built-
+// in's exact name -- refused outright from add()/rename(), silently
+// disambiguated by parse(); that a built-in is refused by remove() and by
+// rename(); and a simulated mid-write crash (an abandoned, unrenamed `.tmp`
+// file) leaving the real file untouched, the same durability proof app/
+// selftest/UserBrushLibrary.cpp already makes for its own atomic writer.
+// `$NP_DOCUMENT_PRESETS` keeps every case out of ~/Library/Application
+// Support.
+bool runDocumentPresetsTest();
+
+// io/ClipboardImage: the system-pasteboard bridge docs/testing-issues.md T9
+// (piece 2) asks for. Headless and GPU-free.
+//
+// Split in two, per the header's own §2: decodeClipboardImageBytes() is a
+// pure function with no SDL dependency, and this is where the actual claim
+// -- "these bytes, at this MIME type, become an Image at the right size
+// with the right pixels" -- is proven, against a real PNG this test encodes
+// itself with io/Export's own encoder (not a hand-written fixture), plus
+// deliberately-broken bytes proving Unreadable rather than a crash.
+// probeClipboardImage() itself is asserted only for its Empty and
+// NotAnImage outcomes, produced by querying (never overwriting with a
+// synthetic image -- see the header) the CURRENT state of the real SDL/
+// Cocoa pasteboard; text is written and then the previous clipboard
+// contents restored afterwards so this test does not leave a stray string
+// on the machine's real pasteboard. The Image outcome of
+// probeClipboardImage() itself -- an image actually round-tripped off a
+// live NSPasteboard -- is NOT exercised here; see this function's .cpp for
+// how it was verified manually, and the report that introduced it for the
+// dimensions actually observed.
+bool runClipboardImageTest();
+
 }  // namespace np
