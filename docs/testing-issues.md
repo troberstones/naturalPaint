@@ -486,3 +486,66 @@ property of `BeginChild`, not of the history panel, so any of these that
 wants to follow a selection will hit it. LAYERS should follow the *selected*
 layer; COMPS probably needs no follow at all, and should not grow one just
 for symmetry.
+
+---
+
+## T12 — The right column is a fixed list; it should be the user's · in progress
+
+**Reported.** Break up the side panel: let the user choose what shows in the
+right panel, allow re-ordering, and save it in the user's preferences.
+
+**Verified — the seam already exists and was built for this.**
+`app/ControlsLayout.hpp:149` exposes `controlsSections()`, a
+`std::vector<ControlsSectionSpec>` of the twelve sections, and
+`ui/MacPaintUI.cpp:7945` draws the column by iterating it. The header says
+why it is data:
+
+> The list is data rather than a sequence of calls in the draw function
+> precisely so the ordering rule above can be asserted headlessly.
+
+So this feature is not a refactor of the draw loop. It is a second list —
+the *user's* — that the draw loop iterates instead, with the built-in list
+demoted to "the default and the repair target".
+
+The draw loop also already has a precedent for a section being absent:
+`BoardTilt` is skipped outside Watercolor, with the comment "A section can be
+absent when its subject is; it is still in the list, because the list is the
+column's order and not its contents." User-hidden sections are the same
+mechanism with a different predicate.
+
+**Persistence has three precedents, all agreeing.**
+`app/UserBrushLibrary.cpp:137`, `app/BrushLibraryFile.cpp:210` and
+`app/DocumentLifecycle.cpp:728` all resolve
+`~/Library/Application Support/naturalPaint/<name>.txt` with a
+`~/.config/naturalPaint/` fallback, and the first and `app/Journal.cpp` both
+write atomically via temp-then-rename. The panel layout is a fourth file in
+that family, not a new idea.
+
+**Work — split in two, because only one half can be tested.**
+
+* **Headless half (in progress).** An ordered `{section, visible}` sequence
+  whose invariant is *every enumerator exactly once* — order and visibility
+  vary, membership does not. Reorder, toggle, reset-to-default, and
+  save/load. The interesting surface is not the mutations, it is the
+  **round-trip repair**: a file written by an older or newer build must load
+  into a valid layout. Unknown name dropped, **missing section appended**,
+  duplicate collapsed, garbage falling back to the default.
+* **UI half (not started).** The draw loop iterates the user's sequence; a
+  configuration affordance offers reorder and visibility.
+
+**Two traps, both already paid for once in this repo.**
+
+1. **Serialize by stable text name, never by enum ordinal.** An enumerator
+   inserted mid-list silently re-points every previously written file, with
+   no parse error — the panel simply comes back scrambled. This is the ABR
+   control-ordinal lesson arriving in our own file format.
+2. **The missing-section repair is the whole feature's silent-no-op risk.** A
+   section added to `ControlsSection` after a user's file was written must
+   *appear*. Drop it instead and the new section is unreachable for everyone
+   who ever launched an older build — a feature that exists that nothing can
+   reach, which is the defect class `docs/reachability-audit.md` is named
+   after.
+
+**Deliberately allowed: hiding every section.** The configuration affordance
+lives outside the column, so an empty column is recoverable and does not need
+a forced-visible section propping it up.
