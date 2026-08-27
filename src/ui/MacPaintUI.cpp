@@ -42,6 +42,7 @@
 #include "app/WheelInput.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "color/LutBake.hpp"  // kMaxCurvePointsPerChannel
+#include "core/Histogram.hpp"
 #include "core/LayerCompOps.hpp"
 #include "core/LayerOps.hpp"
 #include "core/SelectionRefine.hpp"
@@ -1404,6 +1405,138 @@ void drawGradeSection(AppState& st) {
   bound.setEnabled = [&st](size_t i, bool on) { st.opStack.setEnabled(i, on); };
   bound.setOp = [&st](size_t i, Op op) { st.opStack.setOp(i, std::move(op)); };
   drawOpStackEditor(bound);
+}
+
+// ---------------------------------------------------------------- Histogram
+//
+// C2 (docs/reachability-audit.md; PRD D2, P0): core/Histogram.hpp's
+// `computeHistogram()` was a built, tested, read-only Document query with
+// exactly one caller -- `--selftest` -- and no way for a person using the
+// application to ever see it. This is that caller. Four overlaid channel
+// distributions (R, G, B, Luma), drawn with plain ImGui-draw-list rectangles
+// exactly like drawCurveWidget()'s plot above, over the whole open document's
+// composite.
+//
+// **The cost, and why it does not recompute every frame.** `computeHistogram
+// ()` walks every allocated tile of every populated layer (Histogram.cpp's
+// `binTileRegion()`) -- proportional to what is actually resident, per that
+// module's own header, but still real, size-of-the-document work, and this
+// function runs every frame the header is open. Recomputing it every frame
+// would make merely leaving HISTOGRAM open a standing per-frame cost with
+// nothing on the canvas having changed, which is exactly the "large document
+// recomputed per frame" bug this step's brief calls out by name.
+//
+// So the `HistogramResult` is cached across frames, keyed on
+// `(OpenDocument::id, OpenDocument::revision)` -- the identical cache-key
+// idiom `core/DirtyTiles.hpp`'s own header describes and `ui::DocumentTexture`
+// already uses for the same reason (app/SelfTest.hpp's "the cache key"
+// section: "Keyed on (id, revision, width, height); the collision only
+// matters..."). `revision` is bumped by `recordEdit()` and nothing else
+// (app/DocumentLifecycle.hpp) -- a brush stroke that has not yet baked into a
+// `Layer` does not move it, so the panel shows the last-baked state until the
+// next bake, the same staleness every other document-reading panel in this
+// column (LAYERS' thumbnails, COMPS) already accepts between bakes. "Has the
+// document actually changed since I last computed this?" becomes an O(1)
+// integer compare instead of a per-frame recompute.
+//
+// Drawing the cached 256-bin result costs up to 4 * 256 = 1024
+// `AddRectFilled()` calls per open frame -- the same order of magnitude as
+// the brush grid's icon draw (~7751 below) and far cheaper than the tile walk
+// it replaces; it is not itself cached because it is already this cheap.
+void drawHistogramSection(AppState& st) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    ImGui::TextDisabled("No document open.");
+    return;
+  }
+
+  static DocumentId cachedId = 0;
+  static uint64_t cachedRevision = 0;
+  static bool cachedValid = false;
+  static HistogramResult cached;
+
+  // **Not while a stroke is live**, and this is the difference between a
+  // panel and a frame-rate bug. `computeHistogram()` walks every allocated
+  // tile: measured at **12.9 ms** on `--demo-document`'s 1024x1024, which is
+  // most of a 60 Hz frame on its own and grows with the document. And
+  // `app/StrokeSession.cpp:938` bumps `revision` on *every frame that
+  // deposits tiles*, not once per finished stroke -- so keying the cache on
+  // `revision` alone would recompute the whole document on every frame of
+  // every stroke, for a panel the user is not looking at while painting.
+  //
+  // Holding the previous result for the duration of the stroke costs a
+  // histogram that lags the wet edge by one stroke, which is what every
+  // editor does anyway, and `g_stroke.active()` going false on mouse-up
+  // brings it straight back into step.
+  const bool strokeLive = g_stroke.active();
+  if (!strokeLive &&
+      (!cachedValid || cachedId != od->id || cachedRevision != od->revision)) {
+    HistogramParams params = HistogramParams::wholeDocument(od->document);
+    // The composite, not just the active layer -- Histogram.hpp's own header
+    // names the one place this diverges from real compositing (a pixel
+    // covered by two layers would double-count) and why it was left that way:
+    // today's Document invariant is at most one populated RGB layer (the same
+    // invariant core/Histogram.cpp's `sampleAllLayers` branch comment states),
+    // so the plain per-layer sum this module does is exactly correct now.
+    params.sampleAllLayers = true;
+    cached = computeHistogram(od->document, params);
+    cachedId = od->id;
+    cachedRevision = od->revision;
+    cachedValid = true;
+  }
+
+  ImGui::TextDisabled("%llu sample(s) over %d bins",
+                      static_cast<unsigned long long>(cached.sampleCount),
+                      static_cast<int>(cached.r.size()));
+
+  if (cached.sampleCount == 0 || cached.r.empty()) {
+    ImGui::TextDisabled("Nothing painted yet.");
+    return;
+  }
+
+  uint64_t maxCount = 1;
+  for (size_t i = 0; i < cached.r.size(); ++i)
+    maxCount = std::max({maxCount, cached.r[i], cached.g[i], cached.b[i], cached.luma[i]});
+
+  const float plotW = ImGui::GetContentRegionAvail().x;
+  const float plotH = 120.0f;
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(origin, ImVec2(origin.x + plotW, origin.y + plotH),
+                    IM_COL32(20, 20, 22, 255));
+
+  // Overlaid, back-to-front, each channel translucent -- the same
+  // stacked-alpha convention every mainstream editor's RGB histogram overlay
+  // uses (Histogram.hpp's own header cites Photoshop for the same reasoning
+  // about the domain), so a reader who has seen one before reads this one the
+  // same way. Luma drawn last and more opaque, as the summary line over the
+  // three colour channels.
+  auto plotChannel = [&](const std::vector<uint64_t>& bins, ImU32 col) {
+    const size_t n = bins.size();
+    for (size_t i = 0; i < n; ++i) {
+      const float x0 = origin.x + plotW * (static_cast<float>(i) / static_cast<float>(n));
+      const float x1 = origin.x + plotW * (static_cast<float>(i + 1) / static_cast<float>(n));
+      const float h = plotH * (static_cast<float>(bins[i]) / static_cast<float>(maxCount));
+      dl->AddRectFilled(ImVec2(x0, origin.y + plotH - h),
+                        ImVec2(std::max(x1, x0 + 1.0f), origin.y + plotH), col);
+    }
+  };
+  plotChannel(cached.r, IM_COL32(235, 70, 70, 110));
+  plotChannel(cached.g, IM_COL32(70, 215, 110, 110));
+  plotChannel(cached.b, IM_COL32(80, 150, 235, 110));
+  plotChannel(cached.luma, IM_COL32(235, 235, 230, 150));
+
+  dl->AddRect(origin, ImVec2(origin.x + plotW, origin.y + plotH),
+              ImGui::GetColorU32(ImGuiCol_Border));
+  ImGui::Dummy(ImVec2(plotW, plotH));
+
+  ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.30f, 1.0f), "R");
+  ImGui::SameLine();
+  ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.45f, 1.0f), "G");
+  ImGui::SameLine();
+  ImGui::TextColored(ImVec4(0.35f, 0.60f, 0.92f, 1.0f), "B");
+  ImGui::SameLine();
+  ImGui::TextColored(ImVec4(0.92f, 0.92f, 0.90f, 1.0f), "Luma");
 }
 
 // ------------------------------------------------------------------ Layers
@@ -8153,7 +8286,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // Taken by value, because a section's own body can reach a mutation of
     // this vector -- the PANELS popup above is drawn from the same frame --
     // and a reference would be walking a sequence something below it may
-    // reorder. Twelve entries; the copy is not worth a reader's doubt.
+    // reorder. Thirteen entries; the copy is not worth a reader's doubt.
     const std::vector<ControlsColumnEntry> columnEntries = st.controlsColumn.entries();
     for (const ControlsColumnEntry& entry : columnEntries) {
       // Hidden by the user. Distinct from the mode gate below: that one is
@@ -8200,6 +8333,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and
         // a curve widget operating in the shaper domain").
         case ControlsSection::Grade:     drawGradeSection(st); break;
+        // C2 (docs/reachability-audit.md; PRD D2, P0). A `View` section
+        // beside GRADE for the same reason -- see drawHistogramSection()'s
+        // own doc comment for the cache that keeps this cheap to leave open.
+        case ControlsSection::Histogram: drawHistogramSection(st); break;
         // docs/ui.md section 3.3 / PRD L4. First in the column, which is the
         // design's own order -- see app/ControlsLayout.hpp's `Tool` role.
         case ControlsSection::Color:     drawColorSection(st); break;

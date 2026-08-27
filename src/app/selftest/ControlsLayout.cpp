@@ -53,9 +53,10 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 12, "every section has exactly one spec (12)");
-  check(newOrder.size() == kOldOrder.size() + 3,
-        "the same sections plus COMPS, COLOR and BRUSH LIBRARY, reordered -- none was dropped");
+  check(sections.size() == 13, "every section has exactly one spec (13)");
+  check(newOrder.size() == kOldOrder.size() + 4,
+        "the same sections plus COMPS, COLOR, BRUSH LIBRARY and HISTOGRAM, reordered -- none was "
+        "dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
     // enumerators rather than against a count, so a section added to the enum
@@ -66,14 +67,15 @@ bool runControlsLayoutTest() {
     // agrees" was ever checked for it; a sabotage that duplicated BRUSH EDITOR
     // in place of BRUSH LIBRARY would have passed this block silently (it
     // would still have failed the ordering/role checks below by accident, but
-    // for the wrong reason). All 12 enumerators, matching the count asserted
-    // just above.
+    // for the wrong reason). All 13 enumerators, matching the count asserted
+    // just above (C2, docs/reachability-audit.md, added HISTOGRAM).
     const ControlsSection kAll[] = {
         ControlsSection::Color,      ControlsSection::Layers,     ControlsSection::History,
-        ControlsSection::Comps,      ControlsSection::Grade,      ControlsSection::BrushLibrary,
+        ControlsSection::Comps,      ControlsSection::Grade,      ControlsSection::Histogram,
+        ControlsSection::BrushLibrary,
         ControlsSection::Brush,      ControlsSection::Pigment,    ControlsSection::Medium,
         ControlsSection::BoardTilt,  ControlsSection::Grid,       ControlsSection::Solver};
-    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 12,
+    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 13,
                   "kAll must list every ControlsSection enumerator");
     bool eachOnce = true;
     for (const ControlsSection s : kAll) {

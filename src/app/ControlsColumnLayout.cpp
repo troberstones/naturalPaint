@@ -29,6 +29,7 @@ constexpr KeyRow kKeyTable[] = {
     {ControlsSection::History, "history"},
     {ControlsSection::Comps, "comps"},
     {ControlsSection::Grade, "grade"},
+    {ControlsSection::Histogram, "histogram"},
     {ControlsSection::BrushLibrary, "brush_library"},
     {ControlsSection::Brush, "brush"},
     {ControlsSection::Pigment, "pigment"},

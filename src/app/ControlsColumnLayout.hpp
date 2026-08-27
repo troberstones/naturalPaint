@@ -67,6 +67,7 @@
 //     section history 1
 //     section comps 1
 //     section grade 0
+//     section histogram 0
 //     section brush_library 0
 //     section brush 0
 //     section pigment 0
@@ -114,7 +115,7 @@
 //    has no salvageable lines at all, so every section is "missing" and the
 //    rule above rebuilds the default anyway: discarding is what skipping
 //    already does there, by a different road. And it has a real cost on a
-//    file that is *mostly* this format -- one damaged byte in a twelve-line
+//    file that is *mostly* this format -- one damaged byte in a thirteen-line
 //    file throws away an arrangement the user built, when eleven lines of
 //    it were still perfectly readable.
 //
@@ -204,7 +205,7 @@ class ControlsColumnLayout {
 
   // The sections that are visible, in column order -- what the draw loop
   // iterates. A filtered view of `entries()`, computed fresh each call
-  // rather than cached, because it is cheap (twelve entries) and a cache
+  // rather than cached, because it is cheap (thirteen entries) and a cache
   // would be one more thing every mutator below has to remember to
   // invalidate.
   std::vector<ControlsSection> visibleSections() const;
