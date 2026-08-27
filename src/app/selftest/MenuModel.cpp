@@ -152,9 +152,10 @@ bool runMenuModelTest() {
   // This literal is exactly as brittle to the NEXT track that adds an action
   // as it was before, and that brittleness is the point -- an enumerator added
   // without a menu entry fails here rather than shipping unreachable.
-  check(kMenuActionCount == 64,
-        "ids: exactly 64 actions -- the original 41-item extraction plus D1/D2's "
-        "eleven, C5's six and C1's six, so an item lost in a later edit fails here");
+  check(kMenuActionCount == 65,
+        "ids: exactly 65 actions -- the original 41-item extraction plus D1/D2's "
+        "eleven, C5's six, C1's six and Free Transform, so an item lost in a later "
+        "edit fails here");
 
   {
     std::set<MenuAction> seen;
@@ -511,8 +512,9 @@ bool runMenuModelTest() {
     // Delete, and the rule two blocks up ("every claimed chord carries
     // Command") is exactly why it stays unclaimed rather than swallowing the
     // Delete key out of every text field in the application.
-    check(claimed == 21,
-          "keys: exactly 21 chords are claimed -- pinned, because claiming one more "
+    check(claimed == 22,
+          "keys: exactly 22 chords are claimed -- D1/D2's ten, the eleven that came "
+          "before them, and Free Transform's Cmd+T. Pinned, because claiming one more "
           "silently takes that key away from SDL and from keymaps/default.json");
   }
 

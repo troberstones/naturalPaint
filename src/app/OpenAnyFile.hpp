@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -349,6 +350,20 @@ struct DropOutcome {
   // `--selftest` can count them without parsing a sentence. Capped (see the
   // implementation); `refused` is not.
   std::vector<std::string> problems;
+
+  // **The layer a caller may put straight into a transform session**, so a
+  // dropped picture is movable the instant it lands rather than after a trip
+  // to Edit > Free Transform. Its index in the ACTIVE document's stack.
+  //
+  // Set only for the unambiguous gesture: exactly one picture imported
+  // (`imported == 1`) and nothing opened (`opened == 0`). Both halves are
+  // load-bearing. A multi-file import lands eleven layers and there is no
+  // non-arbitrary answer to which one the gesture meant, so none is offered.
+  // A mixed drop that opened a document AND imported has moved the active
+  // document out from under the index, so the index would name a layer in a
+  // stack the user is no longer looking at -- the quiet kind of wrong that is
+  // worse than doing nothing.
+  std::optional<size_t> transformableLayer;
 
   // Non-fatal notes from files that *did* land -- an import's oversize warning,
   // an open's "this document is bound to no file" note. Kept apart from

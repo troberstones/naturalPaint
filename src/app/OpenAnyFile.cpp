@@ -363,6 +363,13 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
         const ImportImageResult imported = importImageAsLayer(*target, path);
         if (imported.ok) {
           ++out.imported;
+          // Remembered for every import, then withdrawn below unless this
+          // gesture turns out to have been the unambiguous one-picture case.
+          // Recorded here rather than recomputed afterwards because
+          // `ImportImageResult` is the thing that actually knows where the
+          // layer landed -- app/ImportImage.hpp returns it precisely so a
+          // caller does not re-derive `layers.size() - 1` and drift.
+          out.transformableLayer = imported.layerIndex;
           for (const std::string& w : imported.warnings) out.warnings.push_back(w);
         } else {
           // app/ImportImage's own sentence, which already names the file and
@@ -397,6 +404,15 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
   //
   // Built from the counts rather than from the loop, so that the sentence and
   // what actually happened cannot disagree.
+  // **Withdraw the transform offer unless this gesture was the unambiguous
+  // one.** The loop above set it on every successful import; only a drop that
+  // imported exactly one picture and opened nothing keeps it. See
+  // OpenAnyFile.hpp's `transformableLayer` for why both halves are required --
+  // eleven layers have no non-arbitrary "the one you meant", and a gesture
+  // that also opened a document has moved the active document out from under
+  // the index.
+  if (out.imported != 1 || out.opened != 0) out.transformableLayer.reset();
+
   const size_t total = paths.size();
   out.status = std::to_string(total) + (total == 1 ? " file dropped: " : " files dropped: ");
   std::string parts;

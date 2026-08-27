@@ -19,6 +19,7 @@
     { "key": "Y", "mods": ["Cmd"], "action": "toggle_grayscale" },
 
     { "key": "Z", "mods": ["Cmd"], "action": "undo" },
+    { "key": "T", "mods": ["Cmd"], "action": "free_transform" },
     { "key": "Z", "mods": ["Cmd", "Shift"], "action": "redo" },
 
     { "key": "A", "mods": ["Cmd"], "action": "select_all" },

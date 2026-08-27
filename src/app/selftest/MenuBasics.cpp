@@ -212,9 +212,9 @@ bool runMenuBasicsTest() {
       size_t pickable = 0;
       for (const MenuNode& n : edit->children)
         if (n.kind == MenuNodeKind::Command || n.kind == MenuNodeKind::Check) ++pickable;
-      check(pickable == 12,
-            "D2: Edit holds exactly twelve pickable rows -- the eleven D1/D2 additions "
-            "plus Clear Canvas, no more and no fewer");
+      check(pickable == 13,
+            "Edit holds exactly thirteen pickable rows -- the eleven D1/D2 additions, "
+            "Clear Canvas, and Free Transform, no more and no fewer");
     }
   }
 

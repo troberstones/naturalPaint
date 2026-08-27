@@ -198,8 +198,8 @@ measure_n="${2:-10}"
 #     That is strictly better than cropping short of the readout: it removes
 #     a real nondeterminism source rather than cropping around one, and
 #     leaves the whole band, not just the wordmark and Undo/Redo, coverable.
-view_names=(toolbar layers canvas tools flyout titlebar)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document")
+view_names=(toolbar layers canvas tools flyout titlebar transform)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -286,11 +286,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # (revision 2's later, no-scrollbar shrink-to-fit correction) to this
 # revision's 100x350 (taller, to bring two of the new flyout groups' own
 # corner-triangle badges into frame -- see the view-table comment above).
-view_crop_x=(0    1916 920  0   0   0)
-view_crop_y=(77   1075 1037 220 700 0)
-view_crop_w=(1400 640  384  100 400 2560)
-view_crop_h=(166  190  192  350 350 77)
-view_frames=(90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0   0   0    900)
+view_crop_y=(77   1075 1037 220 700 0    700)
+view_crop_w=(1400 640  384  100 400 2560 700)
+view_crop_h=(166  190  192  350 350 77   500)
+view_frames=(90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -323,7 +323,7 @@ view_frames=(90 90 90 90 90 90)
 # than a second number invented for it. `canvas` and `tools` stay exact
 # because they genuinely contain no text, and `tools` was re-measured at
 # exactly 0 after the palette grew to 28 cells.
-view_threshold=(48 96 0 0 48 0)
+view_threshold=(48 96 0 0 48 0 48)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -339,7 +339,7 @@ view_threshold=(48 96 0 0 48 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0)
+view_max_changed_px=(16 64 0 0 16 0 16)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

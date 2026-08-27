@@ -742,6 +742,57 @@ bool runOpenAnyFileTest() {
               busy.active()->document.layers.size() == layersBefore + 12,
           "...all of them in the document that was already there");
 
+    // --- the layer a drop offers straight to a transform -------------------
+    //
+    // A dropped picture should be movable the instant it lands, so
+    // `DropOutcome::transformableLayer` names the layer main.cpp puts into a
+    // TransformSession. The whole content of the rule is WHEN IT IS ABSENT,
+    // which is why five of these six assertions are about it being empty:
+    // an index offered for the wrong gesture would start a transform on a
+    // layer nobody pointed at, and a transform on the wrong layer looks
+    // exactly like a transform on the right one until it is committed.
+    check(!onto.transformableLayer,
+          "twelve pictures imported at once offer NO layer to transform -- eleven of "
+          "the twelve would be an arbitrary choice, so none is made");
+    check(!batch.transformableLayer,
+          "...and neither does the twelve-onto-an-empty-session drop, which opened one "
+          "document and imported the rest");
+    {
+      DocumentSession solo;
+      solo.add(makeBlankOpenDocument(64, 64, WorkingSpace{}, "solo"));
+      const size_t before = solo.active()->document.layers.size();
+      const std::string one = writeBytes("solo-drop.png", pngBytes(16, 16));
+      const DropOutcome single = applyDroppedFiles(solo, &recent, {one});
+      check(single.opened == 0 && single.imported == 1,
+            "(setup) one picture onto an open document imports exactly one layer");
+      check(single.transformableLayer.has_value(),
+            "ONE picture onto an open document DOES offer a layer to transform -- the "
+            "unambiguous gesture, and the one a user drags a photo in to perform");
+      check(single.transformableLayer && *single.transformableLayer == before,
+            "...and it names the layer that was actually imported (the new top of the "
+            "stack), not a stale index or a guess at layers.size()");
+
+      // Nothing to import into: the drop OPENS instead, and an opened document
+      // is not something to start a transform on -- the picture IS the
+      // document, so there is nothing to move it relative to.
+      DocumentSession fresh;
+      const DropOutcome opened = applyDroppedFiles(fresh, &recent, {one});
+      check(opened.opened == 1 && opened.imported == 0 && !opened.transformableLayer,
+            "the same picture onto an EMPTY session opens a document and offers nothing "
+            "to transform -- the picture is the document");
+
+      // A file that lands nowhere offers nothing, which is the case that would
+      // otherwise carry an index left over from a previous loop iteration.
+      DocumentSession refuseSession;
+      refuseSession.add(makeBlankOpenDocument(64, 64, WorkingSpace{}, "refuse"));
+      const std::vector<uint8_t> junkBytes = {'n', 'o', 't', ' ', 'a', ' ', 'p', 'n', 'g'};
+      const std::string junk = writeBytes("not-a-picture.png", junkBytes);
+      const DropOutcome refused = applyDroppedFiles(refuseSession, &recent, {junk});
+      check(refused.refused == 1 && !refused.transformableLayer,
+            "a refused file offers nothing to transform -- no index survives a drop "
+            "where nothing landed");
+    }
+
     // The same twelve, dropped on the TAB STRIP of a session that already has
     // a document open: twelve new documents, not one document with eleven
     // more layers -- OpenAnyFile.hpp's applyDroppedFiles() comment argues why
@@ -778,6 +829,17 @@ bool runOpenAnyFileTest() {
           "the refused file is named, so a drop that half-worked says which half");
     check(contains(mix.status, "junk.dat"),
           "...and that name reaches the status line rather than only the struct");
+    // This drop imported exactly ONE picture -- the count half of the
+    // transform rule is satisfied -- and it is still refused a transform,
+    // because it also OPENED a document. That opening changed which document
+    // is active, so the index would name a layer in a stack the user is no
+    // longer looking at. This is the only fixture in the file where the two
+    // halves of that rule disagree, which makes it the only one that can tell
+    // them apart.
+    check(mix.imported == 1 && !mix.transformableLayer,
+          "a mixed drop that opened a document AND imported one picture offers NO "
+          "layer to transform -- the count alone is not enough, because opening moved "
+          "the active document out from under the index");
 
     // Everything failing is still one legible answer.
     DocumentSession none;

@@ -1004,6 +1004,20 @@ int main(int argc, char** argv) {
   // stroke long enough to cross several tiles at the default brush radius.
   constexpr int kPenDemoFirstFrame = 4;
   constexpr int kPenDemoSteps = 24;
+  // --transform-demo : raises the SAME request flag Cmd+T and Edit > Free
+  // Transform both raise, so `--screenshot` photographs the real gizmo
+  // arriving through the real entry path rather than a hand-built session
+  // that could look right while the path to it was broken. Combines with
+  // --demo-document, which gives it a layer to put a box around.
+  bool transformDemo = false;
+  // Optional layer index for --transform-demo. -1 means "whatever layer is
+  // active", which is what a bare Cmd+T does. A number SELECTS that layer
+  // first and then raises the same request -- so the flag stays one code
+  // path with the keystroke rather than a second way in, and
+  // `--transform-demo 0 --pen-demo` can put a transform on a layer that
+  // HAS content while the pen tries to paint. That combination is a golden
+  // case: it pins the rule that a live gizmo suppresses every paint route.
+  int transformDemoLayer = -1;
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
   bool pigmentStrokeDemoMix = true;
@@ -1191,6 +1205,10 @@ int main(int argc, char** argv) {
     } else if (a == "--ui-merge-demo") {
       // Phase 5 step 10 / PRD C10: press one merge button. See runUiMergeDemo().
       if (i + 1 < argc && argv[i + 1][0] != '-') uiMergeDemo = argv[++i];
+    } else if (a == "--transform-demo") {
+      transformDemo = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-')
+        transformDemoLayer = std::atoi(argv[++i]);
     } else if (a == "--ui-multiselect-demo") {
       // PLAN.md Phase 5 step 11 / PRD C12, C13, C15: press the multi-selection's
       // own set commands. See runUiMultiSelectDemo().
@@ -2379,6 +2397,17 @@ int main(int argc, char** argv) {
       runUiMultiSelectDemo(*od, uiMultiSelectDemo);
   }
 
+  // After the set gestures, deliberately: a transform photographs whatever
+  // stack the flags before it built. Serviced by ui/MacPaintUI.cpp's canvas
+  // block on the first frame, exactly as a keystroke would be.
+  if (transformDemo) {
+    if (transformDemoLayer >= 0) {
+      if (np::OpenDocument* od = st.documents.active())
+        np::setActiveLayer(*od, static_cast<size_t>(transformDemoLayer));
+    }
+    st.requestFreeTransform = true;
+  }
+
   // After all of them, and the only fixture that is not meant to be combined
   // with the others: it paints a flat field over layer 0 and adds a second
   // document, so `--demo-document --split-demo` would photograph this field
@@ -2613,6 +2642,24 @@ int main(int argc, char** argv) {
                 st.documents, &st.recentDocuments, droppedFiles, dest);
             droppedFiles.clear();
             np::setDocumentStatusLine(dropped.status);
+            // **A dropped picture is transformable the instant it lands.**
+            // Dragging a photo in and then hunting for Edit > Free Transform
+            // to place it is the step nobody wants; the layer arrives already
+            // in a session, so the next drag moves it.
+            //
+            // Only for the unambiguous gesture -- app/OpenAnyFile.cpp
+            // withdraws `transformableLayer` for a multi-file import and for
+            // a mixed drop, so this cannot start a session on an arbitrary
+            // one of eleven layers or on an index into a stack the user is no
+            // longer looking at. A refusal from `beginLayer()` is left silent
+            // ON PURPOSE and it is the one silence in this block: the drop
+            // itself succeeded and `dropped.status` already says so, and
+            // overwriting that sentence with a transform-shaped complaint
+            // would report the wrong operation as having failed.
+            if (dropped.transformableLayer) {
+              if (np::OpenDocument* od = st.documents.active())
+                st.transform.beginLayer(od->document, *dropped.transformableLayer);
+            }
             // Only a `.npaint` open adds a recent entry (app/OpenAnyFile.hpp
             // says why a picture cannot yet), so this is a no-op for a drop of
             // pictures -- but a dropped document has to reach the same list
@@ -2669,6 +2716,12 @@ int main(int argc, char** argv) {
         // now EXISTS (core/SelectionMask; ⌘A/⌘D/⌘C/⌘X/⌘V are bound just
         // below). What is missing is the view maths to frame an arbitrary
         // rectangle, which belongs with the other view commands.
+        // Cmd+T. Sets the same flag `MenuAction::FreeTransform` does, so the
+        // chord and Edit > Free Transform are one path from here on --
+        // ui/MacPaintUI.cpp's canvas block services it, because choosing
+        // between a whole-layer and a selection-pixels transform needs the
+        // live document.
+        else if (action == "free_transform") st.requestFreeTransform = true;
         else if (action == "fit_window") st.requestFitWindow = true;
         else if (action == "zoom_100") st.requestZoom100 = true;
         else if (action == "zoom_in") st.requestZoomIn = true;

@@ -150,6 +150,14 @@ enum class MenuAction : uint16_t {
   // blocks.
   Undo,
   Redo,
+  // The interactive transform (app/TransformSession). Starts a session on the
+  // active layer, or on the pixels under a selection when there is one; the
+  // gizmo then owns the canvas until Return commits or Escape cancels. Sits
+  // in Edit because that is where Photoshop's Free Transform lives and this
+  // build has no Transform submenu to put it in -- if one is ever added, this
+  // is one enumerator to move, the same relocation note the selection items
+  // below already carry.
+  FreeTransform,
   Cut,
   Copy,
   CopyMerged,

@@ -78,6 +78,15 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Redo, "Redo", "Cmd+Shift+Z",
         MenuKeyEquivalent{'z', kMenuModCmd | kMenuModShift, "redo"});
 
+    // Cmd+T, Photoshop's own chord for it and the one every fingers-first
+    // user will try. The keymap action name below is bound in
+    // `keymaps/default.json` in the same commit -- app/selftest/MenuModel.cpp
+    // cross-checks the two, so a chord claimed here with no binding there is
+    // a red assertion rather than a menu item that prints a shortcut nothing
+    // delivers.
+    set(MenuAction::FreeTransform, "Free Transform", "Cmd+T",
+        MenuKeyEquivalent{'t', kMenuModCmd, "free_transform"});
+
     // D2: the other nine. Chords are `keymaps/default.json`'s own, already
     // shipped and already resolving through main.cpp's dispatch -- this is
     // the menu catching up to keys that worked all along, not a new binding.
@@ -319,6 +328,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::ExportStates: return "ExportStates";
     case MenuAction::Quit: return "Quit";
     case MenuAction::Undo: return "Undo";
+    case MenuAction::FreeTransform: return "FreeTransform";
     case MenuAction::Redo: return "Redo";
     case MenuAction::Cut: return "Cut";
     case MenuAction::Copy: return "Copy";
@@ -533,6 +543,12 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     std::vector<MenuNode>& e = edit.children;
     e.push_back(item(MenuAction::Undo, ctx.canUndo));
     e.push_back(item(MenuAction::Redo, ctx.canRedo));
+    e.push_back(separator());
+    // Enabled on the same predicate Cut uses: an editable (unlocked, pixel-
+    // bearing) layer is exactly what `TransformSession::beginLayer()` needs,
+    // and offering it without one would put a refusal behind a click that
+    // looked available.
+    e.push_back(item(MenuAction::FreeTransform, ctx.hasEditableLayer));
     e.push_back(separator());
     e.push_back(item(MenuAction::Cut, ctx.hasEditableLayer));
     e.push_back(item(MenuAction::Copy, ctx.hasActiveLayer));

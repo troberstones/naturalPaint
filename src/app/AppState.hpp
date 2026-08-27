@@ -17,6 +17,7 @@
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/StrokeBake.hpp"
+#include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "core/Clipboard.hpp"
 #include "core/SelectionBoundary.hpp"
@@ -719,6 +720,26 @@ struct AppState {
   bool requestZoom100 = false;
   bool requestZoomIn = false;
   bool requestZoomOut = false;
+
+  // **Free Transform** (Cmd+T / Edit > Free Transform), and the session it
+  // starts. A request rather than a direct call for the same reason the view
+  // commands above are: it needs to decide between transforming the whole
+  // active layer and transforming just the pixels under a selection, which
+  // needs the live document -- and both of its two entry points (the menu
+  // action, and main.cpp's keymap dispatch) run outside any place that has
+  // one. `ui/MacPaintUI.cpp`'s canvas block services it.
+  //
+  // A drop that imports exactly one picture ALSO starts a session, straight
+  // from main.cpp's drop handler, so a dropped image is immediately movable
+  // without reaching for the menu -- see app/OpenAnyFile.hpp's
+  // `DropOutcome::transformableLayer`.
+  bool requestFreeTransform = false;
+
+  // The one in-progress transform. Empty (`!active()`) whenever no gesture is
+  // running; `commit()` and `cancel()` both return it to that state, and
+  // nothing is written to the document until `commit()`, so an abandoned
+  // session costs nothing and leaves nothing to unwind.
+  TransformSession transform;
 
   // **The frame loop stops when this is true, and nothing else.** It is not a
   // request and never has been: `--screenshot` sets it directly as its

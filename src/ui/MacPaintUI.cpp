@@ -101,6 +101,19 @@ constexpr float kMaxTilt = 0.50f;
 constexpr float kRulerThickness = 20.0f;
 constexpr float kSnapThresholdPx = 8.0f;
 
+// Free Transform's gizmo, in SCREEN pixels -- converted to document space by
+// the live zoom at the point of use, so a handle stays the same size under
+// the finger at any magnification. The hit radius is deliberately larger than
+// the drawn square (`kTransformHandleDrawPx`): a 4 px target is a target you
+// miss, and missing here does not merely do nothing -- before this gizmo
+// claimed the mouse it would have started a brush stroke.
+constexpr float kTransformHandleHitPx = 9.0f;
+constexpr float kTransformHandleDrawPx = 7.0f;
+// How far above the top edge the rotate affordance sits. The same 24 px
+// app/TransformSession.hpp names as its own default, restated here in screen
+// units because that header has no notion of zoom and says so.
+constexpr float kTransformRotateReachPx = 24.0f;
+
 // ui/DocumentTexture: the **visible** documents, composited and uploaded once
 // per revision each, drawn over the paper by the canvas block and reported on
 // by the layers panel. File-scope for exactly that reason -- two places in
@@ -7689,6 +7702,16 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::Redo:
       st.requestRedo = true;
       break;
+    // A request, like every neighbour here, and for this one's own reason:
+    // starting a transform has to choose between the whole active layer and
+    // just the pixels under a selection, which needs the live document. The
+    // canvas block has one; a native menu callback on the AppKit thread does
+    // not. `keymaps/default.json`'s "free_transform" sets the identical flag
+    // from main.cpp, so the chord and the menu item are one code path from
+    // here on rather than two that can drift.
+    case MenuAction::FreeTransform:
+      st.requestFreeTransform = true;
+      break;
     case MenuAction::Cut:
       st.requestCut = true;
       break;
@@ -8749,6 +8772,105 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const float tx = canvasMouse.x;
     const float ty = canvasMouse.y;
 
+    // --- Free Transform (Cmd+T / Edit > Free Transform) ---------------------
+    //
+    // Serviced here, at the top of the canvas block, because two things this
+    // needs both exist only here: a live document, and `xform` -- the one
+    // screen<->document mapping in the file. Sitting AHEAD of every tool
+    // block below is the other half, and the important one: the gizmo claims
+    // the mouse first, so a drag meant to move the box cannot also lay down a
+    // stroke. That failure would be silent in the worst way -- the picture
+    // moves AND gains a brush mark, and only one of the two is undoable as
+    // the user expects.
+    if (st.requestFreeTransform) {
+      st.requestFreeTransform = false;
+      OpenDocument* od = st.documents.active();
+      const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
+      if (od == nullptr || !li) {
+        g_docStatus = "Free Transform needs an open document with a layer.";
+      } else {
+        // A selection transforms the pixels under it; no selection transforms
+        // the whole layer. Photoshop's own rule, and the one a user who has
+        // just drawn a marquee will expect -- the alternative (always the
+        // whole layer) would silently ignore a selection they made on purpose.
+        const TransformBeginResult began =
+            od->selection ? st.transform.beginSelectionPixels(od->document, *od->selection, *li)
+                          : st.transform.beginLayer(od->document, *li);
+        // Refusals are shown, never swallowed: `beginLayer`/
+        // `beginSelectionPixels` refuse a locked layer, an empty one and a
+        // Pigment selection-transform BY NAME (app/TransformSession.hpp), and
+        // a menu item that appeared enabled and then did nothing at all is
+        // the defect docs/reachability-audit.md is named after.
+        if (!began.ok) g_docStatus = began.error;
+      }
+    }
+
+    // Everything below reads this rather than `st.transform.active()` so the
+    // gizmo's own `commit()`/`cancel()` further down cannot change the answer
+    // half way through one frame's input handling.
+    const bool transformActive = st.transform.active();
+    if (transformActive) {
+      // Handle sizes are fixed on SCREEN and converted to document space by
+      // the view's own zoom, so a handle stays the same size under the finger
+      // at 12% and at 1600%. `st.view.zoom` is the transform's uniform length
+      // scale -- rotation and mirror both preserve length -- which is why one
+      // divide is exact here rather than approximate, the same argument the
+      // guide-snap radius above already makes.
+      const float zoom = std::max(st.view.zoom, 0.01f);
+      const float handleRadiusDoc = kTransformHandleHitPx / zoom;
+      const float rotateReachDoc = kTransformRotateReachPx / zoom;
+
+      // ---- input, claimed before any tool sees it -------------------------
+      if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        const TransformHandle grabbed = st.transform.hitTest(
+            Point2{tx, ty}, handleRadiusDoc, rotateReachDoc);
+        // A click on nothing is NOT a commit and NOT a cancel -- it is
+        // nothing. Photoshop commits on a click outside; this build does not,
+        // deliberately: a mis-aimed click that bakes a resample the user was
+        // still adjusting is unrecoverable in the way an extra keystroke
+        // never is. Return commits, Escape cancels, and both are stated in
+        // the status line for as long as the session is live.
+        if (grabbed != TransformHandle::None) st.transform.beginDrag(grabbed, Point2{tx, ty});
+      }
+      if (st.transform.dragging()) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          // Modifiers read live, per frame, not latched at grab time -- so
+          // Shift pressed half way through a corner drag starts constraining
+          // immediately instead of needing the drag restarted. That is
+          // app/TransformSession's own contract and this is the call that
+          // depends on it.
+          st.transform.updateDrag(Point2{tx, ty}, ImGui::GetIO().KeyShift,
+                                  ImGui::GetIO().KeyAlt);
+        } else {
+          st.transform.endDrag();
+        }
+      }
+
+      // ---- commit and cancel ----------------------------------------------
+      //
+      // Read with `ImGui::IsKeyPressed()` rather than through app/Keymap:
+      // Return and Escape are bare keys, and app/Keymap's own rule (and
+      // MenuKeyEquivalent's) is that an unmodified key must not be claimed
+      // globally, because it would be swallowed out of every text field in
+      // the application -- the layer-rename box one panel over included.
+      // Here the claim is scoped to a live transform session, which is
+      // exactly the scope that makes it safe.
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        // Nothing was written, so there is nothing to unwind -- see
+        // app/TransformSession.hpp's "cancel needs no restore step".
+        st.transform.cancel();
+      } else if (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                 ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+        if (OpenDocument* od = st.documents.active()) {
+          const TransformCommitResult done = st.transform.commit(*od);
+          g_docStatus = done.ok ? (done.exact != ExactRemap::None
+                                       ? "Transform applied -- lossless, no resampling."
+                                       : "Transform applied.")
+                                : done.error;
+        }
+      }
+    }
+
     // --- rulers + drag-to-create guides (PRD Q5) -- ruler hit regions live
     // in the band `avail`/`paintOrigin` carved out above, so they never
     // overlap ##canvasHit's paint/pan/rotate rect; only exist at all when
@@ -9128,7 +9250,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
     if (selectionTool && !panning && !rotating && !sizingHeld && !st.pendingGuide.has_value()) {
       const ImGuiIO& mods = ImGui::GetIO();
-      const bool clicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+      // `!transformActive`: while a Free Transform gizmo owns the canvas the
+      // selection tools do not get the mouse. Without this a drag on the box
+      // would move the pixels AND draw a new marquee over them.
+      const bool clicked =
+          hovered && !transformActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
       OpenDocument* od = st.documents.active();
 
       // Latched at mouse-down for every tool, for the reason
@@ -9356,7 +9482,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // document does not have; `probePixel()` would answer transparent black
       // there anyway, but refusing to sample at all leaves the last good pick
       // in place rather than replacing it with a refusal sentence.
-      const bool sampling = hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+      const bool sampling =
+          hovered && !transformActive && ImGui::IsMouseDown(ImGuiMouseButton_Left);
       if (sampling && (od == nullptr || (tx >= 0 && ty >= 0 && tx < texW && ty < texH)))
         applyEyedropperPick(st, PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)});
     }
@@ -9429,7 +9556,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // whether it can be honoured is answered *inside*, where there is
         // somewhere to put the answer. Putting it back in the condition is what
         // makes the refusal silent again.
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && tx >= 0 && ty >= 0 &&
+        if (hovered && !transformActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+            tx >= 0 && ty >= 0 &&
             tx < texW && ty < texH) {
           if (!usable) {
             // The same band, the same colour and the same voice as the stroke
@@ -9539,9 +9667,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
 
     // --- stroke ---
-    const bool paintTool = st.brush.tool == Tool::Brush ||
-                           st.brush.tool == Tool::Water ||
-                           st.brush.tool == Tool::DryBrush;
+    // **`!transformActive` belongs on BOTH tool predicates, not on the
+    // `strokeTool` derived from them.** Putting it only on `strokeTool` is
+    // what this gate was first written as, and it did not stop a stroke -- it
+    // REROUTED one. The layer-writing branch below is `if (strokeTool && ...)`
+    // and the solver branch is its `else if (paintTool && ...)`, so closing
+    // the first merely dropped the pen through into the second, which painted
+    // into the solver canvas instead of the layer. Caught by photographing
+    // the pixels, not by reading the condition: strokeTool really was false,
+    // and the paint really did land. Gating the two leaf predicates means a
+    // branch added later inherits the rule instead of having to remember it.
+    const bool paintTool = (st.brush.tool == Tool::Brush ||
+                            st.brush.tool == Tool::Water ||
+                            st.brush.tool == Tool::DryBrush) &&
+                           !transformActive;
     // **The eraser is a stroke tool but never a SOLVER stroke**, which is why it
     // is a second flag rather than a fourth line above. It joins `paintTool` at
     // the two branches below that reach a layer and at the cursor ring, and is
@@ -9551,7 +9690,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // (app/StrokeSession.hpp §1's Eraser rows). Folding it into `paintTool` would
     // have been one word and would have made the eraser deposit watercolour on
     // the canvas texture the moment no document was open.
-    const bool eraseTool = st.brush.tool == Tool::Eraser;
+    const bool eraseTool = st.brush.tool == Tool::Eraser && !transformActive;
     const bool strokeTool = paintTool || eraseTool;
     const bool inside = tx >= 0 && ty >= 0 && tx < texW && ty < texH;
     const bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
@@ -9879,6 +10018,58 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                        st.selectionBoundary.boundaryFor(
                            selOd->selection.has_value() ? &*selOd->selection : nullptr,
                            selOd->id, selOd->selectionRevision));
+    }
+
+    // --- Free Transform's gizmo ------------------------------------------
+    //
+    // Drawn here, near the end of the canvas block, so it reads over both the
+    // picture and the selection ants. Its INPUT was claimed at the top of the
+    // block, several hundred lines above: the two halves sit apart on purpose,
+    // because the ordering constraints are opposite -- input has to come
+    // before the tools so a move-drag cannot also paint, and the drawing has
+    // to come after them so nothing paints over the affordance the user is
+    // aiming at.
+    if (st.transform.active()) {
+      const float zoomNow = std::max(st.view.zoom, 0.01f);
+      const TransformHandlePositions h =
+          st.transform.handlePositions(kTransformRotateReachPx / zoomNow);
+      auto toScr = [&](Point2 p) {
+        const Vec2 s = xform.toScreen(Vec2{p.x, p.y});
+        return ImVec2(s.x, s.y);
+      };
+      const ImU32 line = atelierToken(kAccent);
+      const ImVec2 tl = toScr(h.topLeft);
+      const ImVec2 tr = toScr(h.topRight);
+      const ImVec2 br = toScr(h.bottomRight);
+      const ImVec2 bl = toScr(h.bottomLeft);
+      // Four segments rather than `AddRect`: once the pending matrix carries a
+      // rotation the box is no longer axis-aligned, and `AddRect` would draw
+      // its bounding box -- a rectangle that is not where the pixels are
+      // going. The handles come from the same `TransformHandlePositions` the
+      // hit test used, so what is drawn and what is clickable cannot drift.
+      dl->AddLine(tl, tr, line, kRuleThickness);
+      dl->AddLine(tr, br, line, kRuleThickness);
+      dl->AddLine(br, bl, line, kRuleThickness);
+      dl->AddLine(bl, tl, line, kRuleThickness);
+      dl->AddLine(toScr(h.topCenter), toScr(h.rotate), line, kRuleThickness);
+
+      const float r = kTransformHandleDrawPx * 0.5f;
+      auto square = [&](ImVec2 c) {
+        // Filled with paper and outlined, not filled with the accent: a solid
+        // accent square on a dark picture and on a light one are different
+        // amounts of visible, and the outline is what makes it read on both.
+        dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r),
+                          atelierToken(kCanvasPaper));
+        dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), line, 0.0f, 0, 1.0f);
+      };
+      for (const Point2 p : {h.topLeft, h.topCenter, h.topRight, h.middleLeft, h.middleRight,
+                             h.bottomLeft, h.bottomCenter, h.bottomRight})
+        square(toScr(p));
+      // A disc, not a ninth square. It does something the eight do not, and
+      // shape is how that reads at 7 px without a label.
+      const ImVec2 rot = toScr(h.rotate);
+      dl->AddCircleFilled(rot, r, atelierToken(kCanvasPaper));
+      dl->AddCircle(rot, r, line, 0, 1.0f);
     }
 
     if (st.marqueeDragging &&
