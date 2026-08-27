@@ -58,6 +58,7 @@
 #include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
 #include "app/Memory.hpp"
+#include "app/SelectionDrag.hpp"
 #include "app/Snapping.hpp"
 #include "app/ViewTransform.hpp"
 #include "brush/StrokePath.hpp"

@@ -13,6 +13,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "app/Journal.hpp"
 #include "app/QuitSequence.hpp"
+#include "app/SelectionDrag.hpp"
 #include "app/StrokeBake.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "core/Clipboard.hpp"
@@ -527,6 +528,28 @@ struct AppState {
   // at mouse-up would conflate the two gestures; sampling at mouse-down keeps
   // "which boolean" and "what shape" as independent questions.
   SelectionCombine marqueeCombine = SelectionCombine::Replace;
+
+  // T10 (docs/testing-issues.md): Space-move state for the in-progress
+  // rectangle/ellipse marquee drag. Reset to a fresh `SelectionMoveState{}`
+  // whenever a new marquee drag starts -- see app/SelectionDrag.hpp's own
+  // doc comment for why an offset from a previous drag has no meaning here.
+  SelectionMoveState marqueeMove;
+
+  // T10's other two gestures (Shift-constrain, Option-from-centre) need no
+  // stored state of their own -- unlike Space-move they are pure functions
+  // of *this frame's* live modifier read and are therefore reapplied fresh
+  // every frame by app/SelectionDrag.hpp's computeSelectionDragBox(), which
+  // is exactly what lets Option be toggled mid-drag in both directions
+  // without the anchor (`marqueeX0/Y0` above) ever being rewritten.
+  //
+  // The live box (unclamped, same as `marqueeX0..Y1` above always were) for
+  // the current frame of a rectangle/ellipse marquee drag, computed once per
+  // frame in ui/MacPaintUI.cpp and consulted by both the live rubber-band
+  // draw and (at mouse-up, where it is clamped to the canvas same as
+  // before) the actual commit, so the two can never disagree about what
+  // shape is being drawn.
+  float marqueeBoxX0 = 0.0f, marqueeBoxY0 = 0.0f;
+  float marqueeBoxX1 = 0.0f, marqueeBoxY1 = 0.0f;
 
   // The lasso's path, in document texel space, shared by both lasso tools
   // (PRD E3) because core/SelectionShapes rasterises them with one function --

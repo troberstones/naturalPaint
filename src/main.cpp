@@ -1504,6 +1504,10 @@ int main(int argc, char** argv) {
     // ui/MacPaintUI's commitDrawnSelection(): the intent rules all five of
     // PRD E3's selection tools funnel through. Headless, pure CPU.
     const bool selectionToolsOk = np::runSelectionToolsTest();
+    // docs/testing-issues.md T10: app/SelectionDrag.hpp's pure geometry
+    // behind Shift-constrain, Option-from-centre and Space-move on the
+    // rectangle/ellipse marquee drag. Headless, pure CPU.
+    const bool selectionDragOk = np::runSelectionDragTest();
     // core/SelectionBoundary (PRD E6): the true outline the marching ants draw
     // -- islands, holes and concave corners -- which replaced the bounding box
     // that made every lasso, wand and Shift-add selection render as a
@@ -2077,7 +2081,7 @@ int main(int argc, char** argv) {
                     eyedropperOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && gradientOk && selectionOk && channelsOk &&
-                    selectionShapesOk && selectionRefineOk && selectionToolsOk &&
+                    selectionShapesOk && selectionRefineOk && selectionToolsOk && selectionDragOk &&
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
