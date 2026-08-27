@@ -401,7 +401,7 @@ There is **no `NSPasteboard` and no `SDL_GetClipboard*` call anywhere in
 
 ---
 
-## T10 — The three selection-drag gestures are missing · open
+## T10 — The three selection-drag gestures are missing · CLOSED
 
 **Reported.** While drawing a selection: **Shift** should constrain it to a
 square/circle; **Space** should move the in-progress region (start a circle,
@@ -467,7 +467,7 @@ sampling the modifiers. That is the split `app/ControlsLayout` and
 
 ---
 
-## T11 — LAYERS and COMPS have no scroll region either · open
+## T11 — LAYERS and COMPS have no scroll region either · CLOSED
 
 **Verified** while closing **T8**: across the whole of `ui/MacPaintUI.cpp`
 only `##pick`, `##plan`, `##report`, `##toolgrid` and the new
@@ -549,3 +549,52 @@ that family, not a new idea.
 **Deliberately allowed: hiding every section.** The configuration affordance
 lives outside the column, so an empty column is recoverable and does not need
 a forced-visible section propping it up.
+
+---
+
+## Closing notes for T10, T11 and T12's first half — 2026-08-27
+
+**T10 shipped a Space-move that resized the shape it was moving, and the
+unit test passed over it.** The geometry went into `app/SelectionDrag` as a
+pure function, which is the right shape. But the first draft translated
+*both* corners by the offset, and the call site derives that offset from the
+very cursor it also passes as the current point — so the hand's movement was
+counted twice on the moving corner and the box grew on every frame of the
+move, then jumped when Space came up.
+
+The test did not catch it because it varied the offset with the cursor held
+still. **That pairing cannot occur at the call site.** A pure function
+extracted from a caller can be driven with argument combinations the caller
+never generates, and an invariant that holds across those combinations is
+not the same claim as one that holds in use. The fix is one line; the test
+that pins it drives the coupled loop, and reverting the formula fails three
+of its assertions.
+
+The correct rule reads asymmetric and is not: the offset moves the anchor
+only, and because the moving corner *is* the cursor and the cursor has
+already moved, both corners still shift by exactly the distance moved.
+
+**T11 found a defect in T8, which was already merged.** `BeginChild()` sizes
+the outer box, but a bordered child lays its rows inside `WindowPadding`, so
+a box of exactly N row-heights holds fewer than N rows and grows a scrollbar
+for content that fits. HISTORY shipped that way — two rows against an
+eight-row cap, and a sliver. Verified by removing the padding term again and
+watching the sliver return.
+
+Worth noting how it surfaced: T11's brief handed over T8's two findings so
+they would not be rediscovered, and the third one turned up *anyway*,
+because the agent screenshotted a state T8 never photographed. **Handing
+over findings is not the same as handing over coverage.**
+
+**T12's malformed-line rule was mine and it was wrong.** The brief said a
+malformed line should invalidate the whole file. It should be skipped: on a
+foreign file, discarding buys nothing (nothing parses, every section is
+missing, the append rule rebuilds the default regardless), and on a
+mostly-valid file it throws away an arrangement the user built over one
+damaged byte.
+
+The instructive part is the test: **five of the six malformed-input
+assertions passed under either rule**, because their good lines happened to
+be in default order, so both rules rebuilt the default. Six assertions, and
+the disagreement was invisible to all but one that had to be written on
+purpose — with a surviving order the default does not have.
