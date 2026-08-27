@@ -19,6 +19,7 @@ add_executable(naturalPaint
   app/Screenshot.cpp
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
+  app/TransformSession.cpp
   app/LayerPanel.cpp
   app/Latency.cpp
   app/Memory.cpp
@@ -138,6 +139,7 @@ add_executable(naturalPaint
   app/selftest/TileStore.cpp
   app/selftest/ToolCursor.cpp
   app/selftest/Transform.cpp
+  app/selftest/TransformSession.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp

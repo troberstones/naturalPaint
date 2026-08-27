@@ -1539,6 +1539,12 @@ int main(int argc, char** argv) {
     // and D16 asserted at document level -- a stack of any depth resamples once.
     // Headless and GPU-free.
     const bool documentTransformOk = np::runDocumentTransformTest();
+    // docs/reachability-audit.md C1: app/TransformSession, the pure session
+    // behind an interactive layer/selection transform -- handles, hit-testing,
+    // drag semantics, and commit through ops/DocumentTransform's own resample
+    // and app/DocumentLifecycle's recordEdit() undo funnel. Headless and
+    // GPU-free.
+    const bool transformSessionOk = np::runTransformSessionTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -2124,7 +2130,8 @@ int main(int argc, char** argv) {
                     selectionShapesOk && selectionRefineOk && selectionToolsOk && selectionDragOk &&
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
-                    lutBakeOk && applyPassOk && transformOk && documentTransformOk && blurOk &&
+                    lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
+                    transformSessionOk && blurOk &&
                     filtersOk &&
                     curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&

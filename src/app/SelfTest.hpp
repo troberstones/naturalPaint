@@ -780,6 +780,18 @@ bool runTransformTest();
 // reports the count.
 bool runDocumentTransformTest();
 
+// app/TransformSession (docs/reachability-audit.md C1; PRD D14, D16, E10): the
+// pure, headless session behind an interactive layer/selection transform --
+// handle geometry and hit-testing, the drag semantics for Move/Rotate/scale
+// (Shift aspect-lock, Option scale-about-centre, both read live), and commit
+// through the existing ops/DocumentTransform + recordEdit() undo funnel.
+// Proves the matrix-not-running-resample discipline (a multi-frame drag reads
+// the source zero times; commit reads it once), that composition order is
+// respected (rotate-then-scale is not scale-then-rotate), and that
+// exactRemapKind() keeps a pure translate or a snapped quarter turn lossless.
+// Headless and GPU-free -- nothing here touches ui/.
+bool runTransformSessionTest();
+
 // core/Clipboard (PLAN.md "Phase 7 -- Select and paste"; PRD M1, M3, M4, M5,
 // M8). Headless and GPU-free.
 //
