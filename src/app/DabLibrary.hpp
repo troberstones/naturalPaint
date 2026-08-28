@@ -216,6 +216,15 @@ std::string dabUserRootPath();
 std::string dabImportedRootPath();
 std::string dabIndexPath();
 
+// `patterns-imported/`, sibling to `dabs-imported/` and resolved through the
+// exact same base path -- one variable (`$NP_DAB_DIR`) still relocates
+// everything this application writes, patterns included. Named apart from
+// the three above because a pattern is not a dab: it is not `DabLibrary`'s
+// concern (no watched-folder scan, no index, no picker -- see
+// `extractAbrPatterns()`'s own comment for why that is out of scope here),
+// only its path resolver is shared.
+std::string patternsImportedRootPath();
+
 class DabLibrary {
  public:
   // Both roots and the index path. Called with the defaults above by the
@@ -367,5 +376,91 @@ int runDabScan();
 // Returns a process exit code: 0 on a successful import, 1 if the file cannot
 // be opened or the parser refuses it.
 int runDabImport(const char* path);
+
+// **Extraction: a Photoshop scanned pattern, written out so it survives the
+// pack.** The pattern equivalent of `extractAbrTips()` above, and the same
+// gap: `io/AbrBrushes.cpp`'s `patternsById` map is built fresh inside
+// `importAbrBrushes()`, feeds `BrushPreset::grain` for the presets in THAT
+// import, and is then thrown away -- a paper this build spent real work
+// decoding (io/PsPatterns.hpp: 98-99% of a typical pack's bytes) has never
+// once reached disk. This closes that, and only that: each unique decoded
+// pattern lands once at `patterns-imported/<id>.png`, `id` being the `patt`
+// record's own uuid -- already the `Txtr`/`Idnt` join key
+// (`brush/BrushModel.hpp`'s `PatternRef`), so nothing is invented.
+//
+// **Single-channel, not alpha-over-black.** `extractAbrTips()`'s tip mask
+// goes in the alpha channel over black specifically so it round-trips through
+// §4's "real alpha, else `1 - luminance`" coverage rule; a pattern is read by
+// nothing of the kind -- `brush/Grain.hpp`'s `PaperField::height8` is a plain
+// scalar height, so it is written with `io/Export.hpp`'s `encodePng8Gray()`
+// -- one byte on disk per texel and no polarity question to get right --
+// rather than as a picture at all.
+//
+// Existing files are never overwritten, for the identical reason
+// `extractAbrTips()` gives: the uuid names the pattern, so a file already at
+// that name IS this pattern, and rewriting it would discard a touch-up made
+// in an image editor.
+//
+// **Downsampled first when it is large enough to matter.** Measured against
+// the four real packs this project checks against: the seventeen unique
+// patterns across all four total ~21.9 MB undownsampled, over this feature's
+// own ~20 MB budget, almost entirely because of six patterns from 1200x1200
+// to 2016x2016 -- four times the "128x128 to 900x900" io/PsPatterns.hpp's own
+// header believed was the largest real pattern before this was measured. A
+// pattern whose larger dimension exceeds `kPatternDownsampleThreshold` below
+// is box-filter halved -- repeatedly, until it is not -- before encoding;
+// "paper tooth is low-frequency" is this project's own prior justification
+// for why that costs the paper nothing a brush stroke would show. Downsampled
+// this way, the same seventeen patterns total ~9.3 MB.
+//
+// **Deliberately not a `PatternLibrary`.** This writes files; it does not
+// scan a folder, keep an index, or resolve an id back into pixels for a
+// picker to draw -- that is a real, larger piece of work with no caller yet
+// (see `PatternRef`'s own comment), and building it ahead of that caller is
+// exactly the kind of unused machinery this codebase's own convention argues
+// against. `patternsImportedRootPath() + "/" + id + ".png"` is the whole
+// resolution rule, stated once here for whenever that caller arrives.
+//
+// A pattern whose larger dimension exceeds this is halved (`extractAbrPatterns()`'s
+// own comment above has the measurement) before being written.
+//
+// **Measured, not guessed.** io/PsPatterns.hpp's own header says "128x128 to
+// 900x900, which is exactly what brush/Grain has been approximating" -- a
+// claim that stood until `--patt-write` was run against the four real packs
+// this project measures against: art_markers.abr and dry_media.abr between
+// them carry six patterns from 1200x1200 up to 2016x2016, and those six alone
+// account for ~16.8 MB of the ~21.9 MB the seventeen unique patterns across
+// all four packs total UNDOWNSAMPLED -- comfortably over this feature's own
+// ~20 MB budget. 1024 is chosen because it falls exactly in the gap the real
+// data shows: every pattern this build has actually seen is either <= 900 or
+// >= 1200, so the threshold does not need to split a cluster, only choose
+// which one survives untouched.
+//
+// A public constant, not a local one in DabLibrary.cpp's anonymous namespace,
+// for the same reason io/PsPatterns.hpp exposes its own `kMaxPatternDimension`
+// rather than keeping it file-local: `--selftest`'s downsampling section
+// (app/selftest/PatternExtract.cpp) needs the exact number `extractAbrPatterns()`
+// downsamples against, and a hard-coded `1024` copied into the test would be
+// one more place for the two to silently disagree.
+inline constexpr int32_t kPatternDownsampleThreshold = 1024;
+
+// Returns the ids written or already present, in the order given -- bare
+// uuids, matching `PatternRef::id`'s own shape (no `abr:`-style prefix: a
+// pattern has exactly one source, unlike a dab's four, so there is nothing
+// for a prefix to disambiguate).
+std::vector<std::string> extractAbrPatterns(
+    const std::string& importedRoot,
+    const std::vector<std::pair<std::string, PaperField>>& patterns,
+    std::vector<std::string>* notesOut = nullptr);
+
+// `--patt-write <file.abr>` -- extract one pack's `patt` block into
+// `patterns-imported/` and report what landed. Headless and GPU-free, the
+// same shape as `--dab-import` for the same reason: this is the answer to
+// "did the papers actually reach disk", measurable without opening the
+// application.
+//
+// Returns a process exit code: 0 on a successful import, 1 if the file cannot
+// be opened or the parser refuses it.
+int runPattWrite(const char* path);
 
 }  // namespace np

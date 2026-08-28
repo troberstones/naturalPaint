@@ -1192,6 +1192,19 @@ bool runPaperTextureTest();
 // `~/Library/Application Support/naturalPaint`. Headless and GPU-free.
 bool runDabLibraryTest();
 
+// app/DabLibrary's PATTERN extraction -- `extractAbrPatterns()` and
+// `patternsImportedRootPath()`, the `patt`-block sibling of the tip
+// extraction `runDabLibraryTest()`'s own section G proves.
+//
+// A decoded `PaperField` written to `patterns-imported/<uuid>.png` reads back
+// byte for byte (single-channel, not alpha-over-black -- a height field
+// answers to none of the coverage-polarity rules a tip's mask does), a second
+// import of the same uuid leaves the file on disk alone, and a malformed id
+// is refused rather than trusted as a path component. A synthetic
+// `PaperField` fixture throughout, not a real `.abr`. Runs entirely against a
+// scratch directory under the system temp path. Headless and GPU-free.
+bool runPatternExtractTest();
+
 // ui/DabPicker's arithmetic -- the half of a picker that can be wrong in a way
 // a screenshot would not show. `--selftest` cannot reach an ImGui dispatch
 // site (reachability-audit F4), so everything here is a pure function of

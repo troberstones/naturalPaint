@@ -94,6 +94,22 @@ struct AbrSampledTip {
   std::shared_ptr<const BrushTipBitmap> bitmap;
 };
 
+// One decoded pattern from the `patt` block, exposed the same way
+// `AbrSampledTip` exposes a `samp` tip, and for the same reason.
+// `importAbrBrushes()` already resolves a pattern into `BrushPreset::grain`
+// for the presets THIS import decoded (via `grainFromTexture()`, below), but
+// that binding lives only as long as this one `AbrImportResult` does --
+// unload the pack and the paper is gone with it. `id` and `field` are exactly
+// what `patternsById`'s map entries hold internally; this is that same data,
+// named and handed to the caller instead of discarded when the map goes out
+// of scope. `field` is the shared_ptr `grainFromTexture()` itself took, not a
+// copy, so exposing it costs nothing extra.
+struct AbrPatternSample {
+  std::string id;
+  std::string name;  // the record's own name, for a future picker's label
+  std::shared_ptr<const PaperField> field;
+};
+
 struct AbrImportResult {
   bool ok = false;
   std::string error;  // set when ok is false, and then presets is empty
@@ -187,6 +203,13 @@ struct AbrImportResult {
   // whose patterns failed.
   size_t patternsDecoded = 0;
   size_t patternsSkipped = 0;
+
+  // The `patt` block's own patterns, flat and in file order, beside the
+  // presets that reference them -- `tipSamples`' own comment states the
+  // argument and it applies unchanged here: writing them somewhere durable is
+  // the app layer's job, not `io/`'s, and app/DabLibrary's
+  // `extractAbrPatterns()` needs them to do it.
+  std::vector<AbrPatternSample> patternSamples;
 
   // Brushes whose Texture is ON and whose paper reached `BrushPreset::grain`,
   // against those where it did not -- an id this file's `patt` does not

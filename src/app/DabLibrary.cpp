@@ -32,6 +32,60 @@ constexpr int kDabIndexVersion = 1;
 // to stop a mis-dropped photograph, not to have an opinion about tip size.
 constexpr int32_t kMaxDabDimension = 4096;
 
+// One box-filter halving: each output texel is the (edge-clamped) average of
+// up to a 2x2 input block. Ceiling division on the output size (`(n+1)/2`)
+// rather than floor, so an odd input dimension keeps its last row/column
+// represented -- averaged from a single input row/column at that edge rather
+// than silently dropped, which floor division would do.
+//
+// "Paper tooth is low-frequency" is this project's own prior justification
+// (io/PsPatterns.hpp's neighbour, brush/Grain.hpp, makes the same point about
+// its procedural lattice) for why a box filter is enough here: a scanned
+// paper's height field has no fine structure a straight 2x2 average would
+// destroy, unlike a photograph or a sampled brush TIP, neither of which this
+// function is ever asked to touch.
+void boxFilterHalve(int32_t width, int32_t height, const std::vector<uint8_t>& src,
+                    int32_t& outWidth, int32_t& outHeight, std::vector<uint8_t>& dst) {
+  outWidth = (width + 1) / 2;
+  outHeight = (height + 1) / 2;
+  dst.resize(static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight));
+  for (int32_t y = 0; y < outHeight; ++y) {
+    const int32_t y0 = y * 2;
+    const int32_t y1 = std::min(y0 + 1, height - 1);
+    for (int32_t x = 0; x < outWidth; ++x) {
+      const int32_t x0 = x * 2;
+      const int32_t x1 = std::min(x0 + 1, width - 1);
+      const uint32_t sum =
+          static_cast<uint32_t>(src[static_cast<size_t>(y0) * width + x0]) +
+          src[static_cast<size_t>(y0) * width + x1] + src[static_cast<size_t>(y1) * width + x0] +
+          src[static_cast<size_t>(y1) * width + x1];
+      dst[static_cast<size_t>(y) * outWidth + x] = static_cast<uint8_t>((sum + 2) / 4);
+    }
+  }
+}
+
+// Halves `field` repeatedly until its larger dimension is within
+// `kPatternDownsampleThreshold` -- a loop rather than one halving, so the
+// bound holds for any input this build accepts up to `kMaxPatternDimension`
+// (io/PsPatterns.hpp), not merely for what the four packs measured above
+// happen to contain. On the real data every one of the six oversized
+// patterns needed exactly one halving; a hypothetical future pack with a
+// larger scan still gets a field under the cap rather than a bigger one this
+// loop assumed away.
+PaperField downsampleIfLarge(const PaperField& field) {
+  if (std::max(field.width, field.height) <= kPatternDownsampleThreshold) return field;
+  PaperField cur = field;
+  while (std::max(cur.width, cur.height) > kPatternDownsampleThreshold) {
+    int32_t nw = 0, nh = 0;
+    std::vector<uint8_t> next;
+    boxFilterHalve(cur.width, cur.height, cur.height8, nw, nh, next);
+    cur.width = nw;
+    cur.height = nh;
+    cur.height8 = std::move(next);
+  }
+  return cur;
+}
+
 bool hasExtension(const std::string& path, std::initializer_list<const char*> exts) {
   const size_t dot = path.find_last_of('.');
   if (dot == std::string::npos) return false;
@@ -201,6 +255,7 @@ std::string defaultDabRootPath() {
 std::string dabUserRootPath() { return defaultDabRootPath() + "/dabs"; }
 std::string dabImportedRootPath() { return defaultDabRootPath() + "/dabs-imported"; }
 std::string dabIndexPath() { return defaultDabRootPath() + "/dab-index.txt"; }
+std::string patternsImportedRootPath() { return defaultDabRootPath() + "/patterns-imported"; }
 
 // ---------------------------------------------------------------------------
 void DabLibrary::setRoots(std::string userRoot, std::string importedRoot,
@@ -688,6 +743,95 @@ std::vector<std::string> extractAbrTips(
   return ids;
 }
 
+// ---------------------------------------------------------------------------
+// Pattern extraction -- the header's argument for single-channel over
+// alpha-over-black, mirrored almost line for line from `extractAbrTips()`
+// above (same uuid-safety check, same "existing file wins" rule, same reason
+// for both). The one thing with no dab-library equivalent is
+// `downsampleIfLarge()`, above -- a sampled TIP has no size problem worth
+// answering pre-emptively (this file's own `kMaxDabDimension` comment: "the
+// largest in the four packs measured here is 1802"), but a PATTERN measurably
+// does, at four times that pixel count -- see `kPatternDownsampleThreshold`'s
+// comment for the number this was measured against.
+// ---------------------------------------------------------------------------
+std::vector<std::string> extractAbrPatterns(
+    const std::string& importedRoot,
+    const std::vector<std::pair<std::string, PaperField>>& patterns,
+    std::vector<std::string>* notesOut) {
+  std::vector<std::string> ids;
+  ids.reserve(patterns.size());
+  if (importedRoot.empty()) return ids;
+
+  bool madeRoot = false;
+  for (const auto& [uuid, field] : patterns) {
+    if (uuid.empty() || field.width <= 0 || field.height <= 0) continue;
+    if (field.height8.size() !=
+        static_cast<size_t>(field.width) * static_cast<size_t>(field.height))
+      continue;
+    // The identical safety check `extractAbrTips()` applies, for the
+    // identical reason: a uuid arrives from a file and lands in a path, so it
+    // is checked rather than trusted. `..` and `/` are why.
+    bool safe = !uuid.empty();
+    for (const char c : uuid)
+      if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-')) safe = false;
+    if (!safe) {
+      if (notesOut)
+        notesOut->push_back("pattern id '" + uuid + "' is not a plain uuid -- not written");
+      continue;
+    }
+
+    const fs::path target = fs::path(importedRoot) / (uuid + ".png");
+    std::error_code ec;
+    if (fs::exists(target, ec)) {
+      // Already extracted, by this import or an earlier one. Same rule as a
+      // dab: the uuid names the pattern, so the file that is there IS this
+      // pattern, and rewriting it would discard a touch-up made in an image
+      // editor.
+      ids.push_back(uuid);
+      continue;
+    }
+
+    // Downsampled first when the pattern is larger than
+    // `kPatternDownsampleThreshold` warrants -- see that constant's own
+    // comment for the measurement behind the number. A no-op copy for every
+    // pattern under the threshold, which on the four packs measured is 11 of
+    // the 17.
+    const PaperField toWrite = downsampleIfLarge(field);
+
+    // Single-channel -- this header's own argument for why a pattern earns a
+    // different encoding than a tip's coverage mask.
+    const std::vector<uint8_t> png = encodePng8Gray(
+        static_cast<uint32_t>(toWrite.width), static_cast<uint32_t>(toWrite.height),
+        toWrite.height8.data());
+    if (png.empty()) {
+      if (notesOut) notesOut->push_back("pattern " + uuid + " could not be encoded as a PNG");
+      continue;
+    }
+
+    // Created here and not eagerly, matching `extractAbrTips()`'s own
+    // reasoning: a scan is not a deliberate act with something to write, an
+    // extraction is.
+    if (!madeRoot) {
+      fs::create_directories(importedRoot, ec);
+      madeRoot = true;
+    }
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      if (notesOut)
+        notesOut->push_back("pattern " + uuid + ": " + target.string() + " is not writable");
+      continue;
+    }
+    out.write(reinterpret_cast<const char*>(png.data()),
+              static_cast<std::streamsize>(png.size()));
+    if (!out) {
+      if (notesOut) notesOut->push_back("pattern " + uuid + ": write failed part way through");
+      continue;
+    }
+    ids.push_back(uuid);
+  }
+  return ids;
+}
+
 size_t resolveDabIds(BrushLibrary& lib, DabLibrary& dabs, std::vector<std::string>* notesOut) {
   size_t resolved = 0;
   for (BrushPreset& p : lib.presets) {
@@ -747,6 +891,78 @@ int runDabImport(const char* path) {
   std::printf("  %zu of %zu preset(s) now carry a `dab` id that outlives this pack\n", withDab,
               imported.presets.size());
   for (const std::string& note : notes) std::printf("  ! %s\n", note.c_str());
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// `--patt-write`
+// ---------------------------------------------------------------------------
+int runPattWrite(const char* path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    std::printf("could not open '%s'\n", path);
+    return 1;
+  }
+  const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+  const AbrImportResult imported = importAbrBrushes(std::span<const uint8_t>(bytes));
+  if (!imported.ok) {
+    std::printf("'%s': %s\n", path, imported.error.c_str());
+    return 1;
+  }
+
+  std::vector<std::pair<std::string, PaperField>> patterns;
+  patterns.reserve(imported.patternSamples.size());
+  for (const AbrPatternSample& p : imported.patternSamples)
+    if (p.field != nullptr) patterns.emplace_back(p.id, *p.field);
+
+  const std::string importedRoot = patternsImportedRootPath();
+
+  // Stat each target BEFORE extracting, so "written this run" and "already
+  // present from an earlier run" can be told apart afterwards --
+  // `extractAbrPatterns()`'s return value does not distinguish them (same as
+  // `extractAbrTips()`'s), and that distinction is exactly what this flag
+  // exists to report.
+  std::error_code ec;
+  size_t alreadyPresent = 0;
+  for (const auto& [uuid, field] : patterns) {
+    (void)field;
+    if (fs::exists(fs::path(importedRoot) / (uuid + ".png"), ec)) ++alreadyPresent;
+  }
+
+  std::vector<std::string> notes;
+  const std::vector<std::string> ids = extractAbrPatterns(importedRoot, patterns, &notes);
+  const size_t writtenNow = ids.size() >= alreadyPresent ? ids.size() - alreadyPresent : 0;
+  const size_t refused = patterns.size() - ids.size();
+
+  std::printf("%s\n", path);
+  std::printf("  %zu pattern(s) decoded, %zu skipped by the `patt` reader\n",
+              imported.patternsDecoded, imported.patternsSkipped);
+  std::printf("  %zu written, %zu already present, %zu refused\n", writtenNow, alreadyPresent,
+              refused);
+  std::printf("  %zu pattern(s) now in %s\n", ids.size(), importedRoot.c_str());
+  for (const std::string& note : notes) std::printf("  ! %s\n", note.c_str());
+
+  // On-disk size of the whole imported root, summed directly rather than
+  // shelling out to `du` -- this flag is meant to answer "how many bytes did
+  // this cost", and a `std::filesystem` walk gives the exact figure with no
+  // subprocess and no platform-specific `du` flag to get wrong.
+  uintmax_t totalBytes = 0;
+  size_t fileCount = 0;
+  if (fs::is_directory(importedRoot, ec)) {
+    for (fs::recursive_directory_iterator it(importedRoot,
+                                             fs::directory_options::skip_permission_denied, ec),
+         end;
+         it != end && !ec; it.increment(ec)) {
+      if (!it->is_regular_file(ec) || ec) continue;
+      const auto size = fs::file_size(it->path(), ec);
+      if (ec) continue;
+      totalBytes += size;
+      ++fileCount;
+    }
+  }
+  const double mb = static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+  std::printf("  %s on disk: %zu file(s), %.2f MB total\n", importedRoot.c_str(), fileCount, mb);
   return 0;
 }
 
