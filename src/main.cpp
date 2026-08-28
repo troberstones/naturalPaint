@@ -2950,7 +2950,15 @@ int main(int argc, char** argv) {
     // `ImGuiConfigFlags_NoMouseCursorChange` above. Making this call
     // conditional on the canvas having asked for something is exactly how the
     // panels would lose their cursors.
-    cursors.apply(np::canvasCursorRequest());
+    //
+    // The second argument is ui/ToolCursor.hpp §7's addition: the same
+    // frame's request as a `ToolCursor` intent, read only so `apply()` can
+    // ask whether a bitmap cursor should win instead of the system shape
+    // above. `SystemCursorTable::bitmapCursorsEnabled()` defaults to false
+    // and nothing in this build calls `setBitmapCursorsEnabled(true)` -- see
+    // §7 for why that flag is left to a product owner -- so passing this
+    // costs nothing today; it only wires the mechanism through.
+    cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest());
 
     ImGui::Render();
 

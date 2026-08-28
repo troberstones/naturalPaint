@@ -1,7 +1,52 @@
 #include "ui/ToolCursor.hpp"
 
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
+
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
+
+// stb_truetype's IMPLEMENTATION lives in this translation unit, and only this
+// one, at global scope -- the same scope `imgui_draw.cpp` (third_party/imgui)
+// puts its own copy in. That file already compiles stb_truetype with
+// `STBTT_STATIC` set, which makes every `stbtt_*` symbol file-local (internal
+// linkage), so there is nothing of ImGui's to link against here, and defining
+// a second, equally file-local copy in this file is not an ODR risk: it is
+// the documented way to use a single-header library from more than one
+// translation unit (`imstb_truetype.h`'s own top-of-file comment calls this
+// out). Deliberately included here rather than nested inside `namespace np`
+// below -- a nested `#include` would declare every `stbtt_*` symbol as
+// `np::stbtt_*` instead, which is legal but is not how the rest of this
+// codebase's few third-party single-header uses do it.
+//
+// This is also why §7's rasterisation talks to stb_truetype directly rather
+// than through Dear ImGui's `ImFontAtlas`: that path needs a live `GImGui`
+// (`ui/Fonts.cpp`'s own merge functions run after `ImGui::CreateContext()`),
+// and `rasterizeToolCursorBitmap()` has to run inside `--selftest`, which
+// creates no ImGui context at all -- see `app/selftest/ToolCursor.cpp`'s file
+// comment on why this whole test file is headless.
+//
+// The pragma pair below is the equivalent of `src/CMakeLists.txt`'s own
+// SYSTEM-include treatment of `third_party` (see that file's comment on
+// `stb_image.h`), applied locally instead of at the include-path level:
+// `imstb_truetype.h` sits in the `imgui` FetchContent target's own source
+// directory, which this project does not mark SYSTEM, so its
+// `STB_TRUETYPE_IMPLEMENTATION` block trips this build's `-Werror=unused-*`
+// guard on every packing/kerning function this file never calls. Scoped to
+// exactly the `#include` line, so a real unused-function mistake in code
+// this project owns is still caught everywhere else.
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+#define STBTT_STATIC
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "imstb_truetype.h"
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace np {
 
@@ -46,17 +91,33 @@ ToolCursor cursorForTool(Tool tool) noexcept {
     // document's bounds is the *result*, not the gesture. Pen, Curve and Shape
     // are here for the same reading: all three define geometry by placing
     // points, and none of them deposits under the pointer the way `Paint` does.
-    case Tool::Marquee:
-    case Tool::EllipseMarquee:
-    case Tool::Lasso:
-    case Tool::PolygonLasso:
-    case Tool::MagicWand:
+    // T17 did not report these five as confusable with one another, so they
+    // stay folded into plain `Select` -- see hpp §7 on the split just below.
     case Tool::Crop:
     case Tool::Slice:
     case Tool::Pen:
     case Tool::Curve:
     case Tool::Shape:
       return ToolCursor::Select;
+
+    // T17 (docs/testing-issues.md): these five used to fall through to the
+    // same `Select` case above, which is what made a lasso drag and a wand
+    // click show the identical "drag a rectangle" diagonal arrow. Each now
+    // has its own intent -- hpp §7 is the bitmap (behind a flag) each one
+    // gets, and every one of the five still projects to
+    // `SDL_SYSTEM_CURSOR_NWSE_RESIZE` through `sdlCursorFor()` below with the
+    // flag off, which is what keeps this split behaviourally invisible until
+    // someone turns the flag on.
+    case Tool::Marquee:
+      return ToolCursor::SelectMarquee;
+    case Tool::EllipseMarquee:
+      return ToolCursor::SelectEllipseMarquee;
+    case Tool::Lasso:
+      return ToolCursor::SelectLasso;
+    case Tool::PolygonLasso:
+      return ToolCursor::SelectPolygonLasso;
+    case Tool::MagicWand:
+      return ToolCursor::SelectMagicWand;
 
     // --- the view, and content within it ----------------------------------
     case Tool::Hand:
@@ -136,6 +197,21 @@ SDL_SystemCursor sdlCursorFor(ToolCursor cursor) noexcept {
     // conventional alternative is (a crosshair here too, as Photoshop does)
     // and why distinguishability won for now.
     case ToolCursor::Select:
+    // The five values hpp §7 split out of `Select` project to the SAME shape
+    // here as `Select` itself -- this line is the whole of "flag off is
+    // byte-identical to today": before the split, all five tools answered
+    // `Select` and got this cursor; after it, each answers its own intent but
+    // still arrives here, because `SystemCursorTable::apply()` only reaches
+    // for a bitmap when `bitmapsEnabled_` is true. Changing any one of these
+    // five without also changing what the tool showed before this split
+    // would BE the accessibility-flag default drifting silently, which
+    // `app/selftest/ToolCursor.cpp` section G checks per tool, not just per
+    // enum value.
+    case ToolCursor::SelectMarquee:
+    case ToolCursor::SelectEllipseMarquee:
+    case ToolCursor::SelectLasso:
+    case ToolCursor::SelectPolygonLasso:
+    case ToolCursor::SelectMagicWand:
       return SDL_SYSTEM_CURSOR_NWSE_RESIZE;
 
     // The pointing finger: "the pixel under this exact spot is the one I am
@@ -221,12 +297,283 @@ SDL_SystemCursor sdlCursorForImGui(ImGuiMouseCursor cursor) noexcept {
   }
 }
 
-// --- the table itself (header §6) -----------------------------------------
+// ---------------------------------------------------------------- §7: bitmaps
+
+namespace {
+
+// Windows' own cursor bitmaps are 32x32; macOS accepts whatever size a
+// surface hands `SDL_CreateColorCursor()`. 32 buys headroom on the pickier
+// platform at no cost to the other.
+constexpr int kCursorCanvas = 32;
+
+void setPixel(std::vector<uint8_t>& rgba, int w, int h, int x, int y, uint8_t a) {
+  if (x < 0 || y < 0 || x >= w || y >= h) return;
+  // Black ink at the sampled coverage, opaque everywhere it is drawn at all
+  // -- every shape this file draws is one colour, so there is no blending
+  // beyond the alpha stb_truetype itself already anti-aliased.
+  uint8_t* p = &rgba[(static_cast<size_t>(y) * w + x) * 4];
+  p[0] = p[1] = p[2] = 0;
+  p[3] = a;
+}
+
+// Bresenham. Every procedural cursor in this file is line segments, so one
+// rasteriser covers the rectangle, the polygon standing in for the ellipse,
+// and both crosshair arms.
+void drawLine(std::vector<uint8_t>& rgba, int w, int h, int x0, int y0, int x1, int y1) {
+  int dx = std::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+  int dy = -std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+  for (;;) {
+    setPixel(rgba, w, h, x0, y0, 255);
+    if (x0 == x1 && y0 == y1) break;
+    const int e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x0 += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y0 += sy;
+    }
+  }
+}
+
+// The marquee composite hpp §7 promised: ONE generator taking the shape as a
+// parameter, not two hand-drawn cursors, because the crosshair and its
+// position are identical between the two marquees and the shape is the only
+// thing the report asked to vary.
+CursorBitmap drawMarqueeCrosshair(CursorMarqueeShape shape) {
+  CursorBitmap out;
+  out.width = out.height = kCursorCanvas;
+  out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
+
+  // The shape: a 20x20 box in the canvas's upper-right, offset so its own
+  // bottom-left corner (10, 22) sits well clear of the crosshair below.
+  constexpr int kLeft = 10, kTop = 2, kSize = 20;
+  if (shape == CursorMarqueeShape::Rectangle) {
+    drawLine(out.rgba, out.width, out.height, kLeft, kTop, kLeft + kSize, kTop);
+    drawLine(out.rgba, out.width, out.height, kLeft + kSize, kTop, kLeft + kSize, kTop + kSize);
+    drawLine(out.rgba, out.width, out.height, kLeft + kSize, kTop + kSize, kLeft, kTop + kSize);
+    drawLine(out.rgba, out.width, out.height, kLeft, kTop + kSize, kLeft, kTop);
+  } else {
+    // A stepped polygon around the box's inscribed circle -- precision
+    // beyond "reads as round rather than square" is not this glyph's job,
+    // and a 20px cursor icon cannot show the difference between this and a
+    // true midpoint ellipse anyway.
+    constexpr int kSteps = 32;
+    const float cx = kLeft + kSize / 2.0f, cy = kTop + kSize / 2.0f, r = kSize / 2.0f;
+    int prevX = 0, prevY = 0;
+    for (int i = 0; i <= kSteps; ++i) {
+      const float t = static_cast<float>(i) / kSteps * 6.2831853f;
+      const int x = static_cast<int>(cx + r * std::cos(t));
+      const int y = static_cast<int>(cy + r * std::sin(t));
+      if (i > 0) drawLine(out.rgba, out.width, out.height, prevX, prevY, x, y);
+      prevX = x;
+      prevY = y;
+    }
+  }
+
+  // The crosshair: bottom-left of the canvas. 4px clearance from the shape's
+  // own bottom-left corner on both axes -- close enough to read as "attached
+  // to the same cursor", never touching it.
+  constexpr int kCrossX = 6, kCrossY = 26, kArm = 5;
+  drawLine(out.rgba, out.width, out.height, kCrossX - kArm, kCrossY, kCrossX + kArm, kCrossY);
+  drawLine(out.rgba, out.width, out.height, kCrossX, kCrossY - kArm, kCrossX, kCrossY + kArm);
+
+  // **The hotspot is the crosshair's own centre, not the shape's corner and
+  // not the canvas's centre.** This is the bug the report is actually
+  // describing: a marquee's drag starts at the exact pixel under the
+  // pointer, and the crosshair is what tells the user which pixel that is --
+  // so the OS has to agree. `app/selftest/ToolCursor.cpp` section G asserts
+  // this specifically, not merely that the hotspot sits somewhere inked.
+  out.hotspotX = kCrossX;
+  out.hotspotY = kCrossY;
+  return out;
+}
+
+// Rasterises one Lucide codepoint through stb_truetype directly -- no
+// `ImFontAtlas`, no `GImGui`, see this section's own opening comment for why.
+// Returns an all-transparent, zero-hotspot `CursorBitmap` (which
+// `rasterizeToolCursorBitmap()`'s generic non-blank scan will then correctly
+// call blank) for a missing file, an unreadable file, or a codepoint the
+// vendored font build does not contain -- the exact three failure modes
+// `ui/ToolCursor.hpp`'s original §1 worried a bitmap cursor could hit
+// silently.
+CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint) {
+  CursorBitmap out;
+  out.width = out.height = kCursorCanvas;
+  out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
+
+#ifndef NP_LUCIDE_TTF
+  return out;
+#else
+  std::ifstream file(NP_LUCIDE_TTF, std::ios::binary);
+  if (!file.is_open()) return out;
+  const std::vector<unsigned char> buffer((std::istreambuf_iterator<char>(file)),
+                                          std::istreambuf_iterator<char>());
+  if (buffer.empty()) return out;
+
+  stbtt_fontinfo info;
+  if (!stbtt_InitFont(&info, buffer.data(), stbtt_GetFontOffsetForIndex(buffer.data(), 0)))
+    return out;
+  if (stbtt_FindGlyphIndex(&info, static_cast<int>(codepoint)) == 0)
+    return out;  // codepoint absent from this build of the vendored font
+
+  // 22px glyph height inside the 32px canvas: 5px of margin top and bottom
+  // for the anti-aliased edge, the same headroom `installToolIconFont()`
+  // leaves around its own 15px icons, scaled up for a cursor.
+  constexpr float kGlyphPx = 22.0f;
+  const float scale = stbtt_ScaleForPixelHeight(&info, kGlyphPx);
+  int gw = 0, gh = 0, xoff = 0, yoff = 0;
+  unsigned char* bitmap =
+      stbtt_GetCodepointBitmap(&info, scale, scale, static_cast<int>(codepoint), &gw, &gh, &xoff, &yoff);
+  if (bitmap == nullptr) return out;
+  if (gw <= 0 || gh <= 0) {
+    stbtt_FreeBitmap(bitmap, nullptr);
+    return out;
+  }
+
+  // Centred in the canvas -- a cursor has no baseline to align to the way a
+  // line of text does, so centring the glyph's own tight bitmap is the only
+  // placement rule that means anything here.
+  const int originX = (out.width - gw) / 2;
+  const int originY = (out.height - gh) / 2;
+  for (int y = 0; y < gh; ++y)
+    for (int x = 0; x < gw; ++x) {
+      const uint8_t coverage = bitmap[static_cast<size_t>(y) * gw + x];
+      if (coverage != 0) setPixel(out.rgba, out.width, out.height, originX + x, originY + y, coverage);
+    }
+  stbtt_FreeBitmap(bitmap, nullptr);
+
+  // Hotspot: the glyph's own bounding-box centre. This file has no per-icon
+  // design input to place it more precisely -- a lasso's natural hotspot is
+  // where its loop closes, a wand's is its tip, and neither is recoverable
+  // from rasterised coverage alone -- so centre-of-glyph is the one placement
+  // every shape can justify without guessing. It is provably inside the
+  // glyph (section G), and it is still strictly more informative than the
+  // corner-ish hotspot of the `NWSE_RESIZE` arrow it replaces.
+  out.hotspotX = originX + gw / 2;
+  out.hotspotY = originY + gh / 2;
+  return out;
+#endif
+}
+
+}  // namespace
+
+bool toolCursorHasBitmap(ToolCursor cursor) noexcept {
+  switch (cursor) {
+    case ToolCursor::SelectMarquee:
+    case ToolCursor::SelectEllipseMarquee:
+    case ToolCursor::SelectLasso:
+    case ToolCursor::SelectPolygonLasso:
+    case ToolCursor::SelectMagicWand:
+      return true;
+    case ToolCursor::Arrow:
+    case ToolCursor::Paint:
+    case ToolCursor::Select:
+    case ToolCursor::Sample:
+    case ToolCursor::Pan:
+    case ToolCursor::Zoom:
+    case ToolCursor::MoveObject:
+    case ToolCursor::Text:
+    case ToolCursor::Refuse:
+      return false;
+  }
+  return false;
+}
+
+CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor) noexcept {
+  CursorBitmap out;
+  switch (cursor) {
+    case ToolCursor::SelectMarquee:
+      out = drawMarqueeCrosshair(CursorMarqueeShape::Rectangle);
+      break;
+    case ToolCursor::SelectEllipseMarquee:
+      out = drawMarqueeCrosshair(CursorMarqueeShape::Ellipse);
+      break;
+    // The codepoints are read from `toolIconCodepoint()` (ui/AtelierChrome)
+    // -- the tool palette's own single source of truth for which Lucide
+    // glyph a tool means -- rather than a second, independent constant here.
+    // A future change to the palette's icon choice then changes this cursor
+    // too, with no edit in this file, instead of the two silently drifting
+    // apart the way `strokeRouteFor()`'s own comment warns a restated
+    // predicate always eventually does.
+    case ToolCursor::SelectLasso:
+      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::Lasso));
+      break;
+    case ToolCursor::SelectPolygonLasso:
+      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::PolygonLasso));
+      break;
+    case ToolCursor::SelectMagicWand:
+      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::MagicWand));
+      break;
+    default:
+      // `toolCursorHasBitmap()` is false for every other value; returning the
+      // all-transparent default here is correct for those AND is what a
+      // future bitmap-less value falls back to if this switch is ever
+      // reached before that function is updated to match.
+      return out;
+  }
+
+  // Non-blank iff at least one pixel actually carries ink -- computed here,
+  // generically, over whatever the font path or the procedural path above
+  // produced, rather than trusted from either generator's own return value.
+  // This is the check hpp §7 promised: it is what turns a missing font file,
+  // an absent codepoint, or (sabotage (a)) a deliberately zeroed rasteriser
+  // into a loud `--selftest` line instead of a silent blank cursor.
+  for (size_t i = 3; i < out.rgba.size(); i += 4) {
+    if (out.rgba[i] != 0) {
+      out.nonBlank = true;
+      break;
+    }
+  }
+  return out;
+}
+
+bool shouldUseBitmapCursor(bool bitmapsEnabled, std::optional<ToolCursor> toolRequest,
+                            bool hasBitmap) noexcept {
+  // The whole of §7's flag. `bitmapsEnabled == false` makes this `false`
+  // regardless of the other two arguments -- checked exhaustively for every
+  // `ToolCursor` value in `app/selftest/ToolCursor.cpp` section G, which is
+  // the mechanical proof `ui/ToolCursor.hpp` §7 promises rather than an
+  // assertion about one value.
+  return bitmapsEnabled && toolRequest.has_value() && hasBitmap;
+}
+
+// --- the table itself (header §6, and §7's bitmap cursors) -----------------
 
 void SystemCursorTable::create() noexcept {
   if (created_) return;
   for (int i = 0; i < SDL_SYSTEM_CURSOR_COUNT; ++i)
     cursors_[i] = SDL_CreateSystemCursor(static_cast<SDL_SystemCursor>(i));
+
+  // §7's five bitmap cursors, built here unconditionally alongside the
+  // system set above. The FLAG decides which source `apply()` reaches for,
+  // not whether this table exists -- `setBitmapCursorsEnabled()` is a plain
+  // setter that can run after `create()` already has, so there is no other
+  // point in the lifecycle to build these from.
+  for (int i = 0; i < kToolCursorCount; ++i) {
+    const ToolCursor cursor = static_cast<ToolCursor>(i);
+    if (!toolCursorHasBitmap(cursor)) continue;
+    const CursorBitmap bitmap = rasterizeToolCursorBitmap(cursor);
+    // §7's fallback rule, enforced at the one place that knows both the
+    // pixels and the table they would join: a blank rasterisation is never
+    // installed as a cursor. Left null, `bitmapCursorFor()` answers exactly
+    // what it answers for a tool with no bitmap at all, and `apply()` falls
+    // back to `sdlCursorFor()`'s system shape -- objection 1's answer.
+    if (!bitmap.nonBlank) continue;
+    SDL_Surface* surface =
+        SDL_CreateSurfaceFrom(bitmap.width, bitmap.height, SDL_PIXELFORMAT_RGBA32,
+                              const_cast<uint8_t*>(bitmap.rgba.data()), bitmap.width * 4);
+    if (surface == nullptr) continue;
+    // `SDL_CreateColorCursor()` copies what it needs out of the surface, so
+    // it can be destroyed immediately after -- the same pattern SDL's own
+    // docs show, and there is no reason to keep `bitmap.rgba` alive past
+    // this call either; it goes out of scope with the loop body.
+    bitmapCursors_[i] = SDL_CreateColorCursor(surface, bitmap.hotspotX, bitmap.hotspotY);
+    SDL_DestroySurface(surface);
+  }
+
   // Marked created even if some entries came back null: `apply()`'s fallback
   // covers a hole, and refusing to mark the table created because one exotic
   // resize cursor is unavailable on some platform would disable the pointer
@@ -239,6 +586,10 @@ void SystemCursorTable::destroy() noexcept {
     if (c != nullptr) SDL_DestroyCursor(c);
     c = nullptr;
   }
+  for (SDL_Cursor*& c : bitmapCursors_) {
+    if (c != nullptr) SDL_DestroyCursor(c);
+    c = nullptr;
+  }
   // Cleared so a `destroy()`/`create()` pair leaves no pointer to a freed
   // cursor behind for the skip-if-unchanged check to compare against -- that
   // comparison would be against a dangling value, and a freed allocation can
@@ -247,7 +598,14 @@ void SystemCursorTable::destroy() noexcept {
   created_ = false;
 }
 
-void SystemCursorTable::apply(std::optional<SDL_SystemCursor> request) noexcept {
+SDL_Cursor* SystemCursorTable::bitmapCursorFor(ToolCursor cursor) const noexcept {
+  const int index = static_cast<int>(cursor);
+  if (index < 0 || index >= kToolCursorCount) return nullptr;
+  return bitmapCursors_[index];
+}
+
+void SystemCursorTable::apply(std::optional<SDL_SystemCursor> request,
+                              std::optional<ToolCursor> toolRequest) noexcept {
   // `--selftest` and the demo paths never call `create()`, and must not be made
   // to: several of them make a window but none draws a frame through this.
   if (!created_) return;
@@ -277,11 +635,28 @@ void SystemCursorTable::apply(std::optional<SDL_SystemCursor> request) noexcept 
   const SDL_SystemCursor want =
       request.has_value() ? *request : sdlCursorForImGui(imguiCursor);
 
-  SDL_Cursor* chosen = cursors_[want];
-  // `SDL_CreateSystemCursor()` can fail for a shape a platform does not
-  // provide. Falling back to the arrow keeps a pointer on screen; passing the
-  // null through would set no cursor at all.
-  if (chosen == nullptr) chosen = cursors_[SDL_SYSTEM_CURSOR_DEFAULT];
+  // §7's one new branch. `hasBitmap` is true only when a bitmap cursor was
+  // actually built for this tool -- which already folds in both
+  // `toolCursorHasBitmap()` (is this one of the five) and `create()`'s own
+  // blank-rasterisation check, since a blank one was never stored. Passed
+  // through `shouldUseBitmapCursor()` rather than inlined so the identical
+  // decision `--selftest` proves flag-off-identical for is the one actually
+  // running here, not a lookalike.
+  SDL_Cursor* chosen = nullptr;
+  const bool hasBitmap = toolRequest.has_value() && bitmapCursorFor(*toolRequest) != nullptr;
+  if (shouldUseBitmapCursor(bitmapsEnabled_, toolRequest, hasBitmap)) chosen = bitmapCursorFor(*toolRequest);
+
+  // §6's original fallback, byte-for-byte: reached whenever the branch above
+  // did not choose a bitmap -- flag off, no tool request this frame, or a
+  // tool request whose bitmap does not exist -- which is EVERY frame before
+  // this section existed and every frame with the flag off after it.
+  if (chosen == nullptr) {
+    chosen = cursors_[want];
+    // `SDL_CreateSystemCursor()` can fail for a shape a platform does not
+    // provide. Falling back to the arrow keeps a pointer on screen; passing
+    // the null through would set no cursor at all.
+    if (chosen == nullptr) chosen = cursors_[SDL_SYSTEM_CURSOR_DEFAULT];
+  }
   if (chosen != nullptr && chosen != last_) {
     SDL_SetCursor(chosen);
     last_ = chosen;
@@ -313,6 +688,16 @@ const char* toolCursorName(ToolCursor cursor) noexcept {
       return "text";
     case ToolCursor::Refuse:
       return "refuse";
+    case ToolCursor::SelectMarquee:
+      return "select-marquee";
+    case ToolCursor::SelectEllipseMarquee:
+      return "select-ellipse-marquee";
+    case ToolCursor::SelectLasso:
+      return "select-lasso";
+    case ToolCursor::SelectPolygonLasso:
+      return "select-polygon-lasso";
+    case ToolCursor::SelectMagicWand:
+      return "select-magic-wand";
   }
   return "?";
 }

@@ -69,6 +69,15 @@ const DocumentTexturePool& canvasDocumentTexture();
 // exactly the stale-cursor failure suppressing the backend was meant to end.
 std::optional<SDL_SystemCursor> canvasCursorRequest();
 
+// ui/ToolCursor.hpp §7's companion accessor: the SAME frame's request as a
+// `ToolCursor` intent rather than a projected SDL shape, so
+// `SystemCursorTable::apply()` can ask `shouldUseBitmapCursor()` whether a
+// bitmap should win instead. `nullopt` under the identical circumstances
+// `canvasCursorRequest()` is, AND on the guide-drag and pan/rotate frames
+// where a shape is requested that is not a tool's intent at all -- see
+// `g_canvasToolCursor`'s own comment in ui/MacPaintUI.cpp.
+std::optional<ToolCursor> canvasCursorToolRequest();
+
 // Which layer the LAYERS panel, the `Layer` menu and **the brush** act on.
 //
 // It is `OpenDocument::activeLayer` now, not a file-scope index in

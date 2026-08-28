@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "app/AppState.hpp"
 #include "core/Layer.hpp"
@@ -213,6 +215,62 @@
 // The skip-if-unchanged check on `SDL_SetCursor()` is carried over as the
 // optimisation it is (SDL has no early-out of its own; see ImGui issue #6113),
 // not as the mechanism: correctness here does not depend on it.
+//
+// ==========================================================================
+// 7. T17 reopens §1's decision -- bitmaps, gated by a flag nobody has flipped
+// ==========================================================================
+//
+// §1 above rejected custom bitmaps outright, "with this build as the only
+// writer" of SDL *system* cursors. docs/testing-issues.md's T17 asks for a
+// lasso, a polygon-lasso outline, a magic-wand sparkle and a marquee with an
+// offset crosshair -- and there is no SDL system cursor that is any of those
+// four shapes, so this request cannot be answered inside §1's decision. It
+// has to be reopened, not worked around, which is why §1's four objections
+// are re-quoted and re-judged here rather than silently overridden.
+//
+// **Two of the four objections are answerable, and this section is the
+// answer:**
+//
+//   * *"A missing font gives a blank cursor."* `rasterizeToolCursorBitmap()`
+//     rasterises through stb_truetype directly (not through Dear ImGui's font
+//     atlas, which needs a live `GImGui` this code must run without -- see
+//     that function's own comment) and reports `CursorBitmap::nonBlank`,
+//     which is false for a missing file, an absent codepoint, or a
+//     zero-coverage glyph. `--selftest` asserts every shipped bitmap is
+//     non-blank -- turning `ui/Fonts.cpp:333`'s silent degradation loud for
+//     the FIRST time anywhere in this codebase -- and `SystemCursorTable`
+//     never installs a blank bitmap as a cursor: a tool whose rasterisation
+//     failed falls back to `sdlCursorFor()`'s system cursor exactly as it did
+//     before this section existed.
+//   * *"A hotspot nothing in `--selftest` could check."* A hotspot is two
+//     integers. `--selftest` asserts each one lands inside its bitmap's own
+//     drawn (non-transparent) bounding box, and -- the case the report is
+//     actually describing -- that the marquee pair's hotspot is the
+//     crosshair's own centre pixel, not the shape's corner or the canvas's
+//     centre. See `app/selftest/ToolCursor.cpp` section G.
+//
+// **The other two do not get answered, because they cannot be from inside
+// this file:**
+//
+//   * Bitmaps do not track the OS pointer-size accessibility setting.
+//     `SDL_CreateColorCursor()` bakes a fixed pixel size; a user who has
+//     enlarged their system pointer gets a normal-sized lasso sitting inside
+//     an enlarged arrow everywhere else. This is a real regression and is not
+//     this task's decision to make.
+//   * Bitmaps ignore the user's cursor theme. Milder, for the reason §1
+//     already gives: a drawing tool overriding the pointer over its own
+//     canvas is conventional.
+//
+// **So the mechanism is built and the choice is left alone.**
+// `SystemCursorTable::setBitmapCursorsEnabled(bool)` is the ONE flag that
+// switches between them, and it defaults to `false` -- today's behaviour,
+// system cursors only, for every user until a product owner flips it. With
+// the flag off, `shouldUseBitmapCursor()` returns `false` unconditionally
+// (proved by exhaustive loop, not asserted for one case --
+// `app/selftest/ToolCursor.cpp` section G again), which is the one branch
+// `apply()` gained; every other line in `apply()` is the code §6 already
+// argued, untouched. Flipping the flag on is therefore a one-line, reversible
+// act by whoever ends up owning the accessibility trade-off, not a rewrite.
 namespace np {
 
 // What the pointer should *mean* over the canvas, independent of which shape
@@ -239,6 +297,29 @@ enum class ToolCursor {
   // **The gesture will not land.** Either the tool is not built, or the
   // refusal predicates say this target cannot take it. See §§4-5.
   Refuse,
+
+  // ==========================================================================
+  // T17 (docs/testing-issues.md): the five tools this file's own §3 named as
+  // "the five ... fall-through cases" collapsed onto `Select`. Appended after
+  // `Refuse` rather than inserted among the values above so every existing
+  // ordinal is untouched by this change -- nothing in this codebase persists
+  // a `ToolCursor` value, so ordinal stability buys nothing by itself, but an
+  // unperturbed run of old arms above this line is still the cheapest proof
+  // that nothing already written against `Select`, `Paint`, etc. had to
+  // change meaning to make room.
+  //
+  // `Select` itself is UNCHANGED and still answers for Crop, Slice, Pen,
+  // Curve and Shape: T17 verified the "one cursor for everything" defect only
+  // for the five below ("Tool::Marquee, EllipseMarquee, Lasso, PolygonLasso
+  // and MagicWand"), not for those, and splitting tools nobody reported is
+  // scope this file was not asked for. §7 below is where the bitmap each of
+  // these five can get, and the flag that gates it, are argued in full.
+  // ==========================================================================
+  SelectMarquee,         // rectangle marquee: an extent, crosshair bottom-left
+  SelectEllipseMarquee,  // ellipse marquee: the same composite, round instead
+  SelectLasso,
+  SelectPolygonLasso,
+  SelectMagicWand,
 };
 
 // The table. One arm per `Tool` value and **no `default:`**, so `-Wswitch`
@@ -275,6 +356,77 @@ SDL_SystemCursor sdlCursorForImGui(ImGuiMouseCursor cursor) noexcept;
 // The intent's own name, for `--selftest`'s printed table. Never null.
 const char* toolCursorName(ToolCursor cursor) noexcept;
 
+// -------------------------------------------------------- §7: bitmap cursors
+//
+// The marquee composite's shape parameter (§7): both marquees ask for the
+// same crosshair, offset to the bottom-left of a shape, and the shape is the
+// only thing that differs between them. One generator taking this as a
+// parameter, not two hand-drawn cursors -- see `drawMarqueeCrosshair()` in
+// the .cpp, which is what actually reads it.
+enum class CursorMarqueeShape { Rectangle, Ellipse };
+
+// One rasterised cursor: straight (non-premultiplied) RGBA8 pixels, row-major
+// from the top-left -- `SDL_PIXELFORMAT_RGBA32`'s own layout, so
+// `SystemCursorTable` can hand `rgba.data()` to `SDL_CreateSurfaceFrom()`
+// without a repack -- plus the hotspot the OS should treat as the exact pixel
+// the tool acts on.
+struct CursorBitmap {
+  int width = 0;
+  int height = 0;
+  std::vector<uint8_t> rgba;  // width * height * 4 bytes, possibly empty
+  int hotspotX = 0;
+  int hotspotY = 0;
+  // False when every pixel's alpha is 0: a font whose glyph did not
+  // rasterise (missing file, absent codepoint, zero-size glyph) or a
+  // generator that produced nothing. §7's answer to "a missing font gives a
+  // blank cursor" -- this is the flag that turns that silent failure loud.
+  bool nonBlank = false;
+};
+
+// Which `ToolCursor` values T17 gave a bitmap to. Exactly the five §7 names
+// -- every other value, including the untouched `Select`, answers false here
+// unconditionally, flag or no flag, so a caller never has to guess which
+// values `rasterizeToolCursorBitmap()` actually has an opinion about.
+bool toolCursorHasBitmap(ToolCursor cursor) noexcept;
+
+// Renders the bitmap for one `ToolCursor`. Pure and headless: it reads the
+// vendored Lucide TTF (`NP_LUCIDE_TTF`) off disk through stb_truetype
+// directly for the three glyph-based shapes (Lasso, PolygonLasso, MagicWand)
+// rather than through Dear ImGui's font atlas -- `ui/Fonts.cpp`'s
+// `installToolIconFont()` already proves the ImGui path works for the tool
+// *palette*, but its `ImFontAtlas`/`ImFontBaked` machinery needs a live
+// `GImGui`, and this function has to run inside `--selftest`, which never
+// creates one (see `app/selftest/ToolCursor.cpp`'s own file comment on why
+// this whole test file is headless). The marquee pair does not touch the
+// font at all -- `drawMarqueeCrosshair()` in the .cpp draws them
+// procedurally, since neither shape exists as a glyph anywhere.
+//
+// Returns `nonBlank == false` (with a best-effort but possibly empty `rgba`)
+// for any `ToolCursor` `toolCursorHasBitmap()` answers false for, and for one
+// it answers true for whose source failed to rasterise. The caller
+// (`SystemCursorTable::create()`) is what turns a false `nonBlank` into "skip
+// this bitmap, fall back to `sdlCursorFor()`" -- this function only reports
+// the fact.
+CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor) noexcept;
+
+// The one decision `apply()` gains once bitmap cursors exist: does the
+// bitmap win this frame, or does the system-cursor fallback? Pulled out as a
+// pure function -- rather than left inline in `apply()` -- because `apply()`
+// needs live SDL video and cannot run under `--selftest` (§6's own
+// admission), while this decision needs nothing: it is a comparison of an
+// `optional` and two `bool`s. `app/selftest/ToolCursor.cpp` section G calls
+// this function directly, the same one `apply()` calls, and proves it
+// answers `false` for every `ToolCursor` value when `bitmapsEnabled` is
+// `false` -- the mechanical proof §7 promises for "flag off is byte-identical
+// to today", rather than an assertion about one case.
+//
+// `hasBitmap` is true only when BOTH `toolCursorHasBitmap(*toolRequest)` and
+// `rasterizeToolCursorBitmap(*toolRequest).nonBlank` hold -- both facts the
+// caller already has to know to build the bitmap cursor table, so they are
+// passed in rather than recomputed here.
+bool shouldUseBitmapCursor(bool bitmapsEnabled, std::optional<ToolCursor> toolRequest,
+                            bool hasBitmap) noexcept;
+
 // The application's cursors, created once and owned here. §6.
 //
 // Deliberately not a singleton and not self-initialising: `create()` needs SDL
@@ -290,25 +442,63 @@ class SystemCursorTable {
   // a hole. The cost is a couple of dozen OS cursor handles for the process
   // lifetime, which is not the kind of allocation ADR-0001's idle-memory rule
   // is about -- there is no per-document or per-tile growth here.
+  //
+  // Also builds the five §7 bitmap cursors, unconditionally -- not gated on
+  // `bitmapsEnabled_`, because the flag can be flipped after `create()` runs
+  // (it is a plain setter, not a construction argument) and there is nowhere
+  // else to build them from. A cursor whose `rasterizeToolCursorBitmap()`
+  // came back blank is left null here rather than installed: §7's fallback
+  // rule, enforced at the one place that knows both the flag and the pixels.
   void create() noexcept;
 
   // Before `SDL_Quit()`. Safe to call twice, and safe without `create()`.
   void destroy() noexcept;
 
+  // §7's ONE flag. Defaults to `false` -- today's behaviour, system cursors
+  // only -- and stays that way until a product owner calls this. See
+  // ui/ToolCursor.hpp §7 for the accessibility trade this is deferring.
+  void setBitmapCursorsEnabled(bool enabled) noexcept { bitmapsEnabled_ = enabled; }
+  bool bitmapCursorsEnabled() const noexcept { return bitmapsEnabled_; }
+
   // One frame's decision, from one place. `request` is what the canvas asked
-  // for, or `nullopt` when the pointer is not over it -- in which case ImGui's
-  // own request is honoured, which is what keeps every panel, menu and window
-  // border behaving as it did before the backend was suppressed.
+  // for as a system-cursor shape, or `nullopt` when the pointer is not over
+  // it -- in which case ImGui's own request is honoured, which is what keeps
+  // every panel, menu and window border behaving as it did before the
+  // backend was suppressed. `toolRequest` is the SAME frame's request as a
+  // `ToolCursor` intent rather than a projected shape, or `nullopt` under the
+  // identical circumstances `request` is -- it exists only so this function
+  // can ask `shouldUseBitmapCursor()` whether a bitmap should win instead.
+  //
+  // With `bitmapsEnabled_ == false` this parameter is read by
+  // `shouldUseBitmapCursor()`, which is proved (§7, and
+  // `app/selftest/ToolCursor.cpp` section G) to answer `false` for every
+  // value regardless -- so passing it costs nothing behaviourally and every
+  // other line here is §6's original function, unedited.
   //
   // A no-op when `create()` has not run, so a code path that never made a
   // window (`--selftest`) cannot trip over it.
-  void apply(std::optional<SDL_SystemCursor> request) noexcept;
+  void apply(std::optional<SDL_SystemCursor> request,
+             std::optional<ToolCursor> toolRequest = std::nullopt) noexcept;
 
  private:
   SDL_Cursor* cursors_[SDL_SYSTEM_CURSOR_COUNT] = {};
+  // §7's five bitmap cursors, indexed by `static_cast<int>(ToolCursor)`.
+  // Sized to the whole enum rather than to a five-entry lookup table so the
+  // index is the enum value itself -- no second mapping function to keep in
+  // sync with `toolCursorHasBitmap()` -- and the unused slots simply stay
+  // null forever, which `bitmapCursorFor()` treats exactly like a bitmap that
+  // failed to rasterise.
+  static constexpr int kToolCursorCount = static_cast<int>(ToolCursor::SelectMagicWand) + 1;
+  SDL_Cursor* bitmapCursors_[kToolCursorCount] = {};
   // Purely to skip a redundant `SDL_SetCursor()`; see §6's last paragraph.
   SDL_Cursor* last_ = nullptr;
   bool created_ = false;
+  bool bitmapsEnabled_ = false;  // §7's flag; off is today's behaviour.
+
+  // Null when `cursor` has no bitmap, when `create()` has not run, or when
+  // that cursor's rasterisation was blank. Shared by `create()` (to decide
+  // what to log) and `apply()` (to decide what to draw).
+  SDL_Cursor* bitmapCursorFor(ToolCursor cursor) const noexcept;
 };
 
 }  // namespace np

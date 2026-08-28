@@ -146,7 +146,7 @@ bool runToolCursorTest() {
     // table has stopped carrying information, whatever the projection does with
     // it afterwards.
     const ToolCursor paint = cursorForTool(Tool::Brush);
-    const ToolCursor select = cursorForTool(Tool::Marquee);
+    const ToolCursor select = cursorForTool(Tool::Crop);  // T17 did NOT split this one
     const ToolCursor sample = cursorForTool(Tool::Eyedropper);
     const ToolCursor pan = cursorForTool(Tool::Hand);
     const ToolCursor zoom = cursorForTool(Tool::Zoom);
@@ -164,17 +164,47 @@ bool runToolCursorTest() {
               cursorForTool(Tool::PaintBucket) == paint,
           "intent: the whole paint family shares one intent -- the dry brush and the "
           "bucket put colour down the same way the brush does");
-    check(cursorForTool(Tool::EllipseMarquee) == select &&
-              cursorForTool(Tool::Lasso) == select && cursorForTool(Tool::MagicWand) == select,
-          "intent: the whole selection family shares one intent -- an ellipse, a lasso "
-          "and a wand all draw a boundary");
+    // T17 did NOT report Crop, Slice, Pen, Curve or Shape as confusable with
+    // one another, so this half of the old "whole selection family shares
+    // one intent" claim still holds for them.
+    check(cursorForTool(Tool::Slice) == select && cursorForTool(Tool::Pen) == select &&
+              cursorForTool(Tool::Curve) == select && cursorForTool(Tool::Shape) == select,
+          "intent: crop, slice, pen, curve and shape still share plain Select -- T17 "
+          "verified the fall-through defect only for the five tools split out below");
+
+    // **This is the assertion T17 exists to flip.** Before this work, this
+    // line asserted the OPPOSITE -- that Marquee, EllipseMarquee, Lasso,
+    // PolygonLasso and MagicWand all answered the SAME intent as `select`
+    // above, which is exactly the "one cursor for five different gestures"
+    // defect the report is about. Now each is its own value, and a table
+    // that collapsed any two of them back together would be reintroducing
+    // that defect silently.
+    const ToolCursor marquee = cursorForTool(Tool::Marquee);
+    const ToolCursor ellipseMarquee = cursorForTool(Tool::EllipseMarquee);
+    const ToolCursor lasso = cursorForTool(Tool::Lasso);
+    const ToolCursor polygonLasso = cursorForTool(Tool::PolygonLasso);
+    const ToolCursor magicWand = cursorForTool(Tool::MagicWand);
+    check(marquee != select && ellipseMarquee != select && lasso != select &&
+              polygonLasso != select && magicWand != select && marquee != ellipseMarquee &&
+              marquee != lasso && marquee != polygonLasso && marquee != magicWand &&
+              ellipseMarquee != lasso && ellipseMarquee != polygonLasso &&
+              ellipseMarquee != magicWand && lasso != polygonLasso && lasso != magicWand &&
+              polygonLasso != magicWand,
+          "intent: T17's five -- Marquee, EllipseMarquee, Lasso, PolygonLasso, MagicWand "
+          "-- are now SIX-WAY distinct from each other AND from plain Select, which is the "
+          "whole of what this task was asked to build");
+    check(marquee == ToolCursor::SelectMarquee && ellipseMarquee == ToolCursor::SelectEllipseMarquee &&
+              lasso == ToolCursor::SelectLasso && polygonLasso == ToolCursor::SelectPolygonLasso &&
+              magicWand == ToolCursor::SelectMagicWand,
+          "intent: and each is named the way ui/ToolCursor.hpp's enum comment promises -- a "
+          "silent renumbering would pass the distinctness check above and still be wrong");
     check(cursorForTool(Tool::Text) == ToolCursor::Text &&
               cursorForTool(Tool::Move) == ToolCursor::MoveObject,
           "intent: text and move keep their own intents -- folding either into a "
           "neighbour would lose a distinction SDL is perfectly able to draw");
   }
 
-  std::printf("  -- C. the shapes: nine intents, eight distinct SDL cursors --\n");
+  std::printf("  -- C. the shapes: fourteen intents, eight distinct SDL cursors --\n");
 
   {
     // **This is the section the move to SDL was for.** Routed through Dear
@@ -220,26 +250,41 @@ bool runToolCursorTest() {
           "shape: pan and move DELIBERATELY share the four-pointed arrow -- the view and "
           "the content both follow the drag, and SDL has one shape that means that");
 
-    // Everything, counted. Eight intents onto seven shapes, with exactly one
-    // pair sharing -- the arithmetic that catches a projection quietly
-    // collapsing a second pair while every named assertion above still passes.
+    // Everything, counted. Fourteen intents onto eight shapes, with exactly
+    // two collisions -- Pan/MoveObject, and Select plus T17's five newly-split
+    // selection intents -- the arithmetic that catches a projection quietly
+    // collapsing a THIRD group while every named assertion above still
+    // passes.
     {
-      const ToolCursor all[] = {ToolCursor::Arrow,      ToolCursor::Paint,
-                                ToolCursor::Select,     ToolCursor::Sample,
-                                ToolCursor::Pan,        ToolCursor::Zoom,
-                                ToolCursor::MoveObject, ToolCursor::Text,
-                                ToolCursor::Refuse};
+      const ToolCursor all[] = {
+          ToolCursor::Arrow,       ToolCursor::Paint,        ToolCursor::Select,
+          ToolCursor::Sample,      ToolCursor::Pan,          ToolCursor::Zoom,
+          ToolCursor::MoveObject,  ToolCursor::Text,         ToolCursor::Refuse,
+          // T17's five. Each is a genuinely new INTENT (section B proved
+          // that), but with the bitmap flag off every one of them still
+          // projects to `Select`'s own shape -- this is where that
+          // collapse is checked at the shape level, not just named for the
+          // five individually as section 3's header comment does.
+          ToolCursor::SelectMarquee, ToolCursor::SelectEllipseMarquee,
+          ToolCursor::SelectLasso,   ToolCursor::SelectPolygonLasso,
+          ToolCursor::SelectMagicWand};
       std::vector<SDL_SystemCursor> shapes;
       for (const ToolCursor c : all) {
         const SDL_SystemCursor s = sdlCursorFor(c);
-        std::printf("    %-8s -> SDL system cursor %d\n", toolCursorName(c),
+        std::printf("    %-22s -> SDL system cursor %d\n", toolCursorName(c),
                     static_cast<int>(s));
         if (std::find(shapes.begin(), shapes.end(), s) == shapes.end()) shapes.push_back(s);
       }
-      // 9 intents, 8 distinct shapes: only Pan and MoveObject share.
+      // 14 intents, 8 distinct shapes: Pan/MoveObject share one collision,
+      // and Select plus the five T17 split out of it share a second --
+      // deliberately, and it is exactly the "flag off changes nothing"
+      // guarantee hpp §7 promises. A third, UNPLANNED collision would still
+      // land on 8 only by coincidence of which two shapes it merged, so this
+      // count is a real check, not an approximation.
       check(shapes.size() == 8,
-            "shape: the nine intents use eight distinct cursors -- exactly one deliberate "
-            "collision, so a second one cannot creep in unnoticed");
+            "shape: fourteen intents use eight distinct cursors -- two deliberate "
+            "collisions (Pan/MoveObject, and Select plus its five T17 offspring), so a "
+            "third cannot creep in unnoticed");
     }
 
     check(sdlCursorFor(ToolCursor::Refuse) == SDL_SYSTEM_CURSOR_NOT_ALLOWED,
@@ -364,9 +409,19 @@ bool runToolCursorTest() {
         // refusal rule that keyed on the layer rather than on the tool would
         // wrongly slash all three.
         {"eyedropper on locked RGB", Tool::Eyedropper, &lockedRgb, ToolCursor::Sample},
-        {"marquee on Adjustment", Tool::Marquee, &adjustment, ToolCursor::Select},
-        {"lasso on locked Pigment", Tool::Lasso, &lockedPigment, ToolCursor::Select},
-        {"wand on Adjustment", Tool::MagicWand, &adjustment, ToolCursor::Select},
+        // T17: these four used to want plain `Select` here, back when all
+        // four fell into that one arm of `cursorForTool()`. Each now wants
+        // its own split-out intent -- the case most likely to be missed by a
+        // patch that updated `cursorForTool()` but forgot this table still
+        // asserted the pre-split answer, which would make this section pass
+        // while the defect T17 reported was still showing on screen.
+        {"marquee on Adjustment", Tool::Marquee, &adjustment, ToolCursor::SelectMarquee},
+        {"ellipse marquee on Adjustment", Tool::EllipseMarquee, &adjustment,
+         ToolCursor::SelectEllipseMarquee},
+        {"lasso on locked Pigment", Tool::Lasso, &lockedPigment, ToolCursor::SelectLasso},
+        {"polygon lasso on Adjustment", Tool::PolygonLasso, &adjustment,
+         ToolCursor::SelectPolygonLasso},
+        {"wand on Adjustment", Tool::MagicWand, &adjustment, ToolCursor::SelectMagicWand},
         {"hand on locked RGB", Tool::Hand, &lockedRgb, ToolCursor::Pan},
         {"zoom on Adjustment", Tool::Zoom, &adjustment, ToolCursor::Zoom},
     };
@@ -452,6 +507,213 @@ bool runToolCursorTest() {
     check(toolImplemented(Tool::Eraser) && cursorForTool(Tool::Eraser) == ToolCursor::Paint,
           "unbuilt: the Eraser shipped carrying the intent it was written with while it "
           "was still unbuilt -- the promise above, already collected once");
+  }
+
+  std::printf("  -- G. §7's bitmap cursors: non-blank, hotspot bounds, and flag-off identity --\n");
+
+  {
+    // Headless the same way sections A-F are: `rasterizeToolCursorBitmap()`
+    // reads the vendored Lucide TTF through stb_truetype directly (no
+    // `ImFontAtlas`, no `GImGui`) and `shouldUseBitmapCursor()` is a pure
+    // comparison -- neither needs SDL video or a window. What genuinely
+    // cannot be covered here is `SystemCursorTable` itself, for the same
+    // reason §6's own untested branches cannot: it calls into SDL and the
+    // platform. See ui/ToolCursor.hpp §7's own comment.
+
+    // -- G1. every bitmap-backed tool rasterises to something, not nothing --
+    //
+    // **This is the answer to objection 1** -- "a missing font gives a
+    // blank cursor" -- turned into a check for the first time anywhere in
+    // this codebase touching `NP_LUCIDE_TTF`. `installToolIconFont()`
+    // (ui/Fonts.cpp) reports a missing font as a string nobody is required
+    // to read; this fails the build's own `--selftest`.
+    const ToolCursor bitmapCursors[] = {ToolCursor::SelectMarquee, ToolCursor::SelectEllipseMarquee,
+                                        ToolCursor::SelectLasso, ToolCursor::SelectPolygonLasso,
+                                        ToolCursor::SelectMagicWand};
+    bool everyBitmapNonBlank = true;
+    CursorBitmap bitmaps[5];
+    for (size_t i = 0; i < std::size(bitmapCursors); ++i) {
+      bitmaps[i] = rasterizeToolCursorBitmap(bitmapCursors[i]);
+      std::printf("    %-22s -> %dx%d, hotspot (%d,%d), %s\n", toolCursorName(bitmapCursors[i]),
+                  bitmaps[i].width, bitmaps[i].height, bitmaps[i].hotspotX, bitmaps[i].hotspotY,
+                  bitmaps[i].nonBlank ? "non-blank" : "BLANK");
+      if (!bitmaps[i].nonBlank) everyBitmapNonBlank = false;
+    }
+    check(everyBitmapNonBlank,
+          "bitmap: every one of T17's five cursors rasterises to at least one visible pixel "
+          "-- a blank one here is sabotage (a)'s target, and is what SHOULD go red for a "
+          "font that silently failed to load or a codepoint the vendored build dropped");
+
+    // **What a blank one here does NOT get to do: become an installed OS
+    // cursor.** That half of objection 1's answer lives in
+    // `SystemCursorTable::create()`'s own `if (!bitmap.nonBlank) continue;`
+    // (ui/ToolCursor.cpp) -- code this section cannot exercise, because
+    // `create()` needs live SDL video and `--selftest` never opens a window,
+    // exactly the limitation this file's own top comment already admits for
+    // every other `SystemCursorTable` branch. It is argued at that call site
+    // rather than asserted here for the same reason those other branches
+    // are: a headless test of a function that is a no-op without SDL video
+    // would be testing something adjacent to the real code, not the code
+    // itself. What THIS section proves is the fact `create()`'s guard reads
+    // -- `nonBlank` -- which is the check immediately above, and which
+    // sabotage (a) below is shown against directly rather than through a
+    // second function that would only restate the same boolean.
+
+    // Every OTHER `ToolCursor` value has no bitmap at all, and answers a
+    // fully transparent, zero-sized-content result -- not merely `false` for
+    // `toolCursorHasBitmap()`, but a `rasterizeToolCursorBitmap()` that
+    // agrees with it, since `SystemCursorTable::create()` calls the second
+    // function guarded by the first and both have to tell the truth for that
+    // guard to mean anything.
+    check(!toolCursorHasBitmap(ToolCursor::Arrow) && !toolCursorHasBitmap(ToolCursor::Paint) &&
+              !toolCursorHasBitmap(ToolCursor::Select) && !toolCursorHasBitmap(ToolCursor::Refuse) &&
+              !rasterizeToolCursorBitmap(ToolCursor::Select).nonBlank,
+          "bitmap: a tool T17 did not name has no bitmap and rasterises to nothing -- "
+          "`toolCursorHasBitmap()` and `rasterizeToolCursorBitmap()` agree on every value "
+          "they were not both told yes about");
+    check(toolCursorHasBitmap(ToolCursor::SelectMarquee) && toolCursorHasBitmap(ToolCursor::SelectEllipseMarquee) &&
+              toolCursorHasBitmap(ToolCursor::SelectLasso) && toolCursorHasBitmap(ToolCursor::SelectPolygonLasso) &&
+              toolCursorHasBitmap(ToolCursor::SelectMagicWand),
+          "bitmap: and exactly T17's five answer yes -- the set this task was asked to give "
+          "a real shape to, no more and no fewer");
+
+    // -- G2. every hotspot lands inside the pixels it is a hotspot OF --
+    //
+    // **This is the answer to objection 2** -- "a hotspot nothing in
+    // --selftest could check". A hotspot outside the drawn glyph would put
+    // the OS's notion of "where this cursor points" on a transparent pixel,
+    // which is sabotage (b)'s target.
+    auto alphaBounds = [](const CursorBitmap& b, int* minX, int* minY, int* maxX, int* maxY) {
+      bool any = false;
+      *minX = *minY = 0;
+      *maxX = *maxY = 0;
+      for (int y = 0; y < b.height; ++y)
+        for (int x = 0; x < b.width; ++x)
+          if (b.rgba[(static_cast<size_t>(y) * b.width + x) * 4 + 3] != 0) {
+            if (!any) {
+              *minX = *maxX = x;
+              *minY = *maxY = y;
+              any = true;
+            } else {
+              *minX = std::min(*minX, x);
+              *maxX = std::max(*maxX, x);
+              *minY = std::min(*minY, y);
+              *maxY = std::max(*maxY, y);
+            }
+          }
+      return any;
+    };
+
+    bool everyHotspotInBounds = true;
+    for (size_t i = 0; i < std::size(bitmapCursors); ++i) {
+      int minX, minY, maxX, maxY;
+      const bool any = alphaBounds(bitmaps[i], &minX, &minY, &maxX, &maxY);
+      const bool inBounds = any && bitmaps[i].hotspotX >= minX && bitmaps[i].hotspotX <= maxX &&
+                            bitmaps[i].hotspotY >= minY && bitmaps[i].hotspotY <= maxY;
+      std::printf("    %-22s glyph bounds x[%d,%d] y[%d,%d], hotspot %s\n",
+                  toolCursorName(bitmapCursors[i]), minX, maxX, minY, maxY,
+                  inBounds ? "inside" : "OUTSIDE");
+      if (!inBounds) everyHotspotInBounds = false;
+    }
+    check(everyHotspotInBounds,
+          "bitmap: every hotspot lies inside its own bitmap's drawn (non-transparent) "
+          "bounding box -- a hotspot on a transparent pixel points at nothing, which is "
+          "sabotage (b)'s target");
+
+    // **The specific claim the report makes for the marquee pair**: the
+    // hotspot is the CROSSHAIR's centre, not the shape's own centre and not
+    // the canvas's centre. `drawMarqueeCrosshair()` places the crosshair at
+    // (6, 26) and the shape's centre near (20, 12) in its 32x32 canvas --
+    // both pinned here so a generator that moved the crosshair without
+    // moving the hotspot with it, or vice-versa, cannot pass by accident.
+    const CursorBitmap& marqueeBitmap = bitmaps[0];
+    const CursorBitmap& ellipseMarqueeBitmap = bitmaps[1];
+    check(marqueeBitmap.hotspotX == 6 && marqueeBitmap.hotspotY == 26 &&
+              ellipseMarqueeBitmap.hotspotX == 6 && ellipseMarqueeBitmap.hotspotY == 26,
+          "bitmap: both marquees' hotspot is the crosshair's own centre pixel (6, 26) -- "
+          "the exact bug report ('a crosshair at the bottom-left') is about this point, not "
+          "merely about SOME pixel inside the composite");
+    check(marqueeBitmap.hotspotX != marqueeBitmap.width / 2 || marqueeBitmap.hotspotY != marqueeBitmap.height / 2,
+          "bitmap: ...and that point is NOT the canvas centre -- a generator that centred "
+          "the hotspot instead of tracking the crosshair would still pass G2 (16,16) sits "
+          "inside the drawn bounds) and only this line catches it");
+
+    // -- G3. flag-off identity, PROVED rather than asserted for one case --
+    //
+    // **This is the mechanical proof ui/ToolCursor.hpp §7 promises.**
+    // `shouldUseBitmapCursor()` is the ONLY branch `SystemCursorTable::apply()`
+    // gained; everything else in that function is §6's original code,
+    // unedited (visible by reading it, not provable by a headless test since
+    // `apply()` itself needs live SDL video). What CAN be proved headlessly
+    // is that this one new branch is inert whenever the flag is off, for
+    // EVERY `ToolCursor` value and both possible `hasBitmap` answers -- not
+    // merely for one tool, which is what "proved" means here as opposed to
+    // "asserted".
+    const ToolCursor allCursors[] = {
+        ToolCursor::Arrow,      ToolCursor::Paint,       ToolCursor::Select,
+        ToolCursor::Sample,     ToolCursor::Pan,         ToolCursor::Zoom,
+        ToolCursor::MoveObject, ToolCursor::Text,        ToolCursor::Refuse,
+        ToolCursor::SelectMarquee, ToolCursor::SelectEllipseMarquee, ToolCursor::SelectLasso,
+        ToolCursor::SelectPolygonLasso, ToolCursor::SelectMagicWand};
+    bool flagOffAlwaysFalse = true;
+    for (const ToolCursor c : allCursors) {
+      if (shouldUseBitmapCursor(/*bitmapsEnabled=*/false, c, /*hasBitmap=*/true)) flagOffAlwaysFalse = false;
+      if (shouldUseBitmapCursor(/*bitmapsEnabled=*/false, c, /*hasBitmap=*/false)) flagOffAlwaysFalse = false;
+    }
+    if (shouldUseBitmapCursor(/*bitmapsEnabled=*/false, std::nullopt, /*hasBitmap=*/true))
+      flagOffAlwaysFalse = false;
+    check(flagOffAlwaysFalse,
+          "flag: shouldUseBitmapCursor(false, ...) answers false for EVERY ToolCursor value "
+          "and both hasBitmap answers, exhaustively -- SystemCursorTable::apply()'s one new "
+          "branch is provably inert with the flag off, which is what sabotage (c) below "
+          "would have to defeat by breaking sdlCursorFor() instead, not this function");
+
+    // **And the flag really is OFF to begin with.** Everything above proves
+    // what happens WHEN it is false; nothing above proves that it IS. Those
+    // are different claims, and only the second one is the promise this whole
+    // step rests on -- ui/ToolCursor.hpp §7 keeps bitmaps behind one flag
+    // precisely so the accessibility cost of losing OS cursor-size scaling
+    // stays a decision someone makes on purpose. Flipping the initialiser to
+    // `true` reddens NOTHING without this line (measured, not supposed), so a
+    // one-word edit could ship that decision by accident.
+    //
+    // Default-constructed and never `create()`d: the flag is a plain member
+    // and this getter touches no SDL, which is what makes the one property
+    // worth pinning reachable from a headless suite at all.
+    const SystemCursorTable freshTable;
+    check(!freshTable.bitmapCursorsEnabled(),
+          "flag: a freshly constructed SystemCursorTable has bitmap cursors OFF -- today's "
+          "behaviour is the DEFAULT, not merely what the flag would give if someone set it; "
+          "turning bitmaps on is a deliberate act because it trades away OS cursor-size "
+          "accessibility scaling (docs/testing-issues.md T17)");
+
+    // The gate is not vacuously false, either -- section D's own lesson,
+    // repeated: a function that always answers false would pass the loop
+    // above and still be useless. Flip the flag on for these two lines only.
+    check(shouldUseBitmapCursor(/*bitmapsEnabled=*/true, ToolCursor::SelectLasso, /*hasBitmap=*/true) &&
+              !shouldUseBitmapCursor(/*bitmapsEnabled=*/true, ToolCursor::SelectLasso, /*hasBitmap=*/false) &&
+              !shouldUseBitmapCursor(/*bitmapsEnabled=*/true, std::nullopt, /*hasBitmap=*/true),
+          "flag: with bitmapsEnabled TRUE the gate answers true only when there both IS a "
+          "tool request and it has a real bitmap -- the positive case D's own vacuous-refusal "
+          "lesson requires this section to also cover");
+
+    // -- G4. the end-to-end claim: today's five tools show today's shape --
+    //
+    // The strongest form of "flag off is byte-identical to today": not the
+    // enum value (section B already changed that on purpose) and not the
+    // gate function in isolation (G3), but the FULL `Tool -> ToolCursor ->
+    // SDL_SystemCursor` pipeline for the five actual tools a user picks from
+    // the palette, compared against `SDL_SYSTEM_CURSOR_NWSE_RESIZE` -- the
+    // literal value this whole task started from (docs/testing-issues.md
+    // T17: "and sdlCursorFor() turns that into SDL_SYSTEM_CURSOR_NWSE_RESIZE").
+    check(sdlCursorFor(cursorForTool(Tool::Marquee)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE &&
+              sdlCursorFor(cursorForTool(Tool::EllipseMarquee)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE &&
+              sdlCursorFor(cursorForTool(Tool::Lasso)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE &&
+              sdlCursorFor(cursorForTool(Tool::PolygonLasso)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE &&
+              sdlCursorFor(cursorForTool(Tool::MagicWand)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE,
+          "flag: end to end, all five tools STILL show the diagonal resize arrow today's "
+          "build showed -- sabotage (c) targets exactly this line, by changing what one of "
+          "these five (or plain Select) maps to in sdlCursorFor()");
   }
 
   // The section verdict every other section prints. Without it this file's

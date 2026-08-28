@@ -166,6 +166,19 @@ std::string g_strokeRefusal;
 // the reset is unconditional and lives where nothing can skip it.
 std::optional<SDL_SystemCursor> g_canvasCursor;
 
+// The SAME frame's request as a `ToolCursor` intent rather than a projected
+// SDL shape -- ui/ToolCursor.hpp §7. Only set alongside `g_canvasCursor` at
+// the one call site below that answers a genuine tool question
+// (`toolCursorOnTarget()`); the guide-drag and pan/rotate branches set
+// `g_canvasCursor` directly to an SDL shape that is not a `ToolCursor` at
+// all (see their own comments on why), so this stays `nullopt` through those
+// and `SystemCursorTable::apply()` correctly never reaches for a bitmap
+// during a transient gesture that was never a tool cursor to begin with.
+// Cleared on the same unconditional schedule as `g_canvasCursor`, for the
+// same reason: a stale intent surviving a frame the canvas branch never runs
+// would be exactly the stale-cursor bug §6 already fixed once.
+std::optional<ToolCursor> g_canvasToolCursor;
+
 // --- The label column (UI detour step 3, problem 1b) ----------------------
 //
 // Dear ImGui draws a widget's label to the *right* of the widget, and the
@@ -8032,6 +8045,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // that sets it is reachable only on some frames, so a reset that lived beside
   // it would let a crosshair outlive the pointer being over the canvas.
   g_canvasCursor.reset();
+  g_canvasToolCursor.reset();  // same reasoning, ui/ToolCursor.hpp §7
 
   // Next, and before anything reads the state those actions write: whatever
   // the native menu bar collected since the last frame.
@@ -10305,7 +10319,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // than a sentence in another band afterwards. `strokeTarget` is the
         // same active layer the stroke and fill blocks above route on, read
         // once for all three.
-        g_canvasCursor = sdlCursorFor(toolCursorOnTarget(st.brush.tool, strokeTarget));
+        //
+        // Recorded BOTH ways: `g_canvasCursor` as the projected SDL shape
+        // (§6's original contract, read whenever bitmaps are off or this
+        // tool has none), and `g_canvasToolCursor` as the intent itself
+        // (§7's addition, read only to ask `shouldUseBitmapCursor()` whether
+        // a bitmap should win instead). One call, one source of truth for
+        // both -- never two opinions about which tool this frame's gesture
+        // means.
+        const ToolCursor cursor = toolCursorOnTarget(st.brush.tool, strokeTarget);
+        g_canvasCursor = sdlCursorFor(cursor);
+        g_canvasToolCursor = cursor;
       }
     }
   }
@@ -10470,6 +10494,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 const DocumentTexturePool& canvasDocumentTexture() { return g_documentTextures; }
 
 std::optional<SDL_SystemCursor> canvasCursorRequest() { return g_canvasCursor; }
+
+// ui/ToolCursor.hpp §7's companion to the accessor above -- same frame, same
+// lifetime, the intent rather than the projected shape. See `g_canvasToolCursor`'s
+// own comment for why this is `nullopt` on frames `canvasCursorRequest()` answers
+// with a guide-drag or pan/rotate shape.
+std::optional<ToolCursor> canvasCursorToolRequest() { return g_canvasToolCursor; }
 
 void setLayersPanelSelection(OpenDocument& doc, size_t layerIndex) {
   setActiveLayer(doc, layerIndex);
