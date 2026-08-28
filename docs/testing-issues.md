@@ -630,7 +630,7 @@ that document already makes about itself.
 
 ---
 
-## T13 — The ellipse marquee draws a rectangle while you drag it · open
+## T13 — The ellipse marquee draws a rectangle while you drag it · CLOSED
 
 **Reported.** Draw the ellipse interactively instead of showing a rectangle
 until you finish the operation.
@@ -656,9 +656,19 @@ and walking an ellipse inscribed in them, and a branch on the tool at
 the contour) is parameterised by a point run, so this is a point generator,
 not new ant code.
 
+**Built, and it was a point generator.** `ellipseMarqueePreviewPoints()`
+(`app/SelectionDrag.hpp:162`) walks an ellipse inscribed in the four floats;
+`ui/MacPaintUI.cpp:1094` feeds that run to the existing ants machinery, and the
+branch at the live rubber band picks it for `Tool::EllipseMarquee`. The
+constraint this entry flagged is honoured structurally: **both** branches read
+the same `st.marqueeBoxX0..Y1`, so Shift-constrain, Option-from-centre and
+Space-move (T10) reach the ellipse preview by construction rather than by a
+second copy of that arithmetic — only the drawing overload differs.
+`kEllipseMarqueePreviewSegments = 32`.
+
 ---
 
-## T14 — A transform shows a box, not the pixels · open
+## T14 — A transform shows a box, not the pixels · PARTLY CLOSED (RGB yes, Pigment no, and the begin cost is over budget)
 
 **Reported.** Show the transform results live instead of deferred until done.
 
@@ -686,9 +696,42 @@ honest cost note is that preview and result will differ slightly at edges
 while dragging, which is what every implementation of this does and is
 strictly better than showing no pixels at all.
 
+**Built (`ui/TransformPreviewTexture`).** The "cheap kernel" turned out not to
+need writing: `ui/CanvasQuad` already draws an arbitrary quad through the GPU
+rasteriser's own sampler, so the preview is one texture uploaded ONCE at
+`begin*()` and drawn every frame at the four corners `handlePositions()`
+already computes — the same corners the wireframe segments use, so the pixels
+cannot drift from the handles being dragged. `commit()` is untouched and its
+bit-identical assertion still holds. The preview reads through
+`copyThroughSelection()`, the non-destructive twin of the `cutThroughSelection()`
+`commit()` uses, so a `SelectionPixels` preview shows exactly what commit will
+move, coverage-weighted edges included.
+
+**What is still open, and this entry stays open for it:**
+
+* **Pigment layers still show the box only.** Previewing one means projecting
+  each `Latent` through `latentToRgb()`; that is not built. The preview
+  returns empty and the caller falls back to the wireframe, so a Pigment
+  transform behaves exactly as it did before — a bounded gap, not a wrong quad.
+* **The one upload is 49.0 ms at 2048×2048 fully opaque — 245% of PRD F3.**
+  Measured in `--selftest`, printed rather than gated (a wall-clock number is
+  this suite's documented flake class). This is a single hitch at ⌘T's
+  mouse-down, not a per-drag-frame cost, but it is a real stall on a large
+  document. The fix is to pack at *view* resolution — prefilter the crop toward
+  the quad's on-screen size before upload, bounding cost by screen pixels
+  rather than document pixels — which needs a resample step sized to the
+  current zoom and re-triggered when the zoom changes mid-drag. Not one line,
+  and not done.
+* **The original stays visible underneath.** Nothing was written to the
+  document, so the composite still shows the untransformed layer in place while
+  the preview shows where it is going. Hiding it means a full recomposite
+  without that layer every frame — `ui/DocumentTexture.hpp` measures that class
+  at 22 ms (1024²) and 89 ms (2048²), both past F3 on their own. Accepted, and
+  the golden `transform` reference was re-blessed showing exactly this.
+
 ---
 
-## T15 — Filters have no preview · open · (Cancel already exists)
+## T15 — Filters have no preview · PARTLY CLOSED (4 of 9 dialogs; the cost does not fit)
 
 **Reported.** Add a preview mode to the filters, and a cancel.
 
@@ -719,6 +762,29 @@ as "add a cancel button" against dialogs that already have one.
 
 The first is the one worth building; it is written down here so the second
 is a rejected option rather than an unconsidered one.
+
+**Built — the first shape, and the second stayed rejected.** `previewX()`
+computes into a scratch `TileStore` from a `const OpenDocument&`, so it
+*cannot* write to the document; the canvas composites a throwaway `Document`
+sharing every tile with the real one except the active layer's (a refcount
+bump, not a copy). `applyPixelFilter()` was split so preview and commit both
+route through one `computePixelFilter()` — "what you saw is what you got" is a
+property of there being one implementation, not of two agreeing.
+
+**Four of nine converted**: Gaussian Blur, Sharpen, Unsharp Mask, Add Noise —
+the per-layer pixel ops sharing one shape. The other five are deliberately
+untouched and behave exactly as before: Image Size and Canvas Size are
+document geometry through `ops/DocumentTransform`; Refine Radius, Colour Range
+and Luminance Range produce a *selection*, where a live preview means animating
+marching ants, not a pixel overlay.
+
+**Still open, and this entry stays open for it — the cost does not fit.**
+Measured: 1024² blur 266.5 ms + recomposite 23.6 ms = 290.0 ms (1450% of F3);
+2048² = 1136.7 ms (5684%). That is at the app's own default document size. All
+four throttle recompute to `IsItemDeactivatedAfterEdit()` — one stall per
+completed slider adjustment instead of one per pixel of travel — which bounds
+the *frequency* and not the cost. The real fix is the same one T14 names:
+preview at view resolution, or on a downsampled proxy. Not built.
 
 ---
 
@@ -775,7 +841,7 @@ unlike the group-collapse state (PRD C7) which is genuinely view-only.
 
 ---
 
-## T17 — Every selection tool shares one cursor, and it is a resize arrow · open
+## T17 — Every selection tool shares one cursor, and it is a resize arrow · BUILT BUT DARK (awaiting one product decision)
 
 **Reported.** Show a lasso cursor for the lasso, a polygon-lasso cursor for
 that tool, a circle or square with a crosshair at the bottom-left for the two
@@ -827,3 +893,25 @@ parameter, not two cursors. **The accessibility cost above should be settled
 before this is scheduled**, because "the pointer no longer grows with the
 system setting" is a decision for the person who owns the product, not for
 whoever picks up the task.
+
+**Built — and deliberately not switched on, which is the part to read.**
+`ToolCursor` now has one value per distinguishable selection tool
+(`SelectMarquee`, `SelectEllipseMarquee`, `SelectLasso`, `SelectPolygonLasso`,
+`SelectMagicWand` — `ui/ToolCursor.hpp:318`), each with its own bitmap glyph,
+its own hotspot, and a non-blank rasterisation check, exactly as the work
+above describes. The bitmap path is behind
+`SystemCursorTable::setBitmapCursorsEnabled(bool)`, which defaults to **false**
+and which **nothing in this build ever calls with `true`**.
+
+So today, in a shipping run, all five tools still return
+`SDL_SYSTEM_CURSOR_NWSE_RESIZE` (`ui/ToolCursor.cpp:210-215`) and the user sees
+the same resize arrow the report complained about. **The reported symptom is
+not fixed in the shipping build.** What landed is everything except the switch,
+because flipping it accepts the one objection above that survived scrutiny —
+bitmaps do not grow with the OS cursor-size accessibility setting — and that is
+the product owner's call, not the implementer's. `--selftest` pins the default
+off, so the flag cannot drift on unnoticed.
+
+**To close this entry**: decide the accessibility trade-off, then call
+`setBitmapCursorsEnabled(true)` once at startup (or behind a preference). The
+glyphs, hotspots and fallbacks are already in place and already tested.
