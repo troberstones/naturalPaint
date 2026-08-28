@@ -1067,6 +1067,13 @@ bool runDabPreviewTest();
 // else's copyrighted work and megabytes besides.
 bool runAbrBrushesTest();
 
+// docs/architecture-review.md P2-2 item 1: io/AbrBrushes.hpp's `checkedAdd()`,
+// the helper that replaced this file's `if (at + n > buf.size())` bounds-check
+// idiom, driven at the boundary none of the parser's own call sites can
+// reach -- SIZE_MAX, SIZE_MAX - 1, and an ordinary case. Pure CPU, no
+// PaintSim or file involvement.
+bool runCheckedAddTest();
+
 // docs/reachability-audit.md B6 and B7: a Multiply target's floor, applied
 // exactly once rather than once per contributing link. `BrushLinkSet::
 // multiplyFloor` (brush/Dynamics.hpp), `BrushTip::sizeFloorPx`

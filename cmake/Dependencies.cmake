@@ -43,7 +43,53 @@ if(NOT EXISTS ${WGPU_DIR}/lib/libwgpu_native.a)
     "wgpu-native not found at ${WGPU_DIR}.\n"
     "Fetch it with:\n"
     "  curl -L -o /tmp/wgpu.zip https://github.com/gfx-rs/wgpu-native/releases/download/${WGPU_VERSION}/wgpu-macos-aarch64-release.zip\n"
-    "  unzip -o /tmp/wgpu.zip -d ${WGPU_DIR}")
+    "  unzip -o /tmp/wgpu.zip -d ${WGPU_DIR}\n"
+    "This build then hashes the extracted ${WGPU_DIR}/lib/libwgpu_native.a and refuses to "
+    "configure if it does not match the pin below -- see that check's own comment for what it "
+    "does and does NOT protect against.")
+endif()
+
+# docs/architecture-review.md P2-2 item 5: the two lines above told the user to
+# pipe a `curl` straight into `unzip` with nothing checked afterward. Anyone
+# who can MITM that download, or compromise the release asset at GitHub, gets
+# arbitrary code linked into every build -- silently, since a swapped-out
+# static library changes no source file this repo tracks.
+#
+# **What this checks, and what it deliberately does not.** The pin below is
+# the SHA-256 of the EXTRACTED `libwgpu_native.a` this build actually links --
+# not of `wgpu-macos-aarch64-release.zip`, the archive the `curl` line above
+# downloads. That is not a simplification made for convenience: the `.zip` is
+# not a build input CMake ever touches (the user's shell unzips it, by hand,
+# before CMake is invoked at all), so there is no configure-time hook this
+# file could attach a zip check to even if one were wanted. Hashing the `.a`
+# instead checks the exact bytes the linker reads, regardless of how they got
+# into `third_party/wgpu/lib/` -- a tampered zip, a MITM'd `curl`, or the file
+# swapped out by hand after extraction all fail the same way. What it does
+# NOT do is stop a hostile `.a` from being unzipped onto disk in the first
+# place, or from `unzip` itself running against tampered bytes; the refusal
+# only fires the next time CMake configures, after the damage of extracting
+# an untrusted archive is already done. Checking the zip pre-extraction would
+# close that gap and is worth doing if this project starts scripting the
+# fetch step instead of asking the user to run `curl | unzip` by hand.
+#
+# Computed directly against the artifact vendored in this tree with
+# `shasum -a 256 third_party/wgpu/lib/libwgpu_native.a` -- not invented, not
+# copied from the zip's own (unpublished, unchecked) checksum, since the zip
+# was not available to hash. Re-derive this pin, with the same command,
+# whenever WGPU_VERSION above changes.
+set(WGPU_NATIVE_A_SHA256 ae3b0ae457862e0616d71d690947bb8978b247c4c26c866d5aabaa9a8bfe1b55)
+file(SHA256 ${WGPU_DIR}/lib/libwgpu_native.a WGPU_NATIVE_A_ACTUAL_SHA256)
+if(NOT WGPU_NATIVE_A_ACTUAL_SHA256 STREQUAL WGPU_NATIVE_A_SHA256)
+  message(FATAL_ERROR
+    "${WGPU_DIR}/lib/libwgpu_native.a does not match the pinned SHA-256 for "
+    "wgpu-native ${WGPU_VERSION}.\n"
+    "  expected: ${WGPU_NATIVE_A_SHA256}\n"
+    "  actual:   ${WGPU_NATIVE_A_ACTUAL_SHA256}\n"
+    "This is refused rather than linked: either the download was corrupted or "
+    "intercepted, or WGPU_VERSION above moved without this pin being updated to "
+    "match (re-derive it with `shasum -a 256` against the new .a and update "
+    "WGPU_NATIVE_A_SHA256 in cmake/Dependencies.cmake). Do not silence this by "
+    "deleting the check -- delete third_party/wgpu and re-fetch instead.")
 endif()
 
 add_library(wgpu_native STATIC IMPORTED GLOBAL)

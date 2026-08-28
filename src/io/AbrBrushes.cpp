@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -9,20 +10,63 @@
 #include "io/Descriptor.hpp"
 
 namespace np {
+
+// `a + b`, refusing rather than wrapping when the sum would exceed what
+// `size_t` can hold.
+//
+// docs/architecture-review.md P2-2 item 1: every bounds check in this file
+// used to be written `if (at + n > buf.size())` -- readU16/readU32 just
+// below, the `hoff + 19 <= bodyEnd` and `hoff + expected <= bodyEnd` guards
+// in `parseAbrSampledTips()`, `p + count > dataEnd` in `decodePackBits()`,
+// the `off + 12 <= bytes.size()` section walk in `importAbrBrushes()`. The
+// addition happens BEFORE the comparison, so an `at` within `n` of SIZE_MAX
+// wraps to something small and sails through a check meant to catch exactly
+// that value. **Not reachable today**: every `at`/`hoff`/`p`/`off` this file
+// ever passes in is itself the output of an earlier `<= buf.size()`-shaped
+// check, so none of them can get near SIZE_MAX. But that is a fact about
+// today's callers, not about the shape of the check -- it is one refactor (a
+// caller that derives an offset a different way, a merge that drops the
+// earlier guard) from being wrong, and every site would need the same fix
+// applied by hand, in the same way, to stay correct. A single checked-add
+// used everywhere makes the next call site correct by construction instead
+// of by re-applied care.
+//
+// `std::numeric_limits<size_t>::max() - b` rather than `a + b` itself is the
+// part that cannot overflow: `b` is always `<= max()`, so the subtraction
+// never wraps, and comparing `a` against the result is equivalent to
+// checking `a + b <= max()` without ever forming the sum that might not fit.
+[[nodiscard]] bool checkedAdd(size_t a, size_t b, size_t& out) noexcept {
+  if (a > std::numeric_limits<size_t>::max() - b) return false;
+  out = a + b;
+  return true;
+}
+
 namespace {
 
 // Big-endian reads that refuse rather than wrap. `at` is checked against the
-// span's size on every call; this file parses a format from the internet and
-// the whole point of io/Descriptor.hpp's contract is not to read past a
-// buffer, so the block framing around it holds itself to the same rule.
-bool readU16(std::span<const uint8_t> b, size_t at, uint16_t& out) noexcept {
-  if (at + 2 > b.size()) return false;
+// span's size on every call, via `checkedAdd` rather than a raw `at + n >
+// b.size()` for the reason `checkedAdd`'s own comment gives; this file
+// parses a format from the internet and the whole point of io/Descriptor.hpp's
+// contract is not to read past a buffer, so the block framing around it holds
+// itself to the same rule.
+//
+// `[[nodiscard]]`: docs/architecture-review.md P2-2 item 2. Every call site
+// in this file already checked the result except one block in
+// `parseAbrSampledTips()` (see its own comment) -- five ignored calls,
+// relying on a `hoff + 19 <= bodyEnd` guard two scopes away to make them
+// safe rather than checking that they were. `[[nodiscard]]` turns "relying
+// on" into "checking", here and at whatever the next call site turns out to
+// be.
+[[nodiscard]] bool readU16(std::span<const uint8_t> b, size_t at, uint16_t& out) noexcept {
+  size_t end = 0;
+  if (!checkedAdd(at, 2, end) || end > b.size()) return false;
   out = static_cast<uint16_t>((b[at] << 8) | b[at + 1]);
   return true;
 }
 
-bool readU32(std::span<const uint8_t> b, size_t at, uint32_t& out) noexcept {
-  if (at + 4 > b.size()) return false;
+[[nodiscard]] bool readU32(std::span<const uint8_t> b, size_t at, uint32_t& out) noexcept {
+  size_t end = 0;
+  if (!checkedAdd(at, 4, end) || end > b.size()) return false;
   out = (static_cast<uint32_t>(b[at]) << 24) | (static_cast<uint32_t>(b[at + 1]) << 16) |
         (static_cast<uint32_t>(b[at + 2]) << 8) | static_cast<uint32_t>(b[at + 3]);
   return true;
@@ -99,9 +143,10 @@ bool decodePackBits(std::span<const uint8_t> body, size_t off, size_t end, uint3
     } else {
       // Literal: the next (n + 1) bytes, verbatim.
       const size_t count = static_cast<size_t>(n) + 1;
-      if (p + count > dataEnd) return false;
+      size_t next = 0;
+      if (!checkedAdd(p, count, next) || next > dataEnd) return false;
       out.insert(out.end(), body.data() + p, body.data() + p + count);
-      p += count;
+      p = next;
     }
   }
   return out.size() == expected;
@@ -702,12 +747,13 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, ui
   const size_t skipAmt = (subversion == 1) ? 47 : 301;
 
   size_t off = 0;
-  while (off + 4 <= samp.size()) {
+  for (;;) {
+    size_t bodyStart = 0;
+    if (!checkedAdd(off, 4, bodyStart) || bodyStart > samp.size()) break;
     uint32_t recLen = 0;
     if (!readU32(samp, off, recLen)) break;
-    const size_t bodyStart = off + 4;
     if (recLen > samp.size() - bodyStart) break;  // truncated record: stop, keep what decoded
-    const size_t bodyEnd = bodyStart + recLen;
+    const size_t bodyEnd = bodyStart + recLen;  // safe: recLen <= samp.size() - bodyStart, just checked
 
     AbrSampledTip tip;
     // The key: a literal '$' then a 36-character UUID, 37 bytes, at the very
@@ -721,26 +767,41 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, ui
     }
 
     size_t hoff = bodyStart + skipAmt;
+    size_t hoffEnd = 0;
     // 16 (rect) + 2 (depth) + 1 (compression byte) must fit before bodyEnd.
-    if (hoff + 19 <= bodyEnd) {
+    if (checkedAdd(hoff, 19, hoffEnd) && hoffEnd <= bodyEnd) {
       uint32_t top = 0, left = 0, bottom = 0, right = 0;
-      readU32(samp, hoff, top);
-      readU32(samp, hoff + 4, left);
-      readU32(samp, hoff + 8, bottom);
-      readU32(samp, hoff + 12, right);
-      hoff += 16;
       uint16_t depth = 0;
-      readU16(samp, hoff, depth);
-      hoff += 2;
-      const uint8_t compressed = samp[hoff];
-      hoff += 1;
+      // docs/architecture-review.md P2-2 item 2: these five reads used to be
+      // called for their side effects and never checked, trusting the
+      // `hoff + 19 <= bodyEnd` guard just above to make every one of them
+      // succeed. That guard's own safety rests on `bodyEnd <= samp.size()` --
+      // true by construction here (`bodyEnd = bodyStart + recLen`, and
+      // `recLen` was already checked against `samp.size() - bodyStart` when
+      // this record's length was read, above) but not a fact visible at THIS
+      // call site -- exactly the kind of invariant held two scopes away that
+      // a later edit can quietly break. Now that the readers are
+      // `[[nodiscard]]`, a failure here is caught rather than assumed away:
+      // `headerOk` false abandons this record's bitmap exactly as a
+      // truncated record does everywhere else in this function, instead of
+      // reading a rectangle full of zero-initialised defaults as though it
+      // were real data.
+      const bool headerOk = readU32(samp, hoff, top) && readU32(samp, hoff + 4, left) &&
+                            readU32(samp, hoff + 8, bottom) && readU32(samp, hoff + 12, right) &&
+                            readU16(samp, hoff + 16, depth);
+      // The compression flag is a single raw byte, not a `readU16`/`readU32`
+      // call, but it is covered by the same `hoff + 19 <= bodyEnd` guard
+      // above (16 rect bytes + 2 depth bytes + this 1 byte == 19), so it is
+      // still in-bounds even when `headerOk` is false above.
+      const uint8_t compressed = samp[hoff + 18];
+      hoff += 19;
 
       // `right > left && bottom > top` rather than trusting the subtraction:
       // both are u32 reads from an untrusted file, and an inverted rect would
       // underflow into a near-4-billion width rather than a negative one.
       // depth == 8: this file's header states what that limit rests on.
-      if (right > left && bottom > top && depth == 8 && right - left <= kMaxSampledTipDimension &&
-          bottom - top <= kMaxSampledTipDimension) {
+      if (headerOk && right > left && bottom > top && depth == 8 &&
+          right - left <= kMaxSampledTipDimension && bottom - top <= kMaxSampledTipDimension) {
         const uint32_t w = right - left;
         const uint32_t h = bottom - top;
         const size_t expected = static_cast<size_t>(w) * static_cast<size_t>(h);
@@ -749,9 +810,12 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, ui
         bool decoded = false;
         if (compressed != 0) {
           decoded = decodePackBits(samp, hoff, bodyEnd, h, expected, alpha);
-        } else if (hoff + expected <= bodyEnd) {
-          alpha.assign(samp.data() + hoff, samp.data() + hoff + expected);
-          decoded = true;
+        } else {
+          size_t rawEnd = 0;
+          if (checkedAdd(hoff, expected, rawEnd) && rawEnd <= bodyEnd) {
+            alpha.assign(samp.data() + hoff, samp.data() + hoff + expected);
+            decoded = true;
+          }
         }
 
         if (decoded && alpha.size() == expected) {
@@ -806,13 +870,14 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
   size_t descAt = 0, descLen = 0;
   size_t sampAt = 0, sampLen = 0;
   bool haveDesc = false;
-  while (off + 12 <= bytes.size()) {
+  for (;;) {
+    size_t body = 0;
+    if (!checkedAdd(off, 12, body) || body > bytes.size()) break;
     if (std::memcmp(bytes.data() + off, "8BIM", 4) != 0) break;
     char key[5] = {0};
     std::memcpy(key, bytes.data() + off + 4, 4);
     uint32_t len = 0;
     if (!readU32(bytes, off + 8, len)) break;
-    const size_t body = off + 12;
     // A length that runs past the end is a truncated or hostile file; stop
     // rather than clamping, since a clamped block would parse as a shorter
     // descriptor and silently import half a library.

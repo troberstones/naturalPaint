@@ -1628,6 +1628,10 @@ int main(int argc, char** argv) {
     // the container framing and the parameter mapping, including what an
     // import could NOT bring across. Headless and GPU-free.
     const bool abrBrushesOk = np::runAbrBrushesTest();
+    // docs/architecture-review.md P2-2 item 1: io/AbrBrushes.hpp's
+    // `checkedAdd()`, driven at SIZE_MAX/SIZE_MAX-1 -- a boundary none of the
+    // parser's own call sites reach. Headless and GPU-free.
+    const bool checkedAddOk = np::runCheckedAddTest();
     // docs/reachability-audit.md B6 and B7: a Multiply target's floor applied
     // exactly once, downstream of both halves of app/StrokeSession's
     // hardware/stroke-local split, rather than once per contributing link or
@@ -2166,7 +2170,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

@@ -11,6 +11,17 @@
 
 namespace np {
 
+// `a + b`, refusing rather than wrapping when the sum would exceed what
+// `size_t` can hold. Exposed (rather than kept file-local to AbrBrushes.cpp)
+// so `--selftest` can drive it straight at the boundary that matters --
+// `SIZE_MAX`, `SIZE_MAX - 1`, and an ordinary case -- rather than only
+// through the parser call sites that happen to use it, none of which can
+// reach anywhere near SIZE_MAX with today's inputs. See AbrBrushes.cpp's own
+// comment on `checkedAdd` for why the addition-then-compare shape it
+// replaces (`if (at + n > buf.size())`) is the wrong one even though nothing
+// in this file can trigger it today.
+[[nodiscard]] bool checkedAdd(size_t a, size_t b, size_t& out) noexcept;
+
 // Reading Photoshop `.abr` brush libraries into `brush/Library`'s presets --
 // the parameters AND, now, the tips.
 //

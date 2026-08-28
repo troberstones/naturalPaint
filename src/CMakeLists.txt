@@ -44,6 +44,7 @@ add_executable(naturalPaint
   app/selftest/BrushLibraryFile.cpp
   app/selftest/BucketRefusal.cpp
   app/selftest/Channels.cpp
+  app/selftest/CheckedAdd.cpp
   app/selftest/ChromeConsistency.cpp
   app/selftest/Clipboard.cpp
   app/selftest/ClipboardImage.cpp
@@ -437,6 +438,59 @@ target_compile_options(naturalPaint PRIVATE
   # handle enumerators generically -- local, visible in the diff, and it says so
   # -- not this flag removed from this file.
   -Werror=switch
+)
+
+# ---- hardening (docs/architecture-review.md P2-2 item 6) --------------------
+#
+# This binary decodes ABR, PSD, EXR, PNG and JPEG from files it did not write
+# (io/AbrBrushes.cpp, io/ImageDecode.cpp, io/OiioBackend.cpp) -- exactly the
+# code the parsers' own bounds checks (io/Descriptor.hpp, io/AbrBrushes.cpp's
+# `checkedAdd`) are written to keep correct by hand. These two flags are a
+# second, independent line of defence that does not depend on any one parser
+# getting its own arithmetic right:
+#
+# `-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST` turns an
+# out-of-bounds `std::vector`/`std::array`/`std::span` index -- anywhere in
+# this target, not only in the files this review pass touched -- into an
+# abort instead of silently reading or writing past the end. "Fast" mode is
+# libc++'s name for the subset of its checks documented to cost close to
+# nothing (no iterator-invalidation tracking, no debug-mode ABI change),
+# which is what makes this a default rather than a diagnostic build variant
+# nobody enables. `-fstack-protector-strong` puts a canary in front of any
+# stack frame with an array or an address-taken local, catching a stack
+# buffer overflow before it overwrites a return address rather than after.
+#
+# **"Near-zero cost" was the review's own phrasing. It is wrong, and the
+# measurement is here rather than the phrase.** `--selftest`'s own composite
+# and blur `[measured]` lines, three runs per configuration on this machine
+# (M4 Max), four separate builds -- neither flag, each alone, and both:
+#
+#     composite         none      libc++    ssp       both
+#     1 tile          0.1405 ms  0.1443    0.1536    0.1544  (+9.9%)
+#     4-tile dab      0.5648 ms  0.5777    0.6173    0.6163  (+9.1%)
+#     8 tiles         1.1279 ms  1.1631    1.2426    1.2452  (+10.4%)
+#     blur 1024^2      241.3 ms   --        --        235.3  (no change)
+#     blur 2048^2      928.2 ms   --        --        920.7  (no change)
+#
+# Every hardened composite reading sits above every unhardened one, so the
+# ~10% is a real separation and not the run-to-run noise this project already
+# documents. Splitting the two flags shows where it comes from: libc++'s FAST
+# mode costs 2.3-2.7%, and `-fstack-protector-strong` costs the other ~7%
+# essentially by itself. Blur does not move at all -- it is float arithmetic
+# over raw pointers, with neither a container index nor an array-bearing
+# stack frame in its inner loop.
+#
+# It is still landed as a default, on the absolute number rather than the
+# relative one: the interactive path is the dab, and the dab pays **0.05 ms
+# of PRD F3's 20 ms pen-to-photon budget** -- 0.3% of a frame. The 10% is
+# only alarming as a ratio. If a future change makes the full-canvas
+# recomposite (11.3 -> 12.4 ms) the thing standing between this app and F3,
+# the honest first move is to drop `-fstack-protector-strong` from
+# `core/Composite.cpp` alone via `set_source_files_properties()`, keeping it
+# where the untrusted bytes are, rather than to turn hardening off globally.
+target_compile_options(naturalPaint PRIVATE
+  -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST
+  -fstack-protector-strong
 )
 
 # ---- link-time optimisation (docs/architecture-review.md P0-2) --------------
