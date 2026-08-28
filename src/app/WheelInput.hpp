@@ -177,22 +177,156 @@ float zoomFactorForPinch(float magnification) noexcept;
 
 // --- canvas: two-finger trackpad pan ---------------------------------------
 
+// track11/pan-rotate-reset: "trackpad panning is too slow." Before changing
+// the factor, this is what got traced -- the brief for this track assumed
+// the path runs through `NSEvent.scrollingDeltaY`; it does not.
+//
+// **What the vendored SDL 3.2.24 Cocoa backend actually reads.**
+// `Cocoa_HandleMouseWheel()` (`_deps/sdl3-src/src/video/cocoa/
+// SDL_cocoamouse.m`) does `x = -[event deltaX]; y = [event deltaY];` --
+// the LEGACY `deltaX`/`deltaY` accessors, not `scrollingDeltaX`/
+// `scrollingDeltaY`. Apple's own shipped `NSEvent.h` (checked on this
+// machine, both the current SDK and a mirrored 10.8 SDK) documents
+// `scrollingDeltaX`/`Y` as "the preferred API ... When
+// -hasPreciseScrollingDeltas returns YES, scroll by the returned value (in
+// points)" -- but says nothing, in either SDK, about `deltaX`/`deltaY`
+// carrying that same value for a precise device. That equivalence is NOT
+// an Apple-documented contract; it is the near-universal assumption of the
+// native-app ecosystem (e.g. a 2018 QEMU patch's own commit message,
+// replacing `scrollingDeltaY` with `deltaY` for wider OS-version support:
+// "does the same thing" -- one independent, corroborating data point, not
+// a specification). This build cannot drive a physical trackpad to check
+// it directly either. So: ASSUMED, not proven, and flagged as such.
+//
+// **What ImGui does with it.** `imgui_impl_sdl3.cpp`'s
+// `ImGui_ImplSDL3_ProcessEvent()` forwards SDL's value straight into
+// `io.AddMouseWheelEvent()` with only a sign flip on X (which cancels
+// against the sign flip SDL's own backend already applied to `deltaX`, so
+// the net magnitude reaching this app is untouched either way) -- no
+// scaling anywhere in that path. Confirmed by reading both vendored
+// sources directly, not inferred.
+//
+// **The conclusion this trace actually supports.** IF the assumed
+// equivalence holds, one unit of `wheelDx`/`wheelDy` here is one POINT of
+// "the amount AppKit itself would scroll a view's content by" (Apple's own
+// wording) -- the exact same screen-space unit `ImGui::GetIO().MouseDelta`
+// already uses for `panX`/`panY` a few lines below this comment's call
+// site (`ui/MacPaintUI.cpp`'s middle-mouse/Hand-tool drag pan). So the
+// PREVIOUS 1:1 mapping was not a units bug -- tracing it through confirms,
+// rather than refutes, its own header's claim that it "matches the
+// middle-mouse drag-pan rate for the same finger/cursor travel." Both really
+// are the same physical unit, assuming the one thing this build cannot
+// verify.
+//
+// **So why speed it up at all, and by how much.** A 1:1-with-AppKit's-own-
+// content-scroll-rate mapping is exactly right for READING a scrollable
+// document (Preview, Safari, Mail) -- fine control, no overshoot. It is not
+// obviously right for NAVIGATING a 2D canvas, where covering the visible
+// working area is the point and a trackpad's usable throw is small and
+// physically bounded (a few hundred points before the fingers run off the
+// pad and the gesture has to be released and restarted) in a way a
+// mouse-drag's throw is not. That is a real, previously-unstated design
+// difference between the two gestures the ORIGINAL comment's "matches the
+// drag-pan rate" argument glossed over -- equal RATE per point is not equal
+// THROUGHPUT per gesture when one input device's points-per-swipe is capped
+// far lower than the other's. Nothing in the traced units gives a number for
+// how much faster to make it, though -- that is a feel judgment, admitted as
+// one, in the same spirit `kPreciseScrollFraction` above already admits it
+// cannot be measured here. `kCanvasPanSpeedFactor` below is that admitted
+// judgment call: a small enough multiple that a moderate flick cannot fling
+// the canvas out of the window in one twitch, comfortably larger than 1.0 so
+// the change is actually perceptible rather than lost in gesture-to-gesture
+// noise. A person who CAN drive a physical trackpad from here should retune
+// this one named constant; nothing else in `canvasPanForPreciseWheel()`
+// needs to change to retune it.
+inline constexpr float kCanvasPanSpeedFactor = 3.0f;
+
 // Pure: one precise wheel sample (`wheelDx`, `wheelDy`, already the ImGui
 // `MouseWheelH`/`MouseWheel` for this frame) -> the amount to add to
-// `st.view.panX`/`panY`. 1:1 with the raw delta, deliberately NOT run
-// through `kPreciseScrollFraction` above: this is not competing against a
-// notch-sized step the way the panel scroll is (a notched wheel over the
-// canvas does something else entirely -- it zooms, see
-// `zoomFactorForPinch()`'s header comment and `ui/MacPaintUI.cpp`'s
+// `st.view.panX`/`panY`. `kCanvasPanSpeedFactor` times the raw delta,
+// deliberately NOT run through `kPreciseScrollFraction` above: this is not
+// competing against a notch-sized step the way the panel scroll is (a
+// notched wheel over the canvas does something else entirely -- it zooms,
+// see `zoomFactorForPinch()`'s header comment and `ui/MacPaintUI.cpp`'s
 // existing wheel-zoom block), so there is no "full step" to be a fraction
-// of; it is simply added the same per-frame way the existing middle-mouse
-// drag-pan already adds `ImGui::GetIO().MouseDelta` directly to
-// `panX`/`panY` a few lines below it, so the two pan gestures move the
-// canvas at the same rate for the same finger/cursor travel.
+// of.
+//
+// **Deliberately NOT scaled by `st.view.zoom`.** `panX`/`panY` are already
+// screen-space pixels -- they are added directly to `origin`, the same
+// screen coordinate the middle-mouse drag-pan's `MouseDelta` is added to a
+// few lines below this function's one call site -- so a fixed swipe already
+// moves a fixed number of SCREEN pixels at any zoom, exactly matching how
+// the drag-pan (also unscaled by zoom) already behaves, and how every
+// mainstream canvas/image editor's hand-tool panning behaves: the same
+// swipe feels the same size on screen whether zoomed in or out. Scaling by
+// 1/zoom instead (to hold DOCUMENT distance constant per swipe) would make
+// the two pan gestures disagree with each other at any zoom besides 1.0x,
+// which is the exact inconsistency the original 1:1 choice was trying to
+// avoid in the first place -- and it would make panning at high zoom
+// require MORE finger travel to cross the same visible screen distance,
+// the opposite of "too slow"'s fix.
 struct CanvasPanDelta {
   float dx;
   float dy;
 };
 CanvasPanDelta canvasPanForPreciseWheel(float wheelDx, float wheelDy) noexcept;
+
+// --- canvas: two-finger trackpad rotate -------------------------------------
+
+// Pure: one `NSEvent.rotation` sample (already in DEGREES, as Apple's own
+// `NSEvent.h` documents it: "In degrees ... For NSEventTypeRotate, it is
+// rotation on the track pad") -> the radians to ADD to `st.view.rotation`.
+//
+// **Sign.** Not stated in either AppKit header this track checked on this
+// machine (current SDK and a mirrored 10.8 SDK both leave `rotation`'s
+// doc comment silent on direction) -- so this is NOT transcribed from an
+// Apple-documented contract the way `zoomFactorForPinch()`'s "1.0 +
+// magnification" is. It is corroborated by an Apple Developer Forums
+// explanation ("If the amount of rotation is positive, the direction is
+// counterclockwise ... If negative, clockwise") and by a second,
+// independent implementation (Hammerspoon's `libeventtap_event.m`, which
+// documents the identical convention) -- two agreeing secondary sources,
+// not a primary one, and not something this build can spin a physical
+// trackpad to confirm.
+//
+// Given that (NSEvent.rotation counterclockwise-positive), the negation
+// below is what makes the gesture feel like direct manipulation: hand-
+// computing `ViewTransform`'s own rotation matrix (see that header's test
+// case (b) -- zoom=2, mirrorX, rotation=+90deg, canvasCenter=(100,50),
+// pivotScreen=(300,200) -- lands the transformed point ABOVE the pivot on
+// screen for a POSITIVE `view.rotation`, i.e. a canvas point sweeps from
+// "right" toward "up", which on a clock face (3 o'clock toward 12 o'clock,
+// screen y increasing downward) is the CLOCKWISE direction as a person
+// looking at the screen actually sees it) shows `CanvasView::rotation` is
+// CLOCKWISE-positive on screen -- the opposite sense from
+// `NSEvent.rotation`'s counterclockwise-positive. The existing `R`+drag
+// rotate gesture (`ui/MacPaintUI.cpp`'s `rotating` block) independently
+// confirms the same clockwise-positive sense the other direction: its
+// `(v.x*d.y - v.y*d.x)/r2` cross-product term comes out positive for a
+// mouse point sweeping clockwise around the pivot, and that positive value
+// is added straight to `st.view.rotation` -- so "drag clockwise, canvas
+// turns clockwise" already holds for the mouse gesture. Negating
+// `NSEvent.rotation` here is what makes "twist your fingers clockwise,
+// canvas turns clockwise" hold for the trackpad gesture too, the same feel
+// through a second input device rather than a second, disagreeing one.
+//
+// magnitude == 0 -> 0 radians (a no-op sample changes nothing, matching
+// every other zero-delta gesture in this file).
+float canvasRotationRadiansForTrackpad(float rotationDegrees) noexcept;
+
+// Pure: wraps `radians` into the canonical range (-pi, pi]. `sinf`/`cosf`
+// (what `ViewTransform`'s matrix build actually calls) are periodic and so
+// are mathematically correct for ANY float argument, but a rotation gesture
+// fires many samples per second and `CanvasView::rotation`'s own comment
+// calls it "arbitrary angle" with no existing wraparound -- left unbounded,
+// repeated rotate gestures over a long session walk the stored float
+// further and further from zero, and a huge float argument to `sinf`/`cosf`
+// loses precision in its own internal range reduction (the classic
+// "sin(1e8)" problem) well before it loses the ability to compile. Wrapping
+// after every accumulation keeps the stored value, and therefore that
+// range-reduction error, bounded for the life of the session -- a real
+// hygiene fix, not merely a display nicety, since nothing here ever reads
+// `view.rotation` in degrees for display.
+float wrapRotationRadians(float radians) noexcept;
 
 }  // namespace np

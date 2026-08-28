@@ -1,6 +1,7 @@
 #pragma once
 
-// ui/MacTrackpadGestures -- the AppKit backend for pinch-to-zoom.
+// ui/MacTrackpadGestures -- the AppKit backend for pinch-to-zoom and
+// two-finger rotate.
 //
 // **Why this file exists at all, rather than a field on `SDL_MouseWheelEvent`
 // this app could just read.** track10/input's brief asked, explicitly, that
@@ -29,6 +30,15 @@
 // is to reach past SDL for it, the same way `ui/MacNativeMenu.mm` already
 // reaches past SDL for the menu bar: an `NSEvent` local monitor for
 // `NSEventTypeMagnify`, installed once `NSApp` exists.
+//
+// track11/pan-rotate-reset added two-finger rotate on the same monitor for
+// the identical reason: `NSEventTypeRotate` is named in the list immediately
+// above as one of the three gesture types this vendored Cocoa backend has no
+// handler for at all -- rotate was never a separate investigation, it is the
+// same "SDL3 does not deliver this gesture here" finding pinch already made,
+// for the sibling event type. `pollRotationDegrees()` below shares the one
+// monitor `pollPinchMagnification()` installs (`NSEventMaskMagnify |
+// NSEventMaskRotate`) rather than opening a second one.
 //
 // **Why a local monitor and not `-magnifyWithEvent:` on some NSView.** SDL3
 // owns the window's content view and its responder chain; subclassing or
@@ -65,9 +75,20 @@ namespace np {
 // it does for the wheel's `MouseWheel == 0.0f`.
 float pollPinchMagnification();
 
+// Drains and returns the total `NSEvent.rotation` (degrees, see
+// `app/WheelInput.hpp`'s `canvasRotationRadiansForTrackpad()` for the sign
+// convention and its two corroborating sources) accumulated by two-finger
+// rotate gestures since the last call. Same shape as
+// `pollPinchMagnification()` immediately above and for the identical
+// reasons: drained unconditionally every frame regardless of hover state,
+// 0.0f for "nothing happened" indistinguishably from "no monitor yet" --
+// both are "nothing to do this frame".
+float pollRotationDegrees();
+
 #else
 
 inline float pollPinchMagnification() { return 0.0f; }
+inline float pollRotationDegrees() { return 0.0f; }
 
 #endif
 

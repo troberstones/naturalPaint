@@ -10,6 +10,7 @@
     { "key": "=", "mods": ["Cmd"], "action": "zoom_in" },
     { "key": "-", "mods": ["Cmd"], "action": "zoom_out" },
     { "key": "0", "mods": ["Cmd"], "action": "fit_window" },
+    { "key": "0", "mods": ["Cmd", "Shift"], "action": "reset_view" },
     { "key": "1", "mods": ["Cmd"], "action": "zoom_100" },
     { "key": "[", "action": "size_down" },
     { "key": "]", "action": "size_up" },

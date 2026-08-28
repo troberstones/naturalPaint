@@ -8250,6 +8250,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::MirrorX:          st.view.mirrorX = !st.view.mirrorX;       break;
     case MenuAction::MirrorY:          st.view.mirrorY = !st.view.mirrorY;       break;
     case MenuAction::ResetRotation:    st.view.rotation = 0.0f;                  break;
+    case MenuAction::ResetView:        st.view = resetCanvasView(st.view);       break;
     case MenuAction::GrayscalePreview: st.view.grayscale = !st.view.grayscale;   break;
     case MenuAction::Rulers:           st.showRulers = !st.showRulers;           break;
     case MenuAction::Navigator:        st.showNavigator = !st.showNavigator;     break;
@@ -9519,6 +9520,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const float pinchMagnification = pollPinchMagnification();
     if (hovered && pinchMagnification != 0.0f)
       applyZoomFactor(zoomFactorForPinch(pinchMagnification), mouse);
+    // --- two-finger trackpad rotate, the same shape as pinch-to-zoom just
+    // above: drained every frame regardless of `hovered` for the identical
+    // reason (a gesture that started over a side panel must not leave a
+    // stale sample), applied only when the canvas was actually hovered.
+    // Unlike zoom/pan there is no anchor to preserve here -- `view.rotation`
+    // is always about the canvas's own centre (`ViewTransform`'s
+    // `canvasCenter`, PRD Q4), the same pivot the existing `R`+drag rotate
+    // gesture above already turns the canvas about, so this is not a second,
+    // disagreeing rotation origin. app/WheelInput.hpp's
+    // `canvasRotationRadiansForTrackpad()`/`wrapRotationRadians()` header
+    // comments carry the sign derivation and the wraparound reasoning;
+    // neither is re-derived here.
+    const float rotationDegrees = pollRotationDegrees();
+    if (hovered && rotationDegrees != 0.0f)
+      st.view.rotation =
+          wrapRotationRadians(st.view.rotation + canvasRotationRadiansForTrackpad(rotationDegrees));
     const ImVec2 viewportCenter(paintOrigin.x + avail.x * 0.5f, paintOrigin.y + avail.y * 0.5f);
     if (st.requestZoomIn) {
       applyZoomFactor(kZoomStepFactor, viewportCenter);

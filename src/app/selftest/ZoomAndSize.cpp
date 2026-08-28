@@ -221,6 +221,54 @@ bool runZoomAndSizeTest() {
                              "vacuous pass because nothing happened)");
   }
 
+  // ==========================================================================
+  // (g) resetCanvasView(): track11/pan-rotate-reset's whole-view reset. Every
+  // one of CanvasView's eight fields is set to a non-identity value first, so
+  // a field the function forgot to touch is caught (the `mirrorY` failure
+  // mode this section's own brief names by name), AND so a field it touches
+  // but should NOT (`grayscale`/`grade`) is equally caught -- both directions
+  // asserted explicitly, field by field, not just "looks reset".
+  // ==========================================================================
+  {
+    CanvasView before;
+    before.zoom = 3.5f;
+    before.panX = 120.0f;
+    before.panY = -75.0f;
+    before.mirrorX = true;
+    before.mirrorY = true;
+    before.rotation = 2.1f;
+    before.grayscale = true;
+    before.grade = true;
+
+    const CanvasView after = resetCanvasView(before);
+
+    check(near(after.zoom, 1.0f, 1e-6f), "resetCanvasView: zoom -> 1.0");
+    check(near(after.panX, 0.0f, 1e-6f), "resetCanvasView: panX -> 0.0");
+    check(near(after.panY, 0.0f, 1e-6f), "resetCanvasView: panY -> 0.0");
+    check(after.mirrorX == false, "resetCanvasView: mirrorX -> false");
+    check(after.mirrorY == false,
+          "resetCanvasView: mirrorY -> false -- the exact field a reset that just does "
+          "`CanvasView{} with the mirrors forgotten` would leave silently set");
+    check(near(after.rotation, 0.0f, 1e-6f), "resetCanvasView: rotation -> 0.0");
+    // The other direction: grayscale/grade are PREVIEW toggles, not view
+    // navigation, and must survive a view reset untouched -- a user who
+    // turned on the grade preview and then hit Shift+Cmd+0 to re-centre
+    // should not have their preview silently killed too.
+    check(after.grayscale == true,
+          "resetCanvasView: grayscale is left UNTOUCHED (a preview toggle, not "
+          "view navigation) -- the opposite mistake from missing mirrorY, equally real");
+    check(after.grade == true,
+          "resetCanvasView: grade is left UNTOUCHED for the identical reason");
+
+    // Idempotent: resetting an already-reset view is a no-op.
+    const CanvasView twice = resetCanvasView(after);
+    check(near(twice.zoom, 1.0f, 1e-6f) && near(twice.panX, 0.0f, 1e-6f) &&
+              near(twice.panY, 0.0f, 1e-6f) && twice.mirrorX == false &&
+              twice.mirrorY == false && near(twice.rotation, 0.0f, 1e-6f) &&
+              twice.grayscale == true && twice.grade == true,
+          "resetCanvasView: idempotent -- resetting an already-reset view changes nothing");
+  }
+
   std::printf("[selftest] zoom and size %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

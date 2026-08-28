@@ -2821,6 +2821,11 @@ int main(int argc, char** argv) {
         else if (action == "mirror_x") st.view.mirrorX = !st.view.mirrorX;
         else if (action == "mirror_y") st.view.mirrorY = !st.view.mirrorY;
         else if (action == "reset_rotation") st.view.rotation = 0.0f;
+        // track11/pan-rotate-reset: the whole-view reset (Shift+Cmd+0) --
+        // app/ZoomAndSize.hpp's `resetCanvasView()` has the field-by-field
+        // reasoning for which six of CanvasView's eight fields this touches
+        // (not grayscale/grade, which are preview toggles, not navigation).
+        else if (action == "reset_view") st.view = np::resetCanvasView(st.view);
         else if (action == "toggle_grayscale") st.view.grayscale = !st.view.grayscale;
         // PLAN.md Phase 7 (PRD E1-E3, M1-M5). Request flags for the same
         // reason the zoom commands are: acting on a selection needs the

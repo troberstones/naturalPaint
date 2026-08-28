@@ -220,6 +220,7 @@ enum class MenuAction : uint16_t {
   MirrorX,
   MirrorY,
   ResetRotation,
+  ResetView,
   GrayscalePreview,
   Rulers,
   Navigator,

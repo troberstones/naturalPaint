@@ -195,21 +195,115 @@ bool runWheelInputTest() {
   }
 
   // ==========================================================================
-  // (f) canvasPanForPreciseWheel(): pass-through, and -- the property that
-  // actually matters -- NOT run through kPreciseScrollFraction's discount.
-  // Unlike the panel scroll, a precise wheel sample over the canvas is not
-  // competing against a "full notch" step (a notch over the canvas zooms;
-  // see (d)/(e) above), so there is nothing for it to be a fraction of.
+  // (f) canvasPanForPreciseWheel(): kCanvasPanSpeedFactor times the wheel
+  // sample (track11/pan-rotate-reset's "trackpad panning is too slow" fix --
+  // this function's own header comment carries the full derivation of why
+  // that factor, not a units correction, is what changed), and -- the
+  // property that still matters exactly as before -- NOT run through
+  // kPreciseScrollFraction's discount. Unlike the panel scroll, a precise
+  // wheel sample over the canvas is not competing against a "full notch"
+  // step (a notch over the canvas zooms; see (d)/(e) above), so there is
+  // nothing for it to be a fraction of.
   // ==========================================================================
   {
     const CanvasPanDelta d = canvasPanForPreciseWheel(3.0f, -2.0f);
-    check(near(d.dx, 3.0f, 1e-6f) && near(d.dy, -2.0f, 1e-6f),
-          "canvas pan: 1:1 with the wheel sample, same as a mouse-drag pan's "
-          "1:1 use of MouseDelta");
+    check(near(d.dx, 3.0f * kCanvasPanSpeedFactor, 1e-4f) &&
+              near(d.dy, -2.0f * kCanvasPanSpeedFactor, 1e-4f),
+          "canvas pan: kCanvasPanSpeedFactor times the wheel sample, hand-computed");
+    check(kCanvasPanSpeedFactor > 1.0f,
+          "canvas pan: the speed factor is a genuine SPEED-UP (> 1.0), not accidentally "
+          "1.0 (no change from before this track) or < 1.0 (a further slowdown, the "
+          "opposite of this track's brief)");
     check(!near(canvasPanForPreciseWheel(1.0f, 0.0f).dx, kPreciseScrollFraction, 1e-6f),
           "canvas pan: NOT discounted by kPreciseScrollFraction -- that constant is "
           "specific to competing against a panel's notch-sized step, which canvas "
           "pan never does");
+    check(near(canvasPanForPreciseWheel(0.0f, 0.0f).dx, 0.0f, 1e-6f) &&
+              near(canvasPanForPreciseWheel(0.0f, 0.0f).dy, 0.0f, 1e-6f),
+          "canvas pan: a zero sample on both axes is a genuine no-op");
+    // Sign follows the delta on both axes, independently -- a diagonal
+    // trackpad swipe must not have one axis silently reflect the other.
+    check(near(canvasPanForPreciseWheel(-5.0f, 7.0f).dx, -5.0f * kCanvasPanSpeedFactor, 1e-4f) &&
+              near(canvasPanForPreciseWheel(-5.0f, 7.0f).dy, 7.0f * kCanvasPanSpeedFactor, 1e-4f),
+          "canvas pan: sign follows each axis independently");
+    // The "fixed screen-pixel factor, not scaled by zoom" property this
+    // function's header comment argues for -- the SAME wheel sample must
+    // produce the SAME pan delta regardless of what st.view.zoom happens to
+    // be, since `canvasPanForPreciseWheel()` does not even take zoom as a
+    // parameter. Asserted anyway, explicitly, so a future edit that tried to
+    // thread a zoom argument through and scale by it would have to change
+    // this test on purpose rather than by accident.
+    const CanvasPanDelta atOneSample = canvasPanForPreciseWheel(4.0f, -1.5f);
+    for (const float pretendZoom : {0.1f, 1.0f, 8.0f}) {
+      (void)pretendZoom;  // canvasPanForPreciseWheel has no zoom parameter to vary
+      const CanvasPanDelta again = canvasPanForPreciseWheel(4.0f, -1.5f);
+      check(near(again.dx, atOneSample.dx, 1e-6f) && near(again.dy, atOneSample.dy, 1e-6f),
+            "canvas pan: the SAME wheel sample gives the SAME screen-pixel pan delta "
+            "every time -- zoom-independent, as ui/MacPaintUI.cpp's own screen-space "
+            "panX/panY composition requires");
+    }
+  }
+
+  // ==========================================================================
+  // (g) canvasRotationRadiansForTrackpad(): sign (this function's header
+  // comment has the full derivation -- NSEvent.rotation counterclockwise-
+  // positive, CanvasView::rotation clockwise-positive on screen, so the
+  // mapping negates) and a zero-sample no-op.
+  // ==========================================================================
+  {
+    check(near(canvasRotationRadiansForTrackpad(0.0f), 0.0f, 1e-6f),
+          "trackpad rotate: a zero-degree sample is a genuine no-op");
+    // 90 degrees counterclockwise (NSEvent.rotation == +90) must DECREASE
+    // view.rotation (clockwise-positive) by pi/2 -- hand-computed, not just
+    // "some negative number".
+    const float kPiHalf = 1.5707963267948966f;
+    check(near(canvasRotationRadiansForTrackpad(90.0f), -kPiHalf, 1e-4f),
+          "trackpad rotate: +90 degrees (counterclockwise fingers) maps to -pi/2 "
+          "(view.rotation moves counterclockwise on screen -- hand-computed)");
+    check(near(canvasRotationRadiansForTrackpad(-45.0f), kPiHalf * 0.5f, 1e-4f),
+          "trackpad rotate: -45 degrees (clockwise fingers) maps to +pi/4 (view.rotation "
+          "moves clockwise on screen, the same sense the R+drag gesture already uses)");
+    // Monotonic and sign-reversing: a bigger counterclockwise finger twist
+    // must not produce a smaller (or same-signed) view.rotation change.
+    check(canvasRotationRadiansForTrackpad(30.0f) < canvasRotationRadiansForTrackpad(10.0f) &&
+              canvasRotationRadiansForTrackpad(10.0f) < canvasRotationRadiansForTrackpad(0.0f) &&
+              canvasRotationRadiansForTrackpad(0.0f) < canvasRotationRadiansForTrackpad(-10.0f),
+          "trackpad rotate: strictly monotonically DEcreasing in the input degrees -- "
+          "the negation holds across the whole range, not just at the two hand-computed "
+          "points above");
+  }
+
+  // ==========================================================================
+  // (h) wrapRotationRadians(): the canonical range is (-pi, pi], approached
+  // from both directions, plus the in-range no-op case.
+  // ==========================================================================
+  {
+    const float kPi = 3.14159265358979323846f;
+    check(near(wrapRotationRadians(0.0f), 0.0f, 1e-4f),
+          "wrap: zero is already canonical and stays zero");
+    check(near(wrapRotationRadians(kPi * 0.5f), kPi * 0.5f, 1e-4f),
+          "wrap: a value already inside (-pi, pi] passes through unchanged");
+    check(near(wrapRotationRadians(kPi), kPi, 1e-3f),
+          "wrap: +pi itself is canonical (the range's own closed end) and stays +pi");
+    check(near(wrapRotationRadians(-kPi), kPi, 1e-3f),
+          "wrap: -pi (excluded from the range) wraps to its equivalent +pi, not left as -pi");
+    check(near(wrapRotationRadians(kPi + 0.1f), -kPi + 0.1f, 1e-3f),
+          "wrap: just past +pi wraps around to just past -pi (positive overflow)");
+    check(near(wrapRotationRadians(-kPi - 0.1f), kPi - 0.1f, 1e-3f),
+          "wrap: just past -pi wraps around to just past +pi (negative overflow)");
+    check(near(wrapRotationRadians(5.0f * kPi + 0.2f), -kPi + 0.2f, 1e-3f),
+          "wrap: several full turns past +pi still lands in (-pi, pi], not merely one "
+          "turn's worth -- the fmod-based implementation must not assume a single wrap "
+          "is ever enough, which a naive one-shot +=/-= kTwoPi would");
+    // Every wrapped output actually lands in the canonical range, swept
+    // across a spread of inputs rather than a few hand-picked points.
+    bool allInRange = true;
+    for (float r = -20.0f; r <= 20.0f; r += 0.37f) {
+      const float w = wrapRotationRadians(r);
+      if (!(w > -kPi - 1e-3f && w <= kPi + 1e-3f)) allInRange = false;
+    }
+    check(allInRange, "wrap: every output across a wide sweep of inputs lands in "
+                      "(-pi, pi], not merely the hand-picked cases above");
   }
 
   // --- Smoothing must actually SMOOTH -----------------------------------

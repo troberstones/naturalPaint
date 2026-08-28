@@ -328,4 +328,40 @@ inline constexpr uint64_t kPaintSimMaxTexels = 1024ull * 1024ull;
 CanvasDimensions paintSimDimensionsFor(const OpenDocument* doc, uint32_t fallbackW,
                                        uint32_t fallbackH) noexcept;
 
+// ==========================================================================
+// 5. The whole-view reset -- track11/pan-rotate-reset, "add a view reset
+// with a hotkey"
+// ==========================================================================
+//
+// `MenuAction::ResetRotation` (`ui/MenuModel.hpp`, `Shift+R`) already exists
+// and already resets exactly one field, `rotation`. There was no command
+// that reset the WHOLE view -- zoom left wherever a session's wheel-zoom/
+// pinch/scrubby-zoom left it, pan left wherever a drag left it, both mirrors
+// left toggled -- short of quitting and reopening. `MenuAction::ResetView`
+// (`Shift+Cmd+0`, chosen to sit next to `Cmd+0` "Fit to Window" and `Cmd+1`
+// "100%", the two existing single-purpose view commands) is that command,
+// and folds `Shift+R`'s own reset in rather than leaving two overlapping
+// "reset something" actions that disagree about what "reset" means.
+//
+// **Six fields, not eight, and both directions matter.** `CanvasView`
+// (`app/AppState.hpp`) has EIGHT fields: zoom, panX, panY, mirrorX, mirrorY,
+// rotation, grayscale, grade. This resets the first six -- the *navigation*
+// state -- and deliberately leaves `grayscale`/`grade` untouched: those are
+// preview toggles a user switched on explicitly through their own section
+// of the UI, not view geometry, and "reset my scroll position" silently
+// killing an in-progress grade preview would surprise rather than help.
+// Getting either direction wrong is a real bug this function's own selftest
+// case is written to catch -- missing `mirrorY` (leaves a mirrored canvas
+// silently mirrored after "reset") is the headline example, but silently
+// clearing `grade` too would be the opposite mistake, equally worth an
+// assertion.
+//
+// Six fields are set explicitly below rather than `CanvasView{}` (which
+// would also reset `grayscale`/`grade` today, and would silently start
+// resetting whatever NINTH field a future PR adds to the struct without
+// anyone revisiting this function) -- so leaving one of the six out, or
+// letting a ninth field ride along unnoticed, is a diff someone has to
+// write on purpose, not a default nobody chose.
+CanvasView resetCanvasView(const CanvasView& current) noexcept;
+
 }  // namespace np

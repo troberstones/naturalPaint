@@ -77,4 +77,15 @@ CanvasDimensions paintSimDimensionsFor(const OpenDocument* doc, uint32_t fallbac
   return CanvasDimensions{static_cast<float>(fallbackW), static_cast<float>(fallbackH)};
 }
 
+CanvasView resetCanvasView(const CanvasView& current) noexcept {
+  CanvasView v = current;  // start from current: grayscale/grade ride along untouched
+  v.zoom = 1.0f;
+  v.panX = 0.0f;
+  v.panY = 0.0f;
+  v.mirrorX = false;
+  v.mirrorY = false;
+  v.rotation = 0.0f;
+  return v;
+}
+
 }  // namespace np

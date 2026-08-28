@@ -3739,6 +3739,11 @@ bool runSaveReadbackTest();
 //    regression of the code that reads them stayed green.
 //  - `toolZoomsView()`: true for `Tool::Zoom`, false for a sample of tools
 //    with no zoom handler.
+//  - `resetCanvasView()` (track11/pan-rotate-reset, "add a view reset with a
+//    hotkey"): all six of `CanvasView`'s navigation fields (zoom/pan/mirror/
+//    rotation) return to identity, `grayscale`/`grade` are left untouched --
+//    both directions asserted, since missing a field on the way IN and
+//    resetting one that should stay put on the way OUT are equally real bugs.
 bool runZoomAndSizeTest();
 
 // ---------------------------------------------------------------------------
@@ -3776,6 +3781,22 @@ bool runCanvasDimensionsTest();
 // property specifically for a pinch gesture. Headless: `--selftest` cannot
 // reach the SDL/ImGui dispatch sites this replaces (F4), which is why the
 // decision logic was pulled out into functions this can call directly.
+//
+// track11/pan-rotate-reset ("trackpad panning is too slow" / "add trackpad
+// rotation") extends this same suite rather than adding a new one:
+//  - `canvasPanForPreciseWheel()`: now `kCanvasPanSpeedFactor`x the raw
+//    delta rather than 1:1 -- checked at several zoom levels to confirm it
+//    stays a FIXED screen-pixel factor (deliberately not scaled by zoom; see
+//    this function's header comment for why that is the right call).
+//  - `canvasRotationRadiansForTrackpad()`: sign (a positive/counterclockwise
+//    `NSEvent.rotation` sample decreases `view.rotation`, matching the
+//    existing `R`+drag gesture's own clockwise-positive convention) and a
+//    zero-sample no-op.
+//  - `wrapRotationRadians()`: wraps past +-pi from both directions, and is a
+//    no-op for a value already inside (-pi, pi].
+//  - `wheelDeltaIsPrecise()` re-asserted still distinguishes a notch from a
+//    trackpad sample after the above changes -- the classifier this whole
+//    file exists for did not quietly stop being exercised by the new code.
 bool runWheelInputTest();
 // track10/feel: PaintCopilot §3.2 (arXiv:2605.20941)'s two pressure-feel
 // contributions -- brush/Dynamics.hpp's own header comment on

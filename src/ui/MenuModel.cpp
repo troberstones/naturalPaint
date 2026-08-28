@@ -155,6 +155,15 @@ const MenuItemSpec* specTable() {
     set(MenuAction::MirrorX, "Mirror Left/Right", "F");
     set(MenuAction::MirrorY, "Mirror Up/Down", "Shift+F");
     set(MenuAction::ResetRotation, "Reset Rotation", "Shift+R");
+    // track11/pan-rotate-reset: the whole-view reset -- zoom, pan, rotation
+    // AND both mirrors back to identity in one command (app/ZoomAndSize.hpp's
+    // `resetCanvasView()` has the field-by-field reasoning for exactly which
+    // six of CanvasView's eight fields this touches). `Shift+Cmd+0` sits next
+    // to `Cmd+0` "Fit to Window" and `Cmd+1` "100%" above -- the other two
+    // single-purpose view commands -- rather than reusing `Shift+R`, which
+    // stays bound to `ResetRotation` alone.
+    set(MenuAction::ResetView, "Reset View", "Shift+Cmd+0",
+        MenuKeyEquivalent{'0', kMenuModCmd | kMenuModShift, "reset_view"});
 
     set(MenuAction::GrayscalePreview, "Grayscale Preview", "Cmd+Y",
         MenuKeyEquivalent{'y', kMenuModCmd, "toggle_grayscale"});
@@ -359,6 +368,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::MirrorX: return "MirrorX";
     case MenuAction::MirrorY: return "MirrorY";
     case MenuAction::ResetRotation: return "ResetRotation";
+    case MenuAction::ResetView: return "ResetView";
     case MenuAction::GrayscalePreview: return "GrayscalePreview";
     case MenuAction::Rulers: return "Rulers";
     case MenuAction::Navigator: return "Navigator";
@@ -737,6 +747,7 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     v.push_back(check(MenuAction::MirrorX, ctx.mirrorX));
     v.push_back(check(MenuAction::MirrorY, ctx.mirrorY));
     v.push_back(item(MenuAction::ResetRotation));
+    v.push_back(item(MenuAction::ResetView));
     v.push_back(separator());
     v.push_back(check(MenuAction::GrayscalePreview, ctx.grayscale));
     v.push_back(separator());
