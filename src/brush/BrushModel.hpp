@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "brush/CoverageBlend.hpp"
 #include "brush/Deposit.hpp"
 #include "brush/Variance.hpp"
 
@@ -69,30 +70,6 @@ struct PatternRef {
   bool empty() const noexcept { return id.empty(); }
 };
 
-// How two coverage values combine.
-//
-// **One enum for BOTH the Dual Brush and the Texture panel**, because they are
-// the same operation: take the tip's coverage and a second coverage, return
-// one. Keeping two enums would mean two switches, two sets of formulas, and
-// two places to add Linear Burn. Measured need: `BlnM` across 66 dual-brush
-// presets wants Multiply, Overlay, Color Burn, Hard Mix, Linear Burn, Color
-// Dodge and Linear Height; `textureBlendMode` across 84 wants Subtract,
-// Height, Color Burn, Hard Mix, Color Dodge, Linear Height and Darken. The
-// union is this enum; the intersection is most of it.
-enum class CoverageBlend : uint8_t {
-  Multiply,      // Mltp -- the four this build already composites
-  Overlay,       // Ovrl
-  ColorBurn,     // CBrn
-  HardMix,       // hMix / hardMix
-  LinearBurn,    // linearBurn
-  ColorDodge,    // CDdg
-  Darken,        // Drkn
-  Subtract,      // Sbtr
-  Height,        // Hght
-  LinearHeight,  // linearHeight
-};
-
-const char* coverageBlendName(CoverageBlend blend) noexcept;
 
 // Photoshop's "Brush Tip Shape".
 struct PsTipShape {

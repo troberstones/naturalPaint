@@ -182,7 +182,7 @@ void printPanelCoverage(const AbrImportResult& r) {
       {"Shape Dynamics", 0, 0, ""},
       {"Scattering", 0, 0, "Count is read but every dab still lands once"},
       {"  - Count > 1", 0, 0, "dabs per position; not yet stamped"},
-      {"Texture", 0, 0, "read; the deposit still uses procedural grain"},
+      {"Texture", 0, 0, ""},
       {"Dual Brush", 0, 0, ""},
       {"Color Dynamics", 0, 0, "read; no engine target"},
       {"Transfer", 0, 0, "read; flow/opacity not yet applied"},
@@ -218,6 +218,11 @@ void printPanelCoverage(const AbrImportResult& r) {
   // knows, because it has been counting its own losses all along.
   rows[kDual].rendered =
       rows[kDual].requested - r.dualBrushes - r.dualBrushUnsupportedBlend;
+  // Texture's rendered count is the import's own, for the same reason the
+  // Dual Brush's is: it is the only party that knows which paper resolved.
+  rows[kTexture].rendered = r.texturesApplied;
+  if (r.texturesNotApplied > 0) rows[kTexture].note = "see the notes for which papers went missing";
+  else if (r.texturesApplied > 0) rows[kTexture].note = "";
 
   std::printf("\n-- panel coverage: what the file asks for, what this build does --\n");
   std::printf("%-20s %9s %9s  %s\n", "panel", "asked by", "rendered", "note");
@@ -230,7 +235,10 @@ void printPanelCoverage(const AbrImportResult& r) {
     }
     std::printf("%-20s %9zu %9zu  %s\n", row.name, row.requested, row.rendered, row.note);
   }
-  std::printf("(of %zu presets)\n", r.models.size());
+  std::printf("(of %zu presets; %zu pattern(s) decoded from `patt`", r.models.size(),
+              r.patternsDecoded);
+  if (r.patternsSkipped > 0) std::printf(", %zu skipped", r.patternsSkipped);
+  std::printf(")\n");
 }
 
 }  // namespace

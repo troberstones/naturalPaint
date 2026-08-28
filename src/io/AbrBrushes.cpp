@@ -9,6 +9,7 @@
 #include "io/Descriptor.hpp"
 #include "brush/BrushModel.hpp"
 #include "io/PackBits.hpp"
+#include "io/PsPatterns.hpp"
 
 namespace np {
 namespace {
@@ -330,6 +331,115 @@ AbrTipShape readAbrTipShape(
   return t;
 }
 
+// `BlnM` (Dual Brush) and `textureBlendMode` (Texture) share this table,
+// because they are the same question asked in two panels: how a second
+// coverage value combines with the first (brush/CoverageBlend.hpp). An id not
+// listed is left at the caller's default rather than approximated.
+//
+// **Provenance, per id, kept in full because the confidence genuinely
+// differs between them** -- this began as the Dual Brush's own if/else chain
+// and the evidence is the reason each line is here:
+//
+// **`Mltp`/`Ovrl` cross-checked against `psd_tools.terminology`
+// (Adobe's own Action Descriptor `BlnM` enumeration, independently
+// reverse-engineered), not against a real `.abr`** -- this build's
+// PLAN.md forbids shipping one, and no `dualBrush.BlnM` field has been
+// read from a real Kyle Webster file the way `AbrControl`'s own header
+// reads a real `bVTy` off "Blot Bot Perfecto". Treat this pair with the
+// same "inferred, not observed" caution that header gives control 7,
+// and re-check against a real file's bytes before trusting it further.
+// **`CBrn` -- Color Burn. HIGH confidence, TWO independent sources,
+// both giving the identical terse id in the identical enum family
+// `Mltp`/`Ovrl` already came from:**
+//   1. `psd_tools/terminology.py`'s `Enum` class -- the SAME class,
+//      not a sibling one -- carries `ColorBurn = b"CBrn"` alongside
+//      `Multiply = b"Mltp"` and `Overlay = b"Ovrl"`.
+//   2. `ag-psd` (Agamnentzar/ag-psd, `src/descriptor.ts`)'s `BlnM`
+//      enum -- built specifically to decode/encode THIS field
+//      (`db.BlnM` for a `dualBrush`, `fx['Md  ']` for a layer effect,
+//      the same enum both places) -- has `'color burn': 'CBrn'`.
+// No caution needed the way `hMix` below needs it: this id is short,
+// matches the naming convention of every other original-era mode in
+// both tables (`Drkn`, `Lghn`, `Scrn`, `Dfrn`, `Xclu`...), and both
+// sources that use it are purpose-built for exactly this field.
+// **`hMix` -- Hard Mix. MEDIUM confidence, and the caveat is worth
+// keeping rather than smoothing over.** `psd_tools/constants.py`'s
+// `BlendMode` enum (a DIFFERENT table from `terminology.py`'s `Enum`
+// above -- it serialises a PSD layer record's fixed 4-byte
+// blend-mode-key field, not an Action Descriptor value) has
+// `HARD_MIX = b"hMix"`. That table is NOT purpose-built for `BlnM`
+// and its vocabulary provably differs from `terminology.py`'s for the
+// SAME concept -- it spells Color Burn `b"idiv"`, not `CBrn` -- so
+// `hMix` being real in ONE Adobe wire format does not by itself prove
+// it is what `dualBrush.BlnM` emits. Independently, `ag-psd`'s `BlnM`
+// enum (the one built for this exact field, cited above) spells Hard
+// Mix the LONG way, `'hard mix': 'hardMix'`, alongside every other
+// "second-generation" mode added after the original terse set
+// (`linearBurn`, `darkerColor`, `linearDodge`, `lighterColor`,
+// `vividLight`, `linearLight`, `pinLight`, `blendSubtraction`,
+// `blendDivide`) -- a pattern `hMix` breaks and `hardMix` fits.
+//
+// **The tie is broken by the bytes, first-hand.** Scanned both sample
+// packs directly: `threeOtherBrushes.abr` contains the literal
+// `hMix` twice and `hardMix` zero times, and both occurrences sit at
+// the end of the same key run every Dual Brush descriptor in these
+// files has -- `Dmtr Hrdn Angl Rndn Spcn Intr flipX flipY
+// sampledData`, then `BlnM enum`, then `useScatter` -- so this is
+// `dualBrush.BlnM` and not some other descriptor's blend field. `hMix`
+// is therefore the spelling that actually occurs; `hardMix` is kept as
+// an accepted alias only because `ag-psd` documents it and accepting an
+// id that never arrives costs nothing, while refusing one that does
+// costs a brush. The MEANING was never in question either way -- both
+// spellings mean Hard Mix in every source checked, and none suggests a
+// third reading.
+// **`linearHeight` -- deliberately NOT mapped.** `ag-psd`'s `BlnM`
+// enum (again, the table built for this exact field) has
+// `'linear height': 'linearHeight'`, with its own "// used in ABR"
+// comment -- so this id is confirmed real and confirmed to appear in
+// exactly this context, not a typo for "Linear Light". Confirmed
+// first-hand too: `runny_inkers.abr` carries `linearHeight` twice, both
+// times at the end of the same Dual Brush key run described for `hMix`
+// above, so it genuinely is a `dualBrush.BlnM` value and not a
+// Texture-panel field that merely looks like one. But "Linear
+// Height" is not one of Photoshop's paint/layer blend modes at all:
+// the Krita `abr_brush_importer` plugin's own texture-mode table
+// (`kpp_writer.py`, `_map_ps_texture_mode()`) lists "Height" and
+// "Linear Height" as TEXTURE-panel compositing modes -- how a
+// pattern's grayscale HEIGHT MAP blends into a stroke, not how two
+// coverage discs blend into each other. No source found gives that a
+// per-pixel formula, so this id is left unmapped and falls through to
+// `dualBrushUnsupportedBlend` below, honestly, rather than reusing one
+// of the four color-blend formulas as a guess.
+//
+// **What changed when the two panels merged onto one table.** `linearHeight`
+// is now MAPPED rather than dropped. The reasoning above still stands
+// unaltered -- no source gives it a per-pixel formula and this build still
+// refuses to invent one -- but there is a difference between "cannot read
+// this field" and "read it, and cannot render what it says". Mapping it lets
+// the importer NAME what it found and count it; `coverageBlendIsRenderable()`
+// is the question a caller asks before using one, and it is false for
+// `linearHeight` alone. `Hght` ("Height", 31 of the 84 textured presets and
+// the most common texture blend) IS mapped, to Zimmer's subtractive
+// height-vs-pressure comparison, which is stated as an approximation where it
+// is implemented rather than as a decoded formula.
+// `BlnM` and `textureBlendMode` share this table, because they are the same
+// question asked in two panels (brush/BrushModel.hpp's `CoverageBlend`). Every
+// id below was observed in a real pack; an id not here is left at the caller's
+// default rather than approximated.
+bool coverageBlendFromId(const std::string& id, CoverageBlend& out) noexcept {
+  if (id == "Mltp") { out = CoverageBlend::Multiply; return true; }
+  if (id == "Ovrl") { out = CoverageBlend::Overlay; return true; }
+  if (id == "CBrn") { out = CoverageBlend::ColorBurn; return true; }
+  if (id == "hMix" || id == "hardMix") { out = CoverageBlend::HardMix; return true; }
+  if (id == "linearBurn") { out = CoverageBlend::LinearBurn; return true; }
+  if (id == "CDdg") { out = CoverageBlend::ColorDodge; return true; }
+  if (id == "Drkn") { out = CoverageBlend::Darken; return true; }
+  if (id == "Sbtr") { out = CoverageBlend::Subtract; return true; }
+  if (id == "Hght") { out = CoverageBlend::Height; return true; }
+  if (id == "linearHeight") { out = CoverageBlend::LinearHeight; return true; }
+  return false;
+}
+
 BrushPreset presetFromDescriptor(
     const DescriptorRef& node, AbrImportResult& result,
     const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& sampledTips) {
@@ -409,84 +519,20 @@ BrushPreset presetFromDescriptor(
     // whether this build can composite it, and the three outcomes below
     // (built / understood-but-unsupported / nothing usable) are told apart by
     // what this enumerated read produces.
+    // One table, `coverageBlendFromId()` above, shared with the Texture
+    // panel's `textureBlendMode` -- see its comment for where every id came
+    // from and how confident each one is. `linearHeight` is now MAPPED rather
+    // than dropped: naming a mode this build cannot render is strictly better
+    // than reporting an unreadable field, and `coverageBlendIsRenderable()`
+    // is the question asked here in its place.
     const auto blendEnum = dual.field("BlnM").asEnumerated();
     std::optional<DualBrushBlend> blend;
     if (blendEnum) {
-      // **`Mltp`/`Ovrl` cross-checked against `psd_tools.terminology`
-      // (Adobe's own Action Descriptor `BlnM` enumeration, independently
-      // reverse-engineered), not against a real `.abr`** -- this build's
-      // PLAN.md forbids shipping one, and no `dualBrush.BlnM` field has been
-      // read from a real Kyle Webster file the way `AbrControl`'s own header
-      // reads a real `bVTy` off "Blot Bot Perfecto". Treat this pair with the
-      // same "inferred, not observed" caution that header gives control 7,
-      // and re-check against a real file's bytes before trusting it further.
-      if (blendEnum->valueId == "Mltp") blend = DualBrushBlend::Multiply;
-      else if (blendEnum->valueId == "Ovrl") blend = DualBrushBlend::Overlay;
-      // **`CBrn` -- Color Burn. HIGH confidence, TWO independent sources,
-      // both giving the identical terse id in the identical enum family
-      // `Mltp`/`Ovrl` already came from:**
-      //   1. `psd_tools/terminology.py`'s `Enum` class -- the SAME class,
-      //      not a sibling one -- carries `ColorBurn = b"CBrn"` alongside
-      //      `Multiply = b"Mltp"` and `Overlay = b"Ovrl"`.
-      //   2. `ag-psd` (Agamnentzar/ag-psd, `src/descriptor.ts`)'s `BlnM`
-      //      enum -- built specifically to decode/encode THIS field
-      //      (`db.BlnM` for a `dualBrush`, `fx['Md  ']` for a layer effect,
-      //      the same enum both places) -- has `'color burn': 'CBrn'`.
-      // No caution needed the way `hMix` below needs it: this id is short,
-      // matches the naming convention of every other original-era mode in
-      // both tables (`Drkn`, `Lghn`, `Scrn`, `Dfrn`, `Xclu`...), and both
-      // sources that use it are purpose-built for exactly this field.
-      else if (blendEnum->valueId == "CBrn") blend = DualBrushBlend::ColorBurn;
-      // **`hMix` -- Hard Mix. MEDIUM confidence, and the caveat is worth
-      // keeping rather than smoothing over.** `psd_tools/constants.py`'s
-      // `BlendMode` enum (a DIFFERENT table from `terminology.py`'s `Enum`
-      // above -- it serialises a PSD layer record's fixed 4-byte
-      // blend-mode-key field, not an Action Descriptor value) has
-      // `HARD_MIX = b"hMix"`. That table is NOT purpose-built for `BlnM`
-      // and its vocabulary provably differs from `terminology.py`'s for the
-      // SAME concept -- it spells Color Burn `b"idiv"`, not `CBrn` -- so
-      // `hMix` being real in ONE Adobe wire format does not by itself prove
-      // it is what `dualBrush.BlnM` emits. Independently, `ag-psd`'s `BlnM`
-      // enum (the one built for this exact field, cited above) spells Hard
-      // Mix the LONG way, `'hard mix': 'hardMix'`, alongside every other
-      // "second-generation" mode added after the original terse set
-      // (`linearBurn`, `darkerColor`, `linearDodge`, `lighterColor`,
-      // `vividLight`, `linearLight`, `pinLight`, `blendSubtraction`,
-      // `blendDivide`) -- a pattern `hMix` breaks and `hardMix` fits.
-      //
-      // **The tie is broken by the bytes, first-hand.** Scanned both sample
-      // packs directly: `threeOtherBrushes.abr` contains the literal
-      // `hMix` twice and `hardMix` zero times, and both occurrences sit at
-      // the end of the same key run every Dual Brush descriptor in these
-      // files has -- `Dmtr Hrdn Angl Rndn Spcn Intr flipX flipY
-      // sampledData`, then `BlnM enum`, then `useScatter` -- so this is
-      // `dualBrush.BlnM` and not some other descriptor's blend field. `hMix`
-      // is therefore the spelling that actually occurs; `hardMix` is kept as
-      // an accepted alias only because `ag-psd` documents it and accepting an
-      // id that never arrives costs nothing, while refusing one that does
-      // costs a brush. The MEANING was never in question either way -- both
-      // spellings mean Hard Mix in every source checked, and none suggests a
-      // third reading.
-      else if (blendEnum->valueId == "hMix" || blendEnum->valueId == "hardMix")
-        blend = DualBrushBlend::HardMix;
-      // **`linearHeight` -- deliberately NOT mapped.** `ag-psd`'s `BlnM`
-      // enum (again, the table built for this exact field) has
-      // `'linear height': 'linearHeight'`, with its own "// used in ABR"
-      // comment -- so this id is confirmed real and confirmed to appear in
-      // exactly this context, not a typo for "Linear Light". Confirmed
-      // first-hand too: `runny_inkers.abr` carries `linearHeight` twice, both
-      // times at the end of the same Dual Brush key run described for `hMix`
-      // above, so it genuinely is a `dualBrush.BlnM` value and not a
-      // Texture-panel field that merely looks like one. But "Linear
-      // Height" is not one of Photoshop's paint/layer blend modes at all:
-      // the Krita `abr_brush_importer` plugin's own texture-mode table
-      // (`kpp_writer.py`, `_map_ps_texture_mode()`) lists "Height" and
-      // "Linear Height" as TEXTURE-panel compositing modes -- how a
-      // pattern's grayscale HEIGHT MAP blends into a stroke, not how two
-      // coverage discs blend into each other. No source found gives that a
-      // per-pixel formula, so this id is left unmapped and falls through to
-      // `dualBrushUnsupportedBlend` below, honestly, rather than reusing one
-      // of the four color-blend formulas as a guess.
+      CoverageBlend parsed = CoverageBlend::Multiply;
+      if (coverageBlendFromId(blendEnum->valueId, parsed) &&
+          coverageBlendIsRenderable(parsed)) {
+        blend = parsed;
+      }
     }
 
     const DescriptorRef dualBrsh = dual.field("Brsh");
@@ -604,23 +650,6 @@ void readRawField(const DescriptorRef& owner, const char* key, float& out) {
   if (unitValue(owner.field(key), d)) out = static_cast<float>(d);
 }
 
-// `BlnM` and `textureBlendMode` share this table, because they are the same
-// question asked in two panels (brush/BrushModel.hpp's `CoverageBlend`). Every
-// id below was observed in a real pack; an id not here is left at the caller's
-// default rather than approximated.
-bool coverageBlendFromId(const std::string& id, CoverageBlend& out) noexcept {
-  if (id == "Mltp") { out = CoverageBlend::Multiply; return true; }
-  if (id == "Ovrl") { out = CoverageBlend::Overlay; return true; }
-  if (id == "CBrn") { out = CoverageBlend::ColorBurn; return true; }
-  if (id == "hMix" || id == "hardMix") { out = CoverageBlend::HardMix; return true; }
-  if (id == "linearBurn") { out = CoverageBlend::LinearBurn; return true; }
-  if (id == "CDdg") { out = CoverageBlend::ColorDodge; return true; }
-  if (id == "Drkn") { out = CoverageBlend::Darken; return true; }
-  if (id == "Sbtr") { out = CoverageBlend::Subtract; return true; }
-  if (id == "Hght") { out = CoverageBlend::Height; return true; }
-  if (id == "linearHeight") { out = CoverageBlend::LinearHeight; return true; }
-  return false;
-}
 
 PsTipShape tipShapeFromDescriptor(
     const DescriptorRef& brsh,
@@ -779,6 +808,58 @@ BrushModel brushModelFromDescriptor(
   m.brushPose = readBoolField(brush, "useBrushPose");
 
   return m;
+}
+
+
+// The Texture panel, into `GrainParams`.
+//
+// **This is the one place a `.abr`'s own paper reaches the deposit**, and it
+// goes through `BrushPreset::grain` rather than waiting for the model to be
+// consumed -- because `grain` already exists, is already persisted by
+// app/UserBrushLibraryStore, and is already sampled by all four deposit
+// routes. 84 of the 101 presets measured switch Texture on; before this every
+// one of them painted on the procedural lattice or on nothing.
+//
+// Returns false, with `grain` untouched, when the brush names a pattern this
+// file's `patt` block does not contain or whose blend mode has no formula --
+// the caller counts those rather than substituting a different paper, for the
+// same reason a missing sampled tip falls back to a round dab loudly.
+bool grainFromTexture(const PsTexture& texture,
+                      const std::unordered_map<std::string, std::shared_ptr<const PaperField>>&
+                          patternsById,
+                      GrainParams& grain, std::string& why) {
+  if (!texture.enabled) return false;
+  if (texture.pattern.id.empty()) {
+    why = "Texture is on but names no pattern";
+    return false;
+  }
+  const auto found = patternsById.find(texture.pattern.id);
+  if (found == patternsById.end() || found->second == nullptr) {
+    why = "Texture names pattern '" + texture.pattern.name +
+          "' which this file's `patt` block does not contain";
+    return false;
+  }
+  if (!coverageBlendIsRenderable(texture.blend)) {
+    why = std::string("Texture's blend mode '") + coverageBlendName(texture.blend) +
+          "' has no per-pixel formula in any source consulted";
+    return false;
+  }
+
+  grain.enabled = true;
+  grain.field = found->second;
+  grain.depth = clampf(texture.depth, 0.0f, 1.0f);
+  // Photoshop's Scale is a percentage of the pattern's own size. Clamped away
+  // from zero because a zero scale is a division, and clamped at the top
+  // because a pattern stretched a hundredfold is a flat colour, not paper.
+  grain.scale = clampf(texture.scalePercent / 100.0f, 0.01f, 16.0f);
+  grain.invert = texture.invert;
+  grain.brightness = clampf(texture.brightness / 100.0f, -1.0f, 1.0f);
+  grain.contrast = clampf(texture.contrast / 100.0f, -1.0f, 1.0f);
+  grain.blend = texture.blend;
+  // `strength` stays at its default 1.0: Photoshop's Texture panel has no
+  // second multiplier on the tip's coverage, so inventing one from `depth`
+  // would be this importer's opinion rather than the file's.
+  return true;
 }
 
 }  // namespace
@@ -1054,6 +1135,31 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
   // Absent or empty `samp` decodes to an empty map, same as a `.abr` with
   // only procedural brushes -- every `sampledData` lookup then misses, which
   // is the existing "not imported" path and not a new failure mode.
+  // The `patt` block, decoded once per import and keyed by the same UUID a
+  // brush's `Txtr` puts in `Idnt` -- verified against real packs, so the join
+  // needs nothing invented in between. Patterns no brush references are freed
+  // when this map goes out of scope; the referenced ones live on the presets
+  // that took a `shared_ptr` to them.
+  std::unordered_map<std::string, std::shared_ptr<const PaperField>> patternsById;
+  size_t pattAt = 0, pattLen = 0;
+  for (const AbrSection& section : table.sections)
+    if (section.key == "patt" && pattLen == 0) {
+      pattAt = section.at;
+      pattLen = section.length;
+    }
+  if (pattLen > 0) {
+    PsPatternResult pat = parseAbrPatterns(bytes.subspan(pattAt, pattLen));
+    result.patternsDecoded = pat.patterns.size();
+    result.patternsSkipped = pat.skipped;
+    for (PsPattern& q : pat.patterns) {
+      auto field = std::make_shared<PaperField>();
+      field->width = q.width;
+      field->height = q.height;
+      field->height8 = std::move(q.height8);
+      patternsById.emplace(std::move(q.id), std::move(field));
+    }
+  }
+
   std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>> tipsById;
   if (sampLen > 0) {
     for (AbrSampledTip& tip : parseAbrSampledTips(bytes.subspan(sampAt, sampLen), table.subversion))
@@ -1079,6 +1185,20 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     // The Photoshop-shaped model, filled alongside -- see the
     // `brushModelFromDescriptor()` block's own comment on why both, for now.
     result.models.push_back(brushModelFromDescriptor(list.child(i), tipsById));
+
+    // The Texture panel, resolved against this file's own patterns and
+    // attached to the preset that will paint with it.
+    const BrushModel& model = result.models.back();
+    BrushPreset& preset = result.presets.back();
+    if (model.texture.enabled) {
+      std::string why;
+      if (grainFromTexture(model.texture, patternsById, preset.grain, why)) {
+        ++result.texturesApplied;
+      } else {
+        ++result.texturesNotApplied;
+        result.notes.push_back({preset.name, why + " -- painting without paper texture"});
+      }
+    }
   }
 
   result.ok = true;

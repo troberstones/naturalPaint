@@ -150,6 +150,25 @@ struct AbrImportResult {
   // fired on it would carry no information -- the same discipline
   // `useDualBrush`'s own "present but off" case already applies below.
   size_t dualBrushCadenceNotHonoured = 0;
+
+  // --- The Texture panel -----------------------------------------------
+  //
+  // Patterns found in this file's `patt` block, and those its framing
+  // reached but would not decode (io/PsPatterns.hpp names the four ways).
+  // A pack with no `patt` at all -- threeOtherBrushes.abr carries one of
+  // length zero -- reports 0 and 0, which is a different fact from a pack
+  // whose patterns failed.
+  size_t patternsDecoded = 0;
+  size_t patternsSkipped = 0;
+
+  // Brushes whose Texture is ON and whose paper reached `BrushPreset::grain`,
+  // against those where it did not -- an id this file's `patt` does not
+  // contain, or a blend mode with no formula (`linearHeight`). A brush
+  // counted in the second paints on no paper at all and says so, rather than
+  // silently reading smoother than the original, which is what every one of
+  // the 84 textured presets did before this existed.
+  size_t texturesApplied = 0;
+  size_t texturesNotApplied = 0;
 };
 
 // Parse a whole `.abr` file.

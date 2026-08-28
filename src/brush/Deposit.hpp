@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 
+#include "brush/CoverageBlend.hpp"
 #include "brush/Grain.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/Pigment.hpp"
@@ -625,29 +626,23 @@ struct BrushTipBitmap {
 };
 
 // How a Dual Brush's second tip combines with the first (§2d), Photoshop's
-// `BlnM` on the `dualBrush` descriptor. Four members, each cross-checked
-// against an independent source before being added rather than assumed from
-// the shape of its wire id -- see `io/AbrBrushes.cpp`'s comment on the
-// `BlnM` mapping for where each of the four came from and at what
-// confidence. `io/AbrBrushes.cpp` still reads every OTHER `BlnM` value it
-// recognises as UNSUPPORTED rather than guessing
-// (`AbrImportResult::dualBrushUnsupportedBlend`), so this enum still never
-// needs an "other" member -- a `BrushTip::dualTip` is never set for a blend
-// mode this build cannot compute.
+// `BlnM` on the `dualBrush` descriptor.
 //
-// **`linearHeight` is a real `BlnM` id and is deliberately NOT a member
-// here.** It was one of three ids this enum grew to resolve; `io/AbrBrushes.cpp`
-// found a source for what it names -- Photoshop's Texture panel's "Linear
-// Height" compositing, a grayscale height-map blend -- but that is not a
-// colour/coverage blend mode at all, so no source gives it a per-pixel
-// formula that belongs in `combineDualCoverage()` below. A wrong guess here
-// would paint; staying in `dualBrushUnsupportedBlend` does not.
-enum class DualBrushBlend {
-  Multiply,
-  Overlay,
-  ColorBurn,
-  HardMix,
-};
+// **This is now an alias for `CoverageBlend`** (brush/CoverageBlend.hpp), not
+// a four-member enum of its own. The Dual Brush's `BlnM` and the Texture
+// panel's `textureBlendMode` are the same question asked in two panels, and
+// their id sets overlap heavily -- so one enum, one function, one place to add
+// a mode. The name survives because "the dual brush's blend" reads better at
+// the call sites than "the coverage blend" does.
+//
+// `linearHeight` is still refused rather than guessed at, and for the reason
+// it always was: it is a height-map blend with no per-pixel formula in any
+// source consulted, and a wrong guess here would PAINT. It is now a member of
+// the enum so the importer can NAME what it found, with
+// `coverageBlendIsRenderable()` the question a caller asks before using one.
+// It is the single largest unmapped mode -- 29 of the 66 dual-brush presets
+// measured name it.
+using DualBrushBlend = CoverageBlend;
 
 // One stamp of the brush tip: its shape, its load, and what it is loaded with.
 //

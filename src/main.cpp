@@ -1656,6 +1656,12 @@ int main(int argc, char** argv) {
     // brush/Variance: the one resolver behind all twelve of Photoshop's
     // Control/Jitter/Minimum/Fade groups.
     const bool varianceOk = np::runVarianceTest();
+    // brush/CoverageBlend: the shared Dual-Brush/Texture blend table, and the
+    // no-blend-creates-coverage invariant both of its callers stand on.
+    const bool coverageBlendOk = np::runCoverageBlendTest();
+    // brush/Grain's sampled `PaperField` -- a `.abr`'s own scanned paper under
+    // the brush -- and the three deposit routes that had no grain call at all.
+    const bool paperTextureOk = np::runPaperTextureTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
@@ -2180,7 +2186,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

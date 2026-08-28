@@ -1,5 +1,7 @@
 #include "brush/Deposit.hpp"
 
+#include "brush/CoverageBlend.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -220,36 +222,18 @@ float singleTipCoverage(const BrushTip& tip, float dx, float dy) noexcept {
 // jagged one, which this file's header calls "most of why an ink brush
 // reads granular rather than smooth" (§2d, opening paragraph).
 float combineDualCoverage(DualBrushBlend mode, float base, float second) noexcept {
-  switch (mode) {
-    case DualBrushBlend::Multiply:
-      return base * second;
-    case DualBrushBlend::Overlay:
-      return base < 0.5f ? 2.0f * base * second
-                         : 1.0f - 2.0f * (1.0f - base) * (1.0f - second);
-    case DualBrushBlend::ColorBurn:
-      // Standard Photoshop Color Burn, `base` as the "bottom": darkens
-      // `base` by `second`. The three-way form (rather than the bare
-      // `1 - (1-base)/second`) matches the reference this was checked
-      // against (Ryan Juckett's published HLSL translation of Photoshop's
-      // blend modes): `base >= 1` saturates white to stay white without
-      // dividing, and `second <= 0` is the formula's own pole, defined here
-      // as `0` -- darkening by NOTHING darkens NOTHING, not everything, which
-      // is also the branch's analytic continuation: as `second -> 0+`,
-      // `(1-base)/second -> +infinity`, `min(1, .) -> 1`, and `1 - 1 == 0`,
-      // so `0` is the limit, not an arbitrary choice made to avoid a
-      // division by zero.
-      if (base >= 1.0f) return 1.0f;
-      if (second <= 0.0f) return 0.0f;
-      return 1.0f - std::min(1.0f, (1.0f - base) / second);
-    case DualBrushBlend::HardMix:
-      // Standard Photoshop Hard Mix: a hard threshold on the sum,
-      // `(base + second >= 1) ? 1 : 0` (same reference as Color Burn above).
-      // The `base > 0.0f` guard is this function's own addition -- see the
-      // block comment above for why the bare threshold does not already
-      // satisfy `combineDualCoverage(HardMix, 0, second) == 0`.
-      return (base > 0.0f && base + second >= 1.0f) ? 1.0f : 0.0f;
-  }
-  return base;  // unreachable for a valid enumerator; see DualBrushBlend's own comment.
+  // **The formulas moved to brush/CoverageBlend.cpp, unchanged.** The Dual
+  // Brush and the Texture panel ask the same question -- combine two coverage
+  // values into one -- and this function's four modes were four of the ten
+  // the two panels between them name across the packs measured. Both of the
+  // guards this function carried and the shared one did not (Color Burn's
+  // saturated-base case, and Hard Mix's `base > 0`) went with them, because
+  // both are correct for grain too.
+  //
+  // Kept as a named function rather than replaced at every call site so that
+  // nothing about the dual-brush path churns for a change that is about where
+  // the arithmetic lives.
+  return applyCoverageBlend(mode, base, second);
 }
 
 bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept {

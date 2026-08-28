@@ -40,6 +40,8 @@ add_executable(naturalPaint
   app/selftest/PsPatterns.cpp
   app/selftest/GimpBrush.cpp
   app/selftest/Variance.cpp
+  app/selftest/CoverageBlend.cpp
+  app/selftest/PaperTexture.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
@@ -163,6 +165,7 @@ add_executable(naturalPaint
   app/WheelInput.cpp
   app/ZoomAndSize.cpp
   brush/BrushModel.cpp
+  brush/CoverageBlend.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
   brush/Grain.cpp

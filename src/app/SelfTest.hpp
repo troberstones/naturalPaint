@@ -1130,6 +1130,46 @@ bool runGimpBrushTest();
 // identity). Headless and GPU-free.
 bool runVarianceTest();
 
+// brush/CoverageBlend: the ten ways two coverage values combine into one --
+// the Dual Brush's `BlnM` and the Texture panel's `textureBlendMode`, which
+// are the same question asked in two panels and now share one table.
+//
+// Four of the arms MOVED here out of `combineDualCoverage()`, so this checks
+// them against expressions written out by hand rather than against the
+// function under test. And it pins the invariant BOTH callers depend on and
+// neither could recover from: **no blend may create coverage where the
+// primary has none** -- a second tip must not paint outside the first tip's
+// footprint, and `depositDab()` only visits texels `dabCoverage()` already
+// accepted. Exactly one mode can violate it (Hard Mix), which is why the
+// guard lives in the shared function.
+//
+// Pure arithmetic: no document, no tile, no GPU, and every asserted value
+// exact in binary floating point, so the comparisons are `==`.
+bool runCoverageBlendTest();
+
+// **A real scanned paper under the brush** -- `GrainParams::field`, and the
+// three deposit routes that never asked for grain at all.
+//
+// brush/Grain generates its height field procedurally (its own §0: the patent
+// names a stored table, this codebase ships no binary fixtures). A `.abr`
+// carries the real thing in its `patt` block -- 98-99% of the file's bytes,
+// named by 84 of the 101 presets measured -- and io/PsPatterns now decodes it.
+// Sections A-C are the sampling: nearest, wrapped at negative coordinates,
+// scaled, and shaped by brightness/contrast/invert in the panel's own order,
+// with a null field falling through to the procedural path bit for bit.
+//
+// **Sections D-F close a gap rather than guard a feature.** `grainCoverageAt()`
+// was called from the CPU Pigment deposit and the preview and NOWHERE else, so
+// paper texture worked on a Pigment layer and silently did nothing on an RGB
+// layer -- the layer an ordinary File > New selects. Those assertions fail on
+// the code as it stood.
+//
+// The field is a checkerboard at depth 1.0, not a scan and not a hash, so the
+// outcome is binary and exact: a peak texel takes no paint at all, a valley
+// takes it in full, and "the grain call is missing" reads as "the disc is
+// solid". Headless and GPU-free.
+bool runPaperTextureTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/
