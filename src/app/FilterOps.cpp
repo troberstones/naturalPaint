@@ -108,11 +108,22 @@ namespace {
 // against; the four callers below still each name their own engine function
 // and their own params type, so there is exactly one place they could
 // silently start sharing a radius, and it is not this one.
+//
+// **Split from `applyPixelFilter()` (docs/testing-issues.md T15)** so that a
+// live preview and a commit are the SAME arithmetic rather than two
+// implementations of it: this function computes the fully-composited result
+// -- what the active layer would hold after the engine ran and
+// `compositeFilterResult()` blended it through the selection -- and hands it
+// back in `*previewOut` rather than writing it anywhere. `doc` is `const&`
+// on purpose; nothing below can mutate it. `applyPixelFilter()` is the only
+// place that takes what this returns and actually writes it, and that
+// happens after this function has already returned, so there is exactly one
+// line in this whole file where a filter touches a live layer.
 template <typename Engine, typename Params>
-FilterOpResult applyPixelFilter(OpenDocument& doc, Engine engine, const Params& params,
-                                const char* editLabel) {
+FilterOpResult computePixelFilter(const OpenDocument& doc, Engine engine, const Params& params,
+                                  TileStore* previewOut) {
   FilterOpResult result;
-  Layer* target = activeLayerOf(doc);
+  const Layer* target = activeLayerOf(doc);
   result.refusal = pixelOpRefusalFor(target);
   if (result.refusal != PixelOpRefusal::None) return result;
 
@@ -135,10 +146,36 @@ FilterOpResult applyPixelFilter(OpenDocument& doc, Engine engine, const Params& 
     return result;
   }
 
+  // Blend into a COPY of `original`, not into `target->rgbTiles` -- that copy
+  // is what makes this function safe to call on a `const OpenDocument&`.
+  // `compositeFilterResult()`'s own copy-on-write argument applies here
+  // unchanged: `composed` starts by sharing every tile with `original` (an
+  // O(tiles) refcount bump), and only the tiles the blend actually writes
+  // fork a private copy, so an identity request or a fully-unselected canvas
+  // costs neither an allocation nor a COW fork here either.
+  TileStore composed = original;
   result.texelsChanged = compositeFilterResult(
       original, filtered, canvasRect, doc.selection.has_value() ? &*doc.selection : nullptr,
-      *target->rgbTiles);
-  if (result.texelsChanged > 0) doc.recordEdit(editLabel, EditKind::Content);
+      composed);
+  if (previewOut != nullptr && result.texelsChanged > 0) *previewOut = std::move(composed);
+  return result;
+}
+
+template <typename Engine, typename Params>
+FilterOpResult applyPixelFilter(OpenDocument& doc, Engine engine, const Params& params,
+                                const char* editLabel) {
+  TileStore composed;
+  const FilterOpResult result = computePixelFilter(doc, engine, params, &composed);
+  if (result.refusal != PixelOpRefusal::None || result.texelsChanged == 0) return result;
+
+  // `computePixelFilter()` already did the work; this is the one line in the
+  // file that makes it real. `target` is refetched (non-const this time)
+  // rather than threaded through as an argument, so `computePixelFilter()`
+  // never needs a mutable `Layer*` at all -- the const-correctness that lets
+  // `previewX()` call it on a `const OpenDocument&`.
+  Layer* target = activeLayerOf(doc);
+  *target->rgbTiles = std::move(composed);
+  doc.recordEdit(editLabel, EditKind::Content);
   return result;
 }
 
@@ -162,6 +199,33 @@ FilterOpResult applyUnsharpMask(OpenDocument& doc, const UnsharpParams& params) 
 
 FilterOpResult applyAddNoise(OpenDocument& doc, const NoiseParams& params) {
   return applyPixelFilter(doc, addNoiseTiles, params, "add noise");
+}
+
+// See this header's own comment on `previewX()`: each one below is
+// `applyX()`'s params-building preamble, feeding `computePixelFilter()`
+// instead of `applyPixelFilter()` -- same engine, same params construction,
+// so a preview cannot silently pick a different sigma/strength/params than
+// the button next to it would commit.
+FilterOpResult previewGaussianBlur(const OpenDocument& doc, float sigma, TileStore* previewOut) {
+  BlurParams params;
+  params.kind = BlurKind::Gaussian;
+  params.sigma = sigma;
+  return computePixelFilter(doc, blurTiles, params, previewOut);
+}
+
+FilterOpResult previewSharpen(const OpenDocument& doc, float strength, TileStore* previewOut) {
+  const UnsharpParams params = sharpenParams(strength);
+  return computePixelFilter(doc, unsharpMaskTiles, params, previewOut);
+}
+
+FilterOpResult previewUnsharpMask(const OpenDocument& doc, const UnsharpParams& params,
+                                  TileStore* previewOut) {
+  return computePixelFilter(doc, unsharpMaskTiles, params, previewOut);
+}
+
+FilterOpResult previewAddNoise(const OpenDocument& doc, const NoiseParams& params,
+                               TileStore* previewOut) {
+  return computePixelFilter(doc, addNoiseTiles, params, previewOut);
 }
 
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,

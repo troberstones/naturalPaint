@@ -190,6 +190,49 @@ FilterOpResult applyUnsharpMask(OpenDocument& doc, const UnsharpParams& params);
 // `NoiseParams`, for the identical reason `applyUnsharpMask()` does.
 FilterOpResult applyAddNoise(OpenDocument& doc, const NoiseParams& params);
 
+// ==========================================================================
+// Live preview (docs/testing-issues.md T15)
+// ==========================================================================
+//
+// `previewX()` below computes EXACTLY what `applyX()` above would write into
+// the active layer -- same engine call, same `compositeFilterResult()`
+// selection blend -- but returns it in `*previewOut` instead of writing it
+// anywhere. `doc` is `const&` and nothing it reaches is mutated: no
+// `recordEdit()`, no write to `target->rgbTiles`, no history entry. That is
+// the whole mechanism T15 asks for -- "compute into a scratch buffer... draw
+// that instead of the layer... discard it on Cancel" -- and the reason each
+// `previewX()` shares its engine call and its composite step with the
+// matching `applyX()` (both route through this file's internal
+// `computePixelFilter()`) is that a SECOND hand-written copy of "run the
+// engine, blend through the selection" is exactly how a preview and a commit
+// end up computing two different answers, which is this task's own sabotage
+// (b): "the preview and the committed result use different parameters."
+// Sharing the function makes that divergence a compile error away rather
+// than a discipline away.
+//
+// `ui/MacPaintUI.cpp`'s dialogs are the only callers: on the frame a slider
+// settles (released, not every intermediate frame of the drag -- see that
+// file's `IsItemDeactivatedAfterEdit()` comment for the measured cost that
+// throttle exists to bound) or the dialog first opens, the dialog calls the
+// matching `previewX()` and hands the result to the preview-overlay
+// machinery near `addCanvasQuad()`'s document draw, which composites a
+// whole-document picture with the active layer's tiles swapped for
+// `*previewOut` and shows THAT instead of the real document texture until
+// the dialog closes. See that file's `g_filterPreview` and
+// `FilterPreviewTexture` for the overlay and PRD F3's budget note on why the
+// composite is a synthetic document rather than a straight tile blit.
+//
+// `previewOut` is left untouched on any refusal or on an identity request
+// (`texelsChanged == 0`) -- callers read `FilterOpResult` first, exactly as
+// `applyX()`'s own callers already do, so "nothing to preview" and "preview
+// computed" are never confused.
+FilterOpResult previewGaussianBlur(const OpenDocument& doc, float sigma, TileStore* previewOut);
+FilterOpResult previewSharpen(const OpenDocument& doc, float strength, TileStore* previewOut);
+FilterOpResult previewUnsharpMask(const OpenDocument& doc, const UnsharpParams& params,
+                                  TileStore* previewOut);
+FilterOpResult previewAddNoise(const OpenDocument& doc, const NoiseParams& params,
+                               TileStore* previewOut);
+
 // What one Image-menu document op did. `error` is `ops/DocumentTransform`'s
 // own message (naming the extent or the layer count that refused it) and is
 // empty exactly when `ok` is true.

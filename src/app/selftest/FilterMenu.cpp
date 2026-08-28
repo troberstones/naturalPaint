@@ -1,8 +1,10 @@
 #include "app/selftest/Support.hpp"
 
+#include <chrono>
 #include <cstring>
 
 #include "app/FilterOps.hpp"
+#include "ui/DocumentTexture.hpp"
 #include "ui/MenuModel.hpp"
 
 namespace np {
@@ -83,6 +85,30 @@ bool tilesExactlyEqual(const TileStore& a, const TileStore& b) {
       return false;
   }
   return true;
+}
+
+// A whole-canvas version of `fillFilterMenuField()` above, for section G's
+// cost measurement: every tile across `canvasSize` gets content (every third
+// local texel, opaque and varying), rather than the 2x2-tile fixture the
+// correctness sections use. T15's live preview runs `blurTiles()` over the
+// WHOLE canvas rectangle regardless of how much of it is painted
+// (app/FilterOps.hpp's own "run the engine over the whole canvas rectangle"
+// section), so a fixture that leaves most tiles unallocated would time a
+// best case nobody's actual painting sits at.
+void fillWholeCanvasField(TileStore& tiles, int32_t canvasSize) {
+  uint64_t counter = 0;
+  const int32_t tilesPerSide = (canvasSize + kTileSize - 1) / kTileSize;
+  for (int32_t ty = 0; ty < tilesPerSide; ++ty) {
+    for (int32_t tx = 0; tx < tilesPerSide; ++tx) {
+      Tile& t = tiles.getOrCreate(TileCoord{tx, ty});
+      for (int32_t y = 0; y < kTileSize; y += 3) {
+        for (int32_t x = 0; x < kTileSize; x += 3) {
+          const float v = filterMenuTestNoise(counter++);
+          t.writePixel(PixelCoord{x, y}, {v, 1.0f - v, 0.5f * v, 1.0f});
+        }
+      }
+    }
+  }
 }
 
 std::array<float, 4> readAt(const TileStore& store, int32_t x, int32_t y) {
@@ -507,6 +533,128 @@ bool runFilterMenuTest() {
           "enable: Image Size and Canvas Size are enabled with a document open EVEN WHEN "
           "filterLayerUsable is false -- a document-level op does not take a layer-shaped "
           "refusal (app/FilterOps.hpp's own argument)");
+  }
+
+  std::printf("  -- G. T15's live preview: measured cost against PRD F3 --\n");
+  {
+    // `ui/MacPaintUI.cpp`'s live preview recomputes on every frame a filter
+    // dialog's own slider actually moves: one `previewGaussianBlur()` call
+    // (the engine plus the selection blend, app/FilterOps.hpp) and, because
+    // `filterPreviewViewFor()` has no incremental path (there is no previous
+    // snapshot of a hypothetical document to diff against -- see that
+    // function's own comment), one FULL document recomposite,
+    // `compositeDocumentStraightHalf()` -- the identical call
+    // `ui/DocumentTexture.hpp`'s own cost section times, at the identical
+    // sizes, so the two sets of numbers describe comparable content rather
+    // than one being measured on a sparser canvas than the other.
+    //
+    // Both halves are timed separately and summed: PRD F3's 20 ms is
+    // pen-to-photon (input event to displayed frame), not a compute budget,
+    // so this total -- the compute this task adds to that frame -- should be
+    // read as "how much of the WHOLE budget got spent before the upload or
+    // the present even started," exactly as `ui/DocumentTexture.hpp`'s own
+    // decision-3 section reads its number.
+    constexpr float kPreviewSigma = 8.0f;  // ui/MacPaintUI.cpp's own dialog default
+    constexpr double kPenToPhotonMs = 20.0;  // PRD F3
+
+    auto measurePreviewCost = [&](int32_t size) {
+      OpenDocument od = makeBlankOpenDocument(size, size, WorkingSpace{}, "preview cost");
+      fillWholeCanvasField(*od.document.layers[0].rgbTiles, size);
+      od.recordEdit("preview cost fixture", EditKind::Content);
+
+      const auto e0 = std::chrono::steady_clock::now();
+      TileStore preview;
+      const FilterOpResult r = previewGaussianBlur(od, kPreviewSigma, &preview);
+      const double engineMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - e0)
+                                  .count();
+      check(r.refusal == PixelOpRefusal::None && r.texelsChanged > 0,
+            "preview cost: the fixture's own preview actually computed something at this "
+            "size, or the timing below would be measuring an early return");
+
+      // The other half every recompute pays: a `Document` sharing every tile
+      // with `od.document` except the active layer's, whose tiles are the
+      // preview -- exactly what `filterPreviewViewFor()` builds, so this
+      // times the SAME construction rather than a simplified stand-in for it.
+      Document previewDoc = od.document;
+      previewDoc.layers[0].rgbTiles = preview;
+      const auto c0 = std::chrono::steady_clock::now();
+      const std::vector<uint16_t> halves = compositeDocumentStraightHalf(previewDoc);
+      const double compositeMs = std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - c0)
+                                     .count();
+      check(!halves.empty(),
+            "preview cost: the recomposite actually produced a picture at this size");
+
+      const double totalMs = engineMs + compositeMs;
+      std::printf(
+          "    [measured] %5dx%-5d  blur %7.3f ms + recomposite %7.3f ms = %7.3f ms  "
+          "(%6.1f%% of PRD F3's %.0f ms pen-to-photon budget, which is end-to-end and not "
+          "compute)\n",
+          size, size, engineMs, compositeMs, totalMs, 100.0 * totalMs / kPenToPhotonMs,
+          kPenToPhotonMs);
+      return totalMs;
+    };
+
+    const double at1024 = measurePreviewCost(1024);
+    const double at2048 = measurePreviewCost(2048);
+    check(at1024 > 0.0 && at2048 > 0.0,
+          "preview cost: both measurements produced a positive, non-optimised-away duration");
+
+    // Not a pass/fail gate -- there is no threshold to assert against,
+    // because the honest reading of a number over 20 ms here is "the display-
+    // only overlay is right for a small or lightly-loaded document and wrong
+    // as the sole strategy for a large one," which this task's own report
+    // says in words. Printed so the number is a measurement every run
+    // reproduces, not a figure that only ever appeared in a report.
+  }
+
+  std::printf("  -- H. T15: a preview must not mutate the document, and must match what "
+              "commit would write --\n");
+  {
+    // The two properties the whole "display-only overlay, not apply-and-undo"
+    // design (docs/testing-issues.md T15) rests on, each pinned directly
+    // rather than trusted from reading the code:
+    //
+    //  1. `previewGaussianBlur()` takes `const OpenDocument&` -- this checks
+    //     that the const-ness is load-bearing, not decorative. A Cancel that
+    //     "left the preview applied" could only happen if computing a
+    //     preview had ALREADY written to the document, since Cancel itself
+    //     is a bare `ImGui::CloseCurrentPopup()` (ui/MacPaintUI.cpp) with
+    //     nothing left to undo -- so the bug this guards has to be caught
+    //     here, at the point a preview is computed, not at the Cancel button.
+    //  2. Committing at the SAME parameters the preview was just computed at
+    //     must write BIT-IDENTICAL tiles -- "what the user saw is what they
+    //     got." `previewX()` and `applyX()` sharing `computePixelFilter()`
+    //     (app/FilterOps.cpp) is what makes this a shared code path rather
+    //     than a coincidence two independent implementations happened to
+    //     agree on.
+    OpenDocument od = makeFilterMenuDocument("preview safety");
+    const TileStore before = *od.document.layers[0].rgbTiles;
+    const size_t entriesBefore = od.history.entries().size();
+    constexpr float kSigma = 8.0f;
+
+    TileStore preview;
+    const FilterOpResult previewed = previewGaussianBlur(od, kSigma, &preview);
+    check(previewed.refusal == PixelOpRefusal::None && previewed.texelsChanged > 0,
+          "preview safety: the fixture's preview actually computed something, or the "
+          "checks below would pass vacuously");
+
+    check(od.history.entries().size() == entriesBefore,
+          "preview safety: computing a preview records NO history entry -- there is nothing "
+          "for Cancel to undo, because nothing was written");
+    check(tilesExactlyEqual(*od.document.layers[0].rgbTiles, before),
+          "preview safety: computing a preview leaves the document's own tiles BIT-IDENTICAL "
+          "to what they were before the call -- a Cancel that left this changed would be "
+          "T15's rejected 'apply-and-undo' shape happening by accident");
+
+    const FilterOpResult committed = applyGaussianBlur(od, kSigma);
+    check(committed.refusal == PixelOpRefusal::None,
+          "preview safety: committing at the SAME sigma the preview used is not itself "
+          "refused, or the check below would pass vacuously");
+    check(tilesExactlyEqual(*od.document.layers[0].rgbTiles, preview),
+          "preview safety: committing at the SAME sigma writes tiles BIT-IDENTICAL to what "
+          "the preview held -- what the user saw during the drag IS what Blur committed");
   }
 
   std::printf("[selftest] filter menu %s\n", ok ? "PASS" : "FAIL");

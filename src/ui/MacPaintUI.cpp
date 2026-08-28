@@ -6722,12 +6722,24 @@ void drawRecoveryDialog(AppState& st) {
 // `ImGui::OpenPopup()` itself), `ImGuiWindowFlags_AlwaysAutoResize`, a
 // verb-named confirm button and a `Cancel` beside it, function-local
 // `static` fields for the dialog's own widget state (this is UI state, not
-// `AppState`'s, per that struct's own ownership rule). None of the four has
-// a live preview: every one of them applies on the confirm button and
-// nothing before it, which keeps this file thin and keeps the only place a
-// pixel actually changes at `app/FilterOps.cpp`'s four `applyX()` functions
-// -- the ones `--selftest` (app/selftest/FilterMenu.cpp) also calls, so the
-// dialog and the test cannot disagree about what confirming one does.
+// `AppState`'s, per that struct's own ownership rule). The pixel that
+// actually changes is still, in every case, `app/FilterOps.cpp`'s four
+// `applyX()` functions -- the ones `--selftest` (app/selftest/FilterMenu.cpp)
+// also calls, so the dialog and the test cannot disagree about what
+// confirming one does.
+//
+// **All four now carry a live preview (docs/testing-issues.md T15).** Each
+// dialog calls the matching `previewX()` (app/FilterOps.hpp) on every frame
+// its own parameters actually change, and hands the result to
+// `setFilterPreview()` below, which the canvas draw code
+// (`filterPreviewViewFor()`, consulted where `addCanvasQuad()` draws the
+// document) shows INSTEAD of the real document texture until the dialog
+// closes. Nothing is written to the document until the confirm button:
+// `previewX()` takes `const OpenDocument&` and cannot mutate it, so Cancel
+// (or Escape, or simply closing the window) needs no undo step -- there is
+// nothing to undo. See `FilterPreviewState` and `FilterPreviewTexture` below
+// for the mechanism and this task's own report for its measured cost against
+// PRD F3.
 //
 // **Why there is no in-dialog refusal banner.** The Filter menu's four items
 // are already disabled, with the reason in their tooltip, whenever
@@ -6738,6 +6750,224 @@ void drawRecoveryDialog(AppState& st) {
 // click that opened the dialog, and the guard belongs where it is relied on).
 // The refusal message is still shown if that re-check ever fires, so a race
 // is reported rather than silently eaten -- it is just not the ordinary path.
+// `previewX()` shares that same re-check (`computePixelFilter()`'s call to
+// `pixelOpRefusalFor()`), so a preview that cannot be computed simply is not
+// shown -- the canvas keeps drawing the real, unfiltered document until the
+// confirm button's own refusal message explains why.
+
+// ---------------------------------------------------------------------------
+// T15's live preview: a display-only overlay, never the committed document
+// ---------------------------------------------------------------------------
+//
+// The two shapes this could have taken (docs/testing-issues.md T15 states
+// the choice explicitly): run the real op and let Cancel undo it, or compute
+// into a scratch buffer and draw that instead of the layer, discarding it on
+// Cancel. This is the second one. The first was rejected there for two
+// reasons that hold just as hard from this side of the wiring: it would put
+// a rejected filter into the undo history the user then has to see past, and
+// it would re-run the full-resolution op on every slider tick with no way to
+// tell "the user is dragging" from "the user is done" apart from waiting for
+// mouse-up -- which the display-only overlay does not need to know at all.
+enum class FilterPreviewOwner { None, GaussianBlur, Sharpen, UnsharpMask, AddNoise };
+
+struct FilterPreviewState {
+  FilterPreviewOwner owner = FilterPreviewOwner::None;
+  DocumentId documentId = 0;
+  size_t layerIndex = 0;
+  // The active layer's full post-filter content -- what `previewX()` handed
+  // back, already blended through the selection by `compositeFilterResult()`.
+  // Bit-identical to what `applyX()` would write into `*target->rgbTiles` at
+  // the SAME parameters, because both route through `computePixelFilter()`
+  // (app/FilterOps.cpp) -- see that file's header on why this is the one
+  // function rather than two, which is what stops the preview and the commit
+  // from computing two different answers.
+  TileStore tiles;
+  // Bumped by every `setFilterPreview()` call, never by a frame that merely
+  // redraws the same one. `FilterPreviewTexture::viewFor()` below re-uploads
+  // only when this has moved past what it last uploaded, so a dialog sitting
+  // open with nothing dragged costs one integer comparison, matching
+  // `DocumentTexture`'s own revision-cache argument.
+  uint64_t generation = 0;
+};
+FilterPreviewState g_filterPreview;
+
+// Called by a dialog on a frame its own parameters actually changed -- a
+// slider moved, or the dialog just opened -- never on every frame it merely
+// stays open. `owner` identifies which dialog this is, so the four draw
+// functions below (each of which runs every frame, whether or not ITS OWN
+// popup is the one open) cannot overwrite a preview that belongs to another
+// one of them.
+void setFilterPreview(FilterPreviewOwner owner, DocumentId id, size_t layerIndex,
+                      TileStore tiles) {
+  g_filterPreview.owner = owner;
+  g_filterPreview.documentId = id;
+  g_filterPreview.layerIndex = layerIndex;
+  g_filterPreview.tiles = std::move(tiles);
+  ++g_filterPreview.generation;
+}
+
+// Only clears the preview if `owner` is the one holding it. That guard is
+// load-bearing, not defensive filler: all four dialog draw functions run
+// every frame regardless of which popup (if any) is actually open, and each
+// one's own "my popup isn't open" branch calls this to clear up after
+// itself -- see the four `drawXDialog()` bodies below. Without the owner
+// check, `drawSharpenDialog()` running on a frame Gaussian Blur's popup is
+// the one open (Sharpen's own popup is not open on that frame, same as
+// nearly every other frame) would blank a preview it does not own, and the
+// canvas would flash back to the unfiltered document mid-drag.
+//
+// This is also what makes Cancel correct **however the dialog closes**, not
+// only via its own Cancel button: `BeginPopupModal()` returning false is
+// Dear ImGui's own signal that the popup closed, and that covers the Cancel
+// click, a successful confirm, AND Escape (ImGui closes the topmost popup on
+// Escape by default, before this file's own Cancel button ever runs) in one
+// place, so there is exactly one line per dialog that has to get "did this
+// close" right rather than three.
+void clearFilterPreview(FilterPreviewOwner owner) {
+  if (g_filterPreview.owner != owner) return;
+  g_filterPreview.owner = FilterPreviewOwner::None;
+  g_filterPreview.tiles = TileStore{};
+}
+
+// The overlay's GPU texture. Same format and the same upload shape as
+// `ui/DocumentTexture`'s `DocumentTexture` (RGBA16Float, straight alpha,
+// packed by the identical `compositeDocumentStraightHalf()`), because it is
+// drawn through the identical `addCanvasQuad()` pipeline and has to encode
+// exactly the same way to look like the same picture.
+//
+// **Not `DocumentTexture` itself**, for `DabPreviewTexture`'s own reason
+// above plus one specific to this task: `DocumentTexture` is keyed on the
+// LIVE document's `(id, revision, width, height)`, and its incremental path
+// diffs the current upload against a `Document` snapshot it keeps across
+// frames (core/DirtyTiles.hpp). Pointing that machinery at a preview -- a
+// document state that never really existed and must never be mistaken for
+// one that did -- would either poison `g_documentTextures`' own cache (a
+// later real frame would find a revision it believes it already drew) or
+// require teaching it to tell a real document from a hypothetical one. A
+// second, dedicated texture, keyed on the caller's own `generation` rather
+// than a revision counter, has neither problem.
+//
+// **Always a full recomposite -- there is no incremental path here at all,
+// and that is deliberate rather than unfinished.** The incremental path
+// needs a PREVIOUS snapshot of the SAME document to diff against; a
+// preview's "before" is the live document and its "after" is a hypothetical
+// one that was never itself uploaded, so there is nothing to diff it
+// against. See this task's own report for what that costs, measured, against
+// PRD F3's 20 ms pen-to-photon budget.
+class FilterPreviewTexture {
+ public:
+  WGPUTextureView viewFor(GpuContext& gpu, const Document& doc, uint64_t generation) {
+    if (doc.width <= 0 || doc.height <= 0) return nullptr;
+    const bool freshTexture =
+        texture_ == nullptr || doc.width != width_ || doc.height != height_;
+    if (freshTexture) {
+      // Retire, don't release -- `ui/DocumentTexture.hpp`'s `retired_`
+      // explains why: ImGui's WebGPU backend caches a bind group keyed by
+      // the view pointer and the bind group holds a strong reference to what
+      // it points at, so releasing a view whose address the allocator then
+      // hands back to a new texture would leave last frame's cached bind
+      // group pointing at freed memory.
+      if (texture_ != nullptr) retired_.push_back(Retired{texture_, view_});
+      WGPUTextureDescriptor td = {};
+      td.label = sv("filter preview");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(doc.width), static_cast<uint32_t>(doc.height), 1};
+      td.format = WGPUTextureFormat_RGBA16Float;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+      width_ = doc.width;
+      height_ = doc.height;
+      uploaded_ = 0;  // a fresh texture holds nothing yet; force the upload below
+    }
+    if (freshTexture || generation != uploaded_) {
+      const std::vector<uint16_t> halves = compositeDocumentStraightHalf(doc);
+      WGPUTexelCopyTextureInfo dst = {};
+      dst.texture = texture_;
+      dst.mipLevel = 0;
+      dst.aspect = WGPUTextureAspect_All;
+      WGPUTexelCopyBufferLayout layout = {};
+      layout.bytesPerRow = static_cast<uint32_t>(width_) * 4u * sizeof(uint16_t);
+      layout.rowsPerImage = static_cast<uint32_t>(height_);
+      const WGPUExtent3D extent = {static_cast<uint32_t>(width_),
+                                   static_cast<uint32_t>(height_), 1};
+      wgpuQueueWriteTexture(gpu.queue, &dst, halves.data(), halves.size() * sizeof(uint16_t),
+                            &layout, &extent);
+      uploaded_ = generation;
+      ++uploads_;
+    }
+    return view_;
+  }
+
+  uint64_t uploads() const noexcept { return uploads_; }
+
+ private:
+  struct Retired {
+    WGPUTexture texture = nullptr;
+    WGPUTextureView view = nullptr;
+  };
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  int32_t width_ = 0;
+  int32_t height_ = 0;
+  uint64_t uploaded_ = 0;
+  uint64_t uploads_ = 0;
+  std::vector<Retired> retired_;
+};
+FilterPreviewTexture g_filterPreviewTexture;
+
+// The canvas draw code's one hook into all of this: `nullptr` when nothing
+// has an active preview for `activeDoc`, otherwise the view to draw INSTEAD
+// of `g_documentTextures`' real one.
+//
+// Builds a `Document` that shares every tile with `activeDoc.document`
+// (`TileStoreOf`'s copy constructor is an O(tiles) refcount bump, not a byte
+// copy -- app/FilterOps.cpp's own "why the original is copied" section makes
+// this same argument) except the active layer's RGB tiles, which point at
+// the filtered scratch buffer instead. That is T15's "draw that instead of
+// the layer" made literal: a WHOLE document composite -- correct across
+// every blend mode and every layer above or below the one being filtered,
+// not a crop or a single-layer blit -- built from a hypothetical `Document`
+// that is thrown away at the end of the frame and never touches
+// `activeDoc` itself.
+WGPUTextureView filterPreviewViewFor(GpuContext& gpu, const OpenDocument& activeDoc) {
+  if (g_filterPreview.owner == FilterPreviewOwner::None) return nullptr;
+  if (g_filterPreview.documentId != activeDoc.id) return nullptr;
+  if (g_filterPreview.layerIndex >= activeDoc.document.layers.size()) return nullptr;
+
+  Document previewDoc = activeDoc.document;
+  previewDoc.layers[g_filterPreview.layerIndex].rgbTiles = g_filterPreview.tiles;
+  return g_filterPreviewTexture.viewFor(gpu, previewDoc, g_filterPreview.generation);
+}
+
+// Shared by all four dialogs below, called on every frame their OWN
+// parameters actually changed: runs `previewFn` (one of `previewGaussianBlur`
+// / `previewSharpen` / `previewUnsharpMask` / `previewAddNoise`,
+// app/FilterOps.hpp) and either shows the result or clears whatever `owner`
+// was previously showing. Refusal and "nothing changed" both fall through to
+// the clear, for two different reasons: a refused layer has nothing to
+// preview (the confirm button's own re-check still reports why, exactly as
+// it did before this task), and an identity request's preview would be
+// pixel-identical to the real document anyway, so clearing it costs nothing
+// visible and skips a texture upload nobody would see change.
+template <typename PreviewFn, typename Params>
+void updateFilterPreview(OpenDocument* od, FilterPreviewOwner owner, PreviewFn previewFn,
+                         const Params& params) {
+  if (od != nullptr) {
+    TileStore tiles;
+    const FilterOpResult r = previewFn(*od, params, &tiles);
+    if (r.refusal == PixelOpRefusal::None && r.texelsChanged > 0) {
+      if (const std::optional<size_t> idx = activeLayerIndex(*od)) {
+        setFilterPreview(owner, od->id, *idx, std::move(tiles));
+        return;
+      }
+    }
+  }
+  clearFilterPreview(owner);
+}
+
 bool g_gaussianBlurRequested = false;
 bool g_sharpenRequested = false;
 bool g_unsharpMaskRequested = false;
@@ -6746,20 +6976,64 @@ bool g_addNoiseRequested = false;
 void drawGaussianBlurDialog(AppState& st) {
   static float sigma = 8.0f;  // texels; ops/Blur.hpp's own worked examples use this
   static std::string status;
+  // Was the popup open last frame? Distinguishes "the slider itself didn't
+  // move" (skip the recompute) from "the dialog just appeared, showing
+  // whatever `sigma` was left at" (recompute once so the canvas has a
+  // preview from the very first visible frame, not only after the first
+  // drag). `BeginPopupModal()` itself can't answer that -- it only says
+  // whether the popup is open THIS frame.
+  static bool wasOpen = false;
 
   if (g_gaussianBlurRequested) {
     g_gaussianBlurRequested = false;
     status.clear();
     ImGui::OpenPopup("Gaussian Blur");
   }
-  if (!ImGui::BeginPopupModal("Gaussian Blur", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  if (!ImGui::BeginPopupModal("Gaussian Blur", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    // Reached on every kind of close -- Cancel, a successful Blur, or Escape
+    // -- which is exactly what makes this the one place Cancel's new job
+    // (T15: discard the preview) gets done, regardless of which of the three
+    // just happened. See `clearFilterPreview()`'s own comment.
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::GaussianBlur);
     return;
+  }
+
+  OpenDocument* od = st.documents.active();
 
   ImGui::SetNextItemWidth(200.0f);
   ImGui::SliderFloat("Radius (sigma, texels)", &sigma, 0.0f, 250.0f, "%.1f");
+  // **On release, not on every tick of the drag.** `SliderFloat()`'s own
+  // return value is true on EVERY frame the value moves, and recomputing the
+  // preview that often would call `previewGaussianBlur()` (and, behind it,
+  // `filterPreviewViewFor()`'s full document recomposite) once per pixel of
+  // mouse travel. This task's own report measures what that costs at this
+  // app's own default document size, `main.cpp`'s 1024x1024 `kCanvasW`/
+  // `kCanvasH` (app/selftest/FilterMenu.cpp section G): ~275 ms of engine
+  // time alone at sigma 8, ~14x PRD F3's whole 20 ms pen-to-photon budget --
+  // and that is the SMALL end of what a user opens. Recomputing on every
+  // tick would not be a slow live preview; it would be the whole
+  // application not responding to input for the length of the drag.
+  //
+  // `IsItemDeactivatedAfterEdit()` is Dear ImGui's own "the user just
+  // finished editing this" signal -- true once, on mouse-up (or on Enter for
+  // a typed value), never on the intermediate frames of a drag. Trading
+  // continuous liveness for that is an honest, scoped mitigation of the
+  // FREQUENCY of a too-slow recompute, not a fix for its per-call cost: the
+  // one recompute this still does, on release, is exactly as slow as it was
+  // before. Fitting inside F3 for real needs what this task's report names
+  // and does not build -- a preview at view resolution, or on a downsampled
+  // proxy, so the recompute itself gets cheap rather than merely rarer.
+  const bool sigmaSettled = ImGui::IsItemDeactivatedAfterEdit();
   ImGui::TextDisabled("0 is the identity. ops/Blur.hpp's apron is ceil(4 * sigma) texels.");
 
-  OpenDocument* od = st.documents.active();
+  // Also recomputed on the dialog's first visible frame (`!wasOpen`), so the
+  // canvas shows a preview from the moment it opens rather than only after
+  // the first completed drag.
+  if (sigmaSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::GaussianBlur, previewGaussianBlur, sigma);
+  wasOpen = true;
+
   if (ImGui::Button("Blur") && od != nullptr) {
     const FilterOpResult r = applyGaussianBlur(*od, sigma);
     if (r.refusal != PixelOpRefusal::None) {
@@ -6785,16 +7059,29 @@ void drawGaussianBlurDialog(AppState& st) {
 void drawSharpenDialog(AppState& st) {
   static float strength = 1.0f;  // UnsharpParams::amount; 0 is the identity
   static std::string status;
+  static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
 
   if (g_sharpenRequested) {
     g_sharpenRequested = false;
     status.clear();
     ImGui::OpenPopup("Sharpen");
   }
-  if (!ImGui::BeginPopupModal("Sharpen", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  if (!ImGui::BeginPopupModal("Sharpen", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::Sharpen);
+    return;
+  }
+
+  OpenDocument* od = st.documents.active();
 
   ImGui::SetNextItemWidth(200.0f);
   ImGui::SliderFloat("Strength", &strength, 0.0f, 3.0f, "%.2f");
+  // On release, not on every tick -- see drawGaussianBlurDialog()'s own
+  // comment on `IsItemDeactivatedAfterEdit()` for why. Sharpen's engine call
+  // is `unsharpMaskTiles()` at the fixed `kSharpenSigma` (a small radius, so
+  // cheaper than a large Gaussian Blur sigma) but still a full-canvas pass at
+  // every recompute, and the SAME full document recomposite behind it.
+  const bool strengthSettled = ImGui::IsItemDeactivatedAfterEdit();
   // kSharpenSigma is named rather than offered as a control: ops/Filters.hpp
   // section 3 argues at length for why 1.0 is the one radius this one-click
   // filter should have, and a slider here would be the second radius control
@@ -6804,7 +7091,10 @@ void drawSharpenDialog(AppState& st) {
   ImGui::TextDisabled("Fixed radius (sigma %.1f) -- see Unsharp Mask for a radius control.",
                       kSharpenSigma);
 
-  OpenDocument* od = st.documents.active();
+  if (strengthSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::Sharpen, previewSharpen, strength);
+  wasOpen = true;
+
   if (ImGui::Button("Sharpen") && od != nullptr) {
     const FilterOpResult r = applySharpen(*od, strength);
     if (r.refusal != PixelOpRefusal::None) {
@@ -6831,21 +7121,36 @@ void drawUnsharpMaskDialog(AppState& st) {
   static UnsharpParams params;  // amount 1, threshold 0, blur.sigma 0 at struct default
   static float radius = 2.0f;   // params.blur.sigma; kept apart so 0 isn't the opening value
   static std::string status;
+  static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
 
   if (g_unsharpMaskRequested) {
     g_unsharpMaskRequested = false;
     status.clear();
     ImGui::OpenPopup("Unsharp Mask");
   }
-  if (!ImGui::BeginPopupModal("Unsharp Mask", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  if (!ImGui::BeginPopupModal("Unsharp Mask", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::UnsharpMask);
     return;
+  }
 
+  OpenDocument* od = st.documents.active();
+
+  // On release, not on every tick, for all three sliders -- see
+  // drawGaussianBlurDialog()'s own comment on `IsItemDeactivatedAfterEdit()`.
+  // This dialog's radius is the SAME Gaussian sigma Gaussian Blur's own
+  // slider drives (`params.blur.sigma` below), so the cost measured there
+  // (app/selftest/FilterMenu.cpp section G) applies here unchanged at the
+  // same radius.
   ImGui::SetNextItemWidth(200.0f);
   ImGui::SliderFloat("Amount", &params.amount, 0.0f, 5.0f, "%.2f");
+  bool paramsSettled = ImGui::IsItemDeactivatedAfterEdit();
   ImGui::SetNextItemWidth(200.0f);
   ImGui::SliderFloat("Radius (sigma, texels)", &radius, 0.1f, 250.0f, "%.1f");
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
   ImGui::SetNextItemWidth(200.0f);
   ImGui::SliderFloat("Threshold", &params.threshold, 0.0f, 0.20f, "%.3f");
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
   ImGui::TextDisabled(
       "Threshold is shaper-domain (ops/Filters.hpp section 2): 0.02 ignores differences "
       "smaller than 27%% of the local level, at every brightness.");
@@ -6853,7 +7158,10 @@ void drawUnsharpMaskDialog(AppState& st) {
   params.blur.kind = BlurKind::Gaussian;
   params.blur.sigma = radius;
 
-  OpenDocument* od = st.documents.active();
+  if (paramsSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::UnsharpMask, previewUnsharpMask, params);
+  wasOpen = true;
+
   if (ImGui::Button("Sharpen") && od != nullptr) {
     const FilterOpResult r = applyUnsharpMask(*od, params);
     if (r.refusal != PixelOpRefusal::None) {
@@ -6880,6 +7188,7 @@ void drawAddNoiseDialog(AppState& st) {
   static NoiseParams params;  // amount 0, Gaussian, not monochrome, seed 0 at struct default
   static int distributionIdx = 1;  // 0 = Uniform, 1 = Gaussian -- matches params' own default
   static std::string status;
+  static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
 
   if (g_addNoiseRequested) {
     g_addNoiseRequested = false;
@@ -6893,24 +7202,45 @@ void drawAddNoiseDialog(AppState& st) {
     params.seed = static_cast<uint64_t>(ImGui::GetTime() * 1e6) ^ 0x9e3779b97f4a7c15ull;
     ImGui::OpenPopup("Add Noise");
   }
-  if (!ImGui::BeginPopupModal("Add Noise", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+  if (!ImGui::BeginPopupModal("Add Noise", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AddNoise);
+    return;
+  }
 
+  OpenDocument* od = st.documents.active();
+
+  // Amount is the one continuous drag here -- on release, not on every tick,
+  // for the reason drawGaussianBlurDialog()'s own comment on
+  // `IsItemDeactivatedAfterEdit()` gives. Uniform/Gaussian and Monochrome are
+  // single-click, so `IsItemDeactivatedAfterEdit()` reports the same frame
+  // their old plain "changed" read did -- used here anyway, for one shared
+  // idiom across all four controls rather than a drag-only exception.
   ImGui::SetNextItemWidth(200.0f);
   ImGui::SliderFloat("Amount", &params.amount, 0.0f, 0.5f, "%.3f");
+  bool paramsSettled = ImGui::IsItemDeactivatedAfterEdit();
   ImGui::RadioButton("Uniform", &distributionIdx, 0);
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
   ImGui::SameLine();
   ImGui::RadioButton("Gaussian", &distributionIdx, 1);
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
   params.distribution =
       distributionIdx == 0 ? NoiseDistribution::Uniform : NoiseDistribution::Gaussian;
   ImGui::Checkbox("Monochrome", &params.monochrome);
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
   ImGui::TextDisabled("Amount is shaper-domain (ops/Filters.hpp section 5): 0.05 is a +/-83%% "
                       "swing in linear light at every brightness above the shadow toe.");
   ImGui::Text("Seed: %llu", static_cast<unsigned long long>(params.seed));
   ImGui::SameLine();
-  if (ImGui::Button("New seed"))
+  if (ImGui::Button("New seed")) {
     params.seed = static_cast<uint64_t>(ImGui::GetTime() * 1e6) ^ 0x9e3779b97f4a7c15ull;
+    paramsSettled = true;
+  }
 
-  OpenDocument* od = st.documents.active();
+  if (paramsSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AddNoise, previewAddNoise, params);
+  wasOpen = true;
+
   if (ImGui::Button("Add Noise") && od != nullptr) {
     const FilterOpResult r = applyAddNoise(*od, params);
     if (r.refusal != PixelOpRefusal::None) {
@@ -8771,7 +9101,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const OpenDocument* activeDocument = st.documents.active();
     WGPUTextureView documentView = nullptr;
     if (activeDocument != nullptr) {
-      documentView = g_documentTextures.viewFor(gpu, *activeDocument);
+      // T15's live preview, checked first: a Filter dialog with a preview
+      // computed for THIS document takes precedence over the real, unfiltered
+      // texture -- `filterPreviewViewFor()` returns nullptr on every other
+      // frame (no dialog open, a different document active, or a refused
+      // preview), in which case this is exactly the one line it replaced.
+      // Nothing here can leave a document showing filtered pixels after its
+      // dialog closes: the four `drawXDialog()` functions clear
+      // `g_filterPreview` the very frame their popup stops being open, before
+      // this code runs again.
+      documentView = filterPreviewViewFor(gpu, *activeDocument);
+      if (documentView == nullptr) documentView = g_documentTextures.viewFor(gpu, *activeDocument);
       addCanvasQuad(dl, documentView, q00, q10, q11, q01);
     }
     dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
