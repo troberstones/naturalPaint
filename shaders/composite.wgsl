@@ -1,11 +1,13 @@
 // Final resolve: pigment fields -> screen, branching on the active model.
 //
 // Latents are only converted to RGB here, at the very end. Everything upstream
-// stayed in Mixbox latent space, so a wet blue stroke dragged through a wet
+// stayed in pigment latent space (Mixbox's, or the two-constant Kubelka-Munk
+// fallback's -- see include/pigment_basis.wgsl and gfx/ShaderLoader.cpp for
+// which one NP_USE_MIXBOX picks), so a wet blue stroke dragged through a wet
 // yellow one gives green rather than the grey an RGB solver would produce. That
 // holds for all three models, since all three transport latent-times-mass.
 //#include "include/common.wgsl"
-//#include "include/mixbox.wgsl"
+//#include "include/pigment_basis.wgsl"
 
 @group(0) @binding(0) var<uniform> P : SimParams;
 @group(0) @binding(1) var depCTex : texture_2d<f32>;
@@ -68,8 +70,8 @@ fn fs(in : VSOut) -> @location(0) vec4<f32> {
     // the surface and lights it.
     let vol = water.z;
     if (vol > 1e-4) {
-      let latent = latentFromMass(pigC, pigR);
-      let paint = mixboxLatentToRgb(latent);
+      let latent = pigmentLatentFromMass(pigC, pigR);
+      let paint = pigmentLatentToRgb(latent);
 
       // Oil is opaque; a thin scrape still lets the ground show through.
       let cover = 1.0 - exp(-14.0 * vol);
@@ -104,8 +106,8 @@ fn fs(in : VSOut) -> @location(0) vec4<f32> {
     let sumR = depR + pigR * 0.55;
     let mass = sumC.w;
     if (mass > 1e-4) {
-      let latent = latentFromMass(sumC, sumR);
-      let ink = mixboxLatentToRgb(latent);
+      let latent = pigmentLatentFromMass(sumC, sumR);
+      let ink = pigmentLatentToRgb(latent);
       // Sumi tone builds steeply, so a single loaded touch can go near-black
       // while the tail of a dry stroke stays a pale grey.
       let opacity = 1.0 - exp(-4.2 * mass);
@@ -127,8 +129,8 @@ fn fs(in : VSOut) -> @location(0) vec4<f32> {
   let mass = sumC.w;
 
   if (mass > 1e-4) {
-    let latent = latentFromMass(sumC, sumR);
-    let pigmentRgb = mixboxLatentToRgb(latent);
+    let latent = pigmentLatentFromMass(sumC, sumR);
+    let pigmentRgb = pigmentLatentToRgb(latent);
 
     // Beer-Lambert style build-up: repeated glazes darken but never quite
     // reach the raw pigment colour, which is how layered washes behave.

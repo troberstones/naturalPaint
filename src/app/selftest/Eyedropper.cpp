@@ -465,12 +465,30 @@ bool runEyedropperTest() {
               std::fabs(tip.linearRgb[2] - oldPigment[2]) > 0.01f,
           "eyedropper: and it genuinely differs from the pigment that was selected before the "
           "pick, so this cannot pass on a tip that ignored the foreground");
+#if defined(NP_USE_MIXBOX)
     // The latent half, without a LUT, falls back to the sRGB triple -- which
     // must still be the PICKED triple rather than the palette's.
     check(near(tip.pigment.c[0], st.brush.rgb[0], kExact) &&
               near(tip.pigment.c[2], st.brush.rgb[2], kExact),
           "eyedropper: the Latent the Pigment-layer route deposits is derived from the picked "
           "colour too, so both layer kinds see one foreground rather than two");
+#else
+    // KM2 basis: `noLut` needs no file under this basis (paint/Palette.cpp),
+    // so `brushTipFor()` never takes the ON-build's "copy the sRGB triple
+    // into `c` verbatim" fallback here -- it calls the real `rgbToLatent()`,
+    // and `tip.pigment.c` is Kubelka's K per channel, not a colour, so it is
+    // not comparable to `st.brush.rgb` directly any more. The claim this
+    // test exists for is unchanged -- the Pigment-layer route sees the
+    // PICKED colour, not a stale one -- and is checked the same way
+    // app/selftest/ActiveLayer.cpp's equivalent KM2 branch checks it: project
+    // the tip's latent back to RGB and compare that to what was picked, at
+    // the derived KM2 round-trip tolerance.
+    const std::array<float, 3> back = latentToRgb(tip.pigment);
+    check(std::fabs(back[0] - st.brush.rgb[0]) <= MixboxLut::kKm2ReflectanceFloor + 1.0e-6f &&
+              std::fabs(back[2] - st.brush.rgb[2]) <= MixboxLut::kKm2ReflectanceFloor + 1.0e-6f,
+          "eyedropper: the Latent the Pigment-layer route deposits is derived from the picked "
+          "colour too, so both layer kinds see one foreground rather than two");
+#endif
 
     // ---- what a pick on nothing does ------------------------------------
     //

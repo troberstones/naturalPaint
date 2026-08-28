@@ -35,8 +35,9 @@ bool runStrokeBridgeTest(GpuContext& gpu) {
   // negative cases in it, not just positive ones.
   constexpr uint32_t kW = 384, kH = 384;
   MixboxLut lut;
-  const bool lutOk = lut.load(NP_MIXBOX_LUT);
-  check(lutOk, "bridge: the Mixbox LUT loaded -- the solver transports real latents");
+  const bool lutOk = pigmentSourceReady(lut, NP_MIXBOX_LUT);
+  check(lutOk, "bridge: this build's pigment source answers with real data -- the solver "
+               "transports real latents");
 
   PaintSim sim;
   if (!sim.init(gpu, kW, kH, lut)) {

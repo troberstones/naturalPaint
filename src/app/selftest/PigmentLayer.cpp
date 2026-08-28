@@ -39,12 +39,14 @@ bool runPigmentLayerTest() {
   //    and `latentToRgb()` returns `pigmentPolynomialRgb(c) + res` from the
   //    same polynomial, so the whole trip is `p + (r - p)` -- two correctly-
   //    rounded operations on magnitudes <= 1, at most 2 ulps of 1.0 =
-  //    1.19e-07. Bounded at 5.0e-7, 4.2x that.
-  //  * **kUnpremultiplyTol -- anything read back through the flattener**,
-  //    whose final un-premultiply is one correctly-rounded division. Half an
-  //    ulp at results in [0.25,1) is 2^-25 = 2.98e-8; bounded at 1.0e-7, 3.4x,
-  //    the same figure and derivation runLayerStackTest() and runBlendTest()
-  //    both use.
+  //    1.19e-07. Bounded at 5.0e-7, 4.2x that. **NP_USE_MIXBOX=OFF only**:
+  //    this derivation is specific to Mixbox's fit-plus-residual construction
+  //    and does not hold for the KM2 fallback, which clamps a channel at or
+  //    near 0 or 1 to `MixboxLut::kKm2ReflectanceFloor` before taking
+  //    Kubelka's K/S ratio (paint/Palette.cpp) -- a real, bounded loss for a
+  //    pigment with an exact-0 or exact-1 channel (both palette pigments this
+  //    section uses have one), not float noise. See runBlendTest()'s own
+  //    `#else` for the identical derivation stated once more.
   //
   // Everything else in this section is asserted at **exactly zero tolerance**,
   // and where it is, it is because the reference is computed from the values
@@ -52,7 +54,11 @@ bool runPigmentLayerTest() {
   // walk calls -- not because the arithmetic happens to be tidy.
   constexpr float kHalfRel = 4.8828125e-04f;   // 2^-11
   constexpr float kHalfFloor = 2.9802322e-08f; // 2^-25
+#if defined(NP_USE_MIXBOX)
   constexpr float kProjectionTol = 5.0e-7f;
+#else
+  constexpr float kProjectionTol = MixboxLut::kKm2ReflectanceFloor + 1.0e-6f;
+#endif
   constexpr float kUnpremultiplyTol = 1.0e-7f;
 
   auto nearHalf = [&](float got, float want) {
@@ -140,9 +146,10 @@ bool runPigmentLayerTest() {
 
   // --- 2. The projection, against the real Mixbox LUT --------------------
   MixboxLut lut;
-  const bool lutLoaded = lut.load(NP_MIXBOX_LUT);
+  const bool lutLoaded = pigmentSourceReady(lut, NP_MIXBOX_LUT);
   check(lutLoaded,
-        "projection: the real Mixbox LUT loads -- everything below asserts against measured "
+        "projection: this build's pigment source is live and answering with real data -- "
+        "everything below asserts against measured "
         "pigment data, not a stand-in");
   const Pigment& yellowPigment = defaultPalette()[0];
   const Pigment& bluePigment = defaultPalette()[7];
@@ -167,9 +174,26 @@ bool runPigmentLayerTest() {
     check(lutLoaded && worst <= kProjectionTol,
           "projection: core/Pigment's latentToRgb() reproduces the pigments rgbToLatent() "
           "was given -- the polynomial moved out of paint/Palette unchanged");
+#if defined(NP_USE_MIXBOX)
     check(latentToRgb(Latent{}) == pigmentPolynomialRgb(std::array<float, 3>{0.0f, 0.0f, 0.0f}),
           "projection: it needs no LUT and no state -- a zero latent projects with nothing "
           "loaded, which is why core/ can own it and paint/ keeps only the inverse");
+#else
+    // KM2 basis: there is no separate polynomial to compare `latentToRgb()`
+    // against (its whole point is that it is closed-form, see
+    // core/Pigment.cpp), so the property under test -- "needs no LUT and no
+    // state" -- is checked directly: the all-zero latent (K=0, S=0 in every
+    // channel, core/Pigment.cpp's guarded degenerate case) still projects to
+    // a finite, in-range colour with nothing loaded, rather than a NaN or a
+    // crash from dividing by S=0.
+    const auto z0 = latentToRgb(Latent{});
+    bool finiteAndInRange = true;
+    for (float v : z0)
+      if (!std::isfinite(v) || v < 0.0f || v > 1.0f) finiteAndInRange = false;
+    check(finiteAndInRange,
+          "projection: it needs no LUT and no state -- a zero latent projects with nothing "
+          "loaded, which is why core/ can own it and paint/ keeps only the inverse");
+#endif
 
     // Latent -> f16 -> latent -> RGB, which is what a composite actually does.
     // Bounded by the derived f16 figure, and the measurement is printed so the
@@ -656,9 +680,17 @@ bool runPigmentLayerTest() {
       // The basis refusal docs/document-format.md 3.3 asks for, which could
       // not exist before this step because no latent could be written.
       NpaintCarry foreign;
-      foreign.basis = "km2-v1";
+      // The basis this build is NOT -- which of core/Document.hpp's two names
+      // that is depends on NP_USE_MIXBOX, and spelling "km2-v1" outright would
+      // turn this refusal test into a same-basis save that succeeds under
+      // NP_USE_MIXBOX=OFF.
+#if defined(NP_USE_MIXBOX)
+      foreign.basis = kPigmentBasisKm2;
+#else
+      foreign.basis = kPigmentBasisMixbox;
+#endif
       const NpaintSaveResult mismatched = saveNpaint(doc, kPath, {}, &foreign);
-      check(!mismatched.ok && contains(mismatched.error, "km2-v1") &&
+      check(!mismatched.ok && contains(mismatched.error, foreign.basis.c_str()) &&
                 contains(mismatched.error, "basis"),
             "npaint: a document with Pigment layers whose carried np:basis is not this "
             "build's is REFUSED by name -- a latent is meaningless in another basis, and "

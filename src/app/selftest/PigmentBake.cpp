@@ -70,9 +70,9 @@ bool runPigmentBakeTest() {
   std::printf("  -- 1. the constants, read out of the shader the GPU runs --\n");
   {
     const std::string composite = shaderText("composite.wgsl");
-    const std::string mixbox = shaderText("include/mixbox.wgsl");
+    const std::string common = shaderText("include/common.wgsl");
     check(!composite.empty(), "bake: shaders/composite.wgsl is readable at NP_SHADER_DIR");
-    check(!mixbox.empty(), "bake: shaders/include/mixbox.wgsl is readable at NP_SHADER_DIR");
+    check(!common.empty(), "bake: shaders/include/common.wgsl is readable at NP_SHADER_DIR");
 
     // Written as the shader writes them. If someone retunes the medium in
     // WGSL, this fails and names the constant, instead of the bake quietly
@@ -87,7 +87,14 @@ bool runPigmentBakeTest() {
           "bake: the watercolour suspended weight is 0.75 in BOTH languages");
     check(composite.find("pigC * 0.55") != std::string::npos && kSuspendedWeightInk == 0.55f,
           "bake: the ink suspended weight is 0.55 in BOTH languages");
-    check(mixbox.find("max(cm.w, 1e-5)") != std::string::npos && kMassEpsilon == 1e-5f,
+    // `pigmentLatentFromMass()` (the mass-divide guard) moved from
+    // include/mixbox.wgsl to include/common.wgsl when the fallback pigment
+    // basis (NP_USE_MIXBOX=OFF, docs/architecture-review.md P2-3) needed the
+    // same basis-agnostic unpack -- see include/common.wgsl's own comment.
+    // It is basis-agnostic content, so it is checked once, unconditionally,
+    // rather than being duplicated per `#if` the way the projection itself
+    // (mixboxEvalPolynomial / include/km2.wgsl's KM formula) has to be.
+    check(common.find("max(cm.w, 1e-5)") != std::string::npos && kMassEpsilon == 1e-5f,
           "bake: the mass-divide guard is 1e-5 in BOTH languages");
 
     // The fibre gains, which are deliberately NOT baked. Asserted so the
@@ -222,8 +229,9 @@ bool runPigmentBakeTest() {
     const float masses[] = {0.02f, 0.1f, 0.4f, 1.0f, 2.5f};
 
     MixboxLut lut;
-    const bool lutOk = lut.load(NP_MIXBOX_LUT);
-    check(lutOk, "bake: the Mixbox LUT loaded, so these are real pigment latents");
+    const bool lutOk = pigmentSourceReady(lut, NP_MIXBOX_LUT);
+    check(lutOk, "bake: this build's pigment source answers with real data, so these are "
+                 "real pigment latents");
 
     float worst = 0.0f;
     float worstGrain = 0.0f;

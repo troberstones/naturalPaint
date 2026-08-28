@@ -143,6 +143,29 @@ void appendToVector(void* context, void* data, int size);
 // the full account of why the mask exists and why it matches by pattern.
 std::string maskCapDates(std::string bytes);
 
+// **The pigment source is live and answering with real data**, for whichever
+// pigment basis this build was compiled with (core/Document.hpp names both).
+//
+// Six sections used to open this claim as `check(lut.load(NP_MIXBOX_LUT))`,
+// worded "the real Mixbox LUT loads -- this section asserts against measured
+// pigment data, not against a stand-in". That is the right claim, and under
+// `NP_USE_MIXBOX=OFF` the literal check stopped meaning it: the KM2 fallback
+// is closed-form, so `MixboxLut::load()` is a no-op that always succeeds and
+// `valid()` is unconditionally true (paint/Palette.cpp). All six kept passing
+// while asserting the existence of a LUT that build does not have -- a green
+// line standing where a real precondition used to be, which is the shape
+// docs/testing-issues.md keeps warning about.
+//
+// So this asks the question the sections actually need answered, in terms
+// neither basis can satisfy vacuously: `lut` must be usable, AND two
+// different palette pigments must convert to two different latents that each
+// project back to their own colour. Under Mixbox that fails if the LUT did
+// not load (an unloaded `MixboxLut` copies the sRGB triple through, so the
+// round trip survives but the two latents stop being LUT-derived -- hence the
+// `valid()` term, which is the load result). Under KM2 it fails if
+// `rgbToLatent()` were ever stubbed, degenerate, or disconnected.
+bool pigmentSourceReady(MixboxLut& lut, const char* lutPath);
+
 // ---- GPU scaffolding (app/SelfTest.cpp's second anonymous namespace, plus
 // the padded readback that sat just above runDocumentTextureTest()) --------
 

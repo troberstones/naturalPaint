@@ -512,6 +512,45 @@ was not executed and the flag makes it look as though it was.
 unbuilt configuration is not a seam — `PLAN.md` 1.5 already says so), or delete the option and state
 the licence constraint plainly in the README. The current state is the worst of the three.
 
+#### Outcome (2026-08-27): fallback implemented; the encumbrance was wider than described
+
+**The finding understated it.** The LUT was not the only encumbered part.
+`core/Pigment.cpp`'s `pigmentPolynomialRgb()` was a verbatim transcription of Mixbox's own fitted
+20-term polynomial — its coefficients, not merely code adjacent to the table — and
+`shaders/include/mixbox.wgsl` said so in its own header. Both ran on every pigment mix, CPU and GPU,
+in every build, regardless of the flag or whether the LUT PNG ever loaded. `NP_USE_MIXBOX=OFF` now
+genuinely omits them: `nm` finds `pigmentPolynomialRgb` in the ON binary and not in the OFF one.
+
+The fallback is two-constant Kubelka-Munk from the 1948 closed-form (`K/S = (1-R)²/(2R)` inverted for
+`R`, rationalised for stability), per RGB channel — the same three-band simplification Curtis et al.
+1997, already cited here, uses. `Latent`'s six floats are reinterpreted (`c` = K, `res` = S) rather
+than replaced, which is why `mixLatents()`'s existing per-component lerp needed no change: a
+concentration-weighted lerp of K and S *is* the two-constant mixing rule.
+
+**It is a compliance stopgap, not a visual match**, and the difference is measured rather than
+guessed: over nine 50/50 mixes of `defaultPalette()` pairs, max Euclidean residual in linear RGB
+**0.524**, mean **0.317**. KM2 mixes read systematically darker and less saturated — Cadmium Yellow ×
+Cobalt Blue is `(0.189, 0.583, 0.239)` under Mixbox and `(0.057, 0.211, 0.056)` under KM2. Both
+bases do cross blue + yellow to green for the real named pigments; a fully saturated synthetic
+primary does not cross under KM2, which is a genuine limitation of per-channel RGB-band KM.
+
+**Two defects the OFF build shipped with until review caught them**, both instances of an
+unbuilt-configuration seam being asserted by tests that could not see it:
+
+1. **The OFF build stamped every document `mixbox-v1`** while writing K/S latents — a file that
+   tells the next reader to feed Kubelka values to Mixbox's polynomial, which renders wrong and
+   never refuses. `core/Document.hpp` now carries both names and a `kPigmentBasisThisBuild` selected
+   by the same flag that selects the projection.
+2. **Six `--selftest` assertions passed vacuously in the OFF build**, each asserting "the real
+   Mixbox LUT loads" — true only because the fallback's `load()` is a no-op that always succeeds.
+   They now go through `pigmentSourceReady()`, which requires two palette pigments to convert to two
+   *different* latents that each project back to their own colour, and which a degenerate
+   `rgbToLatent()` reddens in either build.
+
+Both configurations now build and run `--selftest` at 5,327 assertions, 0 FAIL, with nothing skipped
+in either. The review's "build both configurations in CI" is therefore still open as CI work; what
+exists today is that both are built and tested by hand on each change to this area.
+
 ---
 
 ### P3 — Readability and navigability

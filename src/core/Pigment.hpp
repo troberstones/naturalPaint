@@ -76,6 +76,12 @@ struct Latent {
 };
 
 // Mixbox's 20-term cubic in the four pigment weights, evaluated in linear RGB.
+// Only declared when NP_USE_MIXBOX is on: it is a verbatim transcription of
+// Mixbox's own fitted coefficients (CC BY-NC, see shaders/include/mixbox.wgsl),
+// not merely code that happens to sit next to the LUT, and the NP_USE_MIXBOX=OFF
+// build must carry none of it -- see Pigment.cpp's `#else` branch of
+// `latentToRgb()` below for the real, licence-independent fallback and
+// docs/architecture-review.md finding P2-3 for why this split exists at all.
 //
 // **Moved verbatim from paint/Palette.cpp's anonymous namespace**, coefficient
 // for coefficient and term for term, and that word is load-bearing for the
@@ -88,23 +94,32 @@ struct Latent {
 //
 // Identical to `mixboxEvalPolynomial()` in shaders/include/mixbox.wgsl; keep
 // the two in step if either is ever touched.
+#if defined(NP_USE_MIXBOX)
 std::array<float, 3> pigmentPolynomialRgb(const std::array<float, 3>& c) noexcept;
+#endif
 
 // The latent -> RGB projection: **straight** (non-premultiplied) linear RGB,
 // clamped to [0,1].
 //
-// The clamp is Mixbox's own, moved with the function rather than introduced
-// here. It is the one place in this codebase's compositing chain that clamps,
-// and it is defensible for a reason that does not generalise: the polynomial's
-// output is a *reflectance*, and a reflectance above 1 or below 0 is not a
-// bright highlight, it is a pigment mixture outside the model's domain. This
-// is not io/Export's quantization clamp and does not license one elsewhere.
+// **Two mutually-exclusive definitions, chosen by NP_USE_MIXBOX** (Pigment.cpp):
+// the Mixbox polynomial above plus its residual, or a closed-form two-constant
+// Kubelka-Munk projection that needs no fitted table and nothing from Mixbox.
+// Callers do not branch -- this is the one seam, same convention as
+// `MixboxLut::rgbToLatent()` in paint/Palette.cpp for the reverse direction.
+//
+// The clamp is shared by both branches. It is the one place in this codebase's
+// compositing chain that clamps, and it is defensible for a reason that does
+// not generalise: the projection's output is a *reflectance*, and a
+// reflectance above 1 or below 0 is not a bright highlight, it is a pigment
+// mixture outside the model's domain. This is not io/Export's quantization
+// clamp and does not license one elsewhere.
 //
 // No LUT, no state, no `paint/` -- see this header's opening. It is a free
 // function rather than a `MixboxLut` member (which is what it used to be)
 // precisely because it never touched the LUT's pixels: a member that ignores
 // its object is a misleading signature, and having it on the class implied the
-// projection was unavailable without a loaded 512x512 PNG. It is not.
+// projection was unavailable without a loaded 512x512 PNG. It is not, in
+// either build.
 std::array<float, 3> latentToRgb(const Latent& z) noexcept;
 
 // One Pigment texel, in the format's own channel order. `mass` is the Pigment

@@ -387,11 +387,19 @@ bool runSaveReadbackTest() {
               "correctly, rather than failing against its own document's default --\n");
   {
     Document rgbOnly = Document::createBlank(32, 32, WorkingSpace{});
-    check(rgbOnly.pigmentBasis == kPigmentBasisMixbox,
+    check(rgbOnly.pigmentBasis == kPigmentBasisThisBuild,
           "fixture: an RGB-only document still carries this build's default basis label");
 
     NpaintCarry foreignBasis;
-    foreignBasis.basis = "km2-v1";  // a basis this build has never heard of
+    // A basis this build has never heard of -- and which one that is depends
+    // on NP_USE_MIXBOX, since core/Document.hpp's two names swap roles with
+    // the flag. Spelling "km2-v1" here would make this an ordinary same-basis
+    // save in the OFF build, where km2-v1 IS this build's own.
+#if defined(NP_USE_MIXBOX)
+    foreignBasis.basis = kPigmentBasisKm2;
+#else
+    foreignBasis.basis = kPigmentBasisMixbox;
+#endif
     const std::string path = inDir("foreign_basis.npaint");
 
     NpaintSaveOptions verifyOpt;
@@ -402,7 +410,7 @@ bool runSaveReadbackTest() {
           "is not a defect, and the verification agrees");
 
     const NpaintLoadResult reloaded = loadNpaint(path);
-    check(reloaded.ok && reloaded.document.pigmentBasis == "km2-v1",
+    check(reloaded.ok && reloaded.document.pigmentBasis == foreignBasis.basis,
           "...and the file genuinely carries the FOREIGN basis, exactly as PRD I10 requires -- "
           "this was never going to match `rgbOnly.pigmentBasis` verbatim, which is the whole "
           "point of the fix");

@@ -64,22 +64,46 @@ bool runPigmentBasisTest() {
     return !ba.empty() && maskCapDates(ba) == maskCapDates(bb);
   };
 
+  // Two ROLES, not two literals. This section is about a document declaring
+  // which basis its latents are fitted in, and half its claims are about the
+  // basis this build stamps while the other half are about one it cannot
+  // interpret. `NP_USE_MIXBOX` swaps which name plays which role
+  // (core/Document.hpp), so spelling either literal directly here would make
+  // every claim below true in exactly one configuration -- and the OFF build,
+  // where "km2-v1" IS this build's own basis, would quietly run its
+  // foreign-basis refusal tests against its own label and pass them for the
+  // wrong reason.
+  const char* const kThisBasis = kPigmentBasisThisBuild;
+#if defined(NP_USE_MIXBOX)
+  const char* const kForeignBasis = kPigmentBasisKm2;
+  const char* const kSameLengthOther = "mixbox-v2";  // 9 bytes, as kThisBasis is
+#else
+  const char* const kForeignBasis = kPigmentBasisMixbox;
+  const char* const kSameLengthOther = "km2-v2";     // 6 bytes, as kThisBasis is
+#endif
+  check(std::strlen(kThisBasis) == std::strlen(kSameLengthOther) &&
+            std::string(kThisBasis) != kSameLengthOther &&
+            std::string(kThisBasis) != kForeignBasis,
+        "basis: the same-length control string really is the same length as this build's "
+        "basis and really does differ from it, and the foreign label is not this build's");
+
   // ======================================================================
   // (1) The field on the document. Both builds; no file is involved.
   // ======================================================================
 
-  check(std::string(kPigmentBasisMixbox) == "mixbox-v1" &&
-            Document{}.pigmentBasis == kPigmentBasisMixbox &&
-            Document::createBlank(4, 4, WorkingSpace{}).pigmentBasis == kPigmentBasisMixbox,
-        "basis: every document this build makes declares \"mixbox-v1\" -- the default is on "
-        "the member, so createBlank() and a bare Document cannot disagree");
+  check((std::string(kThisBasis) == "mixbox-v1" || std::string(kThisBasis) == "km2-v1") &&
+            Document{}.pigmentBasis == kThisBasis &&
+            Document::createBlank(4, 4, WorkingSpace{}).pigmentBasis == kThisBasis,
+        "basis: every document this build makes declares the basis this build's latents are "
+        "actually in -- the default is on the member, so createBlank() and a bare Document "
+        "cannot disagree, and NP_USE_MIXBOX moves both together");
 
   // Pointer equality, not string equality. String equality would still pass if
   // io/NpaintFile.hpp went back to spelling the literal a second time, which is
   // exactly the drift the alias exists to prevent: two constants that must
   // agree and are only checked by eye.
   check(static_cast<const void*>(kNpaintPigmentBasis) ==
-            static_cast<const void*>(kPigmentBasisMixbox),
+            static_cast<const void*>(kThisBasis),
         "basis: io/NpaintFile's kNpaintPigmentBasis IS core/Document's constant -- the same "
         "object, not a second literal that happens to match today");
 
@@ -89,8 +113,8 @@ bool runPigmentBasisTest() {
   // property of this standard library and this literal), hence no [measured].
   const size_t ssoCapacity = std::string().capacity();
   std::printf("    basis: \"%s\" is %zu bytes; std::string SSO capacity is %zu\n",
-              kPigmentBasisMixbox, std::strlen(kPigmentBasisMixbox), ssoCapacity);
-  check(std::strlen(kPigmentBasisMixbox) <= ssoCapacity,
+              kThisBasis, std::strlen(kThisBasis), ssoCapacity);
+  check(std::strlen(kThisBasis) <= ssoCapacity,
         "basis: the default value is short-string-optimised, so putting it on Document costs "
         "a history entry sizeof(std::string) and zero allocations");
 
@@ -102,17 +126,17 @@ bool runPigmentBasisTest() {
   {
     History h;
     Document doc = Document::createBlank(8, 8, WorkingSpace{});
-    doc.pigmentBasis = "km2-v1";
+    doc.pigmentBasis = kForeignBasis;
     h.begin("opened", doc);
     Document edited = doc;
-    edited.pigmentBasis = kPigmentBasisMixbox;
+    edited.pigmentBasis = kThisBasis;
     h.record("converted the basis", edited);
     const Document* back = h.undo();
-    check(back != nullptr && back->pigmentBasis == "km2-v1",
+    check(back != nullptr && back->pigmentBasis == kForeignBasis,
           "basis: undo restores it with the tiles it describes -- on app::OpenDocument it "
           "would sit outside every history entry and undo could not reach it");
     const Document* fwd = h.redo();
-    check(fwd != nullptr && fwd->pigmentBasis == kPigmentBasisMixbox,
+    check(fwd != nullptr && fwd->pigmentBasis == kThisBasis,
           "basis: and redo puts it back, so it is ordinary document state and not a special "
           "case anywhere in core/History");
   }
@@ -162,8 +186,8 @@ bool runPigmentBasisTest() {
     {
       const Document doc = plainDocument();
       const NpaintLoadResult back = loadNpaint(kPlain);
-      check(back.ok && back.carry.basis == kPigmentBasisMixbox &&
-                back.document.pigmentBasis == kPigmentBasisMixbox,
+      check(back.ok && back.carry.basis == kThisBasis &&
+                back.document.pigmentBasis == kThisBasis,
             "basis: np:basis comes back on BOTH -- the carry records what the file said, the "
             "document records what its own latents are (PRD C8)");
       check(back.ok && back.warnings.empty(),
@@ -194,14 +218,14 @@ bool runPigmentBasisTest() {
             "capDate is masked -- the format is deterministic apart from that clock");
 
       NpaintCarry sameBasis;
-      sameBasis.basis = kPigmentBasisMixbox;
+      sameBasis.basis = kThisBasis;
       const NpaintSaveResult viaCarry = saveNpaint(doc, kViaCarry, {}, &sameBasis);
       check(viaCarry.ok && sameFileBytes(kPlain, kViaCarry),
             "basis: writing the basis FROM THE DOCUMENT produces the same bytes as writing it "
             "from a carry -- an ordinary document's file is untouched by this step");
 
       NpaintCarry otherBasis;
-      otherBasis.basis = "mixbox-v2";  // same length, so only the value differs
+      otherBasis.basis = kSameLengthOther;  // same length, so only the value differs
       const NpaintSaveResult viaOther = saveNpaint(doc, kOtherBasis, {}, &otherBasis);
       check(viaOther.ok && !sameFileBytes(kPlain, kOtherBasis),
             "basis: and a different basis of the SAME LENGTH does change the bytes -- the "
@@ -214,7 +238,7 @@ bool runPigmentBasisTest() {
     // manufacture one: nothing in this build writes a basis other than its own.
     {
       NpaintCarry foreign;
-      foreign.basis = "km2-v1";
+      foreign.basis = kForeignBasis;
       const Document doc = plainDocument();
       check(saveNpaint(doc, kForeign, {}, &foreign).ok,
             "basis: a foreign basis can be written at all -- an RGB-only document carries one "
@@ -224,12 +248,13 @@ bool runPigmentBasisTest() {
       check(back.ok, "basis: a file declaring a basis this build has never heard of LOADS -- "
                      "refusing would make a document unopenable over a label");
       if (back.ok) {
-        check(back.document.pigmentBasis == "km2-v1" && back.carry.basis == "km2-v1",
+        check(back.document.pigmentBasis == kForeignBasis &&
+                  back.carry.basis == kForeignBasis,
               "basis: and the document keeps that string verbatim rather than being "
               "relabelled with this build's");
         bool named = false;
         for (const std::string& w : back.warnings)
-          if (contains(w, "km2-v1") && contains(w, kPigmentBasisMixbox)) named = true;
+          if (contains(w, kForeignBasis) && contains(w, kThisBasis)) named = true;
         check(named,
               "basis: warned by name, naming both the file's basis and this build's -- loud, "
               "not silent, and not fatal");
@@ -242,9 +267,9 @@ bool runPigmentBasisTest() {
         const NpaintSaveResult again = saveNpaint(back.document, kForeignAgain);
         check(again.ok, "basis: a foreign-basis document saves back out with no carry");
         const NpaintLoadResult third = loadNpaint(kForeignAgain);
-        check(third.ok && third.document.pigmentBasis == "km2-v1" &&
-                  third.carry.basis == "km2-v1",
-              "basis: still \"km2-v1\" after a second generation written from the DOCUMENT "
+        check(third.ok && third.document.pigmentBasis == kForeignBasis &&
+                  third.carry.basis == kForeignBasis,
+              "basis: still the FILE's basis after a second generation written from the DOCUMENT "
               "alone -- the constant is gone from the write path");
       }
     }
@@ -261,10 +286,10 @@ bool runPigmentBasisTest() {
       Document doc = Document::createBlank(64, 64, WorkingSpace{});
       doc.layers[0] = makePigmentLayer("wash");
       writePigment(doc, 0, 1, 1, zExact, 0.5f);
-      doc.pigmentBasis = "km2-v1";
+      doc.pigmentBasis = kForeignBasis;
 
       NpaintCarry agreeing;
-      agreeing.basis = "km2-v1";
+      agreeing.basis = kForeignBasis;
       const NpaintSaveResult saved = saveNpaint(doc, kPigment, {}, &agreeing);
       check(saved.ok,
             "basis: a document whose Pigment latents and whose source file agree on a foreign "
@@ -275,16 +300,17 @@ bool runPigmentBasisTest() {
       // against this build's constant instead of against the document, which
       // is what the code did before this step.
       Document relabelled = doc;
-      relabelled.pigmentBasis = kPigmentBasisMixbox;
+      relabelled.pigmentBasis = kThisBasis;
       const NpaintSaveResult mixed = saveNpaint(relabelled, kPigmentAgain, {}, &agreeing);
-      check(!mixed.ok && contains(mixed.error, "km2-v1") &&
-                contains(mixed.error, kPigmentBasisMixbox),
+      check(!mixed.ok && contains(mixed.error, kForeignBasis) &&
+                contains(mixed.error, kThisBasis),
             "basis: but a document claiming THIS build's basis for latents whose file says "
-            "km2-v1 is still refused by name -- one file, two bases, no honest label");
+            "the other one is still refused by name -- one file, two bases, no honest label");
 
       const NpaintLoadResult back = loadNpaint(kPigment);
-      check(back.ok && back.document.pigmentBasis == "km2-v1",
-            "basis: the saved foreign-basis Pigment document reads back declaring km2-v1");
+      check(back.ok && back.document.pigmentBasis == kForeignBasis,
+            "basis: the saved foreign-basis Pigment document reads back declaring the file's "
+            "own basis, not this build's");
       if (back.ok && back.document.layers.size() == 1 &&
           back.document.layers[0].pigmentTiles.has_value()) {
         const PigmentTexel got = readPigment(back.document, 0, 1, 1);
@@ -303,7 +329,7 @@ bool runPigmentBasisTest() {
       doc.pigmentBasis.clear();
       const NpaintSaveResult refused = saveNpaint(doc, kPigmentAgain);
       check(!refused.ok && contains(refused.error, "pigmentBasis") &&
-                contains(refused.error, kPigmentBasisMixbox),
+                contains(refused.error, kThisBasis),
             "basis: an empty basis is refused by name -- this OpenImageIO drops empty string "
             "attributes, so the file would declare no basis rather than an unknown one");
     }

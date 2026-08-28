@@ -16,20 +16,41 @@
 // the one factory PLAN.md's step 5 (PRD C7) asks for: createBlank().
 namespace np {
 
-// The pigment basis this build fits latents in (PRD C8: "the file records
-// which pigment basis produced them"). core/Pigment's `latentToRgb()` is
-// Mixbox's own 20-term polynomial over Mixbox's own three stored pigment
-// weights, and paint/MixboxLut's 512x512 texture is the inverse of exactly
-// that map -- so "mixbox-v1" is not a label chosen here, it names the model
-// core/Pigment implements.
+// The two pigment bases this source tree can be built with (PRD C8: "the file
+// records which pigment basis produced them"). Neither name is a label chosen
+// here; each names the model `core/Pigment`'s `latentToRgb()` actually
+// implements in the corresponding build:
 //
+//  * `mixbox-v1` -- Mixbox's own 20-term polynomial over Mixbox's own three
+//    stored pigment weights, with paint/MixboxLut's 512x512 texture as the
+//    inverse of exactly that map.
+//  * `km2-v1` -- the two-constant Kubelka-Munk projection that replaces it
+//    when `NP_USE_MIXBOX` is off (docs/architecture-review.md P2-3), where
+//    `Latent::c` is absorption K per RGB channel and `Latent::res` is
+//    scattering S. The same six floats, meaning something entirely different,
+//    which is precisely why the label has to move with the build.
+//
+// **`kPigmentBasisThisBuild` is the one a document gets stamped with, and it
+// is selected by the same flag that selects the projection.** Getting this
+// wrong is not cosmetic: an `NP_USE_MIXBOX=OFF` build stamping `mixbox-v1`
+// writes K/S values under a label that tells the next reader to feed them to
+// Mixbox's polynomial, which is a silently wrong picture rather than a
+// refusal -- exactly the failure this field exists to prevent, committed by
+// the field itself.
+inline constexpr const char* kPigmentBasisMixbox = "mixbox-v1";
+inline constexpr const char* kPigmentBasisKm2 = "km2-v1";
+
 // Declared in `core/` rather than in io/NpaintFile because it is the default
 // of the member below, and a default has to live where the member does.
 // io/NpaintFile's `kNpaintPigmentBasis` -- the format's name for the same
 // string, which docs/document-format.md's own example uses -- is defined *as*
-// this constant rather than as a second spelling of "mixbox-v1", so the
+// this constant rather than as a second spelling of the literal, so the
 // document's claim and the attribute the writer stamps cannot drift apart.
-inline constexpr const char* kPigmentBasisMixbox = "mixbox-v1";
+#if defined(NP_USE_MIXBOX)
+inline constexpr const char* kPigmentBasisThisBuild = kPigmentBasisMixbox;
+#else
+inline constexpr const char* kPigmentBasisThisBuild = kPigmentBasisKm2;
+#endif
 
 struct Document {
   int32_t width = 0;
@@ -71,10 +92,11 @@ struct Document {
   //
   // The cost of that placement is one `std::string` per history entry, and it
   // is a copy rather than a share. That is affordable for a measured reason
-  // rather than an assumed one: "mixbox-v1" is 9 bytes, inside libc++'s
-  // short-string capacity, so copying a history entry does **not** allocate
-  // for this member; the entry grows by `sizeof(std::string)` and nothing
-  // else. `--selftest` asserts that rather than trusting it.
+  // rather than an assumed one: "mixbox-v1" is 9 bytes and "km2-v1" is 6, both
+  // inside libc++'s short-string capacity, so copying a history entry does
+  // **not** allocate for this member in either build; the entry grows by
+  // `sizeof(std::string)` and nothing else. `--selftest` asserts that of
+  // whichever basis this build stamps, rather than trusting it.
   //
   // Never empty in a document this build produces. io/NpaintFile refuses to
   // save an empty one by name rather than writing a file that declares no
@@ -88,7 +110,7 @@ struct Document {
   // latents from two bases under one label. Nothing in the paint path checks
   // it today -- see io/NpaintFile.hpp's basis section for what that leaves
   // open and what closes it.
-  std::string pigmentBasis = kPigmentBasisMixbox;
+  std::string pigmentBasis = kPigmentBasisThisBuild;
 
   // Ordered, **bottom to top**: index 0 is the bottom of the stack
   // (DESIGN-imaging.md §3's `Layer[]` diagram, and docs/document-format.md's

@@ -92,3 +92,34 @@ fn distToSegment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
   let t = clamp(dot(p - a, ab) / denom, 0.0, 1.0);
   return distance(p, a + t * ab);
 }
+
+// A pigment latent: six floats whose *meaning* depends on which basis is
+// linked in (`//#include "include/pigment_basis.wgsl"` in composite.wgsl
+// resolves to either include/mixbox.wgsl or include/km2.wgsl, chosen by
+// NP_USE_MIXBOX at the C++ level -- see gfx/ShaderLoader.cpp). Under Mixbox,
+// `c` is three of Mixbox's four pigment weights and `res` is an additive
+// residual. Under the two-constant Kubelka-Munk fallback, `c` is absorption
+// (K) per RGB channel and `res` is scattering (S) per RGB channel -- see
+// include/km2.wgsl and core/Pigment.cpp for why that reinterpretation is
+// exactly what makes `mixLatents()`'s plain per-component lerp (mirrored here
+// by the fluid solver's linear advection of these same two textures) the
+// correct Kubelka-Munk mixing rule in *both* bases: lerping three affinely-
+// implied pigment weights is a Mixbox mix, and lerping K and S by the same
+// weight is `K_mix = sum ci*Ki, S_mix = sum ci*Si`, the textbook two-constant
+// mixing rule. This struct and the unpack below are basis-agnostic (plain
+// division by mass) and live here, once, so composite.wgsl does not care
+// which basis produced the values it is unpacking.
+struct PigmentLatent {
+  c   : vec3<f32>,
+  res : vec3<f32>,
+};
+
+// Pigment is stored as latent premultiplied by mass, so that advection and
+// deposition — both linear — mix correctly. Undo that here.
+fn pigmentLatentFromMass(cm: vec4<f32>, rm: vec4<f32>) -> PigmentLatent {
+  let mass = max(cm.w, 1e-5);
+  var out : PigmentLatent;
+  out.c = cm.xyz / mass;
+  out.res = rm.xyz / mass;
+  return out;
+}

@@ -13,6 +13,14 @@
 // polynomial. The reverse direction is the one that needs Mixbox's 512x512 LUT,
 // and it is only ever needed when the user picks a colour — so it lives on the
 // CPU in paint/Palette.cpp and the GPU never sees the table at all.
+//
+// This file is only ever linked in when NP_USE_MIXBOX is on -- see
+// gfx/ShaderLoader.cpp, which resolves composite.wgsl's basis-neutral
+// `//#include "include/pigment_basis.wgsl"` to this file or to include/km2.wgsl
+// depending on the C++ build flag. `PigmentLatent` (the type `pigmentLatentToRgb`
+// below takes) and the mass-unpack that produces one both live in
+// include/common.wgsl now, basis-agnostic, so this file owns nothing but the
+// polynomial itself and the one-line adapter to the neutral name.
 
 fn mixboxEvalPolynomial(c: vec3<f32>) -> vec3<f32> {
   let c0 = c[0];
@@ -50,21 +58,9 @@ fn mixboxEvalPolynomial(c: vec3<f32>) -> vec3<f32> {
          (c12 * c3) * vec3<f32>( 6.00078678,  2.55552042,  1.90739502);
 }
 
-struct MixboxLatent {
-  c   : vec3<f32>,   // pigment weights
-  res : vec3<f32>,   // additive residual
-};
-
-fn mixboxLatentToRgb(latent: MixboxLatent) -> vec3<f32> {
+// `PigmentLatent` (include/common.wgsl): `c` is three of Mixbox's four
+// pigment weights (the fourth is implied, see mixboxEvalPolynomial above),
+// `res` is the additive residual.
+fn pigmentLatentToRgb(latent: PigmentLatent) -> vec3<f32> {
   return clamp(mixboxEvalPolynomial(latent.c) + latent.res, vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
-// Pigment is stored as latent premultiplied by mass, so that advection and
-// deposition — both linear — mix correctly. Undo that here.
-fn latentFromMass(cm: vec4<f32>, rm: vec4<f32>) -> MixboxLatent {
-  let mass = max(cm.w, 1e-5);
-  var out : MixboxLatent;
-  out.c = cm.xyz / mass;
-  out.res = rm.xyz / mass;
-  return out;
 }

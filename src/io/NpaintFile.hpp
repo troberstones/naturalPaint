@@ -582,7 +582,7 @@ inline constexpr int32_t kNpaintFormatVersion = 1;
 // or refuse the stroke). Neither is this step's, and neither is reachable from
 // a document this build can currently produce, because nothing in this build
 // writes a basis other than its own.
-inline constexpr const char* kNpaintPigmentBasis = kPigmentBasisMixbox;
+inline constexpr const char* kNpaintPigmentBasis = kPigmentBasisThisBuild;
 
 // The conventional extension. `.exr` is the same container under a different
 // name (PRD I8), and nothing in this module inspects the extension -- both

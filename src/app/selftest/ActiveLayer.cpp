@@ -192,8 +192,26 @@ bool runActiveLayerTest() {
       BrushState b;
       b.pigment = static_cast<int>(i);
       const BrushTip t = brushTipFor(b, noLut, 1.0f);
+#if defined(NP_USE_MIXBOX)
       for (int k = 0; k < 3; ++k)
         if (std::fabs(t.pigment.c[k] - palette[i].rgb[k]) > 1e-6f) colourOnly = false;
+#else
+      // KM2 basis: `noLut` is unconditionally "loaded" under this basis (see
+      // paint/Palette.cpp), so `brushTipFor()` takes the real
+      // `rgbToLatent()` branch rather than the ON-build's "no LUT, copy the
+      // sRGB triple into `c` verbatim" fallback -- `t.pigment.c` is Kubelka's
+      // K per channel, not a colour, and comparing it to `palette[i].rgb`
+      // directly no longer means anything. The claim this test exists for --
+      // the tip is a function of the pigment's colour ALONE, not its
+      // physical constants -- is checked instead by round-tripping the tip's
+      // latent back to RGB and comparing THAT to the pigment's colour, at
+      // the same tolerance app/selftest/PigmentLayer.cpp derives for the
+      // identical KM2 round trip.
+      const std::array<float, 3> back = latentToRgb(t.pigment);
+      for (int k = 0; k < 3; ++k)
+        if (std::fabs(back[k] - palette[i].rgb[k]) > MixboxLut::kKm2ReflectanceFloor + 1.0e-6f)
+          colourOnly = false;
+#endif
     }
     check(colourOnly,
           "the tip carries the pigment's colour and nothing else -- see brushTipFor()");

@@ -48,6 +48,25 @@ std::string expand(const fs::path& root, const fs::path& file,
       continue;
     }
     std::string rel = line.substr(q1 + 1, q2 - q1 - 1);
+
+    // The one basis-selecting indirection in the whole shader tree:
+    // composite.wgsl names a symbolic target, "include/pigment_basis.wgsl",
+    // that does not exist on disk, rather than naming mixbox.wgsl directly --
+    // exactly the same role NP_USE_MIXBOX plays on the C++ side
+    // (core/Pigment.cpp, paint/Palette.cpp), and resolved by the same
+    // compile-time flag so the two halves of one build cannot disagree about
+    // which pigment model is linked in. `#if` rather than a runtime choice
+    // because WGSL itself has no preprocessor and this loader's `#include` is
+    // already the only preprocessing step it gets (see this file's own
+    // top-of-header comment).
+    if (rel == "include/pigment_basis.wgsl") {
+#if defined(NP_USE_MIXBOX)
+      rel = "include/mixbox.wgsl";
+#else
+      rel = "include/km2.wgsl";
+#endif
+    }
+
     if (!seen.insert(rel).second) continue;  // already pulled in
     out << expand(root, root / rel, seen) << '\n';
   }

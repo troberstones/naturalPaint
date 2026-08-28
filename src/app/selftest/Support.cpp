@@ -552,4 +552,42 @@ bool readbackRGBA16FPadded(GpuContext& gpu, WGPUTexture tex, uint32_t width, uin
 }
 
 
+bool pigmentSourceReady(MixboxLut& lut, const char* lutPath) {
+  if (!lut.load(lutPath)) return false;
+  if (!lut.valid()) return false;
+
+  // Two pigments far apart in every channel, taken from the palette rather
+  // than invented, so this exercises the same data every caller goes on to
+  // assert against: Cadmium Yellow and Cobalt Blue.
+  const std::vector<Pigment>& palette = defaultPalette();
+  if (palette.size() < 8) return false;
+  const Pigment& a = palette[0];
+  const Pigment& b = palette[7];
+
+  const Latent za = lut.rgbToLatent(a.rgb[0], a.rgb[1], a.rgb[2]);
+  const Latent zb = lut.rgbToLatent(b.rgb[0], b.rgb[1], b.rgb[2]);
+
+  bool distinct = false;
+  for (int i = 0; i < 3; ++i)
+    if (std::fabs(za.c[i] - zb.c[i]) > 1e-3f) distinct = true;
+  if (!distinct) return false;
+
+  // Round trip, at the tolerance each basis can actually meet: Mixbox's fit
+  // carries its residual, so it is exact to float noise; KM2 clamps a channel
+  // to its reflectance floor before taking K/S, so a pigment with an exact-0
+  // channel comes back off by exactly that floor (paint/Palette.cpp).
+#if defined(NP_USE_MIXBOX)
+  const float tol = 5.0e-7f;
+#else
+  const float tol = MixboxLut::kKm2ReflectanceFloor + 1.0e-6f;
+#endif
+  const std::array<float, 3> backA = latentToRgb(za);
+  const std::array<float, 3> backB = latentToRgb(zb);
+  for (int i = 0; i < 3; ++i) {
+    if (std::fabs(backA[i] - a.rgb[i]) > tol) return false;
+    if (std::fabs(backB[i] - b.rgb[i]) > tol) return false;
+  }
+  return true;
+}
+
 }  // namespace np
