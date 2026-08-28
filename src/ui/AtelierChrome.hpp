@@ -376,7 +376,15 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands, AtelierSplitSt
 // `refusal` is the sentence the brush could not paint, or empty. Shown here
 // rather than logged: a locked target makes the brush silently stop working,
 // which is the one failure a painter cannot diagnose by looking at the canvas.
-void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands, const std::string& refusal);
+// The active tool and its options, drawn INTO THE CALLER'S WINDOW.
+//
+// No `Begin()`/`End()` of its own, unlike every other band in this file: this
+// is a dockable panel now (app/ControlsLayout.hpp's `ControlsSection::Options`)
+// and its callers -- a dock slot, a flyout body -- have already made the
+// window it belongs in. `bandH` is the height available, which is all the
+// vertical centring needs. See the definition for what went wrong with the
+// version that made its own window.
+void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& refusal);
 
 // docs/ui.md section 2's 26px band: zoom, dimensions and working space,
 // resident against budget, and the view-state markers.

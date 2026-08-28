@@ -540,10 +540,21 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
   return newDocument;
 }
 
-void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
-                           const std::string& refusal) {
-  beginBand("##atelierOptions", bands.optionsBar, kChromeDeep);
-  centreInBand(bands.optionsBar.h, ImGui::GetFrameHeight());
+void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& refusal) {
+  // **Content only -- no window of its own.** The options bar used to be a
+  // band welded under the tab strip, so it opened its own `beginBand()` window
+  // and the only question was which rect. It is a dockable panel now
+  // (app/ControlsLayout.hpp's `ControlsSection::Options`), so it can be a slot
+  // in any of the four docks or the body of a flyout, and every one of those
+  // is a caller that has ALREADY made a window and wants this drawn into it.
+  //
+  // The version in between took a rect and still made its own window, and it
+  // did not work: a `Begin()` inside a dock's `BeginChild()` is a second
+  // top-level window floating at the same coordinates, so the panel drew
+  // either behind its own dock or over its neighbours depending on focus
+  // order. Drawing into the caller's window is the fix, and it also deletes
+  // the special case the dock had to carry for this one panel.
+  centreInBand(bandH, ImGui::GetFrameHeight());
 
   // The accent block that leads the band in the design (`[]BRUSH`): the active
   // tool, marked in the one colour reserved for "this is on".
@@ -655,7 +666,6 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
       ImGui::PopStyleColor();
     }
 
-    endBand();
     return;
   }
 
@@ -794,8 +804,6 @@ void drawAtelierOptionsBar(AppState& st, const AtelierBands& bands,
       ImGui::SetTooltip("The active layer is \"%s\".\nA %s stroke on it goes to: %s",
                         target->name.c_str(), toolName(st.brush.tool), strokeRouteName(route));
   }
-
-  endBand();
 }
 
 void drawAtelierStatusBar(AppState& st, const AtelierBands& bands, uint32_t canvasW,

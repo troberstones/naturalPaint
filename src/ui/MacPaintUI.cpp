@@ -4,6 +4,7 @@
 #include "ui/AtelierChrome.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/AtelierLayout.hpp"
+#include "ui/DockLayout.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/NewDocumentDialog.hpp"
 
@@ -23,7 +24,7 @@
 #include "app/BrushRowIcon.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CompPanel.hpp"
-#include "app/ControlsColumnLayout.hpp"
+#include "app/PanelLayout.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
 #include "app/DabPreview.hpp"
@@ -91,7 +92,16 @@ namespace {
 // the status bar goes, and the pigment well it held has moved into the COLOR
 // section of the right-hand column, which is where docs/ui.md section 3.3 puts
 // colour selection.
-constexpr float kControlsW = kRightColumnW;
+// `kControlsW` is gone the same way, and for a sharper version of the same
+// reason: it aliased `kRightColumnW`, the right-hand column's fixed 322 px,
+// and the right-hand column is not fixed any more. A panel's width is its
+// dock's extent, which the user drags and `app/PanelLayout` persists, so a
+// compile-time constant standing in for it would be exactly the "per-frame
+// value masquerading as a constant" this comment already warns about -- one
+// revision later and one axis over. Its only reader was the label-column log
+// line, which now reports `bands.rightDock.w`: the number that is actually
+// on screen.
+//
 // Peak gravity, in the same cells-per-step units as the rest of the velocity field.
 constexpr float kMaxTilt = 0.50f;
 // PLAN.md Phase 2 step 12 ("Rulers, guides, grid and snapping", PRD Q5-Q7).
@@ -8515,90 +8525,839 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
   }
 }
 
-// The name of the popup that edits which sections the column shows and in
-// what order. A file-local constant rather than a literal in three places --
-// `OpenPopup`, `BeginPopup` and any future `IsPopupOpen` have to agree
-// exactly, and a typo in one of them opens nothing with no diagnostic.
-constexpr const char* kColumnConfigPopup = "##columnconfig";
-
-// The "PANELS" affordance and its popup: a checkbox and a pair of arrows per
-// section, plus reset.
+// ===========================================================================
+// The dockable panel system
+// ===========================================================================
 //
-// **This lives outside the column it configures**, which is what makes
-// hiding every section a legal state rather than a trap -- app/
-// ControlsColumnLayout.hpp's header says the model deliberately does not
-// force a section to stay visible, and this is the other half of that
-// bargain. An empty column is recoverable because the way out was never in
-// the column.
+// The user's instruction, in full, because every decision below answers some
+// part of it:
+//
+//   *"revamp the right panel to be dockable, not scrollable, I want to be
+//   able to put the parts I want in and have them stay put, and put others in
+//   flyout mode or dock around the app"*
+//
+//   *"All four edges but move the brush setting and the tool pallet to
+//   dockable panels as well, this makes the UI modular and customizable"*
+//
+// What was here before: one `##controls` window on the right, holding thirteen
+// `CollapsingHeader`s in a single scroll, plus two separate welded bands (the
+// `##tools` palette on the left edge and the options bar under the tab strip)
+// that were not panels at all and could not be moved.
+//
+// What is here now: **four docks, a flyout rail, and fifteen panels that can
+// be in any of them.** The model is `app/PanelLayout` (headless, persisted,
+// version-1-compatible), the slot arithmetic is `ui/DockLayout` (headless,
+// asserted to tile exactly), and this file is the only part that knows what a
+// splitter looks like.
+//
+// --- Why a dock is one window with child slots, and not N windows ---------
+//
+// Each dock draws ONE ImGui window covering the dock rect, and each panel
+// inside it a `BeginChild()` at its slot. The alternative -- one top-level
+// window per panel -- was written first and is worse in a way that shows
+// immediately: fifteen top-level windows are fifteen entries in ImGui's
+// focus/z-order list, and the moment one is clicked it comes forward, so a
+// panel could be raised above the splitter that resizes it. Children have no
+// independent z-order, which is exactly the property a docked panel wants.
+//
+// **Every panel draws into the dock's window**, with no exceptions. There used
+// to be one -- the OPTIONS panel was `drawAtelierOptionsBar()`, a band that
+// opened its own window -- and it did not work: a `Begin()` inside a
+// `BeginChild()` is a second top-level window at the same coordinates, so the
+// panel drew either behind its own dock or over its neighbours depending on
+// focus order. That function is `drawAtelierOptionsBarContent()` now and draws
+// into whatever window is current, which deleted the special case rather than
+// papering over it.
+//
+// --- "not scrollable" is a property of the DOCK, not of the panel ----------
+//
+// The dock never scrolls. Every panel in it gets a slot, and the slots tile
+// the dock exactly (ui/DockLayout). A panel whose content is taller than its
+// own slot scrolls **inside that slot** -- which is why the child below is
+// created without `NoScrollbar`, deliberately, in a file where nearly every
+// other child suppresses it. That is the difference between "LAYERS is below
+// the fold because HISTOGRAM above it is long" (the complaint) and "LAYERS is
+// exactly where I put it and has its own scrollbar" (the fix).
+//
+// The one exception is disclosed rather than hidden: when the minima cannot
+// fit the dock at all (`DockTiling::overflowed`), the slots run past the
+// dock's edge and the dock itself is allowed to scroll. See `drawDock()`.
+
+constexpr const char* kPanelMenuPopup = "##panelmenu";
+
+// The dock side a placement names. Only meaningful for the four dock
+// placements; `panelPlacementIsDock()` is the guard, and `Bottom` is the
+// default arm rather than an assert because this is called per panel per
+// frame and a wrong answer here is a misplaced rect, not a crash.
+DockSide dockSideFor(PanelPlacement p) {
+  switch (p) {
+    case PanelPlacement::Left:  return DockSide::Left;
+    case PanelPlacement::Right: return DockSide::Right;
+    case PanelPlacement::Top:   return DockSide::Top;
+    default:                    return DockSide::Bottom;
+  }
+}
+
+// Written on every change rather than at quit. A layout is cheap to write and
+// there is no moment this app is guaranteed to reach on the way out --
+// app/DocumentLifecycle's recent-documents list is persisted the same way and
+// for the same reason.
+void savePanelLayout(const AppState& st) {
+  std::string err;
+  if (!st.panels.saveToFile(defaultPanelLayoutFilePath(), &err))
+    std::fprintf(stderr, "[panel-layout] save failed: %s\n", err.c_str());
+}
+
+// The tool palette's body, flowed into whatever rectangle it has been given.
+//
+// This used to be the `##tools` window's whole contents, sized from
+// `bands.toolPalette.h` -- a band that was always a tall narrow column, so a
+// single column of cells was the only arrangement it ever needed. TOOLS is a
+// panel now and can be docked to the top or bottom edge, where a single column
+// of 18 cells in a 46 px strip is not a layout at all, so the grid flows:
+// `atelierToolGrid()` picks the cell size and the column count together from
+// both of the panel's dimensions.
+//
+// **The FG swatch is vertical-only.** It is drawn below the grid, which is
+// where docs/ui.md section 2's diagram puts it, and that placement only makes
+// sense in a column -- in a 46 px strip there is no "below". So a horizontal
+// arrangement omits it rather than squeezing it, and the colour it shows is
+// still one click away in the COLOR panel, which is where it is chosen.
+void drawToolsPanelBody(AppState& st, float availW, float availH, bool vertical) {
+  const float swatchSide = kToolCellMax - 8.0f;
+  const float swatchArea = vertical ? kToolSwatchAreaH : 0.0f;
+  const float gridH = std::max(0.0f, availH - swatchArea);
+  const AtelierToolGrid grid = atelierToolGrid(availW, gridH);
+
+  // ItemSpacing is 6px everywhere else in the chrome (ui/AtelierTheme.cpp) but
+  // the grid's own cell size already accounts for every pixel it has -- 6px of
+  // spacing *between* cells is gaps the fitting arithmetic never saw, and this
+  // is exactly the "buttons are too large" the user once pointed at: the cells
+  // themselves were not the (only) problem, the gaps between them were. Zeroed
+  // here, scoped to just this child, rather than globally.
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+
+  // `NoScrollbar` for the one case fitting cannot rescue (`grid.overflows`):
+  // Dear ImGui's mouse wheel still scrolls a `NoScrollbar` child, so every
+  // cell stays reachable, it is only the bar itself -- and the width it would
+  // otherwise reserve -- that this suppresses.
+  if (ImGui::BeginChild("##toolgrid", ImVec2(0.0f, gridH), 0, ImGuiWindowFlags_NoScrollbar)) {
+    // --flyout-demo names a *tool*, not a slot index -- matched by
+    // toolGroupIndex() so a reordering of ui/AtelierChrome.hpp's kToolGroups
+    // cannot silently point the demo at the wrong group.
+    const int brushGroup = toolGroupIndex(Tool::Brush);
+    int inRow = 0;
+    for (int g = 0; g < kToolGroupCount; ++g) {
+      // The flow. `SameLine()` before every cell except the first of a row is
+      // what turns the same single-column loop into a grid without a second
+      // copy of it -- in a one-column grid the condition is never true and the
+      // behaviour is byte-for-byte what it was.
+      if (inRow > 0) ImGui::SameLine(0.0f, 0.0f);
+      toolGroupButton(st, g, grid.cell, st.openToolFlyoutDemo && g == brushGroup);
+      if (++inRow >= grid.columns) inRow = 0;
+      // A group rule only reads as a separator in a column. In a flowed grid
+      // it would be a stray dash in the middle of a row, so it is drawn only
+      // where it means something -- the groups themselves are unchanged either
+      // way, and `kToolGroups`' membership is what a user actually navigates
+      // by (each cell's flyout still lists its own group).
+      if (kToolGroups[g].ruleAfter && grid.columns == 1) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 rp = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(rp, ImVec2(rp.x + grid.cell, rp.y + kDividerThickness),
+                          atelierToken(kDivider));
+        ImGui::Dummy(ImVec2(grid.cell, kDividerThickness));
+      }
+    }
+    if (inRow > 0) ImGui::SameLine(0.0f, 0.0f);
+    moreToolsButton(grid.cell);
+  }
+  ImGui::EndChild();
+  ImGui::PopStyleVar();  // ItemSpacing, pushed above BeginChild()
+
+  if (!vertical) return;
+
+  // The foreground swatch, below the grid where docs/ui.md section 2's diagram
+  // puts `FG/BG` -- drawn after EndChild() precisely so it is *not* part of the
+  // scrolling grid above and cannot move with it. Its side is pinned to
+  // `kToolCellMax`, not the live cell size, so it does not resize or reflow as
+  // the panel resizes.
+  //
+  // **FG only, no BG.** The pair is Photoshop's, and the second half of it
+  // means something only once something fills with it: Fill-with-colour is PRD
+  // D26 and the paint bucket D25, both phase 6, and nothing in this build reads
+  // a background colour. A second well that no operation consumes would be
+  // chrome promising a feature that is not behind it.
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  // **`foregroundSrgb()`, not `defaultPalette()[st.brush.pigment]`.** This is
+  // the well PRD Q10 says the eyedropper picks *into*, so it has to show the
+  // colour that was picked.
+  const std::array<float, 3> fg = foregroundSrgb(st.brush);
+  dl->AddRectFilled(p, ImVec2(p.x + swatchSide, p.y + swatchSide),
+                    IM_COL32((int)(fg[0] * 255), (int)(fg[1] * 255), (int)(fg[2] * 255), 255));
+  dl->AddRect(p, ImVec2(p.x + swatchSide, p.y + swatchSide), atelierToken(kRule), 0.0f, 0,
+              kRuleThickness);
+  ImGui::Dummy(ImVec2(swatchSide, swatchSide));
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
+                      "or picked with the eyedropper (PRD Q10)",
+                      foregroundName(st.brush));
+  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
+  ImGui::TextUnformatted("FG");
+  ImGui::PopStyleColor();
+}
+
+// One panel's contents, with no frame of its own.
+//
+// The switch is what the `##controls` loop's switch used to be, moved here so
+// that a dock slot, a flyout and (in future) anything else that wants to show
+// a panel all reach the same bodies. `Options` is the one arm that does not
+// draw into the caller's window -- see the note at the top of this section.
+void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintSim>& sim,
+                   GpuContext& gpu, const MixboxLut& lut, const AtelierRect& slot,
+                   bool vertical) {
+  switch (section) {
+    case ControlsSection::Tools:
+      drawToolsPanelBody(st, slot.w, slot.h, vertical);
+      break;
+    case ControlsSection::Options:
+      // The one panel whose background is not the dock's. It is the design's
+      // options band (docs/ui.md section 2 paints it `#201e1d`, a shade deeper
+      // than the panels around it), and that reads as a band whether it is
+      // welded to the window or docked to an edge -- so the token comes with
+      // it rather than being left behind with the geometry.
+      {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 o = ImGui::GetWindowPos();
+        const ImVec2 sz = ImGui::GetWindowSize();
+        dl->AddRectFilled(o, ImVec2(o.x + sz.x, o.y + sz.y), atelierToken(kChromeDeep));
+      }
+      // `GetWindowHeight()`, not `slot.h`. The rect handed to a panel body is
+      // its CONTENT region -- the body padding already subtracted -- and that
+      // is the right quantity for a grid that has to fit inside it. It is the
+      // wrong one for vertical centring, which has to be measured against the
+      // panel's full height or the content lands half the padding too high.
+      // That is a 6 px lift, and the golden `toolbar` view is what named it.
+      drawAtelierOptionsBarContent(st, ImGui::GetWindowHeight(), g_strokeRefusal);
+      break;
+    // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
+    // visibility, lock, opacity"; PRD C4).
+    case ControlsSection::Layers:       drawLayersSection(st); break;
+    // PLAN.md Phase 5 step 8 ("History panel ...", PRD O2/O3).
+    case ControlsSection::History:      drawHistorySection(st, sim, gpu); break;
+    // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14).
+    case ControlsSection::Comps:        drawCompsSection(st); break;
+    // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and a
+    // curve widget operating in the shaper domain").
+    case ControlsSection::Grade:        drawGradeSection(st); break;
+    // C2 (docs/reachability-audit.md; PRD D2, P0).
+    case ControlsSection::Histogram:    drawHistogramSection(st); break;
+    // docs/ui.md section 3.3 / PRD L4.
+    case ControlsSection::Color:        drawColorSection(st); break;
+    // Two panes, because picking a brush and authoring one are different acts
+    // (drawBrushLibrarySection()'s own comment). `gpu` and `lut` for the hover
+    // preview alone, which is a real rasterised dab in a real texture.
+    case ControlsSection::BrushLibrary: drawBrushLibrarySection(st, gpu, lut); break;
+    // `gpu` and `lut` for the TIP PREVIEW alone, for the same reason.
+    case ControlsSection::Brush:        drawBrushSection(st, gpu, lut); break;
+    case ControlsSection::Pigment:      drawPigmentSection(st); break;
+    case ControlsSection::Medium:       drawMediumSection(st, sim.get()); break;
+    case ControlsSection::BoardTilt:    drawBoardTiltSection(st); break;
+    case ControlsSection::Grid:         drawGridSection(st); break;
+    case ControlsSection::Solver:       drawSolverSection(st, sim.get()); break;
+  }
+}
+
+// Is this section's subject present right now?
+//
+// The board is a shallow-water idea: only the watercolour solver reads
+// `tiltX/tiltY`. A section can be absent when its subject is; it is still in
+// the layout, because the layout is where the user put it and not what the app
+// currently has to say.
+//
+// **Distinct from the user hiding it.** That is a placement
+// (`PanelPlacement::Hidden`); this is the app reporting it has nothing to
+// show. Keeping them separate is what stops one being read as the other.
+bool panelHasSubject(const AppState& st, ControlsSection section) {
+  if (section == ControlsSection::BoardTilt) return st.mode == PaintMode::Watercolor;
+  return true;
+}
+
+// Does this panel draw its own header bar in this slot?
+//
+// **One rule, on both axes: a header that cannot do its job is not drawn.**
+//
+//  * **Too short.** A 46 px top dock holding the OPTIONS panel would give 20 px
+//    to the controls after a 26 px header, which is not a control strip, it is
+//    a label with a sliver under it.
+//  * **Too narrow.** A 52 px left dock -- the tool palette's own default width
+//    -- cannot show the word "TOOLS" after the disclosure triangle, so the
+//    header would be 26 px of vertical space spent on a triangle and a clipped
+//    word. That is worse than the welded band it replaced, which spent nothing
+//    and showed nothing.
+//
+// Both are the same judgement `app/ControlsLayout.hpp` §2 already makes about
+// labels ("a slider narrower than this is not a control, it is a decoration"),
+// applied to a header instead of a widget.
+//
+// The consequence is disclosed rather than hidden: a headerless panel cannot be
+// collapsed or moved by clicking its own header, because it has none. The
+// PANELS menu still reaches it -- the same guarantee that makes hiding every
+// panel recoverable -- and widening the dock past the threshold brings the
+// header back, which makes the rule discoverable by doing rather than only by
+// reading this comment.
+bool panelShowsHeader(ControlsSection section, const AtelierRect& slot) {
+  if (slot.h < kPanelHeaderExtent + kPanelMinHeight) return false;
+  pushAtelierMono();
+  const float titleW = ImGui::CalcTextSize(controlsSectionSpec(section).title).x;
+  popAtelierMono();
+  // 22 px for the triangle and its gap, 4 px of breathing room after the word
+  // -- the same two numbers `drawPanelHeader()` lays the header out with, so
+  // the two cannot disagree about whether the title fits.
+  return slot.w >= 22.0f + titleW + 4.0f;
+}
+
+// The per-panel context menu: where to send this panel. Opened by right-
+// clicking a panel's header, and drawn from the PANELS menu too, so the two
+// routes offer exactly the same moves rather than drifting apart.
+//
+// Returns true if the layout changed and needs saving.
+bool drawPanelPlacementItems(AppState& st, ControlsSection section) {
+  bool changed = false;
+  const PanelPlacement current = st.panels.placementOf(section);
+  struct Row { PanelPlacement placement; const char* label; };
+  static constexpr Row kRows[] = {
+      {PanelPlacement::Left, "Dock left"},     {PanelPlacement::Right, "Dock right"},
+      {PanelPlacement::Top, "Dock top"},       {PanelPlacement::Bottom, "Dock bottom"},
+      {PanelPlacement::Flyout, "Flyout"},      {PanelPlacement::Hidden, "Hide"},
+  };
+  for (const Row& r : kRows) {
+    if (!ImGui::MenuItem(r.label, nullptr, current == r.placement)) continue;
+    if (r.placement == current) continue;
+    st.panels.setPlacement(section, r.placement);
+    // Moving a panel out of a flyout closes the flyout, or it would keep
+    // hovering over the canvas showing a panel that is now docked.
+    if (st.flyoutOpen && st.flyoutSection == section) st.flyoutOpen = false;
+    changed = true;
+  }
+  return changed;
+}
+
+// One panel's header bar: a triangle, a title, and the two gestures a header
+// carries -- click to collapse, right-click for the placement menu.
+//
+// Drawn by hand rather than with `CollapsingHeader` because the open/closed
+// state has to live in `app/PanelLayout` (it is persisted, and it feeds
+// `ui/DockLayout`'s slot arithmetic), and `CollapsingHeader` keeps its own in
+// ImGui's ini state where neither can reach it.
+void drawPanelHeader(AppState& st, ControlsSection section, const AtelierRect& slot,
+                     bool* layoutChanged) {
+  const ControlsSectionSpec& spec = controlsSectionSpec(section);
+  const bool collapsed = st.panels.isCollapsed(section);
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const float w = slot.w;
+  dl->AddRectFilled(p, ImVec2(p.x + w, p.y + kPanelHeaderExtent), atelierToken(kChromeMid));
+
+  ImGui::PushID(static_cast<int>(section));
+  const bool clicked = ImGui::InvisibleButton("##hdr", ImVec2(w, kPanelHeaderExtent));
+  const bool hovered = ImGui::IsItemHovered();
+  if (clicked) {
+    st.panels.setCollapsed(section, !collapsed);
+    *layoutChanged = true;
+  }
+  if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##panelctx");
+  if (ImGui::BeginPopup("##panelctx")) {
+    pushAtelierMono();
+    ImGui::TextDisabled("%s", spec.title);
+    popAtelierMono();
+    ImGui::Separator();
+    if (drawPanelPlacementItems(st, section)) *layoutChanged = true;
+    ImGui::EndPopup();
+  }
+  ImGui::PopID();
+
+  // The disclosure triangle, pointing down when open and right when closed --
+  // the direction convention every other tree in this chrome uses.
+  const float cy = p.y + kPanelHeaderExtent * 0.5f;
+  const uint32_t ink = atelierToken(hovered ? kTextPrimary : kTextSecondary);
+  const float tx = p.x + 8.0f;
+  if (collapsed)
+    dl->AddTriangleFilled(ImVec2(tx, cy - 4.0f), ImVec2(tx, cy + 4.0f), ImVec2(tx + 6.0f, cy), ink);
+  else
+    dl->AddTriangleFilled(ImVec2(tx - 1.0f, cy - 2.0f), ImVec2(tx + 9.0f, cy - 2.0f),
+                          ImVec2(tx + 4.0f, cy + 4.0f), ink);
+
+  // docs/ui.md section 1: caps labels are monospace. A panel title is the
+  // largest caps label in a dock, so it is the one where the face change is
+  // most of what tells a header from the prose under it.
+  //
+  // **Drawn only if it fits.** app/ControlsLayout.hpp §2 is a whole section on
+  // this exact failure -- the column once read "Granulatio", "Edge darke",
+  // "Paper slop" and "Working ti" -- and its rule is that a label is never
+  // half a word. A 52 px left dock (the tool palette's own default width)
+  // cannot hold "TOOLS" after the disclosure triangle, so what it gets is the
+  // triangle alone plus a tooltip, which is strictly more than the welded band
+  // this replaced ever had: that one carried no caption at all.
+  pushAtelierMono();
+  const float th = ImGui::GetFontSize();
+  constexpr float kTitleX = 22.0f;
+  const float titleW = ImGui::CalcTextSize(spec.title).x;
+  const bool titleFits = kTitleX + titleW <= w - 4.0f;
+  if (titleFits)
+    dl->AddText(ImVec2(p.x + kTitleX, cy - th * 0.5f), atelierToken(kTextPrimary), spec.title);
+  popAtelierMono();
+  // The tooltip is unconditional: it is the only name a clipped header has,
+  // and on a wide one it still says which panel the pointer is over without
+  // the user having to read back up to the title.
+  if (hovered)
+    ImGui::SetTooltip("%s\n%s -- click to %s, right-click to move it",
+                      spec.title, panelPlacementKey(st.panels.placementOf(section)),
+                      collapsed ? "expand" : "collapse");
+}
+
+// Draw one dock: its background, its panels in their slots, and the splitters
+// between them.
+void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRect,
+              std::unique_ptr<PaintSim>& sim, GpuContext& gpu, const MixboxLut& lut,
+              bool* layoutChanged) {
+  if (dockRect.empty()) return;
+  const std::vector<ControlsSection> sections = st.panels.sectionsIn(placement);
+  if (sections.empty()) return;
+
+  const DockSide side = dockSideFor(placement);
+  const bool vertical = dockStacksVertically(side);
+
+  // Build the slot specs. A section whose subject is absent still holds its
+  // place in the layout but takes no space this frame -- it is collapsed to a
+  // header, so the user can see it is there and see that it has nothing to
+  // say, rather than having the dock silently reflow around a panel that
+  // vanished.
+  std::vector<DockSlotSpec> specs;
+  specs.reserve(sections.size());
+  for (const ControlsSection s : sections) {
+    DockSlotSpec spec;
+    spec.collapsed = st.panels.isCollapsed(s) || !panelHasSubject(st, s);
+    spec.weight = st.panels.weightOf(s);
+    spec.minExtent = vertical ? kPanelMinHeight : kPanelMinWidth;
+    spec.headerExtent = kPanelHeaderExtent;
+    specs.push_back(spec);
+  }
+  const DockTiling tiling = dockTile(dockRect, side, specs);
+
+  // The dock's own window: background, splitters, and the panels' children.
+  //
+  // `NoScrollbar` in the steady state -- that is the whole point of the
+  // feature. The overflow case is the single disclosed exception: when the
+  // minima cannot fit, the slots really do run past the edge and the dock is
+  // allowed to scroll, because the alternative is panels too small to use.
+  const ImGuiWindowFlags dockFlags =
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus |
+      (tiling.overflowed ? 0 : ImGuiWindowFlags_NoScrollbar);
+
+  char dockId[32];
+  std::snprintf(dockId, sizeof(dockId), "##dock_%s", panelPlacementKey(placement));
+  ImGui::SetNextWindowPos(ImVec2(dockRect.x, dockRect.y));
+  ImGui::SetNextWindowSize(ImVec2(dockRect.w, dockRect.h));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                        ImGui::ColorConvertU32ToFloat4(atelierToken(kChromeBase)));
+  const bool dockOpen = ImGui::Begin(dockId, nullptr, dockFlags);
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar();
+  if (!dockOpen) {
+    ImGui::End();
+    return;
+  }
+
+  for (size_t i = 0; i < sections.size() && i < tiling.slots.size(); ++i) {
+    const ControlsSection section = sections[i];
+    const DockSlot& slot = tiling.slots[i];
+    const AtelierRect r = slot.rect;
+
+    ImGui::SetCursorScreenPos(ImVec2(r.x, r.y));
+    ImGui::PushID(static_cast<int>(section));
+
+    const bool showHeader = panelShowsHeader(section, r);
+    float bodyTop = r.y;
+    if (showHeader) {
+      drawPanelHeader(st, section, r, layoutChanged);
+      bodyTop = r.y + kPanelHeaderExtent;
+    }
+
+    const float bodyH = std::max(0.0f, r.bottom() - bodyTop);
+    if (!slot.collapsed && bodyH > 0.0f) {
+      ImGui::SetCursorScreenPos(ImVec2(r.x, bodyTop));
+      char bodyId[48];
+      std::snprintf(bodyId, sizeof(bodyId), "##body_%s", controlsSectionKey(section));
+      // **No `NoScrollbar` here, deliberately.** This is where "not
+      // scrollable" is bought: the DOCK does not scroll, so a panel whose
+      // content exceeds its own slot scrolls within itself and never pushes a
+      // neighbour off the bottom.
+      // The theme's own `WindowPadding`, not a pair invented here. A docked
+      // panel's body is the window the tool palette and the controls column
+      // each used to be, so it has to inset its content by exactly what those
+      // did or every glyph in it lands a couple of pixels off -- which is what
+      // the golden `tools` view measured when this was `6.0f`.
+      //
+      // **`AlwaysUseWindowPadding` is not optional here.** Dear ImGui zeroes
+      // `WindowPadding` for a borderless child window unless this flag asks
+      // for it, so pushing the style var alone silently does nothing and every
+      // panel's content runs flush against the dock's edge -- which is exactly
+      // what happened, and what the golden `toolbar` view caught: the options
+      // bar's content sat 8 px left of where the welded band had drawn it.
+      // **Transparent, so the dock's own background is what shows.** The theme
+      // paints `ImGuiCol_ChildBg` a shade deeper than `WindowBg`, which is
+      // right for a child that is a distinct surface (the tool grid inside the
+      // palette, say) and wrong for one that is only a scroll region. Left at
+      // the theme's value it painted the deep tone across the panel's full
+      // slot, including the padding margin the old top-level windows left in
+      // the base tone -- a 13-level frame the golden `tools` view caught with
+      // its zero tolerance.
+      ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kWindowPaddingX, kWindowPaddingY));
+      const bool bodyOpen = ImGui::BeginChild(bodyId, ImVec2(r.w, bodyH),
+                                              ImGuiChildFlags_AlwaysUseWindowPadding);
+      // **Popped the instant the child exists, not after its contents.** A
+      // style colour applies to every `BeginChild()` made while it is pushed,
+      // so leaving it in scope hands the transparency to the panel's OWN
+      // children too -- the tool grid's background vanished, and the dock's
+      // base tone showed through the gap beside each cell. Scoping it to this
+      // one call is the fix; the panel's internals keep the theme's `ChildBg`
+      // exactly as they had it when each panel was its own window.
+      ImGui::PopStyleColor();
+      ImGui::PopStyleVar();
+      if (bodyOpen) {
+        if (!panelHasSubject(st, section)) {
+          // Only reachable when a headerless panel loses its subject; a
+          // panel with a header is collapsed instead. Said out loud rather
+          // than drawn blank.
+          ImGui::TextDisabled("Nothing to show for the current mode.");
+        } else {
+          const AtelierRect inner{r.x, bodyTop, ImGui::GetContentRegionAvail().x,
+                                  ImGui::GetContentRegionAvail().y};
+          drawPanelBody(st, section, sim, gpu, lut, inner, vertical);
+        }
+      }
+      ImGui::EndChild();
+    }
+    ImGui::PopID();
+  }
+
+  // The splitters. Drawn last within the dock so they sit above the panel
+  // children's own hit areas -- a splitter that a panel body can steal the
+  // mouse from is a splitter that intermittently refuses to drag.
+  for (size_t i = 0; i < tiling.splitters.size(); ++i) {
+    const AtelierRect& sp = tiling.splitters[i];
+    ImGui::SetCursorScreenPos(ImVec2(sp.x, sp.y));
+    ImGui::PushID(static_cast<int>(1000 + i));
+    ImGui::InvisibleButton("##split", ImVec2(std::max(1.0f, sp.w), std::max(1.0f, sp.h)));
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered || ImGui::IsItemActive())
+      ImGui::SetMouseCursor(vertical ? ImGuiMouseCursor_ResizeNS : ImGuiMouseCursor_ResizeEW);
+
+    // The 2 px rule drawn down the middle of the 6 px handle, so the splitter
+    // looks like every other rule in the chrome and behaves like a grip.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const uint32_t col = atelierToken((hovered || ImGui::IsItemActive()) ? kAccent : kRule);
+    if (vertical) {
+      const float ry = sp.y + (sp.h - kRuleThickness) * 0.5f;
+      dl->AddRectFilled(ImVec2(sp.x, ry), ImVec2(sp.x + sp.w, ry + kRuleThickness), col);
+    } else {
+      const float rx = sp.x + (sp.w - kRuleThickness) * 0.5f;
+      dl->AddRectFilled(ImVec2(rx, sp.y), ImVec2(rx + kRuleThickness, sp.y + sp.h), col);
+    }
+
+    if (ImGui::IsItemActive() && i + 1 < tiling.slots.size()) {
+      const float delta = vertical ? ImGui::GetIO().MouseDelta.y : ImGui::GetIO().MouseDelta.x;
+      if (delta != 0.0f) {
+        const AtelierRect& ra = tiling.slots[i].rect;
+        const AtelierRect& rb = tiling.slots[i + 1].rect;
+        const float ea = vertical ? ra.h : ra.w;
+        const float eb = vertical ? rb.h : rb.w;
+        const ControlsSection sa = sections[i];
+        const ControlsSection sb = sections[i + 1];
+        // A collapsed neighbour has no weight to trade, so the drag would be
+        // redistributing a share it does not hold. Skipped rather than
+        // clamped: the boundary a user grabbed between an expanded panel and a
+        // collapsed one is not a size boundary at all.
+        if (!tiling.slots[i].collapsed && !tiling.slots[i + 1].collapsed) {
+          const DockDragResult d =
+              dockApplyDrag(ea, eb, st.panels.weightOf(sa), st.panels.weightOf(sb),
+                            vertical ? kPanelMinHeight : kPanelMinWidth, delta);
+          st.panels.setWeight(sa, d.weightA);
+          st.panels.setWeight(sb, d.weightB);
+        }
+      }
+    }
+    // Written back on release rather than on every frame of the drag -- a
+    // drag is dozens of frames and each would be a file write, an fsync and a
+    // rename for a number the user is still choosing.
+    if (ImGui::IsItemDeactivated()) *layoutChanged = true;
+    ImGui::PopID();
+  }
+
+  ImGui::End();
+}
+
+// The dock's outer edge: drag it to resize the whole dock.
+//
+// A separate gesture from the splitters above, and deliberately a separate
+// piece of state on `AppState` -- the two have different bounds and different
+// write-backs, and one bool doing both jobs is how a drag ends up resizing the
+// wrong thing.
+void drawDockEdge(AppState& st, PanelPlacement placement, const AtelierRect& dockRect,
+                  bool* layoutChanged) {
+  if (dockRect.empty()) return;
+  const bool horizontal = (placement == PanelPlacement::Top || placement == PanelPlacement::Bottom);
+
+  // The grip sits on the side of the dock that faces the canvas.
+  AtelierRect grip;
+  if (placement == PanelPlacement::Left)
+    grip = AtelierRect{dockRect.right(), dockRect.y, kDockSplitterThickness, dockRect.h};
+  else if (placement == PanelPlacement::Right)
+    grip = AtelierRect{dockRect.x - kDockSplitterThickness, dockRect.y, kDockSplitterThickness,
+                       dockRect.h};
+  else if (placement == PanelPlacement::Top)
+    grip = AtelierRect{dockRect.x, dockRect.bottom(), dockRect.w, kDockSplitterThickness};
+  else
+    grip = AtelierRect{dockRect.x, dockRect.y - kDockSplitterThickness, dockRect.w,
+                       kDockSplitterThickness};
+
+  char id[40];
+  std::snprintf(id, sizeof(id), "##dockedge_%s", panelPlacementKey(placement));
+  ImGui::SetNextWindowPos(ImVec2(grip.x, grip.y));
+  ImGui::SetNextWindowSize(ImVec2(grip.w, grip.h));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  const ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
+      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoBackground;
+  if (ImGui::Begin(id, nullptr, flags)) {
+    ImGui::InvisibleButton("##grip", ImVec2(std::max(1.0f, grip.w), std::max(1.0f, grip.h)));
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+      ImGui::SetMouseCursor(horizontal ? ImGuiMouseCursor_ResizeNS : ImGuiMouseCursor_ResizeEW);
+    if (ImGui::IsItemActive()) {
+      const ImVec2 d = ImGui::GetIO().MouseDelta;
+      float extent = horizontal ? dockRect.h : dockRect.w;
+      // Which way "bigger" is depends on which edge the dock is attached to.
+      switch (placement) {
+        case PanelPlacement::Left:   extent += d.x; break;
+        case PanelPlacement::Right:  extent -= d.x; break;
+        case PanelPlacement::Top:    extent += d.y; break;
+        default:                     extent -= d.y; break;
+      }
+      st.panels.setDockExtent(placement, extent);
+    }
+    if (ImGui::IsItemDeactivated()) *layoutChanged = true;
+  }
+  ImGui::End();
+  ImGui::PopStyleVar();
+}
+
+// The flyout rail: a strip of buttons for every panel in flyout mode, and the
+// flyout itself.
+//
+// The user asked for **both** this and the PANELS menu -- "rail plus the
+// PANELS menu" -- and the two are not redundant. The rail is one click for a
+// panel you reach for often; the menu is the complete list, including panels
+// that are nowhere on screen, which is what makes `Hidden` recoverable rather
+// than a trap.
+//
+// The rail is drawn on the canvas's right edge, inside the canvas region, so
+// it costs the docks nothing and disappears entirely when no panel is in
+// flyout mode.
+constexpr float kRailW = 28.0f;
+
+void drawPanelRail(AppState& st, const AtelierRect& canvas, bool* layoutChanged) {
+  const std::vector<ControlsSection> flyouts = st.panels.sectionsIn(PanelPlacement::Flyout);
+  if (flyouts.empty() || canvas.empty()) return;
+
+  const float h = std::min(canvas.h, static_cast<float>(flyouts.size()) * kRailW + 8.0f);
+  const AtelierRect rail{canvas.right() - kRailW, canvas.y, kRailW, h};
+
+  ImGui::SetNextWindowPos(ImVec2(rail.x, rail.y));
+  ImGui::SetNextWindowSize(ImVec2(rail.w, rail.h));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2.0f, 4.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 2.0f));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                        ImGui::ColorConvertU32ToFloat4(atelierToken(kChromeBase)));
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+                                 ImGuiWindowFlags_NoScrollbar;
+  if (ImGui::Begin("##panelrail", nullptr, flags)) {
+    for (const ControlsSection s : flyouts) {
+      const ControlsSectionSpec& spec = controlsSectionSpec(s);
+      ImGui::PushID(static_cast<int>(s));
+      const bool isOpen = st.flyoutOpen && st.flyoutSection == s;
+      if (isOpen)
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
+      // Two letters of the title, which is what fits in a 24 px cell and is
+      // enough to tell fifteen panels apart at a glance. Not a Lucide glyph:
+      // there is no icon assigned per panel anywhere in this build, and
+      // inventing one mapping here would be a second, undocumented icon table
+      // beside ui/AtelierChrome.hpp's real one.
+      char label[4] = {spec.title[0], spec.title[1] ? spec.title[1] : ' ', '\0', '\0'};
+      pushAtelierMono();
+      const bool clicked = ImGui::Button(label, ImVec2(24.0f, 24.0f));
+      popAtelierMono();
+      if (isOpen) ImGui::PopStyleColor();
+      if (clicked) {
+        // Clicking the open one closes it -- a toggle, so the rail is a way
+        // out as well as a way in.
+        st.flyoutOpen = !isOpen;
+        st.flyoutSection = s;
+      }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", spec.title);
+      if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##railctx");
+      if (ImGui::BeginPopup("##railctx")) {
+        if (drawPanelPlacementItems(st, s)) *layoutChanged = true;
+        ImGui::EndPopup();
+      }
+      ImGui::PopID();
+    }
+  }
+  ImGui::End();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(2);
+}
+
+// The open flyout itself: one panel, floating over the canvas beside the rail.
+void drawFlyoutPanel(AppState& st, const AtelierRect& canvas, std::unique_ptr<PaintSim>& sim,
+                     GpuContext& gpu, const MixboxLut& lut, bool* layoutChanged) {
+  if (!st.flyoutOpen || canvas.empty()) return;
+  // A panel moved out of flyout mode while its flyout was open closes it here
+  // rather than drawing a docked panel twice.
+  if (st.panels.placementOf(st.flyoutSection) != PanelPlacement::Flyout) {
+    st.flyoutOpen = false;
+    return;
+  }
+
+  const float w = std::min(kRightColumnW, std::max(kPanelMinWidth, canvas.w - kRailW - 16.0f));
+  const float h = std::min(canvas.h - 16.0f, 420.0f);
+  if (w <= 0.0f || h <= 0.0f) return;
+  const AtelierRect box{canvas.right() - kRailW - w - 4.0f, canvas.y + 8.0f, w, h};
+
+  ImGui::SetNextWindowPos(ImVec2(box.x, box.y));
+  ImGui::SetNextWindowSize(ImVec2(box.w, box.h));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                        ImGui::ColorConvertU32ToFloat4(atelierToken(kChromeBase)));
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+                                 ImGuiWindowFlags_NoScrollbar;
+  const bool open = ImGui::Begin("##flyoutpanel", nullptr, flags);
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar();
+  if (open) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRect(ImVec2(box.x, box.y), ImVec2(box.right(), box.bottom()), atelierToken(kRule), 0.0f,
+                0, kRuleThickness);
+    ImGui::SetCursorScreenPos(ImVec2(box.x, box.y));
+    drawPanelHeader(st, st.flyoutSection, box, layoutChanged);
+    const float bodyTop = box.y + kPanelHeaderExtent;
+    ImGui::SetCursorScreenPos(ImVec2(box.x, bodyTop));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kWindowPaddingX, kWindowPaddingY));
+    if (ImGui::BeginChild("##flyoutbody", ImVec2(box.w, box.bottom() - bodyTop),
+                          ImGuiChildFlags_AlwaysUseWindowPadding)) {
+      const AtelierRect inner{box.x, bodyTop, ImGui::GetContentRegionAvail().x,
+                              ImGui::GetContentRegionAvail().y};
+      drawPanelBody(st, st.flyoutSection, sim, gpu, lut, inner, /*vertical=*/true);
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+  }
+  ImGui::End();
+}
+
+// The "PANELS" affordance and its popup: every panel, where it is, and a way
+// to move it.
+//
+// **This lives in the title bar, outside every dock**, which is what makes
+// hiding every panel a legal state rather than a trap -- app/PanelLayout.hpp's
+// header says the model deliberately does not force a panel to stay docked,
+// and this is the other half of that bargain. An empty window is recoverable
+// because the way back in was never in a dock.
+//
+// docs/ui.md section 2's own diagram has a `panels` control in this band, and
+// the comment beside the undo/redo buttons said of it: "Not built: the
+// design's `panels` control. There is no panel manager to wire it to, and a
+// button that does nothing is worse than a gap." There is one now.
 //
 // Every mutation is deferred to after the row loop. `moveUp`/`moveDown`
 // reorder the very vector being iterated, so applying one inside the loop
-// would walk an invalidated sequence -- and the visible symptom (a row
-// drawn twice, or skipped) looks like a drawing bug rather than the
-// iterator bug it is.
-void drawColumnConfig(AppState& st) {
+// would walk an invalidated sequence -- and the visible symptom (a row drawn
+// twice, or skipped) looks like a drawing bug rather than the iterator bug it
+// is.
+void drawPanelMenu(AppState& st) {
   pushAtelierMono();
   const bool clicked = ImGui::SmallButton("PANELS");
   popAtelierMono();
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Choose which sections this column shows, and their order.");
-  if (clicked) ImGui::OpenPopup(kColumnConfigPopup);
+    ImGui::SetTooltip("Where every panel is docked, and how to move it.\n"
+                      "Right-click any panel's header for the same menu.");
+  if (clicked) ImGui::OpenPopup(kPanelMenuPopup);
+  if (!ImGui::BeginPopup(kPanelMenuPopup)) return;
 
-  if (!ImGui::BeginPopup(kColumnConfigPopup)) return;
-
-  enum class Act { None, Up, Down, Toggle, Reset };
+  enum class Act { None, Up, Down, Reset };
   Act act = Act::None;
   ControlsSection target = ControlsSection::Color;
-  bool toggleTo = false;
+  bool changed = false;
 
-  const std::vector<ControlsColumnEntry>& entries = st.controlsColumn.entries();
+  // Taken by value: a row's own body can reach a mutation of this vector, and
+  // a reference would be walking a sequence something below it may reorder.
+  // Fifteen entries; the copy is not worth a reader's doubt.
+  const std::vector<PanelEntry> entries = st.panels.entries();
   for (size_t i = 0; i < entries.size(); ++i) {
-    const ControlsColumnEntry& entry = entries[i];
+    const PanelEntry& entry = entries[i];
     const ControlsSectionSpec& spec = controlsSectionSpec(entry.section);
     ImGui::PushID(static_cast<int>(i));
 
-    bool visible = entry.visible;
-    if (ImGui::Checkbox("##vis", &visible)) {
-      act = Act::Toggle;
-      target = entry.section;
-      toggleTo = visible;
-    }
-    ImGui::SameLine();
-    // Disabled at the ends rather than absent, so the two arrows keep their
-    // positions and the rows stay a column instead of jittering.
-    ImGui::BeginDisabled(i == 0);
+    // Disabled at the ends of the panel's OWN placement rather than of the
+    // whole list -- see app/PanelLayout::moveUp()'s comment for why an arrow
+    // that jumps a panel to another edge of the window is not a reorder.
+    const std::vector<ControlsSection> siblings = st.panels.sectionsIn(entry.placement);
+    const bool atFront = !siblings.empty() && siblings.front() == entry.section;
+    const bool atBack = !siblings.empty() && siblings.back() == entry.section;
+    ImGui::BeginDisabled(atFront);
     if (ImGui::ArrowButton("##up", ImGuiDir_Up)) { act = Act::Up; target = entry.section; }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(i + 1 >= entries.size());
+    ImGui::BeginDisabled(atBack);
     if (ImGui::ArrowButton("##down", ImGuiDir_Down)) { act = Act::Down; target = entry.section; }
     ImGui::EndDisabled();
     ImGui::SameLine();
+
     pushAtelierMono();
-    ImGui::TextUnformatted(spec.title);
+    char label[64];
+    std::snprintf(label, sizeof(label), "%-14s %s", spec.title,
+                  panelPlacementKey(entry.placement));
+    if (ImGui::BeginMenu(label)) {
+      popAtelierMono();
+      if (drawPanelPlacementItems(st, entry.section)) changed = true;
+      pushAtelierMono();
+      ImGui::EndMenu();
+    }
     popAtelierMono();
     ImGui::PopID();
   }
 
   ImGui::Separator();
-  if (ImGui::SmallButton("Reset to default order")) act = Act::Reset;
+  if (ImGui::SmallButton("Reset to default arrangement")) act = Act::Reset;
 
   if (act != Act::None) {
     switch (act) {
-      case Act::Up:     st.controlsColumn.moveUp(target); break;
-      case Act::Down:   st.controlsColumn.moveDown(target); break;
-      case Act::Toggle: st.controlsColumn.setVisible(target, toggleTo); break;
-      case Act::Reset:  st.controlsColumn.resetToDefault(); break;
-      case Act::None:   break;
+      case Act::Up:    st.panels.moveUp(target); break;
+      case Act::Down:  st.panels.moveDown(target); break;
+      case Act::Reset: st.panels.resetToDefault(); st.flyoutOpen = false; break;
+      case Act::None:  break;
     }
-    // Written on every change rather than at quit. A layout is cheap to
-    // write and there is no moment this app is guaranteed to reach on the
-    // way out -- app/DocumentLifecycle's recent-documents list is persisted
-    // the same way and for the same reason.
-    std::string err;
-    if (!st.controlsColumn.saveToFile(defaultControlsColumnLayoutFilePath(), &err))
-      std::fprintf(stderr, "[panel-layout] save failed: %s\n", err.c_str());
+    changed = true;
   }
+  if (changed) savePanelLayout(st);
   ImGui::EndPopup();
 }
 
@@ -8753,8 +9512,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // that reason: it is instrumentation, and it should be the first thing
     // removed when the title bar needs the room.
     //
-    // Not built: the design's `panels` control. There is no panel manager to
-    // wire it to, and a button that does nothing is worse than a gap.
+    // docs/ui.md section 2's `panels` control, which this comment used to say
+    // was "not built: there is no panel manager to wire it to, and a button
+    // that does nothing is worse than a gap." There is a panel manager now
+    // (`app/PanelLayout`), and this is the button. It is drawn just before
+    // Undo/Redo, which is the order the design's own diagram has:
+    // `undo redo`, then the panels control.
     History* titleHistory = activeForBar != nullptr ? &activeForBar->history : nullptr;
     char status[64];
     // docs/reachability-audit.md F2: frozen to a fixed string on a
@@ -8765,10 +9528,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       std::snprintf(status, sizeof(status), "%.1f fps",
                     st.frameMs > 0.0f ? 1000.0f / st.frameMs : 0.0f);
     }
+    const float panelsW = ImGui::CalcTextSize("PANELS").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float undoW = ImGui::CalcTextSize("Undo").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float redoW = ImGui::CalcTextSize("Redo").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float statusW = ImGui::CalcTextSize(status).x;
-    ImGui::SameLine(ImGui::GetWindowWidth() - undoW - redoW - statusW - 40.0f);
+    ImGui::SameLine(ImGui::GetWindowWidth() - panelsW - undoW - redoW - statusW - 52.0f);
+    drawPanelMenu(st);
+    ImGui::SameLine();
     // D1: routed through `moveHistoryCursor()`, the same function the
     // HISTORY panel's pair, the Edit menu's Undo/Redo and ⌘Z/⇧⌘Z all call --
     // one implementation, four callers, so the title bar cannot drift from
@@ -8897,285 +9663,72 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // marker and a `+` beside it, and a band that materialised on the second
   // document would move every other band down by 36 px at the moment a user
   // opened one.
+  // T12: read the user's arrangement on the first frame that draws the chrome,
+  // not at startup -- see AppState::panelsLoaded. A missing file is the
+  // ordinary first-run case and yields the default arrangement, so there is
+  // nothing to report and no error branch here.
+  //
+  // **Before `atelierLayout()`, not after.** The dock extents are an input to
+  // the band arithmetic now, so a layout read one frame late would lay the
+  // whole window out against the defaults for that frame and then jump.
+  if (!st.panelsLoaded) {
+    st.panelsLoaded = true;
+    st.panels.loadFromFile(defaultPanelLayoutFilePath(), nullptr);
+  }
+  // `effectiveDockExtents()`, not `dockExtents()`: a dock holding no panels is
+  // not on screen at all, whatever extent it remembers. That rule is the
+  // model's (app/PanelLayout.hpp) so a test can assert it without a window.
+  const PanelDockExtents pd = st.panels.effectiveDockExtents();
+  AtelierDockExtents dockExtents;
+  dockExtents.left = pd.left;
+  dockExtents.right = pd.right;
+  dockExtents.top = pd.top;
+  dockExtents.bottom = pd.bottom;
   const AtelierBands bands = atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y,
-                                           /*showTabStrip=*/!st.documents.empty());
+                                           /*showTabStrip=*/!st.documents.empty(), dockExtents);
+
+  // Any dock, splitter or header gesture below sets this; it is written back
+  // once, after every dock has drawn. One write per frame that changed
+  // something, rather than one per gesture -- several can fire in a frame (a
+  // collapse and a splitter release, say) and each would otherwise be its own
+  // file write, fsync and rename.
+  bool panelLayoutChanged = false;
 
   const ImGuiWindowFlags fixedFlags =
       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
       ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar;
 
-  // ------------------------------------------------------------ tool palette
-  ImGui::SetNextWindowPos(ImVec2(bands.toolPalette.x, bands.toolPalette.y));
-  ImGui::SetNextWindowSize(ImVec2(bands.toolPalette.w, bands.toolPalette.h));
-  if (ImGui::Begin("##tools", nullptr, fixedFlags)) {
-    // The cell size is computed fresh every frame from the band's live
-    // height -- see ui/AtelierLayout.hpp's atelierToolCellSize() and the
-    // comment on the (now-removed) file-scope kToolSize above for why this
-    // is a local, not a cached member or a file-static. `kToolSwatchAreaH`
-    // is the same constant atelierToolCellSize() itself subtracts before
-    // dividing by kToolCellCount, so the grid drawn here and the grid
-    // atelierToolCellSize() sized itself for agree by construction rather
-    // than by two call sites happening to compute the same arithmetic twice.
-    const float cellSize = atelierToolCellSize(bands.toolPalette.h);
-    const float swatchSide = kToolCellMax - 8.0f;
-    const float gridH = std::max(0.0f, bands.toolPalette.h - kToolSwatchAreaH);
-
-    // ItemSpacing is 6px everywhere else in the chrome (ui/AtelierTheme.cpp)
-    // but the grid's own cell size already accounts for every pixel between
-    // the title bar's rule and the swatch above -- 6px of spacing *between*
-    // 28 cells is 27 gaps the shrink-to-fit arithmetic above never saw, and
-    // this is exactly the "buttons are too large" the user pointed at: the
-    // cells themselves were not the (only) problem, the gaps between them
-    // were. Zeroed here, scoped to just this child, rather than globally --
-    // the rest of the chrome still wants its 6px.
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-
-    // The grid no longer scrolls in the steady state -- the whole point of
-    // atelierToolCellSize() is to shrink cells until all 28 fit. It keeps
-    // `ImGuiWindowFlags_NoScrollbar` anyway, for the one case shrinking
-    // cannot rescue (windows shorter than ui/AtelierLayout.hpp's "honest
-    // limit" comment describes, roughly 670px): Dear ImGui's mouse wheel
-    // still scrolls a `NoScrollbar` child, so every cell stays reachable,
-    // it is only the bar itself -- and the width it would otherwise reserve
-    // -- that this suppresses. The *outer* window above does not scroll
-    // either (`ImGuiWindowFlags_NoScrollbar` is in `fixedFlags`), which is
-    // what keeps the FG swatch below pinned to the bottom of the band
-    // regardless of how far the grid has wheel-scrolled -- it lives in the
-    // outer window's content, after this child's fixed-height reservation,
-    // not inside the scrolling child itself.
-    if (ImGui::BeginChild("##toolgrid", ImVec2(0.0f, gridH), 0,
-                          ImGuiWindowFlags_NoScrollbar)) {
-      // --flyout-demo names a *tool*, not a slot index -- matched by
-      // toolGroupIndex() so a reordering of ui/AtelierChrome.hpp's
-      // kToolGroups cannot silently point the demo at the wrong group.
-      const int brushGroup = toolGroupIndex(Tool::Brush);
-      for (int g = 0; g < kToolGroupCount; ++g) {
-        toolGroupButton(st, g, cellSize, st.openToolFlyoutDemo && g == brushGroup);
-        if (kToolGroups[g].ruleAfter) {
-          ImDrawList* dl = ImGui::GetWindowDrawList();
-          const ImVec2 rp = ImGui::GetCursorScreenPos();
-          dl->AddRectFilled(rp, ImVec2(rp.x + cellSize, rp.y + kDividerThickness),
-                            atelierToken(kDivider));
-          ImGui::Dummy(ImVec2(cellSize, kDividerThickness));
-        }
-      }
-      moreToolsButton(cellSize);
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleVar();  // ItemSpacing, pushed above BeginChild()
-
-    // The foreground swatch, at the bottom of the palette where docs/ui.md
-    // section 2's diagram puts `FG/BG` -- drawn after EndChild() precisely so
-    // it is *not* part of the scrolling grid above and cannot move with it.
-    // Its side is pinned to `kToolCellMax`, not the live `cellSize`, so it
-    // does not resize or reflow as the window resizes -- see
-    // ui/AtelierLayout.hpp's kToolSwatchAreaH comment for why that anchoring
-    // also breaks a circular dependency in the height arithmetic above.
-    //
-    // **FG only, no BG.** The pair is Photoshop's, and the second half of it
-    // means something only once something fills with it: Fill-with-colour is
-    // PRD D26 and the paint bucket D25, both phase 6, and nothing in this
-    // build reads a background colour. A second well that no operation
-    // consumes would be the `PRESET` dropdown problem again -- chrome
-    // promising a feature that is not behind it.
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    // **`foregroundSrgb()`, not `defaultPalette()[st.brush.pigment]`.** This
-    // is the well PRD Q10 says the eyedropper picks *into*, so it has to show
-    // the colour that was picked; drawing the palette row here would leave the
-    // one control a user looks at to confirm a pick showing the colour they
-    // just replaced. It also indexed `st.brush.pigment` unchecked, which
-    // `foregroundSrgb()` does not.
-    const std::array<float, 3> fg = foregroundSrgb(st.brush);
-    dl->AddRectFilled(p, ImVec2(p.x + swatchSide, p.y + swatchSide),
-                      IM_COL32((int)(fg[0] * 255), (int)(fg[1] * 255), (int)(fg[2] * 255), 255));
-    dl->AddRect(p, ImVec2(p.x + swatchSide, p.y + swatchSide), atelierToken(kRule), 0.0f, 0,
-                kRuleThickness);
-    ImGui::Dummy(ImVec2(swatchSide, swatchSide));
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
-                        "or picked with the eyedropper (PRD Q10)",
-                        foregroundName(st.brush));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
-    ImGui::TextUnformatted("FG");
-    ImGui::PopStyleColor();
-  }
-  ImGui::End();
-
-  // --------------------------------------------------------- controls column
+  // ------------------------------------------------------------- the docks
   //
-  // docs/ui.md §2's "docked column of collapsing headers", which this was not
-  // until UI detour step 3: it was one unbroken scroll with six
-  // simulation-parameter sections above everything Phase 5 built, so LAYERS and
-  // HISTORY were off the bottom of the window at the default size and a
-  // screenshot of the running application did not contain them at all.
+  // Four calls where there used to be two hand-placed windows (`##tools` on
+  // the left, `##controls` on the right) and one welded band (the options bar,
+  // drawn far below with the rest of the chrome). Every panel in the
+  // application now goes through the same path: `app/PanelLayout` says which
+  // dock it is in, `ui/DockLayout` says where in that dock, and `drawDock()`
+  // draws it. See this file's "dockable panel system" section for the design.
   //
-  // The order and the default-open set are `app::controlsSections()`, as data,
-  // so both are asserted by `--selftest` rather than being a property of where
-  // a statement sits in this function. That header carries the argument for
-  // them; what is here is the loop.
-  ImGui::SetNextWindowPos(ImVec2(bands.rightColumn.x, bands.rightColumn.y));
-  ImGui::SetNextWindowSize(ImVec2(bands.rightColumn.w, bands.rightColumn.h));
-  // `NoScrollWithMouse` takes the wheel away from Dear ImGui for this window
-  // ONLY, so the step below is the whole behaviour rather than an addition to
-  // ImGui's own -- without it both would fire and one notch would scroll
-  // 65 px further than intended. The scrollbar itself stays (the flag only
-  // suppresses wheel handling, not the bar or dragging it).
-  if (ImGui::Begin("##controls", nullptr,
-                   (fixedFlags & ~ImGuiWindowFlags_NoScrollbar) |
-                       ImGuiWindowFlags_NoScrollWithMouse)) {
-    // Taken before the sections are emitted, because `GetScrollMaxY()` is only
-    // meaningful once this frame's content has been laid out -- so the wheel
-    // read here applies to the scroll range the PREVIOUS frame established,
-    // which is the range the user was looking at when they turned the wheel.
-    //
-    // track10/input: this used to be one line, `SetScrollY(GetScrollY() -
-    // wheel*step)`, and it was both "much too fast" and "choppy" on a
-    // trackpad for the same reason -- see app/WheelInput.hpp's header
-    // comment for what the vendored SDL3 actually hands this app and why a
-    // trackpad's fractional, high-frequency deltas were getting the exact
-    // same notch-sized multiplier a single deliberate wheel click gets.
-    // `pendingControlsScrollPx` is a smoothing pool, not a second copy of
-    // the scroll position: `wheelScrollPixels()` converts this frame's
-    // wheel delta (discounted if it came from a precise device) into pixels
-    // and adds them to the pool; `smoothedScrollStep()` then releases a
-    // fraction of the pool every frame, so several oversized samples in a
-    // row blend into motion instead of each landing as its own hard jump.
-    // A `static` local rather than `AppState` -- this build has exactly one
-    // window and one controls column, so there is nothing a second instance
-    // would ever need to keep separate, and the alternative is a field nothing
-    // else in `CanvasView` or `AppState` has any other reason to carry.
-    static float pendingControlsScrollPx = 0.0f;
-    const float wheel = ImGui::GetIO().MouseWheel;
-    if (wheel != 0.0f && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
-        ImGui::GetScrollMaxY() > 0.0f) {
-      const float step =
-          controlsWheelScrollStep(ImGui::GetWindowHeight(), ImGui::GetFontSize());
-      pendingControlsScrollPx += wheelScrollPixels(wheel, step);
-    }
-    if (pendingControlsScrollPx != 0.0f) {
-      const SmoothedStep s =
-          smoothedScrollStep(pendingControlsScrollPx, ImGui::GetIO().DeltaTime);
-      const float scrollMax = ImGui::GetScrollMaxY();
-      const float target = std::clamp(ImGui::GetScrollY() - s.appliedPx, 0.0f, scrollMax);
-      // Stop pushing once a bound is actually hit, in the direction that hit
-      // it -- otherwise the remainder keeps pointing the way that was
-      // blocked, and reversing direction right after hitting the top or
-      // bottom would have to burn through it before the scrollbar visibly
-      // responds.
-      const bool blockedAtBound =
-          (target == 0.0f && s.appliedPx > 0.0f) || (target == scrollMax && s.appliedPx < 0.0f);
-      ImGui::SetScrollY(target);
-      pendingControlsScrollPx = blockedAtBound ? 0.0f : s.remainingPx;
-    }
-    // T12: read the user's arrangement on the first frame that draws the
-    // column, not at startup -- see AppState::controlsColumnLoaded. A missing
-    // file is the ordinary first-run case and yields the default order, so
-    // there is nothing to report and no error branch here.
-    if (!st.controlsColumnLoaded) {
-      st.controlsColumnLoaded = true;
-      st.controlsColumn.loadFromFile(defaultControlsColumnLayoutFilePath(), nullptr);
-    }
-    drawColumnConfig(st);
+  // Order matters, but only for one reason: a dock's window is created here
+  // and the canvas's is created below, and `fixedFlags` carries
+  // `NoBringToFrontOnFocus`, so creation order IS z-order. Docks first means a
+  // flyout drawn after the canvas can float above it.
+  drawDock(st, PanelPlacement::Top, bands.topDock, sim, gpu, lut, &panelLayoutChanged);
+  drawDock(st, PanelPlacement::Left, bands.leftDock, sim, gpu, lut, &panelLayoutChanged);
+  drawDock(st, PanelPlacement::Right, bands.rightDock, sim, gpu, lut, &panelLayoutChanged);
+  drawDock(st, PanelPlacement::Bottom, bands.bottomDock, sim, gpu, lut, &panelLayoutChanged);
 
-    // **The user's sequence, not `controlsSections()`.** That list is now the
-    // default and the repair target rather than the column's contents; its
-    // header always said the list was data so the order could be asserted
-    // headlessly, and this is that seam being used for what it described.
-    //
-    // Taken by value, because a section's own body can reach a mutation of
-    // this vector -- the PANELS popup above is drawn from the same frame --
-    // and a reference would be walking a sequence something below it may
-    // reorder. Thirteen entries; the copy is not worth a reader's doubt.
-    const std::vector<ControlsColumnEntry> columnEntries = st.controlsColumn.entries();
-    for (const ControlsColumnEntry& entry : columnEntries) {
-      // Hidden by the user. Distinct from the mode gate below: that one is
-      // the app saying a section has no subject right now, this one is the
-      // user saying they do not want it. Both end in `continue`, and keeping
-      // them separate is what stops one from being read as the other.
-      if (!entry.visible) continue;
-      const ControlsSectionSpec& spec = controlsSectionSpec(entry.section);
-      // The board is a shallow-water idea: only the watercolour solver reads
-      // `tiltX/tiltY`, and the section was inside the WATER branch before this
-      // step. A section can be absent when its subject is; it is still in the
-      // list, because the list is the column's order and not its contents.
-      if (spec.section == ControlsSection::BoardTilt && st.mode != PaintMode::Watercolor)
-        continue;
-      // --controls-all-open: see AppState::controlsAllOpen. Once, so it is a
-      // starting state rather than a mode that fights the user.
-      if (st.controlsAllOpen) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-      // docs/ui.md section 1: caps labels are monospace. A section title is
-      // the column's largest caps label, so it is the one where the face
-      // change is most of what tells a header from the prose under it.
-      pushAtelierMono();
-      const bool open = ImGui::CollapsingHeader(
-          spec.title, spec.defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
-      popAtelierMono();
-      // --controls-all-open <SECTION>: pin that header to the top of the
-      // column so a screenshot can reach a section that is below the fold.
-      // See AppState::controlsScrollTo.
-      if (st.controlsScrollTo == spec.title) ImGui::SetScrollHereY(0.0f);
-      if (!open) continue;
-      switch (spec.section) {
-        // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with
-        // reorder, visibility, lock, opacity"; PRD C4), and every entry point
-        // UI detour step 3 added. See drawLayersSection()'s own doc comment.
-        case ControlsSection::Layers:    drawLayersSection(st); break;
-        // PLAN.md Phase 5 step 8 ("History panel ...", PRD O2/O3). docs/ui.md
-        // §5: "The History panel (PRD O2) joins the right-hand docked column."
-        // Below LAYERS, because a history row names an edit made to the stack
-        // above it.
-        case ControlsSection::History:   drawHistorySection(st, sim, gpu); break;
-        // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14). Below HISTORY,
-        // because a comp is a saved state *of* the layer stack and a history
-        // row is an edit *to* it. See drawCompsSection()'s own doc comment.
-        case ControlsSection::Comps:     drawCompsSection(st); break;
-        // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and
-        // a curve widget operating in the shaper domain").
-        case ControlsSection::Grade:     drawGradeSection(st); break;
-        // C2 (docs/reachability-audit.md; PRD D2, P0). A `View` section
-        // beside GRADE for the same reason -- see drawHistogramSection()'s
-        // own doc comment for the cache that keeps this cheap to leave open.
-        case ControlsSection::Histogram: drawHistogramSection(st); break;
-        // docs/ui.md section 3.3 / PRD L4. First in the column, which is the
-        // design's own order -- see app/ControlsLayout.hpp's `Tool` role.
-        case ControlsSection::Color:     drawColorSection(st); break;
-        // Two panes, because picking a brush and authoring one are
-        // different acts (drawBrushLibrarySection()'s own comment).
-        // `gpu` and `lut` for the hover preview alone, which is a real
-        // rasterised dab in a real texture -- the same pair, for the same
-        // reason, that the BRUSH EDITOR below takes.
-        case ControlsSection::BrushLibrary: drawBrushLibrarySection(st, gpu, lut); break;
-        // `gpu` and `lut` for the TIP PREVIEW alone: the preview is a real
-        // rasterised dab in a real texture, so this section needs the device
-        // (to upload it) and the LUT (because `brushTipFor()` resolves the
-        // loaded pigment through it). drawHistorySection() above already takes
-        // a GpuContext for the same shape of reason.
-        case ControlsSection::Brush:     drawBrushSection(st, gpu, lut); break;
-        case ControlsSection::Pigment:   drawPigmentSection(st); break;
-        case ControlsSection::Medium:    drawMediumSection(st, sim.get()); break;
-        case ControlsSection::BoardTilt: drawBoardTiltSection(st); break;
-        case ControlsSection::Grid:      drawGridSection(st); break;
-        case ControlsSection::Solver:    drawSolverSection(st, sim.get()); break;
-      }
-      ImGui::Dummy(ImVec2(0, 6));
-    }
-
-    // The label column, measured and reported (UI detour step 3, problem 1b).
-    // Printed when it changes rather than every frame: it settles on the first
-    // frame that has drawn every open section once, and moves again only if a
-    // section that opens later carries a wider label. A log line is what makes
-    // "no label is clipped" a number rather than a look at a screenshot.
-    if (g_labelColumn != g_reportedColumn) {
-      g_reportedColumn = g_labelColumn;
-      std::printf("[controls] label column %.0f px -- widest label \"%s\" at %.0f px, "
-                  "panel %.0f px, so a slider gets %.0f px\n",
-                  g_labelColumn, g_widestLabel.c_str(), g_widestLabelPx, kControlsW,
-                  ImGui::GetContentRegionAvail().x - g_labelColumn);
-    }
+  // The label column, measured and reported (UI detour step 3, problem 1b).
+  // Printed when it changes rather than every frame: it settles on the first
+  // frame that has drawn every open panel once, and moves again only if a
+  // panel that opens later carries a wider label. A log line is what makes "no
+  // label is clipped" a number rather than a look at a screenshot.
+  if (g_labelColumn != g_reportedColumn) {
+    g_reportedColumn = g_labelColumn;
+    std::printf("[controls] label column %.0f px -- widest label \"%s\" at %.0f px, "
+                "right dock %.0f px, so a slider gets %.0f px\n",
+                g_labelColumn, g_widestLabel.c_str(), g_widestLabelPx, bands.rightDock.w,
+                std::max(0.0f, bands.rightDock.w - g_labelColumn));
   }
-  ImGui::End();
 
   // ------------------------------------------------------------ canvas
   //
@@ -11181,12 +11734,42 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     requestNewDocumentDialog();
     g_docStatus.clear();
   }
-  drawAtelierOptionsBar(st, bands, g_strokeRefusal);
+  // **The options bar is no longer drawn here.** It is a panel now
+  // (`ControlsSection::Options`), so it is drawn by whichever dock holds it,
+  // up with the other docks -- see this file's "dockable panel system"
+  // section. What that costs is the one-frame freshness the comment above
+  // argues for: the band reads `st.brush`, and it is now drawn before this
+  // frame's canvas input rather than after. The trade is deliberate and the
+  // loss is small -- the options bar shows the brush's *settings*, which the
+  // canvas does not change, where the status bar shows the *view*, which it
+  // does. The status bar, which is the one that actually needed it, still
+  // draws here.
   drawAtelierStatusBar(st, bands, canvasW, canvasH);
+
+  // The flyout rail and the open flyout, over the canvas. After the canvas
+  // window so they float above it (creation order is z-order under
+  // `NoBringToFrontOnFocus`), and before the rules so a rule still reads as
+  // the topmost edge of the chrome.
+  drawPanelRail(st, bands.canvas, &panelLayoutChanged);
+  drawFlyoutPanel(st, bands.canvas, sim, gpu, lut, &panelLayoutChanged);
+
+  // The four dock edges, so a dock can be resized as a whole rather than only
+  // slot-by-slot. Drawn last of the interactive chrome: each is a 6 px window
+  // straddling a dock's boundary with the canvas, and it has to be able to
+  // take the mouse from both.
+  drawDockEdge(st, PanelPlacement::Top, bands.topDock, &panelLayoutChanged);
+  drawDockEdge(st, PanelPlacement::Left, bands.leftDock, &panelLayoutChanged);
+  drawDockEdge(st, PanelPlacement::Right, bands.rightDock, &panelLayoutChanged);
+  drawDockEdge(st, PanelPlacement::Bottom, bands.bottomDock, &panelLayoutChanged);
+
   // Last, and on the foreground draw list: a 2 px rule that a neighbouring
   // window overdrew by a pixel would be a 1 px rule, and the design's whole
   // separation of major regions is that thickness.
   drawAtelierRules(bands);
+
+  // One write per frame that changed something. See where
+  // `panelLayoutChanged` is declared for why it is not one write per gesture.
+  if (panelLayoutChanged) savePanelLayout(st);
 
   if (st.showDemo) ImGui::ShowDemoWindow(&st.showDemo);
 

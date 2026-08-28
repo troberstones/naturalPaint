@@ -1970,13 +1970,21 @@ int main(int argc, char** argv) {
     // label-on-the-right run beside it and both clip counts printed. Headless
     // and GPU-free; writes no files.
     const bool controlsLayoutOk = np::runControlsLayoutTest();
-    // app/ControlsColumnLayout: the headless model behind a configurable
-    // right-hand controls column -- which sections appear, in what order,
-    // and that it survives a relaunch. The exactly-once invariant under
-    // every mutation, the four round-trip repair rules, and a real save/load
-    // round trip under $NP_PANEL_LAYOUT. Headless, GPU-free and ImGui-free;
-    // the ImGui affordance itself is a concurrent, separate change.
-    const bool controlsColumnLayoutOk = np::runControlsColumnLayoutTest();
+    // app/PanelLayout: the headless model behind the dockable panel system --
+    // where every panel is (one of four docks, a flyout, or put away), in
+    // what order, at what size, and that it survives a relaunch. The
+    // exactly-once invariant under every mutation, the round-trip repair
+    // rules, a version 1 file from the single-column build still reading
+    // correctly, and a real save/load round trip under $NP_PANEL_LAYOUT.
+    // Headless, GPU-free and ImGui-free.
+    const bool panelLayoutOk = np::runPanelLayoutTest();
+    // ui/DockLayout: the geometric half of the same feature -- that the slots
+    // and splitters tile a dock exactly on all four sides, that a collapsed
+    // panel hands its space to its neighbours, that the minimum-extent floor
+    // holds without the slots overrunning the dock, that the overflow case is
+    // disclosed rather than hidden, and that a splitter drag moves exactly
+    // the boundary it grabbed. Headless, GPU-free and ImGui-free.
+    const bool dockLayoutOk = np::runDockLayoutTest();
     // The incremental composite (core/DirtyTiles + core/Composite's region
     // walk + ui/DocumentTexture's sub-rectangle upload): that the dirty set is
     // complete, that a non-tile-local change is classified as one, and that
@@ -2244,7 +2252,7 @@ int main(int argc, char** argv) {
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
-                    controlsLayoutOk && controlsColumnLayoutOk &&
+                    controlsLayoutOk && panelLayoutOk && dockLayoutOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk && layerGroupOk &&
                     layerGroupPanelOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&

@@ -286,8 +286,19 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # (revision 2's later, no-scrollbar shrink-to-fit correction) to this
 # revision's 100x350 (taller, to bring two of the new flyout groups' own
 # corner-triangle badges into frame -- see the view-table comment above).
+# `layers`' y moved 1075 -> 1209 when the right-hand column became a DOCK of
+# fixed slots (app/PanelLayout, ui/DockLayout). The LAYERS panel no longer
+# starts wherever the scroll happened to leave it: it sits below COLOR's slot
+# and the collapsed BRUSH LIBRARY / BRUSH EDITOR headers, 134 px lower than the
+# scrolling column put it (measured from the highlighted ADJUSTMENT row's own
+# top edge in both images, not eyeballed). **The crop was re-aimed, not the reference
+# re-blessed** -- this view's whole purpose is "three LAYERS panel rows, with
+# the Pigment/Adjustment/RGB kind glyphs", and it still frames exactly those
+# three rows against the exact same reference PNG. A reference regenerated
+# instead would have quietly accepted whatever else had drifted into the old
+# rectangle, which here was the filter field and the BLEND/OPACITY row.
 view_crop_x=(0    1916 920  0   0   0    900)
-view_crop_y=(77   1075 1037 220 700 0    700)
+view_crop_y=(77   1209 1037 220 700 0    700)
 view_crop_w=(1400 640  384  100 400 2560 700)
 view_crop_h=(166  190  192  350 350 77   500)
 view_frames=(90 90 90 90 90 90 90)

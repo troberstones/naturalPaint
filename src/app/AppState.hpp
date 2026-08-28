@@ -10,7 +10,7 @@
 #include "brush/Library.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
-#include "app/ControlsColumnLayout.hpp"
+#include "app/PanelLayout.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
 #include "app/Journal.hpp"
@@ -861,20 +861,44 @@ struct AppState {
   RecentDocuments recentDocuments;
   bool recentDocumentsLoaded = false;
 
-  // T12: which sections the right-hand column shows and in what order, as the
-  // user arranged them (app/ControlsColumnLayout.hpp for the model, the file
-  // and the repair rules a file from another build goes through).
+  // T12: where every panel is docked, how big it is and whether it is collapsed,
+  // flown out or put away, as the user arranged it (app/PanelLayout.hpp for the
+  // model, the file, and the repair rules a file from another build goes
+  // through -- including a version 1 file written by the single-column build
+  // this replaced).
   //
   // Lazy exactly as `recentDocuments` above is, and for the same reason -- but
-  // note this one is read on the first frame that draws the column, which in
+  // note this one is read on the first frame that draws the chrome, which in
   // a windowed session is frame 1. The laziness is therefore worth almost
   // nothing at runtime and everything to `--selftest`, whose headless path
-  // never draws a column and so must never touch a preferences file.
-  ControlsColumnLayout controlsColumn;
-  bool controlsColumnLoaded = false;
+  // never draws a panel and so must never touch a preferences file.
+  PanelLayout panels;
+  bool panelsLoaded = false;
+
+  // Which flyout panel is open, if any -- session state, deliberately NOT
+  // persisted. A flyout is a transient view over the canvas, and restoring one
+  // open on relaunch would present a covered canvas as the application's
+  // resting state. `Count`-style sentinel is not available on
+  // `ControlsSection`, so the pair is a bool and a value rather than an
+  // optional; `flyoutOpen` is the one that decides.
+  bool flyoutOpen = false;
+  ControlsSection flyoutSection = ControlsSection::Color;
+
+  // A splitter drag in progress: which dock, and the index of the splitter
+  // within it. Session state for the same reason -- a drag cannot survive a
+  // relaunch because the mouse button cannot.
+  bool splitterDragging = false;
+  PanelPlacement splitterDock = PanelPlacement::Right;
+  size_t splitterIndex = 0;
+  // A dock-edge drag in progress (resizing the whole dock rather than one
+  // slot inside it). Kept apart from the splitter above because the two have
+  // different bounds and different write-backs, and one bool doing both jobs
+  // is how a drag ends up resizing the wrong thing.
+  bool dockEdgeDragging = false;
+  PanelPlacement dockEdgeDock = PanelPlacement::Right;
 
   // T9: the user's saved File > New sizes (app/DocumentPresets.hpp). Lazy
-  // exactly as `recentDocuments`/`controlsColumn` above, and for the same
+  // exactly as `recentDocuments`/`panels` above, and for the same
   // reason -- read the first time the New Document dialog opens, not at
   // startup, so `--selftest`'s headless run (which never opens that dialog)
   // never touches `document-presets.txt`.

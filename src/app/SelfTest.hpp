@@ -2444,34 +2444,62 @@ bool runLayerEditorTest();
 // Headless, GPU-free and ImGui-free; writes no files.
 bool runControlsLayoutTest();
 
-// app/ControlsColumnLayout -- the headless model behind a CONFIGURABLE
-// right-hand controls column: which sections appear, in what order, and
-// whether that survives a relaunch. Where app/ControlsLayout above asserts
-// the *default* order and open set never change, this is the model that
-// lets a user rearrange and hide sections away from that default and get it
-// back the same way tomorrow. The ImGui affordance for doing so is a
-// concurrent, separate change (src/ui/MacPaintUI.cpp); nothing here draws
-// anything.
+// app/PanelLayout -- the headless model behind the DOCKABLE panel system:
+// where every panel is (one of four docks, a flyout, or put away), in what
+// order within that placement, how big it is, and whether all of that
+// survives a relaunch. Where app/ControlsLayout above asserts the *default*
+// order and open set never change, this is the model that lets a user
+// rearrange panels away from that default and get it back the same way
+// tomorrow. The ImGui affordance for doing so is ui/MacPaintUI.cpp; nothing
+// here draws anything.
+//
+// This replaces `runControlsColumnLayoutTest()`, which covered the same
+// module under its single-column shape (`app/ControlsColumnLayout`). Every
+// assertion that test made is carried forward below -- the exactly-once
+// invariant, the key-stability rules and the repair rules are unchanged
+// properties of a model that grew two axes, not properties of the column --
+// so the count here is strictly larger than the count it replaced.
 //
 // What is asserted:
 //  - **The invariant that matters most**: the sequence holds every
 //    `ControlsSection` enumerator exactly once, across every mutator
-//    (`moveTo()`/`moveUp()`/`moveDown()`/`setVisible()`/`resetToDefault()`),
-//    every `parse()`, and every disk round trip -- including an out-of-range
-//    move index (clamped, not refused) and hiding every section at once
-//    (legal, not force-corrected).
-//  - **Stable text keys, not ordinals**: every enumerator's persistence key
-//    is unique, round-trips through `controlsSectionFromKey()`, and an
-//    unrecognised string is rejected rather than aliasing some section.
-//  - **The four round-trip repair rules, each in isolation**: an unknown
-//    section name is ignored; a section this build's file predates is
-//    APPENDED in `controlsSections()`'s own relative order rather than
-//    vanishing; a duplicated section keeps its first occurrence and drops
-//    the rest; and a malformed line -- or a file that is not this format at
-//    all -- invalidates the WHOLE file rather than half-applying it,
-//    falling back to `resetToDefault()`'s layout. An empty or missing file
-//    resolves to the default through the identical "every section missing"
-//    path as the append rule, not a separate special case.
+//    (`setPlacement()`/`setPlacementAt()`/`moveUp()`/`moveDown()`/
+//    `setWeight()`/`setCollapsed()`/`resetToDefault()`), every `parse()`,
+//    and every disk round trip -- including an out-of-range placement index
+//    (clamped, not refused) and hiding every panel at once (legal, not
+//    force-corrected).
+//  - **The default arrangement is the outgoing chrome, exactly**: TOOLS on
+//    the left at 52 px, OPTIONS on top at 46 px, everything else in the
+//    right dock at 322 px in `controlsSections()`'s own order, and nothing
+//    on the bottom -- so the revamp changed what the layout CAN express, not
+//    what a first run looks like.
+//  - **Stable text keys, not ordinals**, for sections AND for placements:
+//    every enumerator's persistence key is unique, round-trips through its
+//    `...FromKey()`, and an unrecognised string is rejected rather than
+//    aliasing some other value. This is the rule that made inserting
+//    `Tools`/`Options` at the FRONT of `ControlsSection` a non-event for
+//    files on disk, and the test says so by round-tripping a file written
+//    before those two existed.
+//  - **A version 1 file still reads**: `section <key> 1` lands in the right
+//    dock in its recorded order, `section <key> 0` lands hidden, and the two
+//    panels that version 1 could not name arrive at their DEFAULT placements
+//    (left and top) rather than being swept into the right dock.
+//  - **The round-trip repair rules, each in isolation**: an unknown section
+//    or placement name is ignored; a section this build's file predates is
+//    APPENDED at its default placement in `controlsSections()`'s own
+//    relative order rather than vanishing; a duplicated section keeps its
+//    first occurrence and drops the rest; and a malformed line is SKIPPED
+//    rather than invalidating the file, with the section it failed to name
+//    then arriving via the append rule -- so the result is always complete,
+//    never half-applied. A weight that is zero, negative, NaN or infinite is
+//    a malformed line by that same rule, because it would otherwise reach
+//    ui/DockLayout's arithmetic and produce a NaN rect. An empty or missing
+//    file resolves to the default through the identical "every section
+//    missing" path, not a separate special case.
+//  - **An empty dock is not on screen**: `effectiveDockExtents()` reports
+//    zero for a dock holding no panels, whatever extent is stored for it,
+//    and the stored extent is preserved so that returning a panel to that
+//    dock restores its old size.
 //  - **A real save/load round trip**, entirely under `$NP_PANEL_LAYOUT` so
 //    the developer's real `~/Library/Application Support/naturalPaint/` is
 //    never touched, plus the same durability shape app/
@@ -2481,7 +2509,53 @@ bool runControlsLayoutTest();
 //
 // Headless, GPU-free and ImGui-free; writes files only under a
 // `$NP_PANEL_LAYOUT`-redirected temp directory it removes before returning.
-bool runControlsColumnLayoutTest();
+bool runPanelLayoutTest();
+
+// ui/DockLayout -- how the panels inside ONE dock divide it up.
+//
+// The geometric half of the same feature, and headless for the reason
+// ui/AtelierLayout's own suite is: "a test that needs a window, a device and
+// a font atlas to check that four bands tile a rectangle is a test nobody
+// runs."
+//
+// What is asserted:
+//  - **Exact tiling**, on all four sides and at a table of dock sizes and
+//    slot counts: the slots plus the splitters between them sum to exactly
+//    the dock's extent along the axis that side divides, with no overlap and
+//    nothing left over -- an equality, not a tolerance, which is what the
+//    "last expanded slot takes the remainder" rule buys.
+//  - **The weights are ratios**: doubling one panel's weight doubles its
+//    share relative to its siblings, and scaling EVERY weight by the same
+//    factor changes nothing at all.
+//  - **Collapsed panels cost exactly a header** and take no share of the
+//    remainder, so collapsing one is a size control -- the space it frees is
+//    measurably handed to its expanded neighbours.
+//  - **The floor holds, and the water-filling loop is why**. A single
+//    weighted pass that clamps each share upwards to its minimum produces
+//    extents summing to MORE than the dock -- the slots silently overrun.
+//    The test drives exactly that case (one greedy weight starving a sibling
+//    below its floor while the minima still fit overall) and asserts both
+//    halves at once: every slot at or above its minimum, AND the sum still
+//    exact.
+//  - **The honest limit is disclosed, not hidden**: when the minima plus
+//    headers plus splitters exceed the dock, `overflowed` is true,
+//    `usedExtent` reports how far past the edge the slots actually run, and
+//    every expanded slot is at exactly its floor -- rather than the slots
+//    being silently shrunk into illegibility or silently dropped.
+//  - **A splitter drag moves one boundary and only one**: `dockApplyDrag()`
+//    conserves the dragged pair's combined extent and combined weight, so
+//    every other panel in the dock keeps the exact size it had; it clamps at
+//    both floors; and it never returns a zero or negative weight, which
+//    would leave a slot with no boundary left to drag back.
+//  - **`atelierToolGrid()` flows the tool palette**: a tall narrow panel
+//    resolves to one column at the same cell size `atelierToolCellSize()`
+//    picks (so the generalisation did not move the default arrangement), a
+//    short wide panel resolves to multiple columns, and a panel too small
+//    for either reports `overflows` rather than clipping a tool away.
+//
+// Runs in BOTH NP_USE_OIIO configurations. Headless, GPU-free and ImGui-free;
+// writes no files.
+bool runDockLayoutTest();
 
 // ---------------------------------------------------------------------------
 // The incremental composite

@@ -1,0 +1,424 @@
+#include "app/selftest/Support.hpp"
+
+#include "ui/AtelierLayout.hpp"
+#include "ui/DockLayout.hpp"
+
+namespace np {
+namespace {
+
+// The extent of a rect along the axis `side`'s slots divide, and the offset of
+// its leading edge on that axis. Written once here so every tiling assertion
+// below reads the same on all four sides, which is the point of the whole
+// exercise: the four sides are one body of arithmetic, so they deserve one
+// body of assertions rather than four that can drift.
+float majorExtent(const AtelierRect& r, DockSide side) {
+  return dockStacksVertically(side) ? r.h : r.w;
+}
+float majorStart(const AtelierRect& r, DockSide side) {
+  return dockStacksVertically(side) ? r.y : r.x;
+}
+float minorExtent(const AtelierRect& r, DockSide side) {
+  return dockStacksVertically(side) ? r.w : r.h;
+}
+
+// Do the slots and the splitters tile `dock` exactly -- contiguous, in order,
+// no overlap, nothing left over, and every one spanning the minor axis in
+// full?
+//
+// An exact equality on floats, deliberately, and it is only defensible because
+// `dockTile()` gives the last expanded slot the REMAINDER rather than its own
+// computed share. A tolerance here would pass on an implementation that leaks
+// a fraction of a pixel per slot, which at thirteen panels is a visible seam.
+bool tilesExactly(const AtelierRect& dock, DockSide side, const DockTiling& t) {
+  if (t.slots.empty()) return false;
+  if (t.splitters.size() != t.slots.size() - 1) return false;
+
+  float cursor = majorStart(dock, side);
+  for (size_t i = 0; i < t.slots.size(); ++i) {
+    if (majorStart(t.slots[i].rect, side) != cursor) return false;
+    if (minorExtent(t.slots[i].rect, side) != minorExtent(dock, side)) return false;
+    cursor += majorExtent(t.slots[i].rect, side);
+    if (i + 1 < t.slots.size()) {
+      if (majorStart(t.splitters[i], side) != cursor) return false;
+      if (majorExtent(t.splitters[i], side) != kDockSplitterThickness) return false;
+      cursor += kDockSplitterThickness;
+    }
+  }
+  // The whole point: the cursor lands exactly on the dock's far edge.
+  return cursor == majorStart(dock, side) + majorExtent(dock, side);
+}
+
+std::vector<DockSlotSpec> uniformSpecs(size_t n, float minExtent) {
+  std::vector<DockSlotSpec> v;
+  for (size_t i = 0; i < n; ++i) {
+    DockSlotSpec s;
+    s.minExtent = minExtent;
+    v.push_back(s);
+  }
+  return v;
+}
+
+// The four sides, and the rect + floor each one is exercised with. A left or
+// right dock is a tall column; a top or bottom dock is a wide strip.
+struct SideCase {
+  DockSide side;
+  const char* name;
+  AtelierRect dock;
+  float minExtent;
+};
+
+}  // namespace
+
+// ui/DockLayout -- how the panels inside ONE dock divide it up, and
+// ui/AtelierLayout's dock-aware bands and flowing tool grid.
+//
+// The geometric half of the dockable-panel feature. Headless for the reason
+// ui/AtelierLayout's own suite is headless, restated in that file's header: "a
+// test that needs a window, a device and a font atlas to check that four bands
+// tile a rectangle is a test nobody runs."
+//
+// The properties this proves are listed in app/SelfTest.hpp. The one worth
+// naming here is section 4's: a single weighted pass that clamps each share
+// upwards to its floor produces extents that sum to MORE than the dock, and
+// the slots silently overrun it. That was this file's first implementation.
+// Section 4 drives exactly the case that exposes it and asserts both halves at
+// once -- every slot at or above its floor, AND the sum still exact -- because
+// either one alone is satisfiable by a wrong implementation.
+bool runDockLayoutTest() {
+  bool ok = true;
+  auto check = [&](bool cond, const char* what) {
+    std::printf("  %-58s %s\n", what, cond ? "pass" : "FAIL");
+    if (!cond) ok = false;
+  };
+
+  const SideCase kSides[] = {
+      {DockSide::Left, "left", AtelierRect{0.0f, 100.0f, 52.0f, 900.0f}, kPanelMinHeight},
+      {DockSide::Right, "right", AtelierRect{1278.0f, 100.0f, 322.0f, 900.0f}, kPanelMinHeight},
+      {DockSide::Top, "top", AtelierRect{0.0f, 36.0f, 1600.0f, 46.0f}, kPanelMinWidth},
+      {DockSide::Bottom, "bottom", AtelierRect{0.0f, 940.0f, 1600.0f, 120.0f}, kPanelMinWidth},
+  };
+
+  // ==========================================================================
+  // 1. Exact tiling, on all four sides, at a table of slot counts
+  // ==========================================================================
+  {
+    bool allTile = true;
+    bool allSpanMinor = true;
+    size_t cases = 0;
+    for (const SideCase& sc : kSides) {
+      for (size_t n = 1; n <= 6; ++n) {
+        const DockTiling t = dockTile(sc.dock, sc.side, uniformSpecs(n, sc.minExtent));
+        ++cases;
+        if (t.slots.size() != n) allTile = false;
+        // Only assert exact tiling where the dock can actually hold the
+        // minima. The overflow case has its own section below and is
+        // *supposed* to run past the edge.
+        if (!t.overflowed && !tilesExactly(sc.dock, sc.side, t)) allTile = false;
+        for (const DockSlot& s : t.slots)
+          if (minorExtent(s.rect, sc.side) != minorExtent(sc.dock, sc.side)) allSpanMinor = false;
+      }
+    }
+    check(cases == 24, "dock layout: the tiling table covers 4 sides x 6 slot counts");
+    check(allTile,
+          "dock layout: **slots + splitters tile the dock exactly** on every side and count");
+    check(allSpanMinor, "dock layout: every slot spans the dock's minor axis in full");
+
+    // The degenerate inputs, which must not produce a degenerate tiling.
+    const DockTiling none = dockTile(kSides[1].dock, DockSide::Right, {});
+    check(none.slots.empty() && none.splitters.empty(),
+          "dock layout: a dock with no panels yields no slots rather than one empty one");
+    const DockTiling emptyDock =
+        dockTile(AtelierRect{0.0f, 0.0f, 0.0f, 0.0f}, DockSide::Right, uniformSpecs(3, 72.0f));
+    check(emptyDock.slots.empty(),
+          "dock layout: an empty dock rect yields no slots rather than three zero-height ones");
+  }
+
+  // ==========================================================================
+  // 2. The weights are ratios
+  // ==========================================================================
+  {
+    const AtelierRect dock{0.0f, 0.0f, 322.0f, 900.0f};
+    std::vector<DockSlotSpec> a = uniformSpecs(3, kPanelMinHeight);
+    a[0].weight = 1.0f;
+    a[1].weight = 2.0f;
+    a[2].weight = 1.0f;
+    const DockTiling ta = dockTile(dock, DockSide::Right, a);
+
+    // The middle slot has twice the weight, so twice the height (to within the
+    // one pixel the floor()-then-remainder rule can move).
+    const float h0 = ta.slots[0].rect.h, h1 = ta.slots[1].rect.h, h2 = ta.slots[2].rect.h;
+    check(std::fabs(h1 - 2.0f * h0) <= 1.0f,
+          "dock layout: a panel with twice the weight gets twice the height");
+    check(std::fabs(h0 - h2) <= 1.0f,
+          "dock layout: two panels with equal weight get equal height");
+
+    // Scaling EVERY weight by the same factor is a no-op -- which is what
+    // makes a splitter drag able to rewrite two weights without renormalising
+    // the rest.
+    std::vector<DockSlotSpec> scaled = a;
+    for (DockSlotSpec& s : scaled) s.weight *= 7.5f;
+    const DockTiling ts = dockTile(dock, DockSide::Right, scaled);
+    bool identical = ts.slots.size() == ta.slots.size();
+    for (size_t i = 0; identical && i < ts.slots.size(); ++i)
+      if (ts.slots[i].rect.h != ta.slots[i].rect.h) identical = false;
+    check(identical,
+          "dock layout: **scaling every weight by the same factor changes nothing** -- "
+          "weights are ratios, not pixels");
+
+    // A zero or negative weight is repaired to the default rather than
+    // dividing by zero or vanishing.
+    std::vector<DockSlotSpec> bad = uniformSpecs(2, kPanelMinHeight);
+    bad[0].weight = 0.0f;
+    bad[1].weight = -3.0f;
+    const DockTiling tb = dockTile(dock, DockSide::Right, bad);
+    check(tb.slots.size() == 2 && tb.slots[0].rect.h > 0.0f && tb.slots[1].rect.h > 0.0f &&
+              tilesExactly(dock, DockSide::Right, tb),
+          "dock layout: a zero or negative weight is treated as the default, not as zero height");
+  }
+
+  // ==========================================================================
+  // 3. A collapsed panel costs a header, and hands its space to its neighbours
+  // ==========================================================================
+  {
+    const AtelierRect dock{0.0f, 0.0f, 322.0f, 900.0f};
+    std::vector<DockSlotSpec> open = uniformSpecs(3, kPanelMinHeight);
+    const DockTiling before = dockTile(dock, DockSide::Right, open);
+
+    std::vector<DockSlotSpec> withCollapse = open;
+    withCollapse[1].collapsed = true;
+    const DockTiling after = dockTile(dock, DockSide::Right, withCollapse);
+
+    check(after.slots[1].rect.h == kPanelHeaderExtent,
+          "dock layout: a collapsed panel occupies exactly its header and nothing more");
+    check(after.slots[1].collapsed && !after.slots[0].collapsed,
+          "dock layout: the tiling reports which slots are collapsed");
+    check(after.slots[0].rect.h > before.slots[0].rect.h &&
+              after.slots[2].rect.h > before.slots[2].rect.h,
+          "dock layout: **collapsing a panel is a size control** -- its space goes to its "
+          "expanded neighbours, measurably");
+    check(tilesExactly(dock, DockSide::Right, after),
+          "dock layout: a dock containing a collapsed panel still tiles exactly");
+
+    // Every panel collapsed: the dock is mostly empty and still tiles, with
+    // the last slot absorbing the slack rather than a gap opening up.
+    std::vector<DockSlotSpec> allCollapsed = open;
+    for (DockSlotSpec& s : allCollapsed) s.collapsed = true;
+    const DockTiling tc = dockTile(dock, DockSide::Right, allCollapsed);
+    bool everyOneIsAHeader = true;
+    for (const DockSlot& s : tc.slots)
+      if (s.rect.h != kPanelHeaderExtent) everyOneIsAHeader = false;
+    check(everyOneIsAHeader,
+          "dock layout: with every panel collapsed each is a header and none is stretched");
+  }
+
+  // ==========================================================================
+  // 4. The floor holds AND the sum stays exact -- the water-filling property
+  // ==========================================================================
+  //
+  // The case a single weighted pass gets wrong. Three panels in a 400 px dock
+  // with a 72 px floor: the minima total 216 and fit easily, but one greedy
+  // weight drives a sibling's weighted share below its floor. A single pass
+  // clamps that sibling up and leaves the total OVER 400 -- slots overrunning
+  // the dock, in the branch `overflowed` reports as fine.
+  {
+    const AtelierRect dock{0.0f, 0.0f, 322.0f, 400.0f};
+    std::vector<DockSlotSpec> greedy = uniformSpecs(3, kPanelMinHeight);
+    greedy[0].weight = 40.0f;  // wants ~371 of the ~382 shareable
+    greedy[1].weight = 1.0f;   // would get ~9, well under the 72 floor
+    greedy[2].weight = 1.0f;
+    const DockTiling t = dockTile(dock, DockSide::Right, greedy);
+
+    check(!t.overflowed,
+          "dock layout: 3 x 72 px of minima fit a 400 px dock, so this is NOT the overflow case");
+    bool everyOneAtOrAboveFloor = true;
+    for (const DockSlot& s : t.slots)
+      if (s.rect.h < kPanelMinHeight) everyOneAtOrAboveFloor = false;
+    check(everyOneAtOrAboveFloor,
+          "dock layout: a starved panel is raised to its floor rather than left a sliver");
+    check(tilesExactly(dock, DockSide::Right, t),
+          "dock layout: **and the dock still tiles exactly** -- raising a panel to its floor "
+          "takes the space from its siblings, not from past the dock's edge");
+    check(t.slots[1].atMinimum && t.slots[2].atMinimum && !t.slots[0].atMinimum,
+          "dock layout: the tiling reports exactly which slots were held at their floor");
+    check(t.slots[0].rect.h > t.slots[1].rect.h,
+          "dock layout: the greedy panel still gets the lion's share of what remains");
+  }
+
+  // ==========================================================================
+  // 5. The honest limit: disclosed, not hidden
+  // ==========================================================================
+  {
+    // Six panels with a 72 px floor cannot fit a 200 px dock by any
+    // distribution of weight.
+    const AtelierRect dock{0.0f, 0.0f, 322.0f, 200.0f};
+    const DockTiling t = dockTile(dock, DockSide::Right, uniformSpecs(6, kPanelMinHeight));
+    check(t.overflowed, "dock layout: minima that cannot fit the dock set `overflowed`");
+    check(t.slots.size() == 6,
+          "dock layout: **no panel is silently dropped** when the dock is too small");
+    bool allAtFloor = true;
+    for (const DockSlot& s : t.slots)
+      if (s.rect.h != kPanelMinHeight) allAtFloor = false;
+    check(allAtFloor,
+          "dock layout: **no panel is silently shrunk below legibility** either -- every one "
+          "sits at exactly its floor");
+    check(t.usedExtent > dock.h,
+          "dock layout: `usedExtent` reports how far past the dock the slots actually run, "
+          "which is the number the caller's scroll fallback needs");
+    const float expected = 6.0f * kPanelMinHeight + 5.0f * kDockSplitterThickness;
+    check(t.usedExtent == expected,
+          "dock layout: and that number is exactly 6 floors plus 5 splitters, not an estimate");
+  }
+
+  // ==========================================================================
+  // 6. A splitter drag moves one boundary and only one
+  // ==========================================================================
+  {
+    const DockDragResult r = dockApplyDrag(200.0f, 200.0f, 1.0f, 1.0f, 72.0f, 50.0f);
+    check(std::fabs((r.weightA + r.weightB) - 2.0f) < 1e-4f,
+          "dock drag: **the pair's combined weight is conserved**, so every other panel in the "
+          "dock keeps the exact size it had");
+    check(r.weightA > r.weightB,
+          "dock drag: dragging towards the far edge grows the leading panel");
+    check(std::fabs(r.weightA - 1.25f) < 1e-3f && std::fabs(r.weightB - 0.75f) < 1e-3f,
+          "dock drag: a 50 px drag across a 400 px pair moves exactly one eighth of the weight");
+
+    // Clamped at both floors, and never to a zero weight.
+    const DockDragResult far = dockApplyDrag(200.0f, 200.0f, 1.0f, 1.0f, 72.0f, 10000.0f);
+    check(far.weightB > 0.0f && far.weightA > 0.0f,
+          "dock drag: an over-long drag never produces a zero or negative weight");
+    const float impliedB = 400.0f * (far.weightB / (far.weightA + far.weightB));
+    check(std::fabs(impliedB - 72.0f) < 0.5f,
+          "dock drag: an over-long drag stops with the trailing panel at exactly its floor");
+
+    const DockDragResult back = dockApplyDrag(200.0f, 200.0f, 1.0f, 1.0f, 72.0f, -10000.0f);
+    const float impliedA = 400.0f * (back.weightA / (back.weightA + back.weightB));
+    check(std::fabs(impliedA - 72.0f) < 0.5f,
+          "dock drag: and the same in the other direction, with the leading panel at its floor");
+
+    // A pair too small to hold two floors -- reachable in the overflow case.
+    // The clamp collapses to a point and the drag becomes a no-op, which is
+    // correct: there is nothing to redistribute.
+    const DockDragResult tiny = dockApplyDrag(50.0f, 50.0f, 1.0f, 1.0f, 72.0f, 30.0f);
+    check(std::isfinite(tiny.weightA) && std::isfinite(tiny.weightB) && tiny.weightA > 0.0f &&
+              tiny.weightB > 0.0f,
+          "dock drag: a pair too small for two floors yields finite, positive weights");
+
+    // A degenerate pair must not divide by zero.
+    const DockDragResult zero = dockApplyDrag(0.0f, 0.0f, 1.0f, 1.0f, 72.0f, 10.0f);
+    check(std::isfinite(zero.weightA) && std::isfinite(zero.weightB),
+          "dock drag: a zero-extent pair returns finite weights rather than a NaN");
+  }
+
+  // ==========================================================================
+  // 7. The dock-aware bands: absent docks vanish, and the default is unchanged
+  // ==========================================================================
+  {
+    // The default extents reproduce the pre-dock chrome exactly. This is the
+    // claim ui/AtelierLayout.hpp's `kDefaultDockExtents` makes in prose.
+    const AtelierBands b = atelierLayout(0.0f, 0.0f, 1600.0f, 1000.0f, false);
+    check(b.leftDock.w == kToolPaletteW,
+          "atelier bands: the default left dock is the 52 px tool palette's width");
+    check(b.rightDock.w == kRightColumnW,
+          "atelier bands: the default right dock is the 322 px controls column's width");
+    check(b.topDock.h == kOptionsBarH,
+          "atelier bands: the default top dock is the 46 px options bar's height");
+    check(b.bottomDock.h == 0.0f, "atelier bands: there is no bottom dock by default");
+    check(b.rightDock.right() == 1600.0f,
+          "atelier bands: the right dock sits flush with the window's right edge");
+
+    // An empty dock takes its rule with it, and the canvas takes the space.
+    AtelierDockExtents noLeft = kDefaultDockExtents;
+    noLeft.left = 0.0f;
+    const AtelierBands nl = atelierLayout(0.0f, 0.0f, 1600.0f, 1000.0f, false, noLeft);
+    check(nl.leftDock.w == 0.0f && nl.canvas.x == 0.0f,
+          "atelier bands: **an empty left dock leaves no strip and no seam** -- the canvas "
+          "reaches the window edge");
+    check(nl.ruleCount == b.ruleCount - 1,
+          "atelier bands: suppressing a dock suppresses exactly one rule");
+    check(nl.canvas.w == b.canvas.w + kToolPaletteW + kRuleThickness,
+          "atelier bands: and the canvas gains exactly the dock's width plus its rule");
+
+    // All four docks at once, and the bands still tile the window.
+    AtelierDockExtents all;
+    all.left = 200.0f;
+    all.right = 322.0f;
+    all.top = 46.0f;
+    all.bottom = 120.0f;
+    const AtelierBands q = atelierLayout(0.0f, 0.0f, 1600.0f, 1000.0f, true, all);
+    check(q.bottomDock.h == 120.0f && q.bottomDock.bottom() + kRuleThickness == q.statusBar.y,
+          "atelier bands: the bottom dock sits directly above the status bar's rule");
+    check(q.canvas.bottom() + kRuleThickness == q.bottomDock.y,
+          "atelier bands: and the canvas ends exactly at the bottom dock's rule");
+    check(q.canvas.x == q.leftDock.right() + kRuleThickness &&
+              q.canvas.right() == q.rightDock.x - kRuleThickness,
+          "atelier bands: the canvas is exactly the room the two side docks leave");
+    check(q.canvas.y == q.topDock.bottom() + kRuleThickness,
+          "atelier bands: and it starts exactly below the top dock's rule");
+    check(q.ruleCount == 7, "atelier bands: all four docks plus the tab strip is seven rules");
+
+    // Every dock off: nothing but the fixed chrome, and the canvas is
+    // everything between the title bar and the status bar.
+    const AtelierBands bare =
+        atelierLayout(0.0f, 0.0f, 1600.0f, 1000.0f, false, AtelierDockExtents{});
+    check(bare.canvas.x == 0.0f && bare.canvas.w == 1600.0f,
+          "atelier bands: **every panel undocked leaves a full-width canvas**, which is the "
+          "state 'dock around the app' has to be able to reach");
+    check(bare.ruleCount == 2,
+          "atelier bands: with no docks at all only the title bar's and status bar's rules "
+          "remain");
+  }
+
+  // ==========================================================================
+  // 8. The tool grid flows, and the default arrangement did not move
+  // ==========================================================================
+  {
+    // A tall narrow panel: one column, and the same cell size the column-only
+    // arithmetic picks. This is the assertion that says the generalisation is
+    // a superset rather than a replacement.
+    const float paletteH = 900.0f;
+    const float availH = paletteH - kToolSwatchAreaH;
+    const AtelierToolGrid tall = atelierToolGrid(kToolCellMax, availH);
+    check(tall.columns == 1, "tool grid: a panel one cell wide resolves to a single column");
+    check(tall.cell == atelierToolCellSize(paletteH),
+          "tool grid: **and to the same cell size the column-only arithmetic picks** -- the "
+          "flowing grid did not move the default arrangement");
+    check(!tall.overflows, "tool grid: a 900 px column fits all 18 cells without overflowing");
+
+    // A short wide panel -- a TOOLS panel docked to the top edge. It has to
+    // flow into columns or it is not a layout at all.
+    const AtelierToolGrid wide = atelierToolGrid(1600.0f, 46.0f);
+    check(wide.columns >= kToolCellCount,
+          "tool grid: **a 46 px top dock flows all 18 cells into one row**, which is the whole "
+          "reason the grid generalised");
+    check(wide.rows == 1, "tool grid: and that row really is one row");
+    check(!wide.overflows, "tool grid: a full-width strip fits without overflowing");
+
+    // Too small for either. Disclosed, and still yielding a usable grid rather
+    // than nothing.
+    const AtelierToolGrid tiny = atelierToolGrid(30.0f, 30.0f);
+    check(tiny.overflows,
+          "tool grid: a panel too small for even the smallest legible cell says so");
+    check(tiny.columns >= 1 && tiny.cell == kToolCellMin,
+          "tool grid: and still reports a usable grid at the floor rather than zero columns");
+
+    // Every cell accounted for, at a table of sizes -- no tool is ever
+    // arithmetically unreachable.
+    bool everyCellPlaceable = true;
+    const float widths[] = {40.0f, 52.0f, 120.0f, 400.0f, 1600.0f};
+    const float heights[] = {46.0f, 120.0f, 400.0f, 900.0f};
+    for (const float w : widths)
+      for (const float h : heights) {
+        const AtelierToolGrid g = atelierToolGrid(w, h);
+        if (g.columns * g.rows < kToolCellCount) everyCellPlaceable = false;
+        if (g.cell < kToolCellMin || g.cell > kToolCellMax) everyCellPlaceable = false;
+      }
+    check(everyCellPlaceable,
+          "tool grid: at 20 panel sizes the grid always has room for all 18 cells and always "
+          "picks a cell size in range");
+  }
+
+  std::printf("[selftest] dock layout %s\n", ok ? "PASS" : "FAIL");
+  return ok;
+}
+
+}  // namespace np

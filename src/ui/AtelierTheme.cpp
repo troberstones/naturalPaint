@@ -61,7 +61,7 @@ void applyAtelierTheme() {
   // (ui/AtelierLayout.hpp's kToolPaletteW) -- not a second, coincidentally-
   // equal pair of literals. See that header's comment for the defect that
   // duplication produced once.
-  s.WindowPadding = ImVec2(kWindowPaddingX, 8);
+  s.WindowPadding = ImVec2(kWindowPaddingX, kWindowPaddingY);
   s.FramePadding = ImVec2(8, 5);
   s.ItemSpacing = ImVec2(6, 6);
   s.ItemInnerSpacing = ImVec2(6, 4);

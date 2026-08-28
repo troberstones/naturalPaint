@@ -94,6 +94,16 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 > the full arithmetic, ui/AtelierChrome.hpp's `kToolGroups` for the grouping table, and
 > ui/AtelierTheme.hpp for the shared constants that make the width arithmetic hold.
 
+> ⚠️ **Every band in the diagram below that holds controls is a DOCK now, not a welded
+> band.** The diagram is still what a first run looks like -- that is asserted, not asserted-
+> by-hope (`--selftest`'s panel-layout section, and the golden `toolbar`/`tools`/`flyout`
+> views are pixel-identical to the pre-dock chrome) -- but it is now the *default
+> arrangement* of a system rather than a fixed layout. The user's instruction:
+> *"revamp the right panel to be dockable, not scrollable, I want to be able to put the
+> parts I want in and have them stay put, and put others in flyout mode or dock around the
+> app"*, and *"All four edges but move the brush setting and the tool pallet to dockable
+> panels as well, this makes the UI modular and customizable."* See §2c below.
+
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ naturalPaint │ File Edit … Help        undo redo ⟲ panels  │ 36
@@ -258,6 +268,71 @@ them (a second selection-brush tool beside Magic Wand, for instance), without an
 palette rebuild to make room.
 
 ---
+
+### 2c. Docks: four edges, flyouts, and why the dock never scrolls
+
+The chrome had two welded control bands (the 52px tool palette on the left edge, the 46px
+options bar under the tab strip) and one scrolling right-hand column of thirteen
+`CollapsingHeader`s. All three are gone. What replaced them is **fifteen panels, each of
+which can be in any of four docks, on a flyout rail, or put away**, with the arrangement
+persisted across relaunches.
+
+**The parts.** `app/PanelLayout` is the model -- placement, order within that placement,
+size weight, collapsed, plus the four dock extents -- and it is headless and
+`--selftest`-asserted. `ui/DockLayout` is the slot arithmetic: given a dock rect and its
+panels, where each one goes. Also headless, also asserted, for the reason
+`ui/AtelierLayout.hpp` already gives about band geometry: *"a test that needs a window, a
+device and a font atlas to check that four bands tile a rectangle is a test nobody runs."*
+`ui/MacPaintUI.cpp` is the only file that knows what a splitter looks like.
+
+**"Not scrollable" is a property of the dock, not of the panel.** The dock never scrolls;
+its panels divide it, and the slots plus the splitters between them tile it exactly. A
+panel whose content exceeds its own slot scrolls *inside that slot*. That is the whole
+difference between "LAYERS is below the fold because HISTOGRAM above it is long" (the
+complaint this revamp answers) and "LAYERS is exactly where I put it and has its own
+scrollbar" (what it does now).
+
+**Sizing.** Each panel carries a weight; expanded panels share what the collapsed ones
+leave, floored at 72px of height (or 200px of width in a top/bottom dock). Drag the
+splitter between two panels and only those two weights change, so every other panel keeps
+the exact size it had -- which is what makes *"have them stay put"* true. Drag a dock's
+outer edge to resize the whole dock. Both persist.
+
+**The honest limit**, stated the way the tool palette's is: when the minima plus headers
+plus splitters exceed the dock, no distribution of weight helps. `DockTiling::overflowed`
+says so, every panel sits at exactly its floor, and *that one case* lets the dock scroll --
+the behaviour this feature exists to remove, reached only when the alternative is panels
+too small to use. **The default arrangement deliberately stays out of that branch**: the
+nine sections `app/ControlsLayout`'s `defaultOpen` already marks closed start collapsed to
+their headers, so the right dock holds four expanded panels rather than thirteen.
+
+**A header that cannot do its job is not drawn.** A 46px top dock would give OPTIONS 20px
+of controls under a 26px header; a 52px left dock cannot show the word "TOOLS" after the
+disclosure triangle. Both are the same judgement `app/ControlsLayout.hpp` §2 already makes
+about labels, applied to a header. Such a panel is still reachable from the PANELS menu,
+and widening its dock past the threshold brings the header back.
+
+**The tool palette flows.** `atelierToolGrid()` picks the cell size and the column count
+together from both of the panel's dimensions, so TOOLS docked to the top edge is a row of
+18 cells rather than a column that does not fit. A tall narrow panel resolves to one
+column at exactly the cell size `atelierToolCellSize()` picks, which is asserted -- the
+generalisation did not move the default.
+
+**Flyouts, and the two ways back in.** A panel in flyout mode sits on a thin rail at the
+canvas's right edge and opens over the canvas when clicked. The **PANELS** control in the
+title bar -- the one docs/ui.md has drawn since the first revision, and which this file
+previously recorded as *"not built: there is no panel manager to wire it to, and a button
+that does nothing is worse than a gap"* -- lists every panel with its placement and moves
+it anywhere. It lives outside every dock on purpose: that is what makes hiding every panel
+a legal state rather than a trap. Right-clicking any panel's header offers the same menu.
+
+**Persistence.** `panel-layout.txt`, version 2, in the same file the single-column build
+wrote. **Version 1 files still read**: `section <key> 1` means the right dock, `section
+<key> 0` means hidden, and the two panels version 1 could not name arrive at their default
+placements. That compatibility is not incidental -- this revision inserted two enumerators
+at the *front* of `ControlsSection`, which under ordinal-keyed persistence would have
+silently turned every user's LAYERS panel into their SOLVER panel. `app/PanelLayout.hpp`
+carries the full format and the round-trip repair rules.
 
 ## 3. Reconciliations
 

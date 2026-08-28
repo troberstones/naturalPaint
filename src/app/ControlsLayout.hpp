@@ -83,10 +83,31 @@ namespace np {
 // (OIL / INK / WATER) is one enumerator, `Medium`, because exactly one of the
 // three is ever on screen and they occupy one slot in the column.
 enum class ControlsSection {
+  // **The tool palette and the tool options bar are panels now.** Both were
+  // welded bands in the chrome -- a 52 px column on the left edge and a 46 px
+  // strip under the tab strip -- until the user's instruction: *"move the
+  // brush setting and the tool pallet to dockable panels as well, this makes
+  // the UI modular and customizable."* They are `ControlsSection`s so that
+  // one model, one persistence format, one PANELS menu and one set of docks
+  // covers every panel in the application, rather than covering eleven of
+  // them and leaving two special cases welded to the window.
+  //
+  // Both carry the `Tool` role and lead the list, which is not a new rule but
+  // the existing one applied honestly: `Tool` is "what the next stroke will
+  // be", and a tool palette is the most literal possible instance of that.
+  //
+  // They differ from every other section in one way worth naming here,
+  // because it is the thing a reader will wonder about: **neither draws a
+  // collapsing header of its own by default in a horizontal dock**, because
+  // an options bar with a 26 px header above it in a 46 px band leaves 20 px
+  // for the controls. See ui/MacPaintUI.cpp's panel frame for how a panel
+  // that is the only occupant of a thin dock is drawn headerless.
+  Tools,
+  Options,
   // docs/ui.md section 3.3 and PRD **L4** (P0): "The colour panel has RGB and
   // PIGMENT modes; PIGMENT selects physical constants, not just a colour."
-  // First in the column because the design's own diagram puts COLOR first --
-  // see `ControlsSectionRole::Tool` below for why that outranks the
+  // First of the docked sections because the design's own diagram puts COLOR
+  // first -- see `ControlsSectionRole::Tool` below for why that outranks the
   // document-sections-lead rule this list used to open with.
   Color,
   Layers,

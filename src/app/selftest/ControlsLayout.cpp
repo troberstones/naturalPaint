@@ -53,10 +53,10 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 13, "every section has exactly one spec (13)");
-  check(newOrder.size() == kOldOrder.size() + 4,
-        "the same sections plus COMPS, COLOR, BRUSH LIBRARY and HISTOGRAM, reordered -- none was "
-        "dropped");
+  check(sections.size() == 15, "every section has exactly one spec (15)");
+  check(newOrder.size() == kOldOrder.size() + 6,
+        "the same sections plus COMPS, COLOR, BRUSH LIBRARY, HISTOGRAM and -- as of the "
+        "dockable-panel revamp -- TOOLS and OPTIONS, reordered; none was dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
     // enumerators rather than against a count, so a section added to the enum
@@ -70,12 +70,13 @@ bool runControlsLayoutTest() {
     // for the wrong reason). All 13 enumerators, matching the count asserted
     // just above (C2, docs/reachability-audit.md, added HISTOGRAM).
     const ControlsSection kAll[] = {
+        ControlsSection::Tools,      ControlsSection::Options,
         ControlsSection::Color,      ControlsSection::Layers,     ControlsSection::History,
         ControlsSection::Comps,      ControlsSection::Grade,      ControlsSection::Histogram,
         ControlsSection::BrushLibrary,
         ControlsSection::Brush,      ControlsSection::Pigment,    ControlsSection::Medium,
         ControlsSection::BoardTilt,  ControlsSection::Grid,       ControlsSection::Solver};
-    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 13,
+    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 15,
                   "kAll must list every ControlsSection enumerator");
     bool eachOnce = true;
     for (const ControlsSection s : kAll) {
@@ -130,7 +131,17 @@ bool runControlsLayoutTest() {
       if (rank(sections[i].role) < rank(sections[i - 1].role)) nonDecreasing = false;
     check(nonDecreasing,
           "tool sections precede document, document precedes view, view precedes simulation");
-    check(sections.front().section == ControlsSection::Color, "COLOR is the first section");
+    // **TOOLS leads, not COLOR** -- as of the dockable-panel revamp the tool
+    // palette and the tool options bar are `ControlsSection`s like everything
+    // else (they were welded chrome bands before), and a tool palette is the
+    // most literal possible instance of the `Tool` role this ordering already
+    // put first. COLOR is still asserted, as the first section that is not one
+    // of those two, so docs/ui.md section 2's COLOR-heads-the-column order is
+    // still checked rather than quietly dropped.
+    check(sections.front().section == ControlsSection::Tools, "TOOLS is the first section");
+    check(sections.size() > 2 && sections[1].section == ControlsSection::Options &&
+              sections[2].section == ControlsSection::Color,
+          "OPTIONS follows it, and COLOR still heads the docked sections");
     size_t firstDoc = sections.size();
     for (size_t i = 0; i < sections.size(); ++i)
       if (sections[i].role == ControlsSectionRole::Document) { firstDoc = i; break; }
@@ -153,14 +164,18 @@ bool runControlsLayoutTest() {
     bool exact = true;
     size_t open = 0;
     for (const ControlsSectionSpec& spec : sections) {
+      // TOOLS and OPTIONS join them: a collapsed tool palette is an empty left
+      // edge, which is not a state a first run should ever start in.
       const bool shouldBeOpen = spec.role == ControlsSectionRole::Document ||
-                                spec.section == ControlsSection::Color;
+                                spec.section == ControlsSection::Color ||
+                                spec.section == ControlsSection::Tools ||
+                                spec.section == ControlsSection::Options;
       if (spec.defaultOpen != shouldBeOpen) exact = false;
       if (spec.defaultOpen) ++open;
     }
-    check(exact && open == 4,
-          "exactly COLOR and the document sections start open "
-          "(COLOR, LAYERS, HISTORY, COMPS)");
+    check(exact && open == 6,
+          "exactly TOOLS, OPTIONS, COLOR and the document sections start open "
+          "(TOOLS, OPTIONS, COLOR, LAYERS, HISTORY, COMPS)");
   }
 
   // --- Part B: the label column -------------------------------------------

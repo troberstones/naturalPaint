@@ -152,25 +152,107 @@ static_assert(kToolPaletteW - 2.0f * kWindowPaddingX >= kToolCellMax,
 // reachable, just not simultaneously visible, on a window this short.
 float atelierToolCellSize(float paletteH) noexcept;
 
-// The six regions of docs/ui.md section 2, plus the rules between them.
+// ------------------------------------------------------- the tool grid, 2-D
+//
+// `atelierToolCellSize()` above answers the question a *column* asks: given a
+// height, how big may a cell be if all 18 of them are to stack in one column?
+// Once TOOLS is a panel rather than a welded-on left band, that question is no
+// longer the only one -- a panel docked to the top or bottom edge is a **row**
+// (ui/DockLayout.hpp's axis note), and 18 cells stacked vertically in a 46 px
+// strip is not a layout, it is a bug.
+//
+// So the palette flows. `atelierToolGrid()` picks the largest cell size in
+// [kToolCellMin, kToolCellMax] whose resulting grid fits the panel it is given
+// on BOTH axes, and reports how many columns that produced. A tall narrow
+// panel resolves to one column and the same cell size `atelierToolCellSize()`
+// would have chosen, which is why the old function stays: it is this one's
+// answer for the default arrangement, and keeping it lets `--selftest` assert
+// that the generalisation did not move the default.
+//
+// The search runs from the largest cell downwards and takes the first that
+// fits, which is at most 19 steps of integer arithmetic -- cheap enough to do
+// per frame, and far easier to check than a closed form that would have to
+// invert a ceiling division.
+struct AtelierToolGrid {
+  float cell = kToolCellMin;
+  int columns = 1;
+  int rows = kToolCellCount;
+  // No cell size in range fits the panel on both axes. The caller's disclosed
+  // fallback is the one the column already had: draw at `kToolCellMin` and let
+  // the wheel reach what does not fit, rather than clip or hide a tool.
+  bool overflows = false;
+};
+
+// `availW` / `availH` are the panel's CONTENT region -- padding and any swatch
+// strip already subtracted by the caller, exactly as `atelierToolCellSize()`
+// takes a palette height that still has `kToolSwatchAreaH` in it and subtracts
+// it itself. The asymmetry is deliberate: the swatch belongs to the vertical
+// arrangement only, so a general grid cannot assume it.
+AtelierToolGrid atelierToolGrid(float availW, float availH) noexcept;
+
+// ------------------------------------------------------------------ docks
+//
+// **The chrome's two fixed control bands became docks.** Until this revision
+// the tool palette was a 52 px column welded to the left edge and the tool
+// options a 46 px band welded under the tab strip, and neither could hold
+// anything else or be anywhere else. The user's instruction -- *"move the
+// brush setting and the tool pallet to dockable panels as well, this makes
+// the UI modular and customizable"* -- makes both of them panels like every
+// other panel, which means the *layout* can no longer name them: what sits on
+// the left edge is now whatever `app/PanelLayout` says sits there, and the
+// left dock's width is a number a person drags rather than a constant this
+// file owns.
+//
+// So `atelierLayout()` takes the four dock extents as an input. **An extent
+// of zero means that dock is absent**, and an absent dock takes its rule with
+// it -- exactly the rule the tab strip has always followed ("a rule adjacent
+// to an empty band is itself empty, so that suppressing the tab strip
+// suppresses exactly one rule and the bands still tile"), now applied to four
+// more bands. A user who moves every panel out of the left dock gets the
+// canvas all the way to the window edge, with no 52 px strip of empty chrome
+// and no seam where one used to be.
+struct AtelierDockExtents {
+  float left = 0.0f;    // width
+  float right = 0.0f;   // width
+  float top = 0.0f;     // height
+  float bottom = 0.0f;  // height
+};
+
+// The extents that reproduce the pre-dock chrome exactly: the 52 px tool
+// palette on the left, the 322 px controls column on the right, the 46 px
+// options bar across the top, nothing along the bottom.
+//
+// This is the *default arrangement*, not a constraint -- `app/PanelLayout`
+// starts here so that a first run looks like the design in docs/ui.md section
+// 2 rather than like an empty window, and every one of these numbers is then
+// the user's to change. Naming it here keeps the "unchanged by default"
+// claim checkable: `--selftest` asserts that `atelierLayout()` under these
+// extents produces the same bands the fixed-band version did.
+constexpr AtelierDockExtents kDefaultDockExtents{kToolPaletteW, kRightColumnW, kOptionsBarH,
+                                                 0.0f};
+
+// The regions of docs/ui.md section 2, plus the rules between them.
 //
 // Every rect is in the same coordinate space as the value handed to
 // `atelierLayout()` -- ImGui viewport work coordinates at the call site, but
 // this file does not know that and does not care.
 struct AtelierBands {
-  AtelierRect titleBar;     // wordmark, menus, undo/redo/panels
-  AtelierRect tabStrip;     // documents; empty until PLAN.md Phase 5 step 14
-  AtelierRect optionsBar;   // the active tool's options
-  AtelierRect toolPalette;  // left column, 2 x n grid + FG/BG swatch
-  AtelierRect canvas;       // canvas + rulers + navigator
-  AtelierRect rightColumn;  // COLOR / BRUSH / LAYERS / HISTORY / ...
-  AtelierRect statusBar;    // zoom, working space, resident/budget, view state
+  AtelierRect titleBar;    // wordmark, menus, undo/redo/panels
+  AtelierRect tabStrip;    // documents; empty until PLAN.md Phase 5 step 14
+  AtelierRect topDock;     // panels docked to the top edge (OPTIONS by default)
+  AtelierRect leftDock;    // panels docked to the left edge (TOOLS by default)
+  AtelierRect canvas;      // canvas + rulers + navigator
+  AtelierRect rightDock;   // panels docked to the right edge (COLOR / LAYERS / ...)
+  AtelierRect bottomDock;  // panels docked to the bottom edge (empty by default)
+  AtelierRect statusBar;   // zoom, working space, resident/budget, view state
 
-  // 2 px `#201e1d` between major regions (docs/ui.md section 1). Four
-  // horizontal and two vertical at most; a rule adjacent to an empty band is
-  // itself empty, so that suppressing the tab strip suppresses exactly one
-  // rule and the bands still tile.
-  static constexpr size_t kMaxRules = 6;
+  // 2 px `#201e1d` between major regions (docs/ui.md section 1). Five
+  // horizontal (under the title bar, under the tab strip, under the top dock,
+  // over the bottom dock, over the status bar) and two vertical (either side
+  // of the canvas) at most; a rule adjacent to an empty band is itself empty,
+  // so suppressing any band suppresses exactly one rule and the bands still
+  // tile.
+  static constexpr size_t kMaxRules = 7;
   AtelierRect rules[kMaxRules];
   size_t ruleCount = 0;
 };
@@ -183,11 +265,23 @@ struct AtelierBands {
 // fills it, and a layout that cannot express the design's own diagram would
 // have to be rewritten rather than switched on.
 //
+// `docks` gives the four dock extents; a zero extent suppresses that dock and
+// its rule (see `AtelierDockExtents`). The top and bottom docks span the full
+// window width and the left and right docks divide the row between them --
+// which is the arrangement the outgoing chrome already had (a full-width
+// options bar above a palette/canvas/column row), generalised rather than
+// replaced, so the default extents reproduce the old bands exactly.
+//
 // Undersized windows: the bands are absolute and the canvas is the remainder,
 // so a window shorter than the bands would give the canvas a negative height.
 // The canvas is clamped at zero and the bands keep their sizes -- chrome that
 // shrinks is chrome that lies about its hit targets, and the honest failure
 // mode for a window too small to hold the design is a canvas you cannot see.
+AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
+                           const AtelierDockExtents& docks);
+
+// The default arrangement, for the callers (and the tests) that do not vary
+// the docks. Exactly `atelierLayout(..., kDefaultDockExtents)`.
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip);
 
 // ------------------------------------------------------------- navigator

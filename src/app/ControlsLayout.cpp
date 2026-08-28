@@ -9,6 +9,12 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
   // The order and the default-open set, in one place. See the header for why
   // COLOR leads and why the three Document sections follow it.
   static const std::vector<ControlsSectionSpec> kSections = {
+      // The two former chrome bands, ahead of everything -- see the header's
+      // `Tools`/`Options` note. Open by default because a collapsed tool
+      // palette is an empty left edge, which is not a state a first run
+      // should ever start in.
+      {ControlsSection::Tools, R::Tool, "TOOLS", true},
+      {ControlsSection::Options, R::Tool, "OPTIONS", true},
       {ControlsSection::Color, R::Tool, "COLOR", true},
       {ControlsSection::BrushLibrary, R::Tool, "BRUSH LIBRARY", false},
       {ControlsSection::Brush, R::Tool, "BRUSH EDITOR", false},

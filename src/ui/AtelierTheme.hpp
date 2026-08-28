@@ -103,6 +103,13 @@ constexpr float kDividerThickness = 1.0f;
 // agreeing with itself is not evidence that Dear ImGui's own layout code
 // agrees with it too.
 constexpr float kWindowPaddingX = 8.0f;
+// The other half of the same pair. It had no name until docked panels needed
+// one: `applyAtelierTheme()` wrote `ImVec2(kWindowPaddingX, 8)` with the second
+// number as a bare literal, and a panel body that has to inset its content by
+// exactly what the windows it replaced did cannot read a literal. Same rule as
+// kWindowPaddingX's own: the style is assigned FROM this constant, so the two
+// cannot drift.
+constexpr float kWindowPaddingY = 8.0f;
 constexpr float kScrollbarSize  = 12.0f;
 
 // `ui/AtelierLayout.hpp`'s `kToolPaletteW` no longer subtracts

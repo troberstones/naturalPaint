@@ -6,7 +6,7 @@ add_executable(naturalPaint
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
   app/CompPanel.cpp
-  app/ControlsColumnLayout.cpp
+  app/PanelLayout.cpp
   app/ControlsLayout.cpp
   app/CurveEdit.cpp
   app/DabPreview.cpp
@@ -55,7 +55,8 @@ add_executable(naturalPaint
   app/selftest/CloseDecision.cpp
   app/selftest/ColorSpace.cpp
   app/selftest/CompositeCost.cpp
-  app/selftest/ControlsColumnLayout.cpp
+  app/selftest/PanelLayout.cpp
+  app/selftest/DockLayout.cpp
   app/selftest/ControlsLayout.cpp
   app/selftest/CowTile.cpp
   app/selftest/CreateBlank.cpp
@@ -240,6 +241,7 @@ add_executable(naturalPaint
   ui/CanvasQuad.cpp
   ui/FileDialog.cpp
   ui/AtelierLayout.cpp
+  ui/DockLayout.cpp
   ui/AtelierChrome.cpp
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp

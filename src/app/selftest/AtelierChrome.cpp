@@ -138,14 +138,15 @@ bool runAtelierChromeTest() {
     constexpr float kW = 1366.0f, kH = 1024.0f;
 
     const auto tiles = [&](const AtelierBands& b, float w, float h, const char* what) {
-      AtelierRect all[7 + AtelierBands::kMaxRules];
+      AtelierRect all[8 + AtelierBands::kMaxRules];
       size_t n = 0;
       all[n++] = b.titleBar;
       all[n++] = b.tabStrip;
-      all[n++] = b.optionsBar;
-      all[n++] = b.toolPalette;
+      all[n++] = b.topDock;
+      all[n++] = b.leftDock;
       all[n++] = b.canvas;
-      all[n++] = b.rightColumn;
+      all[n++] = b.rightDock;
+      all[n++] = b.bottomDock;
       all[n++] = b.statusBar;
       for (size_t i = 0; i < b.ruleCount; ++i) all[n++] = b.rules[i];
 
@@ -173,7 +174,12 @@ bool runAtelierChromeTest() {
     check(tiles(b, kW, kH, "no tab strip"), "the bands and rules tile the window exactly");
 
     check(b.titleBar.h == kTitleBarH && kTitleBarH == 36.0f, "title bar is 36 px");
-    check(b.optionsBar.h == kOptionsBarH && kOptionsBarH == 46.0f, "options bar is 46 px");
+    // The options bar is the TOP DOCK now (it is a panel, not a welded band --
+    // see ui/AtelierLayout.hpp's dock note), and under the default extents it is
+    // the same 46 px in the same place. That equality is the point of asserting
+    // it here: the revamp changed what the layout can express, not the default.
+    check(b.topDock.h == kOptionsBarH && kOptionsBarH == 46.0f,
+          "the top dock is the options bar's 46 px by default");
     check(b.statusBar.h == kStatusBarH && kStatusBarH == 26.0f, "status bar is 26 px");
     // 52 px, not the outgoing chrome's 104, not the 64 that fixed the
     // clipping bug, and not the 44 that replaced it once cells started
@@ -190,11 +196,12 @@ bool runAtelierChromeTest() {
     // 52. Checked against the *named constant* rather than a second copy
     // of the literal -- docs/ui.md section 2 is where 52 is recorded as
     // the number this build chose.
-    check(b.toolPalette.w == kToolPaletteW && kToolPaletteW == 52.0f,
-          "the tool palette is 52 px wide (a single column, docs/ui.md section 2)");
-    check(b.rightColumn.w == 322.0f, "the right column is 322 px wide");
+    check(b.leftDock.w == kToolPaletteW && kToolPaletteW == 52.0f,
+          "the left dock is the tool palette's 52 px by default (docs/ui.md section 2)");
+    check(b.rightDock.w == 322.0f, "the right dock is 322 px wide by default");
+    check(b.bottomDock.h == 0.0f, "and there is no bottom dock by default");
     check(b.statusBar.bottom() == kH, "the status bar sits flush with the bottom edge");
-    check(b.rightColumn.right() == kW, "the right column sits flush with the right edge");
+    check(b.rightDock.right() == kW, "the right dock sits flush with the right edge");
 
     // The canvas is the remainder, and this is the arithmetic spelled out:
     // three 2px rules vertically (title, options, status) and two horizontally.
@@ -691,7 +698,7 @@ bool runAtelierChromeTest() {
       // document is open, and the case the coordinator's own worked
       // examples (940/790/600) were computed against.
       const AtelierBands b = atelierLayout(0.0f, 0.0f, 1280.0f, c.winH, /*showTabStrip=*/true);
-      const float got = atelierToolCellSize(b.toolPalette.h);
+      const float got = atelierToolCellSize(b.leftDock.h);
       if (std::fabs(got - c.wantCell) > 0.01f) {
         fitsOk = false;
         std::printf("    at window h=%.0f: atelierToolCellSize() = %.1f, want %.1f (%s)\n",
@@ -708,7 +715,7 @@ bool runAtelierChromeTest() {
       // -- it does not, and that shortfall is the disclosed, wheel-only
       // fallback, not a silently broken fit.
       const float used = got * static_cast<float>(kToolCellCount) + kToolSeparatorsH;
-      const float gridH = b.toolPalette.h - kToolSwatchAreaH;
+      const float gridH = b.leftDock.h - kToolSwatchAreaH;
       const bool fits = used <= gridH + 0.01f;
       const bool honestlyClamped = std::fabs(got - kToolCellMin) < 0.01f;
       if (!fits && !honestlyClamped) {

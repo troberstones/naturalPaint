@@ -28,7 +28,40 @@ float atelierToolCellSize(float paletteH) noexcept {
   return std::clamp(raw, kToolCellMin, kToolCellMax);
 }
 
+AtelierToolGrid atelierToolGrid(float availW, float availH) noexcept {
+  AtelierToolGrid g;
+  // Largest first, so the first fit is the best fit.
+  for (float cell = kToolCellMax; cell >= kToolCellMin; cell -= 1.0f) {
+    const int cols = static_cast<int>(std::floor(availW / cell));
+    if (cols < 1) continue;
+    const int rows = (kToolCellCount + cols - 1) / cols;
+    // The separator rules are drawn between groups down the column, so they
+    // cost height once per row-break at most -- charging all four regardless
+    // is the conservative reading and keeps this arithmetic independent of
+    // which group boundary lands on which row.
+    if (static_cast<float>(rows) * cell + kToolSeparatorsH > availH) continue;
+    g.cell = cell;
+    g.columns = cols;
+    g.rows = rows;
+    g.overflows = false;
+    return g;
+  }
+  // Nothing in range fits. The disclosed fallback, matching the column's:
+  // smallest legible cell, as many columns as the width allows, and the wheel
+  // reaches the rest.
+  g.cell = kToolCellMin;
+  g.columns = std::max(1, static_cast<int>(std::floor(availW / kToolCellMin)));
+  g.rows = (kToolCellCount + g.columns - 1) / g.columns;
+  g.overflows = true;
+  return g;
+}
+
 AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip) {
+  return atelierLayout(x, y, w, h, showTabStrip, kDefaultDockExtents);
+}
+
+AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip,
+                           const AtelierDockExtents& docks) {
   AtelierBands b;
 
   const auto addRule = [&b](AtelierRect r) {
@@ -54,9 +87,18 @@ AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip
     b.tabStrip = AtelierRect{x, cy, w, 0.0f};
   }
 
-  b.optionsBar = AtelierRect{x, cy, w, kOptionsBarH};
-  cy += kOptionsBarH;
-  addRule(hRule(x, w, cy));
+  // The top dock, where the outgoing chrome had a permanent options bar. Same
+  // 46 px by default and the same rule under it -- and now the same
+  // disappearing act the tab strip does when it is empty, which is the whole
+  // difference: a user who moves OPTIONS to the bottom or into a flyout gets
+  // those 46 px back rather than an empty band.
+  if (docks.top > 0.0f) {
+    b.topDock = AtelierRect{x, cy, w, docks.top};
+    cy += docks.top;
+    addRule(hRule(x, w, cy));
+  } else {
+    b.topDock = AtelierRect{x, cy, w, 0.0f};
+  }
 
   // The status bar is placed from the bottom, so every rounding error in the
   // bands above lands in the canvas rather than in a 26 px bar that would
@@ -65,22 +107,52 @@ AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip
   b.statusBar = AtelierRect{x, statusTop, w, kStatusBarH};
   const AtelierRect statusRule{x, statusTop - kRuleThickness, w, kRuleThickness};
 
-  // The middle row: palette | rule | canvas | rule | column.
+  // The bottom dock sits between the status bar and the middle row, and is
+  // likewise placed from the bottom upwards for the reason above: the canvas
+  // is the remainder, so the canvas is where any slack belongs.
+  float midBottom = statusRule.y;
+  AtelierRect bottomRule{};
+  if (docks.bottom > 0.0f) {
+    const float bottomTop = std::max(y, midBottom - docks.bottom);
+    b.bottomDock = AtelierRect{x, bottomTop, w, midBottom - bottomTop};
+    bottomRule = AtelierRect{x, bottomTop - kRuleThickness, w, kRuleThickness};
+    midBottom = bottomRule.y;
+  } else {
+    b.bottomDock = AtelierRect{x, midBottom, w, 0.0f};
+  }
+
+  // The middle row: left dock | rule | canvas | rule | right dock. Either
+  // dock may be absent, and when one is, so is its rule and so is the seam it
+  // would have left behind.
   const float midTop = cy;
-  const float midH = std::max(0.0f, statusRule.y - midTop);
+  const float midH = std::max(0.0f, midBottom - midTop);
 
-  b.toolPalette = AtelierRect{x, midTop, kToolPaletteW, midH};
-  const AtelierRect leftRule{x + kToolPaletteW, midTop, kRuleThickness, midH};
+  AtelierRect leftRule{};
+  float canvasX = x;
+  if (docks.left > 0.0f) {
+    b.leftDock = AtelierRect{x, midTop, docks.left, midH};
+    leftRule = AtelierRect{x + docks.left, midTop, kRuleThickness, midH};
+    canvasX = leftRule.right();
+  } else {
+    b.leftDock = AtelierRect{x, midTop, 0.0f, midH};
+  }
 
-  const float rightX = x + w - kRightColumnW;
-  b.rightColumn = AtelierRect{rightX, midTop, kRightColumnW, midH};
-  const AtelierRect rightRule{rightX - kRuleThickness, midTop, kRuleThickness, midH};
+  AtelierRect rightRule{};
+  float canvasRight = x + w;
+  if (docks.right > 0.0f) {
+    const float rightX = x + w - docks.right;
+    b.rightDock = AtelierRect{rightX, midTop, docks.right, midH};
+    rightRule = AtelierRect{rightX - kRuleThickness, midTop, kRuleThickness, midH};
+    canvasRight = rightRule.x;
+  } else {
+    b.rightDock = AtelierRect{x + w, midTop, 0.0f, midH};
+  }
 
-  const float canvasX = leftRule.right();
-  b.canvas = AtelierRect{canvasX, midTop, std::max(0.0f, rightRule.x - canvasX), midH};
+  b.canvas = AtelierRect{canvasX, midTop, std::max(0.0f, canvasRight - canvasX), midH};
 
   addRule(leftRule);
   addRule(rightRule);
+  addRule(bottomRule);
   addRule(statusRule);
 
   return b;
