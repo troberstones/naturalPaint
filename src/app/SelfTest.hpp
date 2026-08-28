@@ -487,6 +487,46 @@ bool runPointOpsTest();
 // function.
 bool runToneOpsTest();
 
+// ops/ColorOps (docs/operations.md §1.2 "Committed additions"): four more
+// pure `rgb -> rgb` point ops extending ops/PointOps.hpp's family -- Hue/
+// Saturation/Lightness, Vibrance, Colour balance, Photo filter. Pure math
+// only: no menu, no dialog, no op-stack integration. Also headless and
+// GPU-free -- pure CPU math, no PaintSim involvement.
+//
+//  - Hue/Saturation/Lightness: default params is an exact identity,
+//    including a negative and an HDR component together; a pure red rotated
+//    +90 degrees lands at the hand-computed triple (Rodrigues' rotation
+//    about normalize(kRec709LumaWeights)), and computeLuma() is exactly
+//    preserved; a 360-degree rotation round-trips to the identity on a
+//    colour that is itself negative in one channel and HDR in another; the
+//    saturation half matches applySaturation() exactly, not just similarly,
+//    at hueDegrees=0; lightness direction and a hand-computed value composed
+//    from shaperEncode/shaperDecode directly; colorize keeps two different-
+//    luma pixels' own luma exactly while giving both the identical chroma
+//    offset, plus a hand-computed case.
+//  - Vibrance: amount=0 is identity; the ordering the op exists to produce
+//    -- grey moves less than a pastel, which moves less than an already-
+//    saturated colour, at one shared amount, distances computed at runtime;
+//    an HDR grey (1.5) is untouched, not clamped down; direction (positive
+//    amount widens the max-min spread, negative narrows it).
+//  - Colour balance: default params is an exact identity, including
+//    negative and HDR components together; hand-computed shadows-lift,
+//    highlights-gain and midtones-gamma cases; the tonal weights do not
+//    double-count -- a highlights-only push is exactly a no-op at pure
+//    black, a shadows-only push exactly a no-op at pure white;
+//    preserveLuminosity keeps output luma equal to input luma exactly, and
+//    the un-preserved twin is shown to actually drift (the flag is not a
+//    no-op); an HDR highlights push is unclamped (1.5 -> 3.0).
+//  - Photo filter: default params is an exact identity, including negative
+//    and HDR components together; a hand-computed full-density case shows a
+//    real filter colour darkens overall luma without preserveLuminosity;
+//    preserveLuminosity restores that luma exactly while the colour cast
+//    survives; an HDR input (2.0) is unclamped; density is shown to be a
+//    blend fraction, not a brightness multiplier (a filter channel of 1.0
+//    is untouched at any density; a mid-density channel lands strictly
+//    between untouched and fully filtered).
+bool runColorOpsTest();
+
 // ops/MonoOps (docs/operations.md §1.2, "Committed additions": Black & white
 // and Gradient map, both class A / P1). Pure math only, matching
 // ops/PointOps.hpp's own `rgb -> rgb` contract exactly -- no menu, dialog or
@@ -523,6 +563,27 @@ bool runToneOpsTest();
 // that two different far-above-range lumas land on the identical colour,
 // proving the plateau is truly flat and not a close clamp.
 bool runMonoOpsTest();
+
+// ops/AutoLevels (docs/operations.md §1.2: Auto-tone, Auto-contrast,
+// Auto-white-balance -- all three "a parameter solver, not an op" -- plus
+// this module's own Equalize addition). Pure CPU math over hand-built
+// core::HistogramResult fixtures, no Document/PaintSim/GPU involvement.
+//
+// Covers: an already-full [0,1] histogram solves near-neutral; a
+// lower-half-confined histogram's white point stretches it, checked
+// against a hand-computed value tied to the exact bin-center/srgbDecode
+// mapping AutoLevels.hpp documents (so an off-by-one there reddens this,
+// not a vaguer "direction only" check); the clip fraction actually moves
+// the white point away from a lone top-bin outlier, checked against which
+// bin it now matches, not merely that it changed; auto-tone produces three
+// DIFFERENT LevelsParams on a colour-cast fixture while auto-contrast
+// produces three IDENTICAL ones on the same fixture -- the clearest
+// statement of the pair's whole reason to both exist; Equalize never
+// exceeds color::kMaxCurvePointsPerChannel control points and is
+// monotonically non-decreasing; and an all-zero histogram (identity on
+// every solver) and a single-occupied-bin histogram (well-defined,
+// blackIn == whiteIn, never reversed, never NaN) both stay degenerate-safe.
+bool runAutoLevelsTest();
 
 // ops/Gradient (PLAN.md "Phase 6 -- Filter and transform it"; PRD D24, and the
 // gradient half of D26). The op only -- no editor, no presets. Headless and

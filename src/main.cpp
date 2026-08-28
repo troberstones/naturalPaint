@@ -1512,12 +1512,23 @@ int main(int argc, char** argv) {
     // each an involution), posterize and threshold (both shaper-domain).
     // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool toneOpsOk = np::runToneOpsTest();
+    // ops/ColorOps (docs/operations.md §1.2): hue/saturation/lightness (a
+    // Rodrigues rotation about the normalised Rec.709 luma axis, so luma is
+    // preserved exactly rather than approximately), vibrance, colour balance
+    // by tonal range, and photo filter. Also headless and GPU-free.
+    const bool colorOpsOk = np::runColorOpsTest();
     // ops/MonoOps (docs/operations.md §1.2): Black & white's six hue-wheel
     // weights and Gradient map's luma->ramp lookup, both reusing
     // ops/PointOps.hpp's `rgb -> rgb` contract and ops/Gradient.hpp's stop
     // model rather than inventing either afresh. Also headless and
     // GPU-free -- pure CPU math, no PaintSim involvement.
     const bool monoOpsOk = np::runMonoOpsTest();
+    // ops/AutoLevels (docs/operations.md §1.2): auto-tone, auto-contrast,
+    // auto-white-balance and equalize -- "a parameter solver, not an op", so
+    // each inspects a core::HistogramResult and returns parameters for an
+    // ordinary editable Levels or Curves op rather than touching a pixel.
+    // Headless and GPU-free -- hand-built histogram fixtures, no Document.
+    const bool autoLevelsOk = np::runAutoLevelsTest();
     // Phase 6 (ops/Gradient; PRD D24 and the gradient half of D26): linear,
     // radial and angular geometries, the independently-positioned colour and
     // opacity stop lists, straight-colour interpolation in linear light, and
@@ -2264,7 +2275,8 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    halfOk && histogramOk && pointOpsOk && toneOpsOk && monoOpsOk &&
+                    halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
+                    autoLevelsOk &&
                     gradientOk && selectionOk && channelsOk &&
                     selectionShapesOk && selectionRefineOk && selectionToolsOk && selectionDragOk &&
                     ellipseMarqueePreviewOk &&

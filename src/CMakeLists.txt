@@ -54,6 +54,7 @@ add_executable(naturalPaint
   app/selftest/ClipboardImage.cpp
   app/selftest/ClippingMask.cpp
   app/selftest/CloseDecision.cpp
+  app/selftest/ColorOps.cpp
   app/selftest/ColorSpace.cpp
   app/selftest/CompositeCost.cpp
   app/selftest/PanelLayout.cpp
@@ -84,6 +85,7 @@ add_executable(naturalPaint
   app/selftest/FiltersExt.cpp
   app/selftest/FloodFill.cpp
   app/selftest/Fonts.cpp
+  app/selftest/AutoLevels.cpp
   app/selftest/AtelierChrome.cpp
   app/selftest/ActiveLayer.cpp
   app/selftest/FormatSupport.cpp
@@ -225,7 +227,9 @@ add_executable(naturalPaint
   io/OpSerial.cpp
   io/PsdImport.cpp
   io/TileResidency.cpp
+  ops/AutoLevels.cpp
   ops/Blur.cpp
+  ops/ColorOps.cpp
   ops/DocumentTransform.cpp
   ops/Feather.cpp
   ops/Filters.cpp
