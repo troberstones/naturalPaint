@@ -1,5 +1,6 @@
 #include "app/selftest/Support.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -9,19 +10,25 @@
 #include <vector>
 
 #include "app/OpenAnyFile.hpp"
+#include "color/Space.hpp"
+#include "core/Tile.hpp"
+#include "core/TileStore.hpp"
 #include "io/ImageIO.hpp"
 #include "io/PsdImport.hpp"
 
 // io/PsdImport (and the app/OpenAnyFile seam it fills) -- headless, GPU-free.
-// No genuine Photoshop-authored file is available on this machine (this
-// file's io/PsdImport.hpp states that at length, and it applies here
-// unchanged): every fixture below is written by a matching PSD *writer*
-// built in this file, so a pass proves this reader agrees with this
-// author's reading of the published specification -- corroborated, for the
-// two facts that mattered most (layer stacking order, and the `flags`
-// byte's inverted "visible" bit), against an independent third-party
-// reader's behaviour, per io/PsdImport.hpp's own citations -- and does NOT
-// prove agreement with what Photoshop itself emits.
+// Every fixture below is written by a matching PSD *writer* built in this
+// file, so a pass proves this reader agrees with this author's reading of
+// the published specification. **That is still all it proves**, and it is
+// worth being clear about what does the other half of the job: three
+// genuine Photoshop-authored documents have since been read by this module
+// and by an independent third-party reader and compared layer by layer, and
+// io/PsdImport.hpp's own header records that comparison in full. Those
+// files are the user's artwork, are not in this repository, and cannot be,
+// so they are not reachable from `--selftest` -- the flag that reads them
+// is `--psd-report` (app/PsdReport.hpp), run by hand against a file someone
+// has. This suite and that flag prove different things and neither replaces
+// the other.
 //
 // The section split mirrors io/PsdImport.hpp's own "Scope" and "What has
 // NOT been verified" sections:
@@ -40,6 +47,8 @@
 //      flat one (no layer section) falls back to the pre-existing
 //      flattened path unchanged, and a PSD with real but unreadable layer
 //      content (ZIP) is refused outright rather than silently flattened.
+//   E. Transparent regions cost no tiles -- the guard on the empty-tile
+//      skip a real 180 MB Photoshop file made necessary.
 namespace np {
 namespace {
 
@@ -791,6 +800,67 @@ bool runPsdImportTest() {
     }
 
     std::filesystem::remove_all(scratch, ec);
+  }
+
+  // ==========================================================================
+  std::printf("  -- E. Transparent regions cost no tiles --\n");
+  // ==========================================================================
+  //
+  // The guard on io/PsdImport.cpp's `writeLayerPixelsAt()` skip. Measured on
+  // a real Photoshop file before that skip existed: a 5000x2559 illustration
+  // whose 53 layers were each stored at full canvas size took 6.2 GB
+  // resident, 800 tiles per layer regardless of how little each one actually
+  // drew -- twelve times this project's whole 512 MB budget (app/Memory),
+  // for a 180 MB file.
+  //
+  // Both halves are asserted, and the second is the one that matters: it is
+  // trivial to allocate nothing by dropping pixels, so a test that only
+  // checked "fewer tiles" would pass on a reader that lost the picture.
+  {
+    // A 512x512 layer -- 4x4 = 16 tiles' worth of rectangle -- with a single
+    // opaque pixel at (300, 300), which lands in exactly one of them.
+    constexpr uint32_t kSide = 512;
+    constexpr uint32_t kPx = 300;
+    const size_t n = static_cast<size_t>(kSide) * kSide;
+    std::vector<uint32_t> r(n, 0), g(n, 0), b(n, 0), a(n, 0);
+    const size_t hit = static_cast<size_t>(kPx) * kSide + kPx;
+    r[hit] = 200; g[hit] = 100; b[hit] = 50; a[hit] = 255;
+
+    LayerSpec sparse;
+    sparse.top = 0; sparse.left = 0;
+    sparse.bottom = static_cast<int32_t>(kSide); sparse.right = static_cast<int32_t>(kSide);
+    sparse.compression = 0;
+    sparse.channels = {{-1, a}, {0, r}, {1, g}, {2, b}};
+
+    const std::vector<uint8_t> bytes = buildPsd(kSide, kSide, 8, {sparse});
+    const PsdImportResult res = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+    check(res.ok && res.document.layers.size() == 1,
+          "E1: a 512x512 layer holding one opaque pixel imports");
+    if (res.ok && res.document.layers.size() == 1 &&
+        res.document.layers[0].rgbTiles.has_value()) {
+      const TileStore& tiles = *res.document.layers[0].rgbTiles;
+      check(tiles.occupiedTileCount() == 1,
+            "E2: it occupies exactly ONE tile, not the 16 its rectangle spans -- "
+            "transparent samples allocate nothing");
+
+      // The half that stops E2 being satisfiable by simply dropping pixels.
+      const Tile* t = tiles.find(tileCoordAt(PixelCoord{static_cast<int32_t>(kPx),
+                                                        static_cast<int32_t>(kPx)}));
+      bool survived = false;
+      if (t != nullptr) {
+        const std::array<float, 4> px =
+            t->readPixel(tileLocalOffset(PixelCoord{static_cast<int32_t>(kPx),
+                                                    static_cast<int32_t>(kPx)}));
+        survived = px[3] > 0.99f && std::fabs(px[0] - srgbDecode(200.0f / 255.0f)) < kTol &&
+                   std::fabs(px[1] - srgbDecode(100.0f / 255.0f)) < kTol &&
+                   std::fabs(px[2] - srgbDecode(50.0f / 255.0f)) < kTol;
+      }
+      check(survived,
+            "E3: and that one pixel is still there, with its own colour -- so E2 was not "
+            "bought by discarding content");
+    } else {
+      check(false, "E2/E3: the sparse layer produced no tile store at all");
+    }
   }
 
   // The section footer every other file in `app/selftest/` prints. Not

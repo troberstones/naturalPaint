@@ -182,20 +182,48 @@
 // than approximate it" discipline io/AbrBrushes.hpp already holds itself to
 // for a different Photoshop artifact.
 //
-// --- What has NOT been verified, stated plainly -----------------------------
+// --- What has since been verified against real Photoshop files --------------
 //
-// **No genuine Photoshop-authored `.psd` or `.psb` file was available on the
-// machine this was written on, and none was available to test against.**
-// Every fixture `--selftest` parses through this module is written by a
-// matching writer in the test code itself (see app/selftest/PsdImport.cpp),
-// so passing proves this reader agrees with this author's reading of the
-// published specification -- corroborated, for the two facts named above,
-// against an independent third-party reader's *behaviour* -- and does
-// **not** prove agreement with what Photoshop itself actually emits. That
-// gap is real, it is the same gap io/Descriptor.hpp and io/AbrBrushes.hpp
-// already carry for the identical reason, and it closes only when a real
-// file is opened and the reviewer can compare the panel of a genuine
-// Photoshop document against what this module built from its bytes.
+// This section previously read "no genuine Photoshop-authored `.psd` file was
+// available on the machine this was written on", and named the comparison
+// that would close that gap. **The user supplied three, and it is closed for
+// what they cover.** Recorded here rather than deleted, because the shape of
+// the check is what makes the result mean anything:
+//
+//   Lineart4_crop.psd            476x634,   27 layers, 8-bit, all RLE
+//   Testforautoflats 2.psd       2752x2064, 87 layer records (84 layers +
+//                                3 groups' worth of boundary records), one
+//                                HIDDEN layer
+//   Peter_confronts_...fire.psd  5000x2559, 53 records, 12 hidden layers,
+//                                8 non-255 opacities, `colr` and `lddg`
+//                                blend keys, 180 MB
+//
+// Each was read twice: once by this module (through `--psd-report`,
+// app/PsdReport.hpp) and once by **psd-tools 1.18.0** -- the same MIT,
+// independently-maintained reader whose *behaviour* settled the two
+// spec-ambiguous facts above, here used as an oracle rather than a citation.
+// Compared per layer: name, count, stacking order, opacity, visibility,
+// clipping, rectangle, alpha-covered pixel count, and the **mean straight
+// linear RGBA** over the covered pixels.
+//
+// **Every layer of all three files matched**, worst per-channel deviation
+// 2.3e-4 -- which is `rgba16float`'s own quantisation and not a
+// disagreement (half carries ~11 mantissa bits; a correct reader cannot do
+// better). Both of the facts flagged above as "checked, not assumed" are now
+// checked against Photoshop's own output too:
+//
+//   * **stacking order** -- `Background` lands at index 0 and the line-art
+//     layer at the top in all three, which is the right way up.
+//   * **the inverted `flags` bit** -- 1 hidden layer in the second file and
+//     12 in the third, both exact. A reader with that bit the wrong way
+//     round would have reported 86 and 41.
+//
+// **What is still unverified**, and is not covered by any of the three:
+// PSB (version 2), 16-bit and 32-bit depth, ZIP-compressed layer data,
+// non-RGB colour modes, astral-plane (surrogate-pair) `luni` names, layer
+// masks, and the odd-row-padding reading of the spec's ambiguous prose --
+// every one of which is either refused by name above or exercised only by
+// this project's own fixtures.
 namespace np {
 
 // One PSD import's outcome.

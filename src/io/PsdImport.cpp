@@ -645,6 +645,28 @@ bool decodeChannelData(std::span<const uint8_t> channelSpan, uint32_t width, uin
 // coordinates correctly (see that header's own comment), so no clamping is
 // needed here at all -- a tile is simply allocated wherever the layer's
 // pixels land, on or off the nominal canvas.
+//
+// **Fully transparent samples are skipped rather than written**, and that is
+// a memory decision, not a shortcut. Premultiplying a sample whose alpha is
+// zero gives {0, 0, 0, 0} whatever its straight RGB was -- which is exactly
+// what a tile that does not exist already reads as, since `TileStoreOf`'s
+// slots are value-initialised and core/Composite treats an absent tile as
+// transparent. So the two are indistinguishable downstream, and writing the
+// zero costs a whole 128 KB tile for nothing.
+//
+// It costs a great deal for nothing on real files. A Photoshop document
+// whose layers were each pasted at full canvas size -- which is what a
+// composited illustration tends to look like, every layer's record rect the
+// whole canvas even where its content is a hand-sized patch -- allocated the
+// entire tile grid for every one of them: a measured 5000x2559 document with
+// 53 layers took **6.2 GB** resident, 800 tiles per layer regardless of
+// content, against this project's stated 512 MB budget (app/Memory). The
+// same file after this skip holds only tiles that contain something.
+//
+// This is not a heuristic and there is no threshold: a tile is skipped
+// exactly when every sample that would land in it has alpha == 0, so no
+// visible pixel can be dropped by it. `--selftest`'s "a fully transparent
+// layer allocates no tiles" assertion is the guard.
 void writeLayerPixelsAt(std::span<const float> straightRgba, uint32_t width, uint32_t height,
                         int32_t left, int32_t top, Layer& layer) {
   if (width == 0 || height == 0 || !layer.rgbTiles.has_value()) return;
@@ -653,6 +675,7 @@ void writeLayerPixelsAt(std::span<const float> straightRgba, uint32_t width, uin
     for (uint32_t x = 0; x < width; ++x) {
       const float* src = &straightRgba[(static_cast<size_t>(y) * width + x) * 4];
       const float a = src[3];
+      if (a <= 0.0f) continue;
       const std::array<float, 4> premultiplied{src[0] * a, src[1] * a, src[2] * a, a};
       const PixelCoord doc{left + static_cast<int32_t>(x), top + static_cast<int32_t>(y)};
       tiles.getOrCreate(tileCoordAt(doc)).writePixel(tileLocalOffset(doc), premultiplied);
