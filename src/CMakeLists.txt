@@ -124,6 +124,7 @@ add_executable(naturalPaint
   app/selftest/Probe.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
+  app/selftest/ResamplePerf.cpp
   app/selftest/RgbDeposit.cpp
   app/selftest/RgbErase.cpp
   app/selftest/SaveReadback.cpp

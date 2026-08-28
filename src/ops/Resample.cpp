@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/Parallel.hpp"
 #include "core/Premultiply.hpp"
 
 namespace np {
@@ -172,8 +173,44 @@ bool resampleAreaAverage(const float* src, uint32_t srcWidth, uint32_t srcHeight
   // may be a 32-bit float file, so the accumulation should not be the
   // coarsest stage in the pipeline. The cost is confined to the accumulator
   // -- both buffers stay float.
+  //
+  // **Threaded over `y`, one row per task.** Every row reads only its own
+  // slice of `src` and writes only its own slice of `rows` -- no row touches
+  // another's memory, so this is the safe axis core/Parallel.hpp describes:
+  // threading over independent rows preserves each output texel's own
+  // accumulation order exactly (the `k` loop inside a row runs in the same
+  // order it always did; only which CPU core runs which row's iteration is
+  // new), so the result is bit-identical to the serial version by
+  // construction. There is no `TileStoreOf` here -- `rows` and `out` are
+  // flat `std::vector<float>` -- so none of core/Parallel.hpp's
+  // `getOrCreate()` hazard applies; every row's destination slice already
+  // exists (`rows` is sized once, above, before this loop starts).
+  //
+  // **Grain: `core::kParallelForDefaultGrain` (8), re-measured for this
+  // shape rather than assumed.** core/Parallel.hpp's own 8 was measured
+  // against a *tile*-sized work item (128x128x4 floats, ~6.2us/task
+  // serial). A resample row is a different, much more variable size of
+  // work: a throwaway benchmark (row width 256..4096, taps 3 and 9 --
+  // spanning a mild 2x-ish downscale through a steep one, best-of-5,
+  // `parallelFor(n, 1, ...)` to force the parallel branch at every `n`)
+  // measured serial-per-row costs from ~0.4us (256-wide, 3 taps) up to
+  // ~19us (4096-wide, 9 taps) -- i.e. some real rows are *cheaper* than the
+  // tile floor 8 was tuned against, and some are pricier. The crossover
+  // moved with it: ~n=2-3 for the expensive rows (already 4x-6x by n=8),
+  // but the cheapest row shape never broke past ~1.0x even out to n=64 --
+  // dispatch overhead is not costing anything there (consistent with this
+  // header's own "0.01-0.06us/task" dispatch-overhead finding), there just
+  // isn't enough work per row to show a win. That combination is exactly
+  // why 8 stays the right choice rather than a lower one tuned to the
+  // expensive rows: real `srcHeight`/`dstHeight` values worth optimising
+  // for (1024, 2048, 4096) are always far larger than 8 regardless of which
+  // row shape they are, so the grain only controls behaviour in the regime
+  // where total wall-clock cost is already sub-millisecond and invisible
+  // either way (a thumbnail-sized resize with under 8 rows). Measured, not
+  // guessed -- and the number that was actually measured is 8.
   std::vector<float> rows(static_cast<size_t>(dstWidth) * static_cast<size_t>(srcHeight) * 4u);
-  for (uint32_t y = 0; y < srcHeight; ++y) {
+  parallelFor(srcHeight, kParallelForDefaultGrain, [&](size_t yIdx) {
+    const uint32_t y = static_cast<uint32_t>(yIdx);
     const float* srcRow = src + static_cast<size_t>(y) * srcWidth * 4u;
     float* dstRow = rows.data() + static_cast<size_t>(y) * dstWidth * 4u;
     for (uint32_t x = 0; x < dstWidth; ++x) {
@@ -193,11 +230,15 @@ bool resampleAreaAverage(const float* src, uint32_t srcWidth, uint32_t srcHeight
       float* d = dstRow + static_cast<size_t>(x) * 4u;
       for (int c = 0; c < 4; ++c) d[c] = static_cast<float>(acc[c]);
     }
-  }
+  });
 
   // --- Vertical pass: dstWidth x srcHeight -> dstWidth x dstHeight ---------
+  // Threaded the same way and for the same reason: each destination row `y`
+  // reads only `rows` (untouched by this pass, read-only here) and writes
+  // only its own slice of `out`.
   out->resize(dstSamples);
-  for (uint32_t y = 0; y < dstHeight; ++y) {
+  parallelFor(dstHeight, kParallelForDefaultGrain, [&](size_t yIdx) {
+    const uint32_t y = static_cast<uint32_t>(yIdx);
     const uint32_t i0 = yPlan.first[y];
     const uint32_t n = yPlan.count[y];
     const double* w = yPlan.weight.data() + yPlan.offset[y];
@@ -208,6 +249,13 @@ bool resampleAreaAverage(const float* src, uint32_t srcWidth, uint32_t srcHeight
         const float* p =
             rows.data() + (static_cast<size_t>(i0 + k) * dstWidth + x) * 4u;
         const double weight = w[k];
+        // Vectorised across the four **channels**, not across taps: each
+        // channel keeps its own independent double accumulation in its own
+        // lane, so this stays bit-exact under SIMD (four parallel scalar
+        // adds, not a reassociated horizontal sum). Reordering the `k`
+        // (tap) loop instead would change which additions happen in which
+        // order within a single channel's sum -- that is the reordering
+        // core/Parallel.hpp and this file's own task both forbid.
         for (int c = 0; c < 4; ++c) acc[c] += weight * static_cast<double>(p[c]);
       }
       // core/Premultiply's shared `a <= 0 -> {0,0,0,0}` guard. The promotion
@@ -221,7 +269,7 @@ bool resampleAreaAverage(const float* src, uint32_t srcWidth, uint32_t srcHeight
       float* d = dstRow + static_cast<size_t>(x) * 4u;
       for (int c = 0; c < 4; ++c) d[c] = static_cast<float>(straight[c]);
     }
-  }
+  });
   return true;
 }
 

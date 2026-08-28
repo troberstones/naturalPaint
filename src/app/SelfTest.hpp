@@ -3894,5 +3894,17 @@ bool runParallelTest();
 // wall-clock lines only -- no check() is timing-gated. See
 // app/selftest/CompositeCost.cpp.
 bool runCompositeCostTest();
+// ops/Resample and ops/Transform: step-0 measurement for whether the
+// per-texel walks behind Image Size, Canvas Size and the interactive
+// transform tool are worth threading/vectorising. `resampleAreaAverage()`
+// at 1024^2 and 2048^2, a modest and a steep downscale each; `transformImage()`
+// at the same two sizes for a rotation (reconstruction only), an axis-aligned
+// downscale (prefilter + reconstruction) and a large upscale (reconstruction
+// only). `[measured]` wall-clock lines, not check()-gated -- see
+// app/selftest/ResamplePerf.cpp. A handful of `check()`s confirm each timed
+// call actually succeeded and took the code path its label claims
+// (reconstructionPasses/prefiltered from TransformReport), so a timing that
+// silently measured a refusal or the wrong path cannot pass unnoticed.
+bool runResamplePerfTest();
 
 }  // namespace np

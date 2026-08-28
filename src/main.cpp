@@ -2176,6 +2176,11 @@ int main(int argc, char** argv) {
     // measured before any loop-order change is made on the strength of the
     // finding alone. Headless and GPU-free.
     const bool compositeCostOk = np::runCompositeCostTest();
+    // Step 0 of the ops/Resample + ops/Transform performance task: whether
+    // those two per-texel walks are worth threading/vectorising, measured
+    // rather than assumed. Headless and GPU-free -- pure CPU resampling,
+    // same as runTransformTest().
+    const bool resamplePerfOk = np::runResamplePerfTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2186,7 +2191,7 @@ int main(int argc, char** argv) {
                     ellipseMarqueePreviewOk &&
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
-                    lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && documentTransformOk &&
+                    lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
                     curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&

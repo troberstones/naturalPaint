@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 
+#include "core/Parallel.hpp"
 #include "core/Premultiply.hpp"
 #include "ops/Resample.hpp"
 
@@ -142,27 +143,49 @@ float mitchellNetravali(float t, float B, float C) noexcept {
 // subtle enough that a second copy would be a second thing to keep correct,
 // and the failure mode of the two drifting apart is a downscale that
 // prefilters slightly differently depending on which entry point reached it.
+// Both loops below are threaded **by row**, not by texel. Each texel is
+// independent (no accumulation across texels at all, so there is no
+// ordering to preserve -- unlike the resample/reconstruction passes, this
+// pair has no "the safe axis is rows, not taps" argument to make; a texel
+// is genuinely a unit of its own). The reason to chunk by row rather than
+// handing `parallelFor` one task per texel anyway is dispatch overhead:
+// core/Parallel.hpp's own measurement puts `dispatch_apply` at ~0.01-0.06us
+// per task, which is negligible against a ~6us tile-sized task but would
+// dominate a genuinely single-texel task (a straight/premultiply divide-or-
+// multiply is a handful of nanoseconds) -- at a 4096^2 image's 16.8M
+// texels, 0.03us/task alone would be ~500ms of pure dispatch overhead,
+// which would make this "optimisation" the slowest thing in the file. One
+// row (`width` texels) is enough work per task to amortise that, the same
+// granularity ops/Resample.cpp's two passes and this file's own
+// reconstruction loop use.
 void unpremultiplyImage(const TransformImage& src, std::vector<float>* out) {
   out->resize(src.px.size());
-  const size_t texels = src.px.size() / 4u;
-  for (size_t i = 0; i < texels; ++i) {
-    const float* p = src.px.data() + i * 4u;
-    const std::array<float, 4> straight =
-        unpremultiply(std::array<float, 4>{p[0], p[1], p[2], p[3]});
-    float* d = out->data() + i * 4u;
-    for (int c = 0; c < 4; ++c) d[c] = straight[c];
-  }
+  const uint32_t width = src.width;
+  const uint32_t height = src.height;
+  parallelFor(height, kParallelForDefaultGrain, [&](size_t yIdx) {
+    const size_t rowBase = yIdx * static_cast<size_t>(width);
+    for (size_t x = 0; x < width; ++x) {
+      const size_t i = rowBase + x;
+      const float* p = src.px.data() + i * 4u;
+      const std::array<float, 4> straight =
+          unpremultiply(std::array<float, 4>{p[0], p[1], p[2], p[3]});
+      float* d = out->data() + i * 4u;
+      for (int c = 0; c < 4; ++c) d[c] = straight[c];
+    }
+  });
 }
 
-void premultiplyInPlace(std::vector<float>* buf) {
-  const size_t texels = buf->size() / 4u;
-  for (size_t i = 0; i < texels; ++i) {
-    float* p = buf->data() + i * 4u;
-    const float a = p[3];
-    p[0] *= a;
-    p[1] *= a;
-    p[2] *= a;
-  }
+void premultiplyInPlace(std::vector<float>* buf, uint32_t width, uint32_t height) {
+  parallelFor(height, kParallelForDefaultGrain, [&](size_t yIdx) {
+    const size_t rowBase = yIdx * static_cast<size_t>(width);
+    for (size_t x = 0; x < width; ++x) {
+      float* p = buf->data() + (rowBase + x) * 4u;
+      const float a = p[3];
+      p[0] *= a;
+      p[1] *= a;
+      p[2] *= a;
+    }
+  });
 }
 
 // PRD D15's path. Scatter rather than gather: a signed permutation with an
@@ -724,7 +747,7 @@ bool transformImage(const TransformImage& src, const Mat3& dstFromSrc, uint32_t 
                              "transform refused: the antialiasing prefilter could not run -- " +
                                  resampleError);
       }
-      premultiplyInPlace(&reduced);
+      premultiplyInPlace(&reduced, pw, ph);
       prefiltered.width = pw;
       prefiltered.height = ph;
       prefiltered.px = std::move(reduced);
@@ -794,13 +817,40 @@ bool transformImage(const TransformImage& src, const Mat3& dstFromSrc, uint32_t 
   const auto sh = static_cast<int64_t>(sampleSrc->height);
   const float* sp = sampleSrc->px.data();
 
-  // Weight scratch, sized once. The footprint is at most `2*radius + 2` taps
-  // per axis.
+  // Weight scratch. The footprint is at most `2*radius + 2` taps per axis.
   const int maxTaps = static_cast<int>(std::ceil(2.0f * radius)) + 2;
-  std::vector<float> wx(static_cast<size_t>(maxTaps));
-  std::vector<float> wy(static_cast<size_t>(maxTaps));
 
-  for (uint32_t dy = 0; dy < dstHeight; ++dy) {
+  // **This is the dominant cost in the whole file, measured.**
+  // app/selftest/ResamplePerf.cpp's `[measured]` lines put a single
+  // reconstruction pass at 42-195 ms at 1024^2-2048^2 with the default
+  // Catmull-Rom kernel -- past PRD F3's 20 ms pen-to-photon budget by 2x-10x,
+  // and in the same league as ops/Blur.cpp's own already-threaded 232 ms at
+  // 1024^2. The prefilter and the crop/canvas-size index-copies measured
+  // cheap by comparison; this loop is where the threading effort belongs.
+  //
+  // Threaded over `dy`, one destination row per task -- the same safe axis
+  // as ops/Resample.cpp's two passes: every row reads only `sampleSrc`
+  // (never written by this loop) and writes only its own slice of
+  // `out->px`, so no row's result depends on when any other row runs, and
+  // the per-texel accumulation order (`ky`/`kx` below) is untouched --
+  // bit-identical to the serial version by construction. No `TileStoreOf`
+  // is involved -- `out` is a flat `TransformImage` already sized above --
+  // so core/Parallel.hpp's `getOrCreate()` hazard does not apply.
+  //
+  // `wx`/`wy` move inside the row body, one pair per row rather than one
+  // pair shared across the whole image, for the same reason
+  // ops/Resample.cpp's row loops need no such change but this one does: the
+  // serial version reused one scratch buffer because texels ran one at a
+  // time, but two rows on two threads would otherwise race writing the same
+  // slots. Same grain as ops/Resample.cpp and the same reasoning: this
+  // loop's per-row cost (tens of microseconds at these sizes, derived from
+  // the `[measured]` totals above divided by row count) is well above the
+  // ~6.2us tile floor core/Parallel.hpp's grain of 8 was tuned against, so 8
+  // clears the crossover with room to spare here too.
+  parallelFor(dstHeight, kParallelForDefaultGrain, [&](size_t dyIdx) {
+    const uint32_t dy = static_cast<uint32_t>(dyIdx);
+    std::vector<float> wx(static_cast<size_t>(maxTaps));
+    std::vector<float> wy(static_cast<size_t>(maxTaps));
     float* dstRow = out->px.data() + static_cast<size_t>(dy) * dstWidth * 4u;
     for (uint32_t dx = 0; dx < dstWidth; ++dx) {
       const Point2 s = mat3MapPoint(
@@ -911,7 +961,7 @@ bool transformImage(const TransformImage& src, const Mat3& dstFromSrc, uint32_t 
         d[3] = alpha;
       }
     }
-  }
+  });
 
   localReport.reconstructionPasses = 1;
   if (report) *report = localReport;
