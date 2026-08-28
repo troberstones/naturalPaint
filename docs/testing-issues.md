@@ -726,7 +726,11 @@ move, coverage-weighted edges included.
   document, so the composite still shows the untransformed layer in place while
   the preview shows where it is going. Hiding it means a full recomposite
   without that layer every frame — `ui/DocumentTexture.hpp` measures that class
-  at 22 ms (1024²) and 89 ms (2048²), both past F3 on their own. Accepted, and
+  at 22 ms (1024²) and 89 ms (2048²), both past F3 on their own. **Both are now
+  stale in the app's favour**: after `docs/architecture-review.md` P0-1/P0-2 the
+  same recomposites measure 7.0 ms and 28.3 ms, so 1024² now fits inside F3 and
+  this decision is worth revisiting at that size. 2048² still does not.
+  Accepted for now, and
   the golden `transform` reference was re-blessed showing exactly this.
 
 ---
@@ -780,7 +784,12 @@ marching ants, not a pixel overlay.
 
 **Still open, and this entry stays open for it — the cost does not fit.**
 Measured: 1024² blur 266.5 ms + recomposite 23.6 ms = 290.0 ms (1450% of F3);
-2048² = 1136.7 ms (5684%). That is at the app's own default document size. All
+2048² = 1136.7 ms (5684%). **Re-measured after
+`docs/architecture-review.md` P0-1/P0-2** (the hardware half convert and LTO):
+1024² is now 233.9 + 7.0 = **240.9 ms** and 2048² **940.9 ms** — the
+recomposite half fell 3.45×, the blur itself only 1.15× because it is bound on
+its own float arithmetic rather than on conversion. Still far past budget; the
+fix is still view-resolution preview. That is at the app's own default document size. All
 four throttle recompute to `IsItemDeactivatedAfterEdit()` — one stall per
 completed slider adjustment instead of one per pixel of travel — which bounds
 the *frequency* and not the cost. The real fix is the same one T14 names:

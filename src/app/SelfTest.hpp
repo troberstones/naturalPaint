@@ -397,6 +397,31 @@ bool runGuidesGridSnapTest();
 // Confirms: an empty/all-transparent Document produces all-zero bins and
 // sampleCount == 0; a small synthetic Document built directly via
 // Document::createBlank() + TileStore::getOrCreate()/Tile::writePixel()
+// core/Half (docs/architecture-review.md **P0-1**): the CPU's own half
+// convert, checked against the software routine it replaced. `core/Half.hpp`
+// used to record that this equivalence had been verified once, by hand,
+// across the whole input domain -- a real piece of work that was true of a
+// moment rather than of the tree. P0-1 makes that equivalence the
+// justification for a substitution on the innermost loop of every filter,
+// composite, export and save in the application, so the sweep runs on every
+// build instead: all 65,536 half values through both `halfToFloat` paths
+// exhaustively, and a quarter-million structured floats -- each half's exact
+// float, both float neighbours of each, every tie midpoint, and the named
+// edges -- through both `floatToHalf` paths, asserting bit-equality. The
+// software implementation is kept as both the portable fallback and the
+// oracle; deleting it would have deleted the only thing the claim could be
+// re-checked against. Two guards stop the sweeps passing vacuously: the NaN
+// count is pinned (or a `halfToFloat` returning NaN for everything would
+// sweep clean, every pair landing in the skipped branch) and the float sweep
+// asserts its own size. The ONE documented difference is the NaN payload --
+// the software path forces a mantissa bit so a NaN cannot collapse to
+// infinity, the hardware path emits the platform's own -- and that is
+// asserted as "both are NaN" out loud rather than quietly excluded. Also
+// prints, and on aarch64/x86-64 asserts, that this build really took the
+// hardware path: a silent fall back to software is two orders of magnitude
+// slower and otherwise invisible. Headless and GPU-free.
+bool runHalfTest();
+
 // (matching runProbeTest()/runMipPyramidTest()'s own fixture-construction
 // pattern) with a handful of hand-picked opaque pixels lands in exactly the
 // expected R/G/B/Luma bins with every other bin at zero, and a mixed-in

@@ -82,6 +82,7 @@ add_executable(naturalPaint
   app/selftest/Grain.cpp
   app/selftest/Gradient.cpp
   app/selftest/GuidesGridSnap.cpp
+  app/selftest/Half.cpp
   app/selftest/Histogram.cpp
   app/selftest/History.cpp
   app/selftest/HistoryPanel.cpp
@@ -174,7 +175,6 @@ add_executable(naturalPaint
   core/Clipboard.cpp
   core/Composite.cpp
   core/DirtyTiles.cpp
-  core/Half.cpp
   core/Histogram.cpp
   core/History.cpp
   core/LayerCompOps.cpp
@@ -438,6 +438,36 @@ target_compile_options(naturalPaint PRIVATE
   # -- not this flag removed from this file.
   -Werror=switch
 )
+
+# ---- link-time optimisation (docs/architecture-review.md P0-2) --------------
+#
+# The per-pixel inner loop of `core/Composite.cpp` calls `blendPixel()` (in
+# `Blend.cpp`, with a ~27-mode switch inside) and, for adjustment layers,
+# `applyPointOpsPremultiplied()` (in `PointOps.cpp`). Both are in other
+# translation units, so without LTO neither can be inlined, the blend-mode
+# switch cannot be hoisted out of a loop it is constant across, and nothing
+# vectorises over the call boundary. For a 4096^2 document with ten
+# full-canvas layers the review counts roughly 840 million non-inlinable calls
+# per full composite.
+#
+# P0-1 already removed the worst offender by making `core/Half.hpp`
+# header-only -- that one was on EVERY pixel path, not just the composite, and
+# it did not need LTO because a header needs no link step to be inlined. This
+# catches the rest.
+#
+# Guarded by `check_ipo_supported()` rather than set unconditionally: a
+# toolchain without it should build a working binary, not fail to configure.
+# The RESULT/OUTPUT pair means a refusal is reported with the compiler's own
+# reason instead of silently producing an un-optimised build -- the same
+# "make the degradation loud" rule ui/Fonts.cpp's missing-font path exists for.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT np_ipo_ok OUTPUT np_ipo_why)
+if(np_ipo_ok)
+  set_property(TARGET naturalPaint PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+  message(STATUS "naturalPaint: link-time optimisation enabled (P0-2)")
+else()
+  message(STATUS "naturalPaint: link-time optimisation NOT available -- ${np_ipo_why}")
+endif()
 
 # goldentool -- the comparison half of the golden-image regression harness
 # (see tools/golden/run_golden.sh and src/tools/GoldenTool.cpp). Deliberately

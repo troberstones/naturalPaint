@@ -1471,6 +1471,10 @@ int main(int argc, char** argv) {
     // own allocated-tile iteration, and un-premultiply-before-bin on a
     // translucent pixel. Also headless and GPU-free -- pure CPU, no
     // PaintSim involvement.
+    // docs/architecture-review.md P0-1: the hardware half convert against the
+    // software routine it replaced, swept exhaustively in one direction and
+    // structurally in the other. Headless and GPU-free.
+    const bool halfOk = np::runHalfTest();
     const bool histogramOk = np::runHistogramTest();
     // Phase 3 steps 2+3 (ops/PointOps; docs/operations.md §1.1; PRD B4):
     // Levels, Curves (through color/Shaper), Exposure, Saturation,
@@ -2154,7 +2158,7 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    histogramOk && pointOpsOk && gradientOk && selectionOk && channelsOk &&
+                    halfOk && histogramOk && pointOpsOk && gradientOk && selectionOk && channelsOk &&
                     selectionShapesOk && selectionRefineOk && selectionToolsOk && selectionDragOk &&
                     ellipseMarqueePreviewOk &&
                     selectionBoundaryOk && floodFillOk &&
