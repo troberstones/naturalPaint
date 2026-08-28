@@ -239,6 +239,7 @@ add_executable(naturalPaint
   paint/Palette.cpp
   sim/PaintSim.cpp
   ui/DocumentTexture.cpp
+  ui/LabelledControl.cpp
   ui/MacPaintUI.cpp
   ui/NaturalPaintUI.cpp
   ui/Fonts.cpp
