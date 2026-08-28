@@ -109,6 +109,7 @@ add_executable(naturalPaint
   app/selftest/NpaintFormat.cpp
   app/selftest/OpenAnyFile.cpp
   app/selftest/OpStack.cpp
+  app/selftest/Parallel.cpp
   app/selftest/PigmentBake.cpp
   app/selftest/PigmentBasis.cpp
   app/selftest/PigmentDeposit.cpp

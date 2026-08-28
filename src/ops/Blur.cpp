@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
+#include "core/Parallel.hpp"
 #include "core/Tile.hpp"
 
 namespace np {
@@ -244,28 +246,42 @@ bool blurTiles(const TileStore& src, const PixelRect& outRect, const BlurParams&
                              static_cast<size_t>(Tile::kChannels);
   std::vector<float> plane(planeFloats, 0.0f);
 
+  // docs/architecture-review.md P0-3: safe to parallelize directly, no
+  // reservation phase needed. This loop only reads `src` (a `const
+  // TileStore&`, via `find()`) and writes into `plane`, and every tile's
+  // `span` is disjoint from every other tile's -- that's what "tile" means.
+  // `TileStoreOf::find()` never mutates the map, so concurrent calls from
+  // multiple workers are ordinary concurrent reads of an unmodified
+  // container. See core/Parallel.hpp for the one loop in this file (the
+  // scatter below) that is NOT this simple.
   const TileRange gatherTiles = roiTileRange(need);
-  for (int32_t ty = gatherTiles.y0; ty < gatherTiles.y1; ++ty) {
-    for (int32_t tx = gatherTiles.x0; tx < gatherTiles.x1; ++tx) {
-      const TileCoord coord{tx, ty};
-      const Tile* tile = src.find(coord);
-      if (tile == nullptr) continue;  // absent: already zero in `plane`
-      const PixelRect span = roiIntersect(roiTileRect(coord), need);
-      const PixelCoord origin = tileOrigin(coord);
-      for (int32_t y = span.y0; y < span.y1; ++y) {
-        for (int32_t x = span.x0; x < span.x1; ++x) {
-          const std::array<float, 4> rgba =
-              tile->readPixel(PixelCoord{x - origin.x, y - origin.y});
-          const size_t base = (static_cast<size_t>(y - need.y0) * static_cast<size_t>(w) +
-                               static_cast<size_t>(x - need.x0)) *
-                              static_cast<size_t>(Tile::kChannels);
-          plane[base + 0] = rgba[0];
-          plane[base + 1] = rgba[1];
-          plane[base + 2] = rgba[2];
-          plane[base + 3] = rgba[3];
-        }
-      }
-    }
+  {
+    const int32_t tilesWide = gatherTiles.tilesWide();
+    float* const planeData = plane.data();
+    parallelFor(static_cast<size_t>(gatherTiles.tileCount()), kParallelForDefaultGrain,
+               [&](size_t i) {
+                 const int32_t tx = gatherTiles.x0 + static_cast<int32_t>(i) % tilesWide;
+                 const int32_t ty = gatherTiles.y0 + static_cast<int32_t>(i) / tilesWide;
+                 const TileCoord coord{tx, ty};
+                 const Tile* tile = src.find(coord);
+                 if (tile == nullptr) return;  // absent: already zero in `plane`
+                 const PixelRect span = roiIntersect(roiTileRect(coord), need);
+                 const PixelCoord origin = tileOrigin(coord);
+                 for (int32_t y = span.y0; y < span.y1; ++y) {
+                   for (int32_t x = span.x0; x < span.x1; ++x) {
+                     const std::array<float, 4> rgba =
+                         tile->readPixel(PixelCoord{x - origin.x, y - origin.y});
+                     const size_t base =
+                         (static_cast<size_t>(y - need.y0) * static_cast<size_t>(w) +
+                          static_cast<size_t>(x - need.x0)) *
+                         static_cast<size_t>(Tile::kChannels);
+                     planeData[base + 0] = rgba[0];
+                     planeData[base + 1] = rgba[1];
+                     planeData[base + 2] = rgba[2];
+                     planeData[base + 3] = rgba[3];
+                   }
+                 }
+               });
   }
 
   // Aliased in and out: `blurPlane` holds its own intermediate, so this keeps
@@ -273,25 +289,52 @@ bool blurTiles(const TileStore& src, const PixelRect& outRect, const BlurParams&
   // apron section are for two.
   blurPlane(plane.data(), w, h, Tile::kChannels, p, plane.data());
 
+  // docs/architecture-review.md P0-3, and the hazard core/Parallel.hpp names:
+  // `TileStoreOf::getOrCreate` mutates `dst`'s unordered_map and is not safe
+  // to call from two iterations at once. So this is two phases -- serially
+  // reserve every destination tile the ROI touches (every `getOrCreate()`
+  // call happens here, on one thread), then parallelize the pixel writes
+  // over the now-stable slots. The pointers this reservation loop hands out
+  // stay valid through the parallel phase below because `TileStoreOf::Slot`
+  // is a `std::shared_ptr<T>` -- `getOrCreate()`'s `T&` addresses the tile
+  // object the shared_ptr owns, not a map node, so nothing an insertion does
+  // to the map's bucket layout can move it (core/TileStore.hpp, and
+  // core/Parallel.hpp's file comment).
   const TileRange writeTiles = roiTileRange(outRect);
+  struct ReservedTile {
+    PixelRect span;
+    PixelCoord origin;
+    Tile* tile;
+  };
+  std::vector<ReservedTile> reserved;
+  reserved.reserve(static_cast<size_t>(writeTiles.tileCount()));
   for (int32_t ty = writeTiles.y0; ty < writeTiles.y1; ++ty) {
     for (int32_t tx = writeTiles.x0; tx < writeTiles.x1; ++tx) {
       const TileCoord coord{tx, ty};
       const PixelRect span = roiIntersect(roiTileRect(coord), outRect);
       if (roiIsEmpty(span)) continue;
       Tile& tile = dst->getOrCreate(coord);
-      const PixelCoord origin = tileOrigin(coord);
-      for (int32_t y = span.y0; y < span.y1; ++y) {
-        for (int32_t x = span.x0; x < span.x1; ++x) {
-          const size_t base = (static_cast<size_t>(y - need.y0) * static_cast<size_t>(w) +
-                               static_cast<size_t>(x - need.x0)) *
-                              static_cast<size_t>(Tile::kChannels);
-          tile.writePixel(PixelCoord{x - origin.x, y - origin.y},
-                          {plane[base + 0], plane[base + 1], plane[base + 2], plane[base + 3]});
-        }
-      }
+      reserved.push_back(ReservedTile{span, tileOrigin(coord), &tile});
     }
   }
+
+  // Phase 2: the pixel work, unchanged from what this loop always did --
+  // only who runs which iteration is new. Every `ReservedTile` names a
+  // distinct tile (the map cannot hold two slots at one `TileCoord`), so no
+  // two parallel iterations can write the same memory.
+  parallelFor(reserved.size(), kParallelForDefaultGrain, [&](size_t i) {
+    const ReservedTile& r = reserved[i];
+    for (int32_t y = r.span.y0; y < r.span.y1; ++y) {
+      for (int32_t x = r.span.x0; x < r.span.x1; ++x) {
+        const size_t base = (static_cast<size_t>(y - need.y0) * static_cast<size_t>(w) +
+                             static_cast<size_t>(x - need.x0)) *
+                            static_cast<size_t>(Tile::kChannels);
+        r.tile->writePixel(
+            PixelCoord{x - r.origin.x, y - r.origin.y},
+            {plane[base + 0], plane[base + 1], plane[base + 2], plane[base + 3]});
+      }
+    }
+  });
   return true;
 }
 

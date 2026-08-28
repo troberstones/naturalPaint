@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "color/Shaper.hpp"
+#include "core/Parallel.hpp"
 #include "core/Tile.hpp"
 
 namespace np {
@@ -53,28 +54,43 @@ bool gatherBlurredPlane(const TileStore& src, const PixelRect& outRect, const Bl
                     static_cast<size_t>(Tile::kChannels),
                 0.0f);
 
+  // docs/architecture-review.md P0-3: safe to parallelize directly, exactly
+  // as ops/Blur.cpp's own gather loop is (this is the near-copy the header
+  // comment above already names). Read-only against `src` via `find()`
+  // (`const`, so concurrent calls from multiple workers are ordinary
+  // concurrent reads of an unmodified map), and every tile's `span` lands in
+  // a disjoint slice of `*plane`. No reservation phase needed -- see
+  // core/Parallel.hpp for why that phase exists at all and which loop in
+  // this file actually needs it (scatterAligned, below).
   const TileRange gatherTiles = roiTileRange(*need);
-  for (int32_t ty = gatherTiles.y0; ty < gatherTiles.y1; ++ty) {
-    for (int32_t tx = gatherTiles.x0; tx < gatherTiles.x1; ++tx) {
-      const TileCoord coord{tx, ty};
-      const Tile* tile = src.find(coord);
-      if (tile == nullptr) continue;
-      const PixelRect span = roiIntersect(roiTileRect(coord), *need);
-      const PixelCoord origin = tileOrigin(coord);
-      for (int32_t y = span.y0; y < span.y1; ++y) {
-        for (int32_t x = span.x0; x < span.x1; ++x) {
-          const std::array<float, 4> rgba =
-              tile->readPixel(PixelCoord{x - origin.x, y - origin.y});
-          const size_t base = (static_cast<size_t>(y - need->y0) * static_cast<size_t>(w) +
-                               static_cast<size_t>(x - need->x0)) *
-                              static_cast<size_t>(Tile::kChannels);
-          (*plane)[base + 0] = rgba[0];
-          (*plane)[base + 1] = rgba[1];
-          (*plane)[base + 2] = rgba[2];
-          (*plane)[base + 3] = rgba[3];
-        }
-      }
-    }
+  {
+    const int32_t tilesWide = gatherTiles.tilesWide();
+    const PixelRect needRect = *need;
+    float* const planeData = plane->data();
+    parallelFor(static_cast<size_t>(gatherTiles.tileCount()), kParallelForDefaultGrain,
+               [&](size_t i) {
+                 const int32_t tx = gatherTiles.x0 + static_cast<int32_t>(i) % tilesWide;
+                 const int32_t ty = gatherTiles.y0 + static_cast<int32_t>(i) / tilesWide;
+                 const TileCoord coord{tx, ty};
+                 const Tile* tile = src.find(coord);
+                 if (tile == nullptr) return;
+                 const PixelRect span = roiIntersect(roiTileRect(coord), needRect);
+                 const PixelCoord origin = tileOrigin(coord);
+                 for (int32_t y = span.y0; y < span.y1; ++y) {
+                   for (int32_t x = span.x0; x < span.x1; ++x) {
+                     const std::array<float, 4> rgba =
+                         tile->readPixel(PixelCoord{x - origin.x, y - origin.y});
+                     const size_t base =
+                         (static_cast<size_t>(y - needRect.y0) * static_cast<size_t>(w) +
+                          static_cast<size_t>(x - needRect.x0)) *
+                         static_cast<size_t>(Tile::kChannels);
+                     planeData[base + 0] = rgba[0];
+                     planeData[base + 1] = rgba[1];
+                     planeData[base + 2] = rgba[2];
+                     planeData[base + 3] = rgba[3];
+                   }
+                 }
+               });
   }
 
   // Aliased in and out, exactly as `blurTiles()` does it: `blurPlane` holds
@@ -106,34 +122,75 @@ std::array<float, 4> planeTexel(const std::vector<float>& plane, const PixelRect
 template <class Combine>
 void scatterAligned(const TileStore& src, const PixelRect& outRect, TileStore* dst,
                     Combine&& combine) {
+  // docs/architecture-review.md P0-3, two phases per core/Parallel.hpp's
+  // rule: `dst->getOrCreate()` mutates `dst`'s map and must run serially;
+  // `src.find()` is a `const` read and is safe to call from any thread once
+  // reservation has finished, so it is deferred into the parallel phase
+  // below rather than resolved here -- doing it here would cost nothing for
+  // correctness but would make this phase do work a worker thread could be
+  // doing instead.
   const TileRange writeTiles = roiTileRange(outRect);
+  struct ReservedTile {
+    TileCoord coord;
+    PixelRect span;
+    Tile* outTile;
+  };
+  std::vector<ReservedTile> reserved;
+  reserved.reserve(static_cast<size_t>(writeTiles.tileCount()));
   for (int32_t ty = writeTiles.y0; ty < writeTiles.y1; ++ty) {
     for (int32_t tx = writeTiles.x0; tx < writeTiles.x1; ++tx) {
       const TileCoord coord{tx, ty};
       const PixelRect span = roiIntersect(roiTileRect(coord), outRect);
       if (roiIsEmpty(span)) continue;
-      // Taken before `getOrCreate` so the copy-on-write barrier below cannot
-      // be reasoned about wrongly: `src` is a different store (the callers
-      // refuse `dst == &src`), and a tile the two happen to share stays alive
-      // through its own shared_ptr even after `dst` unshares its slot.
-      const Tile* srcTile = src.find(coord);
       Tile& outTile = dst->getOrCreate(coord);
-      const PixelCoord origin = tileOrigin(coord);
-      for (int32_t y = span.y0; y < span.y1; ++y) {
-        for (int32_t x = span.x0; x < span.x1; ++x) {
-          const PixelCoord local{x - origin.x, y - origin.y};
-          const std::array<float, 4> in =
-              srcTile != nullptr ? srcTile->readPixel(local) : std::array<float, 4>{0, 0, 0, 0};
-          outTile.writePixel(local, combine(x, y, in));
-        }
-      }
+      reserved.push_back(ReservedTile{coord, span, &outTile});
     }
   }
+
+  parallelFor(reserved.size(), kParallelForDefaultGrain, [&](size_t i) {
+    const ReservedTile& r = reserved[i];
+    // Taken inside the parallel body, not the reservation loop above, so the
+    // reservation phase (the one part of this function that has to be
+    // serial) stays as short as possible. Safe here for the same reason it
+    // was safe when this file only had one loop: `src` is a different store
+    // (the callers refuse `dst == &src`), and a tile the two happen to share
+    // stays alive through its own shared_ptr even after `dst` unshares its
+    // slot.
+    const Tile* srcTile = src.find(r.coord);
+    const PixelCoord origin = tileOrigin(r.coord);
+    for (int32_t y = r.span.y0; y < r.span.y1; ++y) {
+      for (int32_t x = r.span.x0; x < r.span.x1; ++x) {
+        const PixelCoord local{x - origin.x, y - origin.y};
+        const std::array<float, 4> in =
+            srcTile != nullptr ? srcTile->readPixel(local) : std::array<float, 4>{0, 0, 0, 0};
+        r.outTile->writePixel(local, combine(x, y, in));
+      }
+    }
+  });
 }
 
 // The same walk for an op whose source texel is somewhere else -- offset,
 // which reads a translated and possibly wrapped coordinate and therefore
 // cannot hoist anything per output tile.
+//
+// **Deliberately NOT parallelized, unlike every other tile loop in this
+// file (docs/architecture-review.md P0-3).** `scatterAligned` above and
+// `gatherBlurredPlane`'s gather loop are safe to hand to `parallelFor`
+// because their per-texel work is stateless between calls. This one's only
+// caller, `offsetTiles`, is not: it closes over a one-entry lookup cache
+// (`cachedCoord`/`cachedTile`/`cacheValid`) that `produce` mutates on every
+// call and reads on the next, on the documented assumption that consecutive
+// texels usually share a source tile. That is exactly the kind of shared
+// mutable state `parallelFor`'s contract (core/Parallel.hpp) requires a body
+// NOT to have -- two workers racing through different destination tiles
+// would tear that cache's three variables against each other, and the
+// result would be a plausible-looking wrong pixel (a stale `cachedTile`
+// read as if it were current), not a crash. Fixing it properly means giving
+// each parallel task its own cache, which is a real change to
+// `offsetTiles`'s structure and out of scope for "the loop body should be
+// unchanged" -- so `offsetTiles` stays serial rather than risk shipping a
+// race. See the architecture-review P0-3 task's own report for this being
+// called out explicitly rather than silently skipped.
 template <class Produce>
 void scatterFree(const PixelRect& outRect, TileStore* dst, Produce&& produce) {
   const TileRange writeTiles = roiTileRange(outRect);

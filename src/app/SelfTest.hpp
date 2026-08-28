@@ -3820,4 +3820,26 @@ bool runDocumentPresetsTest();
 // dimensions actually observed.
 bool runClipboardImageTest();
 
+// core/Parallel (docs/architecture-review.md P0-3: "zero multithreading in
+// an application built on an embarrassingly parallel data structure"). The
+// threading layer itself, and its two consumers -- ops/Blur.cpp's
+// blurTiles() and ops/Filters.cpp's scatterAligned()/gatherBlurredPlane(),
+// which highpassTiles(), unsharpMaskTiles(), sharpenTiles() and
+// localContrastTiles() all hang off. core/Composite.cpp (P0-4) is a separate
+// track's file and is untouched here.
+//
+// Three things carry the section: core::parallelFor's own determinism
+// across its serial and dispatch_apply branches; the strongest available
+// op-level proof -- blurTiles() and highpassTiles() run over the same
+// fixture through a request small enough to stay on the serial branch and a
+// request large enough to cross onto the parallel one, diffed tile-for-tile
+// with memcmp rather than a tolerance -- with both requests' write AND
+// gather tile counts checked against the measured grain first, so the
+// comparison cannot pass vacuously by landing both requests on the same
+// side of it; and `[measured]` (not check()-gated) wall-clock numbers for
+// blur and highpass at 1024^2 and 2048^2, serial vs parallel. See
+// core/Parallel.hpp for the grain constant's own measurement and reasoning,
+// and app/selftest/Parallel.cpp for the rest.
+bool runParallelTest();
+
 }  // namespace np

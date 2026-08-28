@@ -2157,6 +2157,11 @@ int main(int argc, char** argv) {
     // SDL_Init(SDL_INIT_VIDEO) above, so the live pasteboard queries this
     // section makes are real, not stubbed.
     const bool clipboardImageOk = np::runClipboardImageTest();
+    // docs/architecture-review.md P0-3: core/Parallel (the threading layer)
+    // and its two consumers, ops/Blur.cpp's blurTiles() and ops/Filters.cpp's
+    // scatterAligned()/gatherBlurredPlane(). Headless and GPU-free -- pure
+    // CPU tile arithmetic, no PaintSim involvement.
+    const bool parallelOk = np::runParallelTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2188,7 +2193,7 @@ int main(int argc, char** argv) {
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
                     saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
-                    clipboardImageOk;
+                    clipboardImageOk && parallelOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
