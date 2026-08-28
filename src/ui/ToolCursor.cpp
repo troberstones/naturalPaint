@@ -1,5 +1,6 @@
 #include "ui/ToolCursor.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -7,7 +8,6 @@
 
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
-#include "ui/PointerScale.hpp"
 
 // stb_truetype's IMPLEMENTATION lives in this translation unit, and only this
 // one, at global scope -- the same scope `imgui_draw.cpp` (third_party/imgui)
@@ -101,25 +101,20 @@ ToolCursor cursorForTool(Tool tool) noexcept {
     case Tool::Shape:
       return ToolCursor::Select;
 
-    // T17 (docs/testing-issues.md): these five used to fall through to the
-    // same `Select` case above, which is what made a lasso drag and a wand
-    // click show the identical "drag a rectangle" diagonal arrow. Each now
-    // has its own intent, and hpp §7 is the bitmap each one now gets. All
-    // five still project to `SDL_SYSTEM_CURSOR_NWSE_RESIZE` through
-    // `sdlCursorFor()` below -- that projection is now the FALLBACK path
-    // (§7's flag off, or a bitmap that failed to rasterise), not the normal
-    // one, and it is deliberately left as it was so "bitmaps off" remains
-    // byte-identical to the behaviour before §7 existed.
+    // T17 (docs/testing-issues.md) named these five as sharing one cursor, and
+    // an earlier revision answered that by giving each its own `ToolCursor`
+    // value. That turned out to be the wrong layer: what a user needs to tell
+    // apart is the TOOL, and §7 now keys its bitmaps by `Tool` directly, which
+    // covers all twenty-eight rather than five and needs no enumerator here.
+    // So these five are back where §2's argument puts them -- one INTENT,
+    // "a boundary being drawn" -- and `ToolCursor` is an intent enum again
+    // rather than a key some other table needed.
     case Tool::Marquee:
-      return ToolCursor::SelectMarquee;
     case Tool::EllipseMarquee:
-      return ToolCursor::SelectEllipseMarquee;
     case Tool::Lasso:
-      return ToolCursor::SelectLasso;
     case Tool::PolygonLasso:
-      return ToolCursor::SelectPolygonLasso;
     case Tool::MagicWand:
-      return ToolCursor::SelectMagicWand;
+      return ToolCursor::Select;
 
     // --- the view, and content within it ----------------------------------
     case Tool::Hand:
@@ -198,22 +193,13 @@ SDL_SystemCursor sdlCursorFor(ToolCursor cursor) noexcept {
     // names this as one of the two weakest entries and says what the
     // conventional alternative is (a crosshair here too, as Photoshop does)
     // and why distinguishability won for now.
+    //
+    // This is also the FALLBACK every selection tool lands on when §7's
+    // bitmaps are off or one failed to rasterise, which is why it is left
+    // exactly as it was: "bitmaps off" has to be byte-identical to the build
+    // before §7 existed, and `app/selftest/ToolCursor.cpp` section G checks
+    // that per tool rather than per enum value.
     case ToolCursor::Select:
-    // The five values hpp §7 split out of `Select` project to the SAME shape
-    // here as `Select` itself -- this line is the whole of "flag off is
-    // byte-identical to today": before the split, all five tools answered
-    // `Select` and got this cursor; after it, each answers its own intent but
-    // still arrives here, because `SystemCursorTable::apply()` only reaches
-    // for a bitmap when `bitmapsEnabled_` is true. Changing any one of these
-    // five without also changing what the tool showed before this split
-    // would BE the accessibility-flag default drifting silently, which
-    // `app/selftest/ToolCursor.cpp` section G checks per tool, not just per
-    // enum value.
-    case ToolCursor::SelectMarquee:
-    case ToolCursor::SelectEllipseMarquee:
-    case ToolCursor::SelectLasso:
-    case ToolCursor::SelectPolygonLasso:
-    case ToolCursor::SelectMagicWand:
       return SDL_SYSTEM_CURSOR_NWSE_RESIZE;
 
     // The pointing finger: "the pixel under this exact spot is the one I am
@@ -304,18 +290,43 @@ SDL_SystemCursor sdlCursorForImGui(ImGuiMouseCursor cursor) noexcept {
 namespace {
 
 // **A design space, not a pixel size.** Every coordinate in this section is
-// written in these 32 units and multiplied by a `scale` on the way to
-// pixels, because a cursor now has TWO independent reasons to be bigger than
-// 32 pixels: the user's accessibility pointer size (ui/PointerScale.hpp --
-// macOS will not scale a custom cursor for us, so we scale it ourselves) and
-// the display's backing scale (a 2x alternate representation, which SDL turns
-// into the second rep of one NSImage). Those multiply, so the largest canvas
-// this file rasterises is 32 * 4.0 * 2 = 256 px square.
-//
-// 32 was chosen because Windows' own cursor bitmaps are 32x32 and macOS
-// accepts whatever a surface hands `SDL_CreateColorCursor()`; as a design
-// space rather than a pixel count it now only sets the proportions.
+// written in these 32 units and multiplied by a `scale` on the way to pixels,
+// so there is one layout and not one per size. 32 is a comfortable grid for
+// the shapes, nothing more; it is deliberately NOT the size anything ships
+// at.
 constexpr int kCursorDesignUnits = 32;
+
+// **The size a cursor actually is, in points, and the measurement behind it.**
+//
+// macOS's own cursors are 24x24 points: `[NSCursor crosshairCursor].image.size`
+// reads exactly 24.0 x 24.0 (and `openHandCursor` 32x32), measured rather than
+// assumed. A cursor noticeably larger than the system's own does not read as a
+// design choice, it reads as a bug -- which is exactly the report this constant
+// exists to answer.
+//
+// **What is NOT applied here, and the correction that removed it.** An earlier
+// revision multiplied this by the user's Accessibility ▸ Pointer size setting,
+// on the strength of published claims that macOS does not scale custom
+// cursors. **That is wrong on this platform: macOS scales an application's own
+// `NSCursor` along with its own.** Confirmed against a real machine with the
+// setting at 2.07x, where the result was a cursor roughly three times the size
+// it should have been -- the OS's scaling multiplied by ours. So this file
+// draws at the *unscaled* size and lets the OS enlarge it, which is also the
+// behaviour that keeps working if a future macOS changes the multiplier.
+//
+// The remaining reason a bitmap is bigger than 24 pixels is the display
+// backing scale, and that is SDL's job, not this constant's: `create()` builds
+// a 2x alternate through `SDL_AddSurfaceAlternateImage()`, and SDL's Cocoa
+// backend folds base and alternate into one multi-representation `NSImage`
+// whose POINT size stays the base surface's. So the base surface is 24x24 and
+// the alternate 48x48, and the cursor is 24 points either way.
+constexpr int kCursorBasePoints = 24;
+
+// The base surface's scale: what `kCursorDesignUnits` has to be multiplied by
+// to land at `kCursorBasePoints`. Named rather than written as `0.75f` so the
+// two constants above stay the only numbers to change.
+constexpr float kCursorBaseScale =
+    static_cast<float>(kCursorBasePoints) / static_cast<float>(kCursorDesignUnits);
 
 void setPixel(std::vector<uint8_t>& rgba, int w, int h, int x, int y, uint8_t a) {
   if (x < 0 || y < 0 || x >= w || y >= h) return;
@@ -436,7 +447,8 @@ CursorBitmap drawMarqueeCrosshair(CursorMarqueeShape shape, float scale) {
 // vendored font build does not contain -- the exact three failure modes
 // `ui/ToolCursor.hpp`'s original §1 worried a bitmap cursor could hit
 // silently.
-CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint, float scale) {
+CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint, float scale,
+                                        CursorHotspotAnchor anchor) {
   CursorBitmap out;
   out.width = out.height = px(kCursorDesignUnits, scale);
   out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
@@ -486,82 +498,151 @@ CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint, float scale) {
     }
   stbtt_FreeBitmap(bitmap, nullptr);
 
-  // Hotspot: the glyph's own bounding-box centre. This file has no per-icon
-  // design input to place it more precisely -- a lasso's natural hotspot is
-  // where its loop closes, a wand's is its tip, and neither is recoverable
-  // from rasterised coverage alone -- so centre-of-glyph is the one placement
-  // every shape can justify without guessing. It is provably inside the
-  // glyph (section G), and it is still strictly more informative than the
-  // corner-ish hotspot of the `NWSE_RESIZE` arrow it replaces.
-  out.hotspotX = originX + gw / 2;
-  out.hotspotY = originY + gh / 2;
+  // **The hotspot, placed against the glyph's own bounding box rather than at
+  // its centre.** An earlier revision used centre-of-glyph for every icon, on
+  // the reasoning that a tip is not recoverable from rasterised coverage --
+  // which is true, and was the wrong conclusion: it is not recoverable from
+  // the PIXELS, but it is perfectly well known to whoever chose the icon. A
+  // lasso draws from the end of its tail, not from the middle of its loop,
+  // and pointing at the middle of the loop is the same class of defect as the
+  // resize arrow T17 started from: a cursor that does not say where the click
+  // lands. `cursorHotspotAnchorFor()` is that per-tool knowledge, expressed
+  // as a fraction of this bounding box so it survives every scale.
+  // Resolved against the INKED bounding box, not against stb_truetype's glyph
+  // metrics. The two differ: a glyph's metric box can carry an edge row whose
+  // anti-aliased coverage rounds to zero, and `setPixel()` skips those, so an
+  // anchor of 1.0 against the metric box lands one row PAST the last visible
+  // pixel -- a hotspot on a transparent texel, which is precisely what section
+  // G exists to catch. Measured, not reasoned about: eight of the twenty-eight
+  // tools failed that assertion when this was resolved against `gw`/`gh`.
+  int minX = out.width, minY = out.height, maxX = -1, maxY = -1;
+  for (int y = 0; y < out.height; ++y)
+    for (int x = 0; x < out.width; ++x)
+      if (out.rgba[(static_cast<size_t>(y) * out.width + x) * 4 + 3] != 0) {
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+      }
+  if (maxX < 0) return out;  // nothing inked: `nonBlank` stays false, hotspot stays (0,0)
+  out.hotspotX = minX + static_cast<int>(std::lround(anchor.fx * (maxX - minX)));
+  out.hotspotY = minY + static_cast<int>(std::lround(anchor.fy * (maxY - minY)));
   return out;
 #endif
 }
 
 }  // namespace
 
-bool toolCursorHasBitmap(ToolCursor cursor) noexcept {
-  switch (cursor) {
-    case ToolCursor::SelectMarquee:
-    case ToolCursor::SelectEllipseMarquee:
-    case ToolCursor::SelectLasso:
-    case ToolCursor::SelectPolygonLasso:
-    case ToolCursor::SelectMagicWand:
-      return true;
-    case ToolCursor::Arrow:
-    case ToolCursor::Paint:
-    case ToolCursor::Select:
-    case ToolCursor::Sample:
-    case ToolCursor::Pan:
-    case ToolCursor::Zoom:
-    case ToolCursor::MoveObject:
-    case ToolCursor::Text:
-    case ToolCursor::Refuse:
-      return false;
+int cursorBasePoints() noexcept { return kCursorBasePoints; }
+
+float cursorBaseScale() noexcept { return kCursorBaseScale; }
+
+CursorHotspotAnchor cursorHotspotAnchorFor(Tool tool) noexcept {
+  // **Read off the glyphs, not guessed.** Each fraction below was chosen by
+  // rasterising the Lucide icon this tool actually uses and looking at where
+  // its working point is: the end of the lasso's tail, the nib of the pen,
+  // the drip under the tipped bucket, the centre of the magnifier's lens.
+  // Anything genuinely symmetric -- a hand, a move cross, the gradient's two
+  // circles -- is the centre because the centre IS its working point, not
+  // because nothing better was available.
+  switch (tool) {
+    // A tip that touches the canvas at its lower-left end.
+    case Tool::Lasso:
+    case Tool::Brush:
+    case Tool::Water:
+    case Tool::DryBrush:
+    case Tool::Pencil:
+    case Tool::Eraser:
+    case Tool::Smudge:
+    case Tool::CloneStamp:
+    case Tool::Eyedropper:
+    case Tool::Measure:
+    case Tool::Pen:
+    case Tool::Curve:
+      return {0.0f, 1.0f};
+
+    // The pentagon standing in for the polygon lasso: a polygon is built
+    // vertex by vertex and its apex is the vertex the icon leads with.
+    case Tool::PolygonLasso:
+      return {0.5f, 0.0f};
+
+    // The wand's tip is the top-right end of the shaft, where its sparkles are.
+    case Tool::MagicWand:
+      return {1.0f, 0.0f};
+
+    // The bucket is drawn tipped, pouring; the drip leaves at lower-right, and
+    // that drip is where the fill lands.
+    case Tool::PaintBucket:
+      return {0.9f, 1.0f};
+
+    // The magnifier's LENS centre, not the icon's centre -- the icon is a lens
+    // plus a handle running to the lower right, so its bounding-box centre sits
+    // on the glass's edge rather than in the middle of it.
+    case Tool::Zoom:
+      return {0.4f, 0.4f};
+
+    // Genuinely centred: what these tools act on is under the middle of the
+    // shape, so the centre is a choice here rather than a default.
+    case Tool::Hand:
+    case Tool::Move:
+    case Tool::Frame:
+    case Tool::Gradient:
+    case Tool::Crop:
+    case Tool::Slice:
+    case Tool::Shape:
+    case Tool::Text:
+    case Tool::Dodge:
+    case Tool::Burn:
+    case Tool::Marquee:
+    case Tool::EllipseMarquee:
+    case Tool::Count:
+      return {0.5f, 0.5f};
   }
-  return false;
+  return {0.5f, 0.5f};
 }
 
-CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor, float scale) noexcept {
+bool toolHasBitmapCursor(Tool tool) noexcept {
+  // The two marquees get §7's procedural composite -- the shape plus an offset
+  // crosshair the report asked for by name -- and everything else gets its own
+  // palette glyph. `Tool::Count` is the enum's bound rather than a tool.
+  if (tool == Tool::Count) return false;
+  if (tool == Tool::Marquee || tool == Tool::EllipseMarquee) return true;
+  // Every other tool is a bitmap iff the palette has an icon for it. Asking
+  // `toolIconCodepoint()` rather than restating a list is what keeps a change
+  // to the palette's icon choice from silently leaving a cursor behind.
+  return toolIconCodepoint(tool) != 0u;
+}
+
+CursorBitmap rasterizeToolCursorBitmap(Tool tool, float scale) noexcept {
   // A scale of zero or a NaN would produce a zero-sized canvas that then
   // "fails" the non-blank check for a reason that has nothing to do with the
-  // font. Clamped to the same range ui/PointerScale.hpp clamps its own
-  // reading to, times the 2x backing alternate, so no caller can ask this
-  // function for a size `create()` would not have allocated anyway.
+  // font, sending a reader hunting for a missing Lucide file. Clamped instead.
+  // The upper bound is generous rather than tight -- `create()` only ever asks
+  // for `kCursorBaseScale` and twice that -- because this is a guard against
+  // nonsense, not a policy about size.
   if (!(scale > 0.0f)) scale = 1.0f;
   scale = std::min(scale, 8.0f);
 
   CursorBitmap out;
-  switch (cursor) {
-    case ToolCursor::SelectMarquee:
-      out = drawMarqueeCrosshair(CursorMarqueeShape::Rectangle, scale);
-      break;
-    case ToolCursor::SelectEllipseMarquee:
-      out = drawMarqueeCrosshair(CursorMarqueeShape::Ellipse, scale);
-      break;
-    // The codepoints are read from `toolIconCodepoint()` (ui/AtelierChrome)
-    // -- the tool palette's own single source of truth for which Lucide
-    // glyph a tool means -- rather than a second, independent constant here.
-    // A future change to the palette's icon choice then changes this cursor
-    // too, with no edit in this file, instead of the two silently drifting
-    // apart the way `strokeRouteFor()`'s own comment warns a restated
-    // predicate always eventually does.
-    case ToolCursor::SelectLasso:
-      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::Lasso), scale);
-      break;
-    case ToolCursor::SelectPolygonLasso:
-      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::PolygonLasso), scale);
-      break;
-    case ToolCursor::SelectMagicWand:
-      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::MagicWand), scale);
-      break;
-    default:
-      // `toolCursorHasBitmap()` is false for every other value; returning the
-      // all-transparent default here is correct for those AND is what a
-      // future bitmap-less value falls back to if this switch is ever
-      // reached before that function is updated to match.
-      return out;
+  if (!toolHasBitmapCursor(tool)) return out;
+
+  // The two the report described in words rather than by icon: "a circle or
+  // square with a crosshair to the bottom left". No Lucide glyph is that
+  // composite, so §7 draws it -- one generator with the shape as a parameter.
+  if (tool == Tool::Marquee) {
+    out = drawMarqueeCrosshair(CursorMarqueeShape::Rectangle, scale);
+  } else if (tool == Tool::EllipseMarquee) {
+    out = drawMarqueeCrosshair(CursorMarqueeShape::Ellipse, scale);
+  } else {
+    // The codepoint comes from `toolIconCodepoint()` (ui/AtelierChrome) -- the
+    // tool palette's own single source of truth for which Lucide glyph a tool
+    // means -- rather than a second, independent constant here. A future change
+    // to the palette's icon choice then changes this cursor too, with no edit
+    // in this file, instead of the two silently drifting apart the way
+    // `strokeRouteFor()`'s own comment warns a restated predicate always
+    // eventually does.
+    out = rasterizeLucideGlyphCursor(toolIconCodepoint(tool), scale,
+                                     cursorHotspotAnchorFor(tool));
   }
 
   // Non-blank iff at least one pixel actually carries ink -- computed here,
@@ -579,13 +660,13 @@ CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor, float scale) noexcept 
   return out;
 }
 
-bool shouldUseBitmapCursor(bool bitmapsEnabled, std::optional<ToolCursor> toolRequest,
+bool shouldUseBitmapCursor(bool bitmapsEnabled, std::optional<Tool> toolRequest,
                             bool hasBitmap) noexcept {
   // The whole of §7's flag. `bitmapsEnabled == false` makes this `false`
   // regardless of the other two arguments -- checked exhaustively for every
-  // `ToolCursor` value in `app/selftest/ToolCursor.cpp` section G, which is
-  // the mechanical proof `ui/ToolCursor.hpp` §7 promises rather than an
-  // assertion about one value.
+  // `Tool` value in `app/selftest/ToolCursor.cpp` section G, which is the
+  // mechanical proof `ui/ToolCursor.hpp` §7 promises rather than an assertion
+  // about one value.
   return bitmapsEnabled && toolRequest.has_value() && hasBitmap;
 }
 
@@ -596,12 +677,11 @@ void SystemCursorTable::create() noexcept {
   for (int i = 0; i < SDL_SYSTEM_CURSOR_COUNT; ++i)
     cursors_[i] = SDL_CreateSystemCursor(static_cast<SDL_SystemCursor>(i));
 
-  // §7's five bitmap cursors, built here unconditionally alongside the
+  // §7's per-tool bitmap cursors, built here unconditionally alongside the
   // system set above. The FLAG decides which source `apply()` reaches for,
   // not whether this table exists -- `setBitmapCursorsEnabled()` is a plain
   // setter that can run after `create()` already has, so there is no other
   // point in the lifecycle to build these from.
-  pointerScale_ = osPointerSizeScale();
   buildBitmapCursors();
 
   // Marked created even if some entries came back null: `apply()`'s fallback
@@ -612,23 +692,25 @@ void SystemCursorTable::create() noexcept {
 }
 
 void SystemCursorTable::buildBitmapCursors() noexcept {
-  for (int i = 0; i < kToolCursorCount; ++i) {
-    const ToolCursor cursor = static_cast<ToolCursor>(i);
+  for (int i = 0; i < kToolCount; ++i) {
+    const Tool tool = static_cast<Tool>(i);
     if (bitmapCursors_[i] != nullptr) {
       // A rebuild, not a first build. Destroyed before the slot is
-      // overwritten, or every pointer-size change would leak five OS cursors.
+      // overwritten, or every rebuild would leak one OS cursor per tool.
       // `last_` is cleared below for the same reason `destroy()` clears it:
       // it may be pointing at one of these.
       SDL_DestroyCursor(bitmapCursors_[i]);
       bitmapCursors_[i] = nullptr;
     }
-    if (!toolCursorHasBitmap(cursor)) continue;
+    if (!toolHasBitmapCursor(tool)) continue;
 
-    // The BASE representation, at the user's accessibility pointer size. Its
-    // pixel dimensions are also the cursor's POINT dimensions on macOS (SDL's
-    // `Cocoa_CreateImage()` sets `NSImage.size` from this surface), which is
-    // what makes the scaling here the thing the user actually sees.
-    const CursorBitmap bitmap = rasterizeToolCursorBitmap(cursor, pointerScale_);
+    // The BASE representation, at `kCursorBasePoints`. Its pixel dimensions
+    // are also the cursor's POINT dimensions on macOS -- SDL's
+    // `Cocoa_CreateImage()` sets `NSImage.size` from this surface -- and the
+    // OS applies the user's Accessibility pointer size on top of that itself.
+    // See `kCursorBasePoints` for the measurement, and for the earlier
+    // revision that scaled here too and shipped a cursor three times too big.
+    const CursorBitmap bitmap = rasterizeToolCursorBitmap(tool, cursorBaseScale());
     // §7's fallback rule, enforced at the one place that knows both the
     // pixels and the table they would join: a blank rasterisation is never
     // installed as a cursor. Left null, `bitmapCursorFor()` answers exactly
@@ -640,16 +722,17 @@ void SystemCursorTable::buildBitmapCursors() noexcept {
                               const_cast<uint8_t*>(bitmap.rgba.data()), bitmap.width * 4);
     if (surface == nullptr) continue;
 
-    // The 2x ALTERNATE representation -- the Retina half of §7's scaling
-    // story, and a different axis from the accessibility scale above. SDL
-    // adds one `NSBitmapImageRep` per image to a single `NSImage` sized from
-    // the base, so AppKit picks this one on a 2x display and the base on a 1x
-    // display. Without it the base is stretched and the cursor is visibly
-    // soft on every Mac made in the last decade.
+    // The 2x ALTERNATE representation -- the display backing scale, which is
+    // the ONE axis this file still scales along. SDL adds one
+    // `NSBitmapImageRep` per image to a single `NSImage` sized from the base,
+    // so AppKit picks this one on a 2x display and the base on a 1x display,
+    // and the cursor stays `kCursorBasePoints` points either way. Without it
+    // the base is stretched and the cursor is visibly soft on every Mac made
+    // in the last decade.
     //
     // Best-effort: a failure here leaves a perfectly usable 1x cursor rather
     // than no cursor, which is why nothing below is conditional on it.
-    const CursorBitmap retina = rasterizeToolCursorBitmap(cursor, pointerScale_ * 2.0f);
+    const CursorBitmap retina = rasterizeToolCursorBitmap(tool, cursorBaseScale() * 2.0f);
     if (retina.nonBlank) {
       SDL_Surface* alt =
           SDL_CreateSurfaceFrom(retina.width, retina.height, SDL_PIXELFORMAT_RGBA32,
@@ -675,20 +758,6 @@ void SystemCursorTable::buildBitmapCursors() noexcept {
   last_ = nullptr;
 }
 
-bool SystemCursorTable::refreshPointerScale() noexcept {
-  if (!created_) return false;
-  const float now = osPointerSizeScale();
-  // A float compare with a real epsilon, not `!=`: the preference is a slider
-  // position stored as a double (2.0724539756774902 on the machine this was
-  // written on), so an exact compare would be at the mercy of the last bit
-  // and a rebuild of five OS cursors is not free enough to do on noise.
-  // 0.01 is finer than any size change a user could see.
-  if (std::abs(now - pointerScale_) < 0.01f) return false;
-  pointerScale_ = now;
-  buildBitmapCursors();
-  return true;
-}
-
 void SystemCursorTable::destroy() noexcept {
   for (SDL_Cursor*& c : cursors_) {
     if (c != nullptr) SDL_DestroyCursor(c);
@@ -706,14 +775,14 @@ void SystemCursorTable::destroy() noexcept {
   created_ = false;
 }
 
-SDL_Cursor* SystemCursorTable::bitmapCursorFor(ToolCursor cursor) const noexcept {
-  const int index = static_cast<int>(cursor);
-  if (index < 0 || index >= kToolCursorCount) return nullptr;
+SDL_Cursor* SystemCursorTable::bitmapCursorFor(Tool tool) const noexcept {
+  const int index = static_cast<int>(tool);
+  if (index < 0 || index >= kToolCount) return nullptr;
   return bitmapCursors_[index];
 }
 
 void SystemCursorTable::apply(std::optional<SDL_SystemCursor> request,
-                              std::optional<ToolCursor> toolRequest) noexcept {
+                              std::optional<Tool> toolRequest) noexcept {
   // `--selftest` and the demo paths never call `create()`, and must not be made
   // to: several of them make a window but none draws a frame through this.
   if (!created_) return;
@@ -745,8 +814,8 @@ void SystemCursorTable::apply(std::optional<SDL_SystemCursor> request,
 
   // §7's one new branch. `hasBitmap` is true only when a bitmap cursor was
   // actually built for this tool -- which already folds in both
-  // `toolCursorHasBitmap()` (is this one of the five) and `create()`'s own
-  // blank-rasterisation check, since a blank one was never stored. Passed
+  // `toolHasBitmapCursor()` and `create()`'s own blank-rasterisation check,
+  // since a blank one was never stored. Passed
   // through `shouldUseBitmapCursor()` rather than inlined so the identical
   // decision `--selftest` proves flag-off-identical for is the one actually
   // running here, not a lookalike.
@@ -796,16 +865,6 @@ const char* toolCursorName(ToolCursor cursor) noexcept {
       return "text";
     case ToolCursor::Refuse:
       return "refuse";
-    case ToolCursor::SelectMarquee:
-      return "select-marquee";
-    case ToolCursor::SelectEllipseMarquee:
-      return "select-ellipse-marquee";
-    case ToolCursor::SelectLasso:
-      return "select-lasso";
-    case ToolCursor::SelectPolygonLasso:
-      return "select-polygon-lasso";
-    case ToolCursor::SelectMagicWand:
-      return "select-magic-wand";
   }
   return "?";
 }

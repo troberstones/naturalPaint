@@ -878,9 +878,9 @@ standing objections, and which of them survive:
   rather than at a corner — which is exactly the bug the report is describing
   when it asks for the crosshair specifically.
 * **"Bitmaps do not scale with the OS cursor-size accessibility setting."**
-  **This one stood at the time and was answered later** — see the "Built"
-  section below. The underlying fact never changed; what changed is that the
-  app now reads the setting itself instead of hoping macOS would apply it.
+  **This objection is simply false on macOS** — see the "Built" section below.
+  It was believed on the strength of published claims, acted on, and cost a
+  shipped bug.
 * **"Bitmaps ignore the user's cursor theme."** **Stands**, and is the milder
   of the two — a drawing tool overriding the pointer over its own canvas is
   conventional.
@@ -895,42 +895,65 @@ before this is scheduled**, because "the pointer no longer grows with the
 system setting" is a decision for the person who owns the product, not for
 whoever picks up the task.
 
-**Built, and switched on.** `ToolCursor` has one value per distinguishable
-selection tool (`SelectMarquee`, `SelectEllipseMarquee`, `SelectLasso`,
-`SelectPolygonLasso`, `SelectMagicWand`), each with its own bitmap glyph, its
-own hotspot, and a non-blank rasterisation check.
-`setBitmapCursorsEnabled()` defaults to **true**; `--selftest` pins that
-default, so it cannot drift back to dark unnoticed. The flag survives as the
-fallback switch, not as a gate waiting for permission.
+**Built, and switched on.** `setBitmapCursorsEnabled()` defaults to **true**
+and `--selftest` pins that default, so it cannot drift back to dark unnoticed.
+The flag survives as the fallback switch, not as a gate waiting for permission.
 
-**The one objection that stood is answered — by doing the OS's job, not by
-accepting the cost.** The finding above is a true fact about macOS and stays
-true: the system scales the cursors it draws itself and applies *nothing* to
-an `NSCursor` an application built from its own image, and there is no API to
-opt in. So the app reads the setting and rasterises at it.
+**The bitmaps are keyed by `Tool`, not by cursor intent.** A first revision
+answered the report by splitting `ToolCursor` — five new enumerators for the
+five tools named. That put the distinction at the wrong layer: what a user
+tells apart is the tool, not the family it belongs to, and a five-value split
+leaves the other twenty-three tools sharing shapes. `ToolCursor` is back to
+being the *intent* enum §2 argues for, and §7's bitmap table is indexed by
+`Tool`, so **every tool has its own cursor** — hand, paint bucket, magnifier,
+gradient, eyedropper, eraser, pencil, pen, crop, text, move and the rest, each
+drawn from the same Lucide glyph its palette cell uses. `toolIconCodepoint()`
+is the single source, so changing the palette's icon changes the cursor with
+no edit in `ui/ToolCursor.cpp`.
 
-* `ui/PointerScale.hpp` reads `com.apple.universalaccess` /
-  `mouseDriverCursorSize` through `CFPreferencesCopyAppValue`, clamped to
-  [1, 4], defaulting to 1.0 when absent or unreadable. **On the machine this
-  was built on it reads 2.07×** — the developer is a user of the very feature
-  the objection was about, which is why guessing at it was never acceptable.
-* Every coordinate in the cursor generators is written in 32 **design units**
-  and multiplied on the way to pixels, so there is one design and not one per
-  size. Stroke width scales too: without that a 4× cursor is a hairline
-  wireframe rather than a large cursor. Measured — the marquee is 9.86% inked
-  at both 1× and 4×; pinning the stroke at 1px collapses it to 2.45%, and
-  `--selftest` reddens exactly that line when it does.
-* Retina crispness is a **separate axis**, and SDL already handles it:
-  `SDL_AddSurfaceAlternateImage()` attaches a 2× alternate, and SDL's Cocoa
-  backend builds one multi-representation `NSImage` whose point size is the
-  base surface's size (`Cocoa_CreateImage()` in `SDL_cocoavideo.m`) — exactly
-  the image AppKit picks a representation out of per display. The two factors
-  multiply, and `SystemCursorTable::create()` is the only place they meet.
-* `refreshPointerScale()` re-reads on window-focus-gained — when a user coming
-  back from System Settings returns — and rebuilds only if the number actually
-  moved. No distributed notification is registered: the names macOS posts for
-  universal-access changes are undocumented and version-dependent, and
-  guessing wrong means a cursor stuck at the old size until restart.
+**The hotspot is per tool, and that was a real defect in the first revision.**
+Centre-of-glyph was used for every icon, on the reasoning that a tip is not
+recoverable from rasterised coverage. True — and the wrong conclusion, because
+it is perfectly well known to whoever picked the icon. It put the lasso's
+draw point in the middle of its loop instead of at the end of its tail: the
+same class of defect the report started from, a cursor that does not say where
+the click lands. `cursorHotspotAnchorFor()` now gives each tool a fraction of
+its own **inked** bounding box — tail for the lasso and every tipped tool, apex
+for the polygon lasso, tip for the wand, the drip for the bucket, the lens
+centre for the magnifier, and the centre for the genuinely symmetric ones
+(hand, move, gradient) because there the centre *is* the working point.
+
+Resolving against the inked box rather than stb_truetype's metric box matters:
+eight of the tools put their hotspot one row past the last visible pixel when
+it was resolved against the glyph metrics, because an edge row whose coverage
+rounds to zero is inside the metric box and outside the ink.
+
+### The size bug, and why the tests could not see it
+
+**macOS scales an application's own `NSCursor` along with its own cursors.**
+Published claims say otherwise, and a revision built on them read
+`com.apple.universalaccess`/`mouseDriverCursorSize` and rasterised bigger. On a
+machine with the setting at 2.07× the OS's scaling multiplied by ours and
+produced a cursor roughly three times the size it should have been. Every
+scale assertion in `app/selftest/ToolCursor.cpp` section H passed the whole
+time, because each one exercised the rasteriser at a scale the *test* chose —
+nothing read the number the application actually uses.
+
+Two things came out of that, and the second is the more useful:
+
+* Cursors now ship at one size, **24 points** —
+  `[NSCursor crosshairCursor].image.size` measured, not picked — and the OS
+  applies the pointer-size setting on top. Nothing reads an accessibility
+  preference. The one scale axis left is the display backing scale, and that
+  is SDL's: `SDL_AddSurfaceAlternateImage()` attaches a 48-pixel alternate and
+  SDL's Cocoa backend folds base and alternate into one multi-representation
+  `NSImage` whose *point* size stays the base surface's.
+* `cursorBasePoints()` and `cursorBaseScale()` are **public**, and the suite
+  asserts through them rather than through its own constants. Changing the
+  shipping size now reddens exactly one line. That is the repair for the blind
+  spot, not the size fix itself — a suite full of internal assertions can be
+  entirely green while the thing on screen is wrong, and the fix is to make it
+  read the number the application reads.
 
 **Still true, and not fixed**: bitmaps ignore the user's cursor theme. That was
 the milder of the two objections and the reasoning has not changed — a drawing

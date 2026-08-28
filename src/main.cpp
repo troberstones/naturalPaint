@@ -2268,13 +2268,11 @@ int main(int argc, char** argv) {
   // create/destroy pair can be read as one by scrolling between them.
   np::SystemCursorTable cursors;
   cursors.create();
-  // ui/ToolCursor.hpp §7. `create()` reads `osPointerSizeScale()` itself; this
-  // line only makes the answer observable, because "the cursors are the wrong
-  // size" and "the preference was not readable" look identical from outside
-  // and the second one is a one-line log away from being obvious.
-  std::printf("[cursor] per-tool bitmap cursors %s, pointer size %.2fx\n",
-              cursors.bitmapCursorsEnabled() ? "on" : "off",
-              static_cast<double>(cursors.pointerScale()));
+  // ui/ToolCursor.hpp §7: whether the per-tool bitmaps or the system shapes
+  // are what this run will show. One line, because "the cursor looks wrong"
+  // and "the bitmaps silently fell back" are indistinguishable from outside.
+  std::printf("[cursor] per-tool bitmap cursors %s\n",
+              cursors.bitmapCursorsEnabled() ? "on" : "off");
 
   // app/Keymap (Phase 2 step 15, PRD R7/R8): bindings loaded from a data
   // file rather than the `if (e.key.key == SDLK_...)` checks this used to
@@ -2708,18 +2706,6 @@ int main(int argc, char** argv) {
         gpu.configureSurface(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
         ImGui_ImplWGPU_InvalidateDeviceObjects();
         ImGui_ImplWGPU_CreateDeviceObjects();
-      }
-      if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
-        // ui/ToolCursor.hpp §7: macOS does not scale a custom cursor with the
-        // Accessibility ▸ Pointer size setting, so this application reads that
-        // setting and rasterises its own cursors at it. This is the one moment
-        // it can have changed without us -- the user went to System Settings
-        // and came back. `refreshPointerScale()` re-reads and rebuilds ONLY if
-        // the number actually moved, so the cost on an ordinary focus change
-        // is one preference read and a float compare.
-        if (cursors.refreshPointerScale())
-          std::printf("[cursor] pointer size changed -- bitmap cursors rebuilt at %.2fx\n",
-                      static_cast<double>(cursors.pointerScale()));
       }
       if (e.type == SDL_EVENT_KEY_DOWN) {
         // Resolve the raw key event through the keymap rather than testing

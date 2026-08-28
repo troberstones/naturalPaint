@@ -229,7 +229,6 @@ add_executable(naturalPaint
   ui/AtelierLayout.cpp
   ui/AtelierChrome.cpp
   ui/MenuModel.cpp
-  ui/PointerScale.cpp
   ui/NewDocumentDialog.cpp
   ui/ToolCursor.cpp
   ui/TransformPreviewTexture.cpp

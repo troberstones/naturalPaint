@@ -3,7 +3,6 @@
 #include "app/StrokeSession.hpp"
 #include "core/LayerOps.hpp"
 #include "ui/AtelierChrome.hpp"
-#include "ui/PointerScale.hpp"
 #include "ui/ToolCursor.hpp"
 
 namespace np {
@@ -180,32 +179,30 @@ bool runToolCursorTest() {
     // defect the report is about. Now each is its own value, and a table
     // that collapsed any two of them back together would be reintroducing
     // that defect silently.
-    const ToolCursor marquee = cursorForTool(Tool::Marquee);
-    const ToolCursor ellipseMarquee = cursorForTool(Tool::EllipseMarquee);
-    const ToolCursor lasso = cursorForTool(Tool::Lasso);
-    const ToolCursor polygonLasso = cursorForTool(Tool::PolygonLasso);
-    const ToolCursor magicWand = cursorForTool(Tool::MagicWand);
-    check(marquee != select && ellipseMarquee != select && lasso != select &&
-              polygonLasso != select && magicWand != select && marquee != ellipseMarquee &&
-              marquee != lasso && marquee != polygonLasso && marquee != magicWand &&
-              ellipseMarquee != lasso && ellipseMarquee != polygonLasso &&
-              ellipseMarquee != magicWand && lasso != polygonLasso && lasso != magicWand &&
-              polygonLasso != magicWand,
-          "intent: T17's five -- Marquee, EllipseMarquee, Lasso, PolygonLasso, MagicWand "
-          "-- are now SIX-WAY distinct from each other AND from plain Select, which is the "
-          "whole of what this task was asked to build");
-    check(marquee == ToolCursor::SelectMarquee && ellipseMarquee == ToolCursor::SelectEllipseMarquee &&
-              lasso == ToolCursor::SelectLasso && polygonLasso == ToolCursor::SelectPolygonLasso &&
-              magicWand == ToolCursor::SelectMagicWand,
-          "intent: and each is named the way ui/ToolCursor.hpp's enum comment promises -- a "
-          "silent renumbering would pass the distinctness check above and still be wrong");
+    // **The five share one INTENT, on purpose, and that is not the defect.**
+    // T17's report was that they share one CURSOR, and an earlier revision
+    // answered it by splitting this enum -- which put the distinction at the
+    // wrong layer, since what a user tells apart is the tool, not the family
+    // it belongs to. §7 now gives every one of the twenty-eight tools its own
+    // bitmap, keyed by `Tool`, so this enum went back to being what §2 argues
+    // it should be. The property worth asserting here is therefore that they
+    // all still mean "a boundary is being drawn" -- and section H is where the
+    // five actually being DIFFERENT on screen is checked.
+    check(cursorForTool(Tool::Marquee) == select &&
+              cursorForTool(Tool::EllipseMarquee) == select &&
+              cursorForTool(Tool::Lasso) == select &&
+              cursorForTool(Tool::PolygonLasso) == select &&
+              cursorForTool(Tool::MagicWand) == select,
+          "intent: T17's five share the Select INTENT -- what distinguishes them is their "
+          "per-tool bitmap (section H), not an intent split that would only have separated "
+          "five of the twenty-eight tools");
     check(cursorForTool(Tool::Text) == ToolCursor::Text &&
               cursorForTool(Tool::Move) == ToolCursor::MoveObject,
           "intent: text and move keep their own intents -- folding either into a "
           "neighbour would lose a distinction SDL is perfectly able to draw");
   }
 
-  std::printf("  -- C. the shapes: fourteen intents, eight distinct SDL cursors --\n");
+  std::printf("  -- C. the shapes: nine intents, eight distinct SDL cursors --\n");
 
   {
     // **This is the section the move to SDL was for.** Routed through Dear
@@ -260,15 +257,7 @@ bool runToolCursorTest() {
       const ToolCursor all[] = {
           ToolCursor::Arrow,       ToolCursor::Paint,        ToolCursor::Select,
           ToolCursor::Sample,      ToolCursor::Pan,          ToolCursor::Zoom,
-          ToolCursor::MoveObject,  ToolCursor::Text,         ToolCursor::Refuse,
-          // T17's five. Each is a genuinely new INTENT (section B proved
-          // that), but with the bitmap flag off every one of them still
-          // projects to `Select`'s own shape -- this is where that
-          // collapse is checked at the shape level, not just named for the
-          // five individually as section 3's header comment does.
-          ToolCursor::SelectMarquee, ToolCursor::SelectEllipseMarquee,
-          ToolCursor::SelectLasso,   ToolCursor::SelectPolygonLasso,
-          ToolCursor::SelectMagicWand};
+          ToolCursor::MoveObject,  ToolCursor::Text,         ToolCursor::Refuse};
       std::vector<SDL_SystemCursor> shapes;
       for (const ToolCursor c : all) {
         const SDL_SystemCursor s = sdlCursorFor(c);
@@ -276,16 +265,14 @@ bool runToolCursorTest() {
                     static_cast<int>(s));
         if (std::find(shapes.begin(), shapes.end(), s) == shapes.end()) shapes.push_back(s);
       }
-      // 14 intents, 8 distinct shapes: Pan/MoveObject share one collision,
-      // and Select plus the five T17 split out of it share a second --
-      // deliberately, and it is exactly the "flag off changes nothing"
-      // guarantee hpp §7 promises. A third, UNPLANNED collision would still
-      // land on 8 only by coincidence of which two shapes it merged, so this
-      // count is a real check, not an approximation.
+      // 9 intents, 8 distinct shapes: Pan and MoveObject share the only
+      // collision, deliberately (§3 argues it is fair rather than forced). A
+      // second, UNPLANNED collision would land on 7, and a re-map that merged
+      // two while splitting two others would land on 8 only by coincidence --
+      // so this count is a real check rather than an approximation.
       check(shapes.size() == 8,
-            "shape: fourteen intents use eight distinct cursors -- two deliberate "
-            "collisions (Pan/MoveObject, and Select plus its five T17 offspring), so a "
-            "third cannot creep in unnoticed");
+            "shape: nine intents use eight distinct cursors -- one deliberate collision "
+            "(Pan/MoveObject), so a second cannot creep in unnoticed");
     }
 
     check(sdlCursorFor(ToolCursor::Refuse) == SDL_SYSTEM_CURSOR_NOT_ALLOWED,
@@ -416,13 +403,13 @@ bool runToolCursorTest() {
         // patch that updated `cursorForTool()` but forgot this table still
         // asserted the pre-split answer, which would make this section pass
         // while the defect T17 reported was still showing on screen.
-        {"marquee on Adjustment", Tool::Marquee, &adjustment, ToolCursor::SelectMarquee},
+        {"marquee on Adjustment", Tool::Marquee, &adjustment, ToolCursor::Select},
         {"ellipse marquee on Adjustment", Tool::EllipseMarquee, &adjustment,
-         ToolCursor::SelectEllipseMarquee},
-        {"lasso on locked Pigment", Tool::Lasso, &lockedPigment, ToolCursor::SelectLasso},
+         ToolCursor::Select},
+        {"lasso on locked Pigment", Tool::Lasso, &lockedPigment, ToolCursor::Select},
         {"polygon lasso on Adjustment", Tool::PolygonLasso, &adjustment,
-         ToolCursor::SelectPolygonLasso},
-        {"wand on Adjustment", Tool::MagicWand, &adjustment, ToolCursor::SelectMagicWand},
+         ToolCursor::Select},
+        {"wand on Adjustment", Tool::MagicWand, &adjustment, ToolCursor::Select},
         {"hand on locked RGB", Tool::Hand, &lockedRgb, ToolCursor::Pan},
         {"zoom on Adjustment", Tool::Zoom, &adjustment, ToolCursor::Zoom},
     };
@@ -528,14 +515,13 @@ bool runToolCursorTest() {
     // this codebase touching `NP_LUCIDE_TTF`. `installToolIconFont()`
     // (ui/Fonts.cpp) reports a missing font as a string nobody is required
     // to read; this fails the build's own `--selftest`.
-    const ToolCursor bitmapCursors[] = {ToolCursor::SelectMarquee, ToolCursor::SelectEllipseMarquee,
-                                        ToolCursor::SelectLasso, ToolCursor::SelectPolygonLasso,
-                                        ToolCursor::SelectMagicWand};
+    const Tool bitmapCursors[] = {Tool::Marquee, Tool::EllipseMarquee, Tool::Lasso,
+                                  Tool::PolygonLasso, Tool::MagicWand};
     bool everyBitmapNonBlank = true;
     CursorBitmap bitmaps[5];
     for (size_t i = 0; i < std::size(bitmapCursors); ++i) {
       bitmaps[i] = rasterizeToolCursorBitmap(bitmapCursors[i]);
-      std::printf("    %-22s -> %dx%d, hotspot (%d,%d), %s\n", toolCursorName(bitmapCursors[i]),
+      std::printf("    %-22s -> %dx%d, hotspot (%d,%d), %s\n", toolName(bitmapCursors[i]),
                   bitmaps[i].width, bitmaps[i].height, bitmaps[i].hotspotX, bitmaps[i].hotspotY,
                   bitmaps[i].nonBlank ? "non-blank" : "BLANK");
       if (!bitmaps[i].nonBlank) everyBitmapNonBlank = false;
@@ -562,28 +548,15 @@ bool runToolCursorTest() {
 
     // Every OTHER `ToolCursor` value has no bitmap at all, and answers a
     // fully transparent, zero-sized-content result -- not merely `false` for
-    // `toolCursorHasBitmap()`, but a `rasterizeToolCursorBitmap()` that
+    // `toolHasBitmapCursor()`, but a `rasterizeToolCursorBitmap()` that
     // agrees with it, since `SystemCursorTable::create()` calls the second
     // function guarded by the first and both have to tell the truth for that
     // guard to mean anything.
-    check(!toolCursorHasBitmap(ToolCursor::Arrow) && !toolCursorHasBitmap(ToolCursor::Paint) &&
-              !toolCursorHasBitmap(ToolCursor::Select) && !toolCursorHasBitmap(ToolCursor::Refuse) &&
-              !rasterizeToolCursorBitmap(ToolCursor::Select).nonBlank,
-          "bitmap: a tool T17 did not name has no bitmap and rasterises to nothing -- "
-          "`toolCursorHasBitmap()` and `rasterizeToolCursorBitmap()` agree on every value "
-          "they were not both told yes about");
-    check(toolCursorHasBitmap(ToolCursor::SelectMarquee) && toolCursorHasBitmap(ToolCursor::SelectEllipseMarquee) &&
-              toolCursorHasBitmap(ToolCursor::SelectLasso) && toolCursorHasBitmap(ToolCursor::SelectPolygonLasso) &&
-              toolCursorHasBitmap(ToolCursor::SelectMagicWand),
-          "bitmap: and exactly T17's five answer yes -- the set this task was asked to give "
-          "a real shape to, no more and no fewer");
+    check(!toolHasBitmapCursor(Tool::Count) && !rasterizeToolCursorBitmap(Tool::Count).nonBlank,
+          "bitmap: Tool::Count -- the enum's bound, not a tool -- has no bitmap and "
+          "rasterises to nothing, so `toolHasBitmapCursor()` and "
+          "`rasterizeToolCursorBitmap()` agree about it rather than one of them guessing");
 
-    // -- G2. every hotspot lands inside the pixels it is a hotspot OF --
-    //
-    // **This is the answer to objection 2** -- "a hotspot nothing in
-    // --selftest could check". A hotspot outside the drawn glyph would put
-    // the OS's notion of "where this cursor points" on a transparent pixel,
-    // which is sabotage (b)'s target.
     auto alphaBounds = [](const CursorBitmap& b, int* minX, int* minY, int* maxX, int* maxY) {
       bool any = false;
       *minX = *minY = 0;
@@ -605,6 +578,98 @@ bool runToolCursorTest() {
       return any;
     };
 
+    // **Every tool, not only the five T17 named.** The five above are the
+    // reported case; this loop is the general one, and it is what makes "the
+    // rest of the tools have appropriate icons" a checked claim rather than a
+    // sentence in a commit message. A tool whose Lucide codepoint the vendored
+    // font build happens not to carry shows up here as a blank, which is the
+    // silent-degradation failure §7 exists to make loud.
+    bool everyToolNonBlank = true, everyToolHotspotInside = true;
+    int toolsWithBitmaps = 0;
+    for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+      const Tool t = static_cast<Tool>(i);
+      if (!toolHasBitmapCursor(t)) continue;
+      ++toolsWithBitmaps;
+      const CursorBitmap b = rasterizeToolCursorBitmap(t);
+      if (!b.nonBlank) {
+        everyToolNonBlank = false;
+        std::printf("    %-22s BLANK\n", toolName(t));
+        continue;
+      }
+      int lo0, lo1, hi0, hi1;
+      const bool any = alphaBounds(b, &lo0, &lo1, &hi0, &hi1);
+      if (!any || b.hotspotX < lo0 || b.hotspotX > hi0 || b.hotspotY < lo1 || b.hotspotY > hi1) {
+        everyToolHotspotInside = false;
+        std::printf("    %-22s hotspot (%d,%d) OUTSIDE bounds x[%d,%d] y[%d,%d]\n", toolName(t),
+                    b.hotspotX, b.hotspotY, lo0, hi0, lo1, hi1);
+      }
+    }
+    // **Without this line the two checks below pass vacuously.** They loop over
+    // tools that HAVE bitmaps and skip the rest, so a `toolHasBitmapCursor()`
+    // narrowed back to five -- or to none -- would satisfy both while shipping
+    // the exact defect the report is about. The count is the coverage claim.
+    check(toolsWithBitmaps == static_cast<int>(Tool::Count),
+          "bitmap: every one of the tools has a bitmap cursor, not a chosen few -- the "
+          "count is asserted because the two checks below iterate only over tools that "
+          "have one and would pass on an empty set");
+    check(everyToolNonBlank,
+          "bitmap: EVERY tool with a bitmap rasterises to visible ink -- all of them, "
+          "not only the five T17 named, since §7 now keys its cursors by Tool");
+    check(everyToolHotspotInside,
+          "bitmap: ...and every one of those hotspots lands inside its own glyph's drawn "
+          "bounding box");
+
+    // **The reported defect, as an assertion rather than a claim.** "The lasso
+    // draw point comes from the centre of the cursor, not the tail of the
+    // lasso" was the bug; in-bounds (above) does not catch it, because the
+    // centre of a glyph is emphatically in bounds. These three pin the actual
+    // placement, and the second half of each is what makes it a test of the
+    // FIX rather than of the shape: a regression to centre-of-glyph reddens
+    // them, and nothing above.
+    auto anchorReport = [&](Tool t, const char* what) {
+      const CursorBitmap b = rasterizeToolCursorBitmap(t);
+      int x0, y0, x1, y1;
+      alphaBounds(b, &x0, &y0, &x1, &y1);
+      std::printf("    %-16s %-14s hotspot (%d,%d) in x[%d,%d] y[%d,%d], centre (%d,%d)\n",
+                  toolName(t), what, b.hotspotX, b.hotspotY, x0, x1, y0, y1, (x0 + x1) / 2,
+                  (y0 + y1) / 2);
+      return b;
+    };
+
+    {
+      const CursorBitmap lasso = anchorReport(Tool::Lasso, "tail");
+      int x0, y0, x1, y1;
+      alphaBounds(lasso, &x0, &y0, &x1, &y1);
+      check(lasso.hotspotX == x0 && lasso.hotspotY == y1 && lasso.hotspotY != (y0 + y1) / 2,
+            "hotspot: the lasso points from its TAIL -- the bottom-left of its own ink -- and "
+            "that is provably not the centre of the loop, which is where a centre-of-glyph "
+            "rule put it and which is the bug this line was written for");
+    }
+    {
+      const CursorBitmap wand = anchorReport(Tool::MagicWand, "tip");
+      int x0, y0, x1, y1;
+      alphaBounds(wand, &x0, &y0, &x1, &y1);
+      check(wand.hotspotX == x1 && wand.hotspotY == y0,
+            "hotspot: the wand points from its TIP -- the top-right end of the shaft, where "
+            "the icon draws its sparkles -- not from the middle of the stick");
+    }
+    {
+      const CursorBitmap zoom = anchorReport(Tool::Zoom, "lens");
+      int x0, y0, x1, y1;
+      alphaBounds(zoom, &x0, &y0, &x1, &y1);
+      check(zoom.hotspotX < (x0 + x1) / 2 && zoom.hotspotY < (y0 + y1) / 2,
+            "hotspot: the magnifier points through its LENS, up and left of the icon's own "
+            "centre -- the icon is a lens plus a handle running to the lower right, so its "
+            "bounding-box centre sits on the glass's rim rather than in the middle of it");
+    }
+
+    // -- G2. every hotspot lands inside the pixels it is a hotspot OF --
+    //
+    // **This is the answer to objection 2** -- "a hotspot nothing in
+    // --selftest could check". A hotspot outside the drawn glyph would put
+    // the OS's notion of "where this cursor points" on a transparent pixel,
+    // which is sabotage (b)'s target.
+
     bool everyHotspotInBounds = true;
     for (size_t i = 0; i < std::size(bitmapCursors); ++i) {
       int minX, minY, maxX, maxY;
@@ -612,7 +677,7 @@ bool runToolCursorTest() {
       const bool inBounds = any && bitmaps[i].hotspotX >= minX && bitmaps[i].hotspotX <= maxX &&
                             bitmaps[i].hotspotY >= minY && bitmaps[i].hotspotY <= maxY;
       std::printf("    %-22s glyph bounds x[%d,%d] y[%d,%d], hotspot %s\n",
-                  toolCursorName(bitmapCursors[i]), minX, maxX, minY, maxY,
+                  toolName(bitmapCursors[i]), minX, maxX, minY, maxY,
                   inBounds ? "inside" : "OUTSIDE");
       if (!inBounds) everyHotspotInBounds = false;
     }
@@ -650,14 +715,9 @@ bool runToolCursorTest() {
     // EVERY `ToolCursor` value and both possible `hasBitmap` answers -- not
     // merely for one tool, which is what "proved" means here as opposed to
     // "asserted".
-    const ToolCursor allCursors[] = {
-        ToolCursor::Arrow,      ToolCursor::Paint,       ToolCursor::Select,
-        ToolCursor::Sample,     ToolCursor::Pan,         ToolCursor::Zoom,
-        ToolCursor::MoveObject, ToolCursor::Text,        ToolCursor::Refuse,
-        ToolCursor::SelectMarquee, ToolCursor::SelectEllipseMarquee, ToolCursor::SelectLasso,
-        ToolCursor::SelectPolygonLasso, ToolCursor::SelectMagicWand};
     bool flagOffAlwaysFalse = true;
-    for (const ToolCursor c : allCursors) {
+    for (int i = 0; i <= static_cast<int>(Tool::Count); ++i) {
+      const Tool c = static_cast<Tool>(i);
       if (shouldUseBitmapCursor(/*bitmapsEnabled=*/false, c, /*hasBitmap=*/true)) flagOffAlwaysFalse = false;
       if (shouldUseBitmapCursor(/*bitmapsEnabled=*/false, c, /*hasBitmap=*/false)) flagOffAlwaysFalse = false;
     }
@@ -685,18 +745,14 @@ bool runToolCursorTest() {
     check(freshTable.bitmapCursorsEnabled(),
           "flag: a freshly constructed SystemCursorTable has bitmap cursors ON -- the per-tool "
           "shapes are what ships, not a mechanism waiting behind a switch (T17). The "
-          "accessibility objection that once kept this false is answered by the scale test "
-          "below, not deferred");
-    check(freshTable.pointerScale() == 0.0f,
-          "flag: ...and it has NOT read a pointer size yet -- 0 is 'no bitmaps built', "
-          "distinct from 1.0 ('built, at normal size'), which is the distinction "
-          "refreshPointerScale() needs to decide its first call changed anything");
+          "accessibility objection that once kept this false turned out not to exist on "
+          "this platform -- see section H");
 
     // The gate is not vacuously false, either -- section D's own lesson,
     // repeated: a function that always answers false would pass the loop
     // above and still be useless. Flip the flag on for these two lines only.
-    check(shouldUseBitmapCursor(/*bitmapsEnabled=*/true, ToolCursor::SelectLasso, /*hasBitmap=*/true) &&
-              !shouldUseBitmapCursor(/*bitmapsEnabled=*/true, ToolCursor::SelectLasso, /*hasBitmap=*/false) &&
+    check(shouldUseBitmapCursor(/*bitmapsEnabled=*/true, Tool::Lasso, /*hasBitmap=*/true) &&
+              !shouldUseBitmapCursor(/*bitmapsEnabled=*/true, Tool::Lasso, /*hasBitmap=*/false) &&
               !shouldUseBitmapCursor(/*bitmapsEnabled=*/true, std::nullopt, /*hasBitmap=*/true),
           "flag: with bitmapsEnabled TRUE the gate answers true only when there both IS a "
           "tool request and it has a real bitmap -- the positive case D's own vacuous-refusal "
@@ -728,34 +784,26 @@ bool runToolCursorTest() {
           "of these five (or plain Select) maps to in sdlCursorFor()");
   }
 
-  std::printf("  -- H. §7's scaling: the accessibility pointer size, honoured by us --\n");
+
+  std::printf("  -- H. §7's one size, and the design-space scaling under it --\n");
 
   {
-    // **Why this section exists at all.** macOS applies its Accessibility ▸
-    // Pointer size setting to the cursors it draws and applies nothing to an
-    // `NSCursor` an app built from its own image -- there is no API to opt
-    // in. That fact is what made "bitmaps do not scale" the one objection
-    // ui/ToolCursor.hpp §7 originally could not answer. The answer is to read
-    // the setting and rasterise at it, and everything below is the proof that
-    // the rasteriser actually reads its `scale` argument rather than
-    // accepting one and drawing 32x32 regardless -- which would pass a
-    // carelessly written version of this section and ship the original bug
-    // with a scale parameter bolted on.
-
-    const float osScale = osPointerSizeScale();
-    std::printf("    osPointerSizeScale() on this machine: %.4fx\n",
-                static_cast<double>(osScale));
-    check(osScale >= 1.0f && osScale <= 4.0f && osScale == osScale,
-          "scale: osPointerSizeScale() is a finite multiplier in [1, 4] -- a preference file "
-          "is user-writable, and an unclamped read of it sizes a texture");
-
-    // Three scales: normal, THIS machine's own setting (whatever it is, so
-    // the case a developer actually runs under is covered rather than only
-    // the round numbers), and the clamp's far end.
-    const float scales[] = {1.0f, osScale, 4.0f};
-    const ToolCursor scaled[] = {ToolCursor::SelectMarquee, ToolCursor::SelectEllipseMarquee,
-                                 ToolCursor::SelectLasso, ToolCursor::SelectPolygonLasso,
-                                 ToolCursor::SelectMagicWand};
+    // **What this section can and cannot see, stated first, because an
+    // earlier revision of it passed completely while the cursor on screen was
+    // three times too big.** Every assertion here is about the CONTENT of a
+    // bitmap at a given scale. None of them is about what size the cursor ends
+    // up on screen -- that depends on how macOS composites an `NSCursor`, which
+    // is not observable from a headless suite and was got wrong by reading
+    // published claims instead of measuring. ui/ToolCursor.hpp §7 records that
+    // mistake; what is left for this section is the narrower and still-useful
+    // property that the rasteriser actually reads its `scale` argument rather
+    // than accepting one and drawing 32x32 regardless.
+    //
+    // The scales exercised are the ones `create()` really asks for -- the base
+    // and its 2x Retina alternate -- plus 4.0 as a headroom case.
+    const float scales[] = {0.75f, 1.5f, 4.0f};
+    const Tool scaled[] = {Tool::Marquee, Tool::EllipseMarquee, Tool::Lasso,
+                           Tool::PolygonLasso, Tool::MagicWand};
 
     auto inkedPixels = [](const CursorBitmap& b) {
       size_t n = 0;
@@ -767,7 +815,7 @@ bool runToolCursorTest() {
     bool everyScaleSized = true, everyScaleNonBlank = true, everyHotspotTracks = true;
     for (const float s : scales) {
       const int expect = static_cast<int>(std::lround(32.0 * static_cast<double>(s)));
-      for (const ToolCursor c : scaled) {
+      for (const Tool c : scaled) {
         const CursorBitmap b = rasterizeToolCursorBitmap(c, s);
         if (b.width != expect || b.height != expect) everyScaleSized = false;
         if (!b.nonBlank) everyScaleNonBlank = false;
@@ -776,7 +824,7 @@ bool runToolCursorTest() {
       // explicitly, so it is the one that has to survive scaling exactly --
       // through the SAME rounding the crosshair's own arms went through, not
       // a second rounding of the same product.
-      const CursorBitmap m = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, s);
+      const CursorBitmap m = rasterizeToolCursorBitmap(Tool::Marquee, s);
       const int hx = static_cast<int>(std::lround(6.0 * static_cast<double>(s)));
       const int hy = static_cast<int>(std::lround(26.0 * static_cast<double>(s)));
       if (m.hotspotX != hx || m.hotspotY != hy) everyHotspotTracks = false;
@@ -786,8 +834,34 @@ bool runToolCursorTest() {
     }
     check(everyScaleSized,
           "scale: every one of T17's five cursors rasterises to round(32 * scale) square at "
-          "1x, at this machine's own pointer size, and at the 4x clamp -- a rasteriser that "
-          "took the argument and ignored it fails here first");
+          "the base scale, at its 2x Retina alternate, and at 4x -- a rasteriser that took "
+          "the argument and ignored it fails here first");
+
+    // **The size that ships**, pinned as a number rather than left implicit in
+    // `create()`. 24 points is `[NSCursor crosshairCursor].image.size`
+    // measured on macOS; a cursor noticeably larger than the system's own does
+    // not read as a design choice. This is the closest a headless suite can
+    // get to the on-screen size -- it fixes the bitmap the OS is handed, and
+    // says nothing about what the OS then does with it.
+    // Read through `cursorBasePoints()`/`cursorBaseScale()` -- the SAME two
+    // functions `create()` calls -- rather than through a scale this test
+    // picked. That distinction is the whole point: the earlier revision that
+    // shipped cursors three times too big passed every assertion in this
+    // section, because none of them read the number the application uses.
+    const CursorBitmap base = rasterizeToolCursorBitmap(Tool::Marquee, cursorBaseScale());
+    const CursorBitmap alt = rasterizeToolCursorBitmap(Tool::Marquee, cursorBaseScale() * 2.0f);
+    std::printf("    ships at %d pt (scale %.4f) -> %dx%d base, %dx%d Retina alternate\n",
+                cursorBasePoints(), static_cast<double>(cursorBaseScale()), base.width,
+                base.height, alt.width, alt.height);
+    check(cursorBasePoints() == 24,
+          "scale: a cursor ships at 24 points -- what [NSCursor crosshairCursor].image.size "
+          "measures on macOS, not a number that felt right, and NOT multiplied by the "
+          "Accessibility pointer size because the OS already does that");
+    check(base.width == cursorBasePoints() && base.height == cursorBasePoints() &&
+              alt.width == cursorBasePoints() * 2 && alt.height == cursorBasePoints() * 2,
+          "scale: and create()'s own two scales really do produce that base and its 2x "
+          "Retina alternate -- read through cursorBaseScale(), the function the application "
+          "calls, not through a scale this test chose for itself");
     check(everyScaleNonBlank,
           "scale: ...and all five are still non-blank at every one of those sizes -- a glyph "
           "path that only works at its original 22px is a blank cursor for an accessibility "
@@ -804,16 +878,14 @@ bool runToolCursorTest() {
     // wireframe at 4x -- the ink covering a QUARTER of the fraction it covers
     // at 1x, because the canvas grew 16x and the ink only 4x.
     //
-    // Measured on this build: the marquee is 9.8633% inked at BOTH 1x and 4x
-    // -- exactly 101 pixels becoming exactly 1616, which is 16x the ink in
-    // 16x the area. The scaling is clean because both the coordinates and the
-    // stroke width are integer multiples at 4x. The bound below is 0.75x the
-    // 1x fraction rather than equality, because at a non-integer scale (this
-    // machine's own 2.0725x) the whole-pixel stroke width rounds and the
-    // fraction moves a little; 0.75 leaves room for that rounding while
-    // staying far above the ~2.47% a hairline would produce.
-    const CursorBitmap at1 = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, 1.0f);
-    const CursorBitmap at4 = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, 4.0f);
+    // The bound below is 0.75x the 1x fraction rather than equality, because
+    // at a non-integer scale the whole-pixel stroke width rounds and the
+    // fraction moves; 0.75 leaves room for that while staying far above the
+    // ~1/4 a hairline would produce. The printed figures below are the
+    // measurement -- read them rather than trusting this comment, which is
+    // exactly the discipline the size bug above was a failure of.
+    const CursorBitmap at1 = rasterizeToolCursorBitmap(Tool::Marquee, 1.0f);
+    const CursorBitmap at4 = rasterizeToolCursorBitmap(Tool::Marquee, 4.0f);
     const double frac1 = static_cast<double>(inkedPixels(at1)) / (at1.width * at1.height);
     const double frac4 = static_cast<double>(inkedPixels(at4)) / (at4.width * at4.height);
     std::printf("    inked fraction: %.4f%% at 1x, %.4f%% at 4x (hairline would be ~%.4f%%)\n",
@@ -826,8 +898,8 @@ bool runToolCursorTest() {
     // A bad scale must not become a zero-sized canvas that then reports
     // itself blank for a reason that has nothing to do with the font -- that
     // would send a reader hunting for a missing Lucide file.
-    const CursorBitmap zero = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, 0.0f);
-    const CursorBitmap negative = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, -3.0f);
+    const CursorBitmap zero = rasterizeToolCursorBitmap(Tool::Marquee, 0.0f);
+    const CursorBitmap negative = rasterizeToolCursorBitmap(Tool::Marquee, -3.0f);
     check(zero.width == 32 && zero.nonBlank && negative.width == 32 && negative.nonBlank,
           "scale: a zero or negative scale is clamped to 1.0 rather than producing an empty "
           "canvas -- a bad preference file must not look like a missing font");

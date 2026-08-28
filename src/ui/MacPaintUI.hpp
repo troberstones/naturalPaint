@@ -86,8 +86,8 @@ std::optional<SDL_SystemCursor> canvasCursorRequest();
 // bitmap should win instead. `nullopt` under the identical circumstances
 // `canvasCursorRequest()` is, AND on the guide-drag and pan/rotate frames
 // where a shape is requested that is not a tool's intent at all -- see
-// `g_canvasToolCursor`'s own comment in ui/MacPaintUI.cpp.
-std::optional<ToolCursor> canvasCursorToolRequest();
+// `g_canvasBitmapTool`'s own comment in ui/MacPaintUI.cpp.
+std::optional<Tool> canvasCursorToolRequest();
 
 // Which layer the LAYERS panel, the `Layer` menu and **the brush** act on.
 //
