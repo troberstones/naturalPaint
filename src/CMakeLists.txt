@@ -44,6 +44,7 @@ add_executable(naturalPaint
   app/selftest/BrushDynamics.cpp
   app/selftest/BrushLibraryFile.cpp
   app/selftest/BucketRefusal.cpp
+  app/selftest/CanvasDimensions.cpp
   app/selftest/Channels.cpp
   app/selftest/CheckedAdd.cpp
   app/selftest/ChromeConsistency.cpp

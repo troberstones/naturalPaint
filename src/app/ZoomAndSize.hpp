@@ -189,4 +189,143 @@ float radiusForDrag(float startRadius, float dragPixelsX) noexcept;
 // report for where it must be reconciled with that branch at merge.
 bool toolZoomsView(Tool tool) noexcept;
 
+// ==========================================================================
+// 4. Canvas dimensions -- the active document is the one source of truth
+// ==========================================================================
+//
+// naturalPaint canvasdim bug report: "Making a non-square document still
+// shows up square. Changing the canvas size to non-square shows square."
+// Root cause: `ui/MacPaintUI.cpp`'s canvas block computed its `texW`/`texH`
+// -- the on-screen canvas geometry EVERYTHING else in that block reads
+// (fit-to-window, `drawSize`, the `ViewTransform`, the corner quad, the
+// navigator, the zoom anchor, hit-testing, the grid overlay and guides) --
+// from `main.cpp`'s two compile-time constants `kCanvasW`/`kCanvasH`
+// (1024x1024), never from the active document's own `Document::width`/
+// `height`. A document opened or resized to anything other than 1024x1024
+// therefore always drew as a 1024x1024 square: File > New with a portrait
+// size, and Image Size / Canvas Size afterward, both looked like they had
+// no effect, because the on-screen quad never read the number either one
+// of them changed.
+//
+// `canvasDimensionsFor()` is the fix, and it is deliberately the ONLY place
+// that decides -- `ui/MacPaintUI.cpp`'s canvas block calls this once, into
+// its local `texW`/`texH`, rather than re-deriving "document size, or the
+// fallback" inline a second time the way the Add Guide popup's percentage
+// field used to (a second, independent read of `canvasW`/`canvasH` a few
+// hundred lines above the canvas block, fixed alongside this).
+//
+// `doc` is nullable BY DESIGN, not an oversight: a session can be empty
+// (`DocumentSession::active()` already returns `nullptr` for it, and
+// `ui/AtelierChrome.hpp`'s `atelierPaneDocuments()` agrees -- see that
+// function's own "one empty pane" comment), and the canvas still has to draw
+// *something* -- the blank-paper quad -- while nothing is open. In that case
+// `fallbackW`/`fallbackH` (the caller's `kCanvasW`/`kCanvasH`) are the
+// answer, and ONLY in that case: once a document exists, its own size wins
+// outright, with no blending or averaging against the fallback.
+//
+// The zero/negative guard is defensive rather than reachable in this build
+// today -- every constructor of a `Document` (`Document::createBlank()`,
+// every `io::` loader) enforces a positive width and height before a
+// `Document` value can exist at all -- but this is the one function every
+// division in the canvas block's fit-to-window and zoom-anchor arithmetic
+// (`avail.x / texW`, etc.) ultimately depends on, so it re-checks rather
+// than trusts a caller three modules away, the same defensive posture
+// `ViewTransform::Mat2::inverse()`'s own zero-determinant guard takes for
+// the same reason: total correctness costs one comparison, and a division
+// by zero costs a NaN that silently poisons every frame after it.
+//
+// **What this function does NOT fix, and why**, is `sim::PaintSim`. The
+// solver is one texture, `width_`/`height_` fixed at whichever call to
+// `ensurePaintSim()` happens to construct it first (`sim/PaintSim.hpp`/
+// `.cpp`) and untouched by any later one -- `ensurePaintSim()`'s own body
+// returns the existing `sim.get()` immediately if `sim` is already non-null,
+// ignoring the `width`/`height` it was just called with. `ui/MacPaintUI.cpp`
+// now passes THIS function's own result to that first call (so a document
+// open when the user makes their first Watercolour/Oil stroke gets a solver
+// sized to match it, not a hardcoded 1024x1024), which closes the common
+// case. It does not, and cannot without recreating the solver's textures and
+// deciding what happens to whatever paint is already wet in them, close the
+// case of a document resized (Image Size / Canvas Size) or switched
+// (multiple open documents of different sizes sharing the one solver --
+// already a known limit; see the unfocused split-pane's own comment in
+// `ui/MacPaintUI.cpp`) AFTER the solver already exists: the paper quad's
+// texture then stays whatever size it was first built at while the document
+// quad drawn over it follows the document exactly, and the two visibly
+// disagree. That mismatch is real, pre-existing in the sense that the solver
+// was never document-sized OR resizable to begin with, and out of this
+// track's scope -- recreating a live solver's GPU state on every Canvas Size
+// change (and deciding whether wet paint survives the resize) is a
+// substantially bigger change than a display-geometry fix, and PRD/PLAN.md
+// name no requirement that forces it here.
+struct CanvasDimensions {
+  float w;
+  float h;
+};
+
+// Pure: the active document's own size if `doc` is non-null and both of its
+// dimensions are positive, else `{fallbackW, fallbackH}`.
+CanvasDimensions canvasDimensionsFor(const OpenDocument* doc, uint32_t fallbackW,
+                                     uint32_t fallbackH) noexcept;
+
+// --- the solver's own size, which is NOT the display size -----------------
+//
+// `canvasDimensionsFor()` above answers "how big is the picture on screen",
+// and that answer is cheap: it sizes a quad. `ensurePaintSim()` asks a
+// different question with identical-looking arguments -- "how big a fluid
+// solver should I allocate" -- and that answer is not cheap at all, so the
+// two do not share one function even though the fix above made it tempting.
+//
+// **The arithmetic, read off `sim/PaintSim.cpp`'s `allocFields()` rather
+// than estimated.** Seven ping-pong fields are allocated unconditionally,
+// each of them TWO full-resolution textures (`makePingPong()` builds
+// `tex[0]` and `tex[1]`), at `kWaterFormat = RGBA16Float` (8 B/texel) or
+// `kPigmentFormat = RGBA32Float` (16 B/texel):
+//
+//   water_ 8   pigC_ 16   pigR_ 16   depC_ 16   depR_ 16   sat_ 8   aux_ 8
+//   -> 2 x (8 + 16 + 16 + 16 + 16 + 8 + 8) = **176 bytes per texel**
+//
+// and `allocInkFields()` adds three more RGBA32Float ping-pongs (lbmA_,
+// lbmB_, lbmC_) the moment the Ink medium is used: 2 x 3 x 16 = 96 B/texel,
+// for **272 bytes per texel** in the worst case.
+//
+// At the 1024x1024 this build has always allocated, that is 184.5 MB, or
+// 285.2 MB once ink is in play -- already 55.7% of the design's 512 MB
+// memory budget (`app/Memory`, asserted by `app/selftest/AtelierChrome.cpp`
+// as "the budget is the design's 512 MB"). Doubling the texel count puts
+// the solver alone over that entire budget.
+//
+// **Why this function has to exist at all.** The canvasdim fix routes the
+// active document's size into the `ensurePaintSim()` call, which is right
+// for a document near the old fixed size and is how a portrait document
+// gets a portrait paper quad. But `Document` dimensions are user-chosen and
+// bounded only by `app/DocumentPresets.hpp`'s
+// `kMaxDocumentPresetDimension = 32768`. Passed through unclamped, a
+// 32768x32768 document's first Watercolour stroke asks the driver for
+// 1.07 Gtexel x 272 B = **292 GB**, and even an ordinary 4000x3000 photo
+// import asks for 3.3 GB where this build has never allocated more than
+// 285 MB. That is not a slow path or a large number to keep an eye on; it
+// is a hard allocation failure on the first brush-down, in a call that used
+// to be a fixed, shipped, measured 1024x1024.
+//
+// **The budget, and why it is this number rather than a chosen one.** The
+// cap is exactly the texel count the fixed canvas already allocated --
+// 1024 x 1024 = 1,048,576 -- so this build's solver footprint after the
+// canvasdim fix is what it was before it, to the byte. That makes the cap a
+// status-quo guarantee rather than a judgement call: raising it becomes a
+// deliberate, separately-measured decision about the 512 MB budget, and
+// nothing here quietly makes one on the way past. A document inside the
+// budget (the reported 800x1200 is 960,000 texels, comfortably inside) gets
+// a solver shaped like itself; a document over it falls back to
+// `fallbackW`/`fallbackH` and therefore to exactly the pre-fix behaviour --
+// the paper quad stretches under a correctly-shaped document quad, which is
+// the gap the section above already documents, not a new one.
+inline constexpr uint64_t kPaintSimMaxTexels = 1024ull * 1024ull;
+
+// Pure: `canvasDimensionsFor()`'s answer when the document fits within
+// `kPaintSimMaxTexels`, else `{fallbackW, fallbackH}`. The caller owns its
+// own fallback: if that already exceeds the budget this hands it back
+// unchanged rather than silently overriding a number the caller chose.
+CanvasDimensions paintSimDimensionsFor(const OpenDocument* doc, uint32_t fallbackW,
+                                       uint32_t fallbackH) noexcept;
+
 }  // namespace np

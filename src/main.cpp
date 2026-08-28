@@ -2139,6 +2139,12 @@ int main(int argc, char** argv) {
     // anchor math and the brush-size gesture/bracket-key range, both as pure
     // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
     const bool zoomAndSizeOk = np::runZoomAndSizeTest();
+    // naturalPaint canvasdim bug fix: `canvasDimensionsFor()` (app/
+    // ZoomAndSize.hpp section 4) -- the active document's own size is now
+    // `ui/MacPaintUI.cpp`'s canvas block's one source of truth for its
+    // on-screen `texW`/`texH`, closing "a non-square document displays
+    // square". Headless and GPU-free.
+    const bool canvasDimensionsOk = np::runCanvasDimensionsTest();
     // track10/input ("make Mac trackpad input feel right"): the notch-vs-
     // precise wheel classifier, the panel scroll's discount/smoothing, and
     // the pinch-to-zoom path's arithmetic -- app/WheelInput.hpp. Headless;
@@ -2215,7 +2221,8 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
-                    saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
+                    saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
+                    angleConventionOk && wheelInputOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk;
     s->shutdown();

@@ -8598,10 +8598,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     ImGui::InputText("Position", posBuf, sizeof(posBuf));
     ImGui::TextDisabled("e.g. 512 or 50%%");
     const bool horizontal = orientationIdx == 0;
-    // A Horizontal guide's position is along canvasH (it sits at a fixed Y);
-    // a Vertical guide's is along canvasW (a fixed X) -- same axis pairing
-    // app/Snapping.hpp's parseGuidePosition() doc comment spells out.
-    const float axisExtent = horizontal ? static_cast<float>(canvasH) : static_cast<float>(canvasW);
+    // A Horizontal guide's position is along the document's height (it sits
+    // at a fixed Y); a Vertical guide's is along its width (a fixed X) --
+    // same axis pairing app/Snapping.hpp's parseGuidePosition() doc comment
+    // spells out. `canvasDimensionsFor()` (naturalPaint canvasdim fix), not
+    // `canvasW`/`canvasH` directly: this popup is a second, independent call
+    // site outside the canvas block below, and reading the fixed solver-
+    // canvas constants here instead of the open document was this exact bug
+    // in a second place -- a "50%" guide on an 800x1200 document used to
+    // land at Y=512 (half of 1024), not Y=600 (half of the document it was
+    // actually being drawn on).
+    const CanvasDimensions guideDims = canvasDimensionsFor(st.documents.active(), canvasW, canvasH);
+    const float axisExtent = horizontal ? guideDims.h : guideDims.w;
     const auto parsed = parseGuidePosition(posBuf, axisExtent);
     if (ImGui::Button("Add") && parsed) {
       st.guides.push_back(
@@ -8983,8 +8991,26 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                         ImGui::ColorConvertU32ToFloat4(atelierToken(atelierSurround())));
   if (ImGui::Begin("##canvas", nullptr, fixedFlags)) {
     const ImVec2 fullAvail = ImGui::GetContentRegionAvail();
-    const float texW = static_cast<float>(canvasW);
-    const float texH = static_cast<float>(canvasH);
+    // The active document's own size, not `canvasW`/`canvasH` (main.cpp's
+    // fixed `kCanvasW`/`kCanvasH`) -- naturalPaint canvasdim bug: a
+    // non-square document used to display square because every one of this
+    // block's downstream computations (fit-to-window, `drawSize`, the
+    // `ViewTransform`, the corner quad, the navigator, the zoom anchor,
+    // hit-testing, the grid overlay and guides -- all listed in
+    // `canvasDimensionsFor()`'s own comment) read `texW`/`texH`, and
+    // `texW`/`texH` read the two compile-time constants instead of the
+    // document. `st.documents.active()` rather than `paneDocs`'s focused
+    // pane: `atelierPaneDocuments()`'s own contract (ui/AtelierChrome.hpp,
+    // "the focused pane always shows the session's active document")
+    // guarantees the two are always the same `OpenDocument*`, so this reads
+    // the session directly rather than through a second lookup that could
+    // only ever agree with it. `canvasW`/`canvasH` survive only as the
+    // "no document open" fallback `canvasDimensionsFor()` itself takes --
+    // this call is the single place that decision gets made; nothing below
+    // re-derives it.
+    const CanvasDimensions canvasDims = canvasDimensionsFor(st.documents.active(), canvasW, canvasH);
+    const float texW = canvasDims.w;
+    const float texH = canvasDims.h;
 
     // PLAN.md Phase 2 step 12: rulers reserve a thin strip along the top and
     // left of this window when shown, so the paintable area shrinks by
@@ -9101,13 +9127,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // straight alpha rather than premultiplied because of ImGui's global
     // blend state, and the revision cache that keeps an unchanged frame free.
     //
-    // The document is drawn on the *canvas* quad, so a document whose own
-    // dimensions differ from kCanvasW/kCanvasH is stretched onto the paper
-    // rather than placed at its own size. That is right for today -- the
-    // document a session starts with is exactly canvas-sized (see main.cpp),
-    // and the two pictures are stacked precisely because they are not yet one
-    // thing -- and it stops being a question at all once the stroke bridge
-    // makes the document the canvas.
+    // The document is drawn on the *canvas* quad, and (naturalPaint
+    // canvasdim fix, `canvasDimensionsFor()`) that quad is now sized to the
+    // document's own `texW`/`texH`, not a fixed 1024x1024 -- so the document
+    // draws at its own aspect ratio, not stretched onto a square.
+    //
+    // **The paper underneath it can still be stretched, and that is the
+    // known remaining gap, not an oversight.** `sim::PaintSim`'s canvas
+    // texture is a fixed size set once, at whichever call to
+    // `ensurePaintSim()` first constructs it (below, at the first
+    // Watercolour/Oil stroke) -- `canvasDimensionsFor()`'s own comment has
+    // the full argument for why recreating it on every later resize is out
+    // of this track's scope. So a document painted, then resized via Canvas
+    // Size, then painted with Watercolour/Oil again shows its wet paint
+    // stretched to the document's new aspect while the dry layer pixels
+    // above it (this call) are not -- the two pictures visibly disagreeing
+    // is the honest symptom of one texture staying the old size under a
+    // quad that now correctly follows the new one, and it stops being a
+    // question at all once the stroke bridge makes the document the canvas.
     //
     // No warnings are collected: `compositeDocumentPremultiplied()` would
     // report an unimplemented blend once per layer per upload, and the layers
@@ -10342,8 +10379,35 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // picked a different medium from the Medium menu before ever
       // painting, honour that choice now instead of silently starting
       // Watercolour and waiting for a mode switch that already happened.
+      // `canvasDims.w`/`.h` (this document's own size, or the fallback if
+      // none is open -- `canvasDimensionsFor()`), not the raw `canvasW`/
+      // `canvasH` parameters: this is the FIRST construction of the solver
+      // for the whole process, and `ensurePaintSim()` never resizes it
+      // again after (its own early `if (sim) return sim.get();`), so
+      // whatever size is handed to it here is what the paper quad is stuck
+      // at until the app quits. Sizing it to the document that is actually
+      // open when the user's first Watercolour/Oil stroke lands is strictly
+      // better than always defaulting to `kCanvasW`/`kCanvasH` regardless of
+      // what that document is -- it closes the common single-document
+      // session -- but it does NOT make the solver follow a LATER Canvas
+      // Size or a document switch; see the "paper underneath it can still
+      // be stretched" comment above, a few hundred lines up in this same
+      // block, for the gap that remains.
+      //
+      // `paintSimDimensionsFor()` and NOT `canvasDims` (the DISPLAY size,
+      // computed at the top of this block): the two questions look identical
+      // and are not. A quad costs nothing to make 4000x3000; `allocFields()`
+      // costs 176 bytes per texel to match it, 272 once Ink is in play. So
+      // the document's size goes through the solver's own budget check
+      // before it reaches the allocator, or one brush-down on a large
+      // document asks the driver for gigabytes it will refuse. That
+      // function's header carries the arithmetic and the 512 MB budget it is
+      // measured against.
       const bool wasNull = !sim;
-      PaintSim* s = ensurePaintSim(sim, gpu, canvasW, canvasH, lut);
+      const CanvasDimensions simDims =
+          paintSimDimensionsFor(st.documents.active(), canvasW, canvasH);
+      PaintSim* s = ensurePaintSim(sim, gpu, static_cast<uint32_t>(simDims.w),
+                                   static_cast<uint32_t>(simDims.h), lut);
       if (s && wasNull && st.mode != PaintMode::Watercolor) s->setMode(gpu, st.mode);
 
       if (s) {

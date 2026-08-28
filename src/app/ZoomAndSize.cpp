@@ -55,4 +55,26 @@ float radiusForDrag(float startRadius, float dragPixelsX) noexcept {
 
 bool toolZoomsView(Tool tool) noexcept { return tool == Tool::Zoom; }
 
+CanvasDimensions canvasDimensionsFor(const OpenDocument* doc, uint32_t fallbackW,
+                                     uint32_t fallbackH) noexcept {
+  if (doc != nullptr && doc->document.width > 0 && doc->document.height > 0) {
+    return CanvasDimensions{static_cast<float>(doc->document.width),
+                            static_cast<float>(doc->document.height)};
+  }
+  return CanvasDimensions{static_cast<float>(fallbackW), static_cast<float>(fallbackH)};
+}
+
+CanvasDimensions paintSimDimensionsFor(const OpenDocument* doc, uint32_t fallbackW,
+                                       uint32_t fallbackH) noexcept {
+  const CanvasDimensions display = canvasDimensionsFor(doc, fallbackW, fallbackH);
+  // uint64_t, and multiplied only after the widening cast: the two factors
+  // are each bounded by kMaxDocumentPresetDimension (32768), whose square is
+  // 2^30 -- inside uint32_t, but only just, and nothing here should depend on
+  // that margin holding if the preset limit is ever raised.
+  const uint64_t texels =
+      static_cast<uint64_t>(display.w) * static_cast<uint64_t>(display.h);
+  if (texels <= kPaintSimMaxTexels) return display;
+  return CanvasDimensions{static_cast<float>(fallbackW), static_cast<float>(fallbackH)};
+}
+
 }  // namespace np

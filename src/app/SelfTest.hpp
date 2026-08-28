@@ -3741,6 +3741,32 @@ bool runSaveReadbackTest();
 //    with no zoom handler.
 bool runZoomAndSizeTest();
 
+// ---------------------------------------------------------------------------
+// naturalPaint canvasdim bug fix: app/ZoomAndSize.hpp's `canvasDimensionsFor()`
+// -- the pure function `ui/MacPaintUI.cpp`'s canvas block now calls for its
+// `texW`/`texH` instead of reading `main.cpp`'s fixed `kCanvasW`/`kCanvasH`
+// directly, closing the reported bug ("Making a non-square document still
+// shows up square. Changing the canvas size to non-square shows square.").
+// Headless -- `OpenDocument` is a plain struct, no ImGui/GPU involved, and
+// this suite builds one with `makeBlankOpenDocument()` rather than driving
+// the (headlessly-unreachable, docs/reachability-audit.md F4) canvas block
+// itself. Covers:
+//  - a non-square document's own width/height come back exactly, in both
+//    portrait and landscape;
+//  - `doc == nullptr` (the empty-session case `DocumentSession::active()`
+//    and `atelierPaneDocuments()` both already return for it) falls back to
+//    `fallbackW`/`fallbackH`, not a zero or a stale value;
+//  - a document mutated in place to a new width/height (what
+//    `ops/DocumentTransform::resizeDocumentCanvas()`/`resizeDocumentImage()`
+//    actually do to `Document::width`/`height`) is picked up on the very
+//    next call -- there is no cached copy anywhere to go stale, which is
+//    the failure mode a second, independent "canvas size" variable would
+//    have had;
+//  - the zero/negative-dimension defensive fallback (unreachable through
+//    any constructor this build ships, per this function's own comment, but
+//    checked anyway since every downstream division depends on it).
+bool runCanvasDimensionsTest();
+
 // track10/input ("make Mac trackpad input feel right"): app/WheelInput.hpp's
 // pure functions -- the notch-vs-precise classifier
 // (`wheelDeltaIsPrecise()`), the panel scroll's discount and exponential
