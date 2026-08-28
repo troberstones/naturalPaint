@@ -92,28 +92,35 @@ float layerCoverage(const Document& doc, size_t index) noexcept {
   return own * groupCoverage(doc, index);
 }
 
-std::vector<PointOp> layerPointOps(const OpStack& ops) {
-  std::vector<PointOp> out;
+std::vector<Op> layerPointOps(const OpStack& ops) {
+  std::vector<Op> out;
   // detectRuns() has already dropped disabled entries and split at non-PointA
-  // boundaries; flattening the runs in order is the whole conversion. Only
-  // PointA has an implementation anywhere in this codebase (core/OpStack.hpp),
-  // so a SpatialB/StrokeC/BakedD entry is simply absent from every run and
-  // therefore from this list.
+  // boundaries; walking each run's raw `[startIndex, endIndex)` range and
+  // copying `ops.at(i)` verbatim reproduces exactly the same filtered,
+  // flattened list `run.ops` (a vector of closures) used to hand back
+  // directly -- see OpRun::ops's own doc comment (core/OpStack.hpp) for why
+  // "enabled PointA entries, in order" is the filter either representation
+  // applies. Only PointA has an implementation anywhere in this codebase
+  // (core/OpStack.hpp), so a SpatialB/StrokeC/BakedD entry is simply absent
+  // from every run and therefore from this list.
   for (const OpRun& run : ops.detectRuns())
-    out.insert(out.end(), run.ops.begin(), run.ops.end());
+    for (size_t i = run.startIndex; i < run.endIndex; ++i) {
+      const Op& op = ops.at(i);
+      if (op.enabled) out.push_back(op);
+    }
   return out;
 }
 
 std::array<float, 4> gradedPremultiplied(const std::array<float, 4>& premultiplied,
-                                         const std::vector<PointOp>& ops) {
+                                         const std::vector<Op>& ops) {
   // The early return is the correctness-relevant line, not an optimisation:
-  // applyPointOpsPremultiplied() divides by alpha and multiplies back, which
+  // applyOpsPremultiplied() divides by alpha and multiplies back, which
   // is two correctly-rounded operations and therefore NOT the identity, and
   // PLAN.md step 1's regression boundary (an unchanged document composites
   // byte-identically to the plain sum it replaced) is asserted at zero
   // tolerance. Every layer with no op stack must cost exactly nothing.
   if (ops.empty()) return premultiplied;
-  return applyPointOpsPremultiplied(premultiplied, ops);
+  return applyOpsPremultiplied(premultiplied, ops);
 }
 
 std::array<float, 4> projectPigmentTexel(const PigmentTexel& texel) noexcept {
@@ -123,9 +130,9 @@ std::array<float, 4> projectPigmentTexel(const PigmentTexel& texel) noexcept {
 }
 
 std::array<float, 4> mixedPairTexel(const PigmentTexel& lower,
-                                    const std::vector<PointOp>& lowerOps, float lowerCoverage,
+                                    const std::vector<Op>& lowerOps, float lowerCoverage,
                                     const PigmentTexel& upper,
-                                    const std::vector<PointOp>& upperOps, float upperCoverage) {
+                                    const std::vector<Op>& upperOps, float upperCoverage) {
   // The three projections, each graded by the stacks that apply to it. The
   // mixed one carries both, in stack order (bottom first), because it is the
   // single projection standing in for both layers.
@@ -155,7 +162,7 @@ std::array<float, 4> mixedPairTexel(const PigmentTexel& lower,
 }
 
 std::array<float, 4> adjustedPremultiplied(const std::array<float, 4>& below,
-                                           const std::vector<PointOp>& ops,
+                                           const std::vector<Op>& ops,
                                            float effectiveCoverage) {
   // Three ways an adjustment layer does nothing at this texel, each returning
   // `below` unchanged rather than computing something that happens to equal
@@ -163,7 +170,7 @@ std::array<float, 4> adjustedPremultiplied(const std::array<float, 4>& below,
   //   * no ops -- the same rule §1 applies to every other kind's stack;
   //   * no coverage -- a hidden layer, opacity 0, or a mask sample of 0;
   //   * nothing beneath -- there is no colour to grade, and this is also what
-  //     keeps applyPointOpsPremultiplied()'s `a <= 0` guard out of this path
+  //     keeps applyOpsPremultiplied()'s `a <= 0` guard out of this path
   //     rather than making a copy of it here.
   if (ops.empty() || !(effectiveCoverage > 0.0f) || !(below[3] > 0.0f)) return below;
 
@@ -229,7 +236,7 @@ std::array<float, 4> clipGroupOpen(const std::array<float, 4>& basePremultiplied
 }
 
 std::array<float, 4> clipGroupFold(const std::array<float, 4>& group, BlendMode mode,
-                                   std::array<float, 4> src, const std::vector<PointOp>& ops,
+                                   std::array<float, 4> src, const std::vector<Op>& ops,
                                    float effectiveCoverage) {
   // The same two lines every other kind's source goes through -- grade, then
   // scale by one coverage scalar -- so a clipped layer and an unclipped one
@@ -474,7 +481,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
         warningsOut->push_back(adjustmentLayerBlendWarning(i, layer));
 
       const float coverage = layerCoverage(doc, i);
-      const std::vector<PointOp> ops = layerPointOps(layer.ops);
+      const std::vector<Op> ops = layerPointOps(layer.ops);
       // Both skips are exact no-ops rather than identity arithmetic: opacity 0
       // and an empty stack must leave the accumulator byte-for-byte untouched.
       if (coverage <= 0.0f || ops.empty()) continue;
@@ -549,9 +556,12 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
                                ? *resolved
                                : BlendMode::Normal;
 
-    // Resolved once per layer for the same reason: building a PointOp
-    // allocates a closure, so doing it per texel would dominate the walk.
-    const std::vector<PointOp> ops = layerPointOps(layer.ops);
+    // Resolved once per layer for the same reason: an Op carrying a Curve
+    // copies a std::vector, so doing this per texel would dominate the walk
+    // -- and per-texel evaluation now goes through applyOpDirect()'s switch
+    // (core/OpStack.hpp, docs/architecture-review.md P0-5), not a per-op
+    // closure, so hoisting this list is purely about not re-copying it.
+    const std::vector<Op> ops = layerPointOps(layer.ops);
 
     const float coverage = layerCoverage(doc, i);
 
@@ -578,7 +588,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     struct ClipMember {
       bool adjustment = false;
       BlendMode mode = BlendMode::Normal;
-      std::vector<PointOp> ops;
+      std::vector<Op> ops;
       float coverage = 0.0f;
       const MaskTileStore* maskTiles = nullptr;
       const TileStore* rgbTiles = nullptr;
@@ -686,7 +696,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       // contributed on its own.
       const Layer& lower = doc.layers[i - 1];
       const float lowerCoverage = layerCoverage(doc, i - 1);
-      const std::vector<PointOp> lowerOps = layerPointOps(lower.ops);
+      const std::vector<Op> lowerOps = layerPointOps(lower.ops);
       // Both halves of the pair carry their own mask, and each one modulates
       // only its own coverage -- `covLow` and `covUp` in this file's header
       // §3, now per texel. The mixing weight `t` is `upper.mass` and is

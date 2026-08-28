@@ -205,7 +205,10 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
     // core/Composite hoists it: `blend` is a std::string, and parsing one per
     // texel per layer would put a string comparison in the innermost loop of
     // an operation that runs on every pointer move. Op stacks are hoisted for
-    // a stronger reason -- building a PointOp allocates.
+    // a stronger reason -- an Op carrying a Curve copies a std::vector, and
+    // core::layerPointOps() (core/Composite.hpp) now hands back raw `Op`
+    // copies rather than `PointOp` closures (docs/architecture-review.md
+    // P0-5) -- the copy cost this comment is about is unchanged either way.
     const MixPairing pairing = mixPairing(doc);
     // **Phase 5 step 9**: and which layer clips which, for the identical
     // reason -- an eyedropper that did not know about clipping would report a
@@ -216,7 +219,7 @@ ProbeSample probePixel(const Document& doc, PixelCoord at, const ProbeParams& pa
     // occupied tiles.
     const ClipRuns clips = clipRuns(doc);
     std::vector<BlendMode> modes(doc.layers.size(), BlendMode::Normal);
-    std::vector<std::vector<PointOp>> ops(doc.layers.size());
+    std::vector<std::vector<Op>> ops(doc.layers.size());
     std::vector<float> coverages(doc.layers.size(), 0.0f);
     for (size_t i = 0; i < doc.layers.size(); ++i) {
       const Layer& layer = doc.layers[i];

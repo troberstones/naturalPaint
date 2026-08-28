@@ -262,6 +262,50 @@ Interim, if the LUT is too big a step: replace `std::vector<std::function>` with
 struct plus a `switch`. It is six ops (`Levels`, `Curves`, `Exposure`, `Saturation`, `Grayscale`,
 `ChannelMixer`), a closed set, and `-Werror=switch` is already on to keep it honest.
 
+#### Outcome (2026-08-27): the interim shipped; the LUT route should not be re-attempted as written
+
+Two of this finding's own premises did not survive being checked, so they are corrected here rather
+than left to be rediscovered.
+
+**"Its only consumer is a self-test" is wrong.** `sim::PaintSim::updateGradePreview()`
+(`src/sim/PaintSim.cpp`) calls `bakeLut()` for the interactive Grade-view preview, wired live from
+`src/main.cpp`, with the version-gated rebake this finding asks for already built. What is true is
+narrower: `bakeLut()` is **GPU-resident** — it takes a `GpuContext&`, dispatches WGSL, and returns a
+`Lut3D` holding only a `WGPUTexture`, with no CPU-readable data. It is therefore not usable *as it
+stands* from `core/Composite.cpp`, which is a pure-CPU walk with no GPU context; wiring it there
+means threading a context through the walk plus a synchronous readback per rebake, which is a much
+larger change than this finding describes.
+
+**The LUT is not accurate enough for the general CPU path, measured rather than assumed.** A
+24³ = 13,824-sample sweep over the unit cube (`app/selftest/GradeDispatch.cpp`, printed every run):
+
+| stack | max abs error |
+|---|---|
+| Exposure | 1.1e-05 |
+| ChannelMixer | 3.1e-03 |
+| Grayscale | 3.5e-03 |
+| Levels | 5.8e-03 |
+| Curves, moderate S | 2.6e-03 |
+| Curves, harsh contrast crunch | **5.28** |
+| Saturation, oversaturating (1.4) | **0.36** |
+| realistic 5-op stack, oversaturating | **1.10** |
+| same 5 ops, in-gamut Saturation (0.85) | 0.031 |
+
+The harsh-curve number confirms ADR-0004's own steep-tangent prediction. The Saturation number is a
+**second, previously undocumented failure mode**: `LutBake` clamps each node to [0,1], silently
+discarding what an oversaturated primary pushes outside the cube, which the reference math never
+clamps. Both are parameter-dependent, not fundamental — in-gamut stacks stay near 0.03 — but
+"oversaturate" and "hard contrast" are ordinary settings, so a LUT on the save/export path would be
+wrong for ordinary documents.
+
+**The interim's predicted win did not materialise.** The `switch` landed (`core::applyOpDirect` /
+`core::applyOpsPremultiplied`, `core/OpStack.hpp`) and is bit-identical to the closure path, but
+measures **0.98×** — about 2% *slower* — on a 5-op stack at both 1024² and 2048². The per-op
+arithmetic (transcendentals in Curves and the shaper) dominates, and a monomorphic indirect call in
+a tight loop is well predicted. It was kept anyway, for the structural reason rather than the
+performance one: it removes the type erasure that blocks any future SIMD batching over the op chain,
+which is where the actual win is.
+
 ---
 
 ### P1-1 — 57,902 lines of tests are compiled and linked into the shipping binary

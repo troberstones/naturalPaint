@@ -244,4 +244,48 @@ const char* pointOpKindName(PointOpKind kind) noexcept;
 // `const char*` because that is what its callers concatenate into.
 std::string opDisplayName(const Op& op);
 
+// docs/architecture-review.md P0-5's interim fix, chosen over rebuilding
+// core/Composite.cpp's per-pixel path on color/LutBake's 32^3 GPU LUT (see
+// this function's .cpp comment for why the LUT route was measured and set
+// aside for now, not merely assumed too slow). `applyPointOpsPremultiplied()`
+// two files down (ops/PointOps.hpp) held a `std::vector<PointOp>` of
+// `std::function<...>` closures and called one per op **per pixel** -- type
+// erasure defeats inlining and vectorisation, and it is an indirect branch
+// the predictor has to re-learn, for a pipeline that is constant for the
+// whole layer. Op is already exactly the "small tagged struct" the review
+// asks for (a kind tag plus fields meaningful only for that kind, the same
+// shape core/Layer.hpp's own Layer/LayerKind established) -- this function
+// dispatches on it with a switch instead, over PointOpKind's six values,
+// closed and kept honest by -Werror=switch (already on, src/CMakeLists.txt).
+//
+// Precondition: `op.opClass == OpClass::PointA` -- meaningless, and never
+// called, for any other class. Every caller reaches this having already
+// filtered to PointA entries (OpStack::detectRuns()'s own run-boundary rule,
+// or core::layerPointOps() built on top of it, core/Composite.cpp) -- this
+// function does not re-check opClass, the same narrower-than-Op precondition
+// toPointOp() (OpStack.cpp, anonymous namespace) already keeps for the same
+// reason.
+std::array<float, 3> applyOpDirect(const std::array<float, 3>& rgb, const Op& op) noexcept;
+
+// The un-premultiply / apply-chain / re-premultiply bracket for an ordered
+// list of raw Op entries, evaluated via applyOpDirect()'s switch -- the exact
+// same contract ops::applyPointOpsPremultiplied() (ops/PointOps.hpp) keeps
+// for a `vector<PointOp>` of closures: `a <= 0` short-circuits to the
+// un-premultiplied value unchanged (nothing to grade), alpha itself is never
+// touched, and an empty `ops` is the caller's job to treat as "no-op, cost
+// nothing" (see ops::applyPointOpsPremultiplied's own doc comment; this
+// function does not special-case an empty list any differently than that one
+// does -- it just runs zero iterations of the loop below and re-premultiplies
+// what it un-premultiplied, which is only exactly the identity when the
+// caller already checked `ops.empty()` first, same as before).
+//
+// Reproduced here rather than shared with ops::applyPointOpsPremultiplied()
+// via some common templated bracket: that function's loop body is `op(straight)`
+// (a stored closure's call operator) and this one's is
+// `applyOpDirect(straight, op)` (a switch) -- different enough that sharing
+// one function would need a callback parameter, which reintroduces exactly
+// the indirect-call cost this function exists to avoid.
+std::array<float, 4> applyOpsPremultiplied(const std::array<float, 4>& premultiplied,
+                                            const std::vector<Op>& ops);
+
 }  // namespace np

@@ -990,6 +990,49 @@ bool runLutBakeTest(GpuContext& gpu);
 //    the --selftest level).
 bool runApplyPassTest(GpuContext& gpu, PaintSim& sim);
 
+// docs/architecture-review.md P0-5 ("std::function called per pixel, when
+// the fast path already exists in this repo"). Headless, GPU-free -- pure
+// CPU, no PaintSim involvement.
+//
+// core/Composite.cpp's adjustment-layer walk used to hold a
+// std::vector<ops::PointOp> of std::function closures and call one per op
+// per PIXEL (type erasure defeating inlining/vectorisation, an indirect
+// branch the predictor had to re-learn, for a pipeline constant across the
+// whole layer). It now calls core::applyOpDirect()/applyOpsPremultiplied()
+// (core/OpStack.hpp) -- a switch over the same six PointOpKind values,
+// -Werror=switch kept exhaustive. See SelfTest.cpp for the full breakdown;
+// in short:
+//  - Regression: the switch and the (untouched) closure path agree exactly
+//    -- not approximately -- on each of the six op kinds alone and on a
+//    5-op stack, across several premultiplied pixels including a fully
+//    transparent one (both paths' `a <= 0` short-circuit).
+//  - Whether the review's own suggested fix -- baking onto color/
+//    LutBake.hpp's 32^3 GPU 3-D LUT and sampling it per pixel instead --
+//    would have been accurate enough to ship on the save/export path this
+//    finding is about. That LUT is GPU-only (Lut3D holds a WGPUTexture,
+//    not CPU-readable data) and its one production caller,
+//    sim::PaintSim::updateGradePreview(), is a narrow single-run live
+//    preview blit over the SDR paint canvas, architecturally separate from
+//    core/Composite.cpp's multi-layer CPU document walk -- so this section
+//    measures the question with its own from-scratch, selftest-only,
+//    CPU-only bake + tetrahedral sample (mirroring color/LutBake.cpp's
+//    documented shaper-domain contract in plain C++) rather than
+//    half-wiring the GPU one into a path it was never built for. Measured,
+//    printed max/mean absolute error per channel for each of the six ops
+//    alone and for a realistic 5-op stack, over a dense (24 steps/axis,
+//    13824-point) sample of the working [0,1] RGB cube -- plus a
+//    deliberately steep "contrast crunch" Curves shape, checked to measure
+//    a materially larger error than a moderate one, confirming ADR-0004's
+//    own "cannot represent a near-vertical curve segment" prediction with a
+//    number rather than trusting the doc.
+//  - A vacuity guard: the realistic stack is confirmed to change a
+//    representative pixel by more than a trivial amount before any error
+//    measured against it is treated as meaning anything.
+//  - [measured] (printed, not check()-gated -- wall-clock is this suite's
+//    documented flake class) op-chain evaluation time, closures vs. the
+//    switch, at 1024^2 and 2048^2 pixels.
+bool runGradeDispatchTest();
+
 // Headless, GPU-free check on app/CurveEdit.hpp (PLAN.md Phase 3 step 8's
 // curve widget, factored out for testability the same way app/Snapping.hpp
 // was for Phase 2 step 12 -- see that header's own doc comment and

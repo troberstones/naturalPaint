@@ -9,8 +9,8 @@
 #include "core/Blend.hpp"
 #include "core/Document.hpp"
 #include "core/Layer.hpp"
+#include "core/OpStack.hpp"
 #include "core/Pigment.hpp"
-#include "ops/PointOps.hpp"
 
 // core/Composite (PLAN.md "Phase 5 -- Stack it", step 1: "Multiple layers in
 // `Document`, with reorder, visibility, lock, opacity"; step 2 moved the blend
@@ -288,11 +288,26 @@
 // operate on straight (non-premultiplied) scene-linear RGB. The accumulator is
 // premultiplied. So the bracket is the familiar un-premultiply, grade,
 // re-premultiply -- and it is **not written again here**:
-// `applyPointOpsPremultiplied()` (PRD B4, ops/PointOps.hpp) is exactly that
-// bracket and already owns it, so this walk hands it the accumulator's texel
-// through `gradedPremultiplied()`, the same function every other layer kind's
-// grade goes through. There is one un-premultiply-for-grading in this binary,
-// not two.
+// `core::applyOpsPremultiplied()` (core/OpStack.hpp) is exactly that bracket
+// and already owns it, so this walk hands it the accumulator's texel through
+// `gradedPremultiplied()`, the same function every other layer kind's grade
+// goes through. There is one un-premultiply-for-grading in *this walk*, not
+// two.
+//
+// **Two implementations of that same bracket exist in the binary, not one.**
+// `ops::applyPointOpsPremultiplied()` (PRD B4, ops/PointOps.hpp) was the
+// original, evaluating its op list through a stored `std::vector<PointOp>`
+// of `std::function` closures -- one indirect call per op per texel. Every
+// self-test that exercises the bracket directly (ops/PointOps' own,
+// color/LutBake's GPU-vs-CPU reference) still uses it unchanged, and its
+// contract is identical: same guard, same un-premultiply/re-premultiply
+// arithmetic, same never-touches-alpha rule. Only this walk stopped calling
+// it, on docs/architecture-review.md's P0-5 finding: that indirect call is
+// exactly wrong for a per-texel hot path evaluating a pipeline that is
+// constant for the whole layer. `core::applyOpsPremultiplied()` keeps the
+// identical bracket but evaluates each `core::Op` via `applyOpDirect()`'s
+// switch instead -- same six formulas, same order, a closed dispatch instead
+// of an open one. app/selftest/GradeDispatch.cpp checks the two agree.
 //
 // Its `a <= 0 -> {0,0,0,0}` guard is therefore inherited rather than
 // duplicated, and this walk **never reaches it**: a texel whose accumulated
@@ -803,21 +818,25 @@ float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept;
 std::string unimplementedBlendWarning(size_t layerIndex, const Layer& layer,
                                       const std::string& mixReason = {});
 
-// The enabled `OpClass::PointA` entries of `ops`, in stack order, each already
-// bound to its own params -- `core::OpStack::detectRuns()`'s output flattened,
-// which is exactly what a per-texel grade needs and is resolved **once per
-// layer** rather than per texel (building a `PointOp` allocates a closure).
+// The enabled `OpClass::PointA` entries of `ops`, in stack order, as raw
+// `core::Op` copies -- `core::OpStack::detectRuns()`'s run boundaries walked
+// and flattened, but each entry copied verbatim rather than turned into a
+// closure (docs/architecture-review.md P0-5: a per-pixel `applyOpDirect()`
+// switch, core/OpStack.hpp, replaced the `std::vector<PointOp>` of
+// `std::function` this used to build). Still resolved **once per layer**
+// rather than per texel -- an `Op` carrying a `Curve` still copies a
+// `std::vector` doing so, the same reason this was hoisted before.
 //
 // Returns an empty vector for an empty stack, and callers must treat empty as
 // "do nothing at all" rather than "apply nothing": see this header's §1 on why
-// running `applyPointOpsPremultiplied()` with no ops is not the identity.
-std::vector<PointOp> layerPointOps(const OpStack& ops);
+// running `applyOpsPremultiplied()` with no ops is not the identity.
+std::vector<Op> layerPointOps(const OpStack& ops);
 
 // `premultiplied` graded by `ops`, or **bit-identically** `premultiplied` when
 // `ops` is empty. The one place this codebase decides that an empty op stack
 // costs nothing and changes nothing.
 std::array<float, 4> gradedPremultiplied(const std::array<float, 4>& premultiplied,
-                                         const std::vector<PointOp>& ops);
+                                         const std::vector<Op>& ops);
 
 // The latent -> RGB projection of one Pigment texel, as a **premultiplied**
 // linear-light RGBA texel: `(latentToRgb(latent) * mass, mass)`. See this
@@ -829,9 +848,9 @@ std::array<float, 4> projectPigmentTexel(const PigmentTexel& texel) noexcept;
 // header's §3, in one function so that the flattener and the eyedropper cannot
 // disagree about what a `Mix` layer looks like.
 std::array<float, 4> mixedPairTexel(const PigmentTexel& lower,
-                                    const std::vector<PointOp>& lowerOps, float lowerCoverage,
+                                    const std::vector<Op>& lowerOps, float lowerCoverage,
                                     const PigmentTexel& upper,
-                                    const std::vector<PointOp>& upperOps, float upperCoverage);
+                                    const std::vector<Op>& upperOps, float upperCoverage);
 
 // One texel of an **Adjustment** layer's effect: `below` -- the composite
 // accumulated beneath it, premultiplied -- with `ops` applied and the result
@@ -853,7 +872,7 @@ std::array<float, 4> mixedPairTexel(const PigmentTexel& lower,
 // computed. See §10 on why both ends have to be exact rather than merely
 // close.
 std::array<float, 4> adjustedPremultiplied(const std::array<float, 4>& below,
-                                           const std::vector<PointOp>& ops,
+                                           const std::vector<Op>& ops,
                                            float effectiveCoverage);
 
 // **An Adjustment layer carrying a blend mode other than `normal` has that
@@ -928,7 +947,7 @@ std::array<float, 4> clipGroupOpen(const std::array<float, 4>& basePremultiplied
 // -- must be skipped by the caller rather than folded with a zero, for the
 // same reason every other skip in this file is a skip (§5).
 std::array<float, 4> clipGroupFold(const std::array<float, 4>& group, BlendMode mode,
-                                   std::array<float, 4> src, const std::vector<PointOp>& ops,
+                                   std::array<float, 4> src, const std::vector<Op>& ops,
                                    float effectiveCoverage);
 
 // Closes the group: back to premultiplied, with the base's alpha restored

@@ -115,9 +115,15 @@ bool runDocumentTextureTest(GpuContext& gpu) {
 
     OpStack stack;
     stack.add(exposureOp(3.0f));
-    const std::vector<PointOp> ops = layerPointOps(stack);
+    // layerPointOps() hands back raw core::Op copies, not ops::PointOp
+    // closures, since docs/architecture-review.md P0-5 (core/Composite.hpp);
+    // core::applyOpsPremultiplied() (core/OpStack.hpp) is that
+    // representation's un-premultiply/switch/re-premultiply bracket, the
+    // same contract ops::applyPointOpsPremultiplied() keeps for its own
+    // std::function-closure callers elsewhere in this suite.
+    const std::vector<Op> ops = layerPointOps(stack);
     const std::array<float, 4> graded =
-        applyPointOpsPremultiplied({0.9f, 0.8f, 0.7f, 0.0f}, ops);
+        applyOpsPremultiplied({0.9f, 0.8f, 0.7f, 0.0f}, ops);
     check(!ops.empty() && std::memcmp(graded.data(), zero.data(), sizeof(float) * 4) == 0,
           "call site 3/5 ops/PointOps: +3 stops on transparent is still {0,0,0,0}");
 

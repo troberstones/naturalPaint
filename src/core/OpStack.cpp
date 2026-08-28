@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <utility>
 
+#include "core/Premultiply.hpp"
+
 namespace np {
 namespace {
 
@@ -136,6 +138,46 @@ std::string opDisplayName(const Op& op) {
       return "unrecognised op (" + std::to_string(op.unrecognised.size()) + " bytes)";
   }
   return "?";
+}
+
+// docs/architecture-review.md P0-5. See OpStack.hpp's doc comment on this
+// function for the full "why a switch instead of the toPointOp() closure
+// above" reasoning; this is the switch itself, one arm per PointOpKind,
+// each calling the exact same ops/PointOps.hpp function toPointOp()'s
+// matching lambda would have called -- the math is identical, only the
+// dispatch mechanism differs, which is what keeps this a performance-only
+// change (a document composites to the same bytes either way, verified by
+// runGradeDispatchTest()'s regression check against the closure path,
+// app/selftest/GradeDispatch.cpp).
+std::array<float, 3> applyOpDirect(const std::array<float, 3>& rgb, const Op& op) noexcept {
+  switch (op.pointKind) {
+    case PointOpKind::Levels:       return applyLevels(rgb, op.levels);
+    case PointOpKind::Curves:       return applyCurves(rgb, op.curves);
+    case PointOpKind::Exposure:     return applyExposure(rgb, op.exposure);
+    case PointOpKind::Saturation:   return applySaturation(rgb, op.saturation);
+    case PointOpKind::Grayscale:    return applyGrayscale(rgb, op.grayscale);
+    case PointOpKind::ChannelMixer: return applyChannelMixer(rgb, op.channelMixer);
+  }
+  // Unreachable for a valid PointOpKind value (every enumerator handled
+  // above, and -Werror=switch keeps that exhaustive); identity rather than
+  // undefined behaviour if this is ever somehow reached, matching
+  // toPointOp()'s own unreachable-fallback convention just above.
+  return rgb;
+}
+
+std::array<float, 4> applyOpsPremultiplied(const std::array<float, 4>& premultiplied,
+                                            const std::vector<Op>& ops) {
+  // Identical bracket to ops::applyPointOpsPremultiplied() (ops/PointOps.cpp)
+  // -- see that function's own doc comment for why `a <= 0` short-circuits
+  // and why alpha is never written by the loop below.
+  const std::array<float, 4> undone = unpremultiply(premultiplied);
+  const float a = undone[3];
+  if (a <= 0.0f) return undone;
+
+  std::array<float, 3> straight{undone[0], undone[1], undone[2]};
+  for (const Op& op : ops) straight = applyOpDirect(straight, op);
+
+  return {straight[0] * a, straight[1] * a, straight[2] * a, a};
 }
 
 }  // namespace np

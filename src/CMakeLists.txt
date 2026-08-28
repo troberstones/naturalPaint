@@ -80,6 +80,7 @@ add_executable(naturalPaint
   app/selftest/AtelierChrome.cpp
   app/selftest/ActiveLayer.cpp
   app/selftest/FormatSupport.cpp
+  app/selftest/GradeDispatch.cpp
   app/selftest/Grain.cpp
   app/selftest/Gradient.cpp
   app/selftest/GuidesGridSnap.cpp

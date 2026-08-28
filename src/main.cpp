@@ -1605,6 +1605,14 @@ int main(int argc, char** argv) {
     // a real PaintSim -- the same shared instance every other PaintSim-
     // backed --selftest case in this chain already uses.
     const bool applyPassOk = np::runApplyPassTest(gpu, *s);
+    // docs/architecture-review.md P0-5: core/Composite.cpp's adjustment-
+    // layer walk no longer calls a std::function per op per pixel -- it
+    // calls core::applyOpDirect()'s switch (core/OpStack.hpp) instead.
+    // Regression-checks the switch against the untouched closure path,
+    // measures a from-scratch CPU-only LUT-accuracy question the review's
+    // own suggested fix raised, and prints before/after timing. Headless
+    // and GPU-free.
+    const bool gradeDispatchOk = np::runGradeDispatchTest();
     // Phase 3 step 8 ("Op-stack UI... and a curve widget operating in the
     // shaper domain"): app/CurveEdit.hpp's pure screen<->curve-space
     // geometry and list-mutation math -- everything the interactive curve
@@ -2172,7 +2180,7 @@ int main(int argc, char** argv) {
                     ellipseMarqueePreviewOk &&
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
-                    lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
+                    lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
                     curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
