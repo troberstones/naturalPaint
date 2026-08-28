@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "brush/ToolOptionsBlend.hpp"
 #include "color/Space.hpp"
 
 namespace np {
@@ -15,6 +16,25 @@ namespace {
 // grepping the binary for something recognisable has a chance of finding it,
 // not for any property of the bits themselves.
 constexpr uint64_t kScatterAngleSalt = 0x3172657474616373ULL;  // "scatter1" (LE)
+
+// Scatter COUNT's own per-SUB-DAB salt (Part 1, `PsScatter::count`) --
+// multiplied by `subIndex` and XORed into the seed before
+// `applyPerDabScatter()` draws SCATTER's own angle, so each of the N
+// sub-dabs stamped at one nominal position gets an INDEPENDENT draw rather
+// than all of them landing on the identical offset. Any fixed odd 64-bit
+// constant decorrelates the sub-dab stream from the stroke's own seed
+// equally well; this one is the ASCII bytes of "subdab01" read as a
+// little-endian word, chosen for the same "recognisable in a hex dump"
+// reason `kScatterAngleSalt` was.
+//
+// **Provably zero at `subIndex == 0`** -- `kScatterSubDabSalt *
+// static_cast<uint64_t>(0)` is exactly `0` by the definition of unsigned
+// multiplication, so the seed this constant is XORed into is bit-identical
+// to the seed alone whenever there is only one sub-dab (`resolvedCount ==
+// 1`, every existing preset before this feature). That is the structural
+// half of `applyPerDabScatter()`'s own no-op proof; `app/selftest/
+// ScatterCount.cpp` is the other half, asserted end to end.
+constexpr uint64_t kScatterSubDabSalt = 0x3130626164627573ULL;  // "subdab01" (LE)
 
 // Two 2*pi's worth of named precision rather than a bare literal: the
 // dynamics matrix's other angular sources (`sourceDisplay()`'s tilt/azimuth/
@@ -68,11 +88,16 @@ constexpr float kHalfPi = kTwoPi * 0.25f;
 // +x" -- so the first dab's perpendicular is due +y, exactly as deterministic
 // as every later dab's, rather than undefined.
 Vec2 applyPerDabScatter(Vec2 centre, const BrushTip& tip, uint64_t seed, uint32_t dabIndex,
-                        float stepDx, float stepDy) noexcept {
+                        float stepDx, float stepDy, uint32_t subIndex) noexcept {
   if (tip.scatter == 0.0f) return centre;  // the identity: no branch taken,
                                            // no draw spent, for every brush
                                            // with nothing linked to SCATTER
-  const float draw = dynamicRandomDraw(seed ^ kScatterAngleSalt, dabIndex);
+  // Scatter COUNT's own sub-dab salt (Part 1) -- exactly `0` when
+  // `subIndex == 0` (unsigned multiplication by zero), so the seed the draw
+  // below reads from is bit-identical to `seed` alone for the single-sub-dab
+  // case, which is every existing caller and every preset with `Cnt ` == 1.
+  const uint64_t subSeed = seed ^ (kScatterSubDabSalt * static_cast<uint64_t>(subIndex));
+  const float draw = dynamicRandomDraw(subSeed ^ kScatterAngleSalt, dabIndex);
   const float magnitude = tip.scatter * tip.radius;
   if (tip.scatterBothAxes) {
     const float angle = draw * kTwoPi;
@@ -399,20 +424,41 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   tip.dualBlend = brush.dualBlend;
   tip.scatterBothAxes = model.scatter.bothAxes;
 
-  // **Deliberately unscaled by anything Photoshop calls Transfer.** The old
-  // code multiplied `brush.load` by two matrix columns (`Flow`,
-  // `Concentration`); both are retired with the matrix. `PsTransfer::flow`/
-  // `PsToolOptions::flow` are real Photoshop settings -- 69 and 101 of 101
-  // presets respectively carry one -- but wiring them in, along with Scatter
-  // Count and the `Md ` blend mode, is explicitly the NEXT phase's job, not
-  // this one (brush/RgbDeposit.hpp §2's own style: name a deferred divergence
-  // rather than hide it). So this is `brush.load` alone, same as it always
-  // was for a brush with no Flow/Concentration link.
+  // **Unscaled HERE by anything Photoshop calls Transfer -- not because it
+  // stays unscaled, but because this is not where the scaling happens.** The
+  // old code multiplied `brush.load` by two matrix columns (`Flow`,
+  // `Concentration`); both are retired with the matrix. `PsTransfer::opacity`/
+  // `.flow` (`opVr`/`prVr`) are now wired -- Part 2 of this phase -- but at
+  // `StrokeSession::begin()`, not here: Opacity is a per-STROKE ceiling that
+  // must be resolved once and latched into the RGB/erase accumulators'
+  // OWN members, and Flow's resolved multiplier has to survive `setTip()`
+  // rebuilding this very tip from a fresh call to this function every frame
+  // -- neither of which this function, called from both `begin()` and
+  // `setTip()` with no memory of which, can do on its own. See `begin()`'s
+  // own comment for the full argument. So this is `brush.load`/
+  // `brush.opacity` alone, same as it always was for a brush with no Flow/
+  // Concentration link -- the base value Transfer's resolved multiplier
+  // scales, not the resolved value itself.
+  //
+  // Scatter Count (`PsScatter::count`/`countJitter`) is wired too, in
+  // `app/StrokeSession.cpp`'s `depositPending()` -- a per-DAB resolution, so
+  // it belongs beside Size/Angle/Roundness/Scatter there rather than here.
   tip.flow = brush.load;
   // Straight through, unscaled: there is no per-dab Grain dynamic in either
   // the matrix or the model.
   tip.opacity = brush.opacity;
   tip.grain = brush.grain;
+
+  // The `Md ` per-stroke blend mode (Part 3, `PsToolOptions::blendMode`),
+  // mapped once at the edge. Unlike Transfer and Scatter Count, this is
+  // groundwork only: `blend` is not read by any of the four deposit routes
+  // yet (see `BrushTip::blend`'s own comment, brush/Deposit.hpp, for the two
+  // obstacles a bounded investigation found). Falls back to `Normal` on
+  // refusal -- the same value `BrushTip::blend`'s own default member
+  // initializer already gives, so ignoring the `false` return here is
+  // exactly today's implicit behaviour for every brush this build has ever
+  // painted, ".abr"-imported or not.
+  blendModeFromPsToolOptions(model.options.blendMode, tip.blend);
 
   // **The foreground, not `defaultPalette()[brush.pigment]`.** This used to
   // read the palette row directly, which was the same thing right up until
@@ -619,6 +665,59 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   tool_ = tool;
   label_ = strokeEditLabel(tool);
 
+  // Transfer Opacity/Flow (Part 2, `PsTransfer::opacity`/`.flow`), resolved
+  // HERE -- before any of the three `*_.begin()` calls below read
+  // `tip.opacity`, and before this function's own `if (haveModel_)` block
+  // further down that copies the rest of the model's Variance objects. That
+  // block runs AFTER these three calls (it always has -- see its own
+  // comment), and Opacity is a per-STROKE ceiling that gets latched into
+  // `rgb_`/`erase_`/`pigErase_`'s own members at exactly this point
+  // (brush/RgbDeposit.hpp §2, brush/RgbErase.hpp §2, brush/PigmentErase.hpp
+  // §2) -- there is no second chance to apply it once those calls have run.
+  // Moving the whole model-copying block earlier was the other option this
+  // task's own brief named; resolving inline here is the smaller change,
+  // because nothing else in that block needs to run before those three
+  // calls, only this.
+  //
+  // Flow has no single latch point the way Opacity does -- `BrushTip::flow`
+  // is read fresh out of `tip_` every dab, by whichever route is running, so
+  // there is nothing to bake the resolved value INTO here that would survive
+  // `setTip()` rebuilding `tip_` from a fresh (Transfer-unaware)
+  // `brushTipFor()` call on the stroke's very next frame. Its resolution
+  // therefore lives in `transferFlowMul_` (a per-stroke CONSTANT, computed
+  // once here) and is applied to `tip_.flow` fresh every dab in
+  // `depositPending()` -- see that loop's own comment for the full argument.
+  //
+  // **No real stroke position exists yet here.** `begin()`'s own signature
+  // has no x/y -- the identical reason `seed_` below is latched from the
+  // stroke's first DAB position rather than here. So a Control-driven
+  // Opacity/Flow Jitter (a brush whose `opVr`/`prVr` reads PenPressure, say)
+  // sees `hardwareInputs` -- this frame's hardware sample, the only one
+  // available -- but the JITTER component draws from a FIXED placeholder
+  // seed (`0`) and a fixed dab index (`0`), never a real per-stroke random
+  // draw. This is a PRE-EXISTING limitation of resolving anything at
+  // `begin()`-time (nothing latched here has ever had real randomness to
+  // draw from -- the ink and the erase/deposit ceiling already had exactly
+  // this limitation before Transfer existed), not a new gap Transfer
+  // introduces. Named plainly rather than left to be discovered, this
+  // codebase's standing rule for a divergence.
+  const bool haveTransferModel = model != nullptr;
+  // The fixed placeholder this comment names. `0` rather than something
+  // derived from `layerIndex`/`tool`/anything else in scope: those are not
+  // positions either, and a seed built from them would look like real
+  // per-stroke variation without being any.
+  constexpr uint64_t kTransferSeed = 0;
+  const float resolvedOpacity =
+      haveTransferModel
+          ? varianceScale(model->transfer.opacity, hardwareInputs, kTransferSeed, 0,
+                          VarianceSite::Opacity) *
+                tip.opacity
+          : tip.opacity;
+  transferFlowMul_ = haveTransferModel
+                         ? varianceScale(model->transfer.flow, hardwareInputs, kTransferSeed, 0,
+                                        VarianceSite::Flow)
+                         : 1.0f;
+
   // The ink, latched for the whole stroke -- brush/RgbDeposit.hpp §2 on why the
   // colour and the ceiling may not move once the accumulator has started, and
   // §3 on the accumulator being allocated here and freed at `end()`.
@@ -636,7 +735,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // file already has in hand and `brush/RgbDeposit` deliberately knows nothing
   // about one (its header §5, "No Document, no Layer").
   if (route_ == StrokeRoute::RgbDeposit)
-    rgb_.begin(tip.linearRgb, tip.opacity, layer.alphaLocked);
+    rgb_.begin(tip.linearRgb, resolvedOpacity, layer.alphaLocked);
   else
     rgb_.end();
 
@@ -652,7 +751,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // erasure carried across strokes would let the floor of the last stroke stop
   // the first dab of the next, so a second pass would refuse to cut deeper.
   if (route_ == StrokeRoute::RgbErase)
-    erase_.begin(tip.opacity);
+    erase_.begin(resolvedOpacity);
   else
     erase_.end();
 
@@ -663,7 +762,7 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // tiles, and an interrupted drag is exactly the case that reaches here with
   // one of them still live.
   if (route_ == StrokeRoute::PigmentErase)
-    pigErase_.begin(tip.opacity);
+    pigErase_.begin(resolvedOpacity);
   else
     pigErase_.end();
 
@@ -696,6 +795,12 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
     angleVariance_ = model->shape.angle;
     roundnessVariance_ = model->shape.roundness;
     scatterVariance_ = model->scatter.scatter;
+    // Scatter COUNT (Part 1) -- copied out alongside the five above, for the
+    // identical reason (`StrokeSession.hpp`'s own member comment: nothing
+    // guarantees the `BrushState`/`BrushPreset` `begin()` was called with
+    // outlives the stroke).
+    baseCount_ = model->scatter.count;
+    countVariance_ = model->scatter.countJitter;
   }
   hardwareInputs_ = hardwareInputs;
   seed_ = 0;
@@ -857,6 +962,32 @@ void StrokeSession::depositPending() {
     // outright, from `baseDiameterPx_`/`baseAngleDeg_`/`baseRoundness_` and
     // this dab's own resolution.
     BrushTip dabTip = tip_;
+    // Transfer FLOW (Part 2): `transferFlowMul_` is a per-STROKE constant,
+    // resolved once at `begin()` -- see that function's own comment on why
+    // it lives here as a multiplier applied fresh every dab, rather than
+    // baked once into `tip_.flow` there. Identity (`* 1.0f`, bit-exact for
+    // every finite float) whenever there is no model or the model's
+    // Transfer Flow Variance is inert, which is what keeps this a no-op for
+    // every brush this codebase already paints with.
+    dabTip.flow = tip_.flow * transferFlowMul_;
+
+    // **Size, Angle, Roundness and Scatter are resolved HERE, per dab, in
+    // exactly one `varianceScale()`/`varianceOffset()` call each -- never a
+    // stroke-begin base multiplied/added to by a second per-dab correction.**
+    // This is `brush/Variance.hpp`'s own load-bearing invariant: a `Variance`
+    // object's floor is applied ONCE, inside its formula, so composing two
+    // partial resolutions the way the old `applyStrokeLocalCorrection()` did
+    // for the matrix would apply that floor twice and reintroduce audit B6 in
+    // a new shape. `dabTip` therefore does not start from `tip_.radius`/
+    // `.angle`/`.roundness`/`.scatter` and correct them -- it REPLACES them
+    // outright, from `baseDiameterPx_`/`baseAngleDeg_`/`baseRoundness_` and
+    // this dab's own resolution.
+    //
+    // Scatter COUNT (Part 1) resolves alongside them below. `resolvedCount`
+    // starts at `dabTip.count` -- `BrushTip::count`'s own identity, 1, when
+    // there is no model -- exactly the identity every field above already
+    // takes in that case.
+    int32_t resolvedCount = dabTip.count;
     if (haveModel_) {
       // The six stroke-local signals, fresh every dab -- unchanged from the
       // old `local` this replaces, since Variance needs the identical inputs
@@ -892,34 +1023,79 @@ void StrokeSession::depositPending() {
       // is exactly `span * jitter` at `span == 2.0`.
       dabTip.scatter = varianceOffset(scatterVariance_, local, 2.0f, seed_, dabIndex,
                                       VarianceSite::Scatter);
+
+      // Scatter COUNT (Part 1, `PsScatter::count`/`countJitter`): a
+      // MULTIPLICATIVE resolution, the same shape Size and Roundness use
+      // above, scaling `baseCount_` (Photoshop's own `Cnt `) rather than
+      // replacing it outright -- there is no "offset" reading for a dab
+      // count the way there is for an angle. Rounded to the nearest integer
+      // and clamped to [1, 16]: at least one dab must always land at a
+      // nominal position (a count that resolved to 0 would be silent paint
+      // loss on a brush whose Count Jitter control happens to sample a
+      // dynamic source at 0 this dab), and 16 is comfortably above the
+      // widest `Cnt ` this build has measured (5, across the 68 scattering
+      // presets `brush/BrushModel.hpp` reports on) while still matching
+      // Photoshop's own Scatter Count ceiling.
+      const float countMul =
+          varianceScale(countVariance_, local, seed_, dabIndex, VarianceSite::Count);
+      resolvedCount =
+          std::clamp(static_cast<int32_t>(std::lround(baseCount_ * countMul)), 1, 16);
     }
+    dabTip.count = resolvedCount;
     // No further flooring here: `brush/Variance.hpp`'s `minimum` is already
     // the floor, applied inside `varianceScale()`'s own formula above. There
     // is no second, pixel-space floor left to apply downstream of it --
     // `BrushTip::sizeFloorPx` (and this exact `std::max()` call) is gone.
     lastDabRadius_ = dabTip.radius;
 
-    const Vec2 centre =
-        applyPerDabScatter(p, dabTip, seed_, static_cast<uint32_t>(dabs_), dx, dy);
+    // One deposit dispatch per SUB-DAB -- `resolvedCount` of them, all at
+    // this ONE nominal position `p`. Each sub-dab draws its OWN scatter
+    // offset (`applyPerDabScatter()`'s `subIndex` parameter, folded into the
+    // seed before SCATTER's own random draw) so N dabs stamped at one
+    // position do not all land on the exact same pixels -- the whole point
+    // of Scatter Count.
+    //
+    // **Provably a no-op at `resolvedCount == 1`** -- every existing preset
+    // before this feature, and most of the 68 scattering ones (`Cnt `
+    // measured 1x21, 2x28, 3x18, 5x1): the loop runs exactly once, at
+    // `subIndex == 0`, and `applyPerDabScatter()`'s own fold is the identity
+    // there by construction. `app/selftest/ScatterCount.cpp` asserts this
+    // bit-for-bit and sabotage-proves it.
+    //
+    // **`dabs_`/`seed_`'s own per-dab index advances once per NOMINAL
+    // position, never once per sub-dab.** VELOCITY, FADE, NOISE, DIRECTION
+    // and INITIAL DIRECTION are all properties of the stroke's own PATH --
+    // consecutive dab POSITIONS, which do not change between sub-dabs
+    // stamped at one position -- so advancing `dabs_` per sub-dab would move
+    // those five signals for a reason that has nothing to do with them.
+    // `distanceTravelled_`/`stepDist`, likewise, are computed once above this
+    // loop, from consecutive PATH positions, not sub-dabs. Only RANDOM
+    // (`dynamicRandomDraw(seed_, dabIndex)`, which nothing downstream reads
+    // per sub-dab today) and SCATTER's own draw read a per-dab index, and
+    // only the second actually varies within this loop, via `subIndex` alone.
+    for (int32_t subIndex = 0; subIndex < resolvedCount; ++subIndex) {
+      const Vec2 centre = applyPerDabScatter(p, dabTip, seed_, static_cast<uint32_t>(dabs_), dx,
+                                             dy, static_cast<uint32_t>(subIndex));
 
-    // The four routes differ in exactly this call, and each takes
-    // `selection`. Everything around it -- the tile bookkeeping, the
-    // counters, the revision bump and the single history entry -- is shared,
-    // because none of it is a property of what a texel is made of or of
-    // which direction the stroke moves it.
-    const DepositCount c =
-        route_ == StrokeRoute::RgbErase
-            ? erase_.eraseDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
-                              &frameTiles_)
-        : route_ == StrokeRoute::PigmentErase
-            ? pigErase_.eraseDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height,
-                                 selection, &frameTiles_)
-        : route_ == StrokeRoute::RgbDeposit
-            ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
-                              &frameTiles_)
-            : depositDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height, selection,
-                        &frameTiles_);
-    frameTexels += c.texels;
+      // The four routes differ in exactly this call, and each takes
+      // `selection`. Everything around it -- the tile bookkeeping, the
+      // counters, the revision bump and the single history entry -- is
+      // shared, because none of it is a property of what a texel is made of
+      // or of which direction the stroke moves it.
+      const DepositCount c =
+          route_ == StrokeRoute::RgbErase
+              ? erase_.eraseDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
+                                &frameTiles_)
+          : route_ == StrokeRoute::PigmentErase
+              ? pigErase_.eraseDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height,
+                                   selection, &frameTiles_)
+          : route_ == StrokeRoute::RgbDeposit
+              ? rgb_.depositDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
+                                &frameTiles_)
+              : depositDab(*layer.pigmentTiles, dabTip, centre, doc.width, doc.height, selection,
+                          &frameTiles_);
+      frameTexels += c.texels;
+    }
     ++dabs_;
     prevDabX_ = p.x;
     prevDabY_ = p.y;

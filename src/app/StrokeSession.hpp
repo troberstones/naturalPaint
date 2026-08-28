@@ -688,8 +688,23 @@ DynamicInputs dynamicInputsFor(const AppState& st) noexcept;
 // draw. See `app/StrokeSession.cpp`'s own definition for the geometry:
 // perpendicular-to-the-stroke by default (`tip.scatterBothAxes == false`,
 // Photoshop's own default), full-circle isotropic when it is set.
+//
+// `subIndex` (Part 1, Scatter Count) picks which of `resolvedCount` sub-dabs
+// stamped at ONE nominal position this call is drawing an offset for --
+// folded into the seed before SCATTER's own random draw, so each sub-dab
+// lands independently rather than all of them piling onto the same offset.
+// Defaulted to `0`, unlike `brush/Deposit.hpp`'s deliberately non-defaulted
+// `Selection*` (whose header explains why THAT default would be a trap):
+// omitting `subIndex` always means "the only dab at this position", which is
+// the correct and only meaning for every one of this function's callers that
+// predate Scatter Count, so a default here cannot silently produce a wrong
+// answer the way a defaulted selection could. At `subIndex == 0` the fold is
+// the identity (`app/StrokeSession.cpp`'s own definition proves it: the
+// salt is multiplied by `subIndex`, which is exactly zero there), so every
+// existing call site -- including `app/selftest/Scatter.cpp`'s, which does
+// not pass this argument -- keeps reading bit-identically.
 Vec2 applyPerDabScatter(Vec2 centre, const BrushTip& tip, uint64_t seed, uint32_t dabIndex,
-                        float stepDx, float stepDy) noexcept;
+                        float stepDx, float stepDy, uint32_t subIndex = 0) noexcept;
 
 // --- The brush library, against the live brush ------------------------------
 //
@@ -975,6 +990,33 @@ class StrokeSession {
   Variance angleVariance_;
   Variance roundnessVariance_;
   Variance scatterVariance_;
+
+  // Scatter COUNT's own base value and Variance (Part 1, `PsScatter::count`/
+  // `countJitter`) -- copied out at `begin()` alongside the four above, and
+  // resolved the identical single-call-per-dab way in `depositPending()`.
+  // `baseCount_` defaults to 1, `BrushTip::count`'s own identity, so a
+  // session begun with `haveModel_` false (or never resolving this member at
+  // all) reads exactly the pre-existing single-dab-per-position behaviour.
+  int32_t baseCount_ = 1;
+  Variance countVariance_;
+
+  // Transfer FLOW's own resolved multiplier (Part 2, `PsTransfer::flow`) --
+  // latched ONCE at `begin()`, from `hardwareInputs` and a fixed placeholder
+  // seed (`begin()`'s own comment says why: there is no real stroke position
+  // yet), and applied to `tip_.flow` fresh every dab in `depositPending()`
+  // rather than baked into `tip_.flow` here. Baking it in would not survive
+  // `setTip()` rebuilding `tip_` from a fresh, Transfer-unaware
+  // `brushTipFor()` call on the stroke's very next frame -- `depositPending()`
+  // 's own comment on this member has the full argument. Defaults to 1.0f,
+  // the multiplicative identity, so a session with no model or an inert
+  // Transfer Flow Variance reads `tip_.flow` completely unmodified.
+  //
+  // Transfer OPACITY has no equivalent member: it is a per-stroke CEILING,
+  // latched directly into `rgb_`/`erase_`/`pigErase_`'s own accumulators at
+  // `begin()` (their `*_.begin()` calls take the resolved value directly),
+  // which is immune to `setTip()` by construction -- `setTip()` never touches
+  // any of those three objects, only `tip_`.
+  float transferFlowMul_ = 1.0f;
 
   // The hardware sample `begin()`/`setTip()` latched -- see either's own
   // comment. Read by the per-dab loop below to resolve a

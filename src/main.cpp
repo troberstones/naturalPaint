@@ -1712,6 +1712,9 @@ int main(int argc, char** argv) {
     // ~0, perpendicular component real -- rather than a flag. Headless and
     // GPU-free.
     const bool scatterOk = np::runScatterTest();
+    // Phase C Part 1: Scatter Count, resolved per dab and dispatched as N
+    // sub-dabs per nominal position. Headless and GPU-free.
+    const bool scatterCountOk = np::runScatterCountTest();
     // io/AbrBrushes' `samp` block: sampled bitmap tips decoded and stamped by
     // brush/Deposit.hpp §2c in place of the procedural tip. Headless and
     // GPU-free.
@@ -2238,6 +2241,12 @@ int main(int argc, char** argv) {
     // track10/feel (PaintCopilot §3.2, arXiv:2605.20941): the log/power
     // pressure-response curves and the pressure EMA's per-stroke reset.
     const bool pressureFeelOk = np::runPressureFeelTest();
+    // Phase C Part 2: Transfer Opacity/Flow, latched once at pen-down and
+    // (for Flow) applied fresh every dab. Headless and GPU-free.
+    const bool transferDynamicsOk = np::runTransferDynamicsTest();
+    // Phase C Part 3 (bounded): the `Md ` blend id mapping and its one call
+    // site -- groundwork only, no route wired. Headless and GPU-free.
+    const bool toolOptionsBlendOk = np::runToolOptionsBlendTest();
   const bool strokePreviewOk = np::runStrokePreviewTest();
     // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp), US 5,347,620:
     // the tiled grain field, `F = clamp(P*S*O1 - G, 0, 1)`, grain OFF as a
@@ -2273,7 +2282,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && shelvedLinksOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && shelvedLinksOk && scatterOk && scatterCountOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
@@ -2289,7 +2298,7 @@ int main(int argc, char** argv) {
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
-                    saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
+                    saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk && transferDynamicsOk && toolOptionsBlendOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk;
     s->shutdown();

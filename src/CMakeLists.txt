@@ -136,6 +136,7 @@ add_executable(naturalPaint
   app/selftest/RgbErase.cpp
   app/selftest/SaveReadback.cpp
   app/selftest/Scatter.cpp
+  app/selftest/ScatterCount.cpp
   app/selftest/Selection.cpp
   app/selftest/SelectionBoundary.cpp
   app/selftest/SelectionDrag.cpp
@@ -153,6 +154,8 @@ add_executable(naturalPaint
   app/selftest/TileResidency.cpp
   app/selftest/TileStore.cpp
   app/selftest/ToolCursor.cpp
+  app/selftest/ToolOptionsBlend.cpp
+  app/selftest/TransferDynamics.cpp
   app/selftest/Transform.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
@@ -184,6 +187,7 @@ add_executable(naturalPaint
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/StrokePath.cpp
+  brush/ToolOptionsBlend.cpp
   brush/Variance.cpp
   color/LutBake.cpp
   color/Shaper.cpp

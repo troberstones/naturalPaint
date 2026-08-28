@@ -253,7 +253,7 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept {
   // not assumed -- which is the only reason the weaker version is not still
   // here.
   const auto& [radius, hardness, roundness, angle, bitmap, dualTip, dualBlend, flow, spacing,
-               scatter, scatterBothAxes, grain, pigment, linearRgb, opacity] = a;
+               scatter, scatterBothAxes, grain, pigment, linearRgb, opacity, count, blend] = a;
   // `bitmap` and `dualTip` compare by POINTER, which is `dabPreviewTipsEqual()`'s
   // established convention; its comment carries the argument.
   return radius == b.radius && hardness == b.hardness && roundness == b.roundness &&
@@ -261,7 +261,7 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept {
          dualBlend == b.dualBlend && flow == b.flow && spacing == b.spacing &&
          scatter == b.scatter && scatterBothAxes == b.scatterBothAxes &&
          grainParamsEqual(grain, b.grain) && pigment == b.pigment &&
-         linearRgb == b.linearRgb && opacity == b.opacity;
+         linearRgb == b.linearRgb && opacity == b.opacity && count == b.count && blend == b.blend;
 }
 
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {

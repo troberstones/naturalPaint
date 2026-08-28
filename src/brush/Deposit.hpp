@@ -9,6 +9,7 @@
 #include "brush/CoverageBlend.hpp"
 #include "brush/Grain.hpp"
 #include "brush/StrokePath.hpp"
+#include "core/Blend.hpp"
 #include "core/Pigment.hpp"
 #include "core/SelectionMask.hpp"
 #include "core/Tile.hpp"
@@ -762,6 +763,32 @@ struct BrushTip {
   // and giving a pigment stroke a mass ceiling of its own is a decision about
   // what a half-loaded brush means physically, not a plumbing job.
   float opacity = 1.0f;
+
+  // How many dabs land at ONE nominal stroke position -- Photoshop's own
+  // Scattering "Count" (`PsScatter::count`, `Cnt ` on disk). 1 is the
+  // identity every `BrushTip` this codebase already builds by naming its
+  // fields keeps: `app/StrokeSession`'s `depositPending()` loops over
+  // exactly this many sub-dabs, each with its own scatter offset, and a
+  // single iteration at `subIndex == 0` is provably bit-identical to the one
+  // dispatch this field's own loop replaced (that function's own comment
+  // carries the proof).
+  int32_t count = 1;
+
+  // The per-stroke blend mode a `.abr`'s tool options carry (`PsToolOptions::
+  // blendMode`, Photoshop's `Md `), mapped once at the edge
+  // (`blendModeFromPsToolOptions()`, brush/ToolOptionsBlend.hpp) onto this
+  // project's layer-compositing vocabulary (`core::BlendMode`).
+  //
+  // **Set by `brushTipFor()`, read by nothing downstream yet.** None of the
+  // four deposit routes (`brush/RgbDeposit`, `brush/RgbErase`,
+  // `brush/PigmentErase`, the free `depositDab()` for Pigment) thread this
+  // through to their own per-texel write -- see `brushTipFor()`'s own
+  // comment for the two obstacles that stopped that (a Pigment texel has no
+  // premultiplied RGBA to blend, and Photoshop's own Eraser tool does not
+  // read a brush's blend mode at all). The field and the mapping function
+  // are left in place, harmless and unused, as the groundwork a future task
+  // can build the wiring on top of without re-deriving the mapping.
+  BlendMode blend = BlendMode::Normal;
 
   // **`sizeFloorPx` is gone.** Through commit 8f6f960 this held the pixel
   // floor beneath `radius`'s own product, computed once and applied once,

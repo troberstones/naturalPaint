@@ -1100,6 +1100,15 @@ bool runShelvedLinksTest();
 // due-+y axis rather than an undefined one. Pure CPU, no document, no GPU.
 bool runScatterTest();
 
+// Phase C Part 1: Scatter Count (`PsScatter::count`/`countJitter`, `Cnt ` on
+// disk) resolved per dab in `app/StrokeSession.cpp`'s `depositPending()` and
+// dispatched as N sub-dabs per nominal stroke position, each with its own
+// `applyPerDabScatter()` offset. Asserts the no-op at `resolvedCount == 1`
+// (dabCount()/texelsWritten()/strokeTiles() bit-identical to no model at
+// all) and the measured claim that count == 3 writes exactly 3x the texels
+// of count == 1. Pure CPU, no document window, no GPU.
+bool runScatterCountTest();
+
 // io/AbrBrushes' `samp` block and brush/Deposit.hpp §2c: a sampled bitmap tip
 // decoded (raw and PackBits, both subversions' header skip), matched to a
 // preset by UUID, resolving a `#Prc` `Dmtr` against the sample's own pixel
@@ -3891,6 +3900,29 @@ bool runWheelInputTest();
 bool runStrokePreviewTest();
 
 bool runPressureFeelTest();
+
+// Phase C Part 2: Transfer Opacity/Flow (`PsTransfer::opacity`/`.flow`,
+// `opVr`/`prVr`), latched once at `StrokeSession::begin()` -- Opacity
+// directly into the RGB deposit/erase accumulators, Flow into
+// `transferFlowMul_`, applied fresh every dab. Asserts a stroke with an
+// inert Transfer Variance paints bit-identically to no model at all (dab/
+// texel counts, tile set AND the stored pixel), and that a real, hand-built
+// `opVr`/`prVr` with a `PenPressure` control measurably -- and, at a single
+// non-overlapping hard-disc dab's own centre, EXACTLY -- changes the stored
+// alpha (1.0 unscaled vs 0.5 halved, for both Opacity's ceiling and Flow's
+// weight). Pure CPU, no document window, no GPU.
+bool runTransferDynamicsTest();
+
+// Phase C Part 3 (bounded investigation): `blendModeFromPsToolOptions()`
+// (brush/ToolOptionsBlend.hpp), the edge mapping from Photoshop's own `Md `
+// tool-options blend id onto `core::BlendMode`, and `brushTipFor()`'s one
+// call site for it. Groundwork only -- `BrushTip::blend` is not wired into
+// any of the four deposit routes (see that field's own comment in
+// brush/Deposit.hpp for the two obstacles found), so this asserts the
+// mapping's three honoured ids, its three distinctly-worded refusals, and
+// the fallback to Normal, rather than any painted pixel. Pure CPU, no
+// document window, no GPU.
+bool runToolOptionsBlendTest();
 
 // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp): US 5,347,620's tiled
 // grain field and its `F = clamp(P*S*O1 - G, 0, 1)` overlay fraction, headless
