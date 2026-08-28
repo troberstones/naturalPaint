@@ -967,3 +967,49 @@ Two things came out of that, and the second is the more useful:
 **Still true, and not fixed**: bitmaps ignore the user's cursor theme. That was
 the milder of the two objections and the reasoning has not changed — a drawing
 tool overriding the pointer over its own canvas is conventional.
+
+---
+
+## T18 — A layered PSD opens with orange halos and stray sparks · open
+
+**Reported.** Three Photoshop-authored `.psd` files were supplied to test
+`io/PsdImport` against something other than its own writer. Two open
+correctly. The third —
+`Peter_confronts_a_small_monster_with_fire.psd`, 5000x2559, 53 records —
+opens with orange halos around both figures and a scatter of sparks that are
+not in Photoshop's own composite.
+
+**Verified — two causes, both decode gaps, neither a compositing bug.** The
+importer was compared layer-for-layer against psd-tools 1.18.0 (MIT, used as
+an oracle) across all three files: name, count, stacking order, opacity,
+visibility, clipping, rectangle, covered-pixel count and mean straight linear
+RGBA all match, worst deviation 2.3e-4, which is `rgba16float`'s quantisation
+floor. **Everything the reader claims to read, it reads correctly.** The
+symptom is entirely what it discards:
+
+* **Ten layers carry a raster mask** (channel id −2) that is walked past and
+  dropped. `core/Composite.cpp:30` already multiplies coverage by
+  `Layer::mask`, so the receiving feature is complete — only the decode is
+  missing.
+* **Four layers carry a blend key that is not imported** — `colr` x3 and
+  `lddg` x1, all four of them *also* masked, so those four are wrong twice.
+  `lddg` (Linear Dodge/Add) is `BlendMode::Plus`, which `core/Blend.cpp:177`
+  already implements; it is merely absent from the mapping table. `colr` has
+  no equivalent in this codebase's seven modes and the warning is honest.
+
+One layer carries most of it: `Layer 30` is a full-canvas Linear Dodge glow at
+20% opacity whose mask has a **mean of 0.017**. Photoshop shows 1.7% of it; we
+show all of it, as Normal.
+
+Also dropped, with no visual symptom: **six `lsct` group records per file**
+(imported as junk empty layers, one of them named `</Layer group>` in the
+panel — `LayerKind::Group` and `Layer::groupTag`/`parent` already exist, and
+all six groups are pass-through, which is exactly what `core/Composite.hpp:688`
+implements), and **`lspf` transparency-lock on two layers**, whose receiving
+field `Layer::alphaLocked` landed in `4931d6d`.
+
+**Work.** `docs/psd-import-gaps.md` — sequence, verified wire layouts,
+receiving fields, the assertions to write and the sabotage for each. Masks and
+`lddg` together first; they are the whole visible defect. The three files are
+the user's artwork, are gitignored by name, and nothing in `--selftest` may
+depend on them.
