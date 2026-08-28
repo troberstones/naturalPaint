@@ -2268,6 +2268,13 @@ int main(int argc, char** argv) {
   // create/destroy pair can be read as one by scrolling between them.
   np::SystemCursorTable cursors;
   cursors.create();
+  // ui/ToolCursor.hpp §7. `create()` reads `osPointerSizeScale()` itself; this
+  // line only makes the answer observable, because "the cursors are the wrong
+  // size" and "the preference was not readable" look identical from outside
+  // and the second one is a one-line log away from being obvious.
+  std::printf("[cursor] per-tool bitmap cursors %s, pointer size %.2fx\n",
+              cursors.bitmapCursorsEnabled() ? "on" : "off",
+              static_cast<double>(cursors.pointerScale()));
 
   // app/Keymap (Phase 2 step 15, PRD R7/R8): bindings loaded from a data
   // file rather than the `if (e.key.key == SDLK_...)` checks this used to
@@ -2702,6 +2709,18 @@ int main(int argc, char** argv) {
         ImGui_ImplWGPU_InvalidateDeviceObjects();
         ImGui_ImplWGPU_CreateDeviceObjects();
       }
+      if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+        // ui/ToolCursor.hpp §7: macOS does not scale a custom cursor with the
+        // Accessibility ▸ Pointer size setting, so this application reads that
+        // setting and rasterises its own cursors at it. This is the one moment
+        // it can have changed without us -- the user went to System Settings
+        // and came back. `refreshPointerScale()` re-reads and rebuilds ONLY if
+        // the number actually moved, so the cost on an ordinary focus change
+        // is one preference read and a float compare.
+        if (cursors.refreshPointerScale())
+          std::printf("[cursor] pointer size changed -- bitmap cursors rebuilt at %.2fx\n",
+                      static_cast<double>(cursors.pointerScale()));
+      }
       if (e.type == SDL_EVENT_KEY_DOWN) {
         // Resolve the raw key event through the keymap rather than testing
         // SDL keycodes here. `activeScope` is std::nullopt because no
@@ -2968,12 +2987,10 @@ int main(int argc, char** argv) {
     // panels would lose their cursors.
     //
     // The second argument is ui/ToolCursor.hpp §7's addition: the same
-    // frame's request as a `ToolCursor` intent, read only so `apply()` can
-    // ask whether a bitmap cursor should win instead of the system shape
-    // above. `SystemCursorTable::bitmapCursorsEnabled()` defaults to false
-    // and nothing in this build calls `setBitmapCursorsEnabled(true)` -- see
-    // §7 for why that flag is left to a product owner -- so passing this
-    // costs nothing today; it only wires the mechanism through.
+    // frame's request as a `ToolCursor` intent, so `apply()` can pick the
+    // per-tool bitmap over the system shape above. That is now the normal
+    // path -- `bitmapCursorsEnabled()` defaults to true -- and the system
+    // shape is the fallback for a bitmap that failed to rasterise.
     cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest());
 
     ImGui::Render();

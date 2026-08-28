@@ -7,6 +7,7 @@
 
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
+#include "ui/PointerScale.hpp"
 
 // stb_truetype's IMPLEMENTATION lives in this translation unit, and only this
 // one, at global scope -- the same scope `imgui_draw.cpp` (third_party/imgui)
@@ -103,11 +104,12 @@ ToolCursor cursorForTool(Tool tool) noexcept {
     // T17 (docs/testing-issues.md): these five used to fall through to the
     // same `Select` case above, which is what made a lasso drag and a wand
     // click show the identical "drag a rectangle" diagonal arrow. Each now
-    // has its own intent -- hpp §7 is the bitmap (behind a flag) each one
-    // gets, and every one of the five still projects to
-    // `SDL_SYSTEM_CURSOR_NWSE_RESIZE` through `sdlCursorFor()` below with the
-    // flag off, which is what keeps this split behaviourally invisible until
-    // someone turns the flag on.
+    // has its own intent, and hpp §7 is the bitmap each one now gets. All
+    // five still project to `SDL_SYSTEM_CURSOR_NWSE_RESIZE` through
+    // `sdlCursorFor()` below -- that projection is now the FALLBACK path
+    // (§7's flag off, or a bitmap that failed to rasterise), not the normal
+    // one, and it is deliberately left as it was so "bitmaps off" remains
+    // byte-identical to the behaviour before §7 existed.
     case Tool::Marquee:
       return ToolCursor::SelectMarquee;
     case Tool::EllipseMarquee:
@@ -301,10 +303,19 @@ SDL_SystemCursor sdlCursorForImGui(ImGuiMouseCursor cursor) noexcept {
 
 namespace {
 
-// Windows' own cursor bitmaps are 32x32; macOS accepts whatever size a
-// surface hands `SDL_CreateColorCursor()`. 32 buys headroom on the pickier
-// platform at no cost to the other.
-constexpr int kCursorCanvas = 32;
+// **A design space, not a pixel size.** Every coordinate in this section is
+// written in these 32 units and multiplied by a `scale` on the way to
+// pixels, because a cursor now has TWO independent reasons to be bigger than
+// 32 pixels: the user's accessibility pointer size (ui/PointerScale.hpp --
+// macOS will not scale a custom cursor for us, so we scale it ourselves) and
+// the display's backing scale (a 2x alternate representation, which SDL turns
+// into the second rep of one NSImage). Those multiply, so the largest canvas
+// this file rasterises is 32 * 4.0 * 2 = 256 px square.
+//
+// 32 was chosen because Windows' own cursor bitmaps are 32x32 and macOS
+// accepts whatever a surface hands `SDL_CreateColorCursor()`; as a design
+// space rather than a pixel count it now only sets the proportions.
+constexpr int kCursorDesignUnits = 32;
 
 void setPixel(std::vector<uint8_t>& rgba, int w, int h, int x, int y, uint8_t a) {
   if (x < 0 || y < 0 || x >= w || y >= h) return;
@@ -316,15 +327,29 @@ void setPixel(std::vector<uint8_t>& rgba, int w, int h, int x, int y, uint8_t a)
   p[3] = a;
 }
 
-// Bresenham. Every procedural cursor in this file is line segments, so one
-// rasteriser covers the rectangle, the polygon standing in for the ellipse,
-// and both crosshair arms.
-void drawLine(std::vector<uint8_t>& rgba, int w, int h, int x0, int y0, int x1, int y1) {
+// One design unit, in pixels, for this bitmap. Rounded rather than truncated
+// so a scale of 2.07 does not systematically pull every coordinate toward the
+// top-left of where it was drawn.
+int px(int designUnits, float scale) {
+  return static_cast<int>(std::lround(static_cast<double>(designUnits) * scale));
+}
+
+// How thick a one-unit stroke is at this scale. Without this the shapes stay
+// hairlines as they grow -- a 66-pixel marquee drawn with 1-pixel edges reads
+// as a faint wireframe, not as an enlarged cursor, which would defeat the
+// entire point of honouring the accessibility setting.
+int strokeWidth(float scale) { return std::max(1, static_cast<int>(std::lround(scale))); }
+
+// Bresenham, stamping a `t`x`t` square at each step. Every procedural cursor
+// in this file is line segments, so one rasteriser covers the rectangle, the
+// polygon standing in for the ellipse, and both crosshair arms.
+void drawLine(std::vector<uint8_t>& rgba, int w, int h, int x0, int y0, int x1, int y1, int t) {
   int dx = std::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
   int dy = -std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
   int err = dx + dy;
   for (;;) {
-    setPixel(rgba, w, h, x0, y0, 255);
+    for (int oy = 0; oy < t; ++oy)
+      for (int ox = 0; ox < t; ++ox) setPixel(rgba, w, h, x0 + ox, y0 + oy, 255);
     if (x0 == x1 && y0 == y1) break;
     const int e2 = 2 * err;
     if (e2 >= dy) {
@@ -342,43 +367,49 @@ void drawLine(std::vector<uint8_t>& rgba, int w, int h, int x0, int y0, int x1, 
 // parameter, not two hand-drawn cursors, because the crosshair and its
 // position are identical between the two marquees and the shape is the only
 // thing the report asked to vary.
-CursorBitmap drawMarqueeCrosshair(CursorMarqueeShape shape) {
+CursorBitmap drawMarqueeCrosshair(CursorMarqueeShape shape, float scale) {
   CursorBitmap out;
-  out.width = out.height = kCursorCanvas;
+  out.width = out.height = px(kCursorDesignUnits, scale);
   out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
+  const int t = strokeWidth(scale);
 
   // The shape: a 20x20 box in the canvas's upper-right, offset so its own
   // bottom-left corner (10, 22) sits well clear of the crosshair below.
+  // Design units; `px()` is the only place they become pixels.
   constexpr int kLeft = 10, kTop = 2, kSize = 20;
+  const int left = px(kLeft, scale), top = px(kTop, scale), size = px(kSize, scale);
   if (shape == CursorMarqueeShape::Rectangle) {
-    drawLine(out.rgba, out.width, out.height, kLeft, kTop, kLeft + kSize, kTop);
-    drawLine(out.rgba, out.width, out.height, kLeft + kSize, kTop, kLeft + kSize, kTop + kSize);
-    drawLine(out.rgba, out.width, out.height, kLeft + kSize, kTop + kSize, kLeft, kTop + kSize);
-    drawLine(out.rgba, out.width, out.height, kLeft, kTop + kSize, kLeft, kTop);
+    drawLine(out.rgba, out.width, out.height, left, top, left + size, top, t);
+    drawLine(out.rgba, out.width, out.height, left + size, top, left + size, top + size, t);
+    drawLine(out.rgba, out.width, out.height, left + size, top + size, left, top + size, t);
+    drawLine(out.rgba, out.width, out.height, left, top + size, left, top, t);
   } else {
     // A stepped polygon around the box's inscribed circle -- precision
     // beyond "reads as round rather than square" is not this glyph's job,
     // and a 20px cursor icon cannot show the difference between this and a
-    // true midpoint ellipse anyway.
+    // true midpoint ellipse anyway. The step count does not scale: at 4x the
+    // 32 steps are 8 pixels apart on a 160-pixel circumference, still inside
+    // the stroke width.
     constexpr int kSteps = 32;
-    const float cx = kLeft + kSize / 2.0f, cy = kTop + kSize / 2.0f, r = kSize / 2.0f;
+    const float cx = left + size / 2.0f, cy = top + size / 2.0f, r = size / 2.0f;
     int prevX = 0, prevY = 0;
     for (int i = 0; i <= kSteps; ++i) {
-      const float t = static_cast<float>(i) / kSteps * 6.2831853f;
-      const int x = static_cast<int>(cx + r * std::cos(t));
-      const int y = static_cast<int>(cy + r * std::sin(t));
-      if (i > 0) drawLine(out.rgba, out.width, out.height, prevX, prevY, x, y);
+      const float a = static_cast<float>(i) / kSteps * 6.2831853f;
+      const int x = static_cast<int>(cx + r * std::cos(a));
+      const int y = static_cast<int>(cy + r * std::sin(a));
+      if (i > 0) drawLine(out.rgba, out.width, out.height, prevX, prevY, x, y, t);
       prevX = x;
       prevY = y;
     }
   }
 
-  // The crosshair: bottom-left of the canvas. 4px clearance from the shape's
-  // own bottom-left corner on both axes -- close enough to read as "attached
-  // to the same cursor", never touching it.
+  // The crosshair: bottom-left of the canvas. 4 units of clearance from the
+  // shape's own bottom-left corner on both axes -- close enough to read as
+  // "attached to the same cursor", never touching it.
   constexpr int kCrossX = 6, kCrossY = 26, kArm = 5;
-  drawLine(out.rgba, out.width, out.height, kCrossX - kArm, kCrossY, kCrossX + kArm, kCrossY);
-  drawLine(out.rgba, out.width, out.height, kCrossX, kCrossY - kArm, kCrossX, kCrossY + kArm);
+  const int crossX = px(kCrossX, scale), crossY = px(kCrossY, scale), arm = px(kArm, scale);
+  drawLine(out.rgba, out.width, out.height, crossX - arm, crossY, crossX + arm, crossY, t);
+  drawLine(out.rgba, out.width, out.height, crossX, crossY - arm, crossX, crossY + arm, t);
 
   // **The hotspot is the crosshair's own centre, not the shape's corner and
   // not the canvas's centre.** This is the bug the report is actually
@@ -386,8 +417,14 @@ CursorBitmap drawMarqueeCrosshair(CursorMarqueeShape shape) {
   // pointer, and the crosshair is what tells the user which pixel that is --
   // so the OS has to agree. `app/selftest/ToolCursor.cpp` section G asserts
   // this specifically, not merely that the hotspot sits somewhere inked.
-  out.hotspotX = kCrossX;
-  out.hotspotY = kCrossY;
+  //
+  // Scaled with everything else, and by the SAME `px()` the crosshair's own
+  // arms went through -- not by a second rounding of the same product, which
+  // is how a hotspot drifts a pixel off its own crosshair at some scales and
+  // not others. `app/selftest/ToolCursor.cpp` section G checks the identity
+  // at several scales rather than only at 1.0.
+  out.hotspotX = crossX;
+  out.hotspotY = crossY;
   return out;
 }
 
@@ -399,9 +436,9 @@ CursorBitmap drawMarqueeCrosshair(CursorMarqueeShape shape) {
 // vendored font build does not contain -- the exact three failure modes
 // `ui/ToolCursor.hpp`'s original §1 worried a bitmap cursor could hit
 // silently.
-CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint) {
+CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint, float scale) {
   CursorBitmap out;
-  out.width = out.height = kCursorCanvas;
+  out.width = out.height = px(kCursorDesignUnits, scale);
   out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
 
 #ifndef NP_LUCIDE_TTF
@@ -419,14 +456,18 @@ CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint) {
   if (stbtt_FindGlyphIndex(&info, static_cast<int>(codepoint)) == 0)
     return out;  // codepoint absent from this build of the vendored font
 
-  // 22px glyph height inside the 32px canvas: 5px of margin top and bottom
-  // for the anti-aliased edge, the same headroom `installToolIconFont()`
-  // leaves around its own 15px icons, scaled up for a cursor.
-  constexpr float kGlyphPx = 22.0f;
-  const float scale = stbtt_ScaleForPixelHeight(&info, kGlyphPx);
+  // 22 units of glyph height inside the 32-unit canvas: 5 units of margin top
+  // and bottom for the anti-aliased edge, the same headroom
+  // `installToolIconFont()` leaves around its own 15px icons, scaled up for a
+  // cursor. Multiplied by the caller's scale like every other coordinate --
+  // and note that this is the one shape in this file that needs no stroke
+  // thickening, because asking stb_truetype for a taller glyph thickens its
+  // strokes as a matter of course, which a Bresenham line does not.
+  const float glyphPx = 22.0f * scale;
+  const float fontScale = stbtt_ScaleForPixelHeight(&info, glyphPx);
   int gw = 0, gh = 0, xoff = 0, yoff = 0;
-  unsigned char* bitmap =
-      stbtt_GetCodepointBitmap(&info, scale, scale, static_cast<int>(codepoint), &gw, &gh, &xoff, &yoff);
+  unsigned char* bitmap = stbtt_GetCodepointBitmap(&info, fontScale, fontScale,
+                                                   static_cast<int>(codepoint), &gw, &gh, &xoff, &yoff);
   if (bitmap == nullptr) return out;
   if (gw <= 0 || gh <= 0) {
     stbtt_FreeBitmap(bitmap, nullptr);
@@ -482,14 +523,22 @@ bool toolCursorHasBitmap(ToolCursor cursor) noexcept {
   return false;
 }
 
-CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor) noexcept {
+CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor, float scale) noexcept {
+  // A scale of zero or a NaN would produce a zero-sized canvas that then
+  // "fails" the non-blank check for a reason that has nothing to do with the
+  // font. Clamped to the same range ui/PointerScale.hpp clamps its own
+  // reading to, times the 2x backing alternate, so no caller can ask this
+  // function for a size `create()` would not have allocated anyway.
+  if (!(scale > 0.0f)) scale = 1.0f;
+  scale = std::min(scale, 8.0f);
+
   CursorBitmap out;
   switch (cursor) {
     case ToolCursor::SelectMarquee:
-      out = drawMarqueeCrosshair(CursorMarqueeShape::Rectangle);
+      out = drawMarqueeCrosshair(CursorMarqueeShape::Rectangle, scale);
       break;
     case ToolCursor::SelectEllipseMarquee:
-      out = drawMarqueeCrosshair(CursorMarqueeShape::Ellipse);
+      out = drawMarqueeCrosshair(CursorMarqueeShape::Ellipse, scale);
       break;
     // The codepoints are read from `toolIconCodepoint()` (ui/AtelierChrome)
     // -- the tool palette's own single source of truth for which Lucide
@@ -499,13 +548,13 @@ CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor) noexcept {
     // apart the way `strokeRouteFor()`'s own comment warns a restated
     // predicate always eventually does.
     case ToolCursor::SelectLasso:
-      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::Lasso));
+      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::Lasso), scale);
       break;
     case ToolCursor::SelectPolygonLasso:
-      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::PolygonLasso));
+      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::PolygonLasso), scale);
       break;
     case ToolCursor::SelectMagicWand:
-      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::MagicWand));
+      out = rasterizeLucideGlyphCursor(toolIconCodepoint(Tool::MagicWand), scale);
       break;
     default:
       // `toolCursorHasBitmap()` is false for every other value; returning the
@@ -552,10 +601,34 @@ void SystemCursorTable::create() noexcept {
   // not whether this table exists -- `setBitmapCursorsEnabled()` is a plain
   // setter that can run after `create()` already has, so there is no other
   // point in the lifecycle to build these from.
+  pointerScale_ = osPointerSizeScale();
+  buildBitmapCursors();
+
+  // Marked created even if some entries came back null: `apply()`'s fallback
+  // covers a hole, and refusing to mark the table created because one exotic
+  // resize cursor is unavailable on some platform would disable the pointer
+  // entirely rather than degrade one shape.
+  created_ = true;
+}
+
+void SystemCursorTable::buildBitmapCursors() noexcept {
   for (int i = 0; i < kToolCursorCount; ++i) {
     const ToolCursor cursor = static_cast<ToolCursor>(i);
+    if (bitmapCursors_[i] != nullptr) {
+      // A rebuild, not a first build. Destroyed before the slot is
+      // overwritten, or every pointer-size change would leak five OS cursors.
+      // `last_` is cleared below for the same reason `destroy()` clears it:
+      // it may be pointing at one of these.
+      SDL_DestroyCursor(bitmapCursors_[i]);
+      bitmapCursors_[i] = nullptr;
+    }
     if (!toolCursorHasBitmap(cursor)) continue;
-    const CursorBitmap bitmap = rasterizeToolCursorBitmap(cursor);
+
+    // The BASE representation, at the user's accessibility pointer size. Its
+    // pixel dimensions are also the cursor's POINT dimensions on macOS (SDL's
+    // `Cocoa_CreateImage()` sets `NSImage.size` from this surface), which is
+    // what makes the scaling here the thing the user actually sees.
+    const CursorBitmap bitmap = rasterizeToolCursorBitmap(cursor, pointerScale_);
     // §7's fallback rule, enforced at the one place that knows both the
     // pixels and the table they would join: a blank rasterisation is never
     // installed as a cursor. Left null, `bitmapCursorFor()` answers exactly
@@ -566,19 +639,54 @@ void SystemCursorTable::create() noexcept {
         SDL_CreateSurfaceFrom(bitmap.width, bitmap.height, SDL_PIXELFORMAT_RGBA32,
                               const_cast<uint8_t*>(bitmap.rgba.data()), bitmap.width * 4);
     if (surface == nullptr) continue;
+
+    // The 2x ALTERNATE representation -- the Retina half of §7's scaling
+    // story, and a different axis from the accessibility scale above. SDL
+    // adds one `NSBitmapImageRep` per image to a single `NSImage` sized from
+    // the base, so AppKit picks this one on a 2x display and the base on a 1x
+    // display. Without it the base is stretched and the cursor is visibly
+    // soft on every Mac made in the last decade.
+    //
+    // Best-effort: a failure here leaves a perfectly usable 1x cursor rather
+    // than no cursor, which is why nothing below is conditional on it.
+    const CursorBitmap retina = rasterizeToolCursorBitmap(cursor, pointerScale_ * 2.0f);
+    if (retina.nonBlank) {
+      SDL_Surface* alt =
+          SDL_CreateSurfaceFrom(retina.width, retina.height, SDL_PIXELFORMAT_RGBA32,
+                                const_cast<uint8_t*>(retina.rgba.data()), retina.width * 4);
+      if (alt != nullptr) {
+        // `SDL_AddSurfaceAlternateImage()` takes its own reference, so this
+        // surface is destroyed here and the alternate outlives it -- SDL's
+        // own documented ownership for this call.
+        SDL_AddSurfaceAlternateImage(surface, alt);
+        SDL_DestroySurface(alt);
+      }
+    }
+
     // `SDL_CreateColorCursor()` copies what it needs out of the surface, so
     // it can be destroyed immediately after -- the same pattern SDL's own
     // docs show, and there is no reason to keep `bitmap.rgba` alive past
-    // this call either; it goes out of scope with the loop body.
+    // this call either; it goes out of scope with the loop body. The hotspot
+    // is in BASE-surface pixels, which is the same coordinate space as the
+    // NSImage's points, so it does not get a second scaling here.
     bitmapCursors_[i] = SDL_CreateColorCursor(surface, bitmap.hotspotX, bitmap.hotspotY);
     SDL_DestroySurface(surface);
   }
+  last_ = nullptr;
+}
 
-  // Marked created even if some entries came back null: `apply()`'s fallback
-  // covers a hole, and refusing to mark the table created because one exotic
-  // resize cursor is unavailable on some platform would disable the pointer
-  // entirely rather than degrade one shape.
-  created_ = true;
+bool SystemCursorTable::refreshPointerScale() noexcept {
+  if (!created_) return false;
+  const float now = osPointerSizeScale();
+  // A float compare with a real epsilon, not `!=`: the preference is a slider
+  // position stored as a double (2.0724539756774902 on the machine this was
+  // written on), so an exact compare would be at the mercy of the last bit
+  // and a rebuild of five OS cursors is not free enough to do on noise.
+  // 0.01 is finer than any size change a user could see.
+  if (std::abs(now - pointerScale_) < 0.01f) return false;
+  pointerScale_ = now;
+  buildBitmapCursors();
+  return true;
 }
 
 void SystemCursorTable::destroy() noexcept {

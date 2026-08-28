@@ -3,6 +3,7 @@
 #include "app/StrokeSession.hpp"
 #include "core/LayerOps.hpp"
 #include "ui/AtelierChrome.hpp"
+#include "ui/PointerScale.hpp"
 #include "ui/ToolCursor.hpp"
 
 namespace np {
@@ -668,24 +669,28 @@ bool runToolCursorTest() {
           "branch is provably inert with the flag off, which is what sabotage (c) below "
           "would have to defeat by breaking sdlCursorFor() instead, not this function");
 
-    // **And the flag really is OFF to begin with.** Everything above proves
-    // what happens WHEN it is false; nothing above proves that it IS. Those
-    // are different claims, and only the second one is the promise this whole
-    // step rests on -- ui/ToolCursor.hpp §7 keeps bitmaps behind one flag
-    // precisely so the accessibility cost of losing OS cursor-size scaling
-    // stays a decision someone makes on purpose. Flipping the initialiser to
-    // `true` reddens NOTHING without this line (measured, not supposed), so a
-    // one-word edit could ship that decision by accident.
+    // **And the flag really is ON.** Everything above proves what happens
+    // WHEN it is false; nothing above proves what it IS. Those are different
+    // claims, and the second is the one that decides what a user actually
+    // sees -- an earlier revision of this file pinned this same property to
+    // `false`, which was correct then and would silently un-ship T17 now.
+    // Without this line, flipping the initialiser back reddens NOTHING
+    // (measured, not supposed): every other assertion in section G passes the
+    // flag in explicitly.
     //
     // Default-constructed and never `create()`d: the flag is a plain member
     // and this getter touches no SDL, which is what makes the one property
     // worth pinning reachable from a headless suite at all.
     const SystemCursorTable freshTable;
-    check(!freshTable.bitmapCursorsEnabled(),
-          "flag: a freshly constructed SystemCursorTable has bitmap cursors OFF -- today's "
-          "behaviour is the DEFAULT, not merely what the flag would give if someone set it; "
-          "turning bitmaps on is a deliberate act because it trades away OS cursor-size "
-          "accessibility scaling (docs/testing-issues.md T17)");
+    check(freshTable.bitmapCursorsEnabled(),
+          "flag: a freshly constructed SystemCursorTable has bitmap cursors ON -- the per-tool "
+          "shapes are what ships, not a mechanism waiting behind a switch (T17). The "
+          "accessibility objection that once kept this false is answered by the scale test "
+          "below, not deferred");
+    check(freshTable.pointerScale() == 0.0f,
+          "flag: ...and it has NOT read a pointer size yet -- 0 is 'no bitmaps built', "
+          "distinct from 1.0 ('built, at normal size'), which is the distinction "
+          "refreshPointerScale() needs to decide its first call changed anything");
 
     // The gate is not vacuously false, either -- section D's own lesson,
     // repeated: a function that always answers false would pass the loop
@@ -697,23 +702,135 @@ bool runToolCursorTest() {
           "tool request and it has a real bitmap -- the positive case D's own vacuous-refusal "
           "lesson requires this section to also cover");
 
-    // -- G4. the end-to-end claim: today's five tools show today's shape --
+    // -- G4. the fallback path still lands where it always did --
     //
-    // The strongest form of "flag off is byte-identical to today": not the
-    // enum value (section B already changed that on purpose) and not the
-    // gate function in isolation (G3), but the FULL `Tool -> ToolCursor ->
-    // SDL_SystemCursor` pipeline for the five actual tools a user picks from
-    // the palette, compared against `SDL_SYSTEM_CURSOR_NWSE_RESIZE` -- the
-    // literal value this whole task started from (docs/testing-issues.md
-    // T17: "and sdlCursorFor() turns that into SDL_SYSTEM_CURSOR_NWSE_RESIZE").
+    // The strongest form of "flag off is byte-identical to the build before
+    // §7": not the enum value (section B already changed that on purpose) and
+    // not the gate function in isolation (G3), but the FULL `Tool ->
+    // ToolCursor -> SDL_SystemCursor` pipeline for the five actual tools a
+    // user picks from the palette, compared against
+    // `SDL_SYSTEM_CURSOR_NWSE_RESIZE` -- the literal value this whole task
+    // started from (docs/testing-issues.md T17: "and sdlCursorFor() turns that
+    // into SDL_SYSTEM_CURSOR_NWSE_RESIZE").
+    //
+    // **This is no longer what a user sees.** The flag ships on, so these five
+    // draw their bitmaps; this projection is what remains for a bitmap that
+    // failed to rasterise or a deployment that turned the flag off, and it is
+    // pinned so that fallback keeps being the shape it always was rather than
+    // quietly becoming something nobody chose.
     check(sdlCursorFor(cursorForTool(Tool::Marquee)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE &&
               sdlCursorFor(cursorForTool(Tool::EllipseMarquee)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE &&
               sdlCursorFor(cursorForTool(Tool::Lasso)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE &&
               sdlCursorFor(cursorForTool(Tool::PolygonLasso)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE &&
               sdlCursorFor(cursorForTool(Tool::MagicWand)) == SDL_SYSTEM_CURSOR_NWSE_RESIZE,
-          "flag: end to end, all five tools STILL show the diagonal resize arrow today's "
-          "build showed -- sabotage (c) targets exactly this line, by changing what one of "
-          "these five (or plain Select) maps to in sdlCursorFor()");
+          "flag: end to end, all five tools' FALLBACK is still the diagonal resize arrow the "
+          "pre-§7 build showed -- sabotage (c) targets exactly this line, by changing what one "
+          "of these five (or plain Select) maps to in sdlCursorFor()");
+  }
+
+  std::printf("  -- H. §7's scaling: the accessibility pointer size, honoured by us --\n");
+
+  {
+    // **Why this section exists at all.** macOS applies its Accessibility ▸
+    // Pointer size setting to the cursors it draws and applies nothing to an
+    // `NSCursor` an app built from its own image -- there is no API to opt
+    // in. That fact is what made "bitmaps do not scale" the one objection
+    // ui/ToolCursor.hpp §7 originally could not answer. The answer is to read
+    // the setting and rasterise at it, and everything below is the proof that
+    // the rasteriser actually reads its `scale` argument rather than
+    // accepting one and drawing 32x32 regardless -- which would pass a
+    // carelessly written version of this section and ship the original bug
+    // with a scale parameter bolted on.
+
+    const float osScale = osPointerSizeScale();
+    std::printf("    osPointerSizeScale() on this machine: %.4fx\n",
+                static_cast<double>(osScale));
+    check(osScale >= 1.0f && osScale <= 4.0f && osScale == osScale,
+          "scale: osPointerSizeScale() is a finite multiplier in [1, 4] -- a preference file "
+          "is user-writable, and an unclamped read of it sizes a texture");
+
+    // Three scales: normal, THIS machine's own setting (whatever it is, so
+    // the case a developer actually runs under is covered rather than only
+    // the round numbers), and the clamp's far end.
+    const float scales[] = {1.0f, osScale, 4.0f};
+    const ToolCursor scaled[] = {ToolCursor::SelectMarquee, ToolCursor::SelectEllipseMarquee,
+                                 ToolCursor::SelectLasso, ToolCursor::SelectPolygonLasso,
+                                 ToolCursor::SelectMagicWand};
+
+    auto inkedPixels = [](const CursorBitmap& b) {
+      size_t n = 0;
+      for (size_t i = 3; i < b.rgba.size(); i += 4)
+        if (b.rgba[i] != 0) ++n;
+      return n;
+    };
+
+    bool everyScaleSized = true, everyScaleNonBlank = true, everyHotspotTracks = true;
+    for (const float s : scales) {
+      const int expect = static_cast<int>(std::lround(32.0 * static_cast<double>(s)));
+      for (const ToolCursor c : scaled) {
+        const CursorBitmap b = rasterizeToolCursorBitmap(c, s);
+        if (b.width != expect || b.height != expect) everyScaleSized = false;
+        if (!b.nonBlank) everyScaleNonBlank = false;
+      }
+      // The crosshair hotspot is the one placement the report named
+      // explicitly, so it is the one that has to survive scaling exactly --
+      // through the SAME rounding the crosshair's own arms went through, not
+      // a second rounding of the same product.
+      const CursorBitmap m = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, s);
+      const int hx = static_cast<int>(std::lround(6.0 * static_cast<double>(s)));
+      const int hy = static_cast<int>(std::lround(26.0 * static_cast<double>(s)));
+      if (m.hotspotX != hx || m.hotspotY != hy) everyHotspotTracks = false;
+      std::printf("    %.4fx -> %dx%d canvas, marquee hotspot (%d,%d), %zu inked px\n",
+                  static_cast<double>(s), m.width, m.height, m.hotspotX, m.hotspotY,
+                  inkedPixels(m));
+    }
+    check(everyScaleSized,
+          "scale: every one of T17's five cursors rasterises to round(32 * scale) square at "
+          "1x, at this machine's own pointer size, and at the 4x clamp -- a rasteriser that "
+          "took the argument and ignored it fails here first");
+    check(everyScaleNonBlank,
+          "scale: ...and all five are still non-blank at every one of those sizes -- a glyph "
+          "path that only works at its original 22px is a blank cursor for an accessibility "
+          "user, which is the failure this whole section is about");
+    check(everyHotspotTracks,
+          "scale: the marquee hotspot is round(6*s), round(26*s) at every scale -- it tracks "
+          "the crosshair it is the hotspot OF, rather than staying at (6,26) while the "
+          "crosshair moves away from it");
+
+    // **The non-vacuity check, and the one that catches a hairline.** A
+    // rasteriser that sized the canvas correctly but drew every stroke one
+    // pixel wide would pass all three checks above: bigger canvas, still
+    // non-blank, hotspot still tracking. What it would produce is a faint
+    // wireframe at 4x -- the ink covering a QUARTER of the fraction it covers
+    // at 1x, because the canvas grew 16x and the ink only 4x.
+    //
+    // Measured on this build: the marquee is 9.8633% inked at BOTH 1x and 4x
+    // -- exactly 101 pixels becoming exactly 1616, which is 16x the ink in
+    // 16x the area. The scaling is clean because both the coordinates and the
+    // stroke width are integer multiples at 4x. The bound below is 0.75x the
+    // 1x fraction rather than equality, because at a non-integer scale (this
+    // machine's own 2.0725x) the whole-pixel stroke width rounds and the
+    // fraction moves a little; 0.75 leaves room for that rounding while
+    // staying far above the ~2.47% a hairline would produce.
+    const CursorBitmap at1 = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, 1.0f);
+    const CursorBitmap at4 = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, 4.0f);
+    const double frac1 = static_cast<double>(inkedPixels(at1)) / (at1.width * at1.height);
+    const double frac4 = static_cast<double>(inkedPixels(at4)) / (at4.width * at4.height);
+    std::printf("    inked fraction: %.4f%% at 1x, %.4f%% at 4x (hairline would be ~%.4f%%)\n",
+                frac1 * 100.0, frac4 * 100.0, frac1 * 100.0 / 4.0);
+    check(frac4 >= frac1 * 0.75,
+          "scale: the stroke thickens with the canvas -- a 4x cursor is at least 75% as "
+          "densely inked as a 1x one, where a rasteriser that scaled coordinates but not "
+          "line width would land near 25% and read as a hairline wireframe");
+
+    // A bad scale must not become a zero-sized canvas that then reports
+    // itself blank for a reason that has nothing to do with the font -- that
+    // would send a reader hunting for a missing Lucide file.
+    const CursorBitmap zero = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, 0.0f);
+    const CursorBitmap negative = rasterizeToolCursorBitmap(ToolCursor::SelectMarquee, -3.0f);
+    check(zero.width == 32 && zero.nonBlank && negative.width == 32 && negative.nonBlank,
+          "scale: a zero or negative scale is clamped to 1.0 rather than producing an empty "
+          "canvas -- a bad preference file must not look like a missing font");
   }
 
   // The section verdict every other section prints. Without it this file's

@@ -249,28 +249,45 @@
 //     crosshair's own centre pixel, not the shape's corner or the canvas's
 //     centre. See `app/selftest/ToolCursor.cpp` section G.
 //
-// **The other two do not get answered, because they cannot be from inside
-// this file:**
+//   * *"Bitmaps do not track the OS pointer-size accessibility setting."*
+//     **This was the one that stood, and it is now answered too -- by doing
+//     the OS's job rather than by asking it again.** The underlying fact has
+//     not changed and is worth stating plainly: macOS applies the Pointer
+//     size setting to the cursors it draws itself and applies *nothing* to an
+//     `NSCursor` an application built from its own image; there is no API to
+//     opt in. So this file reads the setting
+//     (`osPointerSizeScale()`, ui/PointerScale.hpp) and rasterises at that
+//     size, and `create()` rebuilds when it changes. Every coordinate in §7's
+//     generators is written in 32 design units and multiplied on the way to
+//     pixels, so there is one design and not one per size.
 //
-//   * Bitmaps do not track the OS pointer-size accessibility setting.
-//     `SDL_CreateColorCursor()` bakes a fixed pixel size; a user who has
-//     enlarged their system pointer gets a normal-sized lasso sitting inside
-//     an enlarged arrow everywhere else. This is a real regression and is not
-//     this task's decision to make.
+//     Crispness on a Retina display is a SEPARATE axis and belongs to SDL:
+//     `SDL_AddSurfaceAlternateImage()` attaches a 2x alternate to the cursor
+//     surface, and SDL's Cocoa backend builds one multi-representation
+//     `NSImage` whose point size is the base surface's size, which is exactly
+//     the image AppKit picks a representation out of per display. The two
+//     factors multiply; `create()` is the only place they meet.
+//
+// **The one that still does not get answered:**
+//
 //   * Bitmaps ignore the user's cursor theme. Milder, for the reason §1
 //     already gives: a drawing tool overriding the pointer over its own
 //     canvas is conventional.
 //
-// **So the mechanism is built and the choice is left alone.**
+// **So the mechanism is built, the trade was decided, and the flag stays.**
 // `SystemCursorTable::setBitmapCursorsEnabled(bool)` is the ONE flag that
-// switches between them, and it defaults to `false` -- today's behaviour,
-// system cursors only, for every user until a product owner flips it. With
-// the flag off, `shouldUseBitmapCursor()` returns `false` unconditionally
-// (proved by exhaustive loop, not asserted for one case --
+// switches between the bitmap and system paths. It now defaults to `true`:
+// the product decision that was deferred has been made, and the reason it
+// could be made is the paragraph above -- the accessibility cost that made it
+// a decision at all no longer exists. The flag itself is kept rather than
+// deleted, because "fall back to system cursors" remains a real answer for a
+// platform where the rasterisation is wrong, and because §7's flag-off
+// identity proof is still the cheapest evidence that this whole section is
+// additive. With the flag off, `shouldUseBitmapCursor()` returns `false`
+// unconditionally (proved by exhaustive loop, not asserted for one case --
 // `app/selftest/ToolCursor.cpp` section G again), which is the one branch
 // `apply()` gained; every other line in `apply()` is the code §6 already
-// argued, untouched. Flipping the flag on is therefore a one-line, reversible
-// act by whoever ends up owning the accessibility trade-off, not a rewrite.
+// argued, untouched.
 namespace np {
 
 // What the pointer should *mean* over the canvas, independent of which shape
@@ -407,7 +424,17 @@ bool toolCursorHasBitmap(ToolCursor cursor) noexcept;
 // (`SystemCursorTable::create()`) is what turns a false `nonBlank` into "skip
 // this bitmap, fall back to `sdlCursorFor()`" -- this function only reports
 // the fact.
-CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor) noexcept;
+//
+// `scale` multiplies a 32-unit design space into pixels, and it carries BOTH
+// reasons a cursor is bigger than 32 pixels at once: the user's accessibility
+// pointer size (`osPointerSizeScale()`, ui/PointerScale.hpp) and the display
+// backing scale of the representation being built (1 for the base surface, 2
+// for the Retina alternate). `create()` multiplies them; this function does
+// not know which factor is which, and does not need to. Out-of-range values
+// are clamped rather than trusted, so a caller cannot turn a bad preference
+// file into a zero-sized canvas that then reports itself blank for a reason
+// that has nothing to do with the font.
+CursorBitmap rasterizeToolCursorBitmap(ToolCursor cursor, float scale = 1.0f) noexcept;
 
 // The one decision `apply()` gains once bitmap cursors exist: does the
 // bitmap win this frame, or does the system-cursor fallback? Pulled out as a
@@ -454,11 +481,36 @@ class SystemCursorTable {
   // Before `SDL_Quit()`. Safe to call twice, and safe without `create()`.
   void destroy() noexcept;
 
-  // §7's ONE flag. Defaults to `false` -- today's behaviour, system cursors
-  // only -- and stays that way until a product owner calls this. See
-  // ui/ToolCursor.hpp §7 for the accessibility trade this is deferring.
+  // §7's ONE flag. Defaults to **`true`**: the per-tool bitmaps are what the
+  // application shows. Kept as a flag rather than deleted so a platform whose
+  // rasterisation is wrong has a working fallback that is one call away, and
+  // so §7's flag-off identity proof stays runnable. See ui/ToolCursor.hpp §7
+  // for why the accessibility objection that once kept this `false` no longer
+  // applies.
   void setBitmapCursorsEnabled(bool enabled) noexcept { bitmapsEnabled_ = enabled; }
   bool bitmapCursorsEnabled() const noexcept { return bitmapsEnabled_; }
+
+  // Re-reads `osPointerSizeScale()` and, **only if it actually moved**,
+  // rebuilds the five bitmap cursors at the new size and re-applies whichever
+  // one is currently showing. Returns true if a rebuild happened.
+  //
+  // Called from main.cpp on window-focus-gained, which is when a user coming
+  // back from System Settings ▸ Accessibility returns to the app. Cheap to
+  // call when nothing changed -- one preference read and a float compare --
+  // and a no-op before `create()`.
+  //
+  // Why an explicit call rather than a notification: the distributed
+  // notification names macOS posts for universal-access changes are
+  // undocumented and version-dependent, and the cost of guessing wrong is a
+  // cursor stuck at the old size until restart. Focus-gained is the moment
+  // that matters and it is a fact SDL already tells us.
+  bool refreshPointerScale() noexcept;
+
+  // The scale the currently-built bitmaps were rasterised at. 0 before
+  // `create()`. Exposed for `--selftest`'s printed table and for main.cpp's
+  // startup log, so "which size are these" is observable rather than inferred
+  // from how they look.
+  float pointerScale() const noexcept { return pointerScale_; }
 
   // One frame's decision, from one place. `request` is what the canvas asked
   // for as a system-cursor shape, or `nullopt` when the pointer is not over
@@ -493,7 +545,19 @@ class SystemCursorTable {
   // Purely to skip a redundant `SDL_SetCursor()`; see §6's last paragraph.
   SDL_Cursor* last_ = nullptr;
   bool created_ = false;
-  bool bitmapsEnabled_ = false;  // §7's flag; off is today's behaviour.
+  bool bitmapsEnabled_ = true;  // §7's flag; the bitmaps are what ships.
+  // The accessibility pointer size the bitmaps in `bitmapCursors_` were
+  // rasterised at. 0 means "none built yet", which is distinct from 1.0
+  // ("built, at normal size") -- `refreshPointerScale()` needs to tell those
+  // apart or its first call would decide nothing had changed.
+  float pointerScale_ = 0.0f;
+
+  // Builds (or rebuilds) the five §7 bitmap cursors at `pointerScale_`,
+  // destroying whatever was there. Shared by `create()` and
+  // `refreshPointerScale()` so the two cannot drift into building cursors
+  // differently -- the second one existing at all is why this is a function
+  // and not a loop inside `create()`.
+  void buildBitmapCursors() noexcept;
 
   // Null when `cursor` has no bitmap, when `create()` has not run, or when
   // that cursor's rasterisation was blank. Shared by `create()` (to decide
