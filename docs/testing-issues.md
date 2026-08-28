@@ -627,3 +627,203 @@ stale** — `core/Histogram.hpp` is still included by nothing but its own `.cpp`
 and `selftest/Support.hpp`, verified the same way in the same minute. Two
 entries in one section, one rotted and one did not, which is the argument
 that document already makes about itself.
+
+---
+
+## T13 — The ellipse marquee draws a rectangle while you drag it · open
+
+**Reported.** Draw the ellipse interactively instead of showing a rectangle
+until you finish the operation.
+
+**Verified — true, and it is one `else` away from the lasso already doing it
+right.** `ui/MacPaintUI.cpp:10076` gates the live rubber band on
+`st.brush.tool == Tool::Marquee || st.brush.tool == Tool::EllipseMarquee` and
+then draws, for both, the four-corner overload at `:10081`. There are exactly
+two `drawMarchingAnts()` overloads (`:1022` takes a traced boundary, `:1045`
+takes `x0,y0,x1,y1`); no ellipse overload exists. The commit path is not
+confused — `case Tool::EllipseMarquee:` at `:9273` builds a real ellipse on
+release — so this is purely the preview lying about what mouse-up will do.
+
+Note what is NOT wrong, because it constrains the fix: `marqueeBoxX0..Y1` is
+already this frame's `computeSelectionDragBox()` result, carrying
+Shift-constrain, Option-from-centre and Space-move (T10). The ellipse preview
+must be inscribed in **that** box, not in the drag's raw corners, or the
+preview and the commit part company again in a new way.
+
+**Work.** A third `drawMarchingAnts()` overload taking the same four floats
+and walking an ellipse inscribed in them, and a branch on the tool at
+`:10076`. The ants machinery (phase from `ImGui::GetTime()`, dash crawl along
+the contour) is parameterised by a point run, so this is a point generator,
+not new ant code.
+
+---
+
+## T14 — A transform shows a box, not the pixels · open
+
+**Reported.** Show the transform results live instead of deferred until done.
+
+**Verified — true, and it is a deliberate design that has now met its limit.**
+`app/TransformSession` accumulates a matrix in `pending_` and writes nothing
+until `commit()`. That is what makes `cancel()` free and what guarantees one
+resample instead of one per drag frame (its header's §1, and the assertion
+"a multi-frame-driven commit is BIT-IDENTICAL to one direct `transformLayer()`
+call"). `ui/MacPaintUI.cpp` draws the box, eight handles and the rotate disc
+from `handlePositions()` and nothing else — so the user is scaling a wireframe
+and finding out what it did to the picture afterwards.
+
+**The tension is real and should not be resolved by deleting the invariant.**
+Resampling the true result every frame is exactly the "once per drag frame"
+cost the model exists to avoid, and on the 2048×2048 measurement in
+`app/selftest/DocumentTransform` a full-quality pass is far past a 20 ms frame
+(PRD F3).
+
+**Work.** A *preview* that is explicitly not the commit: map the source
+tiles through `pending()` at draw time with a cheap kernel (nearest or
+bilinear) into the canvas quad, and keep `commit()` exactly as it is —
+Catmull-Rom, one pass, from the untouched source. That preserves the
+bit-identical assertion, because the preview never feeds the commit. The
+honest cost note is that preview and result will differ slightly at edges
+while dragging, which is what every implementation of this does and is
+strictly better than showing no pixels at all.
+
+---
+
+## T15 — Filters have no preview · open · (Cancel already exists)
+
+**Reported.** Add a preview mode to the filters, and a cancel.
+
+**Verified — half of this is already there, and the half that is there is why
+the other half is not free.** All nine modal dialogs already carry a Cancel:
+`drawGaussianBlurDialog`, `drawSharpenDialog`, `drawUnsharpMaskDialog`,
+`drawAddNoiseDialog`, `drawImageSizeDialog`, `drawCanvasSizeDialog`,
+`drawRefineRadiusDialog`, `drawSelectColourRangeDialog` and
+`drawSelectLuminanceRangeDialog` — checked one by one, not sampled. None has a
+preview.
+
+**Why the existing Cancel does not survive adding one.** Today Cancel is
+`ImGui::CloseCurrentPopup()` and nothing else, and that is *correct* precisely
+because nothing has been applied yet — the filter runs when the user presses
+**Blur**, not before. A live preview inverts that: something is on screen, and
+Cancel acquires a job it does not currently have. So this is one piece of work,
+not two, and the entry is worded that way to stop a future task being briefed
+as "add a cancel button" against dialogs that already have one.
+
+**Work.** Two candidate shapes, and the choice is real:
+
+* **Preview as a display-only overlay** — compute into a scratch buffer at
+  view resolution, draw that instead of the layer, discard on Cancel. Cancel
+  stays a close. Costs a second evaluation path.
+* **Apply-and-undo** — run the real op, let Cancel issue an undo. Reuses the
+  op exactly, but puts a rejected filter in the history the user has to see,
+  and re-runs the full-resolution op on every slider tick.
+
+The first is the one worth building; it is written down here so the second
+is a rejected option rather than an unconsidered one.
+
+---
+
+## T16 — The mask chip is not a control, and no mask can be painted · open
+
+**Reported.** When a layer has a layer mask, paint into it when the layer mask
+icon is active; disable it if you shift-click it; and show its result when you
+use the Photoshop command that shows the mask (⌥-click).
+
+**Verified — all three are absent, and they are absent for one shared reason
+plus one deeper one.**
+
+*The shared reason.* The mask chip is **drawn, not clickable**.
+`ui/MacPaintUI.cpp:2512-2514` computes its rectangle and fills it; there is no
+`InvisibleButton`, so no click of any modifier reaches it. Every one of the
+three gestures needs that control to exist first.
+
+*The deeper one, and it is the expensive part.* There is **no concept of an
+active mask anywhere in the tree** — `maskActive`, `editingMask`,
+`maskSelected`, `MaskTarget` all return nothing — and, more to the point,
+**nothing in this build can paint a mask at all**. `core/Layer.hpp:281` says
+so outright: "the content of a mask can only come from a `.npaint` or from a
+test writing texels", with `addLayerMask()`/`removeLayerMask()` being "the
+whole of the lifecycle a user can reach". `StrokeRoute`
+(`app/StrokeSession.hpp:300`) confirms it from the other side: its six values
+are `None`, `CpuDeposit`, `RgbDeposit`, `RgbErase`, `PigmentErase`, `PaintSim`
+— there is no mask route, and the parametric kinds "already refuse for having
+no writable store".
+
+So "paint into it when the mask icon is active" is not a wiring job. It is a
+seventh `StrokeRoute` writing a `MaskTileStore`, plus the target concept to
+select it.
+
+*And a third thing the report implies but does not name.* Shift-click
+**disables** a mask, which means a mask can be off without being removed —
+there is no such flag on `Layer` (no `maskEnabled`, checked). That is a new
+model field, and therefore a `docs/document-format.md` decision about whether
+it round-trips through `.npaint` or is session-only. It should round-trip: a
+disabled mask that silently re-enables on reload is a data-shaped surprise,
+unlike the group-collapse state (PRD C7) which is genuinely view-only.
+
+**Work**, smallest first, and the first is independently useful:
+
+1. Make the chip a control (`InvisibleButton` on the rect already computed at
+   `:2512`), with plain click selecting the mask as the paint target.
+2. `Layer::maskEnabled`, its `.npaint` attribute, its reader/writer, and its
+   place in the format table. Shift-click toggles it; the chip draws the
+   disabled state so it is visible without hovering.
+3. ⌥-click shows the mask alone in the canvas — a view mode, not a document
+   change, so it belongs beside the grayscale check in
+   `docs/operations.md §7` rather than in the layer model.
+4. `StrokeRoute::MaskPaint` and the deposit that backs it. This is the real
+   cost of the entry and should not be scheduled as if it were part of 1.
+
+---
+
+## T17 — Every selection tool shares one cursor, and it is a resize arrow · open
+
+**Reported.** Show a lasso cursor for the lasso, a polygon-lasso cursor for
+that tool, a circle or square with a crosshair at the bottom-left for the two
+marquees, a magic-wand icon for the wand, and appropriate icons for the rest.
+
+**Verified — true, and the module already says so about itself.**
+`ui/ToolCursor.cpp`'s `cursorForTool()` maps `Tool::Marquee`,
+`EllipseMarquee`, `Lasso`, `PolygonLasso` and `MagicWand` — five tools, all
+five listed as consecutive fall-through cases — to the single value
+`ToolCursor::Select`, and `sdlCursorFor()` turns that into
+`SDL_SYSTEM_CURSOR_NWSE_RESIZE`, a diagonal double-headed arrow. So the lasso
+and the wand currently show the same "drag a rectangle" shape, and it is a
+shape neither of them means. `ui/ToolCursor.hpp` §3 already names this as one
+of its own two weakest entries.
+
+**This one cannot be delivered without reopening a documented decision, which
+is why the decision is quoted rather than worked around.** `ToolCursor.hpp:25`
+chose SDL system cursors *and rejected custom bitmaps on the record*. There is
+no system cursor that is a lasso, a polygon lasso, a wand, or a shape with an
+offset crosshair, so every part of this request needs bitmaps. The four
+standing objections, and which of them survive:
+
+* **"A missing font would give a blank cursor."** `NP_LUCIDE_TTF` is a
+  compile-time absolute path that degrades silently (`ui/Fonts.cpp:333`), and
+  a cursor cut from a missing glyph is an invisible pointer — "an arrow that
+  conveys too little is a poor cursor; a pointer that is not there is a broken
+  application." **Answerable, and the answer is the design:** rasterise, check
+  the coverage is non-zero, and fall back to today's system cursor per tool if
+  it is not. That check belongs in `--selftest`, which makes the silent
+  degradation loud for the first time.
+* **"A hotspot per tool that nothing in `--selftest` could check."**
+  **Answerable:** a hotspot is data. A test can assert it is inside the glyph
+  bounds and, for the marquee pair, that it sits at the crosshair's centre
+  rather than at a corner — which is exactly the bug the report is describing
+  when it asks for the crosshair specifically.
+* **"Bitmaps do not scale with the OS cursor-size accessibility setting."**
+  **This one stands.** It is a real accessibility regression and should be
+  stated in the work, not discovered by a user who enlarges their pointer.
+* **"Bitmaps ignore the user's cursor theme."** **Stands**, and is the milder
+  of the two — a drawing tool overriding the pointer over its own canvas is
+  conventional.
+
+**Work.** Extend `ToolCursor` from a 10-value category enum to one value per
+distinguishable tool, keep `sdlCursorFor()` as the fallback path, and add a
+bitmap path (`SDL_CreateColorCursor`) with a per-cursor hotspot and a
+non-blank assertion. The two marquees want the reported composite — the shape
+plus an offset crosshair — which is one generator taking the shape as a
+parameter, not two cursors. **The accessibility cost above should be settled
+before this is scheduled**, because "the pointer no longer grows with the
+system setting" is a decision for the person who owns the product, not for
+whoever picks up the task.
