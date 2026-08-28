@@ -38,6 +38,7 @@ add_executable(naturalPaint
   app/selftest/AbrDualBrush.cpp
   app/selftest/AbrSampledTips.cpp
   app/selftest/PsPatterns.cpp
+  app/selftest/GimpBrush.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
@@ -203,6 +204,7 @@ add_executable(naturalPaint
   io/ExportAs.cpp
   io/ExportStates.cpp
   io/FileKind.cpp
+  io/GimpBrush.cpp
   io/ImageDecode.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp

@@ -1114,6 +1114,14 @@ bool runAbrSampledTipsTest();
 // record alignment, and the four-byte short tail. Headless and GPU-free.
 bool runPsPatternsTest();
 
+// io/GimpBrush: `.gbr` and `.gih`, read for the dab library. Hand-built
+// fixtures ONLY -- no file GIMP itself wrote was available where this was
+// written, so these prove the reader agrees with the published standard and
+// cannot prove the standard agrees with GIMP. io/GimpBrush.hpp names the one
+// inference that leaves open (mask polarity) and what would settle it.
+// Headless and GPU-free.
+bool runGimpBrushTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/
