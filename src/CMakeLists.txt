@@ -39,6 +39,7 @@ add_executable(naturalPaint
   app/selftest/AbrSampledTips.cpp
   app/selftest/PsPatterns.cpp
   app/selftest/GimpBrush.cpp
+  app/selftest/Variance.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
@@ -169,6 +170,7 @@ add_executable(naturalPaint
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/StrokePath.cpp
+  brush/Variance.cpp
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp

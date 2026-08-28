@@ -1122,6 +1122,14 @@ bool runPsPatternsTest();
 // Headless and GPU-free.
 bool runGimpBrushTest();
 
+// brush/Variance: Photoshop's `brVr` object -- the same four fields at twelve
+// sites -- resolved by one formula. The sections that matter are the two audit
+// findings this type makes UNREPRESENTABLE rather than merely fixed: B6's
+// squared floor (the minimum is outside the product) and B7's
+// absent-device-resolves-to-the-floor (an unavailable axis contributes
+// identity). Headless and GPU-free.
+bool runVarianceTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/
