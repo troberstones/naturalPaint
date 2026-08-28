@@ -6,6 +6,8 @@
 #include <sstream>
 #include <unordered_set>
 
+#include "core/ResourcePaths.hpp"
+
 namespace np {
 namespace {
 
@@ -78,7 +80,7 @@ struct ScopeResult { bool failed = false; bool done = false; };
 }  // namespace
 
 std::string readShaderSource(std::string_view relativePath) {
-  const fs::path root{NP_SHADER_DIR};
+  const fs::path root{shaderDir()};
   std::unordered_set<std::string> seen;
   return expand(root, root / fs::path(relativePath), seen);
 }

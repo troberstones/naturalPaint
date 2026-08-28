@@ -127,6 +127,7 @@ add_executable(naturalPaint
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp
   app/selftest/ResamplePerf.cpp
+  app/selftest/ResourcePaths.cpp
   app/selftest/RgbDeposit.cpp
   app/selftest/RgbErase.cpp
   app/selftest/SaveReadback.cpp
@@ -193,6 +194,7 @@ add_executable(naturalPaint
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp
+  core/ResourcePaths.cpp
   core/SelectionBoundary.cpp
   core/SelectionMask.cpp
   core/SelectionOps.cpp
@@ -321,9 +323,22 @@ target_link_libraries(naturalPaint PRIVATE
   imgui
 )
 
-# Shaders, the pigment LUT and the keymap are read from the source tree at
-# runtime, so the solver can be edited and reloaded (Cmd+R) and the keymap
-# hand-edited, without a rebuild -- same convention for all three.
+# Shaders, the pigment LUT, the keymap and the Lucide icon font are read from
+# disk at runtime rather than compiled in, so the solver can be edited and
+# reloaded (Cmd+R) and the keymap hand-edited, without a rebuild -- same
+# convention for all four.
+#
+# These five macros are now `core/ResourcePaths.cpp`'s tier-3 fallback, not
+# the path callers use directly (docs/architecture-review.md P1-2, "The
+# binary cannot leave the machine that built it": a raw CMAKE_SOURCE_DIR
+# path is an absolute path into *this* machine's checkout, which breaks the
+# moment the binary is copied elsewhere -- worst case silently, for the
+# Lucide font, per that finding). `core/ResourcePaths.hpp` has the full
+# three-tier search order and the reasoning for it; every one of the five
+# `NP_*` values below still needs to exist, unconditionally, because tier 3
+# is what keeps a developer running straight out of `build/src/` -- with
+# nothing staged, or an old build predating staging -- seeing no change at
+# all.
 target_compile_definitions(naturalPaint PRIVATE
   NP_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders"
   NP_MIXBOX_LUT="${CMAKE_SOURCE_DIR}/third_party/mixbox/shaders/mixbox_lut.png"
@@ -337,6 +352,43 @@ target_compile_definitions(naturalPaint PRIVATE
   # -- "every name you use MUST exist in codepoints.json" checked against the
   # vendored file itself at test time, not merely at authoring time.
   NP_LUCIDE_CODEPOINTS_JSON="${CMAKE_SOURCE_DIR}/third_party/lucide/codepoints.json"
+)
+
+# Stages tier 2 of core/ResourcePaths.hpp's search order: a copy of the same
+# five resources, in the same relative layout the source tree uses, next to
+# the built executable. Without this, `core/ResourcePaths.cpp`'s
+# executable-relative lookup would have nothing to find and every run would
+# silently fall through to tier 3 (the compile-time path) -- a resolver with
+# an unreachable middle tier is not a portability fix, it just moves where
+# the machine-specific path is written down. `$<TARGET_FILE_DIR:naturalPaint>`
+# rather than a hard-coded `src/` so this keeps working if the target's
+# output directory ever changes.
+#
+# `copy_directory` for the two directories (`shaders/`, `keymaps/`) and
+# `copy` for the three individual files, run as one POST_BUILD step so a
+# fresh build always leaves `build/src/` self-contained -- this is also
+# exactly what the "prove the binary can leave this machine" check copies
+# elsewhere, so if this step is wrong that check fails immediately rather
+# than the gap surviving until someone actually ships the binary.
+add_custom_command(TARGET naturalPaint POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:naturalPaint>/shaders"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_SOURCE_DIR}/keymaps" "$<TARGET_FILE_DIR:naturalPaint>/keymaps"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/mixbox/shaders"
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/third_party/mixbox/shaders/mixbox_lut.png"
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/mixbox/shaders/mixbox_lut.png"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/lucide"
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/third_party/lucide/lucide.ttf"
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/lucide/lucide.ttf"
+  COMMAND ${CMAKE_COMMAND} -E copy
+          "${CMAKE_SOURCE_DIR}/third_party/lucide/codepoints.json"
+          "$<TARGET_FILE_DIR:naturalPaint>/third_party/lucide/codepoints.json"
+  COMMENT "naturalPaint: staging shaders/keymaps/mixbox-lut/lucide beside the built executable (core/ResourcePaths tier 2)"
 )
 
 if(NP_USE_MIXBOX)

@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "core/PigmentBake.hpp"
+#include "core/ResourcePaths.hpp"
 
 // The solver-to-document mass mapping (PLAN.md roadmap section 11).
 //
@@ -24,7 +25,7 @@ namespace {
 // failure rather than a skip: these constants exist in two places and the
 // whole point of §1 is that nothing silently stops checking that.
 std::string shaderText(const char* relative) {
-  std::string path = std::string(NP_SHADER_DIR) + "/" + relative;
+  std::string path = shaderDir() + "/" + relative;
   std::ifstream in(path, std::ios::binary);
   if (!in) return {};
   std::ostringstream ss;
@@ -229,7 +230,7 @@ bool runPigmentBakeTest() {
     const float masses[] = {0.02f, 0.1f, 0.4f, 1.0f, 2.5f};
 
     MixboxLut lut;
-    const bool lutOk = pigmentSourceReady(lut, NP_MIXBOX_LUT);
+    const bool lutOk = pigmentSourceReady(lut, mixboxLutPath().c_str());
     check(lutOk, "bake: this build's pigment source answers with real data, so these are "
                  "real pigment latents");
 
@@ -279,7 +280,7 @@ bool runPigmentBakeTest() {
   std::printf("  -- 5. the latent, the epsilon, and re-wetting --\n");
   {
     MixboxLut lut;
-    lut.load(NP_MIXBOX_LUT);
+    lut.load(mixboxLutPath());
     const Latent latent = lut.rgbToLatent(0.2f, 0.55f, 0.35f);
 
     // The latent is mass-invariant: the same pigment at any load must project

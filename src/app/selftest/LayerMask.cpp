@@ -379,7 +379,7 @@ bool runLayerMaskTest() {
 
   // --- 5. The C3 trap: a mask on a Pigment layer is NOT pigment mass ------
   MixboxLut lut;
-  const bool lutLoaded = pigmentSourceReady(lut, NP_MIXBOX_LUT);
+  const bool lutLoaded = pigmentSourceReady(lut, mixboxLutPath().c_str());
   check(lutLoaded,
         "pigment: this build's pigment source is live and answering with real data -- every "
         "colour claim below is against measured "

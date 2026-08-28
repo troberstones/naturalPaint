@@ -402,9 +402,11 @@ bool runAtelierChromeTest() {
     // a decimal-digit scan is the whole of what reading it needs, the same
     // "hand-roll the small thing rather than take a dependency" call
     // app/Keymap.cpp's own comment makes for a schema one size up from this.
-    std::FILE* f = std::fopen(NP_LUCIDE_CODEPOINTS_JSON, "rb");
+    const std::string codepointsPath = lucideCodepointsJsonPath();
+    std::FILE* f = std::fopen(codepointsPath.c_str(), "rb");
     if (f == nullptr) {
-      check(false, "third_party/lucide/codepoints.json opens (path: " NP_LUCIDE_CODEPOINTS_JSON ")");
+      check(false,
+            ("third_party/lucide/codepoints.json opens (path: " + codepointsPath + ")").c_str());
     } else {
       std::fseek(f, 0, SEEK_END);
       const long size = std::ftell(f);

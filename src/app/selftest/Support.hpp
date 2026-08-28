@@ -79,6 +79,7 @@
 #include "core/Pigment.hpp"
 #include "core/Premultiply.hpp"
 #include "core/Probe.hpp"
+#include "core/ResourcePaths.hpp"
 #include "core/TileShare.hpp"
 #include "core/TileStore.hpp"
 #include "io/Export.hpp"

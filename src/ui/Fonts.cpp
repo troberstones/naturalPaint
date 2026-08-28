@@ -9,6 +9,7 @@
 #include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
 #include "core/Layer.hpp"
+#include "core/ResourcePaths.hpp"
 #include "imgui.h"
 
 namespace np {
@@ -322,17 +323,23 @@ ToolIconLoadResult installToolIconFont(const std::vector<uint32_t>& codepoints) 
     return result;
   }
 
-#ifndef NP_LUCIDE_TTF
-  result.error =
-      "ui/Fonts: NP_LUCIDE_TTF was not defined at compile time (see src/CMakeLists.txt) -- the "
-      "tool palette will fall back to drawToolIcon()'s hand-drawn vectors.";
-  return result;
-#else
+  // core/ResourcePaths.hpp, docs/architecture-review.md P1-2: this is the
+  // motivating case for that fix -- a missing Lucide font used to be checked
+  // (good) against a raw compile-time path (not portable) and reported only
+  // as `result.error`, which main.cpp does print, but which a GUI launch
+  // with no attached terminal never shows anyone. `lucideTtfPath()` tries
+  // the executable-relative and environment-override locations first, so a
+  // copied binary with its resources staged beside it finds the font at
+  // all; if NONE of the three tiers have it, resolveResourcePath() has
+  // already written every path it tried to stderr before this line ever
+  // runs, so the failure is loud even if `result.error` below also never
+  // reaches a screen.
+  const std::string lucidePath = lucideTtfPath();
   std::error_code ec;
-  if (!std::filesystem::exists(NP_LUCIDE_TTF, ec)) {
-    result.error = std::string("ui/Fonts: vendored Lucide font missing at " NP_LUCIDE_TTF
-                               " -- the tool palette will fall back to drawToolIcon()'s "
-                               "hand-drawn vectors.");
+  if (!std::filesystem::exists(lucidePath, ec)) {
+    result.error = "ui/Fonts: vendored Lucide font missing at " + lucidePath +
+                   " -- the tool palette will fall back to drawToolIcon()'s "
+                   "hand-drawn vectors. (see stderr for every location tried.)";
     return result;
   }
 
@@ -370,14 +377,14 @@ ToolIconLoadResult installToolIconFont(const std::vector<uint32_t>& codepoints) 
   config.DstFont = g_fonts.text;
   config.PixelSnapH = false;  // Lucide is a vector face -- see loadFirst()'s own reasoning
   config.GlyphRanges = ranges.data();
-  ImFont* merged = atlas->AddFontFromFileTTF(NP_LUCIDE_TTF, kToolIconSizePx, &config);
+  ImFont* merged = atlas->AddFontFromFileTTF(lucidePath.c_str(), kToolIconSizePx, &config);
   if (merged == nullptr) {
-    result.error = "ui/Fonts: " NP_LUCIDE_TTF
+    result.error = "ui/Fonts: " + lucidePath +
                    " exists but ImGui refused it -- the tool palette will fall back to "
                    "drawToolIcon()'s hand-drawn vectors.";
     return result;
   }
-  result.path = NP_LUCIDE_TTF;
+  result.path = lucidePath;
 
   // Loaded is not the same as covers -- installUiFonts()'s own lesson,
   // repeated here because it is a second, independent merge and a second,
@@ -407,7 +414,6 @@ ToolIconLoadResult installToolIconFont(const std::vector<uint32_t>& codepoints) 
 
   result.ok = true;
   return result;
-#endif
 }
 
 }  // namespace np

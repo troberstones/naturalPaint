@@ -698,7 +698,7 @@ bool runBlendTest() {
   // green under `Mix`".
   {
     MixboxLut lut;
-    const bool lutLoaded = pigmentSourceReady(lut, NP_MIXBOX_LUT);
+    const bool lutLoaded = pigmentSourceReady(lut, mixboxLutPath().c_str());
     check(lutLoaded,
           "mix: this build's pigment source is live and answering with real data -- this "
           "section asserts against measured pigment "

@@ -44,6 +44,7 @@
 #include "core/LayerOps.hpp"
 #include "core/Tile.hpp"
 #include "core/LayerCompOps.hpp"
+#include "core/ResourcePaths.hpp"
 #include "gfx/Context.hpp"
 #include "io/ImageDecode.hpp"
 #include "paint/Palette.hpp"
@@ -1308,9 +1309,10 @@ int main(int argc, char** argv) {
   if (!gpu.init(window)) return 1;
 
   np::MixboxLut lut;
-  if (!lut.load(NP_MIXBOX_LUT)) {
+  const std::string mixboxLutPath = np::mixboxLutPath();
+  if (!lut.load(mixboxLutPath)) {
     std::fprintf(stderr, "Could not load the Mixbox LUT. Expected it at:\n  %s\n",
-                 NP_MIXBOX_LUT);
+                 mixboxLutPath.c_str());
     return 1;
   }
 
@@ -2191,6 +2193,10 @@ int main(int argc, char** argv) {
     // rather than assumed. Headless and GPU-free -- pure CPU resampling,
     // same as runTransformTest().
     const bool resamplePerfOk = np::runResamplePerfTest();
+    // docs/architecture-review.md P1-2: core/ResourcePaths -- the resolver
+    // this task added so the binary can leave the machine that built it.
+    // Headless and GPU-free -- pure filesystem, no PaintSim involvement.
+    const bool resourcePathsOk = np::runResourcePathsTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2224,7 +2230,7 @@ int main(int argc, char** argv) {
                     saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
                     angleConventionOk && wheelInputOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
-                    clipboardImageOk && parallelOk && compositeCostOk;
+                    clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -2334,7 +2340,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "[keymap] failed to load %s/default.json -- keyboard shortcuts "
                  "will not resolve to any action this session\n",
-                 NP_KEYMAP_DIR);
+                 np::keymapDir().c_str());
   }
 
   np::AppState st;

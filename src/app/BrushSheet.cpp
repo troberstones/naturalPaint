@@ -10,6 +10,7 @@
 #include "app/AppState.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/StrokeSession.hpp"
+#include "core/ResourcePaths.hpp"
 #include "io/AbrBrushes.hpp"
 #include "io/Capabilities.hpp"
 #include "io/Export.hpp"
@@ -151,8 +152,9 @@ int runBrushSheet(const char* abrPath, const char* outPath, const char* experime
   }
 
   MixboxLut lut;
-  if (!lut.load(NP_MIXBOX_LUT)) {
-    std::fprintf(stderr, "brush-sheet: could not load the Mixbox LUT at %s\n", NP_MIXBOX_LUT);
+  const std::string lutPath = mixboxLutPath();
+  if (!lut.load(lutPath)) {
+    std::fprintf(stderr, "brush-sheet: could not load the Mixbox LUT at %s\n", lutPath.c_str());
     return 1;
   }
 

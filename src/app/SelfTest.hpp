@@ -3943,4 +3943,21 @@ bool runCompositeCostTest();
 // silently measured a refusal or the wrong path cannot pass unnoticed.
 bool runResamplePerfTest();
 
+// core/ResourcePaths (docs/architecture-review.md P1-2: "The binary cannot
+// leave the machine that built it"). Proves, in order: every tier of
+// resolveFromCandidates()'s search order is reachable in isolation (tier 2,
+// executable-relative, via a temp directory standing in for the real
+// executable's directory -- never the real one); the NP_ASSET_DIR override
+// wins over both fallbacks and executable-relative wins over compile-time;
+// a resource missing from every tier is reported (captured through
+// fmemopen(), never the process's real stderr) rather than silently
+// returned empty; and -- the assertion that would have caught the Lucide
+// trap this task fixes -- all five real resources (shaders/, the Mixbox
+// LUT, keymaps/, the Lucide TTF, and its codepoints.json) resolve, through
+// the real resolveResourcePath(), to a path that actually opens and yields
+// real bytes, not merely a macro that is non-empty. Headless and
+// GPU-free -- pure filesystem, no PaintSim involvement. See
+// app/selftest/ResourcePaths.cpp.
+bool runResourcePathsTest();
+
 }  // namespace np

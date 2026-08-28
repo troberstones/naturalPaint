@@ -8,6 +8,7 @@
 #include "core/LayerOps.hpp"
 #include "brush/Library.hpp"
 #include "core/Pigment.hpp"
+#include "core/ResourcePaths.hpp"
 #include "core/TileStore.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "io/Export.hpp"
@@ -285,8 +286,9 @@ const StrokePreviewImage& StrokePreviewCache::imageFor(const BrushState& brush,
 
 int runStrokePreviewDump(const char* outPath, float radiusOverride, float spacingOverride) {
   MixboxLut lut;
-  if (!lut.load(NP_MIXBOX_LUT)) {
-    std::fprintf(stderr, "stroke-preview: could not load the Mixbox LUT at %s\n", NP_MIXBOX_LUT);
+  const std::string lutPath = mixboxLutPath();
+  if (!lut.load(lutPath)) {
+    std::fprintf(stderr, "stroke-preview: could not load the Mixbox LUT at %s\n", lutPath.c_str());
     return 1;
   }
 

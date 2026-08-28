@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "core/Layer.hpp"
+#include "core/ResourcePaths.hpp"
 
 namespace np {
 namespace {
@@ -228,7 +229,7 @@ uint16_t keyModsFromSDL(SDL_Keymod sdlMods) {
 }
 
 bool Keymap::loadFromFile(std::string_view relativePath) {
-  const fs::path p = fs::path(NP_KEYMAP_DIR) / relativePath;
+  const fs::path p = fs::path(keymapDir()) / relativePath;
   std::ifstream in(p, std::ios::binary);
   if (!in) {
     std::fprintf(stderr, "[keymap] cannot read %s\n", p.string().c_str());

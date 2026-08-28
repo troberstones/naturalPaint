@@ -29,7 +29,7 @@ bool runStrokePreviewTest() {
   };
 
   MixboxLut lut;
-  if (!lut.load(NP_MIXBOX_LUT)) {
+  if (!lut.load(mixboxLutPath())) {
     std::printf("  %-58s %s\n", "stroke-preview: Mixbox LUT loads", "FAIL");
     std::printf("[selftest] stroke preview FAIL\n");
     return false;

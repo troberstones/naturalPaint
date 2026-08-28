@@ -146,7 +146,7 @@ bool runPigmentLayerTest() {
 
   // --- 2. The projection, against the real Mixbox LUT --------------------
   MixboxLut lut;
-  const bool lutLoaded = pigmentSourceReady(lut, NP_MIXBOX_LUT);
+  const bool lutLoaded = pigmentSourceReady(lut, mixboxLutPath().c_str());
   check(lutLoaded,
         "projection: this build's pigment source is live and answering with real data -- "
         "everything below asserts against measured "

@@ -461,7 +461,7 @@ bool runClippingMaskTest() {
   // --- 6. `Mix` and a clip are mutually exclusive, in one predicate -------
   {
     MixboxLut lut;
-    const bool lutLoaded = pigmentSourceReady(lut, NP_MIXBOX_LUT);
+    const bool lutLoaded = pigmentSourceReady(lut, mixboxLutPath().c_str());
     check(lutLoaded,
           "mix: this build's pigment source is live and answering with real data -- the "
           "pairing claims below are against real latents "
@@ -922,7 +922,7 @@ bool runClippingMaskTest() {
     };
 
     MixboxLut lut;
-    lut.load(NP_MIXBOX_LUT);
+    lut.load(mixboxLutPath());
     const Pigment& bluePigment = defaultPalette()[7];
     const Latent zBlue =
         lut.rgbToLatent(bluePigment.rgb[0], bluePigment.rgb[1], bluePigment.rgb[2]);

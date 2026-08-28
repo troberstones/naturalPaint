@@ -7,6 +7,7 @@
 #include <iterator>
 
 #include "app/StrokeSession.hpp"
+#include "core/ResourcePaths.hpp"
 #include "ui/AtelierChrome.hpp"
 
 // stb_truetype's IMPLEMENTATION lives in this translation unit, and only this
@@ -453,10 +454,14 @@ CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint, float scale,
   out.width = out.height = px(kCursorDesignUnits, scale);
   out.rgba.assign(static_cast<size_t>(out.width) * out.height * 4, 0);
 
-#ifndef NP_LUCIDE_TTF
-  return out;
-#else
-  std::ifstream file(NP_LUCIDE_TTF, std::ios::binary);
+  // core/ResourcePaths.hpp: tries the executable-relative and override
+  // locations before the compile-time path, so a copied binary still finds
+  // the vendored font here, same as installToolIconFont() above it in
+  // ui/Fonts.cpp. A missing file already falls through to the blank,
+  // zero-hotspot bitmap this function's own header comment documents, so no
+  // separate report is added here -- resolveResourcePath() already wrote
+  // every location it tried to stderr if none of them existed.
+  std::ifstream file(lucideTtfPath(), std::ios::binary);
   if (!file.is_open()) return out;
   const std::vector<unsigned char> buffer((std::istreambuf_iterator<char>(file)),
                                           std::istreambuf_iterator<char>());
@@ -528,7 +533,6 @@ CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint, float scale,
   out.hotspotX = minX + static_cast<int>(std::lround(anchor.fx * (maxX - minX)));
   out.hotspotY = minY + static_cast<int>(std::lround(anchor.fy * (maxY - minY)));
   return out;
-#endif
 }
 
 }  // namespace
