@@ -162,6 +162,7 @@ add_executable(naturalPaint
   app/ViewTransform.cpp
   app/WheelInput.cpp
   app/ZoomAndSize.cpp
+  brush/BrushModel.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
   brush/Grain.cpp

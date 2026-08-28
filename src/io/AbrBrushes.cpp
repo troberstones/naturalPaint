@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "io/Descriptor.hpp"
+#include "brush/BrushModel.hpp"
 #include "io/PackBits.hpp"
 
 namespace np {
@@ -552,6 +553,234 @@ BrushPreset presetFromDescriptor(
   return p;
 }
 
+
+// ===========================================================================
+// The BrushModel path -- Photoshop's own panels, read whole.
+// ===========================================================================
+//
+// **This runs ALONGSIDE `presetFromDescriptor()` above, not instead of it.**
+// The engine still paints from `BrushPreset` and its link matrix; this fills
+// the model the engine will move to, so the switchover is one commit that
+// changes what CONSUMES the data rather than one that changes both producer
+// and consumer in the same breath. Until then the model's whole job is to let
+// `--abr-report` say what is in the file -- which for Texture, Transfer and
+// Scatter Count is the first time anything has said so.
+
+Variance readVariance(const DescriptorRef& owner, const char* key) {
+  Variance v;
+  const DescriptorRef ref = owner.field(key);
+  if (!ref.valid()) return v;
+  v.present = true;
+  if (const auto c = ref.field("bVTy").asInteger()) {
+    // Ordinals outside 0..7 are NOT clamped into range. An unknown control is
+    // a control this reader does not understand, and silently calling it
+    // `InitialDirection` because 7 is the nearest legal value is the shape of
+    // guess that produced the 6/7 defect in the first place.
+    if (*c >= 0 && *c <= 7) v.control = static_cast<VarianceControl>(*c);
+  }
+  double d = 0.0;
+  if (unitValue(ref.field("jitter"), d))
+    v.jitter = clampf(static_cast<float>(d) / 100.0f, 0.0f, 1.0f);
+  if (unitValue(ref.field("Mnm "), d))
+    v.minimum = clampf(static_cast<float>(d) / 100.0f, 0.0f, 1.0f);
+  if (const auto f = ref.field("fStp").asInteger()) v.fadeSteps = *f;
+  return v;
+}
+
+bool readBoolField(const DescriptorRef& owner, const char* key, bool fallback = false) {
+  if (const auto b = owner.field(key).asBoolean()) return *b;
+  return fallback;
+}
+
+// A percentage read as a 0..1 fraction. Leaves `out` alone when the key is
+// absent, so a struct default survives rather than being overwritten with 0.
+void readPercentField(const DescriptorRef& owner, const char* key, float& out) {
+  double d = 0.0;
+  if (unitValue(owner.field(key), d)) out = static_cast<float>(d) / 100.0f;
+}
+
+void readRawField(const DescriptorRef& owner, const char* key, float& out) {
+  double d = 0.0;
+  if (unitValue(owner.field(key), d)) out = static_cast<float>(d);
+}
+
+// `BlnM` and `textureBlendMode` share this table, because they are the same
+// question asked in two panels (brush/BrushModel.hpp's `CoverageBlend`). Every
+// id below was observed in a real pack; an id not here is left at the caller's
+// default rather than approximated.
+bool coverageBlendFromId(const std::string& id, CoverageBlend& out) noexcept {
+  if (id == "Mltp") { out = CoverageBlend::Multiply; return true; }
+  if (id == "Ovrl") { out = CoverageBlend::Overlay; return true; }
+  if (id == "CBrn") { out = CoverageBlend::ColorBurn; return true; }
+  if (id == "hMix" || id == "hardMix") { out = CoverageBlend::HardMix; return true; }
+  if (id == "linearBurn") { out = CoverageBlend::LinearBurn; return true; }
+  if (id == "CDdg") { out = CoverageBlend::ColorDodge; return true; }
+  if (id == "Drkn") { out = CoverageBlend::Darken; return true; }
+  if (id == "Sbtr") { out = CoverageBlend::Subtract; return true; }
+  if (id == "Hght") { out = CoverageBlend::Height; return true; }
+  if (id == "linearHeight") { out = CoverageBlend::LinearHeight; return true; }
+  return false;
+}
+
+PsTipShape tipShapeFromDescriptor(
+    const DescriptorRef& brsh,
+    const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& tipsById) {
+  PsTipShape tip;
+  if (!brsh.valid()) return tip;
+
+  tip.computed = brsh.classId() == "computedBrush";
+  if (const auto id = brsh.field("sampledData").asText()) {
+    tip.dab.id = "abr:" + std::string(*id);
+    const auto found = tipsById.find(std::string(*id));
+    if (found != tipsById.end()) tip.dab.bitmap = found->second;
+  }
+
+  double d = 0.0;
+  if (const auto dmtr = brsh.field("Dmtr").asUnitFloat()) {
+    // A `#Prc` diameter is a percentage of the SAMPLE's own pixel size; with
+    // no sample there is nothing to take a percentage of, which is why the
+    // unit is checked here and nowhere else. Never observed in any of the 101
+    // presets measured -- every `Dmtr` is `#Pxl` -- so this branch is carried
+    // for files that have not turned up yet, not for any seen so far.
+    if (dmtr->unit == "#Prc") {
+      if (tip.dab.bitmap != nullptr) {
+        const int32_t larger = std::max(tip.dab.bitmap->width, tip.dab.bitmap->height);
+        tip.diameterPx = static_cast<float>(dmtr->value / 100.0 * larger);
+      }
+    } else {
+      tip.diameterPx = static_cast<float>(dmtr->value);
+    }
+  } else if (unitValue(brsh.field("Dmtr"), d)) {
+    tip.diameterPx = static_cast<float>(d);
+  }
+
+  readRawField(brsh, "Angl", tip.angleDeg);
+  readPercentField(brsh, "Rndn", tip.roundness);
+  readRawField(brsh, "Spcn", tip.spacingPercent);
+  readPercentField(brsh, "Hrdn", tip.hardness);
+  tip.spacingEnabled = readBoolField(brsh, "Intr", true);
+  tip.flipX = readBoolField(brsh, "flipX");
+  tip.flipY = readBoolField(brsh, "flipY");
+  return tip;
+}
+
+PsScatter scatterFromDescriptor(const DescriptorRef& owner, const char* enableKey) {
+  PsScatter sc;
+  sc.enabled = readBoolField(owner, enableKey);
+  sc.scatter = readVariance(owner, "scatterDynamics");
+  sc.bothAxes = readBoolField(owner, "bothAxes");
+  double d = 0.0;
+  if (unitValue(owner.field("Cnt "), d)) sc.count = static_cast<int32_t>(d);
+  sc.countJitter = readVariance(owner, "countDynamics");
+  return sc;
+}
+
+BrushModel brushModelFromDescriptor(
+    const DescriptorRef& brush,
+    const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& tipsById) {
+  BrushModel m;
+
+  m.tip = tipShapeFromDescriptor(brush.field("Brsh"), tipsById);
+
+  // --- Shape Dynamics ---
+  m.shape.enabled = readBoolField(brush, "useTipDynamics");
+  m.shape.size = readVariance(brush, "szVr");
+  m.shape.angle = readVariance(brush, "angleDynamics");
+  m.shape.roundness = readVariance(brush, "roundnessDynamics");
+  // Photoshop's Minimum Diameter and Minimum Roundness ARE the floors of their
+  // variances, and folding them in here is what leaves exactly one minimum per
+  // site -- the structural half of audit B6 (brush/Variance.hpp).
+  readPercentField(brush, "minimumDiameter", m.shape.size.minimum);
+  readPercentField(brush, "minimumRoundness", m.shape.roundness.minimum);
+  m.shape.flipXJitter = readBoolField(brush, "flipX");
+  m.shape.flipYJitter = readBoolField(brush, "flipY");
+  m.shape.brushProjection = readBoolField(brush, "brushProjection");
+  readPercentField(brush, "tiltScale", m.shape.tiltScale);
+
+  // --- Scattering ---
+  m.scatter = scatterFromDescriptor(brush, "useScatter");
+
+  // --- Texture ---
+  m.texture.enabled = readBoolField(brush, "useTexture");
+  {
+    const DescriptorRef txtr = brush.field("Txtr");
+    if (txtr.valid()) {
+      if (const auto id = txtr.field("Idnt").asText())
+        m.texture.pattern.id = std::string(*id);
+      if (const auto nm = txtr.field("Nm  ").asText())
+        m.texture.pattern.name = std::string(*nm);
+    }
+  }
+  m.texture.invert = readBoolField(brush, "InvT");
+  readRawField(brush, "textureScale", m.texture.scalePercent);
+  readPercentField(brush, "textureDepth", m.texture.depth);
+  readPercentField(brush, "minimumDepth", m.texture.minimumDepth);
+  m.texture.depthJitter = readVariance(brush, "textureDepthDynamics");
+  readRawField(brush, "textureBrightness", m.texture.brightness);
+  readRawField(brush, "textureContrast", m.texture.contrast);
+  m.texture.eachTip = readBoolField(brush, "TxtC");
+  m.texture.protectTexture = readBoolField(brush, "protectTexture");
+  if (const auto blend = brush.field("textureBlendMode").asEnumerated())
+    coverageBlendFromId(blend->valueId, m.texture.blend);
+
+  // --- Dual Brush ---
+  {
+    const DescriptorRef dual = brush.field("dualBrush");
+    if (dual.valid()) {
+      // Gated on `useDualBrush`, never on the object's presence: every real
+      // preset carries the object, so presence says nothing at all.
+      m.dual.enabled = readBoolField(dual, "useDualBrush");
+      m.dual.tip = tipShapeFromDescriptor(dual.field("Brsh"), tipsById);
+      m.dual.scatter = scatterFromDescriptor(dual, "useScatter");
+      m.dual.flip = readBoolField(dual, "Flip");
+      if (const auto blend = dual.field("BlnM").asEnumerated())
+        coverageBlendFromId(blend->valueId, m.dual.blend);
+    }
+  }
+
+  // --- Color Dynamics ---
+  m.color.enabled = readBoolField(brush, "useColorDynamics");
+  m.color.perTip = readBoolField(brush, "colorDynamicsPerTip");
+  m.color.foregroundBackground = readVariance(brush, "clVr");
+  readPercentField(brush, "H   ", m.color.hueJitter);
+  readPercentField(brush, "Strt", m.color.saturationJitter);
+  readPercentField(brush, "Brgh", m.color.brightnessJitter);
+  readPercentField(brush, "purity", m.color.purity);
+
+  // --- Transfer ---
+  m.transfer.enabled = readBoolField(brush, "usePaintDynamics");
+  m.transfer.opacity = readVariance(brush, "opVr");
+  m.transfer.flow = readVariance(brush, "prVr");
+  m.transfer.wetness = readVariance(brush, "wtVr");
+  m.transfer.mix = readVariance(brush, "mxVr");
+
+  // --- The options bar state Photoshop saves WITH the preset ---
+  {
+    const DescriptorRef opts = brush.field("toolOptions");
+    if (opts.valid()) {
+      if (const auto md = opts.field("Md  ").asEnumerated()) m.options.blendMode = md->valueId;
+      readPercentField(opts, "Opct", m.options.opacity);
+      readPercentField(opts, "flow", m.options.flow);
+      m.options.smoothing = readBoolField(opts, "smoothing", true);
+      m.options.pressureOverridesSize = readBoolField(opts, "usePressureOverridesSize");
+      m.options.pressureOverridesOpacity = readBoolField(opts, "usePressureOverridesOpacity");
+      m.options.useLegacy = readBoolField(opts, "useLegacy");
+      m.options.sizeOverride = readVariance(opts, "szVr");
+      m.options.opacityOverride = readVariance(opts, "opVr");
+      m.options.flowOverride = readVariance(opts, "prVr");
+      m.options.colorOverride = readVariance(opts, "clVr");
+    }
+  }
+
+  // --- The checkbox tail ---
+  m.noise = readBoolField(brush, "Nose");
+  m.wetEdges = readBoolField(brush, "Wtdg");
+  m.airbrush = readBoolField(brush, "Rpt ");
+  m.brushPose = readBoolField(brush, "useBrushPose");
+
+  return m;
+}
+
 }  // namespace
 
 const char* abrControlName(int bVTy) noexcept {
@@ -845,8 +1074,12 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     return result;
   }
 
-  for (size_t i = 0; i < list.childCount(); ++i)
+  for (size_t i = 0; i < list.childCount(); ++i) {
     result.presets.push_back(presetFromDescriptor(list.child(i), result, tipsById));
+    // The Photoshop-shaped model, filled alongside -- see the
+    // `brushModelFromDescriptor()` block's own comment on why both, for now.
+    result.models.push_back(brushModelFromDescriptor(list.child(i), tipsById));
+  }
 
   result.ok = true;
   return result;

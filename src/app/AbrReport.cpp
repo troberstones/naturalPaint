@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "brush/BrushModel.hpp"
 #include "brush/Dynamics.hpp"
 #include "io/AbrBrushes.hpp"
 #include "io/Descriptor.hpp"
@@ -155,6 +156,85 @@ void walkKeys(const DescriptorRef& root, std::map<std::string, KeyStats>& out) {
 
 }  // namespace
 
+namespace {
+
+// One row of the panel coverage table.
+//
+// **The point of this table is the gap between the two numbers.** Before it,
+// an import that dropped Texture on 84 of 101 brushes reported nothing at all
+// -- the summary counted sampled tips and Dual Brush and stopped there, so
+// the five panels it never looked at were indistinguishable from five panels
+// no file used. Two of this project's own lessons converge here: an absence
+// claim rots, and a green suite once canonised a P0 gap. A number printed
+// from the file every time it is read cannot do either.
+struct PanelRow {
+  const char* name;
+  size_t requested = 0;  // presets whose file switches this panel ON
+  size_t rendered = 0;   // presets where this build actually acts on it
+  const char* note = "";
+};
+
+void printPanelCoverage(const AbrImportResult& r) {
+  if (r.models.empty()) return;
+
+  PanelRow rows[] = {
+      {"Brush Tip Shape", 0, 0, ""},
+      {"Shape Dynamics", 0, 0, ""},
+      {"Scattering", 0, 0, "Count is read but every dab still lands once"},
+      {"  - Count > 1", 0, 0, "dabs per position; not yet stamped"},
+      {"Texture", 0, 0, "read; the deposit still uses procedural grain"},
+      {"Dual Brush", 0, 0, ""},
+      {"Color Dynamics", 0, 0, "read; no engine target"},
+      {"Transfer", 0, 0, "read; flow/opacity not yet applied"},
+      {"Blend mode (Md )", 0, 0, "read; the stroke still composites Normal"},
+      {"Noise", 0, 0, "refused: no published formula"},
+      {"Wet Edges", 0, 0, "refused: not implemented"},
+      {"Build-up (Rpt )", 0, 0, "refused: INFERRED meaning, and time-based"},
+      {"Brush Pose", 0, 0, "refused: not implemented"},
+  };
+  enum { kTip, kShape, kScatter, kCount, kTexture, kDual, kColor, kTransfer,
+         kBlend, kNoise, kWet, kAir, kPose };
+
+  for (const BrushModel& m : r.models) {
+    if (!m.tip.dab.id.empty()) {
+      ++rows[kTip].requested;
+      if (m.tip.dab.bitmap != nullptr) ++rows[kTip].rendered;
+    }
+    if (m.shape.enabled) { ++rows[kShape].requested; ++rows[kShape].rendered; }
+    if (m.scatter.enabled) { ++rows[kScatter].requested; ++rows[kScatter].rendered; }
+    if (m.scatter.count > 1) ++rows[kCount].requested;
+    if (m.texture.enabled) ++rows[kTexture].requested;
+    if (m.dual.enabled) ++rows[kDual].requested;
+    if (m.color.enabled) ++rows[kColor].requested;
+    if (m.transfer.enabled) ++rows[kTransfer].requested;
+    if (!m.options.blendMode.empty() && m.options.blendMode != "Nrml")
+      ++rows[kBlend].requested;
+    if (m.noise) ++rows[kNoise].requested;
+    if (m.wetEdges) ++rows[kWet].requested;
+    if (m.airbrush) ++rows[kAir].requested;
+    if (m.brushPose) ++rows[kPose].requested;
+  }
+  // The Dual Brush is the one panel whose rendered count the import already
+  // knows, because it has been counting its own losses all along.
+  rows[kDual].rendered =
+      rows[kDual].requested - r.dualBrushes - r.dualBrushUnsupportedBlend;
+
+  std::printf("\n-- panel coverage: what the file asks for, what this build does --\n");
+  std::printf("%-20s %9s %9s  %s\n", "panel", "asked by", "rendered", "note");
+  std::printf("%-20s %9s %9s  %s\n", "--------------------", "--------", "--------", "----");
+  for (const PanelRow& row : rows) {
+    if (row.requested == 0 && row.rendered == 0) {
+      std::printf("%-20s %9s %9s  %s\n", row.name, "-", "-",
+                  *row.note != '\0' ? row.note : "no preset in this file uses it");
+      continue;
+    }
+    std::printf("%-20s %9zu %9zu  %s\n", row.name, row.requested, row.rendered, row.note);
+  }
+  std::printf("(of %zu presets)\n", r.models.size());
+}
+
+}  // namespace
+
 int runAbrKeyCensus(const char* path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
@@ -272,6 +352,7 @@ int runAbrReport(const char* path) {
     std::fprintf(stderr, "abr-report: import failed: %s\n", r.error.c_str());
     return 1;
   }
+  printPanelCoverage(r);
 
   std::printf(
       "\n%zu presets imported, %zu sampled tips NOT imported, %zu unmapped controls, "

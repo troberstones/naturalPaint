@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "brush/BrushModel.hpp"
 #include "brush/Library.hpp"
 
 namespace np {
@@ -88,6 +89,20 @@ struct AbrImportResult {
   std::string error;  // set when ok is false, and then presets is empty
 
   std::vector<BrushPreset> presets;
+
+  // The same brushes as `presets`, read into Photoshop's own panel structure
+  // (brush/BrushModel.hpp) rather than flattened onto the link matrix. One
+  // entry per preset, in the same order.
+  //
+  // **Filled alongside `presets`, and read by nothing that paints -- yet.**
+  // Keeping both while the engine moves over means the switchover is one
+  // commit changing what CONSUMES this data, rather than one changing producer
+  // and consumer in the same breath. Today its whole job is to let
+  // `--abr-report` say what is actually in the file: Texture, Transfer,
+  // Scatter Count, the Dual Brush's own cadence and the tool options were all
+  // dropped without a note before it existed.
+  std::vector<BrushModel> models;
+
   std::vector<AbrImportNote> notes;
 
   // Counters for the summary line, so a caller does not have to walk `notes`
