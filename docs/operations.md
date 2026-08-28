@@ -42,24 +42,38 @@ these costs exactly what one costs — see [ADR-0004](adr/0004-colour-ops-collap
 Each is a new set of parameters feeding the same LUT bake. That is why this list can be
 long without being expensive.
 
+> **Built and reachable as of 2026-08-28.** Everything in §1.1 and most of this table is
+> now in **Image > Adjustments** — nineteen commands, destructive, aimed at the active
+> layer and bounded by the selection (`app/AdjustmentOps`, `ops/PointOpTiles`). Marked
+> **✅** below. The op stack and the Adjustment layer kind remain the non-destructive
+> route; the two are not alternatives, because an op stack cannot honour a selection —
+> the same argument this document makes in §1.3 about why a vignette is not class A.
+>
+> Still absent, and each for its own reason: **white balance** (subsumed for now by
+> auto-white-balance and photo filter — a temperature/tint control via real chromatic
+> adaptation is a separate job), **clamp** (wanted only once `HALF` `inf` can reach a
+> save), **selective colour** (P2, no engine yet), **apply LUT** (`.cube` needs a parser
+> and a file dialog), and **equalize**, which is *present* but is this build's own
+> addition rather than one of this table's rows.
+
 | op | class | P | notes |
 |---|---|---|---|
-| Gain / offset / gamma | A | **P1** | the Nuke primitive; the honest form of "brightness/contrast" |
+| Gain / offset / gamma ✅ | A | **P1** | the Nuke primitive; the honest form of "brightness/contrast" |
 | White balance | A | **P1** | temperature/tint via chromatic adaptation, not a channel scale |
-| Colour balance | A | **P1** | lift / gamma / gain by tonal range — the grading control |
-| Hue / saturation by range | A | **P1** | HSL qualifier with soft range edges |
-| Black & white | A | **P1** | six-channel weights, as the mono-conversion control |
-| Gradient map | A | **P1** | luma → gradient; class A because the input is one scalar |
-| Invert | A | **P1** | in linear or display domain — the choice is visible, so expose it |
+| Colour balance ✅ | A | **P1** | lift / gamma / gain by tonal range — the grading control |
+| Hue / saturation by range ✅ | A | **P1** | HSL qualifier with soft range edges |
+| Black & white ✅ | A | **P1** | six-channel weights, as the mono-conversion control |
+| Gradient map ✅ | A | **P1** | luma → gradient; class A because the input is one scalar |
+| Invert ✅ | A | **P1** | in linear or display domain — the choice is visible, so expose it |
 | Clamp | A | **P1** | needed once `HALF` `inf` is possible on save |
-| Posterize | A | **P2** | quantise in the shaper domain or it bands unevenly |
-| Threshold | A | **P2** | |
+| Posterize ✅ | A | **P2** | quantise in the shaper domain or it bands unevenly |
+| Threshold ✅ | A | **P2** | |
 | Selective colour | A | **P2** | per-primary CMYK offsets |
-| Vibrance | A | **P2** | saturation weighted by existing saturation |
+| Vibrance ✅ | A | **P2** | saturation weighted by existing saturation |
 | Apply LUT (`.cube`) | A | **P2** | a 3-D LUT composed into ours — the cheapest op in the list |
-| Auto-tone | A | **P1** | per-channel black/white points from the histogram |
-| Auto-contrast | A | **P1** | composite black/white points, so hue is preserved |
-| Auto-white-balance | A | **P1** | grey-world or brightest-neutral estimate |
+| Auto-tone ✅ | A | **P1** | per-channel black/white points from the histogram |
+| Auto-contrast ✅ | A | **P1** | composite black/white points, so hue is preserved |
+| Auto-white-balance ✅ | A | **P1** | grey-world or brightest-neutral estimate |
 
 Auto-anything is a **parameter solver, not an op**: it inspects the histogram, computes
 levels or balance parameters, and writes them into an ordinary editable op. The user can
