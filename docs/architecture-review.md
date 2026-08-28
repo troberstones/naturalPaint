@@ -226,6 +226,68 @@ is worth fixing, but it is not costing you frame rate while painting.
 allocates a *second* full-document buffer to convert it to f16. Fuse the unpremultiply-and-pack into
 the tile loop above and the second allocation disappears entirely.
 
+#### Outcome (2026-08-27): the symptom is real, the mechanism named for it is not — no restructuring done
+
+**The linear-in-layer-count symptom is exactly right; the DRAM-re-streaming explanation for it is
+not.** `app/selftest/CompositeCost.cpp` (`runCompositeCostTest()`) builds 2048×2048 documents with
+1/2/4/8/16 RGB layers, each occupying every tile of the canvas — the shape most favourable to this
+finding's story — and times `compositeDocumentPremultiplied()`:
+
+| layers | time | s/layer |
+|---|---|---|
+| 1 | 0.0252 s | 0.0252 |
+| 2 | 0.0479 s | 0.0240 |
+| 4 | 0.0934 s | 0.0233 |
+| 8 | 0.1829 s | 0.0229 |
+| 16 | 0.3745 s | 0.0234 |
+
+Marginal cost (past the zero-fill floor) from 2 to 16 layers: 8.33× — linear prediction is exactly
+8.00×. A bare allocate-and-zero of one accumulator-sized buffer (64 MiB) measured 0.0034 s, **13.4%
+of the single-layer composite** — real, but not the dominant term.
+
+Both of those numbers are compatible with the finding's "N full DRAM passes" story. They are *equally*
+compatible with plain per-texel compute cost, which also scales linearly with layer count. The two
+were told apart by a third measurement the finding didn't ask for but the premise needed: per-texel
+time as the accumulator grows from 1 MiB (comfortably cached) to 64 MiB (nowhere close), one layer
+only —
+
+| accumulator | ns/texel |
+|---|---|
+| 256×256 (1.00 MiB) | 4.72 |
+| 512×512 (4.00 MiB) | 5.59 |
+| 1024×1024 (16.00 MiB) | 6.37 |
+| 2048×2048 (64.00 MiB) | 6.31 |
+
+**1.34× over a 64× increase in accumulator size.** A compositor genuinely bottlenecked on
+re-streaming an under-cached accumulator from DRAM would show a sharp step once the working set
+outgrows L2 and again past the last-level cache — this shows almost nothing. The methodology was
+sabotage-checked before trusting that null result: a throwaway change forcing a genuine 64 MiB
+random touch per texel (reverted, never committed) moved the same ratio to 2.23× and roughly
+quadrupled the absolute per-texel cost, proving the measurement *can* see a memory-bound signature
+when one exists. On the unmodified compositor it does not see one, because there mostly isn't one:
+the cost is the per-texel blend arithmetic and the f16 tile decode, not the round trip to the
+accumulator.
+
+That matters because the proposed fix's entire mechanism — keep a 128×128 tile in L2 across layers
+instead of re-streaming a 64 MiB buffer N times — targets a cost that these numbers say is not the
+one being paid. Per this task's own instruction, a premise that does not survive being measured is
+not restructured on the strength of the finding alone: **no loop inversion, no stack accumulator, and
+no fusion of the secondary `compositeDocumentStraightHalf` pack were made.** The secondary item is
+also specifically contingent on the tile-major structure (a tile can only be packed to f16 once every
+layer has contributed to it, which `compositeDocumentPremultiplied()`'s current layer-major order
+cannot promise mid-walk), so it does not stand on its own either.
+
+What *would* actually speed this up, separately from anything this finding argues for: the workload is
+compute-bound and single-threaded, and `core/Parallel.hpp`'s `parallelFor` is already proven safe over
+a **layer's own disjoint tiles** (`ops/Blur.cpp`'s two-phase reservation pattern) without requiring any
+change to layer order or accumulator shape — each layer's tile loop in `compositeWalk()` already visits
+disjoint accumulator regions and could be handed to `parallelFor` as-is. That is a smaller, lower-risk
+change than this finding describes, was not authorized by this task's scope, and is left as a
+follow-up rather than implemented here.
+
+`--selftest` (both `NP_USE_MIXBOX` configurations): 0 FAIL, +5 assertions over baseline, exit 0.
+`tools/golden/run_golden.sh`: 7/7.
+
 ---
 
 ### P0-5 — `std::function` called per pixel, when the fast path already exists in this repo

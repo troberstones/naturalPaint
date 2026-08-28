@@ -2170,6 +2170,12 @@ int main(int argc, char** argv) {
     // scatterAligned()/gatherBlurredPlane(). Headless and GPU-free -- pure
     // CPU tile arithmetic, no PaintSim involvement.
     const bool parallelOk = np::runParallelTest();
+    // docs/architecture-review.md P0-4: the premise check for "the full
+    // composite is layer-major over a 256 MB accumulator" -- composite cost
+    // vs. layer count at 2048x2048, and the zero-fill's own share of it,
+    // measured before any loop-order change is made on the strength of the
+    // finding alone. Headless and GPU-free.
+    const bool compositeCostOk = np::runCompositeCostTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2201,7 +2207,7 @@ int main(int argc, char** argv) {
                     openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
                     saveReadbackOk && zoomAndSizeOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
-                    clipboardImageOk && parallelOk;
+                    clipboardImageOk && parallelOk && compositeCostOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

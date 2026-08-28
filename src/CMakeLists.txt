@@ -51,6 +51,7 @@ add_executable(naturalPaint
   app/selftest/ClippingMask.cpp
   app/selftest/CloseDecision.cpp
   app/selftest/ColorSpace.cpp
+  app/selftest/CompositeCost.cpp
   app/selftest/ControlsColumnLayout.cpp
   app/selftest/ControlsLayout.cpp
   app/selftest/CowTile.cpp

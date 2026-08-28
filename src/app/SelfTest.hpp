@@ -3885,4 +3885,14 @@ bool runClipboardImageTest();
 // and app/selftest/Parallel.cpp for the rest.
 bool runParallelTest();
 
+// docs/architecture-review.md P0-4: the premise check for "the full composite
+// is layer-major over a 256 MB accumulator." Measures compositeDocumentPremultiplied()
+// at a fixed 2048x2048 canvas across 1/2/4/8/16 full-canvas RGB layers, and
+// separately times a bare allocate-and-zero of an accumulator-sized buffer, so
+// the linear-in-layer-count claim and the zero-fill's share of the cost are
+// both measured rather than assumed. Headless and GPU-free. `[measured]`
+// wall-clock lines only -- no check() is timing-gated. See
+// app/selftest/CompositeCost.cpp.
+bool runCompositeCostTest();
+
 }  // namespace np
