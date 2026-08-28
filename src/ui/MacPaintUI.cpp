@@ -57,6 +57,7 @@
 #include "ops/FloodFill.hpp"
 #include "ops/Gradient.hpp"
 #include "io/ExportStates.hpp"
+#include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
 #include "ui/Fonts.hpp"
@@ -4307,7 +4308,27 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
   }
 }
 
-void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
+}  // namespace
+
+// --- The brush groups ------------------------------------------------------
+//
+// **Declared in ui/BrushSettingsWindow.hpp and defined here**, with external
+// linkage on purpose: the settings window calls the same code the docked
+// column does, so the two surfaces cannot drift into disagreeing about their
+// own brush. That header's section 2 gives the full reason the definitions
+// are here rather than there -- each group reaches this file's own file-local
+// helpers (`drawTestStroke()`, `ensureDabLibraryScanned()`,
+// `revealDabFolder()`, `saveUserBrushLibrary()`, the `ctlSlider()` family and
+// its shared widest-label column), and hoisting those out of an 11,000-line
+// file to satisfy a header would be a far larger and riskier change than
+// declaring five functions. Those helpers stay in the unnamed namespace above
+// and stay reachable from here, because an unnamed namespace is visible to
+// the namespace enclosing it.
+//
+// `drawBrushSection()` at the bottom calls them in column order; the window
+// calls them one per tab.
+
+void drawBrushPresetHeader(AppState& st) {
   // Defensive, not the primary load site (that is drawBrushLibrarySection()
   // above): the BRUSH LIBRARY pane can be collapsed while this one is drawn,
   // and Save below must never write user-presets.txt from a `lib` that has
@@ -4378,7 +4399,9 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     ImGui::EndDisabled();
     ImGui::Separator();
   }
+}
 
+void drawBrushTipShapeGroup(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   // --- TIP ---------------------------------------------------------------
   // Radius, hardness and spacing already existed; roundness is new with this
   // panel. Spacing is in radii, and the design's caption is the reason it can
@@ -4439,7 +4462,9 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     if (action.useFileSpacing) st.brush.spacing = std::clamp(action.fileSpacing, 0.02f, 1.0f);
     ImGui::TreePop();
   }
+}
 
+void drawBrushPaintGroup(AppState& st) {
   // kBrushLoadMin/Max (app/AppState.hpp): the one range for this field, also
   // read by the options bar's LOAD slider.
   ctlSlider("Load", &st.brush.load, kBrushLoadMin, kBrushLoadMax);
@@ -4552,7 +4577,9 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     popAtelierMono();
     ImGui::EndGroup();
   }
+}
 
+void drawBrushTextureGroup(AppState& st, bool ownPage) {
   // --- PAPER GRAIN ---------------------------------------------------------
   // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) -- docs/
   // reachability-audit.md's B10 caught exactly this mistake once already: a
@@ -4569,22 +4596,41 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   // from the watercolour solver's own "Grain block" slider two panels over
   // (`drawMediumSection()`'s `st.sim.grainBlock`, an unrelated granulation-
   // blocking parameter on the fluid model): the two are different mechanisms
-  // on different routes (this one on the CPU pigment deposit, that one on
+  // on different routes (this one on the CPU layer routes, that one on
   // `sim::PaintSim`), and a user who has seen one "Grain" slider elsewhere
   // must not read this one as the same control moved.
-  if (ImGui::CollapsingHeader("PAPER GRAIN")) {
-    // **Reaches exactly one route** -- brush/Deposit.hpp §2e's own stated
-    // scope: `depositDab()` (the Pigment layer's CPU deposit) and its
-    // preview. `brush/RgbDeposit.cpp` calls `dabCoverage()` directly and was
-    // left untouched by that step, so an RGB layer's stroke ignores this
-    // section entirely, same disabled-rather-than-hidden honesty OPACITY and
-    // WET already give a route that cannot use them, and for the identical
-    // reason: a painter who turns this on and sees no change on an RGB layer
-    // is told why instead of concluding the slider is broken.
+  //
+  // `ownPage` short-circuits the header rather than passing it a
+  // default-open flag: on a tab there should be no header, not an opened one.
+  // ui/BrushSettingsWindow.hpp carries the reasoning.
+  if (ownPage || ImGui::CollapsingHeader("PAPER GRAIN")) {
+    // **Reaches all four layer-writing routes**, and that is a correction
+    // rather than a fact that was always true. This block used to read
+    // `honoured = route == StrokeRoute::CpuDeposit` and grey itself out on
+    // every other route, because grain genuinely was called from
+    // `depositDab()` alone; `brush/RgbDeposit.cpp`, `brush/RgbErase.cpp` and
+    // `brush/PigmentErase.cpp` each computed coverage and never asked the
+    // paper about it.
+    //
+    // The texture work closed that gap in the engine -- all four now call
+    // `grainCoverageAt()` -- and **left this predicate behind**, which is the
+    // worse half of the same defect the disabled-with-a-reason idiom exists to
+    // prevent: a control that works, greyed out, over a sentence explaining
+    // that it cannot. An RGB layer is what File > New gives you, so that was
+    // every stroke most painters make.
+    //
+    // What is left is a real limit and keeps its honesty: the SOLVER route
+    // (`sim::PaintSim`) has no grain of its own, and no CPU coverage for
+    // `grainCoverageAt()` to modify.
+    //
+    // The answer is `grainReachesRoute()` (app/StrokeSession.hpp) rather than
+    // a four-way comparison written out here, for the reason that predicate's
+    // own comment gives: a private copy of the answer is what went stale in
+    // the first place, and there is now a selftest standing behind this one.
     const OpenDocument* od = st.documents.active();
     const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
     const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
-    const bool honoured = route == StrokeRoute::CpuDeposit;
+    const bool honoured = grainReachesRoute(route);
     ImGui::BeginDisabled(!honoured);
     ImGui::Checkbox("Enabled", &st.brush.grain.enabled);
     ImGui::BeginDisabled(!st.brush.grain.enabled);
@@ -4605,7 +4651,7 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (!honoured)
-      ImGui::TextDisabled("Grain reaches the Pigment layer deposit; this stroke goes to %s.",
+      ImGui::TextDisabled("Grain reaches the layer routes; this stroke goes to %s.",
                           strokeRouteName(route));
     else if (st.brush.grain.enabled)
       ImGui::TextDisabled("Deep valleys fill; peaks get skipped, at the same pressure.");
@@ -4613,6 +4659,9 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
       ImGui::TextDisabled("Off: every dab covers exactly what its falloff says, paper or not.");
   }
 
+}
+
+void drawBrushDynamicsGroup(AppState& st) {
   // --- DYNAMICS ----------------------------------------------------------
   if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
     pushAtelierMono();
@@ -4622,6 +4671,19 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   }
   if (ImGui::CollapsingHeader("LINK", ImGuiTreeNodeFlags_DefaultOpen)) drawLinkEditor(st);
 }
+
+// The docked BRUSH column: every group, in the order it has always drawn
+// them. The window (ui/BrushSettingsWindow) draws the same five calls one per
+// tab, which is what makes the two surfaces incapable of disagreeing.
+void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
+  drawBrushPresetHeader(st);
+  drawBrushTipShapeGroup(st, gpu, lut);
+  drawBrushPaintGroup(st);
+  drawBrushTextureGroup(st, /*ownPage=*/false);
+  drawBrushDynamicsGroup(st);
+}
+
+namespace {
 
 // A5 (reachability audit): Density, Staining and Granulation used to be live
 // `ctlSlider()`s here, and a drag on any of them worked for exactly one
@@ -7909,6 +7971,7 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.grayscale = st.view.grayscale;
   ctx.showRulers = st.showRulers;
   ctx.showNavigator = st.showNavigator;
+  ctx.showBrushSettings = st.showBrushSettings;
   ctx.showGuides = st.showGuides;
   ctx.showGrid = st.showGrid;
   ctx.snappingEnabled = st.snappingEnabled;
@@ -8350,6 +8413,13 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::GrayscalePreview: st.view.grayscale = !st.view.grayscale;   break;
     case MenuAction::Rulers:           st.showRulers = !st.showRulers;           break;
     case MenuAction::Navigator:        st.showNavigator = !st.showNavigator;     break;
+    // Inline, not Deferred: this flips a bool that next frame's
+    // `drawBrushSettingsWindow()` reads. It opens no ImGui popup, so it is
+    // safe to perform from a native menu callback with no frame in progress
+    // -- which is the distinction MenuEffect exists to make.
+    case MenuAction::BrushSettings:
+      st.showBrushSettings = !st.showBrushSettings;
+      break;
     case MenuAction::Guides:           st.showGuides = !st.showGuides;           break;
     case MenuAction::Grid:             st.showGrid = !st.showGrid;               break;
     case MenuAction::Snap:             st.snappingEnabled = !st.snappingEnabled; break;
@@ -10982,6 +11052,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // window overdrew by a pixel would be a 1 px rule, and the design's whole
   // separation of major regions is that thickness.
   drawAtelierRules(bands);
+
+  // Modeless, and drawn here rather than inside the docked column's own
+  // window: a `Begin()` nested inside another window's draw is a child of it,
+  // and this one has to be able to float over the canvas and outlive the
+  // column being scrolled or collapsed.
+  drawBrushSettingsWindow(st, gpu, lut);
 
   if (st.showDemo) ImGui::ShowDemoWindow(&st.showDemo);
 

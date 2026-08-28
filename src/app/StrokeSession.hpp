@@ -348,6 +348,34 @@ inline bool wetnessReachesSolver(StrokeRoute route) noexcept {
   return route == StrokeRoute::PaintSim;
 }
 
+// Does the PAPER GRAIN group do anything on this route?
+//
+// **This predicate exists because the answer to it was already wrong once.**
+// `brush/Grain`'s `grainCoverageAt()` was called from `depositDab()` alone,
+// so the BRUSH panel greyed the whole group out on every other route and said
+// why. The texture work then added the call to `brush/RgbDeposit.cpp`,
+// `brush/RgbErase.cpp` and `brush/PigmentErase.cpp` -- and the UI's private
+// copy of the old answer stayed behind, leaving a working control greyed out
+// over a sentence explaining that it could not work. An RGB layer is what
+// File > New gives you, so that was most strokes.
+//
+// It delegates to `strokeRouteWritesLayer()` because the two agree today:
+// grain modifies a CPU-computed coverage, and every route that computes one
+// writes a layer. **It is a separate name rather than a call to that
+// predicate at the UI site, because it is a separate claim** -- a fifth
+// layer-writing route added without a `grainCoverageAt()` call would make
+// `strokeRouteWritesLayer()` still correct and this still wrong, and there
+// would again be nothing to notice. `app/selftest/StrokeSession.cpp` asserts
+// the agreement route by route, so adding a route means answering the
+// question for grain rather than inheriting an answer.
+//
+// The solver route is the real exclusion and keeps the group honest: it has
+// no CPU coverage for grain to modify at all (brush/BrushModel.hpp on the
+// editor-versus-solver divergence generally).
+inline bool grainReachesRoute(StrokeRoute route) noexcept {
+  return strokeRouteWritesLayer(route);
+}
+
 const char* strokeRouteName(StrokeRoute route) noexcept;
 
 // `target` is the layer the stroke is aimed at, or nullptr when there is none.

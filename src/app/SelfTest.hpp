@@ -1205,6 +1205,19 @@ bool runDabLibraryTest();
 // bug that looks like a rendering glitch and is not one. Headless and GPU-free.
 bool runDabPickerTest();
 
+// ui/BrushSettingsWindow's tab table -- which groups of brush settings exist,
+// what they are called, and that each row of the table carries its own id.
+//
+// Same reason as the picker above: `--selftest` cannot reach an ImGui dispatch
+// site (reachability-audit F4), so a tab strip written as a run of
+// `BeginTabItem()` calls has no assertions on it and a group dropped in a
+// later edit is invisible until a painter goes looking for a control that is
+// no longer anywhere. The load-bearing assertion is that the table is indexed
+// by its own enum -- ui/MenuModel's spec table has the identical hazard, and a
+// row out of order draws one group's controls under another group's name,
+// which is completely invisible on inspection. Headless and GPU-free.
+bool runBrushSettingsWindowTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/

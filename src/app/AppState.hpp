@@ -980,6 +980,24 @@ struct AppState {
   // surround, and hides itself when the canvas is too small to spare the
   // corner (ui/AtelierLayout's `atelierNavigatorRect`).
   bool showNavigator = true;
+
+  // ui/BrushSettingsWindow -- the brush groups as a modeless window of their
+  // own, opened from Window > Brush Settings. **False by default and not
+  // persisted**: the docked BRUSH column already shows every one of these
+  // controls (they are literally the same functions), so a window that
+  // reopened itself every launch would be a duplicate panel nobody asked for
+  // covering the canvas.
+  bool showBrushSettings = false;
+
+  // `--brush-settings-demo [tab]`: which tab to open on, as a
+  // `BrushSettingsTab` ordinal, or -1 for "leave it alone". **Consumed on the
+  // frame it is applied** and reset to -1, so it selects a tab once rather
+  // than pinning it -- a value re-applied every frame would make the tab strip
+  // unclickable, which is a strange way for a screenshot flag to break an
+  // interactive session. Same purpose as `dabDemoId` above: the window is
+  // opened from a menu and switched with a click, and `--screenshot` has
+  // neither.
+  int brushSettingsDemoTab = -1;
   bool showGuides = true;
   bool showGrid = false;
   // PRD Q6: global toggle. When true, dragging a new guide off a ruler

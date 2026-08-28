@@ -50,6 +50,7 @@
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/MacNativeMenu.hpp"
@@ -1076,6 +1077,8 @@ int main(int argc, char** argv) {
   bool dabScan = false;
   const char* dabImportPath = nullptr;
   const char* dabDemoId = nullptr;
+  bool brushSettingsDemo = false;
+  int brushSettingsDemoTab = -1;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1116,6 +1119,33 @@ int main(int argc, char** argv) {
       // painting with a sampled tip. The picker needs a click and the
       // screenshot path has no pointer. See AppState::dabDemoId.
       if (i + 1 < argc) dabDemoId = argv[++i];
+    } else if (a == "--brush-settings-demo") {
+      // --brush-settings-demo : open ui/BrushSettingsWindow before the first
+      // frame, so `--screenshot` can photograph it. Same reason
+      // `--brush-dab-demo` exists -- the window is opened from a menu, and
+      // the screenshot path has no pointer to open one with. This is also the
+      // hook a golden case for the window would drive (Phase 8 of the ABR
+      // plan); it is deliberately a flag rather than a default, so no other
+      // capture grows a window over it.
+      brushSettingsDemo = true;
+      // An optional tab name, so a capture can photograph any one of the four
+      // rather than only whichever ImGui opens on. Matched against
+      // `brushSettingsTabName()` so there is one spelling of each, not two.
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const std::string want = argv[++i];
+        for (size_t t = 0; t < np::kBrushSettingsTabCount; ++t) {
+          const auto tab = static_cast<np::BrushSettingsTab>(t);
+          if (want == np::brushSettingsTabName(tab)) {
+            brushSettingsDemoTab = static_cast<int>(t);
+            break;
+          }
+        }
+        if (brushSettingsDemoTab < 0)
+          std::fprintf(stderr,
+                       "--brush-settings-demo: '%s' is not a tab; opening on the "
+                       "default one. Tabs: TipShape Paint Texture Dynamics\n",
+                       want.c_str());
+      }
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
       if (i + 1 < argc) brushSheetOut = argv[++i];
@@ -1684,6 +1714,9 @@ int main(int argc, char** argv) {
     // ui/DabPicker: the grid arithmetic, including the hit test as the exact
     // inverse of the cell placement.
     const bool dabPickerOk = np::runDabPickerTest();
+    // ui/BrushSettingsWindow: the tab table -- one row per group of brush
+    // settings, each carrying its own id.
+    const bool brushSettingsWindowOk = np::runBrushSettingsWindowTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
@@ -2208,7 +2241,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && dabPickerOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && dabPickerOk && brushSettingsWindowOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
@@ -2413,6 +2446,10 @@ int main(int argc, char** argv) {
   st.openLayerMenu = openLayerMenu;
   st.openToolFlyoutDemo = flyoutDemo;
   if (dabDemoId != nullptr) st.dabDemoId = dabDemoId;
+  if (brushSettingsDemo) {
+    st.showBrushSettings = true;
+    st.brushSettingsDemoTab = brushSettingsDemoTab;
+  }
   st.openExportStatesDialog = openExportStates;
   st.openLayerProperties = openLayerProperties;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;

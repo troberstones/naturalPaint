@@ -45,6 +45,7 @@ add_executable(naturalPaint
   app/selftest/PaperTexture.cpp
   app/selftest/DabLibrary.cpp
   app/selftest/DabPicker.cpp
+  app/selftest/BrushSettingsWindow.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
@@ -240,6 +241,7 @@ add_executable(naturalPaint
   ui/AtelierTheme.cpp
   ui/CanvasQuad.cpp
   ui/DabPicker.cpp
+  ui/BrushSettingsWindow.cpp
   ui/FileDialog.cpp
   ui/AtelierLayout.cpp
   ui/AtelierChrome.cpp

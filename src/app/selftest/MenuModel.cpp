@@ -149,13 +149,16 @@ bool runMenuModelTest() {
   //         Unsharp Mask, Add Noise, Image Size, Canvas Size
   //   = 64
   //
+  // Then Free Transform (65) and Window > Brush Settings (66), each added the
+  // same way and each caught here first.
+  //
   // This literal is exactly as brittle to the NEXT track that adds an action
   // as it was before, and that brittleness is the point -- an enumerator added
   // without a menu entry fails here rather than shipping unreachable.
-  check(kMenuActionCount == 65,
-        "ids: exactly 65 actions -- the original 41-item extraction plus D1/D2's "
-        "eleven, C5's six, C1's six and Free Transform, so an item lost in a later "
-        "edit fails here");
+  check(kMenuActionCount == 66,
+        "ids: exactly 66 actions -- the original 41-item extraction plus D1/D2's "
+        "eleven, C5's six, C1's six, Free Transform and Brush Settings, so an item "
+        "lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;
@@ -290,6 +293,7 @@ bool runMenuModelTest() {
     on.grayscale = true;
     on.showGrid = true;
     on.snappingEnabled = true;
+    on.showBrushSettings = true;
     MenuContext off;
     auto viewFlag = [](const MenuContext& c, MenuAction a) {
       for (const MenuNode& menu : buildMenuModel(c))
@@ -304,6 +308,23 @@ bool runMenuModelTest() {
     check(viewFlag(on, MenuAction::Grid) && viewFlag(on, MenuAction::Snap) &&
               !viewFlag(off, MenuAction::Snap),
           "pred: Grid and Snap track their own flags, not one flag read twice");
+
+    // Window > Brush Settings is a Check for a reason: the window's own title-bar
+    // close button writes the same `AppState` flag this tick reads, so an item
+    // that only ever opened would leave the menu unable to say whether the
+    // window was already there. This is the half `buildMenuModel()` owns.
+    //
+    // **The other half is not covered and that is worth saying**: the frame
+    // loop's `ctx.showBrushSettings = st.showBrushSettings` is one assignment
+    // in `ui/MacPaintUI.cpp`, and pointing it at a literal survives this suite
+    // -- proven by sabotage rather than assumed. Every other toggle on this
+    // context (`showNavigator`, `showGrid`, `showDemo` ...) has exactly the
+    // same exposure, because the context is populated inside the interactive
+    // frame with no separate entry point to call.
+    check(viewFlag(on, MenuAction::BrushSettings) &&
+              !viewFlag(off, MenuAction::BrushSettings),
+          "pred: Brush Settings' tick follows the window's own open flag both ways -- "
+          "the menu and the window's close button are one state, not two");
 
     MenuContext noGuides;
     MenuContext someGuides;
