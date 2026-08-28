@@ -34,20 +34,23 @@ bool runBrushSettingsWindowTest() {
   std::printf("  -- A. every group of brush settings has a tab --\n");
   // ======================================================================
   //
-  // **Four is the count of groups `drawBrushSection()` draws**, counted from
-  // that function rather than taken on trust: the tip shape (with the dab
-  // picker), what the brush carries, the paper, and the dynamics matrix. The
-  // preset header is deliberately NOT among them -- it names and saves
-  // whatever the tabs edit, so it is drawn above the strip; a Save button on
-  // one tab is a Save button invisible from the other three.
+  // **Nine is Photoshop's own eight brush-settings panels -- Tip Shape,
+  // Shape Dynamics, Scattering, Texture, Dual Brush, Color Dynamics,
+  // Transfer, Tool Options -- plus the shelved link-matrix editor kept as a
+  // tab of its own** (`BrushSettingsTab`'s own header comment on why
+  // Dynamics stayed rather than moving fully behind `--advanced-dynamics`).
+  // "Paint" -- naturalPaint's own stand-in for load/water/opacity, never a
+  // Photoshop panel -- is no longer one of this window's tabs; the docked
+  // BRUSH column still shows it via `drawBrushPaintGroup()`, unchanged
+  // (`ui/BrushSettingsWindow.hpp` §2's asymmetry).
   //
   // This literal is exactly as brittle to the next group added as
   // ui/MenuModel's action count is, and that is the point: a `BrushSettingsTab`
   // enumerator added without a row in the table fails here rather than
-  // drawing an empty page, and a group added to `drawBrushSection()` with no
-  // tab at all is a group the window silently cannot show.
-  check(kBrushSettingsTabCount == 4,
-        "tabs: exactly four groups -- tip shape, paint, texture and dynamics");
+  // drawing an empty page.
+  check(kBrushSettingsTabCount == 9,
+        "tabs: Photoshop's own eight brush-settings panels, plus the shelved "
+        "Dynamics matrix editor");
 
   // ======================================================================
   std::printf("  -- B. every row carries its OWN id --\n");
@@ -103,15 +106,15 @@ bool runBrushSettingsWindowTest() {
       tooltips.insert(tip);
     }
     check(everyLabelNonEmpty && labels.size() == kBrushSettingsTabCount,
-          "tabs: four distinct, non-empty labels -- two tabs reading the same is a "
+          "tabs: nine distinct, non-empty labels -- two tabs reading the same is a "
           "tab a user cannot choose deliberately");
     // Every label is also an ImGui **id** inside the tab bar, and two items
     // sharing an id in one bar is the ImGui bug where clicking one activates
     // the other. The distinctness above is what rules it out, and this says so
     // rather than leaving it as a happy consequence.
     check(everyTooltipNonEmpty && tooltips.size() == kBrushSettingsTabCount,
-          "tabs: four distinct, non-empty tooltips -- a one-word tab label like "
-          "'Paint' is not self-explanatory and this is the only place it is said");
+          "tabs: nine distinct, non-empty tooltips -- a one-word tab label like "
+          "'Scattering' is not self-explanatory and this is the only place it is said");
   }
 
   return ok;

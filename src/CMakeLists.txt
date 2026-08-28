@@ -49,6 +49,7 @@ add_executable(naturalPaint
   app/selftest/BrushSettingsWindow.cpp
   app/selftest/BrushModelIo.cpp
   app/selftest/BrushModelDiff.cpp
+  app/selftest/BrushPanelBinding.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
@@ -254,6 +255,7 @@ add_executable(naturalPaint
   ui/CanvasQuad.cpp
   ui/DabPicker.cpp
   ui/BrushSettingsWindow.cpp
+  ui/BrushFieldPresentation.cpp
   ui/FileDialog.cpp
   ui/AtelierLayout.cpp
   ui/AtelierChrome.cpp

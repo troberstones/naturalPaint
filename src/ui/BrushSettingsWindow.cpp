@@ -15,18 +15,33 @@ namespace {
 // in the wrong place fails the suite instead of drawing the wrong controls
 // under the right name.
 constexpr std::array<BrushSettingsTabSpec, kBrushSettingsTabCount> kTabs = {{
-    {BrushSettingsTab::TipShape, "Tip",
+    {BrushSettingsTab::TipShape, "Tip Shape",
      "The shape of one dab: its size, its edge, how far apart dabs are laid,\n"
      "and which bitmap -- if any -- is being stamped."},
-    {BrushSettingsTab::Paint, "Paint",
-     "What the brush carries and how much of it lands: load, water, and the\n"
-     "ceiling one stroke may build to."},
+    {BrushSettingsTab::ShapeDynamics, "Shape Dynamics",
+     "How size, angle and roundness vary dab to dab -- pressure, tilt, pen\n"
+     "rotation or the stroke's own direction."},
+    {BrushSettingsTab::Scattering, "Scattering",
+     "How far dabs stray off the stroke's centreline, and how many land at\n"
+     "each position."},
     {BrushSettingsTab::Texture, "Texture",
-     "Paper tooth under the stroke. Deep valleys fill and peaks get skipped,\n"
-     "at the same pressure."},
+     "Paper tooth under the stroke (deep valleys fill and peaks get skipped,\n"
+     "at the same pressure) plus the imported pattern, scale and depth a\n"
+     "'.abr' Texture panel carries."},
+    {BrushSettingsTab::DualBrush, "Dual Brush",
+     "A second tip, its own scatter, and how its coverage combines with the\n"
+     "primary tip's."},
+    {BrushSettingsTab::ColorDynamics, "Color Dynamics",
+     "Hue, saturation, brightness and foreground/background jitter. Persists\n"
+     "with the brush; not yet applied to a stroke -- see the tab's own note."},
+    {BrushSettingsTab::Transfer, "Transfer",
+     "Per-dab opacity and flow jitter."},
+    {BrushSettingsTab::ToolOptions, "Tool Options",
+     "Blend mode, opacity, flow, smoothing and the legacy/pressure-override\n"
+     "flags a tool preset saves alongside the brush."},
     {BrushSettingsTab::Dynamics, "Dynamics",
      "What moves while you paint: pressure, speed, tilt and direction wired\n"
-     "to the numbers on the other tabs."},
+     "to the numbers on the other tabs. Shelved -- see the tab's own note."},
 }};
 
 }  // namespace
@@ -42,11 +57,16 @@ const BrushSettingsTabSpec& brushSettingsTabSpec(BrushSettingsTab tab) noexcept 
 
 const char* brushSettingsTabName(BrushSettingsTab tab) noexcept {
   switch (tab) {
-    case BrushSettingsTab::TipShape: return "TipShape";
-    case BrushSettingsTab::Paint:    return "Paint";
-    case BrushSettingsTab::Texture:  return "Texture";
-    case BrushSettingsTab::Dynamics: return "Dynamics";
-    case BrushSettingsTab::Count:    break;
+    case BrushSettingsTab::TipShape:      return "TipShape";
+    case BrushSettingsTab::ShapeDynamics: return "ShapeDynamics";
+    case BrushSettingsTab::Scattering:    return "Scattering";
+    case BrushSettingsTab::Texture:       return "Texture";
+    case BrushSettingsTab::DualBrush:     return "DualBrush";
+    case BrushSettingsTab::ColorDynamics: return "ColorDynamics";
+    case BrushSettingsTab::Transfer:      return "Transfer";
+    case BrushSettingsTab::ToolOptions:   return "ToolOptions";
+    case BrushSettingsTab::Dynamics:      return "Dynamics";
+    case BrushSettingsTab::Count:         break;
   }
   return "UNNAMED";
 }
@@ -98,10 +118,15 @@ void drawBrushSettingsWindow(AppState& st, GpuContext& gpu, const MixboxLut& lut
         if (ImGui::BeginChild("page", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None)) {
           switch (spec.tab) {
             case BrushSettingsTab::TipShape: drawBrushTipShapeGroup(st, gpu, lut); break;
-            case BrushSettingsTab::Paint:    drawBrushPaintGroup(st);              break;
+            case BrushSettingsTab::ShapeDynamics: drawBrushShapeDynamicsGroup(st); break;
+            case BrushSettingsTab::Scattering:    drawBrushScatteringGroup(st);    break;
             case BrushSettingsTab::Texture:
               drawBrushTextureGroup(st, /*ownPage=*/true);
               break;
+            case BrushSettingsTab::DualBrush:     drawBrushDualBrushGroup(st);     break;
+            case BrushSettingsTab::ColorDynamics: drawBrushColorDynamicsGroup(st); break;
+            case BrushSettingsTab::Transfer:      drawBrushTransferGroup(st);      break;
+            case BrushSettingsTab::ToolOptions:   drawBrushToolOptionsGroup(st);   break;
             case BrushSettingsTab::Dynamics: drawBrushDynamicsGroup(st);           break;
             case BrushSettingsTab::Count:    break;
           }

@@ -1275,6 +1275,15 @@ bool runBrushModelIoTest();
 // I/O -- BrushModel is a plain struct.
 bool runBrushModelDiffTest();
 
+// ui/BrushFieldPresentation: the exhaustiveness guarantee that a BrushModel
+// leaf cannot silently end up with no control anywhere. Asserts that every
+// path `brushModelFieldPaths()` produces is in EXACTLY ONE of
+// `brushFieldPresentationTable()` (gets a live control) or
+// `brushFieldOmissionTable()` (deliberately does not, with a reason), and
+// that neither table names a field that does not exist (the mirror-image
+// failure -- a rename or removal left a stale row behind). Pure CPU, no GPU.
+bool runBrushPanelBindingTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/

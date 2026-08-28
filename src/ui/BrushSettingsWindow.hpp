@@ -46,7 +46,17 @@
 //
 // So the groups are drawn by the functions declared at the bottom of this
 // file, `drawBrushSection()` calls them in column order, and this window
-// calls them one per tab. Neither surface owns a control the other lacks.
+// calls them one per tab. Neither surface owns a control the other lacks --
+// **for the ORIGINAL four groups.** The six Photoshop-shaped panels this
+// window's tabs grew to (Shape Dynamics, Scattering, Dual Brush, Color
+// Dynamics, Transfer, Tool Options) are window-only: `drawBrushSection()`
+// still calls exactly the same five functions it always did, because the
+// docked column is a fixed 322 px strip that was already competing a dozen
+// sections for space (`drawBrushTextureGroup()`'s own comment) and growing
+// it to eleven is a layout project of its own, not a consequence of giving
+// `BrushModel`'s other panels a control surface at all. This is a deliberate
+// asymmetry, stated here rather than left for the invariant above to imply
+// it does not exist.
 //
 // **They are declared here and defined in `ui/MacPaintUI.cpp`, deliberately**
 // -- the same trade `performMenuAction()` already makes, for the same reason
@@ -77,34 +87,82 @@
 
 namespace np {
 
-// One tab per group of brush settings.
+// One tab per panel of `brush/BrushModel` -- Photoshop's own eight, in
+// Photoshop's own order, plus the shelved link-matrix editor at the end.
 //
-// **These are naturalPaint's groups as they exist today, not Photoshop's
-// panel list.** The ABR work (docs and the branch plan) is heading toward
-// Brush Tip Shape / Shape Dynamics / Scattering / Texture / Dual Brush /
-// Colour Dynamics / Transfer, and every one of those is a tab this enum can
-// grow. It has not grown them yet because `brush/BrushModel` is populated by
-// the importer and not yet authoritative over the painted stroke -- a tab
-// full of controls that read a struct nothing paints from would be the
-// "built and wired to nothing" defect the reachability audit exists to catch,
-// dressed up as progress.
+// **`brush/BrushModel` IS authoritative over the painted stroke now** (Phase
+// B/C, landed on this branch before this file's tabs grew to match): Shape
+// Dynamics' Size/Angle/Roundness Variances, Scattering's jitter and Count,
+// Transfer's Opacity/Flow, and Tool Options' blend-mode id each reach
+// `app/StrokeSession` today, not just the importer. This enum used to say
+// otherwise -- "not yet authoritative... a tab full of controls that read a
+// struct nothing paints from" -- and that sentence became false out from
+// under this file rather than being edited when it did; it is corrected
+// here rather than left standing. (Texture, Dual Brush and Color Dynamics
+// are carried and persisted but not yet read at paint time; each tab below
+// says so where it matters, in the same disabled-with-a-reason idiom the
+// rest of this codebase already uses rather than by staying unbuilt.)
+//
+// `ui/BrushFieldPresentation.hpp` is what makes growing this enum to eight
+// (nine, with Dynamics) tabs safe against the failure the OLD comment above
+// was guarding against: every one of `BrushModel`'s 151 leaves is either in
+// that file's presentation table (a tab below draws it) or its omission
+// table (a one-line reason it does not), and `--selftest`
+// (`runBrushPanelBindingTest()`) asserts the two account for all 151 with no
+// overlap and no stale entry -- a leaf now cannot go from "the importer
+// fills it in" to "no control anywhere" without turning the suite red.
 enum class BrushSettingsTab : uint8_t {
-  // Radius, hardness, spacing, roundness, angle, and the dab grid. Photoshop
-  // calls this Brush Tip Shape and it is the same set.
+  // Radius, hardness, spacing, roundness, angle, and the dab grid.
   TipShape,
 
-  // Load, water and opacity -- what the stroke carries and how much of it
-  // lands. Named for what it is rather than "Transfer": Photoshop's Transfer
-  // panel is flow and opacity jitter, which this build reads from a `.abr`
-  // but does not yet paint from, and a tab named after a panel it only half
-  // implements would claim more than it does.
-  Paint,
+  // Size/Angle/Roundness jitter, tilt scale, flip jitter. Wired -- see the
+  // header above.
+  ShapeDynamics,
 
-  // Paper grain. Named as Photoshop names it, because after the texture work
-  // it IS the same feature: a scanned height field under the coverage.
+  // Scatter jitter, Both Axes, Count and its own jitter. Wired.
+  Scattering,
+
+  // Pattern, scale, depth, blend mode, brightness/contrast. **This is
+  // `BrushModel::texture` (Photoshop's imported panel), a different struct
+  // from the paper-tooth PAPER GRAIN section this tab also carries
+  // (`st.brush.grain`, wired since before this phase) -- see
+  // `drawBrushTextureGroup()`'s own comment on why one tab holds both.
   Texture,
 
-  // The source->target link matrix and its editor.
+  // A second tip, its own scatter, and how its coverage combines with the
+  // primary tip's. Net new: no hand-written body existed for any of this
+  // before (naturalPaint-ui-design-gaps' own finding -- "8 of 12 Runny
+  // Inkers stamp a second tip we have no way to render").
+  DualBrush,
+
+  // Foreground/Background jitter, Hue/Saturation/Brightness jitter, Purity.
+  // Shown and editable -- persists to the model and the saved preset -- but
+  // carries a standing banner: `StrokeSession::brushTipFor()` passes the
+  // HSV identity regardless of what is set here (its own comment, "future
+  // work, not this commit's"), and only 1 of 101 presets measured uses this
+  // panel at all.
+  ColorDynamics,
+
+  // Opacity/Flow jitter -- wired. (Wetness/Mix are on
+  // `ui/BrushFieldPresentation`'s omission list: no engine target, per
+  // `PsTransfer`'s own comment.)
+  Transfer,
+
+  // Blend mode id, opacity, flow, smoothing, the two pressure-override
+  // flags, Use Legacy -- plus naturalPaint's `noise`/`wetEdges`/`airbrush`/
+  // `brushPose` checkbox tail, which has no Photoshop-panel prefix of its
+  // own and lands here for lack of a better one (see
+  // `drawBrushToolOptionsGroup()`'s own comment). No `enabled` field on this
+  // one struct, unlike the six panels above it -- Tool Options has no
+  // off switch in Photoshop either.
+  ToolOptions,
+
+  // The shelved source->target link matrix and its editor
+  // (`--advanced-dynamics`). Kept as a tab of its own, last, rather than
+  // folded fully behind the flag with no slot at all: today it still shows a
+  // live "N LINKS" count with the flag off, and a painter who has used it
+  // before should still be able to find it. See `ui/DynamicsMatrixPanel.hpp`
+  // for what would have to happen for it to drive a stroke again.
   Dynamics,
 
   Count,
@@ -139,9 +197,15 @@ const char* brushSettingsTabName(BrushSettingsTab tab) noexcept;
 
 // --- The groups ------------------------------------------------------------
 //
-// Defined in `ui/MacPaintUI.cpp` -- see §2. Each draws exactly the controls
-// the docked BRUSH column has always drawn for that group, in the same order,
-// with the same captions and the same disabled-with-a-reason treatment.
+// Defined in `ui/MacPaintUI.cpp` -- see §2. The first four draw exactly the
+// controls the docked BRUSH column has always drawn for that group, in the
+// same order, with the same captions and the same disabled-with-a-reason
+// treatment. The six after them (`drawBrushShapeDynamicsGroup()` through
+// `drawBrushToolOptionsGroup()`) are window-only -- §2's asymmetry -- and are
+// each built on `ui/BrushFieldPresentation`'s table: an `Enabled` checkbox
+// drawn by hand where the panel has one, then a generic walk of
+// `visitBrushModelFields()` filtered to that panel's own path prefix, each
+// leaf's control chosen by the table row it looks up.
 
 struct GpuContext;
 class MixboxLut;
@@ -169,10 +233,23 @@ void drawBrushPaintGroup(AppState& st);
 // label already says what the page is, so the header would be a second title
 // hiding the controls behind a click.
 //
-// This is the only group that needs the distinction. The other three open on
-// content already.
+// **Also gates `BrushModel::texture`'s own 16 leaves** (`ui/
+// BrushFieldPresentation`'s table), appended after PAPER GRAIN -- a
+// DIFFERENT struct (`st.brush.grain`) that this same tab has always shown.
+// Drawn only when `ownPage` for the identical column-space reason PAPER
+// GRAIN's own header is: the docked column has no room for 16 more controls,
+// so the generic section is window-only, same as the five tabs below.
 void drawBrushTextureGroup(AppState& st, bool ownPage);
 void drawBrushDynamicsGroup(AppState& st);
+
+// The six window-only, presentation-table-driven groups -- see the comment
+// above this block and each panel's own comment on `BrushSettingsTab`.
+void drawBrushShapeDynamicsGroup(AppState& st);
+void drawBrushScatteringGroup(AppState& st);
+void drawBrushDualBrushGroup(AppState& st);
+void drawBrushColorDynamicsGroup(AppState& st);
+void drawBrushTransferGroup(AppState& st);
+void drawBrushToolOptionsGroup(AppState& st);
 
 // --- The window ------------------------------------------------------------
 

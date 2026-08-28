@@ -1148,7 +1148,8 @@ int main(int argc, char** argv) {
         if (brushSettingsDemoTab < 0)
           std::fprintf(stderr,
                        "--brush-settings-demo: '%s' is not a tab; opening on the "
-                       "default one. Tabs: TipShape Paint Texture Dynamics\n",
+                       "default one. Tabs: TipShape ShapeDynamics Scattering Texture "
+                       "DualBrush ColorDynamics Transfer ToolOptions Dynamics\n",
                        want.c_str());
       }
     } else if (a == "--brush-sheet") {
@@ -1752,6 +1753,11 @@ int main(int argc, char** argv) {
     // brush/BrushModelDiff: the diff/equal pair over the same 151 leaves,
     // which presetMatches() and the round-trip proof both need. Headless.
     const bool brushModelDiffOk = np::runBrushModelDiffTest();
+    // ui/BrushFieldPresentation: every BrushModel leaf is in exactly one of
+    // the presentation table (gets a live control) or the omission table
+    // (deliberately does not, with a reason) -- the exhaustiveness guarantee
+    // behind ui/BrushSettingsWindow's Photoshop-shaped tabs. Headless.
+    const bool brushPanelBindingOk = np::runBrushPanelBindingTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
@@ -2282,7 +2288,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && shelvedLinksOk && scatterOk && scatterCountOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && shelvedLinksOk && scatterOk && scatterCountOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && brushPanelBindingOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
