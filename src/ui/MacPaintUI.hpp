@@ -49,6 +49,17 @@ void drawUI(AppState& state, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 // the shutdown line is the one that is always observable.
 const DocumentTexturePool& canvasDocumentTexture();
 
+// T14 (docs/testing-issues.md): uploads the live pixel preview for whatever
+// Free Transform session `state.transform` currently holds -- a no-op if none
+// is active. `drawUI()`'s own canvas block calls this right after a
+// `state.transform.beginLayer()`/`beginSelectionPixels()` it raises succeeds;
+// it is public because main.cpp's drag-and-drop-a-picture path calls
+// `state.transform.beginLayer()` a second time, outside `drawUI()` entirely,
+// and needs the identical upload rather than a second copy of it drifting out
+// of sync. See ui/TransformPreviewTexture.hpp for what "upload" means here --
+// ONE crop, captured once, never per drag frame.
+void beginTransformPreview(AppState& state, GpuContext& gpu);
+
 // What the canvas wants the mouse pointer to be **this frame**, or `nullopt`
 // when the pointer is not over it.
 //

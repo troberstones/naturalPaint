@@ -1568,6 +1568,11 @@ int main(int argc, char** argv) {
     // and app/DocumentLifecycle's recordEdit() undo funnel. Headless and
     // GPU-free.
     const bool transformSessionOk = np::runTransformSessionTest();
+    // docs/testing-issues.md T14: the CPU half of the Free Transform live
+    // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
+    // and GPU-free (the GPU upload wrapper itself is untested, matching this
+    // suite's own precedent for DabPreviewTexture/StrokePreviewTexture).
+    const bool transformPreviewTextureOk = np::runTransformPreviewTextureTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -2155,7 +2160,7 @@ int main(int argc, char** argv) {
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
-                    transformSessionOk && blurOk &&
+                    transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
                     curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
@@ -2663,8 +2668,19 @@ int main(int argc, char** argv) {
             // overwriting that sentence with a transform-shaped complaint
             // would report the wrong operation as having failed.
             if (dropped.transformableLayer) {
-              if (np::OpenDocument* od = st.documents.active())
+              if (np::OpenDocument* od = st.documents.active()) {
                 st.transform.beginLayer(od->document, *dropped.transformableLayer);
+                // T14: the SAME live-pixel-preview upload drawUI()'s own
+                // Free Transform handler makes -- this is the session's
+                // other begin*() call site (docs/testing-issues.md T14's own
+                // brief is about the gizmo in general, not one entry point
+                // into it), and without this call a dropped picture would
+                // start its session showing the wireframe box only, while
+                // Cmd+T on an existing layer showed pixels -- the same
+                // inconsistency a second, drifting copy of the upload logic
+                // would eventually reproduce anyway.
+                np::beginTransformPreview(st, gpu);
+              }
             }
             // Only a `.npaint` open adds a recent entry (app/OpenAnyFile.hpp
             // says why a picture cannot yet), so this is a no-op for a drop of

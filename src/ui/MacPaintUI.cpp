@@ -62,6 +62,7 @@
 #include "ui/MacTrackpadGestures.hpp"
 #include "ui/MenuModel.hpp"
 #include "ui/ToolCursor.hpp"
+#include "ui/TransformPreviewTexture.hpp"
 
 namespace np {
 namespace {
@@ -132,6 +133,16 @@ constexpr float kTransformRotateReachPx = 24.0f;
 // destructor running after the device is gone would be worse than the leak it
 // prevents. See DocumentTexture::release().
 DocumentTexturePool g_documentTextures;
+
+// ui/TransformPreviewTexture: T14's live-pixel Free Transform preview.
+// File-scope for the same reason `g_documentTextures` is -- the begin block
+// (where a session's crop is uploaded, once) and the draw block (where it is
+// read every frame the session is active) are two different places in this
+// same file, several hundred lines apart by the same deliberate input-before-
+// tools/drawing-after-tools split app/TransformSession.hpp's own header
+// documents. It is not app state for the identical reason: transient,
+// ui/-owned, of no use to any caller of drawUI().
+TransformPreviewTexture g_transformPreview;
 
 // Which arrangement the canvas band is in and which document is in the
 // unfocused pane (PRD **A5**). ui/AtelierChrome.hpp owns the shape and the
@@ -9219,6 +9230,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // a menu item that appeared enabled and then did nothing at all is
         // the defect docs/reachability-audit.md is named after.
         if (!began.ok) g_docStatus = began.error;
+        // T14: the live pixel preview's ONE upload for this whole session --
+        // never from the drag loop below, which only ever moves WHERE this
+        // already-uploaded texture is drawn (`pending()` changing the quad's
+        // four corners), never what it holds. A no-op on `!began.ok` (the
+        // session stayed inactive), which `beginTransformPreview()` checks
+        // itself rather than this call site re-deriving it.
+        beginTransformPreview(st, gpu);
       }
     }
 
@@ -9276,6 +9294,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // Nothing was written, so there is nothing to unwind -- see
         // app/TransformSession.hpp's "cancel needs no restore step".
         st.transform.cancel();
+        g_transformPreview.reset();  // T14: this session's uploaded crop is dead with it.
       } else if (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
                  ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
         if (OpenDocument* od = st.documents.active()) {
@@ -9284,6 +9303,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                        ? "Transform applied -- lossless, no resampling."
                                        : "Transform applied.")
                                 : done.error;
+          // Only on success: a refusal (a locked layer that got locked mid-
+          // drag, a collapsed matrix) leaves `active()` true so the user can
+          // adjust and try again (this header's own "On refusal ... active()
+          // stays true" contract), and the preview they are still looking at
+          // has to survive that -- resetting it here would blank the picture
+          // out from under a drag the user has not given up on.
+          if (done.ok) g_transformPreview.reset();
         }
       }
     }
@@ -10471,6 +10497,45 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const ImVec2 tr = toScr(h.topRight);
       const ImVec2 br = toScr(h.bottomRight);
       const ImVec2 bl = toScr(h.bottomLeft);
+
+      // --- T14: the live pixel preview, under the wireframe ------------------
+      //
+      // `g_transformPreview` was uploaded ONCE, at this session's `begin*()`
+      // (`beginTransformPreview()`), from the untouched source -- nothing
+      // here re-reads a tile or re-resamples anything, every frame. What
+      // moves each frame is only where this same texture is DRAWN: the same
+      // four corners (`tl`/`tr`/`br`/`bl`) the wireframe box below is about
+      // to outline, already mapped through `pending()` by `handlePositions()`
+      // above, so the pixels and the box they sit inside cannot draw apart
+      // even by a rounding difference -- one `TransformHandlePositions` feeds
+      // both. `addCanvasQuad()`'s GPU rasteriser supplies the "cheap kernel"
+      // docs/testing-issues.md's T14 entry asks for (ui/CanvasQuad.cpp's own
+      // minify-linear/magnify-nearest sampler) as a side effect of drawing an
+      // ordinary textured quad -- there is no CPU resample in this file at
+      // all, which is what keeps a 2048x2048 document's drag frame cheap (see
+      // this step's own cost measurement).
+      //
+      // Drawn only when `view() != nullptr`: null for a Pigment layer's
+      // whole-layer transform (ui/TransformPreviewTexture.hpp's own named
+      // scope reduction) and for a session whose upload has not landed yet,
+      // in either of which the wireframe-only box below is everything this
+      // step draws, exactly as it did before this file existed.
+      //
+      // **Known and accepted**: the document composite drawn earlier in this
+      // same canvas block still shows this layer's UNTRANSFORMED content at
+      // its ORIGINAL position underneath this quad -- nothing was written to
+      // the document, so there is nothing else for that composite to show.
+      // ui/TransformPreviewTexture.hpp's own header names why hiding it is
+      // out of scope (it would cost a full per-frame recomposite,
+      // ui/DocumentTexture.hpp's own measured 22-89 ms, well past this
+      // quad's own near-zero cost and past PRD F3 on its own). What is on
+      // screen during a drag is therefore the original in place PLUS the
+      // live preview at its new position -- strictly more information than
+      // the wireframe box alone gave, which is the bar this step sets, not a
+      // claim that the drag view is pixel-identical to Photoshop's.
+      if (g_transformPreview.view() != nullptr)
+        addCanvasQuad(dl, g_transformPreview.view(), tl, tr, br, bl);
+
       // Four segments rather than `AddRect`: once the pending matrix carries a
       // rotation the box is no longer axis-aligned, and `AddRect` would draw
       // its bounding box -- a rectangle that is not where the pixels are
@@ -10832,6 +10897,25 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 }
 
 const DocumentTexturePool& canvasDocumentTexture() { return g_documentTextures; }
+
+// T14: uploads `g_transformPreview`'s ONE crop for whatever session
+// `st.transform` currently holds. A no-op if no session is active, so a
+// caller does not have to duplicate the `active()` check.
+//
+// Public (unlike `g_transformPreview` itself) because `st.transform.beginLayer()`
+// has a SECOND call site outside this file -- main.cpp's drop-a-picture-and-
+// it-arrives-in-a-session path -- and that path needs the identical upload
+// this one does, not a second, drifting copy of it. The canvas block's own
+// `st.requestFreeTransform` handler below calls this too, rather than
+// inlining the upload twice.
+void beginTransformPreview(AppState& st, GpuContext& gpu) {
+  if (!st.transform.active()) return;
+  OpenDocument* od = st.documents.active();
+  const size_t li = st.transform.layerIndex();
+  if (od == nullptr || li >= od->document.layers.size()) return;
+  g_transformPreview.upload(gpu, od->document.layers[li], st.transform.selectionSnapshot(),
+                            st.transform.sourceBounds());
+}
 
 std::optional<SDL_SystemCursor> canvasCursorRequest() { return g_canvasCursor; }
 

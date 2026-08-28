@@ -364,6 +364,18 @@ class TransformSession {
   const DocumentRegion& sourceBounds() const noexcept { return sourceBounds_; }
   const Mat3& pending() const noexcept { return pending_; }
 
+  // The selection this session is transforming, or `nullptr` for
+  // `TransformTarget::Layer` (section 2: a session is one target or the
+  // other, never both). A caller that wants to read exactly what a
+  // `SelectionPixels` commit will read -- ui/TransformPreviewTexture does,
+  // to preview it -- must use THIS snapshot rather than the document's live
+  // selection: `beginSelectionPixels()`'s own doc comment is why the two can
+  // differ mid-drag, and reading the live one here would preview a
+  // different region than commit() is actually going to touch.
+  const Selection* selectionSnapshot() const noexcept {
+    return target_ == TransformTarget::SelectionPixels ? &selectionSnapshot_ : nullptr;
+  }
+
   // What PRD D15's exact path says about the transform as it stands right
   // now -- see this header's section 5 for why a UI wants this live, not only
   // at commit.

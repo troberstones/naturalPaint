@@ -140,6 +140,7 @@ add_executable(naturalPaint
   app/selftest/TileStore.cpp
   app/selftest/ToolCursor.cpp
   app/selftest/Transform.cpp
+  app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
@@ -230,6 +231,7 @@ add_executable(naturalPaint
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp
   ui/ToolCursor.cpp
+  ui/TransformPreviewTexture.cpp
 )
 
 # ---- the native menu bar (ui/MacNativeMenu.mm) ------------------------------

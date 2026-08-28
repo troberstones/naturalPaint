@@ -807,6 +807,37 @@ bool runDocumentTransformTest();
 // Headless and GPU-free -- nothing here touches ui/.
 bool runTransformSessionTest();
 
+// ui/TransformPreviewTexture (docs/testing-issues.md T14): the CPU half of a
+// Free Transform's live pixel preview -- crop `sourceBounds` out of a layer,
+// through a selection's coverage weighting or the whole layer for a null
+// one, and pack it straight-alpha for ui/CanvasQuad, matching
+// ui/DocumentTexture's own convention. Proves a null selection copies the
+// whole layer; a real selection crops to it AND leaves a covered-but-outside-
+// selection texel transparent (the same "absent tile" rule
+// imageFromTileStore() already documents, so this preview's edges do not lie
+// about the selection's boundary); un-premultiply actually runs (a
+// premultiplied (0.25,0,0,0.5) becomes straight (0.5,0,0,0.5), not passed
+// through); a Pigment layer is refused rather than shown wrong (this file's
+// own named scope reduction -- no latentToRgb() projection here); and an
+// empty region is refused up front. Also measures the cost this crop pays
+// ONCE per session (at `begin*()`, never per drag frame) at a realistic
+// 2048x2048 fully-opaque layer against PRD F3's 20 ms -- printed, not
+// gated by `check()` (a wall-clock figure is this suite's own documented
+// flake class) -- and the number is OVER budget; see
+// ui/TransformPreviewTexture.hpp for the honest account of why and what a
+// follow-on fix looks like. Also a sabotage proof, in the identical
+// bit-for-bit `memcmp` idiom app/selftest/TransformSession.cpp's own
+// section 5 uses for `commit()`: the source layer's tiles, read
+// independently before and after a call, are unchanged -- the safety net
+// for THIS file's copy of app/TransformSession.hpp's "a reader must never
+// become a writer" invariant, since TransformSession's own proof never
+// calls through here (this file is ui-only and unreachable from that
+// headless test). Headless and GPU-free -- only the GPU upload wrapper is
+// untested here, matching this suite's own precedent for the same shape of
+// class (app/selftest/DabPreview.cpp never touches DabPreviewTexture's
+// wgpuQueueWriteTexture() call either).
+bool runTransformPreviewTextureTest();
+
 // core/Clipboard (PLAN.md "Phase 7 -- Select and paste"; PRD M1, M3, M4, M5,
 // M8). Headless and GPU-free.
 //
