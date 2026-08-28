@@ -1,13 +1,16 @@
 #include "app/AbrReport.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "brush/Dynamics.hpp"
 #include "io/AbrBrushes.hpp"
+#include "io/Descriptor.hpp"
 
 // app/AbrReport -- what actually survived importing an `.abr`.
 //
@@ -41,6 +44,202 @@ const char* curveShape(const Curve& c) {
 }
 
 }  // namespace
+
+namespace {
+
+// `Brsh/12/dualBrush/Brsh/Dmtr` -> `Brsh[]/dualBrush/Brsh/Dmtr`.
+//
+// `DescriptorRef::path()` contributes a list element's INDEX, because a list
+// element has no key of its own. That is the right answer for naming one node
+// and exactly the wrong one for counting a population: without this collapse
+// every preset's `useTexture` is its own row and the census says 101 keys
+// occurring once each, which is the opposite of the thing being measured.
+std::string collapseListIndices(const std::string& path) {
+  std::string out;
+  size_t at = 0;
+  while (at <= path.size()) {
+    const size_t slash = path.find('/', at);
+    const size_t end = (slash == std::string::npos) ? path.size() : slash;
+    const std::string segment = path.substr(at, end - at);
+    const bool numeric =
+        !segment.empty() &&
+        std::all_of(segment.begin(), segment.end(), [](char c) { return c >= '0' && c <= '9'; });
+    if (!out.empty() && numeric) {
+      out += "[]";  // attaches to the container's own segment, not its own row
+    } else {
+      if (!out.empty()) out += '/';
+      out += segment;
+    }
+    if (slash == std::string::npos) break;
+    at = slash + 1;
+  }
+  return out;
+}
+
+
+// One row of the census: everything that can be said about a key from the
+// values alone, kept in the form that answers "is this worth implementing".
+struct KeyStats {
+  size_t count = 0;
+  std::set<std::string> types;
+  size_t trueCount = 0, falseCount = 0;       // bool
+  std::map<std::string, size_t> enumValues;   // enum + TEXT, capped below
+  bool haveNumber = false;
+  double minValue = 0.0, maxValue = 0.0;      // doub / UntF / long
+  std::set<std::string> units;                // UntF
+};
+
+void accumulate(KeyStats& st, const DescriptorRef& ref) {
+  ++st.count;
+  st.types.insert(descriptorTypeKey(ref.type()));  // io/Descriptor's own naming, not a second one
+
+  if (const std::optional<bool> b = ref.asBoolean()) {
+    if (*b) ++st.trueCount; else ++st.falseCount;
+    return;
+  }
+  if (const std::optional<DescriptorEnumerated> e = ref.asEnumerated()) {
+    ++st.enumValues[e->valueId];
+    return;
+  }
+  // TEXT is histogrammed too, but capped: `Nm  ` is 101 distinct brush names
+  // and listing them is what `--abr-report` already does. 12 is enough to show
+  // "this is one of a few fixed values" and short enough not to bury the row.
+  if (const std::optional<std::string_view> t = ref.asText()) {
+    if (st.enumValues.size() < 12) ++st.enumValues[std::string(*t)];
+    else ++st.enumValues["(more)"];
+    return;
+  }
+
+  std::optional<double> number;
+  if (const std::optional<DescriptorUnitFloat> u = ref.asUnitFloat()) {
+    number = u->value;
+    st.units.insert(u->unit);
+  } else if (const std::optional<double> d = ref.asDouble()) {
+    number = d;
+  } else if (const std::optional<int32_t> i = ref.asInteger()) {
+    number = static_cast<double>(*i);
+  }
+  if (number) {
+    if (!st.haveNumber) {
+      st.minValue = st.maxValue = *number;
+      st.haveNumber = true;
+    } else {
+      st.minValue = std::min(st.minValue, *number);
+      st.maxValue = std::max(st.maxValue, *number);
+    }
+  }
+}
+
+// Iterative, with an explicit stack, for the same reason io/Descriptor.hpp's
+// own parser is: the tree comes from a file this build did not write, and a
+// recursive walk over a hostile one is a stack overflow rather than a refusal.
+// The parser's `maxDepth` already bounds this, so the stack is belt to that's
+// braces -- but the parser's bound is a promise about the tree, and this is a
+// walk that has to hold on its own.
+void walkKeys(const DescriptorRef& root, std::map<std::string, KeyStats>& out) {
+  std::vector<DescriptorRef> stack{root};
+  while (!stack.empty()) {
+    const DescriptorRef ref = stack.back();
+    stack.pop_back();
+    if (!ref.valid()) continue;
+
+    // The root itself has no key and is not a row.
+    if (!ref.key().empty() || ref.path() != "") {
+      const std::string path = collapseListIndices(ref.path());
+      if (!path.empty()) accumulate(out[path], ref);
+    }
+    for (size_t i = 0; i < ref.childCount(); ++i) stack.push_back(ref.child(i));
+  }
+}
+
+}  // namespace
+
+int runAbrKeyCensus(const char* path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    std::fprintf(stderr, "abr-keys: cannot open %s\n", path);
+    return 1;
+  }
+  const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+
+  const AbrSectionTable table = readAbrSections(bytes);
+  std::printf("abr-keys: %s (%zu bytes)\n", path, bytes.size());
+  if (!table.ok) {
+    std::fprintf(stderr, "abr-keys: %s\n", table.error.c_str());
+    return 1;
+  }
+  std::printf("version %u.%u\n\n", static_cast<unsigned>(table.version),
+              static_cast<unsigned>(table.subversion));
+
+  std::printf("-- 8BIM sections --\n");
+  size_t descAt = 0, descLen = 0;
+  bool haveDesc = false;
+  for (const AbrSection& s : table.sections) {
+    // The share is worth printing rather than left to be divided by hand: it
+    // is how `patt` was discovered to be 99% of a 36 MB pack while being read
+    // by nothing at all.
+    const double share = bytes.empty() ? 0.0
+                                       : 100.0 * static_cast<double>(s.length) /
+                                             static_cast<double>(bytes.size());
+    std::printf("  %-6s at %10zu  length %12zu  (%5.1f%% of file)\n", s.key.c_str(), s.at,
+                s.length, share);
+    if (s.key == "desc" && !haveDesc) {
+      descAt = s.at;
+      descLen = s.length;
+      haveDesc = true;
+    }
+  }
+  if (!haveDesc) {
+    std::printf("\nno `desc` block: nothing to census.\n");
+    return 1;
+  }
+
+  const DescriptorParseResult parsed =
+      parseVersionedActionDescriptor(std::span<const uint8_t>(bytes).subspan(descAt, descLen));
+  if (!parsed.ok) {
+    std::fprintf(stderr, "\nabr-keys: the `desc` block did not parse: %s\n", parsed.error.c_str());
+    return 1;
+  }
+
+  std::map<std::string, KeyStats> keys;
+  walkKeys(parsed.tree.root(), keys);
+
+  std::printf("\n-- descriptor key census (%zu distinct paths, %zu nodes) --\n", keys.size(),
+              parsed.tree.nodeCount());
+  std::printf("%-46s %6s %-10s %s\n", "path", "count", "types", "values");
+  std::printf("%-46s %6s %-10s %s\n", "----------------------------------------------", "-----",
+              "----------", "------");
+  for (const auto& [path, st] : keys) {
+    std::string types;
+    for (const std::string& t : st.types) {
+      if (!types.empty()) types += ",";
+      types += t;
+    }
+
+    std::string values;
+    if (st.trueCount + st.falseCount > 0) {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "true %zu / false %zu", st.trueCount, st.falseCount);
+      values = buf;
+    }
+    for (const auto& [v, n] : st.enumValues) {
+      if (!values.empty()) values += ", ";
+      values += v + " x" + std::to_string(n);
+    }
+    if (st.haveNumber) {
+      char buf[96];
+      std::snprintf(buf, sizeof(buf), "%s%.4g..%.4g", values.empty() ? "" : ", ", st.minValue,
+                    st.maxValue);
+      values += buf;
+    }
+    for (const std::string& u : st.units) values += " [" + u + "]";
+
+    std::printf("%-46.46s %6zu %-10.10s %.100s\n", path.c_str(), st.count, types.c_str(),
+                values.c_str());
+  }
+  return 0;
+}
 
 int runAbrReport(const char* path) {
   std::ifstream in(path, std::ios::binary);

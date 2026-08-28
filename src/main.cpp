@@ -1068,6 +1068,10 @@ int main(int argc, char** argv) {
   // the dynamics graph being misread, or the TIP never arriving at all -- and
   // guessing between them from a painted stroke is hopeless.
   const char* abrReportPath = nullptr;
+  // --abr-keys <file.abr> : one level below --abr-report -- the 8BIM section
+  // table and a census of every descriptor key the file actually contains.
+  // See app/AbrReport.hpp on why measuring beats remembering here.
+  const char* abrKeysPath = nullptr;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1096,6 +1100,8 @@ int main(int argc, char** argv) {
       if (i + 1 < argc && argv[i + 1][0] != '-') selfTestOut = argv[++i];
     } else if (a == "--abr-report") {
       if (i + 1 < argc) abrReportPath = argv[++i];
+    } else if (a == "--abr-keys") {
+      if (i + 1 < argc) abrKeysPath = argv[++i];
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
       if (i + 1 < argc) brushSheetOut = argv[++i];
@@ -1256,6 +1262,7 @@ int main(int argc, char** argv) {
   // runs in milliseconds on a headless box and cannot be perturbed by anything
   // the GPU path does.
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
+  if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
   if (strokePreviewOut != nullptr)

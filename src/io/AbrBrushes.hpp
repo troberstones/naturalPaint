@@ -246,4 +246,47 @@ float abrSpacingToRadii(double percentOfDiameter) noexcept;
 // 0-100% jitter clamp instead of after it.
 float abrScatterFractionToRadii(float fractionOfDiameter) noexcept;
 
+// --- The `8BIM` section table, exposed so tooling need not re-walk ---------
+
+// One top-level `8BIM` section as the walk found it: its four-character key,
+// and where its BODY begins and how long it is. Offsets are into the same span
+// `readAbrSections()` was handed, so a caller subspans rather than re-walks.
+struct AbrSection {
+  std::string key;  // "samp", "patt", "desc", "phry", or whatever else is there
+  size_t at = 0;      // offset of the body -- past the 12 bytes of framing
+  size_t length = 0;
+};
+
+// Every `8BIM` section in one pass, plus the file's own two version words.
+//
+// Split out of `importAbrBrushes()` -- which now calls it rather than keeping
+// its own copy -- for two reasons: `--abr-report` can print the section table
+// without a second walk that could disagree with the importer's, and a reader
+// of `patt` or `phry` does not have to reimplement the framing to find its
+// block. The rules are unchanged from the walk this replaces: it stops at the
+// first tag that is not `8BIM` (no resync -- a file whose framing has already
+// gone wrong is not one to guess further into), a length running past the end
+// of the buffer stops the walk rather than being clamped (a clamped block
+// would parse as a shorter descriptor and silently import half a library),
+// and sections are word-aligned to 2 bytes -- **not** `samp`'s own internal
+// 4-byte record alignment, which is a different number in a different place
+// and has been confused before.
+//
+// Note the two asymmetric tie-breaks `importAbrBrushes()` applies over this
+// table, preserved from the walk it replaces: the FIRST `desc` wins and the
+// LAST `samp` wins. Neither has ever been exercised by a real file -- no pack
+// examined carries two of either -- so they are the previous code's behaviour
+// kept bit-for-bit rather than a rule anything is known to depend on.
+struct AbrSectionTable {
+  bool ok = false;
+  std::string error;  // set when ok is false, and then `sections` is empty
+  uint16_t version = 0;
+  uint16_t subversion = 0;
+  std::vector<AbrSection> sections;
+};
+
+// Reads no byte outside `bytes`, the same contract everything else in this
+// header holds itself to and for the same reason.
+AbrSectionTable readAbrSections(std::span<const uint8_t> bytes);
+
 }  // namespace np

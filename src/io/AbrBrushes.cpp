@@ -779,33 +779,30 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, ui
   return out;
 }
 
-AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
-  AbrImportResult result;
+AbrSectionTable readAbrSections(std::span<const uint8_t> bytes) {
+  AbrSectionTable table;
 
-  uint16_t version = 0, subversion = 0;
-  if (!readU16(bytes, 0, version) || !readU16(bytes, 2, subversion)) {
-    result.error = "not an .abr file: fewer than four bytes.";
-    return result;
+  if (!readU16(bytes, 0, table.version) || !readU16(bytes, 2, table.subversion)) {
+    table.error = "not an .abr file: fewer than four bytes.";
+    return table;
   }
-  if (version != 6) {
-    // Versions 1 and 2 are a wholly different layout with no descriptor block
-    // at all. Refused by name rather than parsed hopefully, because the framing
-    // is the only thing standing between this and reading arbitrary memory.
-    result.error = "unsupported .abr version " + std::to_string(version) +
-                   " (only version 6 is read; 1 and 2 are a different, much older layout).";
-    return result;
+  // Version 10 is the same layout as version 6. `abrupng`'s own
+  // `src/abr/mod.rs` routes `(version == 6 || version == 10) && (subversion
+  // == 1 || subversion == 2)` through ONE decoder, and this reader's `samp`
+  // framing was derived against that project (this file's header names it).
+  // **No version 10 file was available to test against here**, so the layout
+  // is inherited rather than observed -- `importAbrBrushes()` says so in a
+  // note rather than presenting the assumption as a reading, and the first
+  // person to open a real v10 pack sees the assumption instead of a silent
+  // misparse. Versions 1 and 2 are a wholly different layout carrying no
+  // descriptor block at all, and stay refused by name.
+  if (table.version != 6 && table.version != 10) {
+    table.error = "unsupported .abr version " + std::to_string(table.version) +
+                  " (only versions 6 and 10 are read; 1 and 2 are a different, much older layout).";
+    return table;
   }
 
-  // Walk the 8BIM sections for `samp` and `desc`. Both are located here
-  // rather than each reading past the other, because a real file (and this
-  // module's own `wrapAbr` fixture) puts `samp` BEFORE `desc` -- so a walk
-  // that stopped at the first section it specifically wanted would need to
-  // run twice, once per section, and disagree with itself about where `off`
-  // resumes. One pass, one `off`, every section keeps its own start/length.
   size_t off = 4;
-  size_t descAt = 0, descLen = 0;
-  size_t sampAt = 0, sampLen = 0;
-  bool haveDesc = false;
   while (off + 12 <= bytes.size()) {
     if (std::memcmp(bytes.data() + off, "8BIM", 4) != 0) break;
     char key[5] = {0};
@@ -813,27 +810,63 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     uint32_t len = 0;
     if (!readU32(bytes, off + 8, len)) break;
     const size_t body = off + 12;
-    // A length that runs past the end is a truncated or hostile file; stop
-    // rather than clamping, since a clamped block would parse as a shorter
-    // descriptor and silently import half a library.
     if (len > bytes.size() - body) break;
-    if (std::strcmp(key, "desc") == 0 && !haveDesc) {
-      descAt = body;
-      descLen = len;
-      haveDesc = true;
-    } else if (std::strcmp(key, "samp") == 0) {
-      sampAt = body;
-      sampLen = len;
-    }
+
+    AbrSection section;
+    section.key = key;
+    section.at = body;
+    section.length = len;
+    table.sections.push_back(std::move(section));
+
     off = body + len;
     if (len % 2 != 0) ++off;  // 8BIM sections are word-aligned (2 bytes) --
                               // NOT `samp`'s own internal 4-byte record
                               // alignment; see `parseAbrSampledTips()`.
   }
 
+  table.ok = true;
+  return table;
+}
+
+AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
+  AbrImportResult result;
+
+  const AbrSectionTable table = readAbrSections(bytes);
+  if (!table.ok) {
+    result.error = table.error;
+    return result;
+  }
+
+  // The two asymmetric tie-breaks are the previous walk's, preserved
+  // bit-for-bit: the FIRST `desc` wins and the LAST `samp` wins. See
+  // `AbrSectionTable`'s own comment on why neither is known to matter.
+  size_t descAt = 0, descLen = 0;
+  size_t sampAt = 0, sampLen = 0;
+  bool haveDesc = false;
+  for (const AbrSection& section : table.sections) {
+    if (section.key == "desc" && !haveDesc) {
+      descAt = section.at;
+      descLen = section.length;
+      haveDesc = true;
+    } else if (section.key == "samp") {
+      sampAt = section.at;
+      sampLen = section.length;
+    }
+  }
+
   if (descLen == 0) {
     result.error = "no `desc` block: this .abr carries no brush parameters.";
     return result;
+  }
+
+  // The layout for version 10 is inherited from `abrupng`, never observed
+  // here (`readAbrSections()`'s own comment). Say so per import rather than
+  // letting the assumption pass as a reading -- a note costs nothing on the
+  // six-and-only-six-version files every pack examined so far has been.
+  if (table.version == 10) {
+    result.notes.push_back(
+        {"", "this is a version 10 .abr; its layout is assumed identical to version 6 on "
+             "abrupng's authority and has never been checked against a real v10 file"});
   }
 
   // Decoded before the descriptor is walked, so `presetFromDescriptor()` can
@@ -843,7 +876,7 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
   // is the existing "not imported" path and not a new failure mode.
   std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>> tipsById;
   if (sampLen > 0) {
-    for (AbrSampledTip& tip : parseAbrSampledTips(bytes.subspan(sampAt, sampLen), subversion))
+    for (AbrSampledTip& tip : parseAbrSampledTips(bytes.subspan(sampAt, sampLen), table.subversion))
       tipsById.emplace(std::move(tip.id), std::move(tip.bitmap));
   }
 
