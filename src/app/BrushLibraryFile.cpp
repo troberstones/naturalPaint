@@ -11,6 +11,7 @@
 #include <iterator>
 #include <sstream>
 
+#include "app/DabLibrary.hpp"
 #include "io/AbrBrushes.hpp"
 
 namespace np {
@@ -648,6 +649,37 @@ BrushLibraryLoadResult BrushLibraryStore::readInto(RememberedLibrary& entry, Bru
   else
     lib.active = survivingBefore;
 
+  // Cleared HERE rather than beside `entry.status` below, because the tip
+  // extraction just under this appends to it: a reload that cleared afterwards
+  // would drop exactly the notes this reload produced, and one that never
+  // cleared would accumulate them across every reload of the session.
+  entry.notes.clear();
+
+  // **The tips are written out here, once, at the one place a `.abr` is
+  // actually parsed.** Until this, a sampled tip lived exactly as long as the
+  // library stayed loaded (brush/Library.hpp's `tipBitmap`), so a duplicated
+  // preset reloaded next launch as a round procedural one. Each tip becomes
+  // `dabs-imported/<uuid>.png` and the preset's `dabId` names it, so the
+  // bitmap stops depending on the pack: unload it, move it, delete it, the
+  // brush still has its tip.
+  //
+  // Existing files are never rewritten, so re-importing the same pack -- or
+  // importing two packs that share a tip -- costs nothing and cannot undo a
+  // touch-up the user made in an image editor.
+  if (!imported.tipSamples.empty()) {
+    std::vector<std::pair<std::string, BrushTipBitmap>> tips;
+    tips.reserve(imported.tipSamples.size());
+    for (const AbrSampledTip& tip : imported.tipSamples)
+      if (tip.bitmap != nullptr) tips.emplace_back(tip.id, *tip.bitmap);
+    std::vector<std::string> extractNotes;
+    extractAbrTips(dabImportedRootPath(), tips, &extractNotes);
+    // A tip that could not be written is a note and not a failure: the
+    // library still loaded, the brushes still paint this session, and only
+    // the survives-a-relaunch half is lost. Refusing the whole import over it
+    // would be a worse trade than saying so.
+    for (const std::string& note : extractNotes) entry.notes.push_back(note);
+  }
+
   entry.rows.clear();
   for (const BrushPreset& p : imported.presets) {
     BrushPreset added = p;
@@ -664,7 +696,6 @@ BrushLibraryLoadResult BrushLibraryStore::readInto(RememberedLibrary& entry, Bru
   entry.failure.clear();
   entry.size = st.size;
   entry.mtime = st.mtime;
-  entry.notes.clear();
   for (const AbrImportNote& n : imported.notes)
     entry.notes.push_back(n.brushName + ": " + n.what);
 

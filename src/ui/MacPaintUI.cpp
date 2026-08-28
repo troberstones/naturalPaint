@@ -3940,6 +3940,24 @@ void saveBrushLibraries(AppState& st) {
 // in memory this session and silently drop every preset this session never
 // touched. Guarded by its own flag, so a frame where both call sites fire
 // costs one extra boolean check.
+// The dab library, scanned once and then only on demand (app/DabLibrary.hpp
+// §2). Cheap by construction -- one `stat()` per file against the index, no
+// decode for anything unchanged -- but still not run until something actually
+// needs a tip, which is the same lazy gate the two preference stores above use.
+void ensureDabLibraryScanned(AppState& st) {
+  if (st.dabLibraryScanned) return;
+  st.dabLibraryScanned = true;
+  st.dabLibrary.setRoots(dabUserRootPath(), dabImportedRootPath(), dabIndexPath());
+  st.dabLibrary.rescan();
+  // The load half of the persistence: `user-presets.txt` stores an id, not a
+  // bitmap, so this is what turns a freshly parsed preset's `dabId` into the
+  // tip it names. A preset whose tip has been deleted keeps its note and
+  // paints procedurally rather than failing to load.
+  std::vector<std::string> notes;
+  resolveDabIds(st.brush.brushLibrary, st.dabLibrary, &notes);
+  if (!notes.empty() && g_brushLibraryStatus.empty()) g_brushLibraryStatus = notes.front();
+}
+
 void ensureUserBrushLibraryLoaded(AppState& st) {
   if (st.userBrushLibraryLoaded) return;
   st.userBrushLibraryLoaded = true;
@@ -3948,7 +3966,9 @@ void ensureUserBrushLibraryLoaded(AppState& st) {
                                         &err) &&
       !err.empty())
     g_brushLibraryStatus = err;
+  ensureDabLibraryScanned(st);
 }
+
 
 // Write user-presets.txt, and say so only when it fails -- saveBrushLibraries()'s
 // shape, for the file app/UserBrushLibrary.hpp §4 durability-hardens instead
@@ -4007,10 +4027,10 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
   ImGui::TextDisabled("Import a Photoshop .abr library");
   if (ImGui::IsItemHovered() || ImGui::IsItemClicked())
     ImGui::SetTooltip(
-        "Imports the brush PARAMETERS -- size, spacing, roundness, angle and the whole\n"
-        "dynamics graph. Sampled bitmap tips are not imported: those brushes will behave\n"
-        "like the originals and paint with this application's round tip. The import says\n"
-        "which ones.");
+        "Imports the brush parameters -- size, spacing, roundness, angle, the dynamics,\n"
+        "the paper texture -- and the sampled bitmap tips, which are written out to the\n"
+        "dab library so they survive unloading this pack. Anything that could not be\n"
+        "brought across is named in the import's own notes.");
   ImGui::Separator();
 
   const std::vector<BrushPaneRow> rows = st.brushLibraries.paneRows(lib);

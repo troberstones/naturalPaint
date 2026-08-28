@@ -472,4 +472,18 @@ bool exportDocumentToFile(const Document& doc, const std::string& path, ImageFor
 // empty vector for a zero-sized image or a null pixel pointer.
 std::vector<uint8_t> encodePng16(uint32_t width, uint32_t height, const uint16_t* rgba);
 
+// 8-bit RGBA PNG, exposed for the same reason `encodePng16` above is: this
+// file is the one translation unit that defines
+// `STB_IMAGE_WRITE_IMPLEMENTATION`, so anything else needing a PNG writer has
+// to come through here rather than compile a second copy of stb's bodies.
+//
+// Its caller is app/DabLibrary's `.abr` tip extraction, which writes a
+// coverage mask and not a picture -- see there for why the mask goes in the
+// ALPHA channel over black rather than into a greyscale PNG.
+//
+// Returns an empty vector on a zero dimension or a null pointer, which is the
+// same "no bytes" answer `encodePng16` gives and which every caller already
+// has to handle.
+std::vector<uint8_t> encodePng8Rgba(uint32_t width, uint32_t height, const uint8_t* rgba);
+
 }  // namespace np

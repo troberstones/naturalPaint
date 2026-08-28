@@ -254,6 +254,21 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       continue;
     }
 
+    if (key == "dab") {
+      // The dab-library id for this preset's tip (brush/Library.hpp's
+      // `dabId`). A SEPARATE keyword for the same reason `grain` is one: a
+      // file written before this existed has no `dab` line and must still
+      // load, which growing `scalars`' required field count would break.
+      //
+      // Not validated here beyond being non-empty. Whether an id resolves is
+      // a question about a folder, which this parser has no access to and
+      // should not acquire -- `resolveDabIds()` asks it later, once, with a
+      // library in hand.
+      pending.dabId = rest;
+      pointMode = PointMode::None;
+      continue;
+    }
+
     if (key == "grain") {
       // A SEPARATE keyword rather than an eighth `scalars` field --
       // `BrushPreset::grain`'s own comment gives the reason: growing
@@ -429,6 +444,13 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
     // consistent with `scalars` above always being written regardless of
     // whether a value sits at its default, and simpler than a second code
     // path for "nothing to say here".
+    // Written only when there IS one, unlike `scalars` and `grain` above:
+    // those describe every preset (a brush always has a radius, and grain-off
+    // is a real setting), whereas most presets have no sampled tip at all and
+    // an empty `dab` line would be a line saying nothing. It also keeps a file
+    // written by this build byte-identical to one written before the key
+    // existed, for every preset that does not use it.
+    if (!p.dabId.empty()) out += "dab " + sanitizeOneLine(p.dabId) + "\n";
     out += "grain " + std::string(p.grain.enabled ? "1" : "0") + " " +
            std::to_string(p.grain.periodX) + " " + std::to_string(p.grain.periodY) + " " +
            f9(p.grain.depth) + " " + f9(p.grain.strength) + "\n";

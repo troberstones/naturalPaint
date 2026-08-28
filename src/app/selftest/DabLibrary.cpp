@@ -365,6 +365,109 @@ bool runDabLibraryTest() {
           "dab/delete: and the scan itself deletes nothing -- it only ever reads `dabs/`");
   }
 
+  // ======================================================================
+  std::printf("  -- G. an extracted .abr tip outlives the pack it came from --\n");
+  // ======================================================================
+  {
+    // The defect brush/Library.hpp names in its own words: Duplicate on a
+    // sampled-tip preset copies a pointer, Save writes seven scalars and no
+    // bitmap, "so a saved duplicate of a sampled-tip brush reloads next launch
+    // as the round procedural tip". This is that sequence, run end to end.
+    const std::string uuid = "63d61f21-0000-4000-8000-bc81e4dfd608";
+    BrushTipBitmap tip;
+    tip.width = 6;
+    tip.height = 4;
+    tip.alpha.resize(24);
+    for (size_t i = 0; i < tip.alpha.size(); ++i) tip.alpha[i] = static_cast<uint8_t>(i * 10);
+    // One texel at full coverage, so the "opaque everywhere" branch of §4 is
+    // not what this is measuring, and one at zero.
+    tip.alpha[0] = 0;
+    tip.alpha[23] = 255;
+
+    std::vector<std::string> notes;
+    const std::vector<std::string> ids =
+        extractAbrTips(importedRoot, {{uuid, tip}}, &notes);
+    check(ids.size() == 1 && ids[0] == "abr:" + uuid && notes.empty(),
+          "dab/extract: a sampled tip is written out under its own `samp` uuid");
+    check(fs::exists(fs::path(importedRoot) / (uuid + ".png")),
+          "dab/extract: as a PNG in the imported root, which the write DOES create");
+
+    // **The round trip, which is the whole point.** The mask goes out in the
+    // alpha channel over black; §4's rule must read it back as the same
+    // coverage, byte for byte. A greyscale PNG would come back inverted here
+    // and this assertion is what says so.
+    DabLibrary lib;
+    lib.setRoots(userRoot, importedRoot, indexPath);
+    lib.rescan();
+    const auto back = lib.resolve("abr:" + uuid);
+    bool identical = back != nullptr && back->width == tip.width && back->height == tip.height &&
+                     back->alpha.size() == tip.alpha.size();
+    if (identical)
+      for (size_t i = 0; i < tip.alpha.size(); ++i)
+        if (back->alpha[i] != tip.alpha[i]) identical = false;
+    check(identical,
+          "dab/extract: and reads back BYTE-IDENTICAL -- alpha over black, not greyscale");
+
+    const DabEntry* e = lib.find("abr:" + uuid);
+    check(e != nullptr && e->source == DabSource::Abr && e->root == DabRoot::Imported,
+          "dab/extract: recognised as an extracted tip by where it sits and what it is called");
+
+    // Re-importing the same pack must not rewrite it -- the uuid names the
+    // tip, so a file already at that name IS this tip, and rewriting would
+    // discard a touch-up the user made in an image editor.
+    BrushTipBitmap different = tip;
+    different.alpha.assign(different.alpha.size(), 200);
+    const std::vector<std::string> again = extractAbrTips(importedRoot, {{uuid, different}});
+    // Read through a FRESH library, not `lib`. `lib` is holding the bitmap it
+    // resolved a moment ago and would hand back the cached copy whatever is on
+    // disk -- so asking it proves nothing about the file, which is the thing
+    // under test. (A sabotage that removed the exists-check survived the
+    // version of this assertion that used `lib`, which is how that was found.)
+    DabLibrary reread;
+    reread.setRoots(userRoot, importedRoot, indexPath);
+    reread.rescan();
+    const auto stillOriginal = reread.resolve("abr:" + uuid);
+    check(again.size() == 1 && stillOriginal != nullptr && stillOriginal->alpha == tip.alpha,
+          "dab/extract: a second import reports the id and leaves the file ON DISK alone");
+
+    // A uuid from a file lands in a PATH, so it is checked and not trusted.
+    //
+    // The escape target is removed FIRST. If the guard ever fails, the file it
+    // writes lands outside the scratch directory this section cleans up, so a
+    // later run would find that debris and fail for the previous run's reason
+    // rather than its own -- which is exactly what happened while sabotaging
+    // this guard. Clearing it makes each run's verdict its own.
+    const fs::path escapeTarget = fs::path(importedRoot).parent_path().parent_path() / "escaped.png";
+    fs::remove(escapeTarget, ec);
+    std::vector<std::string> evilNotes;
+    const std::vector<std::string> refused =
+        extractAbrTips(importedRoot, {{"../../escaped", tip}}, &evilNotes);
+    check(refused.empty() && evilNotes.size() == 1,
+          "dab/extract: an id that is not a plain uuid is refused, not asked to name a file");
+    check(!fs::exists(escapeTarget),
+          "dab/extract: and nothing is written outside the imported root");
+
+    // The load half: a preset carrying only the id gets its bitmap back.
+    BrushLibrary presets;
+    BrushPreset saved;
+    saved.name = "duplicated sampled brush";
+    saved.dabId = "abr:" + uuid;
+    presets.presets.push_back(saved);
+    BrushPreset orphan;
+    orphan.name = "points at a deleted tip";
+    orphan.dabId = "file:gone.png";
+    presets.presets.push_back(orphan);
+
+    std::vector<std::string> resolveNotes;
+    const size_t resolved = resolveDabIds(presets, lib, &resolveNotes);
+    check(resolved == 1 && presets.presets[0].tipBitmap != nullptr &&
+              presets.presets[0].tipBitmap->alpha == tip.alpha,
+          "dab/persist: a preset carrying only an id gets its exact tip back");
+    check(presets.presets[1].tipBitmap == nullptr && resolveNotes.size() == 1 &&
+              resolveNotes[0].find("points at a deleted tip") != std::string::npos,
+          "dab/persist: an id that no longer resolves is NAMED, and paints procedurally");
+  }
+
   fs::remove_all(scratch, ec);
   return ok;
 }

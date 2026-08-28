@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "brush/Deposit.hpp"
+#include "brush/Library.hpp"
 
 // app/DabLibrary -- **a folder of brush tips, where dropping a file in is the
 // whole import step.**
@@ -280,6 +281,59 @@ BrushTipBitmap coverageFromDecodedImage(uint32_t width, uint32_t height,
 // collide (§3).
 uint64_t dabFingerprint(const BrushTipBitmap& bitmap) noexcept;
 
+// **Extraction: a Photoshop sampled tip, written out so it survives the pack.**
+//
+// A `.abr`'s `samp` block holds real scanned tips, and until now the only
+// place a preset could keep one was a `shared_ptr` that lived exactly as long
+// as the library stayed loaded. brush/Library.hpp is blunt about what that
+// cost: Duplicate on a sampled-tip preset copies the pointer, `Save` writes
+// seven scalars and no bitmap, "so a saved duplicate of a sampled-tip brush
+// reloads next launch as the round procedural tip". That header proposes
+// closing it by naming the source `.abr` and re-resolving on load, with its
+// own failure mode when the file moves or is edited.
+//
+// **This closes it differently, and better: the tip stops depending on the
+// pack at all.** Each imported tip is written once to
+// `dabs-imported/<uuid>.png`, the uuid being the `samp` block's own -- already
+// the `sampledData` join key, so nothing is invented -- and the preset stores
+// the id `abr:<uuid>`. Unloading the source library, moving it, or deleting it
+// no longer takes the bitmap with it, and re-importing the same pack finds the
+// file already there and writes nothing.
+//
+// **The mask goes in the ALPHA channel, over black RGB**, which is a decision
+// and not a formatting detail. §4's rule reads a picture's alpha when it has a
+// non-trivial one and falls back to `1 - luminance` when it does not, so a
+// greyscale PNG of a tip would round-trip INVERTED. Alpha-over-black is
+// correct in both branches: the normal case takes the alpha, and a tip that
+// happens to be opaque everywhere (a solid sample) falls through to
+// `1 - luminance(black)` = 1, which is the full coverage it should be. Writing
+// white RGB instead would make that second case come out empty.
+//
+// Returns the ids written or already present, in the order given. Existing
+// files are never overwritten -- the uuid identifies the tip, so a file
+// already at that name IS this tip, and rewriting it would throw away any
+// touch-up the user made in an image editor.
+std::vector<std::string> extractAbrTips(
+    const std::string& importedRoot,
+    const std::vector<std::pair<std::string, BrushTipBitmap>>& tips,
+    std::vector<std::string>* notesOut = nullptr);
+
+// Fills every preset's `tipBitmap` from its `dabId`, for a library just read
+// off disk.
+//
+// **This is the load half of the persistence.** `user-presets.txt` stores the
+// id and not the bitmap (brush/Library.hpp's `dabId`), so a freshly parsed
+// preset has a name for its tip and no tip; this is what turns the one into
+// the other. Returns how many were resolved, and appends one note per id that
+// no longer names anything -- a preset whose PNG the user deleted paints with
+// its procedural tip, visibly a different brush, which is better than a
+// silent one.
+//
+// Takes the library by reference and mutates it, rather than returning a copy,
+// because it runs once at launch over a vector that is already the live one.
+size_t resolveDabIds(BrushLibrary& lib, DabLibrary& dabs,
+                     std::vector<std::string>* notesOut = nullptr);
+
 // `--dab-scan` -- scan both roots and print what is there, what changed and
 // what was refused. Headless, GPU-free, and the answer to "why is the file I
 // dropped in not showing up", which a picker with no diagnostics cannot
@@ -288,5 +342,19 @@ uint64_t dabFingerprint(const BrushTipBitmap& bitmap) noexcept;
 // Returns a process exit code: 0 always, including on an empty library, which
 // is a legitimate state and not a failure.
 int runDabScan();
+
+// `--dab-import <file.abr>` -- extract one pack's sampled tips into the
+// imported root and report what landed. Headless and GPU-free.
+//
+// **The same two calls app/BrushLibraryFile makes**, in the same order, with
+// nothing between them: `importAbrBrushes()` then `extractAbrTips()`. It
+// exists so the extraction can be measured against real packs without a
+// window -- the plan's own verification is "import all four and count the
+// `abr:` dabs" -- and because "why did my tip not survive a relaunch" needs
+// an answer that does not begin with "open the application".
+//
+// Returns a process exit code: 0 on a successful import, 1 if the file cannot
+// be opened or the parser refuses it.
+int runDabImport(const char* path);
 
 }  // namespace np

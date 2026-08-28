@@ -546,6 +546,61 @@ bool runUserBrushLibraryTest() {
           "one file never leaks the other's vocabulary into it");
   }
 
+  // -- 8. The `dab` line: a sampled tip survives Duplicate -> Save -> relaunch
+  //
+  // brush/Library.hpp used to say, in its own words, that a saved duplicate of
+  // a sampled-tip brush "reloads next launch as the round procedural tip",
+  // because the format had no slot for a bitmap. It still has none -- what it
+  // has now is a slot for an ID, pointing at a PNG app/DabLibrary wrote. This
+  // is the format half of that; app/selftest/DabLibrary.cpp §G is the folder
+  // half.
+  {
+    BrushLibrary lib;
+    BrushPreset sampled;
+    sampled.name = "Kyle's Marker";
+    sampled.dabId = "abr:63d61f21-0000-4000-8000-bc81e4dfd608";
+    lib.presets.push_back(sampled);
+    BrushPreset plain;
+    plain.name = "Plain Round";
+    lib.presets.push_back(plain);
+
+    UserBrushLibraryStore store;
+    const std::string text = store.serialize(lib);
+    check(contains(text, "dab abr:63d61f21-0000-4000-8000-bc81e4dfd608"),
+          "userbrushlib: a preset with a sampled tip writes a `dab` line naming it");
+    // Written only when there IS one. A preset with no sampled tip must come
+    // out byte-identical to a file written before this key existed, or every
+    // upgrade rewrites every preset for nothing.
+    check(!contains(text, "dab \n") && !contains(text, "dab\n"),
+          "userbrushlib: and a preset without one writes no empty `dab` line");
+
+    BrushLibrary back;
+    UserBrushLibraryStore reload;
+    reload.parse(text, back);
+    const BrushPreset* marker = nullptr;
+    const BrushPreset* round = nullptr;
+    for (const BrushPreset& p : back.presets) {
+      if (p.name == "Kyle's Marker") marker = &p;
+      if (p.name == "Plain Round") round = &p;
+    }
+    check(marker != nullptr && marker->dabId == sampled.dabId,
+          "userbrushlib: the id round-trips through parse, which is the whole persistence");
+    check(round != nullptr && round->dabId.empty(),
+          "userbrushlib: and a preset that never had one still has none");
+
+    // A file written by an older build has no `dab` line at all and must load
+    // unchanged -- the reason this is a separate keyword and not an eighth
+    // `scalars` field, exactly as `grain` is.
+    BrushLibrary old;
+    UserBrushLibraryStore oldStore;
+    oldStore.parse(
+        std::string(kUserPresetsFileHeader) + " 1\npreset Legacy\nscalars 20 0.5 0.25 1 0 1 0\n",
+        old);
+    check(old.presets.size() == 1 && old.presets[0].name == "Legacy" &&
+              old.presets[0].dabId.empty() && old.presets[0].radius == 20.0f,
+          "userbrushlib: a file written before this key existed loads with everything else intact");
+  }
+
   // Restore the environment for whatever runs after this section.
   if (savedUser.empty()) unsetenv("NP_USER_PRESETS");
   else setenv("NP_USER_PRESETS", savedUser.c_str(), 1);

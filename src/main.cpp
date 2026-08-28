@@ -1074,6 +1074,7 @@ int main(int argc, char** argv) {
   // See app/AbrReport.hpp on why measuring beats remembering here.
   const char* abrKeysPath = nullptr;
   bool dabScan = false;
+  const char* dabImportPath = nullptr;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1106,6 +1107,8 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) abrKeysPath = argv[++i];
     } else if (a == "--dab-scan") {
       dabScan = true;
+    } else if (a == "--dab-import") {
+      if (i + 1 < argc) dabImportPath = argv[++i];
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
       if (i + 1 < argc) brushSheetOut = argv[++i];
@@ -1267,6 +1270,7 @@ int main(int argc, char** argv) {
   // the GPU path does.
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
+  if (dabImportPath != nullptr) return np::runDabImport(dabImportPath);
   if (dabScan) return np::runDabScan();
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);

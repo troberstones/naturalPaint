@@ -128,7 +128,33 @@ struct BrushPreset {
   // and the sample id to re-resolve on load, which is a real feature with its
   // own failure mode (the source file moved or was edited) and was scoped out
   // of this step rather than built in a hurry.
+  //
+  // **That gap is now closed, and not the way the paragraph above guessed.**
+  // Re-resolving from the source `.abr` would inherit that file's whole
+  // lifetime -- moved, edited, on a volume that is not mounted. Instead each
+  // imported tip is written once to `dabs-imported/<uuid>.png`
+  // (app/DabLibrary's `extractAbrTips()`) and `dabId` below names it, so the
+  // bitmap stops depending on the pack at all. The paragraph is kept rather
+  // than rewritten because its accounting of the cost -- why a bitmap is not
+  // in `user-presets.txt` and why keeping every library's tips resident was
+  // refused -- is still exactly why the answer is a file in a folder.
   std::shared_ptr<const BrushTipBitmap> tipBitmap;
+
+  // The dab-library id this preset's tip came from: `abr:<uuid>` for an
+  // extracted Photoshop tip, `file:`/`gbr:`/`gih:` for one out of the user's
+  // own folder (app/DabLibrary.hpp §3), empty for a procedural tip.
+  //
+  // **This, and not `tipBitmap`, is what `user-presets.txt` persists.** It is
+  // one short line of text pointing at a file with a durable home, which is
+  // what makes Duplicate -> Save -> relaunch keep the bitmap and what makes
+  // unloading the source library stop taking it away. The pointer above stays
+  // the thing everything downstream reads, resolved from this id on load.
+  //
+  // An id that no longer resolves -- the user deleted the PNG -- leaves
+  // `tipBitmap` null and the brush falls back to its procedural tip, which is
+  // exactly what it does today for a preset that never had one. A missing
+  // file is a visibly different brush, not a crash and not an empty one.
+  std::string dabId;
 
   // A Dual Brush's second tip (brush/Deposit.hpp §2d) -- Photoshop's own
   // second tip, stamped through this one and combined by `dualBlend`. Null

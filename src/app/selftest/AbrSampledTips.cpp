@@ -334,6 +334,19 @@ bool runAbrSampledTipsTest() {
         check(r.sampledTips == 0 && r.notes.empty(),
               "abr-samp: a brush whose bitmap DID arrive costs no count and no note -- most of "
               "Kyle Webster's inkers, once this lands");
+        // **The durable half.** The pointer above lives as long as the library
+        // stays loaded; this id is what `user-presets.txt` writes, so a
+        // duplicated preset still has its tip next launch (brush/Library.hpp's
+        // `dabId`, app/DabLibrary's extraction). Asserted HERE, on the
+        // importer's own output, because app/selftest/DabLibrary.cpp §G tests
+        // the extractor and the resolver directly and would not notice the
+        // importer forgetting to set the id at all -- which a sabotage
+        // confirmed by surviving.
+        check(p.dabId == "abr:f00dcafe-1234-5678-9abc-def012345678",
+              "abr-samp: and the preset carries the tip's id, which is what survives a relaunch");
+        check(r.tipSamples.size() == 1 && r.tipSamples[0].id == "f00dcafe-1234-5678-9abc-def012345678" &&
+                  r.tipSamples[0].bitmap != nullptr,
+              "abr-samp: and the tips come OUT of the import, so the app layer can write them");
       }
     }
 
@@ -353,6 +366,13 @@ bool runAbrSampledTipsTest() {
                 r.notes[0].what.find("sampled bitmap") != std::string::npos,
             "abr-samp: ...and is counted and noted exactly as an unmatched sampledData always "
             "was");
+      // The id is still recorded, even though the lookup failed: a preset that
+      // NAMES a tip this build could not decode should still say which one it
+      // wanted, so importing the pack that has it later can make the brush
+      // whole rather than leaving it silently round forever.
+      check(r.ok && r.presets.size() == 1 &&
+                r.presets[0].dabId == "abr:not-a-real-id-in-this-file",
+            "abr-samp: ...and it still records WHICH tip it wanted, for a later import to find");
     }
 
     // B3. `#Prc` Dmtr, resolved: 50% of this sample's own larger dimension

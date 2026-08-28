@@ -243,6 +243,12 @@ struct AbrTipShape {
   float angle = 0.0f;
   float spacing = 0.25f;
   std::shared_ptr<const BrushTipBitmap> bitmap;
+  // The `sampledData` uuid, carried out so the preset can store `abr:<uuid>`
+  // and re-find the tip next launch without the pack (brush/Library.hpp's
+  // `dabId`). Set whenever the descriptor named one, INCLUDING when the
+  // lookup then failed -- a preset that names a tip this build could not
+  // decode should still say which tip it wanted.
+  std::string sampleId;
 };
 
 AbrTipShape readAbrTipShape(
@@ -261,7 +267,8 @@ AbrTipShape readAbrTipShape(
   if (sampledDataRef.valid()) {
     bool found = false;
     if (const auto idText = sampledDataRef.asText()) {
-      const auto it = sampledTips.find(std::string(*idText));
+      t.sampleId = std::string(*idText);
+      const auto it = sampledTips.find(t.sampleId);
       if (it != sampledTips.end()) {
         t.bitmap = it->second;
         found = true;
@@ -451,6 +458,10 @@ BrushPreset presetFromDescriptor(
                                               /*readHardness=*/true, p.name, "", result,
                                               sampledTips);
   p.tipBitmap = primary.bitmap;
+  // The durable half of the same thing (brush/Library.hpp's `dabId`): the
+  // pointer above lives as long as the library stays loaded, this id survives
+  // a relaunch once app/DabLibrary has written the tip out.
+  if (!primary.sampleId.empty()) p.dabId = "abr:" + primary.sampleId;
   p.radius = primary.radius;
   p.hardness = primary.hardness;
   p.roundness = primary.roundness;
@@ -1162,8 +1173,8 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
 
   std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>> tipsById;
   if (sampLen > 0) {
-    for (AbrSampledTip& tip : parseAbrSampledTips(bytes.subspan(sampAt, sampLen), table.subversion))
-      tipsById.emplace(std::move(tip.id), std::move(tip.bitmap));
+    result.tipSamples = parseAbrSampledTips(bytes.subspan(sampAt, sampLen), table.subversion);
+    for (const AbrSampledTip& tip : result.tipSamples) tipsById.emplace(tip.id, tip.bitmap);
   }
 
   const DescriptorParseResult parsed =

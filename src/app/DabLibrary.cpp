@@ -9,7 +9,9 @@
 #include <unordered_map>
 
 #include "color/Space.hpp"
+#include "io/AbrBrushes.hpp"
 #include "io/GimpBrush.hpp"
+#include "io/Export.hpp"
 #include "io/ImageDecode.hpp"
 #include "ops/PointOps.hpp"
 
@@ -385,6 +387,42 @@ bool DabLibrary::decodeFile(const std::string& root, DabRoot which, const std::s
            " exceeds the " + std::to_string(kMaxDabDimension) + " px limit";
     return false;
   }
+  // **An extracted `.abr` tip is recognised by where it sits and what it is
+  // called**, not by a sidecar or a marker inside the file: a `.png` directly
+  // under the imported root whose stem is a bare uuid is one, and takes the
+  // `abr:<uuid>` id the preset stores. That is the convention
+  // `extractAbrTips()` writes to, stated in one place and read in one place.
+  //
+  // A file the user drops into `dabs-imported/` themselves and happens to name
+  // like a uuid would be read the same way. That is a folder the header says
+  // belongs to the application, so the collision is not one this build needs
+  // to arbitrate -- and the consequence is a working dab under a surprising
+  // id, not a broken one.
+  const std::string stem = fs::path(relPath).stem().string();
+  const bool looksLikeUuid =
+      which == DabRoot::Imported && relPath.find('/') == std::string::npos &&
+      hasExtension(relPath, {"png"}) && stem.size() >= 8 &&
+      std::all_of(stem.begin(), stem.end(), [](unsigned char c) {
+        return std::isalnum(c) != 0 || c == '-';
+      });
+  if (looksLikeUuid) {
+    DabEntry e;
+    e.id = "abr:" + stem;
+    e.name = stem;
+    e.relPath = relPath;
+    e.root = which;
+    e.source = DabSource::Abr;
+    BrushTipBitmap bmp = coverageFromDecodedImage(img.width, img.height, img.pixels);
+    e.width = bmp.width;
+    e.height = bmp.height;
+    e.fingerprint = dabFingerprint(bmp);
+    e.sizeBytes = sizeBytes;
+    e.mtimeNs = mtimeNs;
+    e.bitmap = std::make_shared<const BrushTipBitmap>(std::move(bmp));
+    out.push_back(std::move(e));
+    return true;
+  }
+
   push(coverageFromDecodedImage(img.width, img.height, img.pixels), "file:", DabSource::Image, 0,
        displayNameFor(relPath), false, 0.0f);
   return true;
@@ -566,6 +604,143 @@ std::shared_ptr<const BrushTipBitmap> DabLibrary::resolve(const std::string& id)
     return nullptr;
   }
   return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Extraction -- the header's argument for the alpha-over-black encoding.
+// ---------------------------------------------------------------------------
+std::vector<std::string> extractAbrTips(
+    const std::string& importedRoot,
+    const std::vector<std::pair<std::string, BrushTipBitmap>>& tips,
+    std::vector<std::string>* notesOut) {
+  std::vector<std::string> ids;
+  ids.reserve(tips.size());
+  if (importedRoot.empty()) return ids;
+
+  bool madeRoot = false;
+  for (const auto& [uuid, bitmap] : tips) {
+    if (uuid.empty() || bitmap.width <= 0 || bitmap.height <= 0) continue;
+    if (bitmap.alpha.size() !=
+        static_cast<size_t>(bitmap.width) * static_cast<size_t>(bitmap.height))
+      continue;
+    // A uuid arrives from a file and lands in a path, so it is checked rather
+    // than trusted: anything that is not a plain hex-and-dash id is refused
+    // instead of being asked to name a file. `..` and `/` are the reason.
+    bool safe = !uuid.empty();
+    for (const char c : uuid)
+      if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-')) safe = false;
+    if (!safe) {
+      if (notesOut) notesOut->push_back("tip id '" + uuid + "' is not a plain uuid -- not written");
+      continue;
+    }
+
+    const std::string id = "abr:" + uuid;
+    const fs::path target = fs::path(importedRoot) / (uuid + ".png");
+    std::error_code ec;
+    if (fs::exists(target, ec)) {
+      // Already extracted, by this import or an earlier one. The uuid names
+      // the tip, so the file that is there IS this tip; rewriting it would
+      // discard a touch-up the user made in an image editor.
+      ids.push_back(id);
+      continue;
+    }
+
+    // **Alpha over black** -- the header's §"Extraction" argument. Correct in
+    // both branches of §4's rule, where a greyscale PNG would round-trip
+    // inverted and a white-RGB one would make an opaque tip come out empty.
+    std::vector<uint8_t> rgba(bitmap.alpha.size() * 4, 0);
+    for (size_t i = 0; i < bitmap.alpha.size(); ++i) rgba[i * 4 + 3] = bitmap.alpha[i];
+    const std::vector<uint8_t> png =
+        encodePng8Rgba(static_cast<uint32_t>(bitmap.width),
+                       static_cast<uint32_t>(bitmap.height), rgba.data());
+    if (png.empty()) {
+      if (notesOut) notesOut->push_back("tip " + uuid + " could not be encoded as a PNG");
+      continue;
+    }
+
+    // The root is created HERE and not in `rescan()`: writing a tip is a
+    // deliberate act with something to put in the folder, where a scan is
+    // not (§"rescan"). Created once per call, only if there is a tip to write.
+    if (!madeRoot) {
+      fs::create_directories(importedRoot, ec);
+      madeRoot = true;
+    }
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      if (notesOut) notesOut->push_back("tip " + uuid + ": " + target.string() + " is not writable");
+      continue;
+    }
+    out.write(reinterpret_cast<const char*>(png.data()),
+              static_cast<std::streamsize>(png.size()));
+    if (!out) {
+      if (notesOut) notesOut->push_back("tip " + uuid + ": write failed part way through");
+      continue;
+    }
+    ids.push_back(id);
+  }
+  return ids;
+}
+
+size_t resolveDabIds(BrushLibrary& lib, DabLibrary& dabs, std::vector<std::string>* notesOut) {
+  size_t resolved = 0;
+  for (BrushPreset& p : lib.presets) {
+    if (p.dabId.empty()) continue;
+    // A preset that already HAS its bitmap is left alone: it came straight
+    // out of a loaded `.abr` this session, and re-resolving would swap a tip
+    // the library just decoded for a copy read back off disk. Same picture,
+    // two allocations, and one more way for them to disagree.
+    if (p.tipBitmap != nullptr) { ++resolved; continue; }
+    if (auto bitmap = dabs.resolve(p.dabId)) {
+      p.tipBitmap = std::move(bitmap);
+      ++resolved;
+      continue;
+    }
+    if (notesOut)
+      notesOut->push_back("'" + p.name + "': the tip '" + p.dabId +
+                          "' is no longer in the dab library -- it will paint with the round "
+                          "procedural tip");
+  }
+  return resolved;
+}
+
+// ---------------------------------------------------------------------------
+// `--dab-import`
+// ---------------------------------------------------------------------------
+int runDabImport(const char* path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    std::printf("could not open '%s'\n", path);
+    return 1;
+  }
+  const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+  const AbrImportResult imported = importAbrBrushes(std::span<const uint8_t>(bytes));
+  if (!imported.ok) {
+    std::printf("'%s': %s\n", path, imported.error.c_str());
+    return 1;
+  }
+
+  std::vector<std::pair<std::string, BrushTipBitmap>> tips;
+  for (const AbrSampledTip& tip : imported.tipSamples)
+    if (tip.bitmap != nullptr) tips.emplace_back(tip.id, *tip.bitmap);
+
+  std::vector<std::string> notes;
+  const std::vector<std::string> ids = extractAbrTips(dabImportedRootPath(), tips, &notes);
+
+  std::printf("%s\n", path);
+  std::printf("  %zu preset(s), %zu sampled tip(s) decoded\n", imported.presets.size(),
+              tips.size());
+  std::printf("  %zu tip(s) now in %s\n", ids.size(), dabImportedRootPath().c_str());
+  // How many presets can survive a relaunch is the number this flag exists to
+  // report -- a pack whose brushes are all procedural writes nothing and that
+  // is the correct outcome, not a failure.
+  size_t withDab = 0;
+  for (const BrushPreset& p : imported.presets)
+    if (!p.dabId.empty()) ++withDab;
+  std::printf("  %zu of %zu preset(s) now carry a `dab` id that outlives this pack\n", withDab,
+              imported.presets.size());
+  for (const std::string& note : notes) std::printf("  ! %s\n", note.c_str());
+  return 0;
 }
 
 // ---------------------------------------------------------------------------

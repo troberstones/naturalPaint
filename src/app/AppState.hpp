@@ -8,6 +8,7 @@
 
 #include "brush/Dynamics.hpp"
 #include "brush/Library.hpp"
+#include "app/DabLibrary.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/ControlsColumnLayout.hpp"
@@ -915,6 +916,18 @@ struct AppState {
   // same idle-RSS promise (PRD A2, ADR-0001).
   UserBrushLibraryStore userBrushLibrary;
   bool userBrushLibraryLoaded = false;
+
+  // The dab library: a folder of brush tips, where dropping a file in IS the
+  // import (app/DabLibrary.hpp). A sibling of the two stores above, for their
+  // reason -- it is session state that belongs to the process rather than to a
+  // widget, and it holds one small row per file at rest, not the bitmaps.
+  //
+  // Empty and unscanned until first needed, the same lazy gate the two above
+  // use and guarding the same idle-RSS promise (PRD A2, ADR-0001). It is what
+  // resolves a saved preset's `dabId` back into a `tipBitmap`, so a duplicated
+  // sampled-tip brush still has its tip after a relaunch.
+  DabLibrary dabLibrary;
+  bool dabLibraryScanned = false;
 
   // PLAN.md Phase 4 step 9 (app/Journal, ADR-0008, PRD O5-O10). The recovery
   // journal for this run: one scratch directory, its lock, and one journal

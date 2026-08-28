@@ -84,6 +84,16 @@ struct AbrImportNote {
   std::string what;
 };
 
+// One decoded sample: the id its `samp` record carries (the 36-character
+// UUID text, with the on-disk record's leading `$` stripped -- see this
+// file's header) and the bitmap, or a null bitmap when the record's own
+// header did not describe something this reader trusts (§ this file's header
+// again, the three failure modes).
+struct AbrSampledTip {
+  std::string id;
+  std::shared_ptr<const BrushTipBitmap> bitmap;
+};
+
 struct AbrImportResult {
   bool ok = false;
   std::string error;  // set when ok is false, and then presets is empty
@@ -102,6 +112,22 @@ struct AbrImportResult {
   // Scatter Count, the Dual Brush's own cadence and the tool options were all
   // dropped without a note before it existed.
   std::vector<BrushModel> models;
+
+  // The `samp` block's tips, flat and in file order, beside the presets that
+  // reference them.
+  //
+  // **Exposed so the tips can be written somewhere durable.**
+  // brush/Library.hpp is blunt about the alternative: a preset's `tipBitmap`
+  // lives exactly as long as the library stays loaded, so a duplicated
+  // sampled-tip brush "reloads next launch as the round procedural tip".
+  // Writing them out is the app layer's job -- `io/` does not reach into
+  // `app/` -- and app/DabLibrary's `extractAbrTips()` needs the tips to do it,
+  // which until now only existed inside `importAbrBrushes()`'s own scope.
+  //
+  // Named `tipSamples` and not `sampledTips` because `sampledTips` further
+  // down is already a COUNT of the ones that FAILED, and two members one
+  // letter apart meaning opposite things is a defect waiting to be written.
+  std::vector<AbrSampledTip> tipSamples;
 
   std::vector<AbrImportNote> notes;
 
@@ -180,15 +206,8 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes);
 
 // --- The `samp` block, exposed so it can be tested without a whole `.abr` --
 
-// One decoded sample: the id its `samp` record carries (the 36-character
-// UUID text, with the on-disk record's leading `$` stripped -- see this
-// file's header) and the bitmap, or a null bitmap when the record's own
-// header did not describe something this reader trusts (§ this file's header
-// again, the three failure modes).
-struct AbrSampledTip {
-  std::string id;
-  std::shared_ptr<const BrushTipBitmap> bitmap;
-};
+// `AbrSampledTip` is declared ABOVE `AbrImportResult`, which carries a vector
+// of them -- see there.
 
 // Parses every brush sample out of one `samp` block's body (the bytes AFTER
 // its own `8BIM samp <length>` framing -- `importAbrBrushes()` hands this the
