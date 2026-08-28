@@ -111,6 +111,7 @@ add_executable(naturalPaint
   app/selftest/LutBake.cpp
   app/selftest/MenuBasics.cpp
   app/selftest/MenuModel.cpp
+  app/selftest/MonoOps.cpp
   app/selftest/MergeFamily.cpp
   app/selftest/MipPyramid.cpp
   app/selftest/MultiplyFloor.cpp
@@ -152,6 +153,7 @@ add_executable(naturalPaint
   app/selftest/Support.cpp
   app/selftest/TileResidency.cpp
   app/selftest/TileStore.cpp
+  app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
   app/selftest/Transform.cpp
   app/selftest/TransformPreviewTexture.cpp
@@ -229,10 +231,12 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/MonoOps.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
   ops/Resample.cpp
   ops/Roi.cpp
+  ops/ToneOps.cpp
   ops/Transform.cpp
   paint/Palette.cpp
   sim/PaintSim.cpp

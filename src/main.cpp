@@ -1507,6 +1507,17 @@ int main(int argc, char** argv) {
     // plus the un-premultiply/re-premultiply wrapper bracketing them.
     // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool pointOpsOk = np::runPointOpsTest();
+    // ops/ToneOps (docs/operations.md §1.2 "Committed additions"): four more
+    // pure rgb->rgb point ops -- gain/offset/gamma, invert (both domains,
+    // each an involution), posterize and threshold (both shaper-domain).
+    // Also headless and GPU-free -- pure CPU math, no PaintSim involvement.
+    const bool toneOpsOk = np::runToneOpsTest();
+    // ops/MonoOps (docs/operations.md §1.2): Black & white's six hue-wheel
+    // weights and Gradient map's luma->ramp lookup, both reusing
+    // ops/PointOps.hpp's `rgb -> rgb` contract and ops/Gradient.hpp's stop
+    // model rather than inventing either afresh. Also headless and
+    // GPU-free -- pure CPU math, no PaintSim involvement.
+    const bool monoOpsOk = np::runMonoOpsTest();
     // Phase 6 (ops/Gradient; PRD D24 and the gradient half of D26): linear,
     // radial and angular geometries, the independently-positioned colour and
     // opacity stop lists, straight-colour interpolation in linear light, and
@@ -2253,7 +2264,8 @@ int main(int argc, char** argv) {
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
-                    halfOk && histogramOk && pointOpsOk && gradientOk && selectionOk && channelsOk &&
+                    halfOk && histogramOk && pointOpsOk && toneOpsOk && monoOpsOk &&
+                    gradientOk && selectionOk && channelsOk &&
                     selectionShapesOk && selectionRefineOk && selectionToolsOk && selectionDragOk &&
                     ellipseMarqueePreviewOk &&
                     selectionBoundaryOk && floodFillOk &&

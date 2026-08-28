@@ -468,6 +468,62 @@ bool runHistogramTest();
 //    matches manual hand computation, not just each op individually.
 bool runPointOpsTest();
 
+// ops/ToneOps (docs/operations.md §1.2 "Committed additions"): four more
+// pure `rgb -> rgb` point ops extending the ops/PointOps family above --
+// Gain/offset/gamma (the "Nuke primitive" honest brightness/contrast, ASC
+// CDL Slope/Offset/Power order), Invert (both the linear and the display
+// domain, each proven an involution -- apply twice, recover the original
+// exactly, including for HDR headroom above 1.0), Posterize (quantised in
+// the shaper domain, not linear, with its two degenerate level counts --
+// 0 is pass-through, 1 collapses every input to one fixed constant --
+// decided and hand-verified), and Threshold (a luma-based black/white
+// split, also in the shaper domain, with the inclusive "at/above -> white"
+// boundary pinned at an exact hand-computed luma). `GainOffsetGammaParams`
+// gets its identity default for free from its own neutral numbers;
+// `InvertParams` and `ThresholdParams` carry an explicit `amount` blend
+// field to get theirs, since neither op has any other natural "off" state.
+// Pure CPU math throughout, matching runPointOpsTest()'s own headless-
+// first-class status -- no PaintSim or GPU involvement anywhere in this
+// function.
+bool runToneOpsTest();
+
+// ops/MonoOps (docs/operations.md §1.2, "Committed additions": Black & white
+// and Gradient map, both class A / P1). Pure math only, matching
+// ops/PointOps.hpp's own `rgb -> rgb` contract exactly -- no menu, dialog or
+// op-stack wiring, that is separate later work. Headless and GPU-free.
+//
+// Black & white: the six weights (reds, yellows, greens, cyans, blues,
+// magentas) sit at 60-degree hue-wheel anchors, reusing HSV's own published
+// max/min/mod hue derivation as the sector selector; a pure primary or
+// secondary colour drives that selector to exactly one weight with a zero
+// coefficient on its neighbour, which is the isolation property asserted
+// here (perturbing every OTHER weight leaves a pure red or pure green
+// input's output bit-for-bit unchanged) alongside achromatic output
+// (r == g == b) for chromatic, HDR and negative inputs alike. The default
+// weights are each that colour's own Rec.709 luma, which is not merely "a
+// sensible neutral" but proven (and checked, including above 1.0) to make
+// applyBlackAndWhite() exactly equal applyGrayscale()'s Rec.709 result for
+// every input, since both are affine in the hue-sector interpolation
+// fraction and agree at both of every sector's endpoints by construction.
+//
+// Gradient map: reuses ops/Gradient.hpp's GradientStops and
+// gradientColorAt() wholesale rather than a second stop representation,
+// with luma measured directly in the same scene-linear domain the stops
+// are authored in (no shaper round-trip -- ADR-0004 reserves that domain
+// for Curves' authored control points specifically, not for this op).
+// The identity question a gradient map raises and PointOps.hpp's other six
+// ops do not -- there is no stop list whose ramp is the identity function
+// -- is resolved as "no colour stops means passthrough" rather than a
+// conventional black->white default, specifically so a default-constructed
+// GradientMapParams satisfies the same "default is an exact identity"
+// invariant every other op in this file family already does; asserted on
+// more than one input, including HDR. A luma above the stops' own domain
+// extrapolates flat to the top stop's colour (gradientColorAt()'s own
+// pre-existing contract, inherited rather than re-decided here) -- checked
+// that two different far-above-range lumas land on the identical colour,
+// proving the plateau is truly flat and not a close clamp.
+bool runMonoOpsTest();
+
 // ops/Gradient (PLAN.md "Phase 6 -- Filter and transform it"; PRD D24, and the
 // gradient half of D26). The op only -- no editor, no presets. Headless and
 // GPU-free, pure CPU tile arithmetic.
