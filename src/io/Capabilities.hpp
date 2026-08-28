@@ -73,6 +73,17 @@ namespace np {
 // cannot do it, and here is exactly why" -- requires the format to be
 // nameable. Silently omitting it from the enum would make the capability
 // query unable to answer the one question that proves it is a real query.
+//
+// `Psd` reads through io/PsdImport, not OpenImageIO, as of that module's
+// landing -- a hand-written, dependency-free reader chosen specifically so
+// PSD stays readable in every build configuration, the same guarantee PRD
+// I1's four stb-backed formats already have and OpenImageIO's own PSD
+// plugin could never offer (it decodes only the file's flattened
+// composite, never its layers -- io/PsdImport.hpp's header measures that
+// against this build's OiioBackend.cpp and states it as this module's own
+// baseline). `formatCapability(Psd).canRead` is therefore `true`
+// unconditionally, not "true when OIIO is linked": see Capabilities.cpp's
+// `psdCapability()`.
 enum class ImageFormat {
   // PRD I1's four, stb-backed in every configuration.
   Png,
@@ -136,6 +147,12 @@ enum class FormatBackend {
   None,
   Stb,
   Oiio,
+  // io/PsdImport's hand-written, dependency-free layered-PSD reader. The
+  // only format this backend answers for is `Psd` -- see Capabilities.cpp's
+  // `psdCapability()`, which is why this is a fourth case rather than a
+  // reuse of `Stb` (that name is reserved for stb_image/stb_image_write,
+  // and PSD goes through neither).
+  Native,
 };
 
 inline const char* imageFormatName(ImageFormat f) {

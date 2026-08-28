@@ -2116,6 +2116,14 @@ int main(int argc, char** argv) {
     // asserted as a pure function so it needs no window, and what a drop of
     // twelve files at once resolves to.
     const bool openAnyFileOk = np::runOpenAnyFileTest();
+    // io/PsdImport: a hand-written, dependency-free reader for LAYERED PSD
+    // files, and the app/OpenAnyFile.cpp seam that section's own header
+    // named before this module existed -- "a decoder returning a Document
+    // with N layers replaces this one call and nothing else in this
+    // function". No genuine Photoshop file was available to test against;
+    // this section's own doc comment states exactly what that leaves
+    // unverified.
+    const bool psdImportOk = np::runPsdImportTest();
     // app/FilterOps, ui/MenuModel's Filter and Image menus (docs/
     // reachability-audit.md C1): six of ops/Blur's, ops/Filters' and ops/
     // DocumentTransform's ~93 tested-but-unreachable entry points, wired to
@@ -2232,9 +2240,9 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
-                    openAnyFileOk && filterMenuOk && selectMenuOk && chromeConsistencyOk &&
-                    saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
-                    angleConventionOk && wheelInputOk && pressureFeelOk &&
+                    openAnyFileOk && psdImportOk && filterMenuOk && selectMenuOk &&
+                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk &&
+                    canvasDimensionsOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk;
     s->shutdown();

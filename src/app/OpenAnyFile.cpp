@@ -6,12 +6,14 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <span>
 #include <utility>
 
 #include "app/ImportImage.hpp"
 #include "core/Document.hpp"
 #include "io/Capabilities.hpp"
 #include "io/ImageIO.hpp"
+#include "io/PsdImport.hpp"
 
 // app/OpenAnyFile -- implementation. Every design decision is argued in
 // OpenAnyFile.hpp; this file holds the mechanics, and comments only where the
@@ -137,12 +139,52 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
   // 1.0 file with no recognisable signature still gets decoded, and still
   // opens.
   //
-  // **This is the seam for a layered PSD** (OpenAnyFile.hpp's last section). A
-  // decoder returning a `Document` with N layers replaces this one call and
-  // nothing else in this function: everything below is per-document.
+  // **This was the seam for a layered PSD** (OpenAnyFile.hpp's last section
+  // named it before io/PsdImport existed) **and this is that widening,
+  // landed.** Exactly as that section predicted: a decoder returning a
+  // `Document` with N layers replaces the one `openImageAsDocument()` call
+  // below for this one format, and nothing else in this function changed --
+  // every line from "Wrap it in a lifecycle record" on is still per-document,
+  // not per-layer, so it did not need to know the layer count was no longer
+  // always one.
+  //
+  // `sniff.format` (not the generic decode-and-see-what-comes-back path
+  // every other format takes) is what selects io/PsdImport specifically,
+  // because PSD is the one format this build reads through two entirely
+  // different decoders for two different reasons: io/PsdImport's own layered
+  // reader, tried first, and the flattened fallback below for the one case
+  // io/PsdImport declines on purpose rather than by failure --
+  // `PsdImportResult::noLayerData`, a PSD saved with Maximize Compatibility
+  // off (or otherwise carrying no Layer and Mask Information at all), which
+  // has no layers for a layered reader to build a Document out of and is
+  // exactly what `openImageAsDocument()`'s existing OpenImageIO-backed path
+  // already opens correctly. **Every other io/PsdImport refusal skips that
+  // fallback and refuses the whole open with io/PsdImport's own reason**: a
+  // corrupt file, or one using a compression/colour mode/depth this build's
+  // PSD reader does not support, has real layer content that the fallback
+  // would silently flatten and report as success -- the confidently-wrong
+  // outcome this function's three-refusals design (this file's own header)
+  // exists to keep out.
   std::string decodeError;
-  const std::optional<Document> decoded =
-      openImageAsDocument(bytes.data(), bytes.size(), &decodeError);
+  std::vector<std::string> psdWarnings;
+  std::optional<Document> decoded;
+  bool psdDecided = false;
+
+  if (sniff.format == ImageFormat::Psd) {
+    PsdImportResult psd = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+    if (psd.ok) {
+      decoded = std::move(psd.document);
+      psdWarnings = std::move(psd.warnings);
+      psdDecided = true;
+    } else if (!psd.noLayerData) {
+      decodeError = psd.error;
+      psdDecided = true;  // refuse outright -- see this comment's own argument
+    }
+    // else: `noLayerData` -- fall through to the flattened path below,
+    // unchanged, exactly as if io/PsdImport did not exist for this file.
+  }
+
+  if (!psdDecided) decoded = openImageAsDocument(bytes.data(), bytes.size(), &decodeError);
 
   if (!decoded) {
     // The three refusals OpenAnyFile.hpp promises, in the order that makes each
@@ -209,6 +251,17 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
   r.status = "Opened '" + fileNameOf(path) + "' (" + sniff.signature + ", " +
              std::to_string(doc.width) + "x" + std::to_string(doc.height) +
              ") as a new document.";
+  // A layer count past one is worth saying in the same sentence the npaint
+  // branch above already says it in -- this is the one place an *image*
+  // open can have more than the single layer every other format here still
+  // produces, and it is exactly io/PsdImport landing that makes it possible.
+  if (doc.layers.size() != 1)
+    r.status += " (" + std::to_string(doc.layers.size()) + " layers.)";
+  // io/PsdImport's own notes -- today, an unmapped blend mode naming the PSD
+  // key and the layer -- carried through unchanged, the same "say what was
+  // dropped" shape `warnings` already carries for every other non-fatal
+  // note this function forwards.
+  for (std::string& w : psdWarnings) r.warnings.push_back(std::move(w));
   // Said every time rather than once, because it is the surprising half of the
   // decision and the moment it matters is the moment the user reaches for Cmd-S.
   r.warnings.push_back("'" + fileNameOf(path) +

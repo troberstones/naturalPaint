@@ -84,6 +84,32 @@ std::string missingPluginReason(ImageFormat format) {
   return reason;
 }
 
+// io/PsdImport reads PSD directly, with no OpenImageIO involvement at all --
+// see io/Capabilities.hpp's own comment on `Psd` and io/PsdImport.hpp's
+// header for why that module exists. So, like the four stb formats above,
+// PSD's answer does not come from asking OpenImageIO anything: it is
+// written down here, once, and it is the same answer in every build
+// configuration, which is the whole point (io/PsdImport has no optional
+// dependency to be absent).
+//
+// `canWrite` stays `false`: PSD export is separate, unstarted work (this
+// module is read-only, matching the pre-existing "`Psd` is read-only here"
+// note on the `ImageFormat` enum itself), so `writableDepths` is left at its
+// default all-`false` and `unavailableReason` stays empty -- `canRead` is
+// `true`, so the "both false" precondition that field's own contract
+// requires never applies to this format.
+FormatCapability psdCapability() {
+  FormatCapability cap;
+  cap.format = ImageFormat::Psd;
+  cap.backend = FormatBackend::Native;
+  cap.canRead = true;
+  cap.canWrite = false;
+  // A layer's own alpha channel (id -1) is read when present -- see
+  // io/PsdImport.cpp's channel walk.
+  cap.hasAlpha = true;
+  return cap;
+}
+
 FormatCapability oiioCapability(ImageFormat format) {
   FormatCapability cap;
   cap.format = format;
@@ -111,7 +137,13 @@ const std::vector<FormatCapability>& capabilityTable() {
       const StbCapability* stb = nullptr;
       for (const StbCapability& s : kStbCapabilities)
         if (s.format == format) stb = &s;
-      t.push_back(stb ? stbCapability(*stb) : oiioCapability(format));
+      if (stb) {
+        t.push_back(stbCapability(*stb));
+      } else if (format == ImageFormat::Psd) {
+        t.push_back(psdCapability());
+      } else {
+        t.push_back(oiioCapability(format));
+      }
     }
     return t;
   }();
@@ -141,8 +173,9 @@ std::string formatsThatCanWriteDepth(ExportBitDepth depth) {
 bool oiioBackendCompiledIn() { return true; }
 
 std::string imageBackendSummary() {
-  return "image backends: stb (PNG/JPEG/TGA/BMP) + OpenImageIO " + oiioVersionString() +
-         " [" + oiioFormatList() + "]";
+  return "image backends: stb (PNG/JPEG/TGA/BMP) + io/PsdImport (PSD, layered, "
+         "dependency-free) + OpenImageIO " +
+         oiioVersionString() + " [" + oiioFormatList() + "]";
 }
 
 }  // namespace np

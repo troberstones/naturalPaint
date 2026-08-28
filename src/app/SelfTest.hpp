@@ -3586,6 +3586,74 @@ bool runSelectMenuTest();
 // "a refused Save left the picture untouched" is a claim about a filesystem.
 bool runOpenAnyFileTest();
 
+// io/PsdImport -- a hand-written, dependency-free reader for LAYERED `.psd`
+// files, and the app/OpenAnyFile.cpp seam this section landed in, which
+// runOpenAnyFileTest() above did not yet exercise (that section's own PSD
+// coverage is the pre-existing flattened path, through OpenImageIO).
+//
+// **No genuine Photoshop-authored file was available on this machine.**
+// io/PsdImport.hpp's own header states that at length, names the one
+// third-party corroboration this module rests on for its two riskiest
+// facts (layer stacking order, and the `flags` byte's inverted "visible"
+// bit -- both cross-checked against psd-tools, an independent MIT-licensed
+// reader, not Krita and not vendored here), and is explicit that a pass
+// below proves internal consistency with the published specification, not
+// agreement with what Photoshop itself emits.
+//
+// Covered, in order:
+//
+//  - **A.** A four-layer file: Raw and RLE/PackBits compression (the latter
+//    exercising both PackBits packet kinds -- a solid fill run-length-
+//    encodes, so this is not only the literal-packet path a lazier encoder
+//    would leave untested), a layer rectangle with a negative left edge (so
+//    part of it sits off the canvas), the opacity byte, the `flags` byte's
+//    hidden bit, the clipping byte (mapped to `Layer::clipped`, and the
+//    bottom layer's own clipping byte proven IGNORED -- core/Layer.hpp's
+//    "the bottom layer can never be clipped" invariant, enforced here since
+//    this module builds `Document::layers` directly rather than through
+//    `core::setLayerClipped()`), the Unicode `luni` name proven preferred
+//    over its Pascal fallback, and the blend-mode mapping: `norm`, `mul `
+//    and `dark` land on their exact core::BlendMode equivalents (Darken is
+//    an exact per-channel minimum, not an approximation) and `sLit` (Soft
+//    Light, no equivalent) imports as Normal with a warning naming it. Every
+//    layer's stacking position is checked BY NAME, not by index, so a
+//    silent stack reversal would show as a wrong layer's name rather than a
+//    coincidentally-passing position.
+//  - **B.** 16-bit depth, decoded against the correct 65535 full scale.
+//  - **C.** Ten deliberately adversarial or edge fixtures, each proven to
+//    refuse cleanly (or, for the one legitimate edge case, to import
+//    without crashing) rather than read out of bounds: a channel-data
+//    length claiming far more than the file holds (its own byte offset
+//    verified against the fixture's own known layout before being
+//    corrupted, so a change to this file's builder cannot silently corrupt
+//    the wrong field and still pass); a file truncated mid-channel; a
+//    declared layer count of zero (distinguished from every other refusal
+//    by `PsdImportResult::noLayerData`); an inverted rectangle; ZIP
+//    compression (refused by name -- this project has no zlib dependency);
+//    PSB, the Large Document Format (refused by name rather than
+//    misparsed as PSD -- see io/PsdImport.hpp for the field-width research
+//    that decision rests on); an unsupported colour mode (CMYK) and an
+//    unsupported depth (32-bit); non-PSD bytes; and a zero-area ("empty")
+//    layer, which is not malformed at all and is asserted to import
+//    cleanly alongside an ordinary one.
+//  - **D.** The app/OpenAnyFile.cpp seam itself, through real files on
+//    disk: a layered PSD opens with N layers and a status line naming the
+//    count; a FLAT PSD (no Layer and Mask Information at all, the same
+//    byte shape app/selftest/FormatSupport.cpp's own flattened-PSD fixture
+//    uses) still opens, unchanged, through the pre-existing OpenImageIO
+//    path -- proving `noLayerData` routes to the fallback rather than to a
+//    refusal; and a PSD that DOES carry real layer data in an unreadable
+//    shape (ZIP) is refused OUTRIGHT rather than silently opened flattened
+//    -- the one behavioural distinction the whole fallback design exists to
+//    get right, checked directly rather than assumed from the unit-level
+//    `noLayerData` flag alone.
+//
+// Headless, GPU-free, and identical in intent to every synthetic-fixture
+// section this suite already has (io/Descriptor.hpp, io/AbrBrushes.hpp):
+// every byte parsed here was written by a matching writer in this same
+// file, never read from a checked-in binary.
+bool runPsdImportTest();
+
 // **The Filter and Image menus, and app/FilterOps -- the bridge that makes
 // docs/reachability-audit.md's C1 stop being true for six of the ~93 entries
 // it names.** `runBlurTest()` and `runFiltersTest()` already prove the
