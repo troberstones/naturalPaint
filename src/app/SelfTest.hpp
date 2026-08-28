@@ -1105,6 +1105,15 @@ bool runScatterTest();
 // --selftest. Headless and GPU-free.
 bool runAbrSampledTipsTest();
 
+// io/PsPatterns: the `patt` block -- Adobe's published Pattern structure plus
+// the Virtual Memory Array List, which is 98-99% of the bytes of every brush
+// pack that has one and was read by nothing at all until now. Hand-built
+// fixtures only; no real pack's bytes are in this repository. The three
+// sections that matter are the ones the specification does not warn you
+// about: `numberOfChannels` reading 24 and not being a count, the four-byte
+// record alignment, and the four-byte short tail. Headless and GPU-free.
+bool runPsPatternsTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/

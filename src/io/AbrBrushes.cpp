@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "io/Descriptor.hpp"
+#include "io/PackBits.hpp"
 
 namespace np {
 namespace {
@@ -43,69 +44,6 @@ float clampf(float v, float lo, float hi) noexcept {
 // bounded 16 MiB, not the unbounded allocation a raw `width * height` would
 // be for an adversarial rectangle.
 inline constexpr uint32_t kMaxSampledTipDimension = 4096;
-
-// Photoshop's per-scanline RLE for `samp` image data: `height` big-endian
-// u16 compressed-byte-counts, then that many PackBits-compressed bytes,
-// decoded as ONE continuous stream (not re-synchronised at each scanline
-// boundary) to exactly `expected` bytes.
-//
-// **Decoding as one stream rather than one call per row is deliberate, not a
-// shortcut.** A PackBits run or literal never straddles Photoshop's own row
-// boundaries in a well-formed file -- Adobe's own encoder does not emit one
-// that does -- so decoding scanline-by-scanline and decoding the whole
-// concatenated stream in one pass produce identical bytes for every well-
-// formed file, and the single-pass form is what the openly-published
-// `abrupng` reader this framing was cross-checked against does too (this
-// file's header). Where the two approaches WOULD diverge -- a malformed
-// stream where a run crosses a row boundary -- this form still cannot read
-// past `end`, because every byte access below is checked against it first;
-// it can only decode fewer than `expected` bytes and report the shortfall,
-// never more.
-bool decodePackBits(std::span<const uint8_t> body, size_t off, size_t end, uint32_t height,
-                    size_t expected, std::vector<uint8_t>& out) noexcept {
-  if (off > end || end > body.size()) return false;
-
-  // The row-length table: `height` u16s, big-endian, summed for the total
-  // compressed byte count -- `abrupng`'s own `read_rle_data()` does the same
-  // ("We just need the total length"), which is what makes decoding as one
-  // stream rather than `height` separate calls correct rather than merely
-  // convenient (see this function's own comment above).
-  if (static_cast<uint64_t>(height) * 2u > end - off) return false;
-  uint64_t total = 0;
-  size_t p = off;
-  for (uint32_t i = 0; i < height; ++i) {
-    uint16_t rowLen = 0;
-    if (!readU16(body, p, rowLen)) return false;
-    total += rowLen;
-    p += 2;
-  }
-  if (total > end - p) return false;
-  const size_t dataEnd = p + static_cast<size_t>(total);
-
-  out.clear();
-  out.reserve(expected);
-  while (p < dataEnd && out.size() < expected) {
-    const int8_t n = static_cast<int8_t>(body[p]);
-    ++p;
-    if (n == -128) {
-      continue;  // NOP: PackBits' own no-op control byte
-    } else if (n < 0) {
-      // Run: repeat the next byte (-n + 1) times.
-      if (p >= dataEnd) return false;
-      const size_t count = static_cast<size_t>(-static_cast<int>(n) + 1);
-      const uint8_t b = body[p];
-      ++p;
-      for (size_t k = 0; k < count && out.size() < expected; ++k) out.push_back(b);
-    } else {
-      // Literal: the next (n + 1) bytes, verbatim.
-      const size_t count = static_cast<size_t>(n) + 1;
-      if (p + count > dataEnd) return false;
-      out.insert(out.end(), body.data() + p, body.data() + p + count);
-      p += count;
-    }
-  }
-  return out.size() == expected;
-}
 
 // A `UntF` read that does not care which unit tag it carries.
 //
@@ -710,14 +648,27 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, ui
     const size_t bodyEnd = bodyStart + recLen;
 
     AbrSampledTip tip;
-    // The key: a literal '$' then a 36-character UUID, 37 bytes, at the very
-    // start of the record body -- confirmed by direct inspection of a real
-    // pack (this file's header) and not otherwise documented. Missing or
-    // short is not fatal to the record; it just means this sample cannot be
-    // named, so it can be decoded but never matched by a preset's
-    // `sampledData`.
-    if (recLen >= 37 && samp[bodyStart] == '$') {
-      tip.id.assign(reinterpret_cast<const char*>(samp.data() + bodyStart + 1), 36);
+    // The key: a **Pascal string** -- one length byte, then that many
+    // characters -- at the very start of the record body.
+    //
+    // **This was read as a literal '$' followed by 36 fixed bytes until
+    // io/PsPatterns.cpp was written**, and it worked, because `0x24` is both
+    // the character '$' and the length 36, and every id Photoshop has written
+    // into either block so far is a 36-character UUID. The two readings agree
+    // on every real file and disagree on the first one that carries an id of
+    // any other length: the old form would refuse it outright (no '$'), and a
+    // sample that cannot be named can never be matched by a preset's
+    // `sampledData`, so the brush silently falls back to a round dab.
+    //
+    // The same encoding appears in `patt`, where the ids are the join key the
+    // Texture panel resolves against -- so getting it right in one place and
+    // not the other would have been two readers disagreeing about the same
+    // four bytes. Missing or short is still not fatal to the record; it just
+    // means this sample cannot be named.
+    if (recLen >= 1) {
+      const size_t idLength = samp[bodyStart];
+      if (idLength > 0 && recLen - 1 >= idLength)
+        tip.id.assign(reinterpret_cast<const char*>(samp.data() + bodyStart + 1), idLength);
     }
 
     size_t hoff = bodyStart + skipAmt;

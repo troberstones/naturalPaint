@@ -152,4 +152,33 @@ struct DescFixture {
   DescFixture& vlls(uint32_t count) { return code("VlLs").u32v(count); }
 };
 
+// PackBits, as a test ENCODER -- the mirror of io/PackBits.cpp's decoder.
+//
+// Lives here rather than in one selftest TU because two of them now need it
+// (AbrSampledTips for `samp`, PsPatterns for `patt`), and two encoders that
+// could disagree about the row-length table would let a decoder bug hide
+// behind a matching encoder bug in exactly one of them.
+// PackBits-encodes `raw` (`width` x `height`) as one literal run per scanline
+// -- valid for `width <= 128`, which is every fixture below. Good enough to
+// prove the row-length table and the literal opcode; the run (negative n) and
+// NOP (-128) opcodes are exercised separately, hand-built, where the decoder's
+// handling of THOSE specifically is what a test is about.
+inline std::vector<uint8_t> packBitsLiteralRows(const std::vector<uint8_t>& raw, uint32_t width,
+                                               uint32_t height) {
+  DescFixture rowLens;
+  DescFixture stream;
+  for (uint32_t y = 0; y < height; ++y) {
+    DescFixture row;
+    row.u8v(width - 1);  // literal opcode: `width` bytes follow, verbatim
+    for (uint32_t x = 0; x < width; ++x) row.u8v(raw[y * width + x]);
+    rowLens.u16v(static_cast<unsigned>(row.bytes.size()));
+    for (const uint8_t b : row.bytes) stream.u8v(b);
+  }
+  DescFixture out;
+  for (const uint8_t b : rowLens.bytes) out.u8v(b);
+  for (const uint8_t b : stream.bytes) out.u8v(b);
+  return out.bytes;
+}
+
+
 }  // namespace np

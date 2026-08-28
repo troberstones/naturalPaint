@@ -11,6 +11,7 @@
 #include "brush/Dynamics.hpp"
 #include "io/AbrBrushes.hpp"
 #include "io/Descriptor.hpp"
+#include "io/PsPatterns.hpp"
 
 // app/AbrReport -- what actually survived importing an `.abr`.
 //
@@ -190,6 +191,21 @@ int runAbrKeyCensus(const char* path) {
       haveDesc = true;
     }
   }
+  // The pattern block, decoded rather than stepped over. Printed here and not
+  // only in `runAbrReport()` because the census is where the question "is
+  // there anything in that 36 MB" gets asked, and a count with names answers
+  // it in a way a byte total does not.
+  for (const AbrSection& s : table.sections) {
+    if (s.key != "patt") continue;
+    const PsPatternResult pat =
+        parseAbrPatterns(std::span<const uint8_t>(bytes).subspan(s.at, s.length));
+    std::printf("\n-- patt: %zu pattern(s) decoded, %zu skipped%s --\n", pat.patterns.size(),
+                pat.skipped, pat.truncated ? ", WALK STOPPED EARLY" : "");
+    for (const PsPattern& q : pat.patterns)
+      std::printf("  %5dx%-5d %8zu texels  %.36s  %.60s\n", q.width, q.height, q.height8.size(),
+                  q.id.c_str(), q.name.c_str());
+  }
+
   if (!haveDesc) {
     std::printf("\nno `desc` block: nothing to census.\n");
     return 1;

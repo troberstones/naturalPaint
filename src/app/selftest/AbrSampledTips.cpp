@@ -31,10 +31,17 @@ std::vector<uint8_t> buildSampRecord(const char* uuid36, uint16_t subversion, ui
                                      uint16_t depth, uint8_t compression,
                                      const std::vector<uint8_t>& imageBytes) {
   DescFixture body;
-  body.u8v('$');
+  size_t idLength = 0;
+  for (const char* p = uuid36; *p != '\0'; ++p) ++idLength;
+  // A Pascal string: the LENGTH byte, then the characters. For the usual
+  // 36-character UUID that byte is 0x24, which is also '$' -- which is exactly
+  // why this was misread as a sigil for so long (io/AbrBrushes.cpp's own
+  // comment on the fix). Written as a length here so a fixture can carry an id
+  // of some other length and the two readings can disagree.
+  body.u8v(static_cast<unsigned>(idLength));
   for (const char* p = uuid36; *p != '\0'; ++p) body.u8v(static_cast<unsigned char>(*p));
   const size_t skipAmt = (subversion == 1) ? 47 : 301;
-  for (size_t i = 37; i < skipAmt; ++i) body.u8v(0);
+  for (size_t i = 1 + idLength; i < skipAmt; ++i) body.u8v(0);
   body.u32v(top).u32v(left).u32v(bottom).u32v(right);
   body.u16v(depth);
   body.u8v(compression);
@@ -57,28 +64,6 @@ std::vector<uint8_t> buildSampSection(const std::vector<std::vector<uint8_t>>& r
     while (out.size() % 4 != 0) out.push_back(0);
   }
   return out;
-}
-
-// PackBits-encodes `raw` (`width` x `height`) as one literal run per scanline
-// -- valid for `width <= 128`, which is every fixture below. Good enough to
-// prove the row-length table and the literal opcode; the run (negative n) and
-// NOP (-128) opcodes are exercised separately, hand-built, where the decoder's
-// handling of THOSE specifically is what a test is about.
-std::vector<uint8_t> packBitsLiteralRows(const std::vector<uint8_t>& raw, uint32_t width,
-                                         uint32_t height) {
-  DescFixture rowLens;
-  DescFixture stream;
-  for (uint32_t y = 0; y < height; ++y) {
-    DescFixture row;
-    row.u8v(width - 1);  // literal opcode: `width` bytes follow, verbatim
-    for (uint32_t x = 0; x < width; ++x) row.u8v(raw[y * width + x]);
-    rowLens.u16v(static_cast<unsigned>(row.bytes.size()));
-    for (const uint8_t b : row.bytes) stream.u8v(b);
-  }
-  DescFixture out;
-  for (const uint8_t b : rowLens.bytes) out.u8v(b);
-  for (const uint8_t b : stream.bytes) out.u8v(b);
-  return out.bytes;
 }
 
 // One brush preset descriptor, minimal but real: a name, a `Dmtr` (either
@@ -150,7 +135,16 @@ bool runAbrSampledTipsTest() {
     check(tips.size() == 1, "abr-samp: one well-formed raw record decodes to one tip");
     if (tips.size() == 1) {
       check(tips[0].id == "aaaaaaaa-0000-1111-2222-333333333333",
-            "abr-samp: the id is the 36 characters AFTER the record's leading '$'");
+            "abr-samp: the id is the Pascal string's characters, its length byte consumed");
+      // The reading that worked only by the 0x24 coincidence: an id of any
+      // length other than 36 is where a '$'-sigil reader and a Pascal-string
+      // reader part company. A sample that cannot be named can never be
+      // matched by a preset's `sampledData`, so the brush falls back to a
+      // round dab -- silently, which is the whole failure mode.
+      const auto shortId = buildSampRecord("short-id-01", 2, 0, 0, 2, 3, 8, 0, raw3x2);
+      const auto shortTips = parseAbrSampledTips(std::span<const uint8_t>(shortId), 2);
+      check(shortTips.size() == 1 && shortTips[0].id == "short-id-01",
+            "abr-samp: an id whose length is not 36 is still read, not refused");
       check(tips[0].bitmap != nullptr && tips[0].bitmap->width == 3 && tips[0].bitmap->height == 2,
             "abr-samp: width is right-left, height is bottom-top");
       check(tips[0].bitmap != nullptr && tips[0].bitmap->alpha == raw3x2,

@@ -37,6 +37,7 @@ add_executable(naturalPaint
   app/selftest/AbrBrushes.cpp
   app/selftest/AbrDualBrush.cpp
   app/selftest/AbrSampledTips.cpp
+  app/selftest/PsPatterns.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
@@ -206,6 +207,8 @@ add_executable(naturalPaint
   io/ImageIO.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
+  io/PackBits.cpp
+  io/PsPatterns.cpp
   io/TileResidency.cpp
   ops/Blur.cpp
   ops/DocumentTransform.cpp
