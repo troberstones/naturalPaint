@@ -272,21 +272,21 @@ class PanelLayout {
   // Discards whatever arrangement was in place and returns to the default:
   // TOOLS on the left, OPTIONS on the top, every other section in the right
   // dock in `controlsSections()`'s own order, nothing on the bottom, nothing
-  // in a flyout, nothing hidden, every weight 1 and the dock extents
-  // `ui/AtelierLayout.hpp`'s `kDefaultDockExtents`.
+  // in a flyout, nothing hidden, and the dock extents `ui/AtelierLayout.hpp`'s
+  // `kDefaultDockExtents`.
   //
-  // **Collapsed by default is `controlsSections()`'s `defaultOpen`,
-  // inverted.** A dock does not scroll, so thirteen expanded panels in the
-  // right dock would exceed its floor budget and drive it into
-  // `DockTiling::overflowed` -- squeezed panels and a scrollbar, which is the
-  // behaviour the revamp exists to remove. `defaultOpen` already names the
-  // sections worth screen space in a fresh session, and a section not worth
-  // being open in a scrolling column is not worth a slot in a dock either.
-  // See `defaultEntryFor()` in the .cpp for the full argument.
+  // **Four panels start expanded: TOOLS, OPTIONS, COLOR and LAYERS.** The
+  // other eleven start as a titled grip, one click from open. A dock does not
+  // scroll, so its open panels are taken directly out of each other, which
+  // makes the default-open set a *budget allocation* rather than a preference
+  // -- and LAYERS starts at a heavier weight than its neighbours because it is
+  // the only panel here whose content is a list. See `defaultEntryFor()` in
+  // the .cpp for the measurement that settled both numbers, and for why this
+  // is no longer `controlsSections()`'s `defaultOpen` inverted.
   //
-  // That arrangement reproduces the pre-dock chrome's first screen, which is
-  // the property `--selftest` asserts: the revamp changed what the layout CAN
-  // express, not what it looks like on a first run.
+  // `--selftest` holds this to arithmetic: it lays the default right dock out
+  // at the reference window's height and asserts LAYERS has room for three
+  // layer rows and that no expanded panel is pinned at its floor.
   void resetToDefault();
 
   // The full ordered list, every placement included -- what the PANELS menu

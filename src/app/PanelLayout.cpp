@@ -55,51 +55,130 @@ constexpr PlacementRow kPlacementTable[] = {
     {PanelPlacement::Flyout, "flyout"}, {PanelPlacement::Hidden, "hidden"},
 };
 
-// Where each section starts life. Everything not named here goes to the right
-// dock, which is where the outgoing single column was -- so this table is
-// exactly "the panels that are not in the column", and it is two entries long
-// because that is how many bands the chrome used to have welded to it.
+// Where each section starts life.
+//
+// TOOLS and OPTIONS go where the two welded chrome bands were. Everything else
+// is placed by the role `app/ControlsLayout` already assigns it -- **because a
+// dock's height is finite and the roles are exactly the distinction that
+// matters when it runs out.**
+//
+// The first revision put all thirteen remaining sections in the right dock,
+// reasoning that that is where the outgoing single column was. But the column
+// SCROLLED: an unused section there cost the ones below it nothing, because
+// they moved down. In a dock it costs them 26 px of grip apiece, forever, and
+// thirteen of those is 286 px -- 45% of the dock on this build's reference
+// window, spent on titles for panels nobody has opened. That is what left the
+// LAYERS panel unable to show a single layer row; see `defaultEntryFor()`.
+//
+// So the two roles whose own header calls them occasional -- `View` ("a view
+// of the canvas that is not part of the document") and `Simulation` ("set
+// occasionally, judged by painting rather than by reading") -- start on the
+// FLYOUT RAIL instead: a 28 px strip down the canvas edge, one click to open
+// the panel over the canvas, one click to close it. Not `Hidden`, which is
+// reachable only through the PANELS menu; the rail is the more discoverable of
+// the two and it is the mode the user asked for by name -- *"put others in
+// flyout mode"* -- which until now nothing started in.
+//
+// Keyed off the role rather than listed by hand so that a section added to
+// `controlsSections()` lands somewhere defensible without a second edit here.
 PanelPlacement defaultPlacementFor(ControlsSection section) {
   switch (section) {
     case ControlsSection::Tools:   return PanelPlacement::Left;
     case ControlsSection::Options: return PanelPlacement::Top;
-    default:                       return PanelPlacement::Right;
+    default:                       break;
+  }
+  switch (controlsSectionSpec(section).role) {
+    case ControlsSectionRole::View:
+    case ControlsSectionRole::Simulation: return PanelPlacement::Flyout;
+    case ControlsSectionRole::Tool:
+    case ControlsSectionRole::Document:   break;
+  }
+  return PanelPlacement::Right;
+}
+
+// One panel's default state: where it starts, whether it starts open, and how
+// much of the dock it asks for.
+//
+// ==========================================================================
+// Why this is its own table and not `controlsSections()`'s `defaultOpen`
+// ==========================================================================
+//
+// It used to be exactly that: `collapsed = !defaultOpen`, on the argument that
+// "a section not worth being open in a scrolling column is not worth a slot in
+// a dock either", and with the claim that the result "shows exactly what the
+// outgoing column showed on its first screen".
+//
+// **That claim was measurably false, and the measurement is the reason this
+// table exists.** `defaultOpen` marks six sections open (TOOLS, OPTIONS,
+// COLOR, LAYERS, HISTORY, COMPS), four of them in the right dock. On the
+// window the golden harness captures, that dock is about 650 px tall. Nine
+// collapsed grips took 234 of it and twelve splitters took 72, leaving 293 px
+// for four expanded panels -- 83 px each, of which 26 is the grip. A **57 px**
+// body is the document line and the filter field, and then the dock ends. The
+// LAYERS panel showed **no layer rows at all**, on a first run, by default.
+// The outgoing scrolling column showed three.
+//
+// The mistake was inheriting a flag written for a surface with an unbounded
+// budget. In a scrolling column "open by default" costs the sections below it
+// nothing -- they move down. In a dock every open panel is taken directly out
+// of its neighbours, so the default-open set is a **budget allocation**, and a
+// budget has to be written against the space it is dividing.
+//
+// Half of that budget was recovered by `defaultPlacementFor()` above, which
+// sends the seven View/Simulation sections to the flyout rail instead of
+// leaving them as grips in the dock. This is the other half: of the six
+// sections left in the right dock, two start open.
+//
+//  * **COLOR** -- the panel you cannot paint without.
+//  * **LAYERS** -- the panel the document lives in, and the only one here
+//    whose content is a *list*: every other panel is a fixed-height form that
+//    is as useful at its floor as it is at twice it, while a layer panel
+//    showing zero layers is not a layer panel. That asymmetry is what
+//    `weight` is for, and why LAYERS is the one section that does not start at
+//    `kPanelDefaultWeight`.
+//
+// BRUSH LIBRARY, BRUSH EDITOR, HISTORY and COMPS start collapsed. They keep
+// their titled grip in the dock and are one click from open -- a smaller loss
+// than the one HISTORY and COMPS were causing, because the space they were
+// taking was coming out of LAYERS.
+//
+// `--selftest` holds this to arithmetic rather than to intent: it lays the
+// default right dock out at the reference window's height and asserts LAYERS
+// gets room for three layer rows, and that no expanded panel is pinned at its
+// floor. "Does not overflow" was the assertion before, and it is far too weak
+// -- a dock in which every panel is squeezed to exactly 72 px does not
+// overflow either.
+constexpr float kLayersDefaultWeight = 2.0f;
+
+// The set below is an INTERSECTION, not a replacement: a panel starts expanded
+// only if `controlsSections()` marks it worth screen space AND the dock can
+// afford it. `defaultOpen` stays the authority on the first question -- flip
+// COLOR to `false` there and it starts collapsed here, with no second edit --
+// and this table can only ever take panels OUT of that set, never add one the
+// section list has already ruled out.
+bool defaultAffordableInDock(ControlsSection section) {
+  switch (section) {
+    // The two former chrome bands, plus the two panels the right dock's height
+    // can actually seat: the colour you paint with and the document you paint
+    // on.
+    case ControlsSection::Tools:
+    case ControlsSection::Options:
+    case ControlsSection::Color:
+    case ControlsSection::Layers: return true;
+    default:                      return false;
   }
 }
 
-// One panel's default state.
-//
-// **The default COLLAPSE set is `controlsSections()`'s own `defaultOpen`
-// flags, inverted** -- and that is not a tidy coincidence, it is the thing
-// that makes the default arrangement usable at all.
-//
-// A dock does not scroll, so its panels divide it (ui/DockLayout). Thirteen
-// expanded panels in the right dock need 13 x 72 px of floor plus twelve
-// splitters -- over a thousand pixels before a single control is drawn -- so
-// on any ordinary window the dock lands in `DockTiling::overflowed`, every
-// panel is squeezed to its floor, and the dock falls back to scrolling. That
-// is the exact behaviour the revamp exists to remove, arrived at from the
-// other direction.
-//
-// `app/ControlsLayout` already carries the answer, and has since long before
-// this feature: `defaultOpen` names the four sections worth a column of screen
-// space in a fresh session (COLOR and the three document sections), and its
-// header argues the case at length -- "a simulation section is a *tuning*
-// surface: a handful of numbers that are set once for a medium and then left".
-// A section not worth being open in a scrolling column is not worth a slot in
-// a dock either. So the default is: those four expanded, the rest collapsed to
-// their headers, and TOOLS and OPTIONS expanded because a collapsed tool
-// palette is an empty left edge.
-//
-// The result is that the default arrangement shows exactly what the outgoing
-// column showed on its first screen -- and shows it without scrolling, which
-// the outgoing column could not.
+bool defaultCollapsedFor(ControlsSection section) {
+  return !(controlsSectionSpec(section).defaultOpen && defaultAffordableInDock(section));
+}
+
 PanelEntry defaultEntryFor(ControlsSection section) {
   PanelEntry e;
   e.section = section;
   e.placement = defaultPlacementFor(section);
-  e.weight = kPanelDefaultWeight;
-  e.collapsed = !controlsSectionSpec(section).defaultOpen;
+  e.weight = (section == ControlsSection::Layers) ? kLayersDefaultWeight : kPanelDefaultWeight;
+  e.collapsed = defaultCollapsedFor(section);
   return e;
 }
 

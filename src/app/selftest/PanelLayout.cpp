@@ -96,55 +96,87 @@ bool runPanelLayoutTest() {
     check(layout.placementOf(ControlsSection::Options) == PanelPlacement::Top,
           "panel layout: OPTIONS starts in the top dock, where the options bar band was");
 
-    bool everythingElseRight = true;
+    // **Placement follows the role**, so a section added to
+    // `controlsSections()` lands somewhere defensible with no second edit.
+    // Asserted against the roles rather than against a copy of the list, or
+    // the test would only be checking that two hand-written tables match.
+    bool placementFollowsRole = true;
     for (const PanelEntry& e : layout.entries()) {
       if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options) continue;
-      if (e.placement != PanelPlacement::Right) everythingElseRight = false;
+      const ControlsSectionRole role = controlsSectionSpec(e.section).role;
+      const PanelPlacement want =
+          (role == ControlsSectionRole::View || role == ControlsSectionRole::Simulation)
+              ? PanelPlacement::Flyout
+              : PanelPlacement::Right;
+      if (e.placement != want) placementFollowsRole = false;
     }
-    check(everythingElseRight,
-          "panel layout: every other panel starts in the right dock, where the column was");
+    check(placementFollowsRole,
+          "panel layout: **a Tool or Document panel starts in the right dock and a View or "
+          "Simulation panel starts on the flyout rail** -- the occasional roles do not spend a "
+          "grip apiece of a dock that does not scroll");
+    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 7,
+          "panel layout: which is seven panels on the rail -- and the rail is not empty on a "
+          "first run, which is the mode the revamp was asked for by name");
 
-    // The right dock's order is `controlsSections()`'s own order with the two
-    // new panels removed -- i.e. the outgoing column's order, unchanged.
+    // Whatever is in the right dock is in `controlsSections()`'s own order --
+    // i.e. the outgoing column's order with the flyout sections lifted out.
     const std::vector<ControlsSection> right = layout.sectionsIn(PanelPlacement::Right);
     std::vector<ControlsSection> expected;
-    for (const ControlsSectionSpec& spec : controlsSections()) {
-      if (spec.section == ControlsSection::Tools || spec.section == ControlsSection::Options)
-        continue;
-      expected.push_back(spec.section);
-    }
+    for (const ControlsSectionSpec& spec : controlsSections())
+      if (layout.placementOf(spec.section) == PanelPlacement::Right)
+        expected.push_back(spec.section);
     check(right == expected,
           "panel layout: **the right dock's default order is the outgoing column's order** -- "
-          "the revamp changed what the layout can express, not what a first run looks like");
+          "the revamp changed what the layout can express, not how the column reads");
 
-    bool allUnitWeight = true;
+    // LAYERS is the one panel that does not start at the default weight, and
+    // the reason is in `defaultEntryFor()`: every other panel here is a
+    // fixed-height form, and a layer panel is a list.
+    bool othersUnitWeight = true;
     for (const PanelEntry& e : layout.entries())
-      if (e.weight != kPanelDefaultWeight) allUnitWeight = false;
-    check(allUnitWeight, "panel layout: every panel starts at the default weight");
+      if (e.section != ControlsSection::Layers && e.weight != kPanelDefaultWeight)
+        othersUnitWeight = false;
+    check(othersUnitWeight, "panel layout: every panel but LAYERS starts at the default weight");
+    check(layout.weightOf(ControlsSection::Layers) > kPanelDefaultWeight,
+          "panel layout: **LAYERS starts heavier than its neighbours** -- it is the only panel "
+          "in the dock whose content is a list, and a list at a form's height shows nothing");
 
-    // **The default collapse set is `controlsSections()`'s `defaultOpen`,
-    // inverted** -- asserted in both directions, because either alone is
-    // satisfiable by the wrong rule. This is what keeps the default
-    // arrangement out of ui/DockLayout's overflow branch: thirteen expanded
-    // panels in the right dock exceed its floor budget on any ordinary window,
-    // and the dock would fall back to the very scrolling this feature removes.
-    bool collapseMatchesDefaultOpen = true;
     size_t expanded = 0;
-    for (const ControlsSectionSpec& spec : controlsSections()) {
-      if (layout.isCollapsed(spec.section) == spec.defaultOpen) collapseMatchesDefaultOpen = false;
+    for (const ControlsSectionSpec& spec : controlsSections())
       if (!layout.isCollapsed(spec.section)) ++expanded;
-    }
-    check(collapseMatchesDefaultOpen,
-          "panel layout: **a panel starts expanded exactly when controlsSections() marks it "
-          "defaultOpen** -- no second copy of that decision");
-    check(expanded == 6,
-          "panel layout: which is six panels expanded (TOOLS, OPTIONS, COLOR, LAYERS, HISTORY, "
-          "COMPS) and nine collapsed to their headers");
+    check(!layout.isCollapsed(ControlsSection::Tools) &&
+              !layout.isCollapsed(ControlsSection::Options) &&
+              !layout.isCollapsed(ControlsSection::Color) &&
+              !layout.isCollapsed(ControlsSection::Layers),
+          "panel layout: TOOLS, OPTIONS, COLOR and LAYERS start expanded");
+    check(expanded == 4,
+          "panel layout: and nothing else does -- the other four in the right dock start as a "
+          "titled grip, because in a dock the default-open set is a budget and not a preference");
 
-    // And the consequence, checked as arithmetic rather than assumed: the
-    // default right dock fits a 1024 px window without overflowing.
+    // ------------------------------------------------------------------
+    // And the consequence, as arithmetic against the real chrome rather than
+    // as intent.
+    //
+    // **This replaces a `!overflowed` assertion that was far too weak to
+    // catch the bug it was written for.** A dock in which every panel has
+    // been squeezed to exactly `kPanelMinHeight` does not overflow either,
+    // and that is precisely the state the previous default reached: four
+    // expanded panels sharing 330 px gave LAYERS a 57 px body, which is the
+    // document line and the filter field and then the bottom of the dock.
+    // Zero layer rows, by default, on a first run. So the assertion is now
+    // about how much room the panels actually get.
+    // Both numbers measured off the golden harness's own `layers` capture
+    // rather than guessed, because a guess here is a test that agrees with
+    // itself: the first version of this assertion put the panel's chrome at
+    // 46 px, forgot the BLEND/OPACITY row entirely, and passed green while the
+    // real panel showed one and a half rows.
+    const float kRowH = 40.0f;     // one LAYERS row: two lines of text plus its padding
+    const float kChromeH = 112.0f;  // document line + filter field + BLEND/OPACITY + list frame
+    const AtelierBands bands = atelierLayout(0.0f, 0.0f, 1280.0f, 790.0f, true);
     std::vector<DockSlotSpec> specs;
+    size_t layersIndex = 0;
     for (const ControlsSection sec : layout.sectionsIn(PanelPlacement::Right)) {
+      if (sec == ControlsSection::Layers) layersIndex = specs.size();
       DockSlotSpec sp;
       sp.collapsed = layout.isCollapsed(sec);
       sp.weight = layout.weightOf(sec);
@@ -152,20 +184,31 @@ bool runPanelLayoutTest() {
       sp.headerExtent = kPanelHeaderExtent;
       specs.push_back(sp);
     }
-    const DockTiling t =
-        dockTile(AtelierRect{0.0f, 0.0f, kRightColumnW, 900.0f}, DockSide::Right, specs);
+    const DockTiling t = dockTile(bands.rightDock, DockSide::Right, specs);
     check(!t.overflowed,
-          "panel layout: **the default right dock does NOT overflow** a 900 px window -- which "
-          "is the whole point of collapsing the tuning sections rather than expanding them");
+          "panel layout: the default right dock does not overflow the reference window");
+    const float layersBody =
+        t.slots.empty() ? 0.0f : t.slots[layersIndex].rect.h - kPanelHeaderExtent;
+    check(layersBody >= kChromeH + 3.0f * kRowH,
+          "panel layout: **the default LAYERS panel has room for three layer rows** at the "
+          "reference window size -- the property the outgoing `!overflowed` check did not "
+          "constrain, and whose absence made a first run's layer panel show no layers");
+
+    bool nonePinned = true;
+    for (const DockSlot& s : t.slots)
+      if (!s.collapsed && s.atMinimum) nonePinned = false;
+    check(nonePinned,
+          "panel layout: and no expanded panel is pinned at its floor -- a default that lands "
+          "every panel on `minExtent` is one the window is too small for, not one that fits");
 
     const PanelDockExtents d = layout.dockExtents();
     check(d.left == kDefaultDockExtents.left && d.right == kDefaultDockExtents.right &&
               d.top == kDefaultDockExtents.top && d.bottom == kDefaultDockExtents.bottom,
           "panel layout: the default dock extents are ui/AtelierLayout's kDefaultDockExtents");
     check(layout.sectionsIn(PanelPlacement::Bottom).empty() &&
-              layout.sectionsIn(PanelPlacement::Flyout).empty() &&
               layout.sectionsIn(PanelPlacement::Hidden).empty(),
-          "panel layout: nothing starts on the bottom, in a flyout, or hidden");
+          "panel layout: nothing starts on the bottom or hidden -- the bottom dock is empty "
+          "space the user may claim, and nothing is out of reach on a first run");
   }
 
   // ==========================================================================
@@ -421,8 +464,15 @@ bool runPanelLayoutTest() {
               malformed.isCollapsed(ControlsSection::Solver),
           "panel layout: **a malformed line is SKIPPED, not fatal** -- the readable lines around "
           "it still apply");
-    check(malformed.placementOf(ControlsSection::Grade) == PanelPlacement::Right &&
-              malformed.placementOf(ControlsSection::Histogram) == PanelPlacement::Right,
+    // Compared against a fresh default rather than against a literal, so this
+    // assertion keeps testing the append RULE if the defaults ever move again
+    // -- which they have once already, when GRADE and HISTOGRAM went from the
+    // right dock to the flyout rail.
+    PanelLayout defaults;
+    check(malformed.placementOf(ControlsSection::Grade) ==
+                  defaults.placementOf(ControlsSection::Grade) &&
+              malformed.placementOf(ControlsSection::Histogram) ==
+                  defaults.placementOf(ControlsSection::Histogram),
           "panel layout: and each skipped line's section arrives via the append rule instead");
     bool everyWeightSane = true;
     for (const PanelEntry& e : malformed.entries())

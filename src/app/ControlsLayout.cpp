@@ -46,6 +46,31 @@ const ControlsSectionSpec& controlsSectionSpec(ControlsSection section) {
   return all.front();
 }
 
+std::string controlsSectionShortLabel(ControlsSection section,
+                                      const std::vector<ControlsSection>& among) {
+  const std::string title = controlsSectionSpec(section).title;
+  // Two characters is the floor rather than one: a single letter reads as an
+  // abbreviation of nothing, and every title in this build is at least four
+  // characters long, so two is always available.
+  const size_t lo = std::min<size_t>(2, title.size());
+  const size_t hi = std::min(kSectionShortLabelMax, title.size());
+
+  for (size_t n = lo; n <= hi; ++n) {
+    const std::string candidate = title.substr(0, n);
+    bool unique = true;
+    for (const ControlsSection other : among) {
+      if (other == section) continue;
+      const std::string otherTitle = controlsSectionSpec(other).title;
+      if (otherTitle.compare(0, n, candidate) == 0) unique = false;
+    }
+    if (unique) return candidate;
+  }
+  // No prefix that fits separates it -- see the header's honest limit. The
+  // longest one is still the most informative thing to draw, and the caller's
+  // tooltip carries the title.
+  return title.substr(0, hi);
+}
+
 LabelledControlLayout layoutLabelledControl(float& column, float labelPx, float availPx) {
   // Grow first, and grow *now* rather than next frame: the invariant this
   // whole file exists for is that the widget never starts before the label

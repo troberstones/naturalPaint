@@ -30,6 +30,25 @@
 # same script did five minutes ago rather than on the code under test.
 # Discovered by hitting it directly while picking these views.
 #
+# **And with its own empty $NP_PANEL_LAYOUT** (app/PanelLayout.cpp), for the
+# same reason and with a far larger blast radius. Since the dockable-panel
+# revision the entire chrome -- which panels exist, which dock they are in,
+# which are collapsed, and how wide each dock is -- comes out of
+# `~/Library/Application Support/naturalPaint/panel-layout.txt`. A developer
+# who collapses a panel in the running app has silently changed what every
+# golden view captures from then on, and the references in this repo would
+# then encode one machine's session rather than the code.
+#
+# That is not hypothetical: it happened during the revision that added this
+# line. Four views came back red, and the cause was that a hand-testing
+# session had left COLOR, BRUSH LIBRARY, BRUSH EDITOR and LAYERS collapsed,
+# so `layers` had captured an empty dock -- no rows at all -- and the crop
+# had been re-aimed twice against that. Pointing the app at a scratch file
+# that does not exist makes every capture start from
+# `PanelLayout::resetToDefault()`, which is the arrangement the references
+# are supposed to be OF. The app may write to this path; nothing reads it
+# back, because it is deleted before each capture.
+#
 # Reference images are kept tightly cropped, not full-window, both for
 # repository size and because a smaller region is less likely to contain an
 # incidental unstable pixel far from what the view is actually proving.
@@ -198,8 +217,22 @@ measure_n="${2:-10}"
 #     That is strictly better than cropping short of the readout: it removes
 #     a real nondeterminism source rather than cropping around one, and
 #     leaves the whole band, not just the wordmark and Undo/Redo, coverable.
-view_names=(toolbar layers canvas tools flyout titlebar transform)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo")
+#   rail  -- the flyout rail: the strip of one-click panel launchers down the
+#     canvas's right edge (ui/MacPaintUI.cpp's `drawPanelRail`), holding the
+#     seven View/Simulation panels `app/PanelLayout` puts there on a first run.
+#
+#     Added because this chrome went from never-populated to default-populated
+#     in one revision, and immediately shipped a defect only a screenshot could
+#     show: two of its seven cells clipped their last glyph, so GRADE and GRID
+#     -- the pair the label rule exists to keep apart -- both read `GR` with a
+#     cut third character. The rule itself is headless and was green
+#     throughout; what was wrong was that a 24 px button had been written
+#     independently of the 28 px rail around it. Nothing in the other seven
+#     views frames this strip, so nothing would have caught the next one
+#     either. Carries the text thresholds for the same reason `flyout` does:
+#     the cells are mono glyphs.
+view_names=(toolbar layers canvas tools flyout titlebar transform rail)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -285,23 +318,32 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # 130x270 (revision 2, to clear the then-permanent scrollbar) to 90x270
 # (revision 2's later, no-scrollbar shrink-to-fit correction) to this
 # revision's 100x350 (taller, to bring two of the new flyout groups' own
-# corner-triangle badges into frame -- see the view-table comment above).
-# `layers`' y moved 1075 -> 1209 when the right-hand column became a DOCK of
-# fixed slots (app/PanelLayout, ui/DockLayout). The LAYERS panel no longer
-# starts wherever the scroll happened to leave it: it sits below COLOR's slot
-# and the collapsed BRUSH LIBRARY / BRUSH EDITOR headers, 134 px lower than the
-# scrolling column put it (measured from the highlighted ADJUSTMENT row's own
-# top edge in both images, not eyeballed). **The crop was re-aimed, not the reference
-# re-blessed** -- this view's whole purpose is "three LAYERS panel rows, with
-# the Pigment/Adjustment/RGB kind glyphs", and it still frames exactly those
-# three rows against the exact same reference PNG. A reference regenerated
-# instead would have quietly accepted whatever else had drifted into the old
-# rectangle, which here was the filter field and the BLEND/OPACITY row.
-view_crop_x=(0    1916 920  0   0   0    900)
-view_crop_y=(77   1209 1037 220 700 0    700)
-view_crop_w=(1400 640  384  100 400 2560 700)
-view_crop_h=(166  190  192  350 350 77   500)
-view_frames=(90 90 90 90 90 90 90)
+# corner-triangle badges into frame -- see the view-table comment above), then
+# to 100x402 when the tool palette became a dockable PANEL and grew a 26 px
+# grip above its first cell. The extra 52 device px is exactly that grip: the
+# crop still starts at the same y, so the five tools the view is defined by
+# stay in frame AND the new handle is under coverage rather than beside it.
+#
+# `layers`' y moved 1075 -> 1209 -> 975, and the middle number is a warning
+# worth leaving in place rather than tidying away. 1209 was measured honestly,
+# from the highlighted ADJUSTMENT row's own top edge -- **against a capture
+# taken from a polluted `panel-layout.txt`** (see the header note on
+# $NP_PANEL_LAYOUT). A hand-testing session had left every right-dock panel
+# collapsed, so what was actually being aimed at was an empty dock. The
+# measurement was sound; its subject was not.
+#
+# 975 is the same measurement against a hermetic capture, and this time the
+# reference was ALSO regenerated -- deliberately, and after rendering the diff
+# rather than instead of it. At the re-aimed y the old and new frames differ by
+# 1264 px at magnitude 36, all of them in one 20x60 block at the right edge:
+# the LAYERS list's scrollbar, which is gone because the panel now has room for
+# all five rows without scrolling. That is the property this revision exists to
+# produce, so it is a change to accept rather than a drift to chase.
+view_crop_x=(0    1916 920  0   0   0    900 1830)
+view_crop_y=(77   975  1037 220 700 0    700 230)
+view_crop_w=(1400 640  384  100 400 2560 700 100)
+view_crop_h=(166  190  192  402 350 77   500 500)
+view_frames=(90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -334,7 +376,7 @@ view_frames=(90 90 90 90 90 90 90)
 # than a second number invented for it. `canvas` and `tools` stay exact
 # because they genuinely contain no text, and `tools` was re-measured at
 # exactly 0 after the palette grew to 28 cells.
-view_threshold=(48 96 0 0 48 0 48)
+view_threshold=(48 96 0 0 48 0 48 48)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -350,7 +392,7 @@ view_threshold=(48 96 0 0 48 0 48)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16)
+view_max_changed_px=(16 64 0 0 16 0 16 16)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on
@@ -359,8 +401,13 @@ run_view_capture() {
   local idx="$1" outPng="$2" jdir="$3"
   local name="${view_names[$idx]}"
   local fullPng="$WORK_DIR/${name}.full.png"
+  # See the header note: an absent file is what makes the app fall back to
+  # `PanelLayout::resetToDefault()`, so this is removed rather than written.
+  local layoutFile="$WORK_DIR/${name}.panel-layout.txt"
   mkdir -p "$jdir"
-  if ! NP_JOURNAL_DIR="$jdir" "$BIN" ${view_args[$idx]} --screenshot "$fullPng" "${view_frames[$idx]}" \
+  rm -f "$layoutFile"
+  if ! NP_JOURNAL_DIR="$jdir" NP_PANEL_LAYOUT="$layoutFile" \
+      "$BIN" ${view_args[$idx]} --screenshot "$fullPng" "${view_frames[$idx]}" \
       > "$WORK_DIR/${name}.stdout.log" 2> "$WORK_DIR/${name}.stderr.log"; then
     echo "run_golden.sh: $name: naturalPaint exited nonzero -- see $WORK_DIR/${name}.stderr.log" >&2
     return 1

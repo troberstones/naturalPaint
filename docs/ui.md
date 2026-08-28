@@ -95,10 +95,14 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 > ui/AtelierTheme.hpp for the shared constants that make the width arithmetic hold.
 
 > ⚠️ **Every band in the diagram below that holds controls is a DOCK now, not a welded
-> band.** The diagram is still what a first run looks like -- that is asserted, not asserted-
-> by-hope (`--selftest`'s panel-layout section, and the golden `toolbar`/`tools`/`flyout`
-> views are pixel-identical to the pre-dock chrome) -- but it is now the *default
-> arrangement* of a system rather than a fixed layout. The user's instruction:
+> band**, and what the diagram draws is the *default arrangement* of a system rather than a
+> fixed layout. Three things a first run now shows that the diagram does not: each panel
+> carries a **grip** -- a 26px bar, or a 14px rail on a short slot -- that collapses it,
+> moves it, and tears it off; the right dock starts with COLOR and LAYERS open and the rest
+> as titled grips; and a **flyout rail** sits at the canvas's right edge holding the seven
+> View/Simulation panels. All three are under golden coverage
+> (`toolbar`/`tools`/`flyout`/`layers`/`rail`) and asserted headlessly in `--selftest`'s
+> panel-layout section. §2c has the measurement behind each. The user's instruction:
 > *"revamp the right panel to be dockable, not scrollable, I want to be able to put the
 > parts I want in and have them stay put, and put others in flyout mode or dock around the
 > app"*, and *"All four edges but move the brush setting and the tool pallet to dockable
@@ -298,19 +302,50 @@ splitter between two panels and only those two weights change, so every other pa
 the exact size it had -- which is what makes *"have them stay put"* true. Drag a dock's
 outer edge to resize the whole dock. Both persist.
 
-**The honest limit**, stated the way the tool palette's is: when the minima plus headers
+**The honest limit**, stated the way the tool palette's is: when the minima plus grips
 plus splitters exceed the dock, no distribution of weight helps. `DockTiling::overflowed`
 says so, every panel sits at exactly its floor, and *that one case* lets the dock scroll --
 the behaviour this feature exists to remove, reached only when the alternative is panels
-too small to use. **The default arrangement deliberately stays out of that branch**: the
-nine sections `app/ControlsLayout`'s `defaultOpen` already marks closed start collapsed to
-their headers, so the right dock holds four expanded panels rather than thirteen.
+too small to use.
 
-**A header that cannot do its job is not drawn.** A 46px top dock would give OPTIONS 20px
-of controls under a 26px header; a 52px left dock cannot show the word "TOOLS" after the
-disclosure triangle. Both are the same judgement `app/ControlsLayout.hpp` §2 already makes
-about labels, applied to a header. Such a panel is still reachable from the PANELS menu,
-and widening its dock past the threshold brings the header back.
+**The default arrangement is a budget, not a preference.** This is the part the first
+revision got wrong, and the correction is worth recording because the reasoning that
+produced the error was superficially sound. That revision put all thirteen non-band
+sections in the right dock and started open exactly the ones `app/ControlsLayout`'s
+`defaultOpen` already marked open -- *"a section not worth being open in a scrolling column
+is not worth a slot in a dock either."* But a scrolling column has an unbounded budget: an
+open section there costs the ones below it nothing, because they move down. **A dock's
+budget is its height**, and thirteen panels spent 286px of a ~650px dock on grips alone.
+Four expanded panels then divided 293px, giving LAYERS a 57px body -- its document line,
+its filter field, and then the bottom of the dock. *A first run's layer panel showed no
+layers.* So the default now reads: the `View` and `Simulation` sections start on the flyout
+rail rather than as grips in the dock (their own role descriptions call them occasional);
+of the six left, COLOR and LAYERS start open; and LAYERS starts at twice the default weight
+because it is the only panel in the dock whose content is a *list* -- every other one is a
+fixed-height form, as useful at its floor as at twice it.
+
+`--selftest` now asserts this as arithmetic -- LAYERS gets room for three layer rows at the
+reference window size, and no expanded panel sits pinned at its floor. The assertion it
+replaced was `!overflowed`, which is far too weak: a dock in which every panel has been
+squeezed to exactly 72px does not overflow either, and that is precisely the state that
+shipped.
+
+**Every panel always has a grip.** What varies is its shape, never its existence: a 26px
+**bar** across the top of the slot in the ordinary case, or a 14px **rail** down its left
+edge when the slot is too short to spare 26px of height (the 46px top dock holding
+OPTIONS). A slot too narrow for its title drops the word rather than clipping it
+(`app/ControlsLayout.hpp` §2's rule) and shows grip dots instead, so the strip still reads
+as grabbable. Click it to collapse, drag it to move the panel, right-click it for the
+placement menu.
+
+The rule this replaced was the opposite one -- *a header that cannot do its job is not
+drawn* -- and it is worth naming what that cost, because it looked like the same
+anti-clipping judgement `app/ControlsLayout.hpp` §2 makes about labels. The height floor it
+tested against excluded the very grip it had to contain, so on an ordinary window **every
+panel in the application lost its header at once**: nine anonymous grey bars that could not
+be reopened and four panels that could not be moved. A panel a person cannot get hold of is
+a panel they have lost, which is not a state this chrome is allowed to reach, whatever the
+room.
 
 **The tool palette flows.** `atelierToolGrid()` picks the cell size and the column count
 together from both of the panel's dimensions, so TOOLS docked to the top edge is a row of
@@ -318,13 +353,24 @@ together from both of the panel's dimensions, so TOOLS docked to the top edge is
 column at exactly the cell size `atelierToolCellSize()` picks, which is asserted -- the
 generalisation did not move the default.
 
-**Flyouts, and the two ways back in.** A panel in flyout mode sits on a thin rail at the
-canvas's right edge and opens over the canvas when clicked. The **PANELS** control in the
-title bar -- the one docs/ui.md has drawn since the first revision, and which this file
-previously recorded as *"not built: there is no panel manager to wire it to, and a button
-that does nothing is worse than a gap"* -- lists every panel with its placement and moves
-it anywhere. It lives outside every dock on purpose: that is what makes hiding every panel
-a legal state rather than a trap. Right-clicking any panel's header offers the same menu.
+**Flyouts, and the three ways back in.** A panel in flyout mode sits on a 34px rail at the
+canvas's right edge and opens over the canvas when clicked -- and since the budget
+correction above, seven panels start there, so the rail is populated on a first run rather
+than being a mode nothing uses. Each cell shows the **shortest prefix of the panel's title
+that no other panel on the rail shares** (`controlsSectionShortLabel`), so GRADE and GRID
+read `GRA` and `GRI` while a panel with no near neighbour keeps two characters; the
+tooltip carries the full title. A flat two-character label shipped first and collided on
+exactly that pair.
+
+The **PANELS** control in the title bar -- the one docs/ui.md has drawn since the first
+revision, and which this file previously recorded as *"not built: there is no panel manager
+to wire it to, and a button that does nothing is worse than a gap"* -- lists every panel
+with its placement and moves it anywhere. It lives outside every dock on purpose: that is
+what makes hiding every panel a legal state rather than a trap. Right-clicking any panel's
+grip offers the same menu, and **dragging that grip tears the panel off**: `dockDropTargetAt`
+resolves the pointer to a dock edge or, in the middle of the canvas, to the rail. Corners
+resolve by which edge is nearer *in proportion*, so a 2000x800 window behaves like a square
+one.
 
 **Persistence.** `panel-layout.txt`, version 2, in the same file the single-column build
 wrote. **Version 1 files still read**: `section <key> 1` means the right dock, `section

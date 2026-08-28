@@ -417,6 +417,130 @@ bool runDockLayoutTest() {
           "picks a cell size in range");
   }
 
+  // ==========================================================================
+  // 9. Every slot has room for its grip -- the regression that shipped
+  // ==========================================================================
+  //
+  // The bug this section exists for: `kPanelMinHeight` was a BODY height, so a
+  // panel at exactly its floor had no room for the header that collapses and
+  // moves it. The draw code asked "does a header fit in 83 px, given it needs
+  // 26 + 72?" and correctly answered no -- for every panel at once. Nine
+  // collapsed panels became anonymous grey bars that could not be reopened and
+  // four expanded ones could not be moved.
+  //
+  // Asserted here as arithmetic rather than left to a screenshot, and asserted
+  // on BOTH classes of slot, because the outgoing rule got both wrong in
+  // different ways.
+  {
+    check(kPanelMinHeight >= kPanelHeaderExtent + kPanelMinBody,
+          "dock layout: **an expanded panel's floor includes its grip** -- the relation whose "
+          "absence made every panel in the application headerless at once");
+    check(kPanelMinBody > 0.0f,
+          "dock layout: and leaves a body behind the grip rather than only the grip");
+
+    // A dock shaped like the real default: four expanded panels and nine
+    // collapsed, in a 322 px column.
+    std::vector<DockSlotSpec> specs;
+    for (size_t i = 0; i < 13; ++i) {
+      DockSlotSpec sp;
+      sp.collapsed = i >= 4;
+      sp.minExtent = kPanelMinHeight;
+      specs.push_back(sp);
+    }
+    bool everyExpandedFitsAGrip = true;
+    bool everyCollapsedIsExactlyAGrip = true;
+    for (const float dockH : {560.0f, 700.0f, 900.0f, 1180.0f, 1600.0f}) {
+      const DockTiling t = dockTile(AtelierRect{0.0f, 0.0f, 322.0f, dockH}, DockSide::Right, specs);
+      for (const DockSlot& sl : t.slots) {
+        if (sl.collapsed) {
+          if (sl.rect.h != kPanelHeaderExtent) everyCollapsedIsExactlyAGrip = false;
+        } else if (sl.rect.h < kPanelHeaderExtent + kPanelMinBody) {
+          everyExpandedFitsAGrip = false;
+        }
+      }
+    }
+    check(everyCollapsedIsExactlyAGrip,
+          "dock layout: **a collapsed panel's slot is exactly its grip**, at every dock height -- "
+          "so the thing a person clicks to reopen it is the whole panel");
+    check(everyExpandedFitsAGrip,
+          "dock layout: **and every expanded slot has room for a grip AND a body**, at every "
+          "dock height a 13-panel dock is likely to see");
+  }
+
+  // ==========================================================================
+  // 10. Tearing a panel off: where a drop lands
+  // ==========================================================================
+  {
+    const AtelierRect region{100.0f, 200.0f, 1000.0f, 800.0f};
+
+    const DockDropTarget l = dockDropTargetAt(region, 150.0f, 600.0f);
+    const DockDropTarget r = dockDropTargetAt(region, 1050.0f, 600.0f);
+    const DockDropTarget t = dockDropTargetAt(region, 600.0f, 250.0f);
+    const DockDropTarget b = dockDropTargetAt(region, 600.0f, 950.0f);
+    check(l.isDock && l.side == DockSide::Left && r.isDock && r.side == DockSide::Right,
+          "dock drop: a drop near the left or right edge targets that dock");
+    check(t.isDock && t.side == DockSide::Top && b.isDock && b.side == DockSide::Bottom,
+          "dock drop: and near the top or bottom edge, that one");
+
+    const DockDropTarget centre = dockDropTargetAt(region, 600.0f, 600.0f);
+    check(!centre.isDock,
+          "dock drop: **a drop in the middle is the flyout rail** -- 'not docked anywhere' is a "
+          "target, not a failure to hit one");
+
+    // Every point resolves to exactly one target, and the zones cover the
+    // region -- swept rather than sampled at a few tidy points.
+    bool everyPointResolves = true;
+    size_t dockHits = 0, flyoutHits = 0;
+    for (int i = 0; i <= 40; ++i)
+      for (int j = 0; j <= 40; ++j) {
+        const float x = region.x + region.w * (static_cast<float>(i) / 40.0f);
+        const float y = region.y + region.h * (static_cast<float>(j) / 40.0f);
+        const DockDropTarget d = dockDropTargetAt(region, x, y);
+        if (d.isDock) ++dockHits; else ++flyoutHits;
+        // A malformed result would be an out-of-range side; the enum makes
+        // that unrepresentable, so what is checked is that the sweep reaches
+        // both kinds of answer rather than collapsing to one.
+        (void)d;
+      }
+    check(dockHits > 0 && flyoutHits > 0 && everyPointResolves,
+          "dock drop: a 41x41 sweep of the region reaches both dock and flyout targets");
+
+    // A point outside the region resolves to the nearest edge rather than to
+    // nothing -- a pointer a few pixels past the window edge is a person
+    // aiming AT that edge.
+    const DockDropTarget outside = dockDropTargetAt(region, -500.0f, 600.0f);
+    check(outside.isDock && outside.side == DockSide::Left,
+          "dock drop: a drop past the left edge still lands in the left dock, not nowhere");
+
+    // Corners behave the same shape on a wide region as on a tall one, which
+    // is the whole reason the test is proportional rather than in pixels.
+    // Stated as the property itself: the SAME RELATIVE point gives the SAME
+    // answer whatever the region's shape. Written first as two hand-picked
+    // expectations, which was wrong in both -- a 2000x400 region put (0.05,
+    // 0.10) in the Left zone, not the Top, because 0.05 of the way in from the
+    // left really is nearer than 0.10 of the way down. Asserting the invariant
+    // instead of two guesses is both correct and the thing worth checking.
+    const AtelierRect wide{0.0f, 0.0f, 2000.0f, 400.0f};
+    const AtelierRect tall{0.0f, 0.0f, 400.0f, 2000.0f};
+    const AtelierRect square{0.0f, 0.0f, 900.0f, 900.0f};
+    bool shapeIndependent = true;
+    const float probes[][2] = {{0.05f, 0.10f}, {0.10f, 0.05f}, {0.5f, 0.5f},
+                               {0.95f, 0.5f},  {0.5f, 0.95f},  {0.02f, 0.02f}};
+    for (const auto& pr : probes) {
+      const DockDropTarget a = dockDropTargetAt(wide, wide.w * pr[0], wide.h * pr[1]);
+      const DockDropTarget b = dockDropTargetAt(tall, tall.w * pr[0], tall.h * pr[1]);
+      const DockDropTarget c = dockDropTargetAt(square, square.w * pr[0], square.h * pr[1]);
+      if (a.isDock != b.isDock || a.isDock != c.isDock) shapeIndependent = false;
+      if (a.isDock && (a.side != b.side || a.side != c.side)) shapeIndependent = false;
+    }
+    check(shapeIndependent,
+          "dock drop: **a drop resolves by proportional distance**, so the same relative point "
+          "gives the same answer on a wide, a tall and a square region");
+
+    const DockDropTarget empty = dockDropTargetAt(AtelierRect{}, 10.0f, 10.0f);
+    check(!empty.isDock, "dock drop: an empty region targets nothing rather than a random edge");
+  }
+
   std::printf("[selftest] dock layout %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

@@ -126,18 +126,33 @@ static_assert(kDockSplitterThickness >= kRuleThickness,
 // pixel or two generous costs a collapsed panel nothing.
 constexpr float kPanelHeaderExtent = 26.0f;
 
+// The smallest BODY an expanded panel is worth giving -- the room left after
+// its grip, not including it. Roughly two rows of controls.
+constexpr float kPanelMinBody = 46.0f;
+
 // The floor for an EXPANDED panel, per axis. See this header's axis note for
 // why there are two of these and why the caller picks.
 //
-// 72 px of height is the header plus roughly two rows of controls -- the point
-// below which a panel stops being a panel and becomes a label with a scrollbar.
+// **The height floor INCLUDES the grip.** That looks like a detail and is the
+// bug this constant shipped with: it was 72 px of *body*, so a panel sitting
+// at exactly its floor had no room left for the header that lets a person
+// collapse or move it -- and the draw code, asked whether a header fit,
+// correctly answered no. Thirteen panels in a 1180 px dock give each expanded
+// one 83 px, under the 26 + 72 = 98 px that rule then demanded, so **every
+// panel in the application lost its header at once**: nine anonymous grey bars
+// that could not be reopened and four panels that could not be moved. A floor
+// that excludes the thing it must contain is not a floor.
+//
 // 200 px of width is `app/ControlsLayout.hpp`'s own `kControlsMinWidgetPx`
 // (90 px, the width at which a 0..1 slider still resolves to about a hundred
 // distinct positions) plus room for the label column beside it; a side-by-side
 // panel narrower than that cannot show one labelled control, which is the same
 // judgement made about the same widget, on the other axis.
-constexpr float kPanelMinHeight = 72.0f;
+constexpr float kPanelMinHeight = kPanelHeaderExtent + kPanelMinBody;  // 72
 constexpr float kPanelMinWidth = 200.0f;
+static_assert(kPanelMinHeight > kPanelHeaderExtent,
+              "an expanded panel's floor has to leave room for the grip that collapses and "
+              "moves it, or a panel at its floor is one a person cannot get back.");
 
 // What one panel asks of the dock it sits in.
 struct DockSlotSpec {
@@ -214,5 +229,38 @@ struct DockDragResult {
 };
 DockDragResult dockApplyDrag(float extentA, float extentB, float weightA, float weightB,
                              float minExtent, float deltaPx);
+
+// ------------------------------------------------------- tearing a panel off
+//
+// Where a panel dropped at (`x`, `y`) should go.
+//
+// The user's report: *"I don't see handles to tear off any of the panels like
+// tool settings or the tool bar on the left."* Moving a panel was a menu
+// action only, which is not what "tear off" means to anyone who has used a
+// docking UI. This is the arithmetic half of the gesture: press a panel's
+// grip, drag, and the answer to "which dock is under the pointer" comes from
+// here rather than from a chain of `if`s in the draw code -- so `--selftest`
+// can assert the zones tile the region and that every point resolves to
+// exactly one target.
+//
+// `region` is the canvas rect: the area a drop is judged against, which is the
+// window minus the fixed chrome. A drop within `kDockDropEdgeFraction` of an
+// edge targets that dock; anything further in targets the flyout rail, which
+// is what "not docked anywhere" means in this build.
+//
+// **Corners resolve by which edge is nearer in PROPORTION, not in pixels.** A
+// 2000x800 window is nowhere near square, so a fixed pixel band would make the
+// top and bottom zones swallow the corners on a wide window and the left and
+// right zones swallow them on a tall one. Comparing normalised distances makes
+// the corner behaviour the same shape at every window size.
+constexpr float kDockDropEdgeFraction = 0.25f;
+
+struct DockDropTarget {
+  // False means "no dock" -- the flyout rail.
+  bool isDock = false;
+  DockSide side = DockSide::Right;
+};
+
+DockDropTarget dockDropTargetAt(const AtelierRect& region, float x, float y);
 
 }  // namespace np

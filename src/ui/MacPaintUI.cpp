@@ -8585,6 +8585,27 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
 
 constexpr const char* kPanelMenuPopup = "##panelmenu";
 
+// The flyout rail's width: a strip of one-click launchers along the canvas's
+// right edge, one per panel in flyout mode. Defined up here with the other
+// panel-chrome constants because the tear-off drag preview needs it too --
+// dropping a panel in the middle of the canvas sends it to the rail, and the
+// preview has to be able to show where that is.
+//
+// **34, not the 28 this shipped with, and the six pixels are a measurement.**
+// A cell's label is up to `kSectionShortLabelMax` mono characters, which is
+// 21 px at this build's face; ImGui left-aligns a label it cannot centre and
+// clips it at the button rect, so the old 24 px button (28 minus the rail's
+// own 2 px padding either side) cut the last glyph off `GRA` and `GRI` -- the
+// two labels the default rail exists to keep apart. Caught on a screenshot,
+// which is the only place a clipped glyph shows: the label rule itself is
+// `app/ControlsLayout`'s and was, correctly, green throughout.
+constexpr float kRailW = 34.0f;
+constexpr float kRailPad = 2.0f;
+// The cell, derived rather than written twice -- a button sized independently
+// of the rail holding it is how the clipping above happened in the first
+// place.
+constexpr float kRailCell = kRailW - 2.0f * kRailPad;
+
 // The dock side a placement names. Only meaningful for the four dock
 // placements; `panelPlacementIsDock()` is the guard, and `Bottom` is the
 // default arm rather than an assert because this is called per panel per
@@ -8595,6 +8616,50 @@ DockSide dockSideFor(PanelPlacement p) {
     case PanelPlacement::Right: return DockSide::Right;
     case PanelPlacement::Top:   return DockSide::Top;
     default:                    return DockSide::Bottom;
+  }
+}
+
+// The placement a `DockSide` names. `dockSideFor()`'s inverse, and written out
+// rather than derived so that adding a fifth placement one day is a compile
+// error here instead of a silent mis-drop.
+PanelPlacement placementForDockSide(DockSide side) {
+  switch (side) {
+    case DockSide::Left:  return PanelPlacement::Left;
+    case DockSide::Right: return PanelPlacement::Right;
+    case DockSide::Top:   return PanelPlacement::Top;
+    default:              return PanelPlacement::Bottom;
+  }
+}
+
+// The strip a tear-off drop would land in, for the drag preview.
+//
+// When the target dock already exists this is that dock -- the panel joins
+// what is there. When it does not, the dock has to be carved out of the
+// canvas, and the preview shows the band it would take rather than a phantom
+// zero-width strip at the window edge. Showing the real cost of a new dock
+// before the drop is the difference between a preview and a guess.
+AtelierRect panelDropPreviewRect(const AtelierBands& bands, const DockDropTarget& target) {
+  if (!target.isDock) {
+    // The flyout: preview the rail's own strip at the canvas's right edge.
+    const AtelierRect& c = bands.canvas;
+    if (c.empty()) return AtelierRect{};
+    return AtelierRect{c.right() - kRailW, c.y, kRailW, c.h};
+  }
+  const AtelierRect& c = bands.canvas;
+  switch (target.side) {
+    case DockSide::Left:
+      return bands.leftDock.empty() ? AtelierRect{c.x, c.y, kRightColumnW * 0.5f, c.h}
+                                    : bands.leftDock;
+    case DockSide::Right:
+      return bands.rightDock.empty()
+                 ? AtelierRect{c.right() - kRightColumnW, c.y, kRightColumnW, c.h}
+                 : bands.rightDock;
+    case DockSide::Top:
+      return bands.topDock.empty() ? AtelierRect{c.x, c.y, c.w, kOptionsBarH} : bands.topDock;
+    default:
+      return bands.bottomDock.empty()
+                 ? AtelierRect{c.x, c.bottom() - kOptionsBarH, c.w, kOptionsBarH}
+                 : bands.bottomDock;
   }
 }
 
@@ -8783,43 +8848,101 @@ bool panelHasSubject(const AppState& st, ControlsSection section) {
   return true;
 }
 
-// Does this panel draw its own header bar in this slot?
+// A panel's grip: the strip you click to collapse it, right-click to move it,
+// and DRAG to tear it off.
 //
-// **One rule, on both axes: a header that cannot do its job is not drawn.**
+// ==========================================================================
+// What this replaces, and the bug that made it necessary
+// ==========================================================================
 //
-//  * **Too short.** A 46 px top dock holding the OPTIONS panel would give 20 px
-//    to the controls after a 26 px header, which is not a control strip, it is
-//    a label with a sliver under it.
-//  * **Too narrow.** A 52 px left dock -- the tool palette's own default width
-//    -- cannot show the word "TOOLS" after the disclosure triangle, so the
-//    header would be 26 px of vertical space spent on a triangle and a clipped
-//    word. That is worse than the welded band it replaced, which spent nothing
-//    and showed nothing.
+// The first version asked one question -- "does a header fit?" -- and answered
+// it with `slot.h >= kPanelHeaderExtent + kPanelMinHeight`, i.e. 26 + 72 = 98
+// px. Thirteen panels in a 1180 px right dock give each expanded one 83 px.
+// **So every panel in the application lost its header at once**, and a
+// collapsed panel -- whose slot is exactly 26 px, and which IS nothing but a
+// header -- lost it most of all: nine anonymous grey bars with no triangle, no
+// title and no click target, and no way to reopen them.
 //
-// Both are the same judgement `app/ControlsLayout.hpp` §2 already makes about
-// labels ("a slider narrower than this is not a control, it is a decoration"),
-// applied to a header instead of a widget.
+// Two mistakes, both worth naming because they are easy to make again:
 //
-// The consequence is disclosed rather than hidden: a headerless panel cannot be
-// collapsed or moved by clicking its own header, because it has none. The
-// PANELS menu still reaches it -- the same guarantee that makes hiding every
-// panel recoverable -- and widening the dock past the threshold brings the
-// header back, which makes the rule discoverable by doing rather than only by
-// reading this comment.
-bool panelShowsHeader(ControlsSection section, const AtelierRect& slot) {
-  if (slot.h < kPanelHeaderExtent + kPanelMinHeight) return false;
+//  1. **The floor excluded the thing it had to contain.** `kPanelMinHeight`
+//     was a body height, so a panel at exactly its floor could never have a
+//     header. ui/DockLayout.hpp now defines it as grip + body and static_asserts
+//     the relation.
+//  2. **The "does it fit" test was applied to a panel that is only a grip.** A
+//     collapsed panel does not need room for a grip AND a body; it needs room
+//     for a grip, which is what its slot already is.
+//
+// So the rule is now the opposite one, and it is unconditional: **every panel
+// always has a grip.** What varies is the grip's SHAPE, never its existence.
+// A panel a person cannot get hold of is a panel they have lost, and that is
+// not a state this chrome is allowed to reach.
+//
+// ==========================================================================
+// Two shapes
+// ==========================================================================
+//
+//  * **A bar** across the top of the slot, 26 px, the ordinary case. Shows a
+//    disclosure triangle and -- if the slot is wide enough for it -- the
+//    panel's title. A narrow slot (the 52 px left dock) drops the title rather
+//    than clipping it (app/ControlsLayout.hpp §2's rule, applied to a header)
+//    and shows grip dots instead, so the strip still reads as grabbable.
+//  * **A rail** down the left edge, 14 px, when the slot is too SHORT to spare
+//    26 px of height -- the 46 px top dock holding OPTIONS, where a bar would
+//    leave 20 px of controls. A rail costs width instead of height, which a
+//    full-width band has to spare and a 46 px one does not.
+//
+// The rail is why the options bar and the tool palette are grabbable at all.
+// The previous revision drew them headerless and left the PANELS menu as the
+// only way to reach them, which is exactly the complaint: *"I don't see
+// handles to tear off any of the panels like tool settings or the tool bar on
+// the left."*
+constexpr float kPanelRailW = 14.0f;
+// How far the pointer must travel before a press on a grip becomes a tear-off
+// rather than a click. Dear ImGui's own default drag threshold is 6 px; a
+// grip is a small target and a collapse is cheap to undo, so this is a little
+// larger than that to keep an imprecise click from becoming a move.
+constexpr float kPanelDragThresholdPx = 8.0f;
+
+enum class PanelGripKind { Bar, Rail };
+
+struct PanelGripLayout {
+  PanelGripKind kind = PanelGripKind::Bar;
+  // Bar height, or rail width.
+  float extent = kPanelHeaderExtent;
+  bool showTitle = true;
+};
+
+PanelGripLayout panelGripFor(ControlsSection section, const AtelierRect& slot, bool collapsed) {
+  PanelGripLayout g;
+
+  // A collapsed panel IS its grip: the slot is `kPanelHeaderExtent` tall and
+  // all of it is the bar. Checked first, because the short-slot test below
+  // would otherwise send every collapsed panel to a rail -- which is how the
+  // outgoing bug turned a collapse into a disappearance.
+  const bool roomForBar = collapsed || slot.h >= kPanelHeaderExtent + kPanelMinBody;
+  if (!roomForBar && slot.w >= kPanelRailW + kPanelMinWidth) {
+    g.kind = PanelGripKind::Rail;
+    g.extent = kPanelRailW;
+    g.showTitle = false;
+    return g;
+  }
+
+  g.kind = PanelGripKind::Bar;
+  g.extent = std::min(kPanelHeaderExtent, std::max(1.0f, slot.h));
   pushAtelierMono();
   const float titleW = ImGui::CalcTextSize(controlsSectionSpec(section).title).x;
   popAtelierMono();
   // 22 px for the triangle and its gap, 4 px of breathing room after the word
-  // -- the same two numbers `drawPanelHeader()` lays the header out with, so
-  // the two cannot disagree about whether the title fits.
-  return slot.w >= 22.0f + titleW + 4.0f;
+  // -- the same two numbers `drawPanelGrip()` lays the bar out with, so the
+  // two cannot disagree about whether the title fits.
+  g.showTitle = slot.w >= 22.0f + titleW + 4.0f;
+  return g;
 }
 
 // The per-panel context menu: where to send this panel. Opened by right-
-// clicking a panel's header, and drawn from the PANELS menu too, so the two
-// routes offer exactly the same moves rather than drifting apart.
+// clicking a grip, and drawn from the PANELS menu too, so the two routes offer
+// exactly the same moves rather than drifting apart.
 //
 // Returns true if the layout changed and needs saving.
 bool drawPanelPlacementItems(AppState& st, ControlsSection section) {
@@ -8843,30 +8966,53 @@ bool drawPanelPlacementItems(AppState& st, ControlsSection section) {
   return changed;
 }
 
-// One panel's header bar: a triangle, a title, and the two gestures a header
-// carries -- click to collapse, right-click for the placement menu.
+// Draw one panel's grip and return the rect its BODY should occupy.
 //
 // Drawn by hand rather than with `CollapsingHeader` because the open/closed
-// state has to live in `app/PanelLayout` (it is persisted, and it feeds
-// `ui/DockLayout`'s slot arithmetic), and `CollapsingHeader` keeps its own in
-// ImGui's ini state where neither can reach it.
-void drawPanelHeader(AppState& st, ControlsSection section, const AtelierRect& slot,
-                     bool* layoutChanged) {
+// state has to live in `app/PanelLayout` -- it is persisted, and it feeds
+// `ui/DockLayout`'s slot arithmetic -- and `CollapsingHeader` keeps its own in
+// ImGui's ini state where neither can reach it. The tear-off drag is the other
+// reason: a header that can start a drag is not a header ImGui ships.
+AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRect& slot,
+                          bool collapsed, bool* layoutChanged) {
   const ControlsSectionSpec& spec = controlsSectionSpec(section);
-  const bool collapsed = st.panels.isCollapsed(section);
+  const PanelGripLayout g = panelGripFor(section, slot, collapsed);
+  const bool bar = g.kind == PanelGripKind::Bar;
+
+  const AtelierRect grip = bar ? AtelierRect{slot.x, slot.y, slot.w, g.extent}
+                               : AtelierRect{slot.x, slot.y, g.extent, slot.h};
+  const AtelierRect body = bar
+                               ? AtelierRect{slot.x, slot.y + g.extent, slot.w,
+                                             std::max(0.0f, slot.h - g.extent)}
+                               : AtelierRect{slot.x + g.extent, slot.y,
+                                             std::max(0.0f, slot.w - g.extent), slot.h};
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImVec2 p = ImGui::GetCursorScreenPos();
-  const float w = slot.w;
-  dl->AddRectFilled(p, ImVec2(p.x + w, p.y + kPanelHeaderExtent), atelierToken(kChromeMid));
+  dl->AddRectFilled(ImVec2(grip.x, grip.y), ImVec2(grip.right(), grip.bottom()),
+                    atelierToken(kChromeMid));
 
+  ImGui::SetCursorScreenPos(ImVec2(grip.x, grip.y));
   ImGui::PushID(static_cast<int>(section));
-  const bool clicked = ImGui::InvisibleButton("##hdr", ImVec2(w, kPanelHeaderExtent));
+  const bool clicked = ImGui::InvisibleButton(
+      "##grip", ImVec2(std::max(1.0f, grip.w), std::max(1.0f, grip.h)));
   const bool hovered = ImGui::IsItemHovered();
-  if (clicked) {
+
+  // **The tear-off.** A press that travels far enough stops being a click and
+  // becomes a move; `drawUI()`'s drop handler decides where it lands.
+  if (ImGui::IsItemActive() && !st.panelDragActive &&
+      ImGui::IsMouseDragging(ImGuiMouseButton_Left, kPanelDragThresholdPx)) {
+    st.panelDragActive = true;
+    st.panelDragSection = section;
+  }
+  // Suppressed while a tear-off is in flight: ImGui reports a press as a click
+  // on release however far the pointer travelled, so without this every
+  // completed drag would also toggle the panel shut on its way out.
+  if (clicked && !st.panelDragActive) {
     st.panels.setCollapsed(section, !collapsed);
     *layoutChanged = true;
   }
+  if (hovered || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
   if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##panelctx");
   if (ImGui::BeginPopup("##panelctx")) {
     pushAtelierMono();
@@ -8878,43 +9024,67 @@ void drawPanelHeader(AppState& st, ControlsSection section, const AtelierRect& s
   }
   ImGui::PopID();
 
-  // The disclosure triangle, pointing down when open and right when closed --
-  // the direction convention every other tree in this chrome uses.
-  const float cy = p.y + kPanelHeaderExtent * 0.5f;
   const uint32_t ink = atelierToken(hovered ? kTextPrimary : kTextSecondary);
-  const float tx = p.x + 8.0f;
-  if (collapsed)
-    dl->AddTriangleFilled(ImVec2(tx, cy - 4.0f), ImVec2(tx, cy + 4.0f), ImVec2(tx + 6.0f, cy), ink);
-  else
-    dl->AddTriangleFilled(ImVec2(tx - 1.0f, cy - 2.0f), ImVec2(tx + 9.0f, cy - 2.0f),
-                          ImVec2(tx + 4.0f, cy + 4.0f), ink);
 
-  // docs/ui.md section 1: caps labels are monospace. A panel title is the
-  // largest caps label in a dock, so it is the one where the face change is
-  // most of what tells a header from the prose under it.
-  //
-  // **Drawn only if it fits.** app/ControlsLayout.hpp §2 is a whole section on
-  // this exact failure -- the column once read "Granulatio", "Edge darke",
-  // "Paper slop" and "Working ti" -- and its rule is that a label is never
-  // half a word. A 52 px left dock (the tool palette's own default width)
-  // cannot hold "TOOLS" after the disclosure triangle, so what it gets is the
-  // triangle alone plus a tooltip, which is strictly more than the welded band
-  // this replaced ever had: that one carried no caption at all.
-  pushAtelierMono();
-  const float th = ImGui::GetFontSize();
-  constexpr float kTitleX = 22.0f;
-  const float titleW = ImGui::CalcTextSize(spec.title).x;
-  const bool titleFits = kTitleX + titleW <= w - 4.0f;
-  if (titleFits)
-    dl->AddText(ImVec2(p.x + kTitleX, cy - th * 0.5f), atelierToken(kTextPrimary), spec.title);
-  popAtelierMono();
-  // The tooltip is unconditional: it is the only name a clipped header has,
+  if (bar) {
+    // The disclosure triangle, pointing down when open and right when closed --
+    // the direction convention every other tree in this chrome uses.
+    const float cy = grip.y + grip.h * 0.5f;
+    const float tx = grip.x + 8.0f;
+    if (collapsed)
+      dl->AddTriangleFilled(ImVec2(tx, cy - 4.0f), ImVec2(tx, cy + 4.0f), ImVec2(tx + 6.0f, cy),
+                            ink);
+    else
+      dl->AddTriangleFilled(ImVec2(tx - 1.0f, cy - 2.0f), ImVec2(tx + 9.0f, cy - 2.0f),
+                            ImVec2(tx + 4.0f, cy + 4.0f), ink);
+
+    // docs/ui.md section 1: caps labels are monospace. A panel title is the
+    // largest caps label in a dock, so it is the one where the face change is
+    // most of what tells a grip from the prose under it.
+    //
+    // **Drawn only if it fits.** app/ControlsLayout.hpp §2 is a whole section
+    // on this exact failure -- the column once read "Granulatio", "Edge darke",
+    // "Paper slop" and "Working ti" -- and its rule is that a label is never
+    // half a word.
+    if (g.showTitle) {
+      pushAtelierMono();
+      const float th = ImGui::GetFontSize();
+      dl->AddText(ImVec2(grip.x + 22.0f, cy - th * 0.5f), atelierToken(kTextPrimary), spec.title);
+      popAtelierMono();
+    } else {
+      // No room for the word, so the strip says "grabbable" the way every
+      // drag handle does: two rows of dots. Without this a titleless bar is
+      // an anonymous grey band, which is precisely what the outgoing bug
+      // looked like from the user's side.
+      for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 2; ++j)
+          dl->AddRectFilled(ImVec2(grip.right() - 14.0f + j * 4.0f, cy - 4.0f + i * 4.0f),
+                            ImVec2(grip.right() - 12.0f + j * 4.0f, cy - 2.0f + i * 4.0f), ink);
+    }
+  } else {
+    // The rail: grip dots down the middle, and the triangle at the top so the
+    // collapse affordance reads the same as the bar's.
+    const float cx = grip.x + grip.w * 0.5f;
+    if (collapsed)
+      dl->AddTriangleFilled(ImVec2(cx - 3.0f, grip.y + 5.0f), ImVec2(cx - 3.0f, grip.y + 13.0f),
+                            ImVec2(cx + 3.0f, grip.y + 9.0f), ink);
+    else
+      dl->AddTriangleFilled(ImVec2(cx - 4.0f, grip.y + 6.0f), ImVec2(cx + 4.0f, grip.y + 6.0f),
+                            ImVec2(cx, grip.y + 12.0f), ink);
+    const float midY = grip.y + grip.h * 0.5f;
+    for (int i = 0; i < 3; ++i)
+      dl->AddRectFilled(ImVec2(cx - 1.0f, midY - 6.0f + i * 5.0f),
+                        ImVec2(cx + 1.0f, midY - 4.0f + i * 5.0f), ink);
+  }
+
+  // The tooltip is unconditional: it is the only name a titleless grip has,
   // and on a wide one it still says which panel the pointer is over without
-  // the user having to read back up to the title.
-  if (hovered)
-    ImGui::SetTooltip("%s\n%s -- click to %s, right-click to move it",
+  // the user having to read back up to the bar.
+  if (hovered && !st.panelDragActive)
+    ImGui::SetTooltip("%s -- in the %s\nClick to %s, drag to move it, right-click for the menu",
                       spec.title, panelPlacementKey(st.panels.placementOf(section)),
                       collapsed ? "expand" : "collapse");
+  return body;
 }
 
 // Draw one dock: its background, its panels in their slots, and the splitters
@@ -8980,16 +9150,12 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
     ImGui::SetCursorScreenPos(ImVec2(r.x, r.y));
     ImGui::PushID(static_cast<int>(section));
 
-    const bool showHeader = panelShowsHeader(section, r);
-    float bodyTop = r.y;
-    if (showHeader) {
-      drawPanelHeader(st, section, r, layoutChanged);
-      bodyTop = r.y + kPanelHeaderExtent;
-    }
+    // Every panel has a grip, always -- see `drawPanelGrip()` for the bug that
+    // rule replaced. What comes back is the room left for the body.
+    const AtelierRect body = drawPanelGrip(st, section, r, slot.collapsed, layoutChanged);
 
-    const float bodyH = std::max(0.0f, r.bottom() - bodyTop);
-    if (!slot.collapsed && bodyH > 0.0f) {
-      ImGui::SetCursorScreenPos(ImVec2(r.x, bodyTop));
+    if (!slot.collapsed && body.h > 0.0f && body.w > 0.0f) {
+      ImGui::SetCursorScreenPos(ImVec2(body.x, body.y));
       char bodyId[48];
       std::snprintf(bodyId, sizeof(bodyId), "##body_%s", controlsSectionKey(section));
       // **No `NoScrollbar` here, deliberately.** This is where "not
@@ -9018,7 +9184,7 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
       // its zero tolerance.
       ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kWindowPaddingX, kWindowPaddingY));
-      const bool bodyOpen = ImGui::BeginChild(bodyId, ImVec2(r.w, bodyH),
+      const bool bodyOpen = ImGui::BeginChild(bodyId, ImVec2(body.w, body.h),
                                               ImGuiChildFlags_AlwaysUseWindowPadding);
       // **Popped the instant the child exists, not after its contents.** A
       // style colour applies to every `BeginChild()` made while it is pushed,
@@ -9036,7 +9202,7 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
           // than drawn blank.
           ImGui::TextDisabled("Nothing to show for the current mode.");
         } else {
-          const AtelierRect inner{r.x, bodyTop, ImGui::GetContentRegionAvail().x,
+          const AtelierRect inner{body.x, body.y, ImGui::GetContentRegionAvail().x,
                                   ImGui::GetContentRegionAvail().y};
           drawPanelBody(st, section, sim, gpu, lut, inner, vertical);
         }
@@ -9051,17 +9217,27 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
   // mouse from is a splitter that intermittently refuses to drag.
   for (size_t i = 0; i < tiling.splitters.size(); ++i) {
     const AtelierRect& sp = tiling.splitters[i];
+    // **A boundary that cannot move is not drawn as a handle.** A collapsed
+    // panel is a fixed size, so the splitter beside one has nothing to
+    // redistribute -- and a splitter that highlights, shows a resize cursor
+    // and then does nothing when dragged is the "handles didn't behave
+    // correctly" this pass is fixing. Such a boundary draws as the plain 2 px
+    // rule it really is and takes no input at all.
+    const bool live = i + 1 < tiling.slots.size() && !tiling.slots[i].collapsed &&
+                      !tiling.slots[i + 1].collapsed;
     ImGui::SetCursorScreenPos(ImVec2(sp.x, sp.y));
     ImGui::PushID(static_cast<int>(1000 + i));
-    ImGui::InvisibleButton("##split", ImVec2(std::max(1.0f, sp.w), std::max(1.0f, sp.h)));
-    const bool hovered = ImGui::IsItemHovered();
-    if (hovered || ImGui::IsItemActive())
+    if (live)
+      ImGui::InvisibleButton("##split", ImVec2(std::max(1.0f, sp.w), std::max(1.0f, sp.h)));
+    const bool hovered = live && ImGui::IsItemHovered();
+    if (live && (hovered || ImGui::IsItemActive()))
       ImGui::SetMouseCursor(vertical ? ImGuiMouseCursor_ResizeNS : ImGuiMouseCursor_ResizeEW);
 
     // The 2 px rule drawn down the middle of the 6 px handle, so the splitter
     // looks like every other rule in the chrome and behaves like a grip.
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const uint32_t col = atelierToken((hovered || ImGui::IsItemActive()) ? kAccent : kRule);
+    const uint32_t col =
+        atelierToken((live && (hovered || ImGui::IsItemActive())) ? kAccent : kRule);
     if (vertical) {
       const float ry = sp.y + (sp.h - kRuleThickness) * 0.5f;
       dl->AddRectFilled(ImVec2(sp.x, ry), ImVec2(sp.x + sp.w, ry + kRuleThickness), col);
@@ -9070,7 +9246,7 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
       dl->AddRectFilled(ImVec2(rx, sp.y), ImVec2(rx + kRuleThickness, sp.y + sp.h), col);
     }
 
-    if (ImGui::IsItemActive() && i + 1 < tiling.slots.size()) {
+    if (live && ImGui::IsItemActive()) {
       const float delta = vertical ? ImGui::GetIO().MouseDelta.y : ImGui::GetIO().MouseDelta.x;
       if (delta != 0.0f) {
         const AtelierRect& ra = tiling.slots[i].rect;
@@ -9079,23 +9255,17 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
         const float eb = vertical ? rb.h : rb.w;
         const ControlsSection sa = sections[i];
         const ControlsSection sb = sections[i + 1];
-        // A collapsed neighbour has no weight to trade, so the drag would be
-        // redistributing a share it does not hold. Skipped rather than
-        // clamped: the boundary a user grabbed between an expanded panel and a
-        // collapsed one is not a size boundary at all.
-        if (!tiling.slots[i].collapsed && !tiling.slots[i + 1].collapsed) {
-          const DockDragResult d =
-              dockApplyDrag(ea, eb, st.panels.weightOf(sa), st.panels.weightOf(sb),
-                            vertical ? kPanelMinHeight : kPanelMinWidth, delta);
-          st.panels.setWeight(sa, d.weightA);
-          st.panels.setWeight(sb, d.weightB);
-        }
+        const DockDragResult d =
+            dockApplyDrag(ea, eb, st.panels.weightOf(sa), st.panels.weightOf(sb),
+                          vertical ? kPanelMinHeight : kPanelMinWidth, delta);
+        st.panels.setWeight(sa, d.weightA);
+        st.panels.setWeight(sb, d.weightB);
       }
     }
     // Written back on release rather than on every frame of the drag -- a
     // drag is dozens of frames and each would be a file write, an fsync and a
     // rename for a number the user is still choosing.
-    if (ImGui::IsItemDeactivated()) *layoutChanged = true;
+    if (live && ImGui::IsItemDeactivated()) *layoutChanged = true;
     ImGui::PopID();
   }
 
@@ -9169,18 +9339,20 @@ void drawDockEdge(AppState& st, PanelPlacement placement, const AtelierRect& doc
 // The rail is drawn on the canvas's right edge, inside the canvas region, so
 // it costs the docks nothing and disappears entirely when no panel is in
 // flyout mode.
-constexpr float kRailW = 28.0f;
 
 void drawPanelRail(AppState& st, const AtelierRect& canvas, bool* layoutChanged) {
   const std::vector<ControlsSection> flyouts = st.panels.sectionsIn(PanelPlacement::Flyout);
   if (flyouts.empty() || canvas.empty()) return;
 
-  const float h = std::min(canvas.h, static_cast<float>(flyouts.size()) * kRailW + 8.0f);
+  // One cell plus its 2 px of vertical spacing per panel, plus the window's
+  // own padding top and bottom -- so the strip ends where the last cell does
+  // rather than trailing empty chrome over the canvas.
+  const float h = std::min(canvas.h, static_cast<float>(flyouts.size()) * (kRailCell + 2.0f) + 8.0f);
   const AtelierRect rail{canvas.right() - kRailW, canvas.y, kRailW, h};
 
   ImGui::SetNextWindowPos(ImVec2(rail.x, rail.y));
   ImGui::SetNextWindowSize(ImVec2(rail.w, rail.h));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2.0f, 4.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kRailPad, 4.0f));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 2.0f));
   ImGui::PushStyleColor(ImGuiCol_WindowBg,
                         ImGui::ColorConvertU32ToFloat4(atelierToken(kChromeBase)));
@@ -9195,14 +9367,15 @@ void drawPanelRail(AppState& st, const AtelierRect& canvas, bool* layoutChanged)
       if (isOpen)
         ImGui::PushStyleColor(ImGuiCol_Button,
                               ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
-      // Two letters of the title, which is what fits in a 24 px cell and is
-      // enough to tell fifteen panels apart at a glance. Not a Lucide glyph:
-      // there is no icon assigned per panel anywhere in this build, and
-      // inventing one mapping here would be a second, undocumented icon table
-      // beside ui/AtelierChrome.hpp's real one.
-      char label[4] = {spec.title[0], spec.title[1] ? spec.title[1] : ' ', '\0', '\0'};
+      // The shortest prefix of the title that no other panel ON THIS RAIL
+      // shares -- see `controlsSectionShortLabel()`, which owns the rule and
+      // is asserted headlessly. Not a Lucide glyph: there is no icon assigned
+      // per panel anywhere in this build, and inventing one mapping here would
+      // be a second, undocumented icon table beside ui/AtelierChrome.hpp's
+      // real one.
+      const std::string label = controlsSectionShortLabel(s, flyouts);
       pushAtelierMono();
-      const bool clicked = ImGui::Button(label, ImVec2(24.0f, 24.0f));
+      const bool clicked = ImGui::Button(label.c_str(), ImVec2(kRailCell, kRailCell));
       popAtelierMono();
       if (isOpen) ImGui::PopStyleColor();
       if (clicked) {
@@ -9256,19 +9429,21 @@ void drawFlyoutPanel(AppState& st, const AtelierRect& canvas, std::unique_ptr<Pa
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRect(ImVec2(box.x, box.y), ImVec2(box.right(), box.bottom()), atelierToken(kRule), 0.0f,
                 0, kRuleThickness);
-    ImGui::SetCursorScreenPos(ImVec2(box.x, box.y));
-    drawPanelHeader(st, st.flyoutSection, box, layoutChanged);
-    const float bodyTop = box.y + kPanelHeaderExtent;
-    ImGui::SetCursorScreenPos(ImVec2(box.x, bodyTop));
+    const AtelierRect fbody =
+        drawPanelGrip(st, st.flyoutSection, box, /*collapsed=*/false, layoutChanged);
+    ImGui::SetCursorScreenPos(ImVec2(fbody.x, fbody.y));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kWindowPaddingX, kWindowPaddingY));
-    if (ImGui::BeginChild("##flyoutbody", ImVec2(box.w, box.bottom() - bodyTop),
-                          ImGuiChildFlags_AlwaysUseWindowPadding)) {
-      const AtelierRect inner{box.x, bodyTop, ImGui::GetContentRegionAvail().x,
+    const bool fbodyOpen = ImGui::BeginChild("##flyoutbody", ImVec2(fbody.w, fbody.h),
+                                             ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (fbodyOpen) {
+      const AtelierRect inner{fbody.x, fbody.y, ImGui::GetContentRegionAvail().x,
                               ImGui::GetContentRegionAvail().y};
       drawPanelBody(st, st.flyoutSection, sim, gpu, lut, inner, /*vertical=*/true);
     }
     ImGui::EndChild();
-    ImGui::PopStyleVar();
   }
   ImGui::End();
 }
@@ -11752,6 +11927,66 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // the topmost edge of the chrome.
   drawPanelRail(st, bands.canvas, &panelLayoutChanged);
   drawFlyoutPanel(st, bands.canvas, sim, gpu, lut, &panelLayoutChanged);
+
+  // ------------------------------------------------------- the tear-off drop
+  //
+  // A panel is being dragged by its grip. This is the other half of
+  // `drawPanelGrip()`'s gesture and it lives here rather than there for one
+  // reason: the answer to "which dock is under the pointer" is a question
+  // about the whole window, and a panel's grip only knows its own slot.
+  //
+  // Drawn on the FOREGROUND list so the preview sits above every dock and the
+  // canvas, and evaluated after all of them so the highlight reflects this
+  // frame's geometry rather than last frame's.
+  if (st.panelDragActive) {
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const DockDropTarget target = dockDropTargetAt(bands.canvas, mouse.x, mouse.y);
+    const PanelPlacement dropPlacement =
+        target.isDock ? placementForDockSide(target.side) : PanelPlacement::Flyout;
+
+    // The preview strip: where the panel would land. For a dock that already
+    // exists this is that dock; for one that does not, it is the edge band of
+    // the canvas the drop would carve it out of -- which is honest about the
+    // fact that a new dock costs the canvas some room.
+    const AtelierRect preview = panelDropPreviewRect(bands, target);
+    ImDrawList* fg = ImGui::GetForegroundDrawList();
+    if (!preview.empty()) {
+      const ImVec4 a = ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent));
+      fg->AddRectFilled(ImVec2(preview.x, preview.y), ImVec2(preview.right(), preview.bottom()),
+                        IM_COL32((int)(a.x * 255), (int)(a.y * 255), (int)(a.z * 255), 56));
+      fg->AddRect(ImVec2(preview.x, preview.y), ImVec2(preview.right(), preview.bottom()),
+                  atelierToken(kAccent), 0.0f, 0, kRuleThickness);
+    }
+    // The panel's name at the pointer, so a drag over a busy window still says
+    // WHAT is being moved and not only where it would go.
+    {
+      const char* title = controlsSectionSpec(st.panelDragSection).title;
+      pushAtelierMono();
+      const ImVec2 sz = ImGui::CalcTextSize(title);
+      const ImVec2 p(mouse.x + 14.0f, mouse.y + 10.0f);
+      fg->AddRectFilled(ImVec2(p.x - 4.0f, p.y - 3.0f),
+                        ImVec2(p.x + sz.x + 4.0f, p.y + sz.y + 3.0f), atelierToken(kChromeMid));
+      fg->AddText(p, atelierToken(kTextPrimary), title);
+      popAtelierMono();
+    }
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+      if (dropPlacement != st.panels.placementOf(st.panelDragSection)) {
+        st.panels.setPlacement(st.panelDragSection, dropPlacement);
+        // A panel dragged onto the rail opens straight away -- a flyout you
+        // have to hunt for on the rail after asking for it is a move that
+        // looks like a disappearance, which is the failure this whole pass is
+        // correcting.
+        if (dropPlacement == PanelPlacement::Flyout) {
+          st.flyoutOpen = true;
+          st.flyoutSection = st.panelDragSection;
+        }
+        panelLayoutChanged = true;
+      }
+      st.panelDragActive = false;
+    }
+  }
 
   // The four dock edges, so a dock can be resized as a whole rather than only
   // slot-by-slot. Drawn last of the interactive chrome: each is a 6 px window

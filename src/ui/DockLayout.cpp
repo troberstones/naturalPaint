@@ -199,4 +199,29 @@ DockDragResult dockApplyDrag(float extentA, float extentB, float weightA, float 
   return r;
 }
 
+DockDropTarget dockDropTargetAt(const AtelierRect& region, float x, float y) {
+  DockDropTarget out;
+  if (region.empty()) return out;
+
+  // Normalised position inside the region, clamped so a drop that strayed
+  // outside still resolves to the nearest edge rather than to nothing -- a
+  // pointer a few pixels past the window edge is a person aiming AT that edge.
+  const float u = std::clamp((x - region.x) / region.w, 0.0f, 1.0f);
+  const float v = std::clamp((y - region.y) / region.h, 0.0f, 1.0f);
+
+  // Distance to each edge, in fractions of the region. Comparing these rather
+  // than pixel distances is what makes the corners behave the same shape on a
+  // wide window as on a tall one -- see the header.
+  const float dLeft = u, dRight = 1.0f - u, dTop = v, dBottom = 1.0f - v;
+  const float nearest = std::min(std::min(dLeft, dRight), std::min(dTop, dBottom));
+  if (nearest > kDockDropEdgeFraction) return out;  // the middle: flyout
+
+  out.isDock = true;
+  if (nearest == dLeft)        out.side = DockSide::Left;
+  else if (nearest == dRight)  out.side = DockSide::Right;
+  else if (nearest == dTop)    out.side = DockSide::Top;
+  else                         out.side = DockSide::Bottom;
+  return out;
+}
+
 }  // namespace np

@@ -375,6 +375,70 @@ bool runControlsLayoutTest() {
           "is not a page and a half on a short one");
   }
 
+  // ==========================================================================
+  // The flyout rail's cell labels
+  // ==========================================================================
+  //
+  // The rail draws a prefix of the title because it cannot fit the title. This
+  // section exists because the FLAT two-character version of that rule shipped
+  // with a collision in it -- GRADE and GRID both read `GR` -- and the
+  // revision that populated the rail by default put both on it at once.
+  {
+    // The seven sections `PanelLayout` puts on the rail on a first run.
+    const std::vector<ControlsSection> rail = {
+        ControlsSection::Grade,  ControlsSection::Histogram, ControlsSection::Pigment,
+        ControlsSection::Medium, ControlsSection::BoardTilt,  ControlsSection::Grid,
+        ControlsSection::Solver,
+    };
+
+    bool allUnique = true;
+    bool allFit = true;
+    for (size_t i = 0; i < rail.size(); ++i) {
+      const std::string a = controlsSectionShortLabel(rail[i], rail);
+      if (a.empty() || a.size() > kSectionShortLabelMax) allFit = false;
+      for (size_t j = i + 1; j < rail.size(); ++j)
+        if (a == controlsSectionShortLabel(rail[j], rail)) allUnique = false;
+    }
+    check(allUnique,
+          "rail label: **no two panels on the DEFAULT flyout rail share a label** -- the "
+          "property the flat two-character rule broke for GRADE and GRID, which start side "
+          "by side on it");
+    check(allFit, "rail label: and every one of them fits a rail cell");
+
+    check(controlsSectionShortLabel(ControlsSection::Grade, rail) == "GRA" &&
+              controlsSectionShortLabel(ControlsSection::Grid, rail) == "GRI",
+          "rail label: the colliding pair is separated by ONE extra character, not by "
+          "spending the whole budget on every panel");
+    check(controlsSectionShortLabel(ControlsSection::Solver, rail) == "SO" &&
+              controlsSectionShortLabel(ControlsSection::Medium, rail) == "ME",
+          "rail label: **and a panel with no near neighbour keeps its two characters** -- "
+          "the label is the shortest prefix that works, not a fixed width");
+
+    // Every prefix a label produces really is a prefix of its own title --
+    // otherwise "shortest unique" could be satisfied by inventing text.
+    bool allPrefixes = true;
+    for (const ControlsSectionSpec& spec : controlsSections()) {
+      const std::string label = controlsSectionShortLabel(spec.section, rail);
+      if (std::string(spec.title).compare(0, label.size(), label) != 0) allPrefixes = false;
+    }
+    check(allPrefixes, "rail label: a label is always a prefix of its own title");
+
+    // The honest limit, asserted rather than left to be discovered: HISTORY
+    // and HISTOGRAM agree for five characters, so no label that fits can
+    // separate them, and both get the longest one. This assertion is here so
+    // that a later attempt to widen the rail is measured against what the
+    // widening would actually buy.
+    const std::vector<ControlsSection> both = {ControlsSection::History,
+                                               ControlsSection::Histogram};
+    check(controlsSectionShortLabel(ControlsSection::History, both) ==
+              controlsSectionShortLabel(ControlsSection::Histogram, both),
+          "rail label: HISTORY and HISTOGRAM cannot be separated by a prefix that fits, and "
+          "both get the longest one -- the tooltip is what disambiguates them");
+    check(controlsSectionShortLabel(ControlsSection::History, both).size() ==
+              kSectionShortLabelMax,
+          "rail label: which is the full budget, not a silent truncation to two");
+  }
+
   std::printf("[selftest] controls layout %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

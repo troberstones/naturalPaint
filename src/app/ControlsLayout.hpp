@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 // app/ControlsLayout (UI detour step 3, problems 1 and 1b; docs/ui.md §2's
@@ -180,6 +181,39 @@ const std::vector<ControlsSectionSpec>& controlsSections();
 // The spec for one section. Every enumerator has exactly one, which the test
 // asserts; the returned reference is to a static list and outlives any caller.
 const ControlsSectionSpec& controlsSectionSpec(ControlsSection section);
+
+// --- The flyout rail's cell label -----------------------------------------
+
+// The longest label a `kRailW`-wide rail cell can show at this build's mono
+// face. Three caps glyphs, which is what fits in the 24 px button
+// `ui/MacPaintUI.cpp` draws inside a 28 px rail.
+inline constexpr size_t kSectionShortLabelMax = 3;
+
+// A short label for `section`, guaranteed distinct from every other section in
+// `among` **where a prefix can be**.
+//
+// The rail cannot show a panel's title, so it shows the beginning of it. The
+// first version took a flat two characters and its comment claimed that was
+// "enough to tell fifteen panels apart at a glance". It is not: GRADE and GRID
+// both render as `GR`, and the revision that put the View and Simulation
+// sections on the rail by default (app/PanelLayout.cpp) put both of them there
+// on a first run, side by side, indistinguishable.
+//
+// So the label is the SHORTEST PREFIX, one to `kSectionShortLabelMax`
+// characters, that no other section in `among` shares. GRADE and GRID become
+// `GRA` and `GRI`; a section with no near neighbour keeps its two characters
+// and the rail stays as readable as it was.
+//
+// **The honest limit**, stated rather than hidden: two titles that agree for
+// the first three characters -- HISTORY and HISTOGRAM are the only such pair
+// in this build -- cannot be separated by a prefix that fits, and both get the
+// three-character one. Neither starts on the rail, so reaching it takes a
+// deliberate move of both; the cell's tooltip carries the full title, which is
+// the disambiguation that always works. Widening the rail would not fix it
+// either: those two titles agree for five characters, and a rail wide enough
+// for five is a second tool palette.
+std::string controlsSectionShortLabel(ControlsSection section,
+                                      const std::vector<ControlsSection>& among);
 
 // --- The label column -----------------------------------------------------
 

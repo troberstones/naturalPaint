@@ -897,6 +897,23 @@ struct AppState {
   bool dockEdgeDragging = false;
   PanelPlacement dockEdgeDock = PanelPlacement::Right;
 
+  // A panel being TORN OFF: dragged by its grip towards another dock, the
+  // flyout rail, or back where it came from. Session state like the two drags
+  // above, and for the same reason -- a drag cannot survive a relaunch because
+  // the mouse button cannot.
+  //
+  // The user's report is what this exists for: *"I don't see handles to tear
+  // off any of the panels like tool settings or the tool bar on the left."*
+  // Moving a panel used to be a menu action only, which is not what tearing
+  // off means to anyone who has used a docking UI.
+  //
+  // `panelDragActive` also suppresses the grip's click-to-collapse for the
+  // press that became a drag -- Dear ImGui's button reports a press as a click
+  // on release however far the pointer travelled in between, so without this a
+  // completed tear-off would ALSO toggle the panel shut on the way out.
+  bool panelDragActive = false;
+  ControlsSection panelDragSection = ControlsSection::Color;
+
   // T9: the user's saved File > New sizes (app/DocumentPresets.hpp). Lazy
   // exactly as `recentDocuments`/`panels` above, and for the same
   // reason -- read the first time the New Document dialog opens, not at
