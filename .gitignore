@@ -44,3 +44,12 @@ runny_inkers.abr
 threeOtherBrushes.abr
 art_markers.abr
 dry_media.abr
+
+# Photoshop-authored `.psd` files dropped in to test io/PsdImport against a
+# real Photoshop document rather than against this project's own writer.
+# Artwork, not fixtures this repo owns -- and one of them is 180 MB. Listed
+# by name for the same reason the brush packs above are: a `.psd` this
+# project DOES own could still be committed deliberately.
+Lineart4_crop.psd
+Peter_confronts_a_small_monster_with_fire.psd
+Testforautoflats 2.psd

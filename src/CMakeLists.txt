@@ -16,6 +16,7 @@ add_executable(naturalPaint
   app/HistoryPanel.cpp
   app/Keymap.cpp
   app/PenAxes.cpp
+  app/PsdReport.cpp
   app/Screenshot.cpp
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
