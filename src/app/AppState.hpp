@@ -477,6 +477,23 @@ struct AppState {
   // the screenshot path has neither.
   bool openToolFlyoutDemo = false;
 
+  // --panel-stack-demo: forms two tab stacks in the right dock the first frame
+  // the panel layout is read -- HISTOGRAM and GRADE as tabs beside COLOR, and
+  // COMPS as a tab beside the collapsed HISTORY -- so `--screenshot` can
+  // photograph an open tab strip and a collapsed one.
+  //
+  // Same justification as `openToolFlyoutDemo` one field up: a stack is formed
+  // by dragging one panel onto another, and the screenshot path has no drag.
+  // A feature that can only be verified by a human is one that silently rots,
+  // and the tab strip is the newest chrome in this build with the least
+  // coverage -- the previous revision shipped a clipped glyph on the flyout
+  // rail for exactly that reason.
+  //
+  // **Applied to the in-memory layout only, and never saved.** It runs where
+  // the lazy `loadFromFile()` runs (ui/MacPaintUI.cpp's `drawUI`), after it, so
+  // a demo run cannot rewrite the user's real `panel-layout.txt`.
+  bool panelStackDemo = false;
+
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //
   // Request flags rather than direct action, for the reason the zoom commands

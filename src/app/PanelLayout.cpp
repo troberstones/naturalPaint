@@ -352,6 +352,186 @@ bool PanelLayout::isCollapsed(ControlsSection section) const noexcept {
   return i < entries_.size() && entries_[i].collapsed;
 }
 
+std::vector<PanelSlot> PanelLayout::slotsIn(PanelPlacement placement) const {
+  std::vector<PanelSlot> out;
+  // `stack -> index into out`, for the positive ids only. A linear scan
+  // rather than a map: a placement holds at most fifteen panels, and the
+  // vector keeps first-appearance order for free, which is the ordering rule
+  // this function promises.
+  std::vector<std::pair<int, size_t>> seen;
+
+  for (const PanelEntry& e : entries_) {
+    if (e.placement != placement) continue;
+    if (e.stack == 0) {
+      PanelSlot slot;
+      slot.members.push_back(e.section);
+      out.push_back(slot);
+      continue;
+    }
+    size_t at = out.size();
+    for (const std::pair<int, size_t>& s : seen)
+      if (s.first == e.stack) at = s.second;
+    if (at == out.size()) {
+      seen.emplace_back(e.stack, out.size());
+      out.push_back(PanelSlot{});
+    }
+    out[at].members.push_back(e.section);
+    // `active` is repaired to exactly-one-per-stack by `normaliseStacks()`, so
+    // the last one seen with it set is also the only one.
+    if (e.active) out[at].activeIndex = out[at].members.size() - 1;
+  }
+  return out;
+}
+
+int PanelLayout::stackOf(ControlsSection section) const noexcept {
+  const size_t i = indexOf(section);
+  return i < entries_.size() ? entries_[i].stack : 0;
+}
+
+PanelSlot PanelLayout::slotOf(ControlsSection section) const {
+  for (const PanelSlot& s : slotsIn(placementOf(section)))
+    for (const ControlsSection m : s.members)
+      if (m == section) return s;
+  // Unreachable while the invariant holds; a slot of one is the honest
+  // fallback rather than an empty one the caller would have to guard.
+  PanelSlot lone;
+  lone.members.push_back(section);
+  return lone;
+}
+
+// Restores the two stack invariants after any mutation. See the header's
+// round-trip repair rules -- this is the same repair, applied to the same
+// states, whether they arrived from a file or from a drag.
+void PanelLayout::normaliseStacks() {
+  // 1. A stack needs two members in ONE placement. Anything less loses its id.
+  for (PanelEntry& e : entries_) {
+    if (e.stack == 0) continue;
+    size_t mates = 0;
+    for (const PanelEntry& o : entries_)
+      if (o.stack == e.stack && o.placement == e.placement) ++mates;
+    if (mates < 2) e.stack = 0;
+  }
+  // 2. Exactly one active member per (placement, stack). An unstacked panel is
+  //    left active, which is what `active` means for one: it is the only tab.
+  for (PanelEntry& e : entries_) {
+    if (e.stack == 0) {
+      e.active = true;
+      continue;
+    }
+    bool anyActive = false;
+    for (const PanelEntry& o : entries_)
+      if (o.stack == e.stack && o.placement == e.placement && o.active) anyActive = true;
+    if (!anyActive) {
+      // First member of this stack becomes the visible one.
+      for (PanelEntry& o : entries_)
+        if (o.stack == e.stack && o.placement == e.placement) {
+          o.active = true;
+          break;
+        }
+    }
+  }
+  // Then drop every active flag after the first, per stack.
+  for (PanelEntry& e : entries_) {
+    if (e.stack == 0 || !e.active) continue;
+    bool first = true;
+    for (PanelEntry& o : entries_) {
+      if (o.stack != e.stack || o.placement != e.placement || !o.active) continue;
+      if (first) {
+        first = false;
+        continue;
+      }
+      o.active = false;
+    }
+  }
+}
+
+// An id no stack in `placement` is using. Scoped to the placement because that
+// is the scope of the relation; two docks may reuse the same number.
+int PanelLayout::freeStackId(PanelPlacement placement) const {
+  int next = 1;
+  bool clash = true;
+  while (clash) {
+    clash = false;
+    for (const PanelEntry& e : entries_)
+      if (e.placement == placement && e.stack == next) {
+        clash = true;
+        ++next;
+        break;
+      }
+  }
+  return next;
+}
+
+void PanelLayout::stackWith(ControlsSection moving, ControlsSection target) {
+  if (moving == target) return;
+  const size_t ti = indexOf(target);
+  if (ti >= entries_.size()) return;
+  const PanelPlacement placement = entries_[ti].placement;
+  // Tabs exist only where a slot does. A flyout draws one panel and a hidden
+  // panel draws none, so there is nothing for a tab strip to select between.
+  if (!panelPlacementIsDock(placement)) return;
+
+  int id = entries_[ti].stack;
+  if (id == 0) {
+    id = freeStackId(placement);
+    entries_[ti].stack = id;
+    entries_[ti].active = true;
+  }
+
+  const size_t mi = indexOf(moving);
+  if (mi >= entries_.size()) return;
+  if (entries_[mi].stack == id && entries_[mi].placement == placement) return;  // already mates
+
+  // Splice the mover in directly after the stack's LAST member, so the tab it
+  // becomes is the last tab -- and so the stack stays contiguous in
+  // `entries()`, which keeps the PANELS menu reading as the tab strip does.
+  PanelEntry mover = entries_[mi];
+  mover.placement = placement;
+  mover.stack = id;
+  entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(mi));
+
+  size_t insertAt = entries_.size();
+  for (size_t i = 0; i < entries_.size(); ++i)
+    if (entries_[i].placement == placement && entries_[i].stack == id) insertAt = i + 1;
+  entries_.insert(entries_.begin() + static_cast<std::ptrdiff_t>(insertAt), mover);
+
+  // The new tab is the visible one: a tab a person asked for and cannot see is
+  // the same failure as a panel that moves and disappears.
+  setActiveInStack(moving);
+  normaliseStacks();
+}
+
+void PanelLayout::unstack(ControlsSection section) {
+  const size_t i = indexOf(section);
+  if (i >= entries_.size() || entries_[i].stack == 0) return;
+  const PanelPlacement placement = entries_[i].placement;
+  const int id = entries_[i].stack;
+
+  PanelEntry leaving = entries_[i];
+  leaving.stack = 0;
+  leaving.active = true;
+  entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(i));
+
+  // Placed immediately after the stack it left, so a tab dragged out appears
+  // beside the tabs it was with rather than at the bottom of the dock.
+  size_t insertAt = entries_.size();
+  for (size_t j = 0; j < entries_.size(); ++j)
+    if (entries_[j].placement == placement && entries_[j].stack == id) insertAt = j + 1;
+  entries_.insert(entries_.begin() + static_cast<std::ptrdiff_t>(insertAt), leaving);
+
+  normaliseStacks();
+}
+
+void PanelLayout::setActiveInStack(ControlsSection section) {
+  const size_t i = indexOf(section);
+  if (i >= entries_.size() || entries_[i].stack == 0) return;
+  const int id = entries_[i].stack;
+  const PanelPlacement placement = entries_[i].placement;
+  for (PanelEntry& e : entries_)
+    if (e.stack == id && e.placement == placement) e.active = false;
+  entries_[i].active = true;
+}
+
 void PanelLayout::setPlacement(ControlsSection section, PanelPlacement placement) {
   // Appending to the end of the target placement is what "index one past the
   // last" means, and clamping in `setPlacementAt()` turns that into the last
@@ -370,6 +550,14 @@ void PanelLayout::setPlacementAt(ControlsSection section, PanelPlacement placeme
 
   PanelEntry moving = entries_[from];
   moving.placement = placement;
+  // **Moving a panel takes it out of its stack.** A stack is a set of panels
+  // sharing one slot, and a panel in another dock is not sharing that slot --
+  // keeping the id would make `slotsIn()` see a one-member stack in each
+  // place, which `normaliseStacks()` would then clear anyway. Doing it here
+  // rather than leaving it to the repair keeps the intent visible: this is
+  // "leave the stack", not an accident that gets tidied up.
+  moving.stack = 0;
+  moving.active = true;
   entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(from));
 
   // Walk what is left, counting only the entries already in the target
@@ -378,15 +566,23 @@ void PanelLayout::setPlacementAt(ControlsSection section, PanelPlacement placeme
   // between placements, which is not meaningful to the user but is what makes
   // `entries()` a stable list for the PANELS menu to draw.
   size_t seen = 0;
+  size_t insertAt = entries_.size();
   for (size_t i = 0; i < entries_.size(); ++i) {
     if (entries_[i].placement != placement) continue;
     if (seen == indexInPlacement) {
-      entries_.insert(entries_.begin() + static_cast<std::ptrdiff_t>(i), moving);
-      return;
+      insertAt = i;
+      break;
     }
     ++seen;
   }
-  entries_.push_back(moving);
+  entries_.insert(entries_.begin() + static_cast<std::ptrdiff_t>(insertAt), moving);
+  // **After the insert, on every path.** Taking a panel out of a stack can
+  // leave one member behind, and a stack of one is a panel -- so the dock the
+  // panel LEFT needs repairing just as much as the one it arrived in. An
+  // earlier version returned early from inside the loop and skipped this,
+  // which left a phantom one-member stack drawing a tab strip with a single
+  // tab in it.
+  normaliseStacks();
 }
 
 void PanelLayout::setWeight(ControlsSection section, float weight) {
@@ -548,13 +744,23 @@ void PanelLayout::parse(const std::string& text) {
       continue;
     }
 
-    // --- version 2: panel <key> <placement> <weight> <collapsed> ----------
+    // --- panel <key> <placement> <weight> <collapsed> [<stack> <active>] --
+    //
+    // **Which version a line is comes from its shape, not from the header.**
+    // Five fields is a version 2 line and means unstacked-and-active, which is
+    // exactly what it meant when it was written; seven is version 3. Anything
+    // else -- six, or eight -- is malformed and skipped, because a half-given
+    // pair says nothing about what the other half should be.
     if (tok1 != "panel") continue;
-    std::string keyTok, placeTok, weightTok, collapsedTok, extra;
-    if (!(ls >> keyTok) || !(ls >> placeTok) || !(ls >> weightTok) || !(ls >> collapsedTok) ||
-        (ls >> extra))
+    std::string keyTok, placeTok, weightTok, collapsedTok;
+    if (!(ls >> keyTok) || !(ls >> placeTok) || !(ls >> weightTok) || !(ls >> collapsedTok))
       continue;
+    std::string stackTok, activeTok, extra;
+    const bool hasStack = static_cast<bool>(ls >> stackTok);
+    if (hasStack && !(ls >> activeTok)) continue;  // six fields: malformed
+    if (ls >> extra) continue;                     // eight or more: malformed
     if (collapsedTok != "0" && collapsedTok != "1") continue;
+    if (hasStack && activeTok != "0" && activeTok != "1") continue;
     ControlsSection section;
     if (!controlsSectionFromKey(keyTok, &section)) continue;
     PanelPlacement placement;
@@ -563,6 +769,17 @@ void PanelLayout::parse(const std::string& text) {
     // A non-positive or non-finite weight is a malformed line, not a value to
     // clamp: see the header's fourth repair rule.
     if (!parseFinite(weightTok, &weight) || !(weight > 0.0f)) continue;
+    int stack = 0;
+    if (hasStack) {
+      // A stack id is an opaque positive integer. A negative one, or one that
+      // is not a number at all, is a malformed line rather than a value to
+      // clamp -- clamping it to 0 would silently split a stack, and clamping
+      // it to 1 would silently merge two.
+      char* end = nullptr;
+      const long v = std::strtol(stackTok.c_str(), &end, 10);
+      if (end == stackTok.c_str() || *end != '\0' || v < 0 || v > 1000000) continue;
+      stack = static_cast<int>(v);
+    }
     const size_t row = rowOf(section);
     if (row < seen.size() && seen[row]) continue;
     if (row < seen.size()) seen[row] = true;
@@ -571,6 +788,8 @@ void PanelLayout::parse(const std::string& text) {
     e.placement = placement;
     e.weight = std::max(kPanelMinWeight, weight);
     e.collapsed = (collapsedTok == "1");
+    e.stack = stack;
+    e.active = !hasStack || activeTok == "1";
     parsed.push_back(e);
   }
 
@@ -586,6 +805,10 @@ void PanelLayout::parse(const std::string& text) {
 
   entries_ = std::move(parsed);
   docks_ = docks;
+  // The stack repairs, applied to a parsed file exactly as they are to a drag
+  // -- a hand-edit can scatter a stack across two docks or leave it with no
+  // active member, and neither may reach the draw code.
+  normaliseStacks();
 }
 
 std::string PanelLayout::serialize() const {
@@ -613,7 +836,9 @@ std::string PanelLayout::serialize() const {
     out += " ";
     out += panelPlacementKey(e.placement);
     out += " " + num(e.weight);
-    out += e.collapsed ? " 1\n" : " 0\n";
+    out += e.collapsed ? " 1" : " 0";
+    out += " " + std::to_string(e.stack);
+    out += e.active ? " 1\n" : " 0\n";
   }
   return out;
 }

@@ -102,7 +102,8 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 > as titled grips; and a **flyout rail** sits at the canvas's right edge holding the seven
 > View/Simulation panels. All three are under golden coverage
 > (`toolbar`/`tools`/`flyout`/`layers`/`rail`) and asserted headlessly in `--selftest`'s
-> panel-layout section. §2c has the measurement behind each. The user's instruction:
+> panel-layout section. §2c has the measurement behind each, and covers the tab stacks and
+> the splitter rule that arrived with them. The user's instruction:
 > *"revamp the right panel to be dockable, not scrollable, I want to be able to put the
 > parts I want in and have them stay put, and put others in flyout mode or dock around the
 > app"*, and *"All four edges but move the brush setting and the tool pallet to dockable
@@ -302,6 +303,44 @@ splitter between two panels and only those two weights change, so every other pa
 the exact size it had -- which is what makes *"have them stay put"* true. Drag a dock's
 outer edge to resize the whole dock. Both persist.
 
+**A collapsed panel is ballast, not a wall.** A splitter drag reaches *past* the collapsed
+panels beside it to the nearest expanded one on each side; the fixed-size panels in between
+simply translate. Only a boundary with no expanded panel at all on one side is inert.
+
+This started as the opposite rule -- refuse to drag a boundary next to a collapsed panel,
+on the reasoning that a handle which does nothing is worse than no handle -- and that rule
+shipped. **In the default arrangement it disabled every splitter in the dock**, because the
+right dock alternates (COLOR expanded, two collapsed, LAYERS expanded, two collapsed) and
+not one of its five boundaries had an expanded panel on both sides. The user's report was
+the direct consequence: *"I found that the colorpanel was too big and I couldn't resize
+it."* `--selftest` now asserts the old rule's count (zero live) beside the new one's
+(three), so the regression cannot come back quietly.
+
+**Tab stacks.** Several panels can share one slot, with a tab strip across the top
+selecting between them -- *"tab support for putting multiple panels into a stack."* Drag a
+panel onto the middle of another and they stack; drag onto a slot's leading or trailing
+edge and it is inserted beside it instead. The drop preview says which: a wash over the
+whole slot for a stack, a solid 4px seam for an insert. Right-click a tab to unstack it,
+or drag it out.
+
+The model is an opaque `stack` id on each panel plus an `active` flag, both persisted --
+not a "tabbed with the previous entry" flag, because that would make the grouping a
+property of the *order*, and the order is exactly what a person reshuffles. Two invariants
+are repaired rather than trusted, on every mutation and every parse: **a stack has at least
+two members in one placement** (a stack of one is a panel, and a lone tab strip is chrome
+with nothing to select) and **exactly one member is active**. A hand-edited file cannot
+produce a slot the UI cannot draw.
+
+Three consequences worth stating because each is a decision:
+
+- **The slot's geometry is its FIRST member's**, not its active tab's -- so switching tabs
+  cannot resize the slot.
+- **A stack collapses as a unit**, and a collapsed stack still shows its tabs. Hiding them
+  would leave the other members with no way back, which is the same failure the grip rule
+  below was written to end.
+- **Tabs exist only where a slot does.** Stacking onto a flyout or a hidden panel is
+  refused rather than half-done: a flyout draws one panel and a hidden one draws none.
+
 **The honest limit**, stated the way the tool palette's is: when the minima plus grips
 plus splitters exceed the dock, no distribution of weight helps. `DockTiling::overflowed`
 says so, every panel sits at exactly its floor, and *that one case* lets the dock scroll --
@@ -372,10 +411,13 @@ resolves the pointer to a dock edge or, in the middle of the canvas, to the rail
 resolve by which edge is nearer *in proportion*, so a 2000x800 window behaves like a square
 one.
 
-**Persistence.** `panel-layout.txt`, version 2, in the same file the single-column build
-wrote. **Version 1 files still read**: `section <key> 1` means the right dock, `section
-<key> 0` means hidden, and the two panels version 1 could not name arrive at their default
-placements. That compatibility is not incidental -- this revision inserted two enumerators
+**Persistence.** `panel-layout.txt`, version 3, in the same file the single-column build
+wrote. **Version 2 and version 1 files still read.** A version 2 `panel` line is recognised
+by its field count -- five rather than seven -- and lands unstacked and active, which is
+exactly what it meant when nothing could be stacked; six or eight fields is malformed and
+skipped, because half of a `<stack> <active>` pair says nothing about the other half.
+Version 1's `section <key> 1` means the right dock, `section <key> 0` means hidden, and the
+two panels version 1 could not name arrive at their default placements. That compatibility is not incidental -- this revision inserted two enumerators
 at the *front* of `ControlsSection`, which under ordinal-keyed persistence would have
 silently turned every user's LAYERS panel into their SOLVER panel. `app/PanelLayout.hpp`
 carries the full format and the round-trip repair rules.

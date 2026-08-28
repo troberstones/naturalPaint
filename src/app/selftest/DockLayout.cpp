@@ -541,6 +541,164 @@ bool runDockLayoutTest() {
     check(!empty.isDock, "dock drop: an empty region targets nothing rather than a random edge");
   }
 
+  // ==========================================================================
+  // 11. Which panels a splitter drag redistributes between
+  // ==========================================================================
+  //
+  // **This section exists because of a shipped defect, and its first assertion
+  // is that defect stated directly.** The rule was "both immediate neighbours
+  // must be expanded", which in the default arrangement -- expanded, collapsed,
+  // collapsed, expanded, collapsed, collapsed -- left every one of the five
+  // boundaries inert. The user could not resize anything:
+  // *"I found that the colorpanel was too big and I couldn't resize it."*
+  {
+    // Exactly the default right dock's shape.
+    std::vector<DockSlotSpec> specs(6);
+    specs[0].collapsed = false;  // COLOR
+    specs[1].collapsed = true;   // BRUSH LIBRARY
+    specs[2].collapsed = true;   // BRUSH EDITOR
+    specs[3].collapsed = false;  // LAYERS
+    specs[4].collapsed = true;   // HISTORY
+    specs[5].collapsed = true;   // COMPS
+    const DockTiling t = dockTile(AtelierRect{0.0f, 0.0f, 320.0f, 640.0f}, DockSide::Right, specs);
+    check(t.slots.size() == 6 && t.splitters.size() == 5,
+          "dock drag: the default-shaped dock tiles into six slots and five boundaries");
+
+    // The old rule, written out here so the assertion below is measured
+    // against it rather than against a memory of it.
+    size_t liveUnderOldRule = 0;
+    for (size_t i = 0; i + 1 < t.slots.size(); ++i)
+      if (!t.slots[i].collapsed && !t.slots[i + 1].collapsed) ++liveUnderOldRule;
+    check(liveUnderOldRule == 0,
+          "dock drag: **under the both-neighbours-expanded rule NONE of them is draggable** -- "
+          "which is exactly what shipped, and what the user reported as being unable to resize "
+          "the COLOR panel");
+
+    size_t live = 0;
+    for (size_t i = 0; i + 1 < t.slots.size(); ++i)
+      if (dockDragPairFor(t.slots, i).live) ++live;
+    check(live == 3,
+          "dock drag: reaching past collapsed neighbours makes three of the five live -- every "
+          "boundary that has an expanded panel on both sides of it, however far away");
+
+    const DockDragPair first = dockDragPairFor(t.slots, 0);
+    check(first.live && first.indexA == 0 && first.indexB == 3,
+          "dock drag: **the boundary under COLOR resizes COLOR against LAYERS**, reaching past "
+          "the two collapsed panels between them -- a collapsed panel is ballast, not a wall");
+    const DockDragPair mid = dockDragPairFor(t.slots, 2);
+    check(mid.live && mid.indexA == 0 && mid.indexB == 3,
+          "dock drag: and so does every boundary between the same two, so a person can grab "
+          "whichever of those three lines they aimed at");
+
+    const DockDragPair below = dockDragPairFor(t.slots, 3);
+    check(!below.live,
+          "dock drag: the boundary under LAYERS is inert -- there is no expanded panel below it "
+          "at all, so nothing on that side can give or take");
+    const DockDragPair last = dockDragPairFor(t.slots, 4);
+    check(!last.live, "dock drag: and neither is the one below that, for the same reason");
+
+    check(!dockDragPairFor(t.slots, 5).live && !dockDragPairFor(t.slots, 99).live,
+          "dock drag: an index naming no boundary is not live rather than out of bounds");
+
+    // Two adjacent expanded panels still answer with themselves -- the new
+    // rule has to be a generalisation of the old one, not a replacement for it.
+    std::vector<DockSlotSpec> plain(3);
+    const DockTiling pt =
+        dockTile(AtelierRect{0.0f, 0.0f, 320.0f, 640.0f}, DockSide::Right, plain);
+    const DockDragPair p0 = dockDragPairFor(pt.slots, 0);
+    const DockDragPair p1 = dockDragPairFor(pt.slots, 1);
+    check(p0.live && p0.indexA == 0 && p0.indexB == 1 && p1.live && p1.indexA == 1 &&
+              p1.indexB == 2,
+          "dock drag: with nothing collapsed each boundary still names its own two neighbours "
+          "-- the reach-past rule generalises the old one rather than replacing it");
+
+    // An all-collapsed dock has nothing to redistribute anywhere, which is the
+    // one case where drawing an inert boundary is the honest answer.
+    std::vector<DockSlotSpec> allShut(4);
+    for (DockSlotSpec& sp : allShut) sp.collapsed = true;
+    const DockTiling ct =
+        dockTile(AtelierRect{0.0f, 0.0f, 320.0f, 640.0f}, DockSide::Right, allShut);
+    bool noneLive = true;
+    for (size_t i = 0; i + 1 < ct.slots.size(); ++i)
+      if (dockDragPairFor(ct.slots, i).live) noneLive = false;
+    check(noneLive,
+          "dock drag: a dock of entirely collapsed panels has no live boundary -- fixed sizes "
+          "all the way down, and a handle there really would do nothing");
+  }
+
+  // ==========================================================================
+  // 12. Dropping INSIDE a dock: beside a slot, or onto it
+  // ==========================================================================
+  {
+    std::vector<DockSlotSpec> specs(3);
+    specs[1].collapsed = true;
+    const AtelierRect dock{100.0f, 50.0f, 320.0f, 620.0f};
+    const DockTiling t = dockTile(dock, DockSide::Right, specs);
+    const float midX = dock.x + dock.w * 0.5f;
+
+    // Every point inside a slot resolves to that slot, and to exactly one mode.
+    bool everyPointInside = true;
+    bool modesTile = true;
+    for (size_t i = 0; i < t.slots.size(); ++i) {
+      const AtelierRect& r = t.slots[i].rect;
+      size_t before = 0, into = 0, after = 0;
+      for (int k = 0; k < 40; ++k) {
+        const float y = r.y + r.h * (static_cast<float>(k) + 0.5f) / 40.0f;
+        const DockSlotDrop d = dockSlotDropAt(t, DockSide::Right, midX, y);
+        if (!d.valid || d.slotIndex != i) everyPointInside = false;
+        if (d.mode == DockSlotDropMode::Before) ++before;
+        else if (d.mode == DockSlotDropMode::Into) ++into;
+        else ++after;
+      }
+      if (before + into + after != 40 || before == 0 || into == 0 || after == 0) modesTile = false;
+    }
+    check(everyPointInside,
+          "slot drop: every point inside a slot names that slot -- including the collapsed one, "
+          "which is one grip tall");
+    check(modesTile,
+          "slot drop: **and every slot has all three zones, the collapsed one included** -- a "
+          "collapsed panel is one grip tall and must still be droppable ONTO, which is what "
+          "makes the edge band a fraction rather than a fixed number of pixels");
+
+    // The edge zones are capped in pixels, not only as a fraction: the whole
+    // point is that a tall slot does not spend two thirds of itself on insert.
+    {
+      const AtelierRect& tall = t.slots[0].rect;
+      const DockSlotDrop atCap =
+          dockSlotDropAt(t, DockSide::Right, midX, tall.y + kDockSlotEdgeMaxPx + 1.0f);
+      check(tall.h * kDockSlotEdgeFraction > kDockSlotEdgeMaxPx &&
+                atCap.mode == DockSlotDropMode::Into,
+            "slot drop: **a tall slot's insert band is capped in pixels** -- a fraction alone "
+            "would give the harder gesture, stacking, the smaller target");
+    }
+
+    check(dockSlotDropAt(t, DockSide::Right, midX, t.slots[0].rect.y + 1.0f).mode ==
+              DockSlotDropMode::Before,
+          "slot drop: the top edge of a slot inserts before it");
+    check(dockSlotDropAt(t, DockSide::Right, midX, t.slots[0].rect.bottom() - 1.0f).mode ==
+              DockSlotDropMode::After,
+          "slot drop: and its bottom edge inserts after it");
+
+    check(!dockSlotDropAt(t, DockSide::Right, dock.x - 20.0f, dock.y + 20.0f).valid,
+          "slot drop: a point outside the dock names no slot, so the caller falls back to the "
+          "dock-level answer rather than being handed slot 0");
+
+    // A horizontal dock divides its WIDTH, so the three zones run along x.
+    std::vector<DockSlotSpec> row(2);
+    for (DockSlotSpec& sp : row) sp.minExtent = kPanelMinWidth;
+    const AtelierRect band{0.0f, 0.0f, 900.0f, 46.0f};
+    const DockTiling rt = dockTile(band, DockSide::Top, row);
+    const AtelierRect& r0 = rt.slots[0].rect;
+    check(dockSlotDropAt(rt, DockSide::Top, r0.x + 1.0f, 20.0f).mode ==
+                  DockSlotDropMode::Before &&
+              dockSlotDropAt(rt, DockSide::Top, r0.x + r0.w * 0.5f, 20.0f).mode ==
+                  DockSlotDropMode::Into &&
+              dockSlotDropAt(rt, DockSide::Top, r0.right() - 1.0f, 20.0f).mode ==
+                  DockSlotDropMode::After,
+          "slot drop: **in a top dock the three zones run along x**, because that is the axis "
+          "that dock divides -- the same rule, not a second one");
+  }
+
   std::printf("[selftest] dock layout %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

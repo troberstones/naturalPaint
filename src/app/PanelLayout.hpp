@@ -78,27 +78,49 @@
 // placement (`panelPlacementKey()` / `panelPlacementFromKey()`).
 //
 // ==========================================================================
-// File format, version 2
+// File format, version 3
 // ==========================================================================
 //
-//     naturalPaint-panel-layout 2
+//     naturalPaint-panel-layout 3
 //     dock left 52
 //     dock right 322
 //     dock top 46
 //     dock bottom 0
-//     panel tools left 1.000 0
-//     panel options top 1.000 0
-//     panel color right 1.000 0
-//     panel layers right 2.000 0
-//     panel history right 1.000 1
+//     panel tools left 1.000 0 0 1
+//     panel options top 1.000 0 0 1
+//     panel color right 1.000 0 1 1
+//     panel histogram right 1.000 0 1 0
+//     panel layers right 2.000 0 0 1
+//     panel history right 1.000 1 0 1
 //     ...
 //
 // `dock <side> <extent-px>` for each of the four; `panel <key> <placement>
-// <weight> <collapsed>` per section, **in the order the panels appear within
-// their own placement**. A panel's position in a dock is its position among
-// the other `panel` lines that name the same placement -- the file has no
-// explicit index, because an index is a second source of truth that a
-// hand-edit can put in conflict with the line order.
+// <weight> <collapsed> <stack> <active>` per section, **in the order the
+// panels appear within their own placement**. A panel's position in a dock is
+// its position among the other `panel` lines that name the same placement --
+// the file has no explicit index, because an index is a second source of truth
+// that a hand-edit can put in conflict with the line order.
+//
+// In the example above COLOR and HISTOGRAM share stack `1`, so they are one
+// slot with two tabs, and COLOR is the one on top.
+//
+// ==========================================================================
+// Reading a version 2 file
+// ==========================================================================
+//
+// Version 2 was the same grammar without the last two fields:
+//
+//     panel <key> <placement> <weight> <collapsed>
+//
+// **Those files still read**, and by the field count rather than by the
+// header's version number: a `panel` line with five fields is a version 2 line
+// and lands `stack 0, active 1`, which is precisely what it meant -- nothing
+// was stacked, because nothing could be. Seven fields is version 3; six or
+// eight is malformed and skipped, because half of a `<stack> <active>` pair
+// says nothing about what the other half should be. Reading by shape rather
+// than by declared version also means a file whose header says 3 but whose
+// lines are short still loads, which is the state a hand-edit most easily
+// produces.
 //
 // ==========================================================================
 // Reading a version 1 file
@@ -156,6 +178,18 @@
 //    above rebuilds the default anyway. And it has a real cost on a file that
 //    is *mostly* this format -- one damaged byte throwing away an arrangement
 //    the user built.
+//  * **Incoherent stack** -- repaired, not rejected, because a stack is a
+//    relationship between lines and no single line can be blamed for it:
+//      - a stack id shared by fewer than two panels **in the same placement**
+//        is cleared to 0, since a stack of one is a panel. This is also what
+//        happens to a stack whose members a hand-edit has scattered across two
+//        docks, and to one whose second member's line was malformed.
+//      - a stack with no active member makes its first member active; a stack
+//        with several keeps the first of them and clears the rest.
+//    Neither repair can fail, so no arrangement of `stack`/`active` values in
+//    a file can produce a slot the UI cannot draw -- which matters more here
+//    than for the other fields, because an unreachable tab is a panel the user
+//    has lost.
 //
 // A missing file is the ordinary first-run case, not an error: it is treated
 // exactly like an empty one, which -- every section "missing" -- resolves to
@@ -206,9 +240,49 @@ struct PanelEntry {
   // away and brought back returns to the size it had.
   float weight = 1.0f;
   bool collapsed = false;
+  // **Tab stacks.** Zero means this panel occupies a dock slot by itself. Any
+  // positive value groups it with every other panel in the SAME placement
+  // carrying the same value: they share one slot, a tab strip across the top
+  // selects between them, and only the active one's body is drawn.
+  //
+  // An id rather than a "tabbed with the previous entry" flag because a flag
+  // makes the grouping a property of the *order*, and the order is something
+  // the user reshuffles: dragging a tab out from the middle of a stack would
+  // silently re-form the two halves into one, or split a stack the user never
+  // touched. An id survives every reordering the UI can perform.
+  //
+  // The value itself is meaningless -- only equality matters -- and it is
+  // scoped to a placement, so the same id in two docks is two unrelated
+  // stacks. `PanelLayout` normalises after every mutation: a stack that drops
+  // below two members loses its id, because a "stack" of one is a panel.
+  int stack = 0;
+  // The visible tab of its stack. Exactly one member of each stack has this
+  // set, which `PanelLayout` repairs rather than trusts. Meaningless, and
+  // left true, for an unstacked panel.
+  bool active = true;
 };
 
-inline constexpr int kPanelLayoutFileVersion = 2;
+// The geometry of a slot -- its weight and its collapsed state -- is its FIRST
+// member's, not its active tab's. Two reasons, and they point the same way:
+// switching tabs must not resize the slot, and a stack collapses as a unit
+// (hiding the tab strip along with the body would leave no way back to the
+// other members).
+//
+// One dock slot, which is either a lone panel or a tab stack.
+struct PanelSlot {
+  // At least one, in tab order.
+  std::vector<ControlsSection> members;
+  // Index into `members` of the tab whose body is drawn. Always in range.
+  size_t activeIndex = 0;
+  bool stacked() const noexcept { return members.size() > 1; }
+  ControlsSection leader() const noexcept { return members.front(); }
+  ControlsSection activeSection() const noexcept { return members[activeIndex]; }
+};
+
+// Version 3 adds the two `PanelEntry` fields above. Version 2 files still
+// read: a `panel` line with six tokens is a version 2 line, and lands
+// unstacked and active, which is exactly what it meant.
+inline constexpr int kPanelLayoutFileVersion = 3;
 inline constexpr const char* kPanelLayoutFileHeader = "naturalPaint-panel-layout";
 
 // The default weight, and the floor a parsed weight has to clear.
@@ -298,6 +372,15 @@ class PanelLayout {
   // from.
   std::vector<ControlsSection> sectionsIn(PanelPlacement placement) const;
 
+  // The same panels grouped into SLOTS -- which is what a dock actually
+  // divides, now that several panels can share one. A slot's position in the
+  // returned order is the position of its first member in `sectionsIn()`, so
+  // stacking two panels does not reshuffle the ones around them.
+  //
+  // This, not `sectionsIn()`, is what `ui/DockLayout`'s specs are built from:
+  // a stack asks the dock for one slot, not one per tab.
+  std::vector<PanelSlot> slotsIn(PanelPlacement placement) const;
+
   // The index of `section` in `entries()`. Always found -- the invariant
   // guarantees it -- so this returns `entries_.size()` only if that invariant
   // has somehow been broken, which is a state `--selftest` treats as a bug,
@@ -321,6 +404,35 @@ class PanelLayout {
 
   void setWeight(ControlsSection section, float weight);
   void setCollapsed(ControlsSection section, bool collapsed);
+
+  // --- tab stacks ---------------------------------------------------------
+
+  // The stack id of `section`, or 0 when it stands alone.
+  int stackOf(ControlsSection section) const noexcept;
+  // The slot `section` belongs to, whether or not it is stacked.
+  PanelSlot slotOf(ControlsSection section) const;
+
+  // Puts `moving` into `target`'s slot as a new tab, appended after the
+  // existing members, moving it to `target`'s placement if it was elsewhere.
+  //
+  // Creates the stack when `target` had none. A no-op when the two are already
+  // slot-mates, when they are the same panel, or when `target`'s placement is
+  // not a dock -- **a flyout shows one panel, and a hidden panel has no slot
+  // to share**, so tabs exist only where a slot does.
+  //
+  // The moved panel becomes the ACTIVE tab: a tab you asked for and cannot see
+  // is the same failure as a panel that moves and disappears.
+  void stackWith(ControlsSection moving, ControlsSection target);
+
+  // Takes `section` out of its stack into a slot of its own, immediately after
+  // the stack it left. A no-op if it was not stacked. If it was the active
+  // tab, the stack's first remaining member becomes active.
+  void unstack(ControlsSection section);
+
+  // Makes `section` the visible tab of its stack, without reordering the tabs
+  // -- a tab strip that reshuffles itself when clicked is one nobody can aim
+  // at twice. A no-op for an unstacked panel.
+  void setActiveInStack(ControlsSection section);
 
   // Swaps `section` with its neighbour one position earlier/later **within its
   // own placement**. A no-op at the ends of that placement -- there is no
@@ -377,6 +489,14 @@ class PanelLayout {
   bool saveToFile(const std::string& path, std::string* errorOut) const;
 
  private:
+  // Restores the two stack invariants -- at least two members per stack, and
+  // exactly one active member per stack -- after any mutation and after any
+  // parse. See the header's round-trip repair rules; a drag can reach the same
+  // incoherent states a hand-edited file can, so both go through this.
+  void normaliseStacks();
+  // The lowest stack id unused in `placement`.
+  int freeStackId(PanelPlacement placement) const;
+
   std::vector<PanelEntry> entries_;
   PanelDockExtents docks_;
 };

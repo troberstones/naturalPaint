@@ -9087,34 +9087,212 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
   return body;
 }
 
+// One dock's tiling, from the model.
+//
+// **Shared rather than computed inside `drawDock()`**, because the tear-off
+// drop handler needs exactly the same rectangles: a pointer inside a dock has
+// to resolve to a slot (`dockSlotDropAt`), and it can only do that against the
+// tiling that dock actually drew. Recomputed rather than cached in `AppState`
+// -- it is a dozen floats over at most fifteen slots, and a cache would be a
+// second copy of the layout that could disagree with the first.
+DockTiling dockTilingFor(const AppState& st, PanelPlacement placement, const AtelierRect& rect) {
+  const DockSide side = dockSideFor(placement);
+  const bool vertical = dockStacksVertically(side);
+  std::vector<DockSlotSpec> specs;
+  for (const PanelSlot& slot : st.panels.slotsIn(placement)) {
+    // **A slot's geometry is its FIRST member's**, not its active tab's -- see
+    // `PanelSlot` in app/PanelLayout.hpp. Switching tabs must not resize the
+    // slot, and a stack collapses as a unit.
+    const ControlsSection lead = slot.leader();
+    DockSlotSpec spec;
+    // A section whose subject is absent still holds its place in the layout
+    // but takes no space this frame: it collapses to its grip, so the user can
+    // see it is there and see that it has nothing to say, rather than having
+    // the dock silently reflow around a panel that vanished. A STACK stays
+    // expanded while any of its members has a subject -- collapsing a shared
+    // slot because the tab on top went quiet would take the others down with
+    // it.
+    bool anySubject = false;
+    for (const ControlsSection m : slot.members)
+      if (panelHasSubject(st, m)) anySubject = true;
+    spec.collapsed = st.panels.isCollapsed(lead) || !anySubject;
+    spec.weight = st.panels.weightOf(lead);
+    spec.minExtent = vertical ? kPanelMinHeight : kPanelMinWidth;
+    spec.headerExtent = kPanelHeaderExtent;
+    specs.push_back(spec);
+  }
+  return dockTile(rect, side, specs);
+}
+
+// A TAB STACK's grip: the strip of tabs across the top of a shared slot.
+//
+// The user's instruction: *"tab support for putting multiple panels into a
+// stack."* `app/PanelLayout` owns which panels share a slot and which of them
+// is on top; `ui/DockLayout` gives the slot its rectangle; this draws the one
+// row that lets a person switch between them, and returns the body rect the
+// ACTIVE tab's panel gets.
+//
+// **A stacked slot always gets a bar, even where a lone panel would get a
+// rail.** `panelGripFor()`'s rail shape saves height by spending width, which
+// is right for a single panel in a 46 px top dock -- but a rail can only carry
+// one panel's affordances, and the other tabs would then have no way to be
+// reached at all. A stack in a slot too short for a full bar gets a clamped
+// one instead: cramped is recoverable, unreachable is not.
+AtelierRect drawStackGrip(AppState& st, const PanelSlot& slot, const AtelierRect& rect,
+                          bool collapsed, bool* layoutChanged) {
+  const float gripH = std::min(kPanelHeaderExtent, std::max(1.0f, rect.h));
+  const AtelierRect grip{rect.x, rect.y, rect.w, gripH};
+  const AtelierRect body{rect.x, rect.y + gripH, rect.w, std::max(0.0f, rect.h - gripH)};
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(ImVec2(grip.x, grip.y), ImVec2(grip.right(), grip.bottom()),
+                    atelierToken(kChromeMid));
+
+  // --- the collapse triangle, which acts on the WHOLE stack ---------------
+  //
+  // On the stack, not on the active tab: collapsing hides the bodies and keeps
+  // the tab strip, so the other members stay reachable. Collapsing only the
+  // visible one would leave a slot showing tabs for panels whose state the
+  // user cannot see or change, which is a worse answer than either extreme.
+  constexpr float kTriW = 20.0f;
+  const float cy = grip.y + grip.h * 0.5f;
+  ImGui::SetCursorScreenPos(ImVec2(grip.x, grip.y));
+  ImGui::PushID(9000);
+  const bool triClicked =
+      ImGui::InvisibleButton("##stackfold", ImVec2(kTriW, std::max(1.0f, grip.h)));
+  const bool triHovered = ImGui::IsItemHovered();
+  if (triClicked) {
+    st.panels.setCollapsed(slot.leader(), !collapsed);
+    *layoutChanged = true;
+  }
+  if (triHovered) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    ImGui::SetTooltip("%s this stack of %d panels", collapsed ? "Expand" : "Collapse",
+                      static_cast<int>(slot.members.size()));
+  }
+  ImGui::PopID();
+  {
+    const uint32_t ink = atelierToken(triHovered ? kTextPrimary : kTextSecondary);
+    const float tx = grip.x + 7.0f;
+    if (collapsed)
+      dl->AddTriangleFilled(ImVec2(tx, cy - 4.0f), ImVec2(tx, cy + 4.0f), ImVec2(tx + 6.0f, cy),
+                            ink);
+    else
+      dl->AddTriangleFilled(ImVec2(tx - 1.0f, cy - 2.0f), ImVec2(tx + 9.0f, cy - 2.0f),
+                            ImVec2(tx + 4.0f, cy + 4.0f), ink);
+  }
+
+  // --- the tabs -----------------------------------------------------------
+  const float tabsX = grip.x + kTriW;
+  const float tabsW = std::max(0.0f, grip.right() - tabsX);
+  const size_t n = slot.members.size();
+  const float tabW = tabsW / static_cast<float>(n);
+
+  for (size_t i = 0; i < n; ++i) {
+    const ControlsSection section = slot.members[i];
+    const ControlsSectionSpec& spec = controlsSectionSpec(section);
+    const bool isActive = i == slot.activeIndex;
+    const AtelierRect tab{tabsX + static_cast<float>(i) * tabW, grip.y, tabW, grip.h};
+
+    ImGui::SetCursorScreenPos(ImVec2(tab.x, tab.y));
+    ImGui::PushID(static_cast<int>(section));
+    const bool clicked =
+        ImGui::InvisibleButton("##tab", ImVec2(std::max(1.0f, tab.w), std::max(1.0f, tab.h)));
+    const bool hovered = ImGui::IsItemHovered();
+
+    // A tab tears off exactly like a lone panel's grip does -- same threshold,
+    // same drag state, same drop handler. That is the point: a tab is not a
+    // different kind of thing from a panel, it is a panel sharing a slot.
+    if (ImGui::IsItemActive() && !st.panelDragActive &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left, kPanelDragThresholdPx)) {
+      st.panelDragActive = true;
+      st.panelDragSection = section;
+    }
+    if (clicked && !st.panelDragActive && !isActive) {
+      st.panels.setActiveInStack(section);
+      *layoutChanged = true;
+    }
+    if (hovered || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##tabctx");
+    if (ImGui::BeginPopup("##tabctx")) {
+      pushAtelierMono();
+      ImGui::TextDisabled("%s", spec.title);
+      popAtelierMono();
+      ImGui::Separator();
+      if (ImGui::MenuItem("Unstack into its own slot")) {
+        st.panels.unstack(section);
+        *layoutChanged = true;
+      }
+      ImGui::Separator();
+      if (drawPanelPlacementItems(st, section)) *layoutChanged = true;
+      ImGui::EndPopup();
+    }
+    ImGui::PopID();
+
+    // The active tab is drawn in the dock's own base tone so it reads as
+    // continuous with the body below it, and carries a 2 px accent underline
+    // -- the same rule the tab strip over the canvas uses for documents.
+    if (isActive)
+      dl->AddRectFilled(ImVec2(tab.x, tab.y), ImVec2(tab.right(), tab.bottom()),
+                        atelierToken(kChromeBase));
+    // An inactive tab gets no hover FILL, deliberately: the theme has no
+    // hover-surface token, and inventing a shade here would be a fourth chrome
+    // grey that nothing else in the build uses. Hover brightens the label
+    // instead, which is exactly what `drawPanelGrip()` already does with its
+    // own `ink`.
+    if (isActive && !collapsed)
+      dl->AddRectFilled(ImVec2(tab.x, tab.bottom() - kRuleThickness),
+                        ImVec2(tab.right(), tab.bottom()), atelierToken(kAccent));
+    // A hairline between tabs so two inactive ones do not read as one strip.
+    if (i + 1 < n)
+      dl->AddRectFilled(ImVec2(tab.right() - 1.0f, tab.y + 4.0f),
+                        ImVec2(tab.right(), tab.bottom() - 4.0f), atelierToken(kRule));
+
+    // **The full title if it fits, otherwise the short unique label** --
+    // `controlsSectionShortLabel()` among this stack's own members, which is
+    // the same function and the same guarantee the flyout rail uses. Never a
+    // clipped word: app/ControlsLayout.hpp section 2's rule, which a tab strip
+    // is the easiest place in this chrome to break, because tab width falls as
+    // fast as members are added.
+    pushAtelierMono();
+    std::string label = spec.title;
+    if (ImGui::CalcTextSize(label.c_str()).x > tab.w - 6.0f)
+      label = controlsSectionShortLabel(section, slot.members);
+    const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+    if (ts.x <= tab.w - 2.0f)
+      dl->AddText(ImVec2(tab.x + (tab.w - ts.x) * 0.5f, cy - ts.y * 0.5f),
+                  atelierToken((isActive || hovered) ? kTextPrimary : kTextSecondary),
+                  label.c_str());
+    popAtelierMono();
+
+    if (hovered && !st.panelDragActive)
+      ImGui::SetTooltip("%s -- tab %d of %d\nClick to show it, drag to move it, right-click "
+                        "for the menu",
+                        spec.title, static_cast<int>(i + 1), static_cast<int>(n));
+  }
+  return body;
+}
+
+// One slot's grip, whichever kind it is. The dock's draw loop calls only this.
+AtelierRect drawSlotGrip(AppState& st, const PanelSlot& slot, const AtelierRect& rect,
+                         bool collapsed, bool* layoutChanged) {
+  if (slot.stacked()) return drawStackGrip(st, slot, rect, collapsed, layoutChanged);
+  return drawPanelGrip(st, slot.leader(), rect, collapsed, layoutChanged);
+}
+
 // Draw one dock: its background, its panels in their slots, and the splitters
 // between them.
 void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRect,
               std::unique_ptr<PaintSim>& sim, GpuContext& gpu, const MixboxLut& lut,
               bool* layoutChanged) {
   if (dockRect.empty()) return;
-  const std::vector<ControlsSection> sections = st.panels.sectionsIn(placement);
-  if (sections.empty()) return;
+  const std::vector<PanelSlot> slots = st.panels.slotsIn(placement);
+  if (slots.empty()) return;
 
   const DockSide side = dockSideFor(placement);
   const bool vertical = dockStacksVertically(side);
-
-  // Build the slot specs. A section whose subject is absent still holds its
-  // place in the layout but takes no space this frame -- it is collapsed to a
-  // header, so the user can see it is there and see that it has nothing to
-  // say, rather than having the dock silently reflow around a panel that
-  // vanished.
-  std::vector<DockSlotSpec> specs;
-  specs.reserve(sections.size());
-  for (const ControlsSection s : sections) {
-    DockSlotSpec spec;
-    spec.collapsed = st.panels.isCollapsed(s) || !panelHasSubject(st, s);
-    spec.weight = st.panels.weightOf(s);
-    spec.minExtent = vertical ? kPanelMinHeight : kPanelMinWidth;
-    spec.headerExtent = kPanelHeaderExtent;
-    specs.push_back(spec);
-  }
-  const DockTiling tiling = dockTile(dockRect, side, specs);
+  const DockTiling tiling = dockTilingFor(st, placement, dockRect);
 
   // The dock's own window: background, splitters, and the panels' children.
   //
@@ -9142,17 +9320,24 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
     return;
   }
 
-  for (size_t i = 0; i < sections.size() && i < tiling.slots.size(); ++i) {
-    const ControlsSection section = sections[i];
+  for (size_t i = 0; i < slots.size() && i < tiling.slots.size(); ++i) {
+    const PanelSlot& panelSlot = slots[i];
+    // The tab whose body is drawn. For a lone panel that is the panel.
+    const ControlsSection section = panelSlot.activeSection();
     const DockSlot& slot = tiling.slots[i];
     const AtelierRect r = slot.rect;
 
     ImGui::SetCursorScreenPos(ImVec2(r.x, r.y));
-    ImGui::PushID(static_cast<int>(section));
+    // Keyed on the SLOT's leader, not on the active tab: an ImGui id that
+    // changes when a tab is switched would hand the body child a new identity
+    // every time, discarding its scroll position -- so switching to a tab and
+    // back would silently scroll the first one to the top.
+    ImGui::PushID(static_cast<int>(panelSlot.leader()));
 
     // Every panel has a grip, always -- see `drawPanelGrip()` for the bug that
-    // rule replaced. What comes back is the room left for the body.
-    const AtelierRect body = drawPanelGrip(st, section, r, slot.collapsed, layoutChanged);
+    // rule replaced; a stack gets a tab strip instead. What comes back is the
+    // room left for the body.
+    const AtelierRect body = drawSlotGrip(st, panelSlot, r, slot.collapsed, layoutChanged);
 
     if (!slot.collapsed && body.h > 0.0f && body.w > 0.0f) {
       ImGui::SetCursorScreenPos(ImVec2(body.x, body.y));
@@ -9217,14 +9402,15 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
   // mouse from is a splitter that intermittently refuses to drag.
   for (size_t i = 0; i < tiling.splitters.size(); ++i) {
     const AtelierRect& sp = tiling.splitters[i];
-    // **A boundary that cannot move is not drawn as a handle.** A collapsed
-    // panel is a fixed size, so the splitter beside one has nothing to
-    // redistribute -- and a splitter that highlights, shows a resize cursor
-    // and then does nothing when dragged is the "handles didn't behave
-    // correctly" this pass is fixing. Such a boundary draws as the plain 2 px
-    // rule it really is and takes no input at all.
-    const bool live = i + 1 < tiling.slots.size() && !tiling.slots[i].collapsed &&
-                      !tiling.slots[i + 1].collapsed;
+    // **Which panels this boundary redistributes between**, which is not
+    // necessarily the two it sits between -- see `dockDragPairFor()` for the
+    // rule and for the defect that produced it. A collapsed neighbour is
+    // ballast, not a wall: the drag reaches past it to the nearest expanded
+    // panel, and only a side with no expanded panel at all makes the boundary
+    // inert. The previous rule -- both immediate neighbours expanded -- left
+    // the DEFAULT dock with zero draggable splitters.
+    const DockDragPair pair = dockDragPairFor(tiling.slots, i);
+    const bool live = pair.live;
     ImGui::SetCursorScreenPos(ImVec2(sp.x, sp.y));
     ImGui::PushID(static_cast<int>(1000 + i));
     if (live)
@@ -9246,15 +9432,23 @@ void drawDock(AppState& st, PanelPlacement placement, const AtelierRect& dockRec
       dl->AddRectFilled(ImVec2(rx, sp.y), ImVec2(rx + kRuleThickness, sp.y + sp.h), col);
     }
 
-    if (live && ImGui::IsItemActive()) {
+    // `pair`'s indices are into `tiling.slots`, which `dockTilingFor()` builds
+    // one-for-one from `slots` -- so the two are parallel and either index is
+    // valid in both. Checked rather than assumed because the consequence of
+    // that ceasing to be true is an out-of-bounds read, and the check costs a
+    // comparison on a frame where the mouse is down.
+    const bool pairInRange = pair.indexA < slots.size() && pair.indexB < slots.size();
+    if (live && pairInRange && ImGui::IsItemActive()) {
       const float delta = vertical ? ImGui::GetIO().MouseDelta.y : ImGui::GetIO().MouseDelta.x;
       if (delta != 0.0f) {
-        const AtelierRect& ra = tiling.slots[i].rect;
-        const AtelierRect& rb = tiling.slots[i + 1].rect;
+        const AtelierRect& ra = tiling.slots[pair.indexA].rect;
+        const AtelierRect& rb = tiling.slots[pair.indexB].rect;
         const float ea = vertical ? ra.h : ra.w;
         const float eb = vertical ? rb.h : rb.w;
-        const ControlsSection sa = sections[i];
-        const ControlsSection sb = sections[i + 1];
+        // The LEADER carries the slot's weight, so it is the leader's weight a
+        // drag rewrites -- the same rule `dockTilingFor()` reads it by.
+        const ControlsSection sa = slots[pair.indexA].leader();
+        const ControlsSection sb = slots[pair.indexB].leader();
         const DockDragResult d =
             dockApplyDrag(ea, eb, st.panels.weightOf(sa), st.panels.weightOf(sb),
                           vertical ? kPanelMinHeight : kPanelMinWidth, delta);
@@ -9849,6 +10043,19 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   if (!st.panelsLoaded) {
     st.panelsLoaded = true;
     st.panels.loadFromFile(defaultPanelLayoutFilePath(), nullptr);
+    // --panel-stack-demo, applied AFTER the load and never written back --
+    // see `AppState::panelStackDemo`. Two stacks, deliberately: an expanded
+    // one whose tab strip is the thing being photographed, and a collapsed one
+    // beside it, because "a collapsed stack still shows its tabs" is the rule
+    // that keeps the other members reachable and is the one most likely to be
+    // broken by a later change to the grip code.
+    if (st.panelStackDemo) {
+      st.panels.stackWith(ControlsSection::Histogram, ControlsSection::Color);
+      st.panels.stackWith(ControlsSection::Grade, ControlsSection::Color);
+      st.panels.setActiveInStack(ControlsSection::Color);
+      st.panels.stackWith(ControlsSection::Comps, ControlsSection::History);
+      st.panels.setCollapsed(ControlsSection::History, true);
+    }
   }
   // `effectiveDockExtents()`, not `dockExtents()`: a dock holding no panels is
   // not on screen at all, whatever extent it remembers. That rule is the
@@ -11940,22 +12147,103 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // frame's geometry rather than last frame's.
   if (st.panelDragActive) {
     const ImVec2 mouse = ImGui::GetIO().MousePos;
+
+    // **Two questions, in order.** A pointer already inside a dock is asking a
+    // finer one than "which edge": which SLOT, and beside it or onto it --
+    // because dropping onto a slot is how a tab stack is made, and stacking
+    // has to be the same gesture as every other move or nobody will find it.
+    // Only when the pointer is over no dock at all does the coarse,
+    // canvas-relative answer apply.
+    PanelPlacement hitDock = PanelPlacement::Right;
+    AtelierRect hitRect;
+    bool overDock = false;
+    {
+      const std::pair<PanelPlacement, AtelierRect> docks[] = {
+          {PanelPlacement::Top, bands.topDock},
+          {PanelPlacement::Left, bands.leftDock},
+          {PanelPlacement::Right, bands.rightDock},
+          {PanelPlacement::Bottom, bands.bottomDock},
+      };
+      for (const std::pair<PanelPlacement, AtelierRect>& d : docks) {
+        const AtelierRect& r = d.second;
+        if (r.empty()) continue;
+        if (mouse.x < r.x || mouse.x >= r.right() || mouse.y < r.y || mouse.y >= r.bottom())
+          continue;
+        hitDock = d.first;
+        hitRect = r;
+        overDock = true;
+        break;
+      }
+    }
+
+    DockSlotDrop slotDrop;
+    std::vector<PanelSlot> hitSlots;
+    if (overDock) {
+      hitSlots = st.panels.slotsIn(hitDock);
+      const DockTiling t = dockTilingFor(st, hitDock, hitRect);
+      slotDrop = dockSlotDropAt(t, dockSideFor(hitDock), mouse.x, mouse.y);
+      // A slot the drag STARTED in is not a target for itself: dropping a lone
+      // panel onto its own slot would ask `stackWith()` to stack a panel with
+      // itself, and dropping a tab onto its own stack would be a no-op that
+      // still looked like it did something.
+      if (slotDrop.valid && slotDrop.slotIndex < hitSlots.size()) {
+        const PanelSlot& s = hitSlots[slotDrop.slotIndex];
+        bool ownSlot = false;
+        for (const ControlsSection m : s.members)
+          if (m == st.panelDragSection) ownSlot = true;
+        if (ownSlot && slotDrop.mode == DockSlotDropMode::Into) slotDrop.valid = false;
+      }
+    }
+
     const DockDropTarget target = dockDropTargetAt(bands.canvas, mouse.x, mouse.y);
     const PanelPlacement dropPlacement =
-        target.isDock ? placementForDockSide(target.side) : PanelPlacement::Flyout;
+        overDock ? hitDock
+                 : (target.isDock ? placementForDockSide(target.side) : PanelPlacement::Flyout);
 
-    // The preview strip: where the panel would land. For a dock that already
-    // exists this is that dock; for one that does not, it is the edge band of
-    // the canvas the drop would carve it out of -- which is honest about the
-    // fact that a new dock costs the canvas some room.
-    const AtelierRect preview = panelDropPreviewRect(bands, target);
+    // The preview strip: where the panel would land. Inside a dock that is the
+    // slot itself for a stack, or the 4 px seam it would be inserted at; over
+    // the canvas it is the whole dock, and for a dock that does not exist yet,
+    // the edge band the drop would carve out of the canvas -- which is honest
+    // about the fact that a new dock costs the canvas some room.
+    AtelierRect preview;
+    bool previewIsSeam = false;
+    if (overDock && slotDrop.valid) {
+      const DockTiling t = dockTilingFor(st, hitDock, hitRect);
+      const AtelierRect& sr = t.slots[slotDrop.slotIndex].rect;
+      const bool vert = dockStacksVertically(dockSideFor(hitDock));
+      if (slotDrop.mode == DockSlotDropMode::Into) {
+        preview = sr;
+      } else {
+        previewIsSeam = true;
+        const bool before = slotDrop.mode == DockSlotDropMode::Before;
+        constexpr float kSeam = 4.0f;
+        preview = vert ? AtelierRect{sr.x, before ? sr.y : sr.bottom() - kSeam, sr.w, kSeam}
+                       : AtelierRect{before ? sr.x : sr.right() - kSeam, sr.y, kSeam, sr.h};
+      }
+    } else if (overDock) {
+      preview = hitRect;
+    } else {
+      preview = panelDropPreviewRect(bands, target);
+    }
+
     ImDrawList* fg = ImGui::GetForegroundDrawList();
     if (!preview.empty()) {
       const ImVec4 a = ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent));
-      fg->AddRectFilled(ImVec2(preview.x, preview.y), ImVec2(preview.right(), preview.bottom()),
-                        IM_COL32((int)(a.x * 255), (int)(a.y * 255), (int)(a.z * 255), 56));
-      fg->AddRect(ImVec2(preview.x, preview.y), ImVec2(preview.right(), preview.bottom()),
-                  atelierToken(kAccent), 0.0f, 0, kRuleThickness);
+      // **A seam is drawn solid, an area is drawn as a wash.** They mean
+      // different things -- "inserted here" versus "landing in this region" --
+      // and a 4 px strip filled at the same 22% alpha as a whole dock is
+      // invisible, which would leave the two insert modes looking identical to
+      // the one that stacks.
+      if (previewIsSeam) {
+        fg->AddRectFilled(ImVec2(preview.x, preview.y),
+                          ImVec2(preview.right(), preview.bottom()), atelierToken(kAccent));
+      } else {
+        fg->AddRectFilled(ImVec2(preview.x, preview.y),
+                          ImVec2(preview.right(), preview.bottom()),
+                          IM_COL32((int)(a.x * 255), (int)(a.y * 255), (int)(a.z * 255), 56));
+        fg->AddRect(ImVec2(preview.x, preview.y), ImVec2(preview.right(), preview.bottom()),
+                    atelierToken(kAccent), 0.0f, 0, kRuleThickness);
+      }
     }
     // The panel's name at the pointer, so a drag over a busy window still says
     // WHAT is being moved and not only where it would go.
@@ -11972,15 +12260,36 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-      if (dropPlacement != st.panels.placementOf(st.panelDragSection)) {
-        st.panels.setPlacement(st.panelDragSection, dropPlacement);
+      const ControlsSection moving = st.panelDragSection;
+      if (overDock && slotDrop.valid && slotDrop.slotIndex < hitSlots.size()) {
+        const PanelSlot& onto = hitSlots[slotDrop.slotIndex];
+        if (slotDrop.mode == DockSlotDropMode::Into) {
+          // **The stack gesture.** Everything about which id, which order and
+          // which tab ends up visible is `PanelLayout`'s; this only says which
+          // two panels the pointer named.
+          st.panels.stackWith(moving, onto.leader());
+        } else {
+          // Beside it. `setPlacementAt` counts PANELS, and what the pointer
+          // named is a SLOT, so the index is converted through the slot list
+          // rather than assumed equal -- they are only the same number when
+          // nothing in the dock is stacked.
+          size_t panelIndex = 0;
+          for (size_t k = 0; k < slotDrop.slotIndex && k < hitSlots.size(); ++k)
+            panelIndex += hitSlots[k].members.size();
+          if (slotDrop.mode == DockSlotDropMode::After)
+            panelIndex += onto.members.size();
+          st.panels.setPlacementAt(moving, hitDock, panelIndex);
+        }
+        panelLayoutChanged = true;
+      } else if (dropPlacement != st.panels.placementOf(moving)) {
+        st.panels.setPlacement(moving, dropPlacement);
         // A panel dragged onto the rail opens straight away -- a flyout you
         // have to hunt for on the rail after asking for it is a move that
         // looks like a disappearance, which is the failure this whole pass is
         // correcting.
         if (dropPlacement == PanelPlacement::Flyout) {
           st.flyoutOpen = true;
-          st.flyoutSection = st.panelDragSection;
+          st.flyoutSection = moving;
         }
         panelLayoutChanged = true;
       }

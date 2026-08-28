@@ -199,6 +199,30 @@ DockDragResult dockApplyDrag(float extentA, float extentB, float weightA, float 
   return r;
 }
 
+DockDragPair dockDragPairFor(const std::vector<DockSlot>& slots, size_t splitterIndex) {
+  DockDragPair out;
+  // A splitter sits between slot `i` and slot `i+1`, so an index past the
+  // second-to-last slot names no boundary at all.
+  if (splitterIndex + 1 >= slots.size()) return out;
+
+  bool foundA = false;
+  for (size_t i = splitterIndex + 1; i-- > 0;) {
+    if (slots[i].collapsed) continue;
+    out.indexA = i;
+    foundA = true;
+    break;
+  }
+  bool foundB = false;
+  for (size_t i = splitterIndex + 1; i < slots.size(); ++i) {
+    if (slots[i].collapsed) continue;
+    out.indexB = i;
+    foundB = true;
+    break;
+  }
+  out.live = foundA && foundB;
+  return out;
+}
+
 DockDropTarget dockDropTargetAt(const AtelierRect& region, float x, float y) {
   DockDropTarget out;
   if (region.empty()) return out;
@@ -221,6 +245,40 @@ DockDropTarget dockDropTargetAt(const AtelierRect& region, float x, float y) {
   else if (nearest == dRight)  out.side = DockSide::Right;
   else if (nearest == dTop)    out.side = DockSide::Top;
   else                         out.side = DockSide::Bottom;
+  return out;
+}
+
+DockSlotDrop dockSlotDropAt(const DockTiling& tiling, DockSide side, float x, float y) {
+  DockSlotDrop out;
+  const bool vertical = dockStacksVertically(side);
+
+  for (size_t i = 0; i < tiling.slots.size(); ++i) {
+    const AtelierRect& r = tiling.slots[i].rect;
+    if (r.empty()) continue;
+    if (x < r.x || x >= r.right() || y < r.y || y >= r.bottom()) continue;
+
+    const float start = vertical ? r.y : r.x;
+    const float extent = vertical ? r.h : r.w;
+    const float pos = (vertical ? y : x) - start;
+
+    // The fraction is what keeps a middle band on a SHORT slot -- a collapsed
+    // one is a grip tall and nothing else, and it still has to be droppable
+    // onto -- and the pixel cap is what keeps the insert bands from swallowing
+    // a TALL one. Each binds at one end of the range and neither can close the
+    // middle: the static_assert on `kDockSlotEdgeFraction` is what makes that
+    // second claim true for every extent rather than for the ones tried.
+    const float zone = std::min(extent * kDockSlotEdgeFraction, kDockSlotEdgeMaxPx);
+
+    out.valid = true;
+    out.slotIndex = i;
+    if (pos < zone)
+      out.mode = DockSlotDropMode::Before;
+    else if (pos >= extent - zone)
+      out.mode = DockSlotDropMode::After;
+    else
+      out.mode = DockSlotDropMode::Into;
+    return out;
+  }
   return out;
 }
 

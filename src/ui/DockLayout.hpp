@@ -230,6 +230,41 @@ struct DockDragResult {
 DockDragResult dockApplyDrag(float extentA, float extentB, float weightA, float weightB,
                              float minExtent, float deltaPx);
 
+// Which two panels the splitter at `splitterIndex` actually redistributes
+// between -- **not necessarily the two it sits between.**
+//
+// This function exists because of a defect, and the defect is worth stating
+// because the wrong answer looked like the careful one. A collapsed panel has
+// a fixed extent and nothing to give, so the first version simply refused to
+// drag a boundary next to one: it drew as a plain rule and took no input, on
+// the reasoning that a handle which does nothing is worse than no handle.
+//
+// **In the default arrangement that disabled every splitter in the dock.** The
+// right dock alternates -- COLOR expanded, two collapsed, LAYERS expanded, two
+// collapsed -- so not one of its five boundaries had an expanded panel on both
+// sides, and the user's report was the direct consequence: *"I found that the
+// colorpanel was too big and I couldn't resize it."*
+//
+// The rule a docking UI actually wants is that a collapsed panel is not a
+// wall, it is **ballast**: dragging a boundary moves it, the fixed-size panels
+// between the boundary and the nearest flexible one simply translate, and the
+// space comes out of the nearest EXPANDED panel on the far side. So:
+//
+//  * `indexA` is the nearest non-collapsed slot at or before `splitterIndex`,
+//  * `indexB` is the nearest non-collapsed slot at or after `splitterIndex+1`,
+//  * and `live` is false only when one side has no expanded panel at all --
+//    the genuinely immovable case, where there is nothing to redistribute in
+//    that direction and a handle really would be a lie.
+//
+// Dragging towards the far edge grows `indexA`, which is what the sign of
+// `dockApplyDrag`'s `deltaPx` already means.
+struct DockDragPair {
+  bool live = false;
+  size_t indexA = 0;
+  size_t indexB = 0;
+};
+DockDragPair dockDragPairFor(const std::vector<DockSlot>& slots, size_t splitterIndex);
+
 // ------------------------------------------------------- tearing a panel off
 //
 // Where a panel dropped at (`x`, `y`) should go.
@@ -262,5 +297,61 @@ struct DockDropTarget {
 };
 
 DockDropTarget dockDropTargetAt(const AtelierRect& region, float x, float y);
+
+// ------------------------------------------------- dropping INSIDE one dock
+//
+// `dockDropTargetAt()` above answers "which dock", from a point over the
+// canvas. This answers the finer question a pointer already inside a dock
+// asks: **which slot, and does the panel land beside it or ON it?**
+//
+// Landing on it is what makes a tab stack. The user's instruction is the whole
+// reason this exists: *"tab support for putting multiple panels into a
+// stack."* A stack has to be creatable by the same gesture that moves a panel
+// anywhere else, because a docking UI in which stacking is a menu item is one
+// where nobody finds it.
+//
+// The rule is the one every docking UI uses, and it is a rule about the slot's
+// MAJOR axis only -- the axis its dock divides:
+//
+//  * within `kDockSlotEdgeFraction` of the slot's leading edge -> `Before`
+//  * within the same fraction of its trailing edge -> `After`
+//  * anywhere in between -> `Into`, i.e. add a tab to that slot
+//
+// **The edge zones are capped in pixels as well as in fraction.** A fraction
+// alone gives a 300 px LAYERS slot a 90 px band at each end, so two thirds of
+// the panel a person is aiming AT is "beside" rather than "onto" -- and
+// stacking, the harder gesture to discover, gets the smaller target. The cap
+// keeps the insert zones at a grip's height whatever the slot's size, which is
+// also the shape a person expects: you aim at a *seam* to insert, and at a
+// *panel* to stack.
+//
+// **A collapsed slot is droppable-onto too.** It is one grip tall, so the
+// pixel cap could never bind on it; the fraction does, and it leaves the
+// middle 40% of even a 26 px grip as `Into`. That is what lets a person give a
+// collapsed panel a tab without expanding it first, and it is a property of
+// the FRACTION rather than of any extra clamp -- asserted below so that
+// raising the constant cannot quietly close the gap.
+constexpr float kDockSlotEdgeFraction = 0.30f;
+constexpr float kDockSlotEdgeMaxPx = 26.0f;
+static_assert(kDockSlotEdgeFraction * 2.0f < 1.0f,
+              "the two edge bands have to leave a middle band at every slot size, or a short "
+              "slot -- a collapsed panel -- becomes impossible to drop a tab onto.");
+
+enum class DockSlotDropMode {
+  Before,  // a new slot immediately before the named one
+  Into,    // a tab in the named slot
+  After,   // a new slot immediately after it
+};
+
+struct DockSlotDrop {
+  // False when the point is outside `tiling`'s slots entirely, including the
+  // gaps the splitters occupy -- the caller then has no slot to name, and a
+  // drop there should fall back to the dock-level answer.
+  bool valid = false;
+  size_t slotIndex = 0;
+  DockSlotDropMode mode = DockSlotDropMode::Into;
+};
+
+DockSlotDrop dockSlotDropAt(const DockTiling& tiling, DockSide side, float x, float y);
 
 }  // namespace np

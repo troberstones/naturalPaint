@@ -564,8 +564,8 @@ bool runPanelLayoutTest() {
             "panel layout: a save reports success and no error");
     }
     const std::string bytes = readWhole(path);
-    check(contains(bytes.c_str(), "naturalPaint-panel-layout 2"),
-          "panel layout: the file is written in the version 2 grammar");
+    check(contains(bytes.c_str(), "naturalPaint-panel-layout 3"),
+          "panel layout: the file is written in the version 3 grammar");
     check(contains(bytes.c_str(), "panel layers bottom") &&
               contains(bytes.c_str(), "panel history flyout") &&
               contains(bytes.c_str(), "dock bottom 160.000"),
@@ -642,6 +642,213 @@ bool runPanelLayoutTest() {
     else setenv("NP_PANEL_LAYOUT", saved.c_str(), 1);
     fs::remove_all(root, ec);
     check(!fs::exists(root, ec), "panel layout: every file this section wrote is removed");
+  }
+
+  // ==========================================================================
+  // 9. Tab stacks
+  // ==========================================================================
+  //
+  // The user's instruction: *"tab support for putting multiple panels into a
+  // stack."* Everything below is about the two invariants that make a stack
+  // safe to draw -- at least two members, exactly one of them visible -- and
+  // about the states a drag can reach that would otherwise break them.
+  {
+    PanelLayout l;
+    check(l.stackOf(ControlsSection::Color) == 0 && l.stackOf(ControlsSection::Layers) == 0,
+          "panel stack: nothing starts stacked");
+    check(l.slotsIn(PanelPlacement::Right).size() ==
+              l.sectionsIn(PanelPlacement::Right).size(),
+          "panel stack: with nothing stacked a dock has exactly one slot per panel");
+
+    // --- forming one ------------------------------------------------------
+    l.stackWith(ControlsSection::History, ControlsSection::Color);
+    check(l.stackOf(ControlsSection::Color) != 0 &&
+              l.stackOf(ControlsSection::History) == l.stackOf(ControlsSection::Color),
+          "panel stack: stacking gives both panels the same id");
+    check(l.slotsIn(PanelPlacement::Right).size() ==
+              l.sectionsIn(PanelPlacement::Right).size() - 1,
+          "panel stack: **and the dock now has one FEWER slot than it has panels** -- which is "
+          "the whole point: a stack asks the dock for one slot, not one per tab");
+
+    const PanelSlot s = l.slotOf(ControlsSection::Color);
+    check(s.stacked() && s.members.size() == 2 && s.members[0] == ControlsSection::Color &&
+              s.members[1] == ControlsSection::History,
+          "panel stack: the target keeps its position and the mover is appended after it");
+    check(s.activeSection() == ControlsSection::History,
+          "panel stack: **the panel you just moved is the one you can see** -- a tab a person "
+          "asked for and cannot find is the same failure as a panel that disappears");
+    check(s.leader() == ControlsSection::Color,
+          "panel stack: and the LEADER is still the target, so the slot keeps its size");
+
+    // --- switching tabs ---------------------------------------------------
+    l.setActiveInStack(ControlsSection::Color);
+    const PanelSlot s2 = l.slotOf(ControlsSection::Color);
+    check(s2.activeSection() == ControlsSection::Color && s2.members[0] == ControlsSection::Color &&
+              s2.members[1] == ControlsSection::History,
+          "panel stack: **switching tabs does not reorder them** -- a tab strip that reshuffles "
+          "itself when clicked is one nobody can aim at twice");
+
+    // The slot's geometry is the leader's, so switching tabs cannot resize it.
+    l.setWeight(ControlsSection::Color, 3.0f);
+    l.setWeight(ControlsSection::History, 9.0f);
+    l.setActiveInStack(ControlsSection::History);
+    check(l.weightOf(l.slotOf(ControlsSection::Color).leader()) == 3.0f,
+          "panel stack: the slot's weight is its LEADER's, so bringing another tab to the front "
+          "cannot change the slot's size");
+
+    // --- taking one out ---------------------------------------------------
+    l.unstack(ControlsSection::History);
+    check(l.stackOf(ControlsSection::History) == 0 && l.stackOf(ControlsSection::Color) == 0,
+          "panel stack: **unstacking one member clears the OTHER's id too** -- a stack of one "
+          "is a panel, and a lone tab strip is chrome with nothing to select");
+    {
+      const std::vector<ControlsSection> right = l.sectionsIn(PanelPlacement::Right);
+      size_t ci = right.size(), hi = right.size();
+      for (size_t i = 0; i < right.size(); ++i) {
+        if (right[i] == ControlsSection::Color) ci = i;
+        if (right[i] == ControlsSection::History) hi = i;
+      }
+      check(ci < right.size() && hi == ci + 1,
+            "panel stack: and the panel that left sits right where the stack was, not at the "
+            "bottom of the dock");
+    }
+
+    // --- three-way, and leaving by another route --------------------------
+    PanelLayout l3;
+    l3.stackWith(ControlsSection::History, ControlsSection::Color);
+    l3.stackWith(ControlsSection::Comps, ControlsSection::Color);
+    check(l3.slotOf(ControlsSection::Color).members.size() == 3,
+          "panel stack: a third panel joins the same stack rather than starting a new one");
+    l3.setPlacement(ControlsSection::Comps, PanelPlacement::Flyout);
+    check(l3.stackOf(ControlsSection::Comps) == 0 &&
+              l3.slotOf(ControlsSection::Color).members.size() == 2,
+          "panel stack: **moving a panel to another placement takes it out of its stack** -- it "
+          "is not sharing that slot any more");
+    l3.setPlacement(ControlsSection::History, PanelPlacement::Bottom);
+    check(l3.stackOf(ControlsSection::Color) == 0,
+          "panel stack: and the two-member stack it left behind collapses to a lone panel");
+
+    // --- what stacking refuses -------------------------------------------
+    PanelLayout lr;
+    lr.stackWith(ControlsSection::Color, ControlsSection::Color);
+    check(lr.stackOf(ControlsSection::Color) == 0,
+          "panel stack: a panel cannot be stacked with itself");
+    lr.stackWith(ControlsSection::Color, ControlsSection::Grade);  // GRADE starts on the rail
+    check(lr.stackOf(ControlsSection::Color) == 0 &&
+              lr.placementOf(ControlsSection::Color) == PanelPlacement::Right,
+          "panel stack: **tabs exist only where a slot does** -- a flyout draws one panel and a "
+          "hidden panel draws none, so stacking onto either is refused rather than half-done");
+
+    // --- the mover follows the target into ITS dock -----------------------
+    PanelLayout lm;
+    lm.setPlacement(ControlsSection::Comps, PanelPlacement::Bottom);
+    lm.stackWith(ControlsSection::Color, ControlsSection::Comps);
+    check(lm.placementOf(ControlsSection::Color) == PanelPlacement::Bottom &&
+              lm.stackOf(ControlsSection::Color) == lm.stackOf(ControlsSection::Comps) &&
+              lm.stackOf(ControlsSection::Comps) != 0,
+          "panel stack: stacking onto a panel in another dock moves the mover to that dock");
+
+    // --- ids are scoped to a placement ------------------------------------
+    PanelLayout ls;
+    ls.stackWith(ControlsSection::History, ControlsSection::Color);
+    ls.setPlacement(ControlsSection::Comps, PanelPlacement::Bottom);
+    ls.setPlacement(ControlsSection::Layers, PanelPlacement::Bottom);
+    ls.stackWith(ControlsSection::Layers, ControlsSection::Comps);
+    check(ls.slotOf(ControlsSection::Color).members.size() == 2 &&
+              ls.slotOf(ControlsSection::Comps).members.size() == 2,
+          "panel stack: two docks each hold their own stack, even when the ids collide -- a "
+          "stack id is scoped to its placement");
+
+    // --- the file ---------------------------------------------------------
+    PanelLayout w;
+    w.stackWith(ControlsSection::History, ControlsSection::Color);
+    w.setActiveInStack(ControlsSection::Color);
+    PanelLayout r;
+    r.parse(w.serialize());
+    check(r.slotOf(ControlsSection::Color).members == w.slotOf(ControlsSection::Color).members &&
+              r.slotOf(ControlsSection::Color).activeIndex ==
+                  w.slotOf(ControlsSection::Color).activeIndex,
+          "panel stack: a stack survives a serialize/parse round trip, members and active tab "
+          "both");
+  }
+
+  // ==========================================================================
+  // 10. The stack repair rules, each from a file
+  // ==========================================================================
+  {
+    // A stack id used once is not a stack.
+    PanelLayout lone;
+    lone.parse(
+        "naturalPaint-panel-layout 3\n"
+        "panel color right 1.000 0 7 1\n");
+    check(exactlyOnceEach(lone) && lone.stackOf(ControlsSection::Color) == 0,
+          "panel stack: **a stack id shared by fewer than two panels is cleared** -- a file "
+          "cannot produce a tab strip with one tab in it");
+
+    // A stack scattered across two docks is not a stack either.
+    PanelLayout split;
+    split.parse(
+        "naturalPaint-panel-layout 3\n"
+        "panel color right 1.000 0 4 1\n"
+        "panel layers bottom 1.000 0 4 1\n");
+    check(split.stackOf(ControlsSection::Color) == 0 && split.stackOf(ControlsSection::Layers) == 0,
+          "panel stack: and neither is one whose members a hand-edit has put in different docks "
+          "-- a stack is panels sharing ONE slot");
+
+    // No active member: the first becomes active.
+    PanelLayout dark;
+    dark.parse(
+        "naturalPaint-panel-layout 3\n"
+        "panel color right 1.000 0 2 0\n"
+        "panel layers right 1.000 0 2 0\n");
+    check(dark.slotOf(ControlsSection::Color).members.size() == 2 &&
+              dark.slotOf(ControlsSection::Color).activeSection() == ControlsSection::Color,
+          "panel stack: **a stack with no visible tab gets one** -- the first member -- rather "
+          "than drawing a slot whose body is nothing at all");
+
+    // Two active members: the first wins, like every other duplicate here.
+    PanelLayout twice;
+    twice.parse(
+        "naturalPaint-panel-layout 3\n"
+        "panel color right 1.000 0 2 1\n"
+        "panel layers right 1.000 0 2 1\n");
+    check(twice.slotOf(ControlsSection::Color).activeSection() == ControlsSection::Color,
+          "panel stack: a stack with two visible tabs keeps the first, the same first-wins rule "
+          "a duplicated section line gets");
+
+    // --- version 2 files, and the shapes that are not files at all --------
+    PanelLayout v2;
+    v2.parse(
+        "naturalPaint-panel-layout 2\n"
+        "panel layers right 2.000 0\n"
+        "panel color right 1.000 1\n");
+    check(exactlyOnceEach(v2) && v2.stackOf(ControlsSection::Layers) == 0 &&
+              v2.weightOf(ControlsSection::Layers) == 2.0f &&
+              v2.isCollapsed(ControlsSection::Color) &&
+              v2.sectionsIn(PanelPlacement::Right).front() == ControlsSection::Layers,
+          "panel stack: **a version 2 line reads unstacked and active**, which is exactly what "
+          "it meant -- recognised by its field count, not by the header's version number");
+
+    PanelLayout ragged;
+    ragged.parse(
+        "naturalPaint-panel-layout 3\n"
+        "panel layers right 2.000 0 1\n"          // six fields: half a pair
+        "panel color right 1.000 0 1 1 9\n"       // eight fields
+        "panel history right 1.000 0 -3 1\n"      // negative stack id
+        "panel comps right 1.000 0 notanum 1\n"   // stack id is not a number
+        "panel grade right 1.000 0 2 7\n"         // active is not 0/1
+        "panel solver bottom 1.000 1 0 1\n");     // the one good line
+    check(exactlyOnceEach(ragged) &&
+              ragged.placementOf(ControlsSection::Solver) == PanelPlacement::Bottom &&
+              ragged.isCollapsed(ControlsSection::Solver),
+          "panel stack: every malformed shape of the new fields is SKIPPED, not fatal -- the "
+          "readable line around them still applies");
+    PanelLayout freshDefaults;
+    check(ragged.placementOf(ControlsSection::Layers) ==
+                  freshDefaults.placementOf(ControlsSection::Layers) &&
+              ragged.placementOf(ControlsSection::Color) ==
+                  freshDefaults.placementOf(ControlsSection::Color),
+          "panel stack: and each skipped section arrives via the append rule at its default");
   }
 
   std::printf("[selftest] panel layout %s\n", ok ? "PASS" : "FAIL");

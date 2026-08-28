@@ -231,8 +231,26 @@ measure_n="${2:-10}"
 #     views frames this strip, so nothing would have caught the next one
 #     either. Carries the text thresholds for the same reason `flyout` does:
 #     the cells are mono glyphs.
-view_names=(toolbar layers canvas tools flyout titlebar transform rail)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document")
+#   tabs / tabs_shut  -- a TAB STACK's strip, open and collapsed, under
+#     --panel-stack-demo (which puts HISTOGRAM and GRADE into COLOR's slot and
+#     COMPS into the collapsed HISTORY's; see AppState::panelStackDemo for why
+#     a flag rather than a layout file -- a stack is formed by a drag, and the
+#     screenshot path has none).
+#
+#     Two views rather than one tall crop because the two strips sit at
+#     opposite ends of the dock and everything between them is already covered
+#     by `layers`. `tabs_shut` is the one carrying the rule most likely to be
+#     broken by a later change to the grip code: **a collapsed stack still
+#     shows its tabs**, because hiding them would leave the other members with
+#     no way back. It also pins the negative: no accent underline when there is
+#     no body for it to join.
+#
+#     Added with the feature, not after it. The two revisions before this one
+#     each shipped a defect in chrome that had no view -- headerless panels,
+#     then a clipped glyph on the flyout rail -- and in both cases the fix
+#     began by adding the view that would have caught it.
+view_names=(toolbar layers canvas tools flyout titlebar transform rail tabs tabs_shut)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -339,11 +357,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # the LAYERS list's scrollbar, which is gone because the panel now has room for
 # all five rows without scrolling. That is the property this revision exists to
 # produce, so it is a change to accept rather than a drift to chase.
-view_crop_x=(0    1916 920  0   0   0    900 1830)
-view_crop_y=(77   975  1037 220 700 0    700 230)
-view_crop_w=(1400 640  384  100 400 2560 700 100)
-view_crop_h=(166  190  192  402 350 77   500 500)
-view_frames=(90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0   0   0    900 1830 1900 1900)
+view_crop_y=(77   975  1037 220 700 0    700 230  238  1462)
+view_crop_w=(1400 640  384  100 400 2560 700 100  660  660)
+view_crop_h=(166  190  192  402 350 77   500 500  64   64)
+view_frames=(90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -376,7 +394,7 @@ view_frames=(90 90 90 90 90 90 90 90)
 # than a second number invented for it. `canvas` and `tools` stay exact
 # because they genuinely contain no text, and `tools` was re-measured at
 # exactly 0 after the palette grew to 28 cells.
-view_threshold=(48 96 0 0 48 0 48 48)
+view_threshold=(48 96 0 0 48 0 48 48 48 48)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -392,7 +410,7 @@ view_threshold=(48 96 0 0 48 0 48 48)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16 16)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

@@ -1029,6 +1029,7 @@ int main(int argc, char** argv) {
   bool uiLayerDemo = false;
   bool marqueeDemo = false;
   bool flyoutDemo = false;
+  bool panelStackDemo = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
@@ -1191,6 +1192,14 @@ int main(int argc, char** argv) {
       // a flyout opens on right-click or a ~350ms press-and-hold, and the
       // screenshot path has neither. See AppState::openToolFlyoutDemo.
       flyoutDemo = true;
+    } else if (a == "--panel-stack-demo") {
+      // The dockable-panel revision's tab stacks: puts HISTOGRAM and GRADE
+      // into COLOR's slot as tabs, and COMPS into the collapsed HISTORY's, so
+      // --screenshot can photograph both an OPEN tab strip and a COLLAPSED
+      // one. A stack is made by dragging a panel onto another, and the
+      // screenshot path has no drag -- the same gap --flyout-demo exists to
+      // cover for a press-and-hold. See `st.panelStackDemo`.
+      panelStackDemo = true;
     } else if (a == "--ui-layer-demo") {
       // UI detour step 3: build a stack through the layer editor's own
       // commands. See runUiLayerDemo(). `noclip` runs the same script without
@@ -2452,6 +2461,7 @@ int main(int argc, char** argv) {
   st.controlsAllOpen = controlsAllOpen;
   st.openLayerMenu = openLayerMenu;
   st.openToolFlyoutDemo = flyoutDemo;
+  st.panelStackDemo = panelStackDemo;
   st.openExportStatesDialog = openExportStates;
   st.openLayerProperties = openLayerProperties;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
@@ -2473,6 +2483,9 @@ int main(int argc, char** argv) {
   }
   if (flyoutDemo)
     std::printf("[flyout-demo] Brush group's flyout held open (right-click/press-hold demo)\n");
+  if (panelStackDemo)
+    std::printf("[panel-stack-demo] HISTOGRAM+GRADE tabbed into COLOR's slot, COMPS into the "
+                "collapsed HISTORY's -- in memory only, never saved\n");
   // After both fixtures, deliberately: a merge is applied to whatever stack
   // the flags before it built, which is what makes the before/after pair a
   // pair.
