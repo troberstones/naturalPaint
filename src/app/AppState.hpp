@@ -223,10 +223,18 @@ struct BrushState {
   // procedural round/elliptical tip every other field above already
   // describes. Moves only in lockstep with a whole preset -- set by
   // `applyPresetToBrush()`, read by `presetFromBrush()` and by
-  // `brushTipFor()` -- because there is no slider that swaps a bitmap on its
-  // own, the same reason `brush/Library.hpp`'s `presetMatches()` gives for
-  // not comparing it separately.
+  // `brushTipFor()` -- and, since the dab picker exists, by `ui/DabPicker`'s
+  // own selection, which IS a control that swaps a bitmap on its own. That is
+  // the one exception to the lockstep rule above, and `dabId` below is what
+  // keeps the swap durable rather than lasting until the next preset load.
   std::shared_ptr<const BrushTipBitmap> tipBitmap;
+
+  // Which dab `tipBitmap` came from (app/DabLibrary.hpp §3), or empty for the
+  // procedural tip. Moves with `tipBitmap` everywhere -- `applyPresetToBrush()`
+  // sets both, `presetFromBrush()` reads both, the picker writes both -- and
+  // is the half that survives a save, since `user-presets.txt` stores an id
+  // and not a bitmap (brush/Library.hpp's own `dabId`).
+  std::string dabId;
 
   // A Dual Brush's second tip (brush/Deposit.hpp §2d), or null for every tip
   // that has none. Moves only in lockstep with a whole preset -- set by
@@ -928,6 +936,14 @@ struct AppState {
   // sampled-tip brush still has its tip after a relaunch.
   DabLibrary dabLibrary;
   bool dabLibraryScanned = false;
+
+  // `--brush-dab-demo <id>`: the dab to put on the brush before the first
+  // frame, so `--screenshot` can photograph the BRUSH EDITOR painting with a
+  // sampled tip. There is no other way to reach it from a screenshot -- the
+  // picker needs a click, and the screenshot path has no pointer.
+  //
+  // Empty means "leave the brush alone", which is every ordinary launch.
+  std::string dabDemoId;
 
   // PLAN.md Phase 4 step 9 (app/Journal, ADR-0008, PRD O5-O10). The recovery
   // journal for this run: one scratch directory, its lock, and one journal

@@ -1075,6 +1075,7 @@ int main(int argc, char** argv) {
   const char* abrKeysPath = nullptr;
   bool dabScan = false;
   const char* dabImportPath = nullptr;
+  const char* dabDemoId = nullptr;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1109,6 +1110,12 @@ int main(int argc, char** argv) {
       dabScan = true;
     } else if (a == "--dab-import") {
       if (i + 1 < argc) dabImportPath = argv[++i];
+    } else if (a == "--brush-dab-demo") {
+      // --brush-dab-demo <id> : put that dab on the brush before the first
+      // frame, so --screenshot can photograph the BRUSH EDITOR actually
+      // painting with a sampled tip. The picker needs a click and the
+      // screenshot path has no pointer. See AppState::dabDemoId.
+      if (i + 1 < argc) dabDemoId = argv[++i];
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
       if (i + 1 < argc) brushSheetOut = argv[++i];
@@ -1674,6 +1681,9 @@ int main(int argc, char** argv) {
     // app/DabLibrary: the watched folder -- an unchanged rescan decoding
     // nothing, and a rename not orphaning the presets that point at it.
     const bool dabLibraryOk = np::runDabLibraryTest();
+    // ui/DabPicker: the grid arithmetic, including the hit test as the exact
+    // inverse of the cell placement.
+    const bool dabPickerOk = np::runDabPickerTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
@@ -2198,7 +2208,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && dabPickerOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
@@ -2402,6 +2412,7 @@ int main(int argc, char** argv) {
   st.controlsAllOpen = controlsAllOpen;
   st.openLayerMenu = openLayerMenu;
   st.openToolFlyoutDemo = flyoutDemo;
+  if (dabDemoId != nullptr) st.dabDemoId = dabDemoId;
   st.openExportStatesDialog = openExportStates;
   st.openLayerProperties = openLayerProperties;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;

@@ -1192,6 +1192,19 @@ bool runPaperTextureTest();
 // `~/Library/Application Support/naturalPaint`. Headless and GPU-free.
 bool runDabLibraryTest();
 
+// ui/DabPicker's arithmetic -- the half of a picker that can be wrong in a way
+// a screenshot would not show. `--selftest` cannot reach an ImGui dispatch
+// site (reachability-audit F4), so everything here is a pure function of
+// numbers: column fit, cell placement, the hit test, thumbnail letterboxing,
+// atlas paging.
+//
+// The load-bearing section is the hit test, checked as the INVERSE of the cell
+// placement over every cell of twelve layouts rather than against a
+// hand-written table -- a hit test derived independently from the layout is
+// exactly how a picker ends up selecting the cell next to the one clicked, a
+// bug that looks like a rendering glitch and is not one. Headless and GPU-free.
+bool runDabPickerTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/

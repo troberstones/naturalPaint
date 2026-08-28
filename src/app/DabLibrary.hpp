@@ -249,6 +249,16 @@ class DabLibrary {
   // not increase it -- §2's claim, checked rather than described.
   size_t decodeCount() const noexcept { return decodeCount_; }
 
+  // Bumped by every `rescan()` that changed the entry list, and by every
+  // `resolve()` that decoded a bitmap which was not in hand before.
+  //
+  // **Exists so a thumbnail atlas knows when it is stale** without comparing
+  // the whole list every frame. Two different things move it, deliberately:
+  // the set of dabs changing (a cell appears or goes) and a cell that was a
+  // placeholder acquiring its picture (ui/DabPicker draws only what is on
+  // screen, so most bitmaps arrive long after the scan that found them).
+  uint64_t generation() const noexcept { return generation_; }
+
   // The index, serialised. Exposed so `--selftest` can round-trip it without
   // a filesystem, the way app/BrushLibraryFile exposes its own text form.
   std::string indexText() const;
@@ -262,6 +272,7 @@ class DabLibrary {
   std::vector<DabRefusal> refusals_;
   bool indexLoaded_ = false;
   size_t decodeCount_ = 0;
+  uint64_t generation_ = 1;
 
   // Decodes one file into however many entries it yields (one for an image or
   // a `.gbr`, N for a `.gih`). Appends to `out`; returns false and fills

@@ -600,6 +600,10 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   brush.wetness = preset.wetness;
   brush.links = preset.links;
   brush.tipBitmap = preset.tipBitmap;
+  // Carried with the bitmap, never separately: an id naming a tip the brush is
+  // not using would be written to `user-presets.txt` on the next Save and
+  // would resolve, next launch, to a brush nobody made.
+  brush.dabId = preset.dabId;
   brush.dualTip = preset.dualTip;
   brush.dualBlend = preset.dualBlend;
   brush.scatterBothAxes = preset.scatterBothAxes;
@@ -618,6 +622,7 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   p.wetness = brush.wetness;
   p.links = brush.links;
   p.tipBitmap = brush.tipBitmap;
+  p.dabId = brush.dabId;
   p.dualTip = brush.dualTip;
   p.dualBlend = brush.dualBlend;
   p.scatterBothAxes = brush.scatterBothAxes;

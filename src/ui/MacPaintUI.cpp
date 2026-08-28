@@ -2,11 +2,13 @@
 
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
+#include "ui/DabPicker.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/NewDocumentDialog.hpp"
 
+#include <filesystem>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -3944,6 +3946,27 @@ void saveBrushLibraries(AppState& st) {
 // §2). Cheap by construction -- one `stat()` per file against the index, no
 // decode for anything unchanged -- but still not run until something actually
 // needs a tip, which is the same lazy gate the two preference stores above use.
+// "Reveal in Finder" -- a watched folder nobody can find is not a feature.
+//
+// **The folder is created here, and this is the one place that creates it.**
+// `rescan()` deliberately does not (app/DabLibrary.hpp): a scan that made
+// directories because a picker opened would leave folders in the user's
+// Application Support for an application they only launched. Pressing a button
+// labelled "Reveal" is a different thing entirely -- it is a user asking to be
+// shown the folder, and showing them a path that does not exist would be a
+// worse answer than making it.
+//
+// `SDL_OpenURL` on a `file://` URL is what the platform layer already has;
+// there is no `open -R` shell-out here and no `NSWorkspace` call, so this is
+// the same on every platform SDL supports and adds no dependency.
+void revealDabFolder(AppState& st) {
+  std::error_code ec;
+  std::filesystem::create_directories(st.dabLibrary.userRoot(), ec);
+  const std::string url = "file://" + st.dabLibrary.userRoot();
+  if (!SDL_OpenURL(url.c_str()))
+    g_brushLibraryStatus = "could not open " + st.dabLibrary.userRoot();
+}
+
 void ensureDabLibraryScanned(AppState& st) {
   if (st.dabLibraryScanned) return;
   st.dabLibraryScanned = true;
@@ -3956,6 +3979,20 @@ void ensureDabLibraryScanned(AppState& st) {
   std::vector<std::string> notes;
   resolveDabIds(st.brush.brushLibrary, st.dabLibrary, &notes);
   if (!notes.empty() && g_brushLibraryStatus.empty()) g_brushLibraryStatus = notes.front();
+
+  // `--brush-dab-demo <id>`: the same two assignments the picker's own
+  // selection makes, and deliberately the same two -- a demo path that set the
+  // brush differently from the control it stands in for would photograph
+  // something no user can reach.
+  if (!st.dabDemoId.empty()) {
+    if (auto bitmap = st.dabLibrary.resolve(st.dabDemoId)) {
+      st.brush.dabId = st.dabDemoId;
+      st.brush.tipBitmap = std::move(bitmap);
+    } else {
+      g_brushLibraryStatus = "--brush-dab-demo: no dab with id '" + st.dabDemoId + "'";
+    }
+    st.dabDemoId.clear();
+  }
 }
 
 void ensureUserBrushLibraryLoaded(AppState& st) {
@@ -4362,6 +4399,46 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   ctlSlider("Roundness", &st.brush.roundness, 0.05f, 1.0f);
   ctlSlider("Angle", &st.brush.angle, -180.0f, 180.0f, "%.0f deg");
   ImGui::TextDisabled("Dabs are spaced by arc length, not by time.");
+
+  // --- The tip itself -----------------------------------------------------
+  //
+  // Below the shape sliders rather than above them, because the sliders shape
+  // whatever tip is chosen and the preview at the top of this section already
+  // shows the result: the order reads "here is what it does, here is its
+  // shape, here is what it is stamping".
+  //
+  // **The whole panel is one call into `ui/DabPicker`** -- the merge rule for
+  // this file is move code out, never in, and a grid with a hit test and an
+  // atlas in it is exactly the kind of thing that should not be another two
+  // hundred lines here. It reports; this block decides.
+  if (ImGui::TreeNodeEx("Tip", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ensureDabLibraryScanned(st);
+    const DabPickerAction action = drawDabPicker("brush-tip", st.dabLibrary, gpu, st.brush.dabId);
+    if (action.rescanRequested) st.dabLibrary.rescan();
+    if (action.revealRequested) revealDabFolder(st);
+    if (action.selected) {
+      // **The tip, and nothing else** (ui/DabPicker.hpp §3). Radius, spacing,
+      // hardness and roundness are left exactly as they were, so trying the
+      // next tip along is one click to do and one to undo.
+      st.brush.dabId = action.id;
+      st.brush.tipBitmap = action.id.empty() ? nullptr : st.dabLibrary.resolve(action.id);
+      // An id that resolved a moment ago for the thumbnail and does not now
+      // means the file went away between the two. Falling back to the
+      // procedural tip AND clearing the id keeps the two in step -- an id
+      // naming a bitmap the brush is not using is what would get saved.
+      if (!action.id.empty() && st.brush.tipBitmap == nullptr) st.brush.dabId.clear();
+    }
+    if (action.useNativeSize && action.nativeWidth > 0 && action.nativeHeight > 0) {
+      // The tip's own larger dimension is its DIAMETER; Radius is half of it.
+      // Same reading `io/AbrBrushes.cpp` gives a `#Prc` diameter, and clamped
+      // to the slider's own range rather than to something wider, so the
+      // button can never put the brush somewhere the slider cannot express.
+      const float diameter = static_cast<float>(std::max(action.nativeWidth, action.nativeHeight));
+      st.brush.radius = std::clamp(diameter * 0.5f, kBrushRadiusMin, kBrushRadiusMax);
+    }
+    if (action.useFileSpacing) st.brush.spacing = std::clamp(action.fileSpacing, 0.02f, 1.0f);
+    ImGui::TreePop();
+  }
 
   // kBrushLoadMin/Max (app/AppState.hpp): the one range for this field, also
   // read by the options bar's LOAD slider.

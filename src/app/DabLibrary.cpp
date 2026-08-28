@@ -211,6 +211,7 @@ void DabLibrary::setRoots(std::string userRoot, std::string importedRoot,
   entries_.clear();
   refusals_.clear();
   indexLoaded_ = false;
+  ++generation_;
 }
 
 const DabEntry* DabLibrary::find(const std::string& id) const noexcept {
@@ -561,6 +562,9 @@ DabScanResult DabLibrary::rescan() {
 
   entries_ = std::move(carried);
   for (DabEntry& e : fresh) entries_.push_back(std::move(e));
+  // Anything but a scan that found exactly what the index already held moves
+  // the generation, which is what makes a stale thumbnail atlas detectable.
+  if (result.added != 0 || result.removed != 0 || result.repaired != 0) ++generation_;
   std::sort(entries_.begin(), entries_.end(),
             [](const DabEntry& a, const DabEntry& b) { return a.id < b.id; });
 
@@ -599,6 +603,9 @@ std::shared_ptr<const BrushTipBitmap> DabLibrary::resolve(const std::string& id)
     for (DabEntry& d : decoded)
       if (d.id == id || (decoded.size() == 1 && d.frame == e.frame)) {
         e.bitmap = d.bitmap;
+        // A cell that was a placeholder now has its picture, which a thumbnail
+        // atlas has to hear about -- see `generation()`.
+        ++generation_;
         return e.bitmap;
       }
     return nullptr;
