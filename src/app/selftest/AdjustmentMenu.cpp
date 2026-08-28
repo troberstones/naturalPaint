@@ -1,8 +1,11 @@
 #include "app/selftest/Support.hpp"
 
+#include <cmath>
 #include <cstring>
 
 #include "app/AdjustmentOps.hpp"
+#include "core/SelectionOps.hpp"
+#include "ops/AutoLevels.hpp"
 #include "ops/PointOpTiles.hpp"
 #include "ui/MenuModel.hpp"
 
@@ -96,6 +99,24 @@ bool findMenuPath(const std::vector<MenuNode>& nodes, MenuAction action, std::st
   }
   return false;
 }
+
+
+// Every item in the Adjustments submenu, in the order the submenu draws them.
+// At file scope rather than inside one assertion block, because section C uses
+// it twice: once to prove each is reachable, and once -- via its SIZE -- to
+// prove the effect lists below account for all of them, so an item in neither
+// list cannot pass both loops vacuously.
+constexpr MenuAction kAdjustAll[] = {
+    MenuAction::AdjustLevels,        MenuAction::AdjustCurves,
+    MenuAction::AdjustExposure,      MenuAction::AdjustChannelMixer,
+    MenuAction::AdjustDesaturate,    MenuAction::AdjustBrightnessContrast,
+    MenuAction::AdjustHueSaturation, MenuAction::AdjustVibrance,
+    MenuAction::AdjustColorBalance,  MenuAction::AdjustBlackAndWhite,
+    MenuAction::AdjustPhotoFilter,   MenuAction::AdjustInvert,
+    MenuAction::AdjustPosterize,     MenuAction::AdjustThreshold,
+    MenuAction::AdjustGradientMap,   MenuAction::AdjustAutoTone,
+    MenuAction::AdjustAutoContrast,  MenuAction::AdjustAutoColor,
+    MenuAction::AdjustEqualize};
 
 }  // namespace
 
@@ -440,17 +461,14 @@ bool runAdjustmentMenuTest() {
     MenuContext ctx;
     ctx.hasDocument = true;
     const std::vector<MenuNode> bar = buildMenuModel(ctx);
-    const MenuAction kAdjust[] = {MenuAction::AdjustLevels, MenuAction::AdjustCurves,
-                                  MenuAction::AdjustExposure, MenuAction::AdjustChannelMixer,
-                                  MenuAction::AdjustDesaturate};
     bool allUnderImage = true;
-    for (MenuAction a : kAdjust) {
+    for (MenuAction a : kAdjustAll) {
       std::string path;
       if (!findMenuPath(bar, a, path) || path != "Image > Adjustments") allUnderImage = false;
     }
     check(allUnderImage,
-          "menu: all five items sit under Image > Adjustments -- the path, not merely "
-          "reachability from somewhere");
+          "menu: all NINETEEN items sit under Image > Adjustments -- the path, not "
+          "merely reachability from somewhere");
   }
 
   // --- C2. Four open a modal; Desaturate does not.
@@ -460,15 +478,232 @@ bool runAdjustmentMenuTest() {
   // it wrong for one of the other four means `ImGui::OpenPopup()` called from
   // an AppKit callback with no frame in flight.
   {
-    check(menuActionEffect(MenuAction::AdjustLevels) == MenuEffect::Deferred &&
-              menuActionEffect(MenuAction::AdjustCurves) == MenuEffect::Deferred &&
-              menuActionEffect(MenuAction::AdjustExposure) == MenuEffect::Deferred &&
-              menuActionEffect(MenuAction::AdjustChannelMixer) == MenuEffect::Deferred,
-          "menu: the four with a dialog are Deferred -- a native menu callback has no "
-          "ImGui frame to call OpenPopup() from");
-    check(menuActionEffect(MenuAction::AdjustDesaturate) == MenuEffect::Inline,
-          "menu: Desaturate is Inline -- it has no parameter to ask for, so a modal "
-          "would open with nothing in it");
+    const MenuAction kDialog[] = {
+        MenuAction::AdjustLevels,        MenuAction::AdjustCurves,
+        MenuAction::AdjustExposure,      MenuAction::AdjustChannelMixer,
+        MenuAction::AdjustBrightnessContrast, MenuAction::AdjustHueSaturation,
+        MenuAction::AdjustVibrance,      MenuAction::AdjustColorBalance,
+        MenuAction::AdjustBlackAndWhite, MenuAction::AdjustPhotoFilter,
+        MenuAction::AdjustPosterize,     MenuAction::AdjustThreshold,
+        MenuAction::AdjustGradientMap};
+    // Desaturate, Invert and the four solvers. None asks the user anything:
+    // two take no parameter at all, and the four solvers read their parameters
+    // off the histogram instead of off a person.
+    const MenuAction kImmediate[] = {MenuAction::AdjustDesaturate, MenuAction::AdjustInvert,
+                                     MenuAction::AdjustAutoTone,
+                                     MenuAction::AdjustAutoContrast,
+                                     MenuAction::AdjustAutoColor, MenuAction::AdjustEqualize};
+    bool allDeferred = true, allInline = true;
+    for (MenuAction a : kDialog)
+      if (menuActionEffect(a) != MenuEffect::Deferred) allDeferred = false;
+    for (MenuAction a : kImmediate)
+      if (menuActionEffect(a) != MenuEffect::Inline) allInline = false;
+    check(allDeferred,
+          "menu: the thirteen with a dialog are Deferred -- a native menu callback has "
+          "no ImGui frame to call OpenPopup() from");
+    check(allInline,
+          "menu: the six with none are Inline -- a modal for one of them would open "
+          "with nothing in it");
+    // 13 + 6 == 19 is asserted rather than left to the reader counting the two
+    // arrays: an item added to the enum and to neither list above would pass
+    // both loops vacuously, which is exactly how a new command ends up with no
+    // effect declared and no test noticing.
+    check(std::size(kDialog) + std::size(kImmediate) == std::size(kAdjustAll),
+          "menu: every one of the nineteen is in exactly one of the two lists -- so a "
+          "new command cannot pass both loops by being in neither");
+  }
+
+  std::printf("  -- D. the solvers, and two claims the dialogs make in their own text --\n");
+
+  // --- D1. The histogram a solver reads is the ACTIVE LAYER's, and the
+  // selection's BOUNDING BOX when one is engaged.
+  //
+  // Both are app/AdjustmentOps.hpp's stated rules, and the second is stated
+  // there as an APPROXIMATION -- `computeHistogram()` takes a rectangle and has
+  // no notion of partial coverage, so a lasso solves from its bounding box.
+  // Asserted here rather than left in prose, because a rule that only exists in
+  // a comment is one refactor from being untrue.
+  {
+    OpenDocument od = makeAdjustDocument("solver region");
+    const HistogramResult whole = adjustmentHistogramFor(od);
+    uint64_t wholeCount = 0;
+    for (uint64_t c : whole.luma) wholeCount += c;
+    check(wholeCount == static_cast<uint64_t>(kW) * static_cast<uint64_t>(kH),
+          "solver: with no selection the histogram covers every texel of the canvas");
+
+    od.selection = selectRectangle(0.0f, 0.0f, 64.0f, 64.0f);
+    const HistogramResult bounded = adjustmentHistogramFor(od);
+    uint64_t boundedCount = 0;
+    for (uint64_t c : bounded.luma) boundedCount += c;
+    check(boundedCount == 64ull * 64ull,
+          "solver: with a rectangular selection it covers exactly that rectangle");
+
+    // The approximation, made visible. An L-shaped selection -- two disjoint
+    // rectangles -- has a bounding box strictly larger than its own coverage,
+    // and the histogram counts the box. This assertion exists to be READ: it is
+    // the one place the shortcut is observable.
+    od.selection = combineSelections(selectRectangle(0.0f, 0.0f, 32.0f, 32.0f),
+                                     selectRectangle(96.0f, 96.0f, 128.0f, 128.0f),
+                                     SelectionCombine::Add);
+    const HistogramResult lshape = adjustmentHistogramFor(od);
+    uint64_t lshapeCount = 0;
+    for (uint64_t c : lshape.luma) lshapeCount += c;
+    check(lshapeCount > 2ull * 32ull * 32ull,
+          "solver: KNOWN APPROXIMATION -- a two-rectangle selection histograms its "
+          "BOUNDING BOX, which is strictly more texels than it covers "
+          "(app/AdjustmentOps.hpp names why)");
+  }
+
+  // --- D2. Auto-contrast produces one shared mapping; auto-tone does not.
+  //
+  // Already asserted at the solver level in runAutoLevelsTest(). What is new
+  // here is that the MENU COMMANDS preserve the distinction -- a bridge that
+  // called the wrong solver would leave that section entirely green.
+  {
+    OpenDocument tone = makeAdjustDocument("auto tone");
+    OpenDocument contrast = makeAdjustDocument("auto contrast");
+    const HistogramResult h = adjustmentHistogramFor(tone);
+    const std::array<LevelsParams, 3> t = solveAutoTone(h);
+    const std::array<LevelsParams, 3> c = solveAutoContrast(h);
+    check(!(t[0].whiteIn == t[2].whiteIn && t[0].blackIn == t[2].blackIn),
+          "solver: auto TONE solves R and B differently on the fixture's colour cast");
+    check(c[0].whiteIn == c[2].whiteIn && c[0].blackIn == c[2].blackIn,
+          "solver: auto CONTRAST solves them identically -- one mapping, so hue holds");
+
+    // **Asserting on the two COMMANDS' pixels, not only on the two solvers.**
+    // The version of this that only checked the solvers plus "auto tone
+    // changed something" was worthless at exactly the thing worth checking:
+    // wiring applyAutoContrast() to solveAutoTone() -- a one-word copy/paste
+    // slip, and the single most likely defect in this whole bridge -- left it
+    // entirely green. Two commands that are supposed to differ have to be
+    // shown differing in what they WRITE.
+    const FilterOpResult rt = applyAutoTone(tone);
+    const FilterOpResult rc = applyAutoContrast(contrast);
+    check(rt.refusal == PixelOpRefusal::None && rt.texelsChanged > 0 &&
+              rc.refusal == PixelOpRefusal::None && rc.texelsChanged > 0,
+          "solver: both auto-tone and auto-contrast reach the layer and change it");
+    check(!tilesExactlyEqual(*tone.document.layers[0].rgbTiles,
+                             *contrast.document.layers[0].rgbTiles),
+          "solver: the two commands write DIFFERENT pixels on the same fixture -- which "
+          "is what fails if one of them is wired to the other's solver");
+
+    // And the property that is the whole reason both exist. **Stated
+    // carefully, because the first version of this assertion stated it wrongly
+    // and failed against correct code.** "Auto-contrast preserves hue" does
+    // NOT mean it preserves a texel's channel ratios: Levels is an AFFINE map,
+    // `(in - blackIn) / (whiteIn - blackIn)`, and an affine map with a
+    // non-zero offset moves every ratio it touches. What one shared mapping
+    // preserves is NEUTRALITY -- a texel with r == g == b comes out with
+    // r == g == b, because all three went through the same function. Three
+    // different mappings do not, which is exactly how auto-tone neutralises a
+    // cast, and exactly what auto-contrast declines to do.
+    //
+    // So the fixture carries a genuinely neutral patch inside an otherwise
+    // cast image, and the assertion is about that patch.
+    OpenDocument neutralTone = makeAdjustDocument("neutral under tone");
+    OpenDocument neutralContrast = makeAdjustDocument("neutral under contrast");
+    for (OpenDocument* d : {&neutralTone, &neutralContrast}) {
+      Tile& t = d->document.layers[0].rgbTiles->getOrCreate(TileCoord{0, 0});
+      for (int32_t y = 0; y < 16; ++y)
+        for (int32_t x = 0; x < 16; ++x)
+          t.writePixel(PixelCoord{x, y}, {0.45f, 0.45f, 0.45f, 1.0f});
+      d->recordEdit("neutral patch", EditKind::Content);
+    }
+    applyAutoContrast(neutralContrast);
+    applyAutoTone(neutralTone);
+    const std::array<float, 4> nc =
+        neutralContrast.document.layers[0].rgbTiles->find(TileCoord{0, 0})
+            ->readPixel(PixelCoord{5, 5});
+    const std::array<float, 4> nt =
+        neutralTone.document.layers[0].rgbTiles->find(TileCoord{0, 0})
+            ->readPixel(PixelCoord{5, 5});
+    check(nc[0] == nc[1] && nc[1] == nc[2],
+          "solver: auto-contrast leaves a NEUTRAL texel neutral -- one mapping on all "
+          "three channels is what 'hue is preserved' means arithmetically");
+    check(!(nt[0] == nt[1] && nt[1] == nt[2]),
+          "solver: auto-tone tints that same neutral texel -- neutralising a cast is "
+          "precisely the thing auto-contrast declines to do");
+
+    OpenDocument eq = makeAdjustDocument("equalize");
+    const FilterOpResult r2 = applyEqualize(eq);
+    check(r2.refusal == PixelOpRefusal::None,
+          "solver: equalize reaches the layer through the ordinary Curves path");
+  }
+
+  // --- D3. Invert, at exactly the call the no-dialog menu item makes.
+  //
+  // `applyInvert(doc)` with no params argument -- which is what
+  // `performImmediateAdjustment()` in ui/MacPaintUI.cpp actually calls. This is
+  // the assertion for the defect ops/ToneOps.hpp's header describes at length:
+  // `InvertParams::amount` defaulted to 0 once, and this exact call was
+  // therefore a silent no-op. Asserted at the BRIDGE, not just in the maths,
+  // because the bridge is where the default is taken.
+  {
+    OpenDocument od = makeAdjustDocument("invert");
+    const std::array<float, 4> before =
+        od.document.layers[0].rgbTiles->find(TileCoord{0, 0})->readPixel(PixelCoord{3, 3});
+    const FilterOpResult r = applyInvert(od);
+    check(r.refusal == PixelOpRefusal::None && r.texelsChanged > 0,
+          "invert: the menu item's own zero-argument call actually inverts");
+    const std::array<float, 4> after =
+        od.document.layers[0].rgbTiles->find(TileCoord{0, 0})->readPixel(PixelCoord{3, 3});
+    check(after[3] == before[3],
+          "invert: and leaves alpha exactly alone -- every op in the family is "
+          "colour-only by construction");
+  }
+
+  // --- D4. "The defaults equal Desaturate exactly" -- which the Black & White
+  // dialog prints on screen next to its Reset button.
+  //
+  // A sentence in the UI is a promise to the person reading it. This is the
+  // measurement behind it, taken through the two MENU COMMANDS rather than the
+  // two maths functions, so it stays true of what the buttons do.
+  {
+    OpenDocument bw = makeAdjustDocument("black and white");
+    OpenDocument desat = makeAdjustDocument("desaturate cmp");
+    applyBlackAndWhiteAdjustment(bw, BlackAndWhiteParams{});
+    applyDesaturate(desat);
+
+    // **Measured, not asserted bit-exact -- and the first version of this WAS
+    // bit-exact and failed.** ops/MonoOps.hpp claims the defaults equal
+    // applyGrayscale() "exactly", and algebraically they do: both sides are
+    // affine in the hue-sector fraction and agree at both ends of every
+    // sector. In floating point they are two different expression trees --
+    // `min + weight * chroma` against `0.2126r + 0.7152g + 0.0722b` -- so they
+    // land within an ulp of each other, not on it, and half-float storage
+    // rounds most but not all of that away. The claim is true as mathematics
+    // and false as a bit pattern.
+    //
+    // So the tolerance is the honest form of the claim, and the worst observed
+    // difference is PRINTED rather than merely bounded: a bound tells you the
+    // assertion passed, and the number tells you whether it passed by a
+    // margin or by a hair. If this ever grows past f16's own resolution
+    // (~4.9e-4 relative) the two really have diverged and the tolerance stops
+    // being an accounting of rounding.
+    float worst = 0.0f;
+    for (const auto& [coord, tile] : *bw.document.layers[0].rgbTiles) {
+      const Tile* other = desat.document.layers[0].rgbTiles->find(coord);
+      if (other == nullptr) {
+        worst = 1.0f;
+        break;
+      }
+      for (int32_t y = 0; y < kTileSize; ++y) {
+        for (int32_t x = 0; x < kTileSize; ++x) {
+          const std::array<float, 4> a = tile.readPixel(PixelCoord{x, y});
+          const std::array<float, 4> b = other->readPixel(PixelCoord{x, y});
+          for (int c = 0; c < 4; ++c)
+            worst = std::max(worst, std::fabs(a[static_cast<size_t>(c)] -
+                                              b[static_cast<size_t>(c)]));
+        }
+      }
+    }
+    std::printf("    [selftest] black & white vs desaturate: worst channel difference "
+                "%.3e over %zu tiles (f16 storage resolves ~4.9e-4 relative)\n",
+                static_cast<double>(worst),
+                bw.document.layers[0].rgbTiles->occupiedTileCount());
+    check(worst < 1e-3f,
+          "black & white: at its defaults it matches Desaturate to within f16 storage "
+          "resolution -- the dialog says so on screen, so it is measured here");
   }
 
   return ok;

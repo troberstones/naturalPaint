@@ -6812,7 +6812,16 @@ enum class FilterPreviewOwner {
   AdjustLevels,
   AdjustCurves,
   AdjustExposure,
-  AdjustChannelMixer
+  AdjustChannelMixer,
+  AdjustBrightnessContrast,
+  AdjustHueSaturation,
+  AdjustVibrance,
+  AdjustColorBalance,
+  AdjustBlackAndWhite,
+  AdjustPhotoFilter,
+  AdjustPosterize,
+  AdjustThreshold,
+  AdjustGradientMap
 };
 
 struct FilterPreviewState {
@@ -7809,6 +7818,400 @@ void drawChannelMixerDialog(AppState& st) {
   ImGui::EndPopup();
 }
 
+// ---------------------------------------------------------------------------
+// The nine dialogs for the ops that needed new arithmetic
+// ---------------------------------------------------------------------------
+//
+// Every one has the identical skeleton -- BeginPopupModal, clear the preview
+// on any close, controls, recompute on `settled || !wasOpen`, then
+// `drawAdjustmentButtons()` -- so what is worth reading in each is only the
+// controls and the one line of explanation under them. The skeleton itself is
+// argued once, in drawGaussianBlurDialog() and in this section's own header.
+
+void drawBrightnessContrastDialog(AppState& st) {
+  static GainOffsetGammaParams params{};
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Brightness/Contrast", nullptr,
+                              ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustBrightnessContrast);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  // Gain, offset and gamma rather than two sliders labelled "brightness" and
+  // "contrast", because those two names do not name an operation --
+  // docs/operations.md §1.2 calls this trio "the honest form of
+  // brightness/contrast" and ops/ToneOps.hpp derives the operand order from
+  // ASC-CDL. Gain reads as contrast, offset as brightness, and the labels say
+  // both so a painter looking for the familiar control finds it.
+  bool settled = false;
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Gain (contrast)", &params.gain, 0.0f, 4.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Offset (brightness)", &params.offset, -1.0f, 1.0f, "%+.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Gamma", &params.gamma, 0.1f, 4.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled("output = pow(input * gain + offset, 1/gamma), in linear light.");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustBrightnessContrast,
+                        previewBrightnessContrast, params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "brightness/contrast", status,
+                        [](OpenDocument& d) { return applyBrightnessContrast(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawHueSaturationDialog(AppState& st) {
+  static HueSaturationParams params{};
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Hue/Saturation", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustHueSaturation);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  bool settled = false;
+  settled |= ImGui::Checkbox("Colorize", &params.colorize);
+  if (params.colorize) {
+    // Colorize replaces every pixel's hue with one target, keeping each
+    // pixel's own luma -- so the ordinary hue/saturation controls below would
+    // have nothing to act on, and showing them live but inert is worse than
+    // not showing them.
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Target hue", &params.colorizeHueDegrees, -180.0f, 180.0f, "%.1f deg");
+    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Target saturation", &params.colorizeSaturation, 0.0f, 2.0f, "%.3f");
+    settled |= ImGui::IsItemDeactivatedAfterEdit();
+  } else {
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Hue", &params.hueDegrees, -180.0f, 180.0f, "%.1f deg");
+    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Saturation", &params.saturation, 0.0f, 3.0f, "%.3f");
+    settled |= ImGui::IsItemDeactivatedAfterEdit();
+  }
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Lightness", &params.lightness, -1.0f, 1.0f, "%+.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  // Worth saying out loud, because it is the property that makes this op
+  // usable at all: the hue rotation is about the normalised Rec.709 luma
+  // axis, so it moves colour without moving brightness. Lightness is the
+  // separate, deliberate control for that.
+  ImGui::TextDisabled("Hue rotates about the luma axis, so brightness is preserved exactly.");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustHueSaturation,
+                        previewHueSaturationAdjustment, params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "hue/saturation", status,
+                        [](OpenDocument& d) { return applyHueSaturationAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawVibranceDialog(AppState& st) {
+  static VibranceParams params{};
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Vibrance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustVibrance);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Amount", &params.amount, -1.0f, 2.0f, "%+.3f");
+  const bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled("Weighted by existing saturation: muted colours move most.");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustVibrance, previewVibranceAdjustment, params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "vibrance", status,
+                        [](OpenDocument& d) { return applyVibranceAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawColorBalanceDialog(AppState& st) {
+  static ColorBalanceParams params{};
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Colour Balance", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustColorBalance);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  // Three tonal ranges, each a cyan-red / magenta-green / yellow-blue triple.
+  // Photoshop draws these as three named sliders per range rather than "R G B"
+  // because the axis a painter thinks in is the opposed pair, and the two
+  // labellings are the same number: pushing "red" IS pulling "cyan".
+  bool settled = false;
+  auto rangeSliders = [&settled](const char* title, std::array<float, 3>& v, float lo, float hi) {
+    ImGui::SeparatorText(title);
+    ImGui::PushID(title);
+    const char* kLabels[] = {"Cyan / Red", "Magenta / Green", "Yellow / Blue"};
+    for (int c = 0; c < 3; ++c) {
+      ImGui::SetNextItemWidth(220.0f);
+      ImGui::SliderFloat(kLabels[c], &v[static_cast<size_t>(c)], lo, hi, "%+.3f");
+      settled |= ImGui::IsItemDeactivatedAfterEdit();
+    }
+    ImGui::PopID();
+  };
+  rangeSliders("Shadows (lift)", params.shadowsLift, -0.5f, 0.5f);
+  rangeSliders("Midtones (gamma)", params.midtonesGamma, -1.0f, 1.0f);
+  rangeSliders("Highlights (gain)", params.highlightsGain, -0.5f, 0.5f);
+  settled |= ImGui::Checkbox("Preserve luminosity", &params.preserveLuminosity);
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustColorBalance,
+                        previewColorBalanceAdjustment, params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "colour balance", status,
+                        [](OpenDocument& d) { return applyColorBalanceAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawBlackAndWhiteDialog(AppState& st) {
+  static BlackAndWhiteParams params{};
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Black & White", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustBlackAndWhite);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  bool settled = false;
+  float* const weights[] = {&params.reds,  &params.yellows, &params.greens,
+                            &params.cyans, &params.blues,   &params.magentas};
+  const char* labels[] = {"Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas"};
+  for (int i = 0; i < 6; ++i) {
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat(labels[i], weights[i], -1.0f, 2.0f, "%.3f");
+    settled |= ImGui::IsItemDeactivatedAfterEdit();
+  }
+  if (ImGui::Button("Reset to Rec.709")) {
+    params = BlackAndWhiteParams{};
+    settled = true;
+  }
+  ImGui::SameLine();
+  // Not a slogan -- a measured property, and measured is the operative word.
+  // `--selftest` runs both commands over a real layer and reports the worst
+  // channel difference: one f16 storage step, which is the tile format's
+  // rounding and not the arithmetic (ops/MonoOps.hpp derives why the two
+  // agree algebraically). "Matches" rather than "equals" because the earlier
+  // wording promised bit-equality, which is not true and which a user could
+  // in principle catch us on.
+  ImGui::TextDisabled("the defaults match Desaturate");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustBlackAndWhite,
+                        previewBlackAndWhiteAdjustment, params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "black & white", status,
+                        [](OpenDocument& d) { return applyBlackAndWhiteAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawPhotoFilterDialog(AppState& st) {
+  static PhotoFilterParams params{};
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Photo Filter", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustPhotoFilter);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  bool settled = false;
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::ColorEdit3("Filter colour", params.color.data(), ImGuiColorEditFlags_Float);
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  // The two presets every photo-filter control ships with. Values are the
+  // conventional warming/cooling gel colours, in linear light.
+  if (ImGui::Button("Warming (85)")) {
+    params.color = {1.0f, 0.72f, 0.42f};
+    settled = true;
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cooling (80)")) {
+    params.color = {0.40f, 0.68f, 1.0f};
+    settled = true;
+  }
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Density", &params.density, 0.0f, 1.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  settled |= ImGui::Checkbox("Preserve luminosity", &params.preserveLuminosity);
+  ImGui::TextDisabled("Density blends toward the filtered colour; 0 is the identity.");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustPhotoFilter,
+                        previewPhotoFilterAdjustment, params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "photo filter", status,
+                        [](OpenDocument& d) { return applyPhotoFilterAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawPosterizeDialog(AppState& st) {
+  // 4 rather than PosterizeParams' own default of 0. Zero is the op's declared
+  // "off" value (ops/ToneOps.hpp), which is the right default for a params
+  // struct and the wrong one for a dialog: a Posterize that opens showing "0
+  // levels" and previewing nothing looks broken. 4 is a visible, conventional
+  // starting point.
+  static PosterizeParams params{4};
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Posterize", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustPosterize);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderInt("Levels", &params.levels, 2, 32);
+  const bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled("Quantised in the shaper domain, so the bands are perceptually even.");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustPosterize, previewPosterizeAdjustment,
+                        params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "posterize", status,
+                        [](OpenDocument& d) { return applyPosterizeAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawThresholdDialog(AppState& st) {
+  static ThresholdParams params{};
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Threshold", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustThreshold);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Level", &params.threshold, 0.0f, 1.0f, "%.3f");
+  const bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled("Rec.709 luma, compared in the shaper domain. At or above is white.");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustThreshold, previewThresholdAdjustment,
+                        params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "threshold", status,
+                        [](OpenDocument& d) { return applyThresholdAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawGradientMapDialog(AppState& st) {
+  // A black -> white ramp, planted on first use. `GradientMapParams{}` is
+  // deliberately EMPTY (ops/MonoOps.hpp: no colour stops means passthrough, so
+  // the default is an exact identity), which is right for the op and useless
+  // for a dialog -- an empty gradient map previews nothing and looks broken.
+  // The dialog is the layer that knows a person is looking at it.
+  static GradientMapParams params = [] {
+    GradientMapParams p;
+    p.stops.colorStops.push_back(ColorStop{0.0f, {0.0f, 0.0f, 0.0f}});
+    p.stops.colorStops.push_back(ColorStop{1.0f, {1.0f, 1.0f, 1.0f}});
+    return p;
+  }();
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (!ImGui::BeginPopupModal("Gradient Map", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustGradientMap);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  bool settled = false;
+  for (size_t i = 0; i < params.stops.colorStops.size(); ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    ImGui::SetNextItemWidth(90.0f);
+    ImGui::SliderFloat("##pos", &params.stops.colorStops[i].position, 0.0f, 1.0f, "%.2f");
+    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::ColorEdit3("##col", params.stops.colorStops[i].color.data(),
+                      ImGuiColorEditFlags_Float);
+    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    if (params.stops.colorStops.size() > 2) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x")) {
+        params.stops.colorStops.erase(params.stops.colorStops.begin() +
+                                      static_cast<ptrdiff_t>(i));
+        settled = true;
+        ImGui::PopID();
+        break;
+      }
+    }
+    ImGui::PopID();
+  }
+  if (ImGui::Button("Add stop")) {
+    params.stops.colorStops.push_back(ColorStop{0.5f, {0.5f, 0.5f, 0.5f}});
+    settled = true;
+  }
+  // `gradientColorAt()` requires stops sorted ascending by position -- its own
+  // contract, the same one ops/Gradient's other callers honour. The sliders
+  // let a stop be dragged past its neighbour, so the sort happens here on
+  // every edit rather than being assumed.
+  if (settled) sortGradientStops(params.stops);
+  ImGui::TextDisabled("Rec.709 luma indexes the ramp. Outside the stops, the ends extend flat.");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustGradientMap,
+                        previewGradientMapAdjustment, params);
+  wasOpen = true;
+  drawAdjustmentButtons(od, "Apply", "gradient map", status,
+                        [](OpenDocument& d) { return applyGradientMapAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+// The five commands with no dialog: Invert and the four solvers. Each runs
+// through the same app/AdjustmentOps entry point the menu would call, so each
+// records one history entry and refuses on the same layers for the same
+// reasons. A refusal goes to stderr, since there is no modal to put it in --
+// named as a real gap rather than a design: a painter who invokes Auto Tone
+// on a Pigment layer sees nothing happen and gets no account of why. The fix
+// is a transient status line in the chrome, which does not exist yet.
+template <typename ApplyFn>
+void performImmediateAdjustment(AppState& st, const char* label, ApplyFn applyFn) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) return;
+  const FilterOpResult r = applyFn(*od);
+  if (r.refusal != PixelOpRefusal::None) {
+    std::fprintf(stderr, "[%s] %s\n", label,
+                 pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), label).c_str());
+  }
+}
+
 // The single consumer of `AppState::requestAdjustment`. Runs BEFORE the four
 // modals below, so a request made this frame opens its popup on this frame
 // rather than the next one.
@@ -7825,20 +8228,50 @@ void serviceAdjustmentRequest(AppState& st) {
   st.requestAdjustment = AdjustmentRequest::None;
 
   switch (req) {
-    case AdjustmentRequest::Levels:       ImGui::OpenPopup("Levels"); break;
-    case AdjustmentRequest::Curves:       ImGui::OpenPopup("Curves"); break;
-    case AdjustmentRequest::Exposure:     ImGui::OpenPopup("Exposure"); break;
-    case AdjustmentRequest::ChannelMixer: ImGui::OpenPopup("Channel Mixer"); break;
-    case AdjustmentRequest::Desaturate: {
-      OpenDocument* od = st.documents.active();
-      if (od == nullptr) break;
-      const FilterOpResult r = applyDesaturate(*od);
-      if (r.refusal != PixelOpRefusal::None) {
-        std::fprintf(stderr, "[desaturate] %s\n",
-                     pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "desaturate").c_str());
-      }
+    // The ten with a dialog. The popup name here must match the string the
+    // matching `drawXDialog()` passes to `BeginPopupModal()` exactly -- ImGui
+    // identifies popups by that string, so a typo is a menu item that opens
+    // nothing at all and reports no error.
+    case AdjustmentRequest::Levels:             ImGui::OpenPopup("Levels"); break;
+    case AdjustmentRequest::Curves:             ImGui::OpenPopup("Curves"); break;
+    case AdjustmentRequest::Exposure:           ImGui::OpenPopup("Exposure"); break;
+    case AdjustmentRequest::ChannelMixer:       ImGui::OpenPopup("Channel Mixer"); break;
+    case AdjustmentRequest::BrightnessContrast: ImGui::OpenPopup("Brightness/Contrast"); break;
+    case AdjustmentRequest::HueSaturation:      ImGui::OpenPopup("Hue/Saturation"); break;
+    case AdjustmentRequest::Vibrance:           ImGui::OpenPopup("Vibrance"); break;
+    case AdjustmentRequest::ColorBalance:       ImGui::OpenPopup("Colour Balance"); break;
+    case AdjustmentRequest::BlackAndWhite:      ImGui::OpenPopup("Black & White"); break;
+    case AdjustmentRequest::PhotoFilter:        ImGui::OpenPopup("Photo Filter"); break;
+    case AdjustmentRequest::Posterize:          ImGui::OpenPopup("Posterize"); break;
+    case AdjustmentRequest::Threshold:          ImGui::OpenPopup("Threshold"); break;
+    case AdjustmentRequest::GradientMap:        ImGui::OpenPopup("Gradient Map"); break;
+
+    // The six that act on the spot.
+    case AdjustmentRequest::Desaturate:
+      performImmediateAdjustment(st, "desaturate",
+                                 [](OpenDocument& d) { return applyDesaturate(d); });
       break;
-    }
+    case AdjustmentRequest::Invert:
+      performImmediateAdjustment(st, "invert",
+                                 [](OpenDocument& d) { return applyInvert(d); });
+      break;
+    case AdjustmentRequest::AutoTone:
+      performImmediateAdjustment(st, "auto tone",
+                                 [](OpenDocument& d) { return applyAutoTone(d); });
+      break;
+    case AdjustmentRequest::AutoContrast:
+      performImmediateAdjustment(st, "auto contrast",
+                                 [](OpenDocument& d) { return applyAutoContrast(d); });
+      break;
+    case AdjustmentRequest::AutoColor:
+      performImmediateAdjustment(st, "auto colour",
+                                 [](OpenDocument& d) { return applyAutoColor(d); });
+      break;
+    case AdjustmentRequest::Equalize:
+      performImmediateAdjustment(st, "equalize",
+                                 [](OpenDocument& d) { return applyEqualize(d); });
+      break;
+
     case AdjustmentRequest::None:
       break;
   }
@@ -7850,6 +8283,15 @@ void drawAdjustmentDialogs(AppState& st) {
   drawCurvesDialog(st);
   drawExposureDialog(st);
   drawChannelMixerDialog(st);
+  drawBrightnessContrastDialog(st);
+  drawHueSaturationDialog(st);
+  drawVibranceDialog(st);
+  drawColorBalanceDialog(st);
+  drawBlackAndWhiteDialog(st);
+  drawPhotoFilterDialog(st);
+  drawPosterizeDialog(st);
+  drawThresholdDialog(st);
+  drawGradientMapDialog(st);
 }
 
 // ---------------------------------------------------------------------------
@@ -8885,6 +9327,48 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
       break;
     case MenuAction::AdjustDesaturate:
       st.requestAdjustment = AdjustmentRequest::Desaturate;
+      break;
+    case MenuAction::AdjustBrightnessContrast:
+      st.requestAdjustment = AdjustmentRequest::BrightnessContrast;
+      break;
+    case MenuAction::AdjustHueSaturation:
+      st.requestAdjustment = AdjustmentRequest::HueSaturation;
+      break;
+    case MenuAction::AdjustVibrance:
+      st.requestAdjustment = AdjustmentRequest::Vibrance;
+      break;
+    case MenuAction::AdjustColorBalance:
+      st.requestAdjustment = AdjustmentRequest::ColorBalance;
+      break;
+    case MenuAction::AdjustBlackAndWhite:
+      st.requestAdjustment = AdjustmentRequest::BlackAndWhite;
+      break;
+    case MenuAction::AdjustPhotoFilter:
+      st.requestAdjustment = AdjustmentRequest::PhotoFilter;
+      break;
+    case MenuAction::AdjustInvert:
+      st.requestAdjustment = AdjustmentRequest::Invert;
+      break;
+    case MenuAction::AdjustPosterize:
+      st.requestAdjustment = AdjustmentRequest::Posterize;
+      break;
+    case MenuAction::AdjustThreshold:
+      st.requestAdjustment = AdjustmentRequest::Threshold;
+      break;
+    case MenuAction::AdjustGradientMap:
+      st.requestAdjustment = AdjustmentRequest::GradientMap;
+      break;
+    case MenuAction::AdjustAutoTone:
+      st.requestAdjustment = AdjustmentRequest::AutoTone;
+      break;
+    case MenuAction::AdjustAutoContrast:
+      st.requestAdjustment = AdjustmentRequest::AutoContrast;
+      break;
+    case MenuAction::AdjustAutoColor:
+      st.requestAdjustment = AdjustmentRequest::AutoColor;
+      break;
+    case MenuAction::AdjustEqualize:
+      st.requestAdjustment = AdjustmentRequest::Equalize;
       break;
 
     // Not a silent default: a `MenuAction` added to the enum without a body

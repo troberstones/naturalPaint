@@ -293,6 +293,33 @@ enum class MenuAction : uint16_t {
   AdjustChannelMixer,
   AdjustDesaturate,
 
+  // The nine that needed new arithmetic (ops/ToneOps, ops/ColorOps,
+  // ops/MonoOps), plus Invert -- the rest of docs/operations.md §1.2's
+  // "Committed additions" that this build can now honestly offer, because the
+  // engine behind each one exists. Ordered as Photoshop's own submenu orders
+  // them, which is not decoration: a painter reaches for these by position as
+  // much as by name.
+  AdjustBrightnessContrast,
+  AdjustHueSaturation,
+  AdjustVibrance,
+  AdjustColorBalance,
+  AdjustBlackAndWhite,
+  AdjustPhotoFilter,
+  AdjustInvert,
+  AdjustPosterize,
+  AdjustThreshold,
+  AdjustGradientMap,
+
+  // The four solvers (ops/AutoLevels). These are the only items in the whole
+  // menu that read the document before deciding what to do -- each
+  // histograms the active layer, solves for ordinary Levels (or, for
+  // Equalize, Curves) parameters, and applies those. `MenuEffect::Inline` for
+  // all four, like Desaturate: Photoshop gives none of them a dialog either.
+  AdjustAutoTone,
+  AdjustAutoContrast,
+  AdjustAutoColor,
+  AdjustEqualize,
+
   Count,
 };
 

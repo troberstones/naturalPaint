@@ -171,11 +171,17 @@ bool runMenuModelTest() {
   // ui/MenuModel.hpp's own rule holds: an operation with no engine behind it
   // stays out of the menu, and the dozen further adjustments in
   // docs/operations.md §1.2 each need a new ops/ function first.
-  check(kMenuActionCount == 74,
-        "ids: exactly 74 actions -- the original 41-item extraction plus D1/D2's "
+  // 74 -> 88: the rest of Image > Adjustments. Nine that needed new arithmetic
+  // (ops/ToneOps, ops/ColorOps, ops/MonoOps), Invert, and the four solvers
+  // (ops/AutoLevels) -- nineteen items in the submenu altogether, which is now
+  // the whole of what docs/operations.md §1.2 lists minus the four this build
+  // deliberately does not claim (selective colour, colour lookup, and the two
+  // that are class B rather than class A).
+  check(kMenuActionCount == 88,
+        "ids: exactly 88 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
-        "Emboss/Median/Motion Blur and Adjustments' five, so an item lost in a "
-        "later edit fails here");
+        "Emboss/Median/Motion Blur and Adjustments' nineteen, so an item lost in "
+        "a later edit fails here");
 
   {
     std::set<MenuAction> seen;
@@ -536,11 +542,16 @@ bool runMenuModelTest() {
     // Shift+Cmd+U (Desaturate) -- Photoshop's own three, each verified free in
     // keymaps/default.json before it was taken. Exposure and Channel Mixer
     // claim nothing, matching Photoshop, which is why this is +3 and not +5.
-    check(claimed == 26,
-          "keys: exactly 26 chords are claimed -- D1/D2's ten, the eleven that came "
+    // 26 -> 33: Adjustments' seven further chords -- Cmd+U, Cmd+B, Cmd+I,
+    // Shift+Opt+Cmd+B, Shift+Cmd+L, Shift+Opt+Cmd+L, Shift+Cmd+B. All
+    // Photoshop's own, each verified free in keymaps/default.json before being
+    // taken. Ten of the nineteen items claim nothing, which is also
+    // Photoshop's arrangement.
+    check(claimed == 33,
+          "keys: exactly 33 chords are claimed -- D1/D2's ten, the eleven that came "
           "before them, Free Transform's Cmd+T, ResetView's Shift+Cmd+0 and "
-          "Adjustments' Cmd+L/Cmd+M/Shift+Cmd+U. Pinned, because claiming one more "
-          "silently takes that key away from SDL and from keymaps/default.json");
+          "Adjustments' ten. Pinned, because claiming one more silently takes that "
+          "key away from SDL and from keymaps/default.json");
   }
 
   {

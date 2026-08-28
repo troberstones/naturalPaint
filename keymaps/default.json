@@ -37,6 +37,13 @@
     { "key": "L", "mods": ["Cmd"], "action": "adjust_levels" },
     { "key": "M", "mods": ["Cmd"], "action": "adjust_curves" },
     { "key": "U", "mods": ["Cmd", "Shift"], "action": "adjust_desaturate" },
+    { "key": "U", "mods": ["Cmd"], "action": "adjust_hue_saturation" },
+    { "key": "B", "mods": ["Cmd"], "action": "adjust_color_balance" },
+    { "key": "B", "mods": ["Cmd", "Shift", "Alt"], "action": "adjust_black_and_white" },
+    { "key": "I", "mods": ["Cmd"], "action": "adjust_invert" },
+    { "key": "L", "mods": ["Cmd", "Shift"], "action": "adjust_auto_tone" },
+    { "key": "L", "mods": ["Cmd", "Shift", "Alt"], "action": "adjust_auto_contrast" },
+    { "key": "B", "mods": ["Cmd", "Shift"], "action": "adjust_auto_color" },
 
     { "key": ";", "mods": ["Cmd"], "action": "toggle_guides" },
     { "key": ";", "mods": ["Cmd", "Shift"], "action": "toggle_snapping" },

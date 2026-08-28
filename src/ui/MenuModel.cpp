@@ -217,6 +217,39 @@ const MenuItemSpec* specTable() {
     set(MenuAction::AdjustChannelMixer, "Channel Mixer...", "");
     set(MenuAction::AdjustDesaturate, "Desaturate", "Shift+Cmd+U",
         MenuKeyEquivalent{'u', kMenuModCmd | kMenuModShift, "adjust_desaturate"});
+
+    // The nine that needed new arithmetic, and Invert. Chords are Photoshop's
+    // own; each was checked free in `keymaps/default.json` before being
+    // claimed, because app/selftest/MenuModel.cpp cross-checks the two and a
+    // collision is otherwise a silent double-binding.
+    set(MenuAction::AdjustBrightnessContrast, "Brightness/Contrast...", "");
+    set(MenuAction::AdjustHueSaturation, "Hue/Saturation...", "Cmd+U",
+        MenuKeyEquivalent{'u', kMenuModCmd, "adjust_hue_saturation"});
+    set(MenuAction::AdjustVibrance, "Vibrance...", "");
+    set(MenuAction::AdjustColorBalance, "Colour Balance...", "Cmd+B",
+        MenuKeyEquivalent{'b', kMenuModCmd, "adjust_color_balance"});
+    set(MenuAction::AdjustBlackAndWhite, "Black & White...", "Shift+Opt+Cmd+B",
+        MenuKeyEquivalent{'b', kMenuModCmd | kMenuModShift | kMenuModOption,
+                          "adjust_black_and_white"});
+    set(MenuAction::AdjustPhotoFilter, "Photo Filter...", "");
+    // No "..." -- no dialog. Cmd+I, and note Shift+Cmd+I is already Invert
+    // Selection, exactly as in Photoshop, so the two do not collide.
+    set(MenuAction::AdjustInvert, "Invert", "Cmd+I",
+        MenuKeyEquivalent{'i', kMenuModCmd, "adjust_invert"});
+    set(MenuAction::AdjustPosterize, "Posterize...", "");
+    set(MenuAction::AdjustThreshold, "Threshold...", "");
+    set(MenuAction::AdjustGradientMap, "Gradient Map...", "");
+
+    // The four solvers. None takes "..." -- none has a dialog, which is
+    // Photoshop's arrangement for all four and this build's too.
+    set(MenuAction::AdjustAutoTone, "Auto Tone", "Shift+Cmd+L",
+        MenuKeyEquivalent{'l', kMenuModCmd | kMenuModShift, "adjust_auto_tone"});
+    set(MenuAction::AdjustAutoContrast, "Auto Contrast", "Shift+Opt+Cmd+L",
+        MenuKeyEquivalent{'l', kMenuModCmd | kMenuModShift | kMenuModOption,
+                          "adjust_auto_contrast"});
+    set(MenuAction::AdjustAutoColor, "Auto Colour", "Shift+Cmd+B",
+        MenuKeyEquivalent{'b', kMenuModCmd | kMenuModShift, "adjust_auto_color"});
+    set(MenuAction::AdjustEqualize, "Equalize", "");
     return true;
   }();
   (void)built;
@@ -414,6 +447,20 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::AdjustExposure: return "AdjustExposure";
     case MenuAction::AdjustChannelMixer: return "AdjustChannelMixer";
     case MenuAction::AdjustDesaturate: return "AdjustDesaturate";
+    case MenuAction::AdjustBrightnessContrast: return "AdjustBrightnessContrast";
+    case MenuAction::AdjustHueSaturation: return "AdjustHueSaturation";
+    case MenuAction::AdjustVibrance: return "AdjustVibrance";
+    case MenuAction::AdjustColorBalance: return "AdjustColorBalance";
+    case MenuAction::AdjustBlackAndWhite: return "AdjustBlackAndWhite";
+    case MenuAction::AdjustPhotoFilter: return "AdjustPhotoFilter";
+    case MenuAction::AdjustInvert: return "AdjustInvert";
+    case MenuAction::AdjustPosterize: return "AdjustPosterize";
+    case MenuAction::AdjustThreshold: return "AdjustThreshold";
+    case MenuAction::AdjustGradientMap: return "AdjustGradientMap";
+    case MenuAction::AdjustAutoTone: return "AdjustAutoTone";
+    case MenuAction::AdjustAutoContrast: return "AdjustAutoContrast";
+    case MenuAction::AdjustAutoColor: return "AdjustAutoColor";
+    case MenuAction::AdjustEqualize: return "AdjustEqualize";
     case MenuAction::Count: break;
   }
   // Not a fallback string: reaching this means an enumerator was added without
@@ -483,6 +530,19 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::AdjustCurves:
     case MenuAction::AdjustExposure:
     case MenuAction::AdjustChannelMixer:
+    case MenuAction::AdjustBrightnessContrast:
+    case MenuAction::AdjustHueSaturation:
+    case MenuAction::AdjustVibrance:
+    case MenuAction::AdjustColorBalance:
+    case MenuAction::AdjustBlackAndWhite:
+    case MenuAction::AdjustPhotoFilter:
+    case MenuAction::AdjustPosterize:
+    case MenuAction::AdjustThreshold:
+    case MenuAction::AdjustGradientMap:
+    // AdjustInvert and the four solvers are NOT here, for Desaturate's reason
+    // one comment up: none of the five asks the user anything, so all five are
+    // Inline. Invert takes no parameter at all; each solver reads its
+    // parameters off the histogram instead of off a person.
     // The five refine dialogs -- a radius, or a colour/band plus tolerance --
     // for the identical reason: opening one is `ImGui::OpenPopup()`, which a
     // native menu's AppKit callback has no frame to call.
@@ -684,12 +744,35 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     // Filter menu's seven items make the same trade.
     {
       MenuNode adjust = submenu("Adjustments");
+      // Photoshop's own grouping and order, separators included. The groups
+      // are not arbitrary: tonal controls first (the ones a painter reaches
+      // for most), then the colour controls, then the destructive
+      // simplifications (invert, posterize, threshold, gradient map), then
+      // the mono conversions, then the solvers last -- which is also roughly
+      // the order of how much of the original a command throws away.
+      adjust.children.push_back(item(MenuAction::AdjustBrightnessContrast, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustLevels, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustCurves, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustExposure, ctx.hasDocument));
       adjust.children.push_back(separator());
+      adjust.children.push_back(item(MenuAction::AdjustVibrance, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustHueSaturation, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustColorBalance, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustPhotoFilter, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustChannelMixer, ctx.hasDocument));
+      adjust.children.push_back(separator());
+      adjust.children.push_back(item(MenuAction::AdjustInvert, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustPosterize, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustThreshold, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustGradientMap, ctx.hasDocument));
+      adjust.children.push_back(separator());
+      adjust.children.push_back(item(MenuAction::AdjustBlackAndWhite, ctx.hasDocument));
       adjust.children.push_back(item(MenuAction::AdjustDesaturate, ctx.hasDocument));
+      adjust.children.push_back(separator());
+      adjust.children.push_back(item(MenuAction::AdjustAutoTone, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustAutoContrast, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustAutoColor, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustEqualize, ctx.hasDocument));
       image.children.push_back(std::move(adjust));
     }
     bar.push_back(std::move(image));

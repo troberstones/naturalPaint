@@ -2892,6 +2892,20 @@ int main(int argc, char** argv) {
           st.requestAdjustment = np::AdjustmentRequest::Curves;
         else if (action == "adjust_desaturate")
           st.requestAdjustment = np::AdjustmentRequest::Desaturate;
+        else if (action == "adjust_hue_saturation")
+          st.requestAdjustment = np::AdjustmentRequest::HueSaturation;
+        else if (action == "adjust_color_balance")
+          st.requestAdjustment = np::AdjustmentRequest::ColorBalance;
+        else if (action == "adjust_black_and_white")
+          st.requestAdjustment = np::AdjustmentRequest::BlackAndWhite;
+        else if (action == "adjust_invert")
+          st.requestAdjustment = np::AdjustmentRequest::Invert;
+        else if (action == "adjust_auto_tone")
+          st.requestAdjustment = np::AdjustmentRequest::AutoTone;
+        else if (action == "adjust_auto_contrast")
+          st.requestAdjustment = np::AdjustmentRequest::AutoContrast;
+        else if (action == "adjust_auto_color")
+          st.requestAdjustment = np::AdjustmentRequest::AutoColor;
         else if (action == "fit_window") st.requestFitWindow = true;
         else if (action == "zoom_100") st.requestZoom100 = true;
         else if (action == "zoom_in") st.requestZoomIn = true;

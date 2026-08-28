@@ -390,6 +390,20 @@ enum class AdjustmentRequest {
   Exposure,
   ChannelMixer,
   Desaturate,
+  BrightnessContrast,
+  HueSaturation,
+  Vibrance,
+  ColorBalance,
+  BlackAndWhite,
+  PhotoFilter,
+  Invert,
+  Posterize,
+  Threshold,
+  GradientMap,
+  AutoTone,
+  AutoContrast,
+  AutoColor,
+  Equalize,
 };
 
 struct AppState {

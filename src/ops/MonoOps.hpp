@@ -97,9 +97,20 @@ namespace np {
 //   magentas = kRec709LumaWeights[0] + kRec709LumaWeights[2]     = 0.2848
 //
 // This is not merely "a sensible neutral" -- with these defaults,
-// applyBlackAndWhite() is EXACTLY applyGrayscale()'s Rec.709 result for
-// EVERY input, not only the six anchors, and that is provable rather than
-// measured: `computeLuma()` is a linear functional of (r, g, b). Fix a
+// applyBlackAndWhite() is applyGrayscale()'s Rec.709 result for EVERY input,
+// not only the six anchors, and that is provable rather than measured:
+// `computeLuma()` is a linear functional of (r, g, b).
+//
+// **"Exactly" here means as ALGEBRA, not as a bit pattern**, and the
+// distinction is worth stating because an earlier draft of this comment said
+// EXACTLY without the qualifier and a bit-for-bit assertion built on it
+// failed. The two sides are different expression trees -- `m + weight * C`
+// against `0.2126r + 0.7152g + 0.0722b` -- so in floating point they land
+// within an ulp of each other rather than on it.
+// `app/selftest/AdjustmentMenu.cpp` measures the worst case over a real
+// layer and prints it: 4.883e-04, which is precisely one f16 storage step at
+// that magnitude, i.e. the whole of the disagreement is the tile format's
+// rounding and none of it is the arithmetic. Fix a
 // sector (fix which channel is max, which is min): inside that sector, as
 // `frac` sweeps 0 to 1 at constant `m` and `C`, the pixel's own (r, g, b)
 // moves affinely in `frac` (one channel pinned at `M`, one at `m`, the third

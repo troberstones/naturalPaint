@@ -2,7 +2,11 @@
 
 #include "app/DocumentLifecycle.hpp"
 #include "app/FilterOps.hpp"
+#include "ops/AutoLevels.hpp"
+#include "ops/ColorOps.hpp"
+#include "ops/MonoOps.hpp"
 #include "ops/PointOps.hpp"
+#include "ops/ToneOps.hpp"
 
 // app/AdjustmentOps -- the wiring bridge for the **Image > Adjustments** menu,
 // in the shape `app/FilterOps` already set for the Filter menu: the engine
@@ -145,5 +149,104 @@ FilterOpResult previewExposureAdjustment(const OpenDocument& doc, const Exposure
 FilterOpResult previewChannelMixerAdjustment(const OpenDocument& doc,
                                              const ChannelMixerParams& params,
                                              TileStore* previewOut);
+
+// ==========================================================================
+// The ops that needed new arithmetic (ops/ToneOps, ops/ColorOps, ops/MonoOps)
+// ==========================================================================
+//
+// Nine more of docs/operations.md §1.2's "Committed additions", wired through
+// the identical `pointOpTiles` engine and the identical `app/PixelOpBridge`
+// templates as the five above -- same refusals, same selection blend, same
+// one-history-entry rule. Nothing here is a new mechanism; each is a
+// `runFor()` overload and a label.
+//
+// The two with no preview twin are the two with no dialog, exactly as in
+// Photoshop: Desaturate above, and Invert below.
+FilterOpResult applyBrightnessContrast(OpenDocument& doc, const GainOffsetGammaParams& params);
+FilterOpResult applyHueSaturationAdjustment(OpenDocument& doc, const HueSaturationParams& params);
+FilterOpResult applyVibranceAdjustment(OpenDocument& doc, const VibranceParams& params);
+FilterOpResult applyColorBalanceAdjustment(OpenDocument& doc, const ColorBalanceParams& params);
+FilterOpResult applyBlackAndWhiteAdjustment(OpenDocument& doc, const BlackAndWhiteParams& params);
+FilterOpResult applyPhotoFilterAdjustment(OpenDocument& doc, const PhotoFilterParams& params);
+FilterOpResult applyPosterizeAdjustment(OpenDocument& doc, const PosterizeParams& params);
+FilterOpResult applyThresholdAdjustment(OpenDocument& doc, const ThresholdParams& params);
+FilterOpResult applyGradientMapAdjustment(OpenDocument& doc, const GradientMapParams& params);
+
+// Image > Adjustments > Invert (Cmd+I). No dialog and no preview: it takes no
+// parameter a user could set. `ops/ToneOps.hpp`'s header explains at length
+// why `InvertParams{}` inverts rather than being an identity -- this call is
+// precisely the caller that argument is about.
+FilterOpResult applyInvert(OpenDocument& doc, const InvertParams& params = {});
+
+FilterOpResult previewBrightnessContrast(const OpenDocument& doc,
+                                         const GainOffsetGammaParams& params,
+                                         TileStore* previewOut);
+FilterOpResult previewHueSaturationAdjustment(const OpenDocument& doc,
+                                              const HueSaturationParams& params,
+                                              TileStore* previewOut);
+FilterOpResult previewVibranceAdjustment(const OpenDocument& doc, const VibranceParams& params,
+                                         TileStore* previewOut);
+FilterOpResult previewColorBalanceAdjustment(const OpenDocument& doc,
+                                             const ColorBalanceParams& params,
+                                             TileStore* previewOut);
+FilterOpResult previewBlackAndWhiteAdjustment(const OpenDocument& doc,
+                                              const BlackAndWhiteParams& params,
+                                              TileStore* previewOut);
+FilterOpResult previewPhotoFilterAdjustment(const OpenDocument& doc,
+                                            const PhotoFilterParams& params,
+                                            TileStore* previewOut);
+FilterOpResult previewPosterizeAdjustment(const OpenDocument& doc, const PosterizeParams& params,
+                                          TileStore* previewOut);
+FilterOpResult previewThresholdAdjustment(const OpenDocument& doc, const ThresholdParams& params,
+                                          TileStore* previewOut);
+FilterOpResult previewGradientMapAdjustment(const OpenDocument& doc,
+                                            const GradientMapParams& params,
+                                            TileStore* previewOut);
+
+// ==========================================================================
+// The four solvers (ops/AutoLevels)
+// ==========================================================================
+//
+// `docs/operations.md` §1.2's rule: "Auto-anything is a **parameter solver,
+// not an op**: it inspects the histogram, computes levels or balance
+// parameters, and writes them into an ordinary editable op." These four honour
+// that -- each histograms the active layer, calls the matching `solveX()`, and
+// hands the result to `applyLevelsAdjustment()`/`applyCurvesAdjustment()`
+// above. There is no separate auto-tone *engine*; there is a solver and then
+// an ordinary Levels.
+//
+// They act immediately, with no dialog, which is Photoshop's own arrangement
+// for all four. The consequence, stated because it is the one place this build
+// does not fully deliver §1.2's promise: the user cannot *see* what the solver
+// chose, only its effect and a History entry naming it. Opening the Levels
+// dialog pre-loaded with the solved parameters would deliver it literally and
+// is a small, obvious follow-on -- it is left out here only because it is a
+// deviation from Photoshop's behaviour and this round was scoped to match.
+//
+// **What gets histogrammed, and the approximation in it.** The ACTIVE LAYER
+// only (`HistogramParams::sampleAllLayers = false`) -- an adjustment writes one
+// layer, so solving from a composite of layers it will not touch would fit the
+// wrong picture. When a selection is engaged, the region is that selection's
+// BOUNDING BOX (`core::selectionBounds()`), not its exact coverage:
+// `computeHistogram()` takes a rectangle and has no notion of partial
+// coverage. So a lasso around a dark figure on a bright field solves from a
+// rectangle that includes some of the field. The alternative -- teaching the
+// histogram about coverage -- is a real change to a module whose own header
+// already documents a deferred compositing question, and it is not made here.
+// Named rather than hidden, and asserted in `app/selftest/AdjustmentMenu.cpp`
+// so the behaviour is discoverable from the test output.
+//
+// `tuning` is the clip fraction and its friends (`ops/AutoLevels.hpp`); the
+// default is the conventional 0.1%-per-tail guard against a single stray hot
+// pixel destroying the mapping.
+FilterOpResult applyAutoTone(OpenDocument& doc, const AutoLevelsParams& tuning = {});
+FilterOpResult applyAutoContrast(OpenDocument& doc, const AutoLevelsParams& tuning = {});
+FilterOpResult applyAutoColor(OpenDocument& doc, const AutoLevelsParams& tuning = {});
+FilterOpResult applyEqualize(OpenDocument& doc, const AutoLevelsParams& tuning = {});
+
+// The histogram those four solve from, exposed so `--selftest` can assert the
+// region rule above directly rather than inferring it from a solved result,
+// and so a future dialog could show the same distribution the solver saw.
+HistogramResult adjustmentHistogramFor(const OpenDocument& doc);
 
 }  // namespace np
