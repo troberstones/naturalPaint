@@ -32,6 +32,7 @@ add_executable(naturalPaint
   # rather than globbed, same as every other source in this target, so adding
   # a section is a visible line in the diff and CMake reconfigures for it.
   app/selftest/Accumulator.cpp
+  app/selftest/AdjustmentMenu.cpp
   app/selftest/AdjustmentLayer.cpp
   app/selftest/ApplyPass.cpp
   app/selftest/BaseLayerAlpha.cpp
@@ -159,6 +160,7 @@ add_executable(naturalPaint
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp
   app/selftest/ZoomAndSize.cpp
+  app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
@@ -227,6 +229,7 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/PointOpTiles.cpp
   ops/PointOps.cpp
   ops/Resample.cpp
   ops/Roi.cpp

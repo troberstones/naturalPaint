@@ -2166,6 +2166,12 @@ int main(int argc, char** argv) {
     // PixelOpRefusal cannot touch refuses by the SAME message the paint
     // bucket already uses.
     const bool filterMenuOk = np::runFilterMenuTest();
+    // Image > Adjustments (app/AdjustmentOps, ops/PointOpTiles): the tile-level
+    // runner for ops/PointOps' pure rgb->rgb functions, the bridge that aims
+    // one at the active layer through the selection, and the five menu items.
+    // See SelfTest.hpp for why this section deliberately re-tests neither the
+    // maths nor the selection blend. Headless and GPU-free.
+    const bool adjustmentMenuOk = np::runAdjustmentMenuTest();
     // Reachability audit A5/B2/B3: the BRUSH panel's shared-field ranges, the
     // WET slider's route-dependent disabled state, and the loaded pigment's
     // ownership of Density/Staining/Granulation. Headless -- no ImGui frame,
@@ -2271,7 +2277,8 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
-                    openAnyFileOk && psdImportOk && filterMenuOk && selectMenuOk &&
+                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk &&
+                    selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk &&
                     canvasDimensionsOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
@@ -2848,6 +2855,19 @@ int main(int argc, char** argv) {
         // between a whole-layer and a selection-pixels transform needs the
         // live document.
         else if (action == "free_transform") st.requestFreeTransform = true;
+        // Image > Adjustments' three chorded commands (app/AdjustmentOps).
+        // These set the SAME `st.requestAdjustment` field the menu items set
+        // -- see that field's comment in app/AppState.hpp for why the request
+        // lives there rather than as a ui/MacPaintUI file-static like the
+        // Filter menu's. ui/MacPaintUI.cpp's adjustment block services it,
+        // opening the modal for the two that have one and performing
+        // Desaturate outright.
+        else if (action == "adjust_levels")
+          st.requestAdjustment = np::AdjustmentRequest::Levels;
+        else if (action == "adjust_curves")
+          st.requestAdjustment = np::AdjustmentRequest::Curves;
+        else if (action == "adjust_desaturate")
+          st.requestAdjustment = np::AdjustmentRequest::Desaturate;
         else if (action == "fit_window") st.requestFitWindow = true;
         else if (action == "zoom_100") st.requestZoom100 = true;
         else if (action == "zoom_in") st.requestZoomIn = true;

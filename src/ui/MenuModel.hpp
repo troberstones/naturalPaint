@@ -267,6 +267,32 @@ enum class MenuAction : uint16_t {
   ImageSize,
   CanvasSize,
 
+  // --- Image > Adjustments ------------------------------------------------
+  //
+  // app/AdjustmentOps, through ops/PointOpTiles and ops/PointOps' six pure
+  // `rgb -> rgb` functions. Photoshop's own Image > Adjustments submenu:
+  // destructive, aimed at the active layer, bounded by the selection.
+  //
+  // **Five items, and the reason it is five rather than nineteen is this
+  // header's existing rule, not a change of scope.** `MenuAction::ImageSize`'s
+  // comment above states it: an unwired operation is ABSENT from the menu, not
+  // present and inert. `docs/operations.md` §1.2 lists a dozen more
+  // adjustments (Brightness/Contrast, Hue/Saturation, Vibrance, Colour
+  // Balance, Black & White, Photo Filter, Invert, Posterize, Threshold,
+  // Gradient Map, and the auto solvers), each of which needs a new `ops/`
+  // function before it can honestly appear here. These five need none: their
+  // engine has existed since PLAN.md Phase 3 and had no menu path to it, the
+  // same reachability gap docs/reachability-audit.md C1 named for the filters.
+  //
+  // Desaturate is the one with no ellipsis, because it is the one with no
+  // dialog -- it takes no parameter a user could set. That is Photoshop's own
+  // arrangement and not a shortcut taken here.
+  AdjustLevels,
+  AdjustCurves,
+  AdjustExposure,
+  AdjustChannelMixer,
+  AdjustDesaturate,
+
   Count,
 };
 

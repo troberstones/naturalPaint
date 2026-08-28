@@ -30,6 +30,7 @@
 #include "app/DabPreview.hpp"
 #include "app/StrokePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "app/AdjustmentOps.hpp"
 #include "app/FilterOps.hpp"
 #include "app/HistoryPanel.hpp"
 #include "app/ImportImage.hpp"
@@ -6801,7 +6802,17 @@ enum class FilterPreviewOwner {
   AddNoise,
   Emboss,
   Median,
-  MotionBlur
+  MotionBlur,
+  // Image > Adjustments' four dialogs (app/AdjustmentOps). They share this
+  // enum with the Filter menu's seven rather than getting a parallel one,
+  // because they share the machinery it identifies: one preview at a time,
+  // owned by whichever modal is open, cleared by whichever modal closes. Two
+  // owner enums would mean two previews could be live at once and the canvas
+  // would have to pick.
+  AdjustLevels,
+  AdjustCurves,
+  AdjustExposure,
+  AdjustChannelMixer
 };
 
 struct FilterPreviewState {
@@ -7501,6 +7512,344 @@ void drawMotionBlurDialog(AppState& st) {
     ImGui::PopStyleColor();
   }
   ImGui::EndPopup();
+}
+
+// ===========================================================================
+// Image > Adjustments (app/AdjustmentOps.hpp)
+// ===========================================================================
+//
+// Four modals and one immediate command, on the same request-flag / popup /
+// preview-on-release shape the Filter dialogs above establish -- their
+// `IsItemDeactivatedAfterEdit()` discipline and their Cancel-clears-the-
+// preview behaviour are `drawGaussianBlurDialog()`'s comments and are not
+// re-argued here.
+//
+// **The one structural difference from the seven above, and the reason for
+// it.** These read `st.requestAdjustment` (app/AppState.hpp) instead of a
+// file-static `g_xRequested`, because three of them have a keyboard chord and
+// a chord is resolved in `main.cpp`, which cannot reach a static in this
+// translation unit. `serviceAdjustmentRequest()` is the single place that
+// consumes the field, so the menu path and the chord path converge before
+// either one opens anything.
+//
+// **Why the preview is not throttled harder than the filters', and why it is
+// still throttled at all.** A point op is dramatically cheaper than a spatial
+// one -- no apron, no gather, and `ops/PointOpTiles` visits only tiles the
+// layer already has, so an adjustment on a small sketch in a large canvas
+// touches a handful of tiles where a blur touches every one. But the recompute
+// still walks every occupied texel through a `std::function` per op and then
+// through `filterPreviewViewFor()`'s whole-document recomposite, and that
+// second half is the same cost it is for a blur. Recomputing on every frame of
+// a slider drag would therefore still be a full document composite per pixel
+// of mouse travel. So: same `IsItemDeactivatedAfterEdit()` throttle, for the
+// second half of the cost rather than the first.
+
+// The channel selector shared by the Levels and Curves dialogs -- Photoshop's
+// own arrangement, one channel edited at a time behind a combo, rather than
+// fifteen sliders at once.
+//
+// **Index 0 is "RGB", and editing it writes all three channels**, which is
+// what a composite adjustment IS in `ops/PointOps.hpp`'s vocabulary: "a
+// *composite* levels adjustment is just the caller passing the same
+// LevelsParams for all three channels, not a separate code path". That is the
+// engine's rule, honoured here rather than reinvented -- there is no fourth
+// composite slot in the params, and this combo is the only place the idea
+// exists.
+//
+// The visible consequence, stated because a user will meet it: editing a
+// single channel and then editing RGB overwrites what that channel held. That
+// is Photoshop's behaviour too, and the alternative -- compositing a fourth
+// curve on top of three -- would mean the dialog and the engine disagreed
+// about what the layer is going to look like.
+constexpr const char* kAdjustChannelLabels[] = {"RGB", "Red", "Green", "Blue"};
+
+bool drawAdjustChannelCombo(int* channelIdx) {
+  ImGui::SetNextItemWidth(120.0f);
+  return ImGui::Combo("Channel", channelIdx, kAdjustChannelLabels,
+                      IM_ARRAYSIZE(kAdjustChannelLabels));
+}
+
+// Shared tail of all four dialogs: the commit button, Cancel, and the refusal
+// line. `applyFn` returns the `FilterOpResult` its `applyX()` produced.
+//
+// Written once rather than four times because the three-way outcome -- refused
+// / changed nothing / done -- is the part most likely to drift if copied, and
+// because "nothing changed" MUST close the popup rather than sit there looking
+// broken (a neutral params struct is a legitimate thing to click OK on).
+template <typename ApplyFn>
+void drawAdjustmentButtons(OpenDocument* od, const char* verb, const char* label,
+                           std::string& status, ApplyFn applyFn) {
+  if (ImGui::Button(verb) && od != nullptr) {
+    const FilterOpResult r = applyFn(*od);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), label);
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (neutral settings, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+}
+
+void drawLevelsDialog(AppState& st) {
+  static std::array<LevelsParams, 3> channels{};
+  static int channelIdx = 0;
+  static std::string status;
+  static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
+
+  if (!ImGui::BeginPopupModal("Levels", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustLevels);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  bool edited = drawAdjustChannelCombo(&channelIdx);
+  // The values shown are channel 0's whenever RGB is selected -- see
+  // `kAdjustChannelLabels`' comment. A composite edit has just written the
+  // same numbers to all three, so channel 0 is a faithful reading of what the
+  // composite holds, not an arbitrary pick among three.
+  LevelsParams shown = channels[channelIdx == 0 ? 0 : channelIdx - 1];
+
+  ImGui::SeparatorText("Input");
+  ImGui::SetNextItemWidth(220.0f);
+  edited |= ImGui::SliderFloat("Black in", &shown.blackIn, 0.0f, 1.0f, "%.3f");
+  bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(220.0f);
+  edited |= ImGui::SliderFloat("White in", &shown.whiteIn, 0.0f, 4.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(220.0f);
+  edited |= ImGui::SliderFloat("Gamma", &shown.gamma, 0.1f, 4.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+
+  ImGui::SeparatorText("Output");
+  ImGui::SetNextItemWidth(220.0f);
+  edited |= ImGui::SliderFloat("Black out", &shown.blackOut, 0.0f, 1.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(220.0f);
+  edited |= ImGui::SliderFloat("White out", &shown.whiteOut, 0.0f, 1.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+
+  // `whiteIn` runs past 1.0 deliberately: this is a scene-linear working space
+  // and a highlight above 1.0 is ordinary, so a Levels white point capped at
+  // 1.0 could not reach it. ops/PointOps.hpp's own note on the `t` clamp
+  // explains what happens above `whiteIn` -- it saturates, which is correct
+  // black/white-point behaviour and not the module's no-clamp policy being
+  // broken.
+  ImGui::TextDisabled("White in above 1.0 reaches scene-linear highlights.");
+
+  if (edited) {
+    if (channelIdx == 0) {
+      channels[0] = shown;
+      channels[1] = shown;
+      channels[2] = shown;
+    } else {
+      channels[static_cast<size_t>(channelIdx - 1)] = shown;
+    }
+  }
+  // The combo is not a slider and never reports "deactivated after edit", so a
+  // channel switch has to force the recompute on its own or the canvas would
+  // keep showing the previous channel's preview.
+  if (settled || (edited && channelIdx >= 0 && !ImGui::IsAnyItemActive()) || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustLevels, previewLevelsAdjustment, channels);
+  wasOpen = true;
+
+  drawAdjustmentButtons(od, "Levels", "levels", status,
+                        [](OpenDocument& d) { return applyLevelsAdjustment(d, channels); });
+  ImGui::EndPopup();
+}
+
+void drawCurvesDialog(AppState& st) {
+  static std::array<Curve, 3> channels{};
+  static int channelIdx = 0;
+  static std::string status;
+  static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
+
+  if (!ImGui::BeginPopupModal("Curves", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustCurves);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  const bool switched = drawAdjustChannelCombo(&channelIdx);
+
+  // **The same `drawCurveWidget()` the GRADE panel's op-stack editor draws,
+  // at the same default size.** Not a second curve editor: that function is
+  // already shared with the BRUSH SETTINGS panel's LINK editor precisely so a
+  // third caller costs nothing, and its plotted spline is sampled through the
+  // very `evalCurve()` the engine will run -- so what this dialog draws cannot
+  // diverge from what the adjustment computes.
+  //
+  // Axes are shaper-domain (ADR-0004), which is what the control points ARE by
+  // contract; nothing here converts, and `applyCurves()` does the
+  // encode/decode round trip per channel.
+  Curve& editing = channels[channelIdx == 0 ? 0 : static_cast<size_t>(channelIdx - 1)];
+  ImGui::PushID(channelIdx);
+  bool edited = drawCurveWidget(editing);
+  ImGui::PopID();
+  if (edited && channelIdx == 0) {
+    channels[1] = channels[0];
+    channels[2] = channels[0];
+  }
+  ImGui::TextDisabled("Click to add a point, drag to move. Axes are the shaper domain.");
+  if (ImGui::Button("Reset channel")) {
+    editing.clear();
+    if (channelIdx == 0) {
+      channels[1].clear();
+      channels[2].clear();
+    }
+    edited = true;
+  }
+
+  // Unlike the Levels sliders there is no `IsItemDeactivatedAfterEdit()` to
+  // lean on -- `drawCurveWidget()` reports "changed" on every frame of a drag.
+  // `IsMouseDown()` is the equivalent signal: recompute when the drag ENDS,
+  // not throughout it, for the cost reason this section's header states.
+  const bool released = edited && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
+  if (released || switched || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustCurves, previewCurvesAdjustment, channels);
+  wasOpen = true;
+
+  drawAdjustmentButtons(od, "Curves", "curves", status,
+                        [](OpenDocument& d) { return applyCurvesAdjustment(d, channels); });
+  ImGui::EndPopup();
+}
+
+void drawExposureDialog(AppState& st) {
+  static ExposureParams params{};
+  static std::string status;
+  static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
+
+  if (!ImGui::BeginPopupModal("Exposure", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustExposure);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Stops", &params.stops, -6.0f, 6.0f, "%+.2f");
+  const bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  // Stops, not a percentage, and a pure multiply in linear light -- which is
+  // why this is the one adjustment here that is physically meaningful rather
+  // than perceptual, and why it is NOT authored in the shaper domain the way
+  // Curves is. ops/PointOps.hpp section 3 is the authority.
+  ImGui::TextDisabled("output = input * 2^stops, in linear light. 0 is the identity.");
+
+  if (settled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustExposure, previewExposureAdjustment, params);
+  wasOpen = true;
+
+  drawAdjustmentButtons(od, "Exposure", "exposure", status,
+                        [](OpenDocument& d) { return applyExposureAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+void drawChannelMixerDialog(AppState& st) {
+  static ChannelMixerParams params{};
+  static int outputIdx = 0;
+  static std::string status;
+  static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
+
+  if (!ImGui::BeginPopupModal("Channel Mixer", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::AdjustChannelMixer);
+    return;
+  }
+  OpenDocument* od = st.documents.active();
+
+  // One OUTPUT channel at a time, and no composite entry -- deliberately
+  // unlike Levels and Curves above. A channel mixer's matrix row IS the output
+  // channel's definition (`output[i] = m[i][0]*r + m[i][1]*g + m[i][2]*b +
+  // m[i][3]`), so "all three at once" would mean writing the same row three
+  // times, which is a greyscale conversion, not a composite mix -- and this
+  // application already has `Desaturate` for that.
+  static const char* kOutputs[] = {"Red", "Green", "Blue"};
+  ImGui::SetNextItemWidth(120.0f);
+  bool settled = false;
+  const bool switched = ImGui::Combo("Output channel", &outputIdx, kOutputs, IM_ARRAYSIZE(kOutputs));
+  auto& row = params.matrix[static_cast<size_t>(outputIdx)];
+
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Red source", &row[0], -2.0f, 2.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Green source", &row[1], -2.0f, 2.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Blue source", &row[2], -2.0f, 2.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(220.0f);
+  ImGui::SliderFloat("Constant", &row[3], -1.0f, 1.0f, "%.3f");
+  settled |= ImGui::IsItemDeactivatedAfterEdit();
+
+  // Photoshop shows a "Total" here because a row summing past 100% brightens
+  // that channel; the same is true in linear light, so the number is worth
+  // showing even though this build does not constrain it.
+  ImGui::TextDisabled("Source total: %+.3f (1.000 preserves this channel's level).",
+                      static_cast<double>(row[0] + row[1] + row[2]));
+
+  if (settled || switched || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::AdjustChannelMixer,
+                        previewChannelMixerAdjustment, params);
+  wasOpen = true;
+
+  drawAdjustmentButtons(od, "Mix", "channel mixer", status,
+                        [](OpenDocument& d) { return applyChannelMixerAdjustment(d, params); });
+  ImGui::EndPopup();
+}
+
+// The single consumer of `AppState::requestAdjustment`. Runs BEFORE the four
+// modals below, so a request made this frame opens its popup on this frame
+// rather than the next one.
+//
+// **Desaturate is performed here, not in a dialog**, because it has no
+// parameters -- see `MenuEffect`'s `AdjustDesaturate` comment in
+// ui/MenuModel.cpp. It still goes through the same `applyDesaturate()` the
+// menu would call, so it records the same one history entry and refuses on the
+// same layers for the same reasons; its refusal message goes to stderr rather
+// than into a modal, since there is no modal to put it in.
+void serviceAdjustmentRequest(AppState& st) {
+  const AdjustmentRequest req = st.requestAdjustment;
+  if (req == AdjustmentRequest::None) return;
+  st.requestAdjustment = AdjustmentRequest::None;
+
+  switch (req) {
+    case AdjustmentRequest::Levels:       ImGui::OpenPopup("Levels"); break;
+    case AdjustmentRequest::Curves:       ImGui::OpenPopup("Curves"); break;
+    case AdjustmentRequest::Exposure:     ImGui::OpenPopup("Exposure"); break;
+    case AdjustmentRequest::ChannelMixer: ImGui::OpenPopup("Channel Mixer"); break;
+    case AdjustmentRequest::Desaturate: {
+      OpenDocument* od = st.documents.active();
+      if (od == nullptr) break;
+      const FilterOpResult r = applyDesaturate(*od);
+      if (r.refusal != PixelOpRefusal::None) {
+        std::fprintf(stderr, "[desaturate] %s\n",
+                     pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "desaturate").c_str());
+      }
+      break;
+    }
+    case AdjustmentRequest::None:
+      break;
+  }
+}
+
+void drawAdjustmentDialogs(AppState& st) {
+  serviceAdjustmentRequest(st);
+  drawLevelsDialog(st);
+  drawCurvesDialog(st);
+  drawExposureDialog(st);
+  drawChannelMixerDialog(st);
 }
 
 // ---------------------------------------------------------------------------
@@ -8513,6 +8862,30 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
     case MenuAction::CanvasSize: g_canvasSizeRequested = true; break;
+
+    // --- Image > Adjustments ---------------------------------------------
+    //
+    // Into `st.requestAdjustment`, not into a file-static -- see that field's
+    // comment in app/AppState.hpp. `keymaps/default.json`'s "adjust_levels",
+    // "adjust_curves" and "adjust_desaturate" write the identical values from
+    // main.cpp, which is the whole point: the chord and the menu item are one
+    // path from here on, exactly as `MenuAction::FreeTransform` and Cmd+T
+    // already are.
+    case MenuAction::AdjustLevels:
+      st.requestAdjustment = AdjustmentRequest::Levels;
+      break;
+    case MenuAction::AdjustCurves:
+      st.requestAdjustment = AdjustmentRequest::Curves;
+      break;
+    case MenuAction::AdjustExposure:
+      st.requestAdjustment = AdjustmentRequest::Exposure;
+      break;
+    case MenuAction::AdjustChannelMixer:
+      st.requestAdjustment = AdjustmentRequest::ChannelMixer;
+      break;
+    case MenuAction::AdjustDesaturate:
+      st.requestAdjustment = AdjustmentRequest::Desaturate;
+      break;
 
     // Not a silent default: a `MenuAction` added to the enum without a body
     // here is a menu item that draws, highlights, clicks and does absolutely
@@ -10013,6 +10386,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawEmbossDialog(st);
   drawMedianDialog(st);
   drawMotionBlurDialog(st);
+  drawAdjustmentDialogs(st);
   drawImageSizeDialog(st);
   drawCanvasSizeDialog(st);
   // docs/reachability-audit.md C5 (PRD E4/E8/E9): the Select menu's five

@@ -166,10 +166,16 @@ bool runMenuModelTest() {
   // merge that kept either track's figure would leave this tripwire green
   // while under-counting the other's -- which is the exact failure this
   // pin exists to catch, so it is 65 + 1 + 3 rather than either 66 or 68.
-  check(kMenuActionCount == 69,
-        "ids: exactly 69 actions -- the original 41-item extraction plus D1/D2's "
-        "eleven, C5's six, C1's six, Free Transform, ResetView and "
-        "Emboss/Median/Motion Blur, so an item lost in a later edit fails here");
+  // 69 -> 74: Image > Adjustments' five (Levels, Curves, Exposure, Channel
+  // Mixer, Desaturate -- app/AdjustmentOps.hpp). Five and not more because
+  // ui/MenuModel.hpp's own rule holds: an operation with no engine behind it
+  // stays out of the menu, and the dozen further adjustments in
+  // docs/operations.md §1.2 each need a new ops/ function first.
+  check(kMenuActionCount == 74,
+        "ids: exactly 74 actions -- the original 41-item extraction plus D1/D2's "
+        "eleven, C5's six, C1's six, Free Transform, ResetView, "
+        "Emboss/Median/Motion Blur and Adjustments' five, so an item lost in a "
+        "later edit fails here");
 
   {
     std::set<MenuAction> seen;
@@ -526,11 +532,15 @@ bool runMenuModelTest() {
     // Delete, and the rule two blocks up ("every claimed chord carries
     // Command") is exactly why it stays unclaimed rather than swallowing the
     // Delete key out of every text field in the application.
-    check(claimed == 23,
-          "keys: exactly 23 chords are claimed -- D1/D2's ten, the eleven that came "
-          "before them, Free Transform's Cmd+T and ResetView's Shift+Cmd+0. Pinned, "
-          "because claiming one more silently takes that key away from SDL and from "
-          "keymaps/default.json");
+    // 23 -> 26: Image > Adjustments claims Cmd+L (Levels), Cmd+M (Curves) and
+    // Shift+Cmd+U (Desaturate) -- Photoshop's own three, each verified free in
+    // keymaps/default.json before it was taken. Exposure and Channel Mixer
+    // claim nothing, matching Photoshop, which is why this is +3 and not +5.
+    check(claimed == 26,
+          "keys: exactly 26 chords are claimed -- D1/D2's ten, the eleven that came "
+          "before them, Free Transform's Cmd+T, ResetView's Shift+Cmd+0 and "
+          "Adjustments' Cmd+L/Cmd+M/Shift+Cmd+U. Pinned, because claiming one more "
+          "silently takes that key away from SDL and from keymaps/default.json");
   }
 
   {

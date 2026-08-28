@@ -3791,6 +3791,43 @@ bool runPsdImportTest();
 //
 // Headless and GPU-free, like every ops/ section it sits beside.
 bool runFilterMenuTest();
+
+// ---------------------------------------------------------------------------
+// Image > Adjustments (app/AdjustmentOps, ops/PointOpTiles)
+// ---------------------------------------------------------------------------
+//
+// Photoshop's Image > Adjustments menu, wired to the six `rgb -> rgb`
+// functions ops/PointOps has carried since PLAN.md Phase 3 with no UI path to
+// any of them -- docs/reachability-audit.md C1's gap, one module over from the
+// filters it already named.
+//
+// **Deliberately narrow, and the narrowness is the design.** The maths is
+// `runPointOpsTest()`'s; the selection blend, the copy-on-write discipline and
+// the one-entry history rule are `runFilterMenuTest()`'s, exercised through
+// the very same app/PixelOpBridge.hpp templates. Re-asserting either here
+// would produce assertions that pass because something else is correct. What
+// this section owns is the join:
+//
+//  A. ops/PointOpTiles' own three claims, none of which any spatial filter
+//     shares -- a point op allocates no tile the source did not already have
+//     (so an adjustment cannot paint over empty canvas, even at
+//     `blackOut > 0`); a tile it only PARTLY changes still comes back
+//     carrying its untouched texels (a present-but-partial tile is read as
+//     authoritative by `compositeFilterResult()`, so writing only the changed
+//     addresses would erase the rest -- this module was one line from
+//     shipping exactly that); and the tile-seam invariant, free here by
+//     construction and measured anyway.
+//  B. That the bridge reaches a live layer through app/StrokeSession's
+//     existing `PixelOpRefusal` vocabulary rather than a second one, that the
+//     selection bounds it inside a partly covered tile, that an identity
+//     records no history entry at all, and that `previewX()` is bit-for-bit
+//     what `applyX()` writes.
+//  C. That all five items sit under Image > Adjustments specifically, and
+//     that Desaturate is the one `MenuEffect::Inline` among them -- it has no
+//     parameter to ask for, so a modal would open with nothing in it.
+//
+// Headless and GPU-free, like every ops/ section it sits beside.
+bool runAdjustmentMenuTest();
 // Reachability audit A5/B2/B3: three BRUSH-panel bugs sharing one cause -- a
 // control drawn twice (once in ui/AtelierChrome.cpp's options bar, once in
 // ui/MacPaintUI.cpp's BRUSH panel) with nothing checking the two copies

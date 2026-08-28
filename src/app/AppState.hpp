@@ -372,6 +372,26 @@ struct Guide {
   float position = 0.0f;
 };
 
+// Which **Image > Adjustments** command has been asked for and not yet
+// serviced (`AppState::requestAdjustment` below carries the reason this is one
+// field rather than one bool per command).
+//
+// Every enumerator is a menu item in `ui/MenuModel`'s Adjustments submenu and
+// a function in `app/AdjustmentOps.hpp`. The split between "opens a modal" and
+// "acts immediately" is NOT encoded here: it is `ui/MacPaintUI.cpp`'s
+// adjustment block that knows which is which, for the same reason
+// `MenuEffect` lives on the menu model rather than on the action -- the
+// question "does this need to ask the user something" is about the interface,
+// not about the operation.
+enum class AdjustmentRequest {
+  None,
+  Levels,
+  Curves,
+  Exposure,
+  ChannelMixer,
+  Desaturate,
+};
+
 struct AppState {
   PaintMode mode = PaintMode::Watercolor;
   // The stroke bridge's per-frame cycle. It lives here rather than as a local
@@ -751,6 +771,30 @@ struct AppState {
   // without reaching for the menu -- see app/OpenAnyFile.hpp's
   // `DropOutcome::transformableLayer`.
   bool requestFreeTransform = false;
+
+  // **Image > Adjustments** (app/AdjustmentOps.hpp): which adjustment the next
+  // frame should service, and `None` the rest of the time. Serviced and
+  // cleared by `ui/MacPaintUI.cpp`'s adjustment block, which either opens that
+  // command's modal or -- for the ones Photoshop gives no dialog -- performs
+  // it there and then.
+  //
+  // **One enum in `AppState`, rather than the file-static `g_xRequested` bools
+  // the Filter menu's seven items use.** Not a stylistic preference: five of
+  // these commands carry a keyboard chord (Cmd+L Levels, Cmd+M Curves, and so
+  // on), and a chord is resolved in `main.cpp`, which cannot see a file-static
+  // in another translation unit. The Filter items got away with the older
+  // shape only because not one of them has a chord. Putting the request here
+  // means the menu item and the chord set the SAME field rather than two
+  // fields that could drift about what "Levels" means -- the identical
+  // argument `requestFreeTransform` above makes for Cmd+T, and the reason
+  // that flag is not a `g_freeTransformRequested` either.
+  //
+  // A single field rather than one bool per command, because these are
+  // mutually exclusive by construction (a modal is open or it is not) and
+  // because this list grows to every item in `docs/operations.md` §1.2 --
+  // nineteen bools that may only ever have one set is a state space with
+  // nothing enforcing its own invariant.
+  AdjustmentRequest requestAdjustment = AdjustmentRequest::None;
 
   // The one in-progress transform. Empty (`!active()`) whenever no gesture is
   // running; `commit()` and `cancel()` both return it to that state, and

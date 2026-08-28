@@ -34,6 +34,10 @@
     { "key": "Backspace", "action": "delete_selection" },
     { "key": "Delete", "action": "delete_selection" },
 
+    { "key": "L", "mods": ["Cmd"], "action": "adjust_levels" },
+    { "key": "M", "mods": ["Cmd"], "action": "adjust_curves" },
+    { "key": "U", "mods": ["Cmd", "Shift"], "action": "adjust_desaturate" },
+
     { "key": ";", "mods": ["Cmd"], "action": "toggle_guides" },
     { "key": ";", "mods": ["Cmd", "Shift"], "action": "toggle_snapping" },
     { "key": "'", "mods": ["Cmd"], "action": "toggle_grid" },

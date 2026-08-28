@@ -199,6 +199,24 @@ const MenuItemSpec* specTable() {
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
     set(MenuAction::CanvasSize, "Canvas Size...", "");
+
+    // --- Image > Adjustments --------------------------------------------
+    //
+    // The chords are Photoshop's own, and every one of them was free in
+    // `keymaps/default.json` before this -- checked rather than assumed, since
+    // `app/selftest/MenuModel.cpp` cross-checks each claimed chord against
+    // that file and a collision would be a silent double-binding otherwise.
+    // Note Shift+Cmd+I is already `invert_selection`, exactly as it is in
+    // Photoshop, which is why Desaturate takes Shift+Cmd+U and nothing here
+    // claims a bare Cmd+I yet.
+    set(MenuAction::AdjustLevels, "Levels...", "Cmd+L",
+        MenuKeyEquivalent{'l', kMenuModCmd, "adjust_levels"});
+    set(MenuAction::AdjustCurves, "Curves...", "Cmd+M",
+        MenuKeyEquivalent{'m', kMenuModCmd, "adjust_curves"});
+    set(MenuAction::AdjustExposure, "Exposure...", "");
+    set(MenuAction::AdjustChannelMixer, "Channel Mixer...", "");
+    set(MenuAction::AdjustDesaturate, "Desaturate", "Shift+Cmd+U",
+        MenuKeyEquivalent{'u', kMenuModCmd | kMenuModShift, "adjust_desaturate"});
     return true;
   }();
   (void)built;
@@ -391,6 +409,11 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::MotionBlur: return "MotionBlur";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
+    case MenuAction::AdjustLevels: return "AdjustLevels";
+    case MenuAction::AdjustCurves: return "AdjustCurves";
+    case MenuAction::AdjustExposure: return "AdjustExposure";
+    case MenuAction::AdjustChannelMixer: return "AdjustChannelMixer";
+    case MenuAction::AdjustDesaturate: return "AdjustDesaturate";
     case MenuAction::Count: break;
   }
   // Not a fallback string: reaching this means an enumerator was added without
@@ -447,6 +470,19 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::MotionBlur:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
+    // Image > Adjustments' four dialogs, for the identical reason: opening one
+    // is `ImGui::OpenPopup()`, which a native menu's AppKit callback has no
+    // frame to call.
+    //
+    // **`AdjustDesaturate` is NOT here.** It needs nothing from the user -- no
+    // parameter, no dialog -- so it acts immediately, the same as Deselect and
+    // `SelectUndoRefine` above. That is exactly the distinction this enum
+    // exists to record, and getting it wrong for this one item would mean a
+    // modal that opens with nothing in it.
+    case MenuAction::AdjustLevels:
+    case MenuAction::AdjustCurves:
+    case MenuAction::AdjustExposure:
+    case MenuAction::AdjustChannelMixer:
     // The five refine dialogs -- a radius, or a colour/band plus tolerance --
     // for the identical reason: opening one is `ImGui::OpenPopup()`, which a
     // native menu's AppKit callback has no frame to call.
@@ -630,6 +666,32 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     MenuNode image = submenu("Image");
     image.children.push_back(item(MenuAction::ImageSize, ctx.hasDocument));
     image.children.push_back(item(MenuAction::CanvasSize, ctx.hasDocument));
+    image.children.push_back(separator());
+    // Adjustments (app/AdjustmentOps), a submenu of Image exactly as in
+    // Photoshop -- and under Image rather than as a top-level menu for the
+    // reason this codebase already applies one level up: these are pixel ops
+    // on the active layer, and Image is where the operations that change what
+    // the document *looks like* already live.
+    //
+    // Enabled on `hasDocument`, the same gate the two items above take.
+    // That is deliberately the WEAKER of the two available gates: whether the
+    // active layer can actually take an adjustment is a `PixelOpRefusal`
+    // question (a Pigment layer refuses; a locked layer refuses), and
+    // app/AdjustmentOps answers it with a message naming the layer and the
+    // reason. Greying the item out instead would replace that sentence with
+    // silence -- the user would see a dead menu item and no account of why,
+    // which is precisely what `pixelOpRefusalMessage()` exists to avoid. The
+    // Filter menu's seven items make the same trade.
+    {
+      MenuNode adjust = submenu("Adjustments");
+      adjust.children.push_back(item(MenuAction::AdjustLevels, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustCurves, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustExposure, ctx.hasDocument));
+      adjust.children.push_back(separator());
+      adjust.children.push_back(item(MenuAction::AdjustChannelMixer, ctx.hasDocument));
+      adjust.children.push_back(item(MenuAction::AdjustDesaturate, ctx.hasDocument));
+      image.children.push_back(std::move(adjust));
+    }
     bar.push_back(std::move(image));
   }
 
