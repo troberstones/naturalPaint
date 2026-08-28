@@ -174,8 +174,28 @@ of a pasted selection is how retouching actually works.
 | **Lattice warp** | B | **P1** | subdividable mesh with draggable control points, over a selection |
 | Lens correction | B | **P2** | barrel/pincushion and chromatic aberration, by parameter |
 | Puppet warp | B | — | **future work** — shares the lattice mesh, different control scheme |
+| Polar ↔ rectangular | B | — | **future work** — remaps between polar and Cartesian, both directions |
 | Vanishing point | B | — | **future work** — perspective-aware clone and paste |
 | Content-aware scale | — | — | **not planned** |
+
+> **Polar ↔ rectangular is a nonlinear remap, not a matrix.** It cannot compose into
+> §3.2's single 3×3 before resampling, so it is its own generation — the same shape as
+> lattice warp, and the reason it is grouped with that machinery rather than with free
+> transform. Three things decide whether it is any good: it must be an **inverse** map
+> (walk destination pixels, ask where each came from) or it tears; the **angular seam**
+> at ±π has to wrap when sampling or every rect→polar result grows a visible join; and
+> the **centre is a singularity** where one destination pixel covers a vanishing source
+> area, so it needs the prefiltering §3.1 already argues for on downscale rather than a
+> point sample. Rectangular→polar and polar→rectangular are the same code with the
+> forward and inverse formulae swapped, which is why they are one entry and not two.
+>
+> It is also a **bad citizen of ROI propagation**, and that is worth knowing before it
+> is scheduled rather than after. Phase 6 evaluates class B through `roi(rect) → rect`
+> walked backwards; here a destination rect maps to an annulus or a wedge, whose
+> bounding box near the centre approaches the whole source. The honest `roi()` is
+> therefore close to "everything" for a large part of the image, so this op does not
+> get the tile-cache win the blurs do — it is the one filter in §3 whose cost is
+> genuinely full-frame.
 
 > **Straighten and perspective correction are the photo-prep pair.** A photographed wall
 > needs deskewing and keystone removal *before* it can be made tileable, and marking a
@@ -374,6 +394,7 @@ automatic.
 | deferred | shares machinery with |
 |---|---|
 | Puppet warp | §3's lattice warp |
+| Polar ↔ rectangular coordinates | §3.1's resampler, and the lattice warp's inverse-map loop |
 | Vanishing point | perspective correction, lattice warp |
 | Vector masks | paths (phase 13) and masks |
 | Selection → path tracing | paths |
