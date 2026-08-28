@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -287,5 +288,60 @@ std::array<float, 3> applyOpDirect(const std::array<float, 3>& rgb, const Op& op
 // the indirect-call cost this function exists to avoid.
 std::array<float, 4> applyOpsPremultiplied(const std::array<float, 4>& premultiplied,
                                             const std::vector<Op>& ops);
+
+// docs/architecture-review.md P0-5's "Outcome (2026-08-27)" note: the switch
+// above (applyOpDirect()/applyOpsPremultiplied()) measured 0.98x -- 2%
+// *slower* than the std::function closures it replaced -- and was kept for
+// exactly one reason, recorded there: removing the type erasure is the
+// precondition for SIMD batching over the op chain, which is where the
+// actual win was expected to be. This is that batching.
+//
+// Same bracket as applyOpsPremultiplied() just above -- un-premultiply, run
+// `ops` in list order, re-premultiply -- but **op-outer, texel-inner**
+// instead of texel-outer, op-inner: for each op in `ops`, that op's own
+// switch arm and hoisted parameters (a gamma, a 3x3 matrix, a luma weight
+// triple, whatever that op's PointOpKind carries) are paid ONCE, and its
+// arithmetic then runs over every texel in `texels` before the next op's
+// switch arm is even reached. The per-texel version pays the six-arm switch
+// and each op's own parameter unpacking again on every single pixel; this
+// does it |ops| times total, for a whole tile at once.
+//
+// `texels` holds premultiplied RGBA texels, contiguous, in the exact layout
+// core::Tile::readPixel() already returns them (the same "one texel exactly
+// as a Tile texel" contract applyOpsPremultiplied() documents for its single-
+// texel argument) -- the shape a tile-major caller (docs/architecture-review.md
+// P0-4's tile-major composite walk) actually has on hand: a run of texels
+// belonging to one tile, or one dirty run within one, not scattered pixels.
+// Modified in place; there is no separate output buffer because the bracket
+// (unpremultiply -> apply -> re-premultiply) is a pure per-texel transform,
+// same as the single-texel version.
+//
+// **Bit-exactness, not "close":** every op this function vectorises
+// (Exposure, ChannelMixer, Saturation, Grayscale -- pure elementwise
+// arithmetic, no transcendentals) computes the exact same IEEE operations in
+// the exact same order per texel as applyOpDirect()'s switch arm for that
+// op; SIMD here means running many texels' *identical, independent*
+// computation side by side, never reassociating any *one* texel's own
+// arithmetic (which is the only kind of reordering that could change a
+// result) -- so no -ffast-math, no reduced-precision transcendental, and no
+// tolerance is needed to compare this function's output against
+// applyOpsPremultiplied()'s, same as the switch-vs-closures regression
+// above. Levels and Curves (gamma via std::pow, and the shaper's log2/exp2)
+// are written as plain per-lane scalar loops calling the exact same scalar
+// functions (applyLevelsChannel(), evalCurve()) applyOpDirect() itself
+// calls, so they are bit-exact by construction rather than by measurement --
+// see OpStack.cpp's doc comment on this function for what the compiler does
+// with those loops in practice (it vectorises the cheap arithmetic around
+// each transcendental call/evalCurve() walk, four lanes at a time, but the
+// call itself is still paid once per lane, confirmed in the generated
+// assembly rather than assumed), and why their measured speedup is modest
+// rather than the ~1.2-1.4x the four purely-elementwise ops get.
+//
+// Precondition: every entry in `ops` has `opClass == OpClass::PointA`, the
+// same precondition applyOpsPremultiplied() and applyOpDirect() already
+// carry (a caller reaches this having already filtered through
+// OpStack::detectRuns() or core::layerPointOps(), core/Composite.cpp).
+void applyOpsPremultipliedBatch(std::span<std::array<float, 4>> texels,
+                                 const std::vector<Op>& ops);
 
 }  // namespace np

@@ -434,6 +434,123 @@ bool runGradeDispatchTest() {
   }
 
   // -----------------------------------------------------------------------
+  // 2b. Correctness regression for the SIMD-batched entry point
+  //     (core::applyOpsPremultipliedBatch(), core/OpStack.cpp -- the "actual
+  //     win" P0-5's Outcome note said the switch above was kept to make
+  //     possible): op-outer, texel-inner, run over a whole buffer at once,
+  //     checked against applyOpsPremultiplied() (the untouched per-texel
+  //     switch, section 2's own "after") texel by texel, at zero tolerance
+  //     -- same bar section 2 already holds the switch to against the
+  //     closures.
+  //
+  //     A batch of 41 texels per case, not a handful: enough for the
+  //     vectoriser to actually pack several SIMD-width groups plus a
+  //     ragged remainder (so an off-by-one in the tail handling would show
+  //     up here, not just in a size that happens to be a multiple of the
+  //     hardware vector width), spanning in-gamut, near-black, HDR-above-1,
+  //     negative (a channel-mixer offset can produce one), and several
+  //     alpha values including exactly 0 and exactly 1 -- the same
+  //     transparent short-circuit section 2's own pixel list exercises,
+  //     now mixed in among opaque neighbours in the same batch call rather
+  //     than tested alone, since applyOpsPremultipliedBatch()'s own doc
+  //     comment says the transparent-lane epilogue runs unconditionally
+  //     across the whole buffer, not gated per-texel.
+  // -----------------------------------------------------------------------
+  {
+    const std::vector<std::pair<const char*, std::vector<Op>>> cases = {
+        {"Levels", {opLevels()}},
+        {"Curves", {opCurvesModerate()}},
+        {"Exposure", {opExposure()}},
+        {"Saturation", {opSaturation()}},
+        {"Grayscale", {opGrayscale()}},
+        {"ChannelMixer", {opChannelMixer()}},
+        {"realistic stack (5 ops)", realisticStack()},
+    };
+
+    auto buildBatchPixels = [](size_t count) {
+      std::vector<std::array<float, 4>> px;
+      px.reserve(count);
+      for (size_t i = 0; i < count; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(count > 1 ? count - 1 : 1);
+        float alpha = 0.1f + 0.85f * t;
+        // A deliberate scatter of exact edge alphas among the ordinary
+        // ones, so the transparent short-circuit is tested mixed into a
+        // batch rather than only in a batch of its own.
+        if (i % 11 == 0) alpha = 0.0f;
+        if (i % 13 == 0) alpha = 1.0f;
+        // **Negative alpha, because both paths guard on `a <= 0` and not on
+        // `a == 0`, and nothing above ever went below zero.** What this line
+        // buys is specific, and worth stating precisely rather than as
+        // "more coverage":
+        //
+        // `applyOpsPremultipliedBatch()` protects transparent lanes twice
+        // over. `unpremultiply()` zeroes a lane's alpha along with its RGB,
+        // so the repack's `straight * a` is zero for such a lane whatever
+        // the op chain did; and a separate epilogue writes `{0,0,0,0}` for
+        // any lane whose alpha is `<= 0`. **The two are redundant, and
+        // disabling either one ALONE reddens nothing** -- measured, not
+        // assumed. Disabling both together reddens all seven comparisons
+        // below, but only because of this line: at alpha exactly 0 the two
+        // mechanisms are indistinguishable (raw and unpremultiplied alpha
+        // are the same value there), so a fixture whose smallest alpha is
+        // 0.0f cannot separate them no matter what is broken.
+        //
+        // So this is not a test of the epilogue in isolation -- nothing can
+        // be, while `unpremultiply()` also zeroes alpha. It is the one input
+        // that makes the pair of them jointly load-bearing rather than
+        // jointly untested.
+        if (i % 17 == 0) alpha = -0.25f;
+        const float straightR = -0.3f + 1.6f * t;                       // spans negative..HDR
+        const float straightG = 0.05f + 0.9f * std::fabs(std::sin(static_cast<float>(i) * 0.7f));
+        const float straightB = 1.4f - 1.1f * t;                        // spans HDR..near-zero
+        px.push_back({straightR * alpha, straightG * alpha, straightB * alpha, alpha});
+      }
+      return px;
+    };
+
+    for (const auto& [label, ops] : cases) {
+      const std::vector<std::array<float, 4>> src = buildBatchPixels(41);
+
+      std::vector<std::array<float, 4>> viaScalar = src;
+      for (std::array<float, 4>& px : viaScalar) px = applyOpsPremultiplied(px, ops);
+
+      std::vector<std::array<float, 4>> viaBatch = src;
+      applyOpsPremultipliedBatch(std::span<std::array<float, 4>>(viaBatch), ops);
+
+      bool allExact = true;
+      for (size_t i = 0; i < src.size(); ++i)
+        for (int c = 0; c < 4; ++c)
+          allExact = allExact && near(viaScalar[i][static_cast<size_t>(c)],
+                                      viaBatch[i][static_cast<size_t>(c)], 0.0f);
+
+      char buf[128];
+      std::snprintf(buf, sizeof buf, "regression: batch matches per-texel switch exactly -- %s",
+                   label);
+      check(allExact, buf);
+    }
+
+    // n == 0 and n == 1 are the two edge sizes a general run-length caller
+    // (a partial tile at a canvas edge, or a one-texel dirty run) actually
+    // hits; confirmed not to crash and, for n == 1, to still match the
+    // scalar path exactly.
+    {
+      std::vector<std::array<float, 4>> empty;
+      applyOpsPremultipliedBatch(std::span<std::array<float, 4>>(empty), realisticStack());
+      check(empty.empty(), "batch: n == 0 does not crash and leaves the (empty) buffer alone");
+
+      std::array<float, 4> onePx{0.4f, 0.5f, 0.2f, 0.8f};
+      const std::array<float, 4> viaScalarOne = applyOpsPremultiplied(onePx, realisticStack());
+      std::vector<std::array<float, 4>> oneBuf{onePx};
+      applyOpsPremultipliedBatch(std::span<std::array<float, 4>>(oneBuf), realisticStack());
+      bool oneExact = true;
+      for (int c = 0; c < 4; ++c)
+        oneExact = oneExact && near(viaScalarOne[static_cast<size_t>(c)],
+                                    oneBuf[0][static_cast<size_t>(c)], 0.0f);
+      check(oneExact, "batch: n == 1 matches the scalar path exactly");
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // 3. LUT accuracy: a from-scratch CPU bake + tetrahedral sample (this
   //    file's own, see header comment for why it is not color/LutBake.hpp's
   //    GPU Lut3D) against referenceChain(), over a 24-step-per-axis grid of
@@ -579,12 +696,85 @@ bool runGradeDispatchTest() {
 
       const double msOld = std::chrono::duration<double, std::milli>(t1 - t0).count();
       const double msNew = std::chrono::duration<double, std::milli>(t2 - t1).count();
+
+      // The batched entry point (core::applyOpsPremultipliedBatch(),
+      // core/OpStack.cpp), over the exact same n-pixel run built the same
+      // way as the two loops above, timed the same way: one untimed
+      // warm-up call, then one timed call over the whole buffer (this is
+      // the "run of contiguous premultiplied RGBA texels" its own doc
+      // comment says a tile-major caller has on hand -- a whole side^2
+      // buffer stands in for that here, extending this exact comparison
+      // rather than standing up a second, possibly-disagreeing benchmark).
+      std::vector<std::array<float, 4>> batchBuf(static_cast<size_t>(n));
+      for (int64_t i = 0; i < n; ++i) batchBuf[static_cast<size_t>(i)] = pixelAt(i, side);
+
+      std::vector<std::array<float, 4>> warmBatch(4096);
+      for (int64_t i = 0; i < 4096; ++i) warmBatch[static_cast<size_t>(i)] = pixelAt(i, side);
+      applyOpsPremultipliedBatch(std::span<std::array<float, 4>>(warmBatch), stack);
+      for (const std::array<float, 4>& px : warmBatch) warm += px[0];
+
+      const auto tb0 = std::chrono::steady_clock::now();
+      applyOpsPremultipliedBatch(std::span<std::array<float, 4>>(batchBuf), stack);
+      const auto tb1 = std::chrono::steady_clock::now();
+      double sumBatch = 0.0;
+      for (const std::array<float, 4>& px : batchBuf) sumBatch += px[0] + px[1] + px[2] + px[3];
+      const double msBatch = std::chrono::duration<double, std::milli>(tb1 - tb0).count();
+
       std::printf(
           "  [measured] %dx%d adjustment-layer op-chain (5-op stack, %lld pixels): "
-          "closures(before) %.2f ms, switch(after) %.2f ms, speedup %.2fx  (checksums "
-          "%.6g/%.6g/%.6g, ignore)\n",
-          side, side, static_cast<long long>(n), msOld, msNew,
-          msNew > 0.0 ? msOld / msNew : 0.0, warm, sumOld, sumNew);
+          "closures(before) %.2f ms, switch(after) %.2f ms, batch(simd) %.2f ms  --  "
+          "switch/closures %.2fx, batch/switch %.2fx, batch/closures %.2fx  (checksums "
+          "%.6g/%.6g/%.6g/%.6g, ignore)\n",
+          side, side, static_cast<long long>(n), msOld, msNew, msBatch,
+          msNew > 0.0 ? msOld / msNew : 0.0, msBatch > 0.0 ? msNew / msBatch : 0.0,
+          msBatch > 0.0 ? msOld / msBatch : 0.0, warm, sumOld, sumNew, sumBatch);
+    }
+
+    // ---------------------------------------------------------------------
+    // 4b. Per-op breakdown: which of the six ops actually vectorise. Same
+    //     switch-vs-batch comparison as above, but one op at a time (a
+    //     single-op stack) instead of the realistic 5-op stack, at a single
+    //     size (1024^2) -- enough to show which ops the batched entry point
+    //     speeds up and which (Levels, Curves) it does not, per this
+    //     file's own doc comment on why those two stay scalar.
+    // ---------------------------------------------------------------------
+    {
+      constexpr int32_t side = 1024;
+      const int64_t n = static_cast<int64_t>(side) * static_cast<int64_t>(side);
+      const std::vector<std::pair<const char*, Op>> perOp = {
+          {"Levels", opLevels()},           {"Curves", opCurvesModerate()},
+          {"Exposure", opExposure()},       {"Saturation", opSaturation()},
+          {"Grayscale", opGrayscale()},     {"ChannelMixer", opChannelMixer()},
+      };
+      for (const auto& [label, op] : perOp) {
+        const std::vector<Op> oneOp = {op};
+
+        std::vector<std::array<float, 4>> warmBuf(4096);
+        for (int64_t i = 0; i < 4096; ++i) warmBuf[static_cast<size_t>(i)] = pixelAt(i, side);
+        for (std::array<float, 4>& px : warmBuf) px = applyOpsPremultiplied(px, oneOp);
+        std::vector<std::array<float, 4>> warmBatchBuf(4096);
+        for (int64_t i = 0; i < 4096; ++i) warmBatchBuf[static_cast<size_t>(i)] = pixelAt(i, side);
+        applyOpsPremultipliedBatch(std::span<std::array<float, 4>>(warmBatchBuf), oneOp);
+
+        std::vector<std::array<float, 4>> switchBuf(static_cast<size_t>(n));
+        for (int64_t i = 0; i < n; ++i) switchBuf[static_cast<size_t>(i)] = pixelAt(i, side);
+        const auto s0 = std::chrono::steady_clock::now();
+        for (std::array<float, 4>& px : switchBuf) px = applyOpsPremultiplied(px, oneOp);
+        const auto s1 = std::chrono::steady_clock::now();
+
+        std::vector<std::array<float, 4>> perOpBatchBuf(static_cast<size_t>(n));
+        for (int64_t i = 0; i < n; ++i) perOpBatchBuf[static_cast<size_t>(i)] = pixelAt(i, side);
+        const auto b0 = std::chrono::steady_clock::now();
+        applyOpsPremultipliedBatch(std::span<std::array<float, 4>>(perOpBatchBuf), oneOp);
+        const auto b1 = std::chrono::steady_clock::now();
+
+        const double msSwitch = std::chrono::duration<double, std::milli>(s1 - s0).count();
+        const double msBatch = std::chrono::duration<double, std::milli>(b1 - b0).count();
+        std::printf(
+            "  [measured] per-op batch breakdown, %-12s %dx%d: switch(after) %.2f ms, "
+            "batch(simd) %.2f ms, speedup %.2fx\n",
+            label, side, side, msSwitch, msBatch, msBatch > 0.0 ? msSwitch / msBatch : 0.0);
+      }
     }
 
     // The same question asked literally, not just isolated: a real
