@@ -393,10 +393,53 @@ struct Layer {
   // Locked layers reject edits, to the exact extent core/LayerOps.hpp spells
   // out: its operations refuse to remove, move, rename or re-opacity a locked
   // layer, and deliberately still allow it to be hidden, unlocked and
-  // duplicated. There is still no pixel-edit path to any layer -- a stroke
-  // reaches sim::PaintSim's dense texture, never a Layer -- so "rejects edits"
-  // cannot yet mean "the brush refuses"; that is stated rather than faked.
+  // duplicated.
+  //
+  // **Correction to this member's own history.** Until the alpha-lock step
+  // this comment said "there is still no pixel-edit path to any layer -- a
+  // stroke reaches sim::PaintSim's dense texture, never a Layer -- so
+  // 'rejects edits' cannot yet mean 'the brush refuses'". That was true when
+  // it was written and is false now: `app/StrokeSession.hpp`'s `StrokeRoute`
+  // has carried `CpuDeposit`, `RgbDeposit`, `RgbErase` and `PigmentErase`
+  // since PLAN.md Phase 5, and every one of them writes a `Layer`'s own
+  // tiles, never the solver canvas. `locked` **is** enforced against
+  // painting, and by the brush itself rather than by a caller remembering to
+  // check it first: `app/StrokeSession.cpp`'s `strokeRouteFor()` tests
+  // `target->locked` before it even looks at the layer's kind ("Locked
+  // before kind, so a locked layer refuses for being locked whatever it is
+  // made of"), and returns `StrokeRoute::None` -- which
+  // `StrokeSession::begin()` turns into a refusal naming the layer, not a
+  // silent no-op and not a stroke that lands somewhere the user did not aim.
   bool locked = false;
+
+  // Freezes the layer's ALPHA while still letting colour change underneath
+  // it -- Photoshop's "Lock transparent pixels", and a different promise
+  // from `locked` above: `locked` refuses *every* edit to the layer's
+  // content, while `alphaLocked` refuses only the one that would move alpha
+  // and leaves painting free. brush/RgbDeposit.hpp's `depositRgbTexel()` is
+  // the single place that reads it (its own comment derives the composite
+  // rule and the reason a bound -- `sel * dst.a` -- is not this), and
+  // `app/StrokeSession.cpp`'s `strokeRouteFor()` is what refuses
+  // `StrokeRoute::RgbErase` by it: the eraser exists to take alpha OUT of a
+  // layer, which is exactly the quantity this freezes, so letting it through
+  // would make the flag decorative.
+  //
+  // Meaningless on anything but an RGB layer -- a Pigment layer stores
+  // latent-times-mass, not alpha, and has no channel this flag could freeze
+  // (core/LayerOps.hpp's `setLayerAlphaLocked()` refuses to set it there by
+  // name; `app::layerCommandAvailable()` greys the command out first, for
+  // the same reason `AddMask` is unavailable where a gesture would need
+  // storage the layer has none of). Un-locking is never refused by kind,
+  // matching `setLayerClipped()`'s own rule: a state a document can hold (a
+  // foreign or hand-edited `.npaint`, PRD I10) must always be one a user can
+  // get out of.
+  //
+  // Persisted as `np:alphaLocked` (int, 0 or 1), written **only when true**,
+  // `np:clipped`'s own rule and for the same reason: a `.npaint` this build
+  // wrote before this step -- and a document with the flag false written
+  // after it -- must keep producing the same bytes. See
+  // docs/document-format.md and io/NpaintFile.cpp.
+  bool alphaLocked = false;
 
   // **The `groupTag` of the group this layer belongs to** (PLAN.md Phase 5's
   // C7/C12 follow-on), or empty for a top-level layer.

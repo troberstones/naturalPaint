@@ -722,6 +722,24 @@ bool runRgbEraseTest() {
     check(strokeRouteFor(Tool::Eraser, &hiddenRgb) == StrokeRoute::RgbErase,
           "routing: a HIDDEN RGB layer still erases -- visibility is a view decision, the same "
           "answer the deposit row gives");
+
+    // Alpha lock (core/Layer.hpp's `alphaLocked`), the eraser's own new
+    // refusal and this task's requirement 4: `StrokeRoute::RgbErase` exists to
+    // take alpha OUT of a layer, which is exactly the quantity alpha lock
+    // freezes, so it refuses BY NAME through the same route table `locked`
+    // does two rows up -- never a silent no-op. The brush on the identical
+    // layer is checked in the same breath because it must NOT refuse: alpha
+    // lock still lets colour change, and a version that folded this into the
+    // general `locked` check would block painting too.
+    Layer alphaLockedRgb = makeRgbLayer("alr");
+    alphaLockedRgb.alphaLocked = true;
+    check(strokeRouteFor(Tool::Eraser, &alphaLockedRgb) == StrokeRoute::None,
+          "routing: an ALPHA-LOCKED RGB layer refuses the eraser -- erasing removes alpha, and "
+          "this layer's alpha is the one thing it may not move");
+    check(strokeRouteFor(Tool::Brush, &alphaLockedRgb) == StrokeRoute::RgbDeposit &&
+              strokeRouteFor(Tool::DryBrush, &alphaLockedRgb) == StrokeRoute::RgbDeposit,
+          "routing: and the SAME alpha-locked layer still takes the brush -- alpha lock is not "
+          "the general lock, and painting is the whole feature it exists to allow");
     check(strokeRouteFor(Tool::Eraser, &storelessRgb) == StrokeRoute::None &&
               strokeRouteFor(Tool::Eraser, &adjustment) == StrokeRoute::None &&
               strokeRouteFor(Tool::Eraser, &media) == StrokeRoute::None,
@@ -879,6 +897,9 @@ bool runRgbEraseTest() {
                     addLayer(od.document, od.document.layers.size(), makePigmentLayer("pig")));
     recordLayerEdit(od,
                     addLayer(od.document, od.document.layers.size(), makeAdjustmentLayer("adj")));
+    recordLayerEdit(od,
+                    addLayer(od.document, od.document.layers.size(), makeRgbLayer("alpha-locked")));
+    od.document.layers[4].alphaLocked = true;
 
     const size_t entries = od.history.entries().size();
     const uint64_t rev = od.revision;
@@ -905,9 +926,28 @@ bool runRgbEraseTest() {
           "refusal: an Adjustment layer refuses by name -- it holds no tiles at all");
     check(!s.begin(od, 99, t, Tool::Eraser, &error) && contains(error, "out of range"),
           "refusal: an out-of-range index refuses without touching the document");
+
+    // This task's requirement 4: alpha lock refuses the eraser BY NAME,
+    // through the identical refusal path every other route-table `None`
+    // uses -- never a silent no-op. `contains(error, "alpha-locked")` and not
+    // merely `contains(error, "locked")`, because the latter would also pass
+    // against the GENERAL lock's sentence two layers up and prove nothing
+    // about which one actually fired.
+    check(!s.begin(od, 4, t, Tool::Eraser, &error) && contains(error, "alpha-locked"),
+          "refusal: an ALPHA-LOCKED RGB layer refuses the erase and names alpha-lock "
+          "specifically -- erasing removes alpha, the one thing this layer may not move");
+    // And the identical layer takes the brush without complaint -- alpha lock
+    // is not the general lock, and painting is the feature it exists to keep.
+    check(s.begin(od, 4, t, Tool::Brush, &error) && error.empty() &&
+              s.route() == StrokeRoute::RgbDeposit,
+          "refusal: and the SAME alpha-locked layer begins a BRUSH stroke normally -- only "
+          "the route that would move alpha refuses");
+    s.end();
+
     check(od.history.entries().size() == entries && od.revision == rev && !s.active(),
-          "refusal: not one of the three refusals -- nor the Pigment stroke that began and "
-          "deposited nothing -- recorded an entry or moved the revision");
+          "refusal: not one of the four refusals -- nor the Pigment stroke that began and "
+          "deposited nothing, nor the brush stroke that began and was ended without a point -- "
+          "recorded an entry or moved the revision");
 
     // The kind refusal is told apart from the locked one in the half of the
     // sentence that names the fix, on two layers whose names differ -- so the

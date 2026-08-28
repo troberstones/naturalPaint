@@ -67,6 +67,7 @@ const std::vector<LayerCommand>& allLayerCommands() {
       LayerCommand::MoveLayerDown,  LayerCommand::AddMask,
       LayerCommand::RemoveMask,     LayerCommand::ToggleVisible,
       LayerCommand::ToggleLocked,   LayerCommand::ToggleClipped,
+      LayerCommand::ToggleAlphaLock,
       LayerCommand::MergeDown,      LayerCommand::MergeVisible,
       LayerCommand::StampVisible,   LayerCommand::FlattenImage,
       LayerCommand::RasteriseLayer,
@@ -89,6 +90,7 @@ const char* layerCommandLabel(LayerCommand command) noexcept {
     case LayerCommand::ToggleVisible:      return "Toggle Visibility";
     case LayerCommand::ToggleLocked:       return "Toggle Lock";
     case LayerCommand::ToggleClipped:      return "Clip to Layer Below";
+    case LayerCommand::ToggleAlphaLock:    return "Lock Transparent Pixels";
     case LayerCommand::MergeDown:          return "Merge Down";
     case LayerCommand::MergeVisible:       return "Merge Visible";
     case LayerCommand::StampVisible:       return "Stamp Visible";
@@ -118,6 +120,7 @@ const char* layerCommandGlyph(LayerCommand command) noexcept {
     case LayerCommand::ToggleVisible:
     case LayerCommand::ToggleLocked:
     case LayerCommand::ToggleClipped:
+    case LayerCommand::ToggleAlphaLock:
     case LayerCommand::CaptureComp:
       return "";
   }
@@ -157,6 +160,16 @@ bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t sel
     // arrived at index 0 from a file.
     case LayerCommand::ToggleClipped:
       return haveSelection && (selected > 0 || doc.layers[selected].clipped);
+    // Only an RGB layer has an alpha channel this command could freeze
+    // (core/LayerOps.hpp's `setLayerAlphaLocked()`) -- unavailable on any
+    // other kind for the identical reason `AddMask` is unavailable where a
+    // gesture would need storage the layer has none of. Turning it back OFF
+    // is always offered, `ToggleClipped`'s own idiom just above: a document
+    // that arrived (PRD I10) with the flag set on a non-RGB layer must still
+    // have a control that clears it.
+    case LayerCommand::ToggleAlphaLock:
+      return haveSelection &&
+             (doc.layers[selected].kind == LayerKind::RGB || doc.layers[selected].alphaLocked);
     // PLAN.md Phase 5 step 10. Availability only where the gesture is
     // meaningless on this row -- the bottom layer has nothing below it to
     // merge into, and an empty document has nothing to collapse. Everything
@@ -254,6 +267,12 @@ LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t
                     setLayerClipped(doc, selected,
                                     selected < count ? !doc.layers[selected].clipped : true),
                     selected, selected);
+    case LayerCommand::ToggleAlphaLock:
+      return record(
+          od,
+          setLayerAlphaLocked(doc, selected,
+                              selected < count ? !doc.layers[selected].alphaLocked : true),
+          selected, selected);
     // PLAN.md Phase 5 step 10 / PRD C10, C11. Each collects core/Merge's
     // warnings into a local list and hands it on, so the panel can say what a
     // successful merge cost. `recordMerge()` takes the landing index from the

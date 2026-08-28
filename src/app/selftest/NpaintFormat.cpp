@@ -704,11 +704,86 @@ bool runNpaintFormatTest() {
     std::remove(kExr);
   }
 
+  // --- Alpha lock (`np:alphaLocked`): round-trips PER LAYER, and only costs
+  //     a byte when true -------------------------------------------------
+  //
+  // `np:clipped`'s own two-part rule (this file's own writer comment states
+  // it, and core/Layer.hpp's `alphaLocked` comment repeats it), checked the
+  // way LayerMask.cpp's own byte-identity block checks the mask channel's: a
+  // per-layer value round-trips, AND a document with the flag false
+  // everywhere produces the SAME bytes as one that never had the attribute
+  // at all -- measured against a real save, not assumed.
+  {
+    const char* kBare = "selftest_npaint_alphalock_bare.npaint";
+    const char* kPath = "selftest_npaint_alphalock.npaint";
+    const char* kAgain = "selftest_npaint_alphalock_again.npaint";
+    for (const char* p : {kBare, kPath, kAgain}) std::remove(p);
+
+    // Blanks OpenImageIO's `capDate` header attribute so two saves made in
+    // different seconds compare equal on everything else -- LayerMask.cpp's
+    // own helper, kept local rather than shared: Support.hpp has no home for
+    // a file-comparison utility and every existing caller re-derives it in
+    // place rather than reach for one that does not exist yet.
+    auto bytesWithoutCapDate = [](const char* path) -> std::vector<unsigned char> {
+      std::ifstream in(path, std::ios::binary);
+      std::vector<unsigned char> b((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+      static const std::string kNeedle = "capDate";
+      for (size_t i = 0; i + kNeedle.size() <= b.size(); ++i) {
+        if (std::memcmp(b.data() + i, kNeedle.data(), kNeedle.size()) != 0) continue;
+        for (size_t j = i; j < std::min(i + 47, b.size()); ++j) b[j] = 0;
+      }
+      return b;
+    };
+
+    Document doc = Document::createBlank(128, 128, WorkingSpace{});
+    addLayer(doc, 1, makeRgbLayer("Locked alpha"));
+    addLayer(doc, 2, makeRgbLayer("Plain"));
+    writeStraight(doc, 0, 5, 5, 0.4f, 0.2f, 0.1f, 1.0f);
+    writeStraight(doc, 1, 6, 6, 0.1f, 0.5f, 0.9f, 0.6f);
+    writeStraight(doc, 2, 7, 7, 0.3f, 0.3f, 0.3f, 1.0f);
+
+    const NpaintSaveResult bare = saveNpaint(doc, kBare);
+    check(bare.ok, "np:alphaLocked: a three-layer document with no alpha-locked layer saves");
+
+    doc.layers[1].alphaLocked = true;
+    const NpaintSaveResult saved = saveNpaint(doc, kPath);
+    check(saved.ok, "np:alphaLocked: the same document with layer 1 alpha-locked saves");
+
+    const NpaintLoadResult back = loadNpaint(kPath);
+    check(back.ok && back.document.layers.size() == 3 && !back.document.layers[0].alphaLocked &&
+              back.document.layers[1].alphaLocked && !back.document.layers[2].alphaLocked,
+          "np:alphaLocked: round-trips PER LAYER -- true on layer 1 only, false on the two "
+          "either side of it, so this cannot pass on a value that round-tripped as a "
+          "document-wide default instead of a per-layer attribute");
+
+    check(bytesWithoutCapDate(kPath).size() > bytesWithoutCapDate(kBare).size(),
+          "np:alphaLocked: the alpha-locked file really is BIGGER than the flag-free one, so "
+          "the byte-identity check below is not passing because nothing was ever written");
+
+    // The property docs/document-format.md requires and this task's own brief
+    // repeats: clearing the flag again gives back the SAME bytes as a file
+    // that never had it set.
+    doc.layers[1].alphaLocked = false;
+    const NpaintSaveResult again = saveNpaint(doc, kAgain);
+    check(again.ok && bytesWithoutCapDate(kAgain) == bytesWithoutCapDate(kBare) &&
+              !bytesWithoutCapDate(kBare).empty(),
+          "np:alphaLocked: turning the flag back off gives a file BYTE-IDENTICAL to one that "
+          "never had it -- `np:alphaLocked` is written only when true, so a document with the "
+          "flag false everywhere (every `.npaint` this build wrote before this step, and any "
+          "document saved after it with the flag never set) produces exactly the bytes it "
+          "always did. This is the assertion sabotage (b) in this task's brief reddens.");
+
+    for (const char* p : {kBare, kPath, kAgain}) std::remove(p);
+  }
+
   // Scratch files: every path this section touches, removed unconditionally,
   // whether or not the assertion that created it passed.
   for (const char* p : {"selftest_npaint_never.npaint", "selftest_npaint_gate.npaint",
                         "selftest_npaint_roundtrip.npaint", "selftest_npaint_carry.npaint",
-                        "selftest_npaint_carry2.npaint", "selftest_npaint_as.exr"}) {
+                        "selftest_npaint_carry2.npaint", "selftest_npaint_as.exr",
+                        "selftest_npaint_alphalock_bare.npaint", "selftest_npaint_alphalock.npaint",
+                        "selftest_npaint_alphalock_again.npaint"}) {
     std::remove(p);
   }
 

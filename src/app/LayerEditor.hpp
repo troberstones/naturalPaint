@@ -85,6 +85,13 @@ enum class LayerCommand {
   ToggleLocked,
   // PLAN.md Phase 5 step 9 / PRD C9.
   ToggleClipped,
+  // Alpha lock ("Lock transparent pixels", core/Layer.hpp's `alphaLocked`).
+  // Sits beside the other two per-layer flags for the identical reason: a
+  // gesture with no value attached, walked by both menus through
+  // `allLayerCommands()` with no bespoke code in either. Unavailable on
+  // anything but an RGB layer (`layerCommandAvailable()`), and refused by
+  // core/LayerOps' own `setLayerAlphaLocked()` if reached anyway.
+  ToggleAlphaLock,
   // PLAN.md Phase 5 step 10 / PRD C10 (P0) and C11 (P1) -- core/Merge. Listed
   // here rather than wired into the menu separately for this file's own
   // reason: `allLayerCommands()` is what both the `Layer` menu and the LAYERS

@@ -217,6 +217,57 @@
 // allocated.
 //
 // ==========================================================================
+// 4.5. Alpha lock freezes `dst.a`; it is a FREEZE, not another bound
+// ==========================================================================
+//
+// Photoshop's "Lock transparent pixels", core/Layer.hpp's `alphaLocked`: the
+// layer's alpha stops moving and its colour keeps changing. It is tempting to
+// reach for the same tool §4 already built -- multiply the weight by one more
+// factor, here `dst.a` -- because that is what "the selection enters twice"
+// already looks like. **That is the wrong rule, and the reason is the same
+// one §4 spends four paragraphs on: a multiplicative factor is a BOUND, and a
+// bound is something a second stroke can climb past.** `sel * dst.a` on the
+// weight would still let the stroke's own accumulator drive `dst.a` upward --
+// one pass reaches `dst.a0 * a`, a second pass composites over THAT and
+// reaches further, exactly the "0.5, then 0.75" creep §4 measures for the
+// selection and rejects for it. A lock that crept was never a lock.
+//
+// **The fix is not a bound on the input, it is a different composite on the
+// output**, and it needs no per-dab memory at all: whatever alpha `a` this
+// dab would have contributed is spent on colour only, and the stored alpha is
+// copied through unchanged.
+//
+//     out.rgb = dst.rgb * (1 - a) + ink * a * dst.a
+//     out.a   = dst.a
+//
+// Read at the *straight* colour it is built from: `dst.rgb / dst.a` is the
+// texel's current straight colour (where `dst.a > 0`), `out.rgb / dst.a` is
+// `straight * (1 - a) + ink * a` -- an ordinary lerp toward the ink, at the
+// SAME `a` the unlocked route would have composited with -- and multiplying
+// back through by `dst.a` (which does not change) is what keeps the texel
+// premultiplied. So an alpha-locked dab paints exactly like an unlocked one
+// felt to the eye, except the rim of the dab does not grow the shape.
+//
+// **At `dst.a == 0` this yields nothing, with no branch needed**: `dst.rgb`
+// is `0` there (premultiplied, §1), so `dst.rgb * (1 - a)` is `0`, and
+// `ink * a * dst.a` is `ink * a * 0`, also `0`. `out.a` is `dst.a`, `0`
+// again. The whole texel comes back bit-identical to `dst` -- "no paint on
+// transparent texels" is not a case this rule handles, it is a value this
+// rule's own arithmetic already produces.
+//
+// **`a` itself is untouched -- this changes only the last two lines of
+// `depositRgbTexel()`.** The accumulator, the ceiling, the selection's two
+// entries into `weight` and `cap`: none of it knows or needs to know the
+// layer is locked. `a` still means "how much of this stroke's opacity budget
+// this dab spends", and alpha lock only changes what that budget is spent
+// ON -- alpha when unlocked, colour alone when locked. That is also why the
+// eraser cannot simply run this rule with `ink` set to "nothing": erasing
+// *is* moving alpha, brush/RgbErase.hpp's whole subject, and there is no dab
+// in this rule that does that -- which is the point, and why
+// `app/StrokeSession.cpp`'s `strokeRouteFor()` refuses `StrokeRoute::RgbErase`
+// on an alpha-locked layer by name rather than routing it here.
+//
+// ==========================================================================
 // 5. What is deliberately not here
 // ==========================================================================
 //
@@ -294,9 +345,13 @@ struct RgbDepositStep {
   float strokeAlpha = 0.0f;              // A', to put back in the accumulator
   float dabAlpha = 0.0f;                 // a; 0 means "nothing to do here"
 };
+// `alphaLocked` selects §4.5's composite over §2's: `a`, the accumulator
+// arithmetic and every one of the four refusals above are IDENTICAL either
+// way, because none of them is a statement about where `a` ends up spent.
+// Only the last two lines -- what gets written for `premultiplied` -- differ.
 RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
                                const std::array<float, 3>& straightLinearRgb, float strokeAlpha,
-                               float weight, float opacity) noexcept;
+                               float weight, float opacity, bool alphaLocked = false) noexcept;
 
 // One RGB stroke in flight: the latched ink, and the accumulator that makes
 // `opacity` a per-stroke ceiling rather than a per-dab multiplier.
@@ -315,7 +370,15 @@ class RgbStroke {
   //
   // `opacity` is clamped to [0,1]; a non-positive one leaves a stroke that
   // deposits nothing, which is a legitimate setting and not an error.
-  void begin(const std::array<float, 3>& straightLinearRgb, float opacity) noexcept;
+  //
+  // `alphaLocked` is latched here for the identical reason `opacity` is
+  // (header §2, §4.5): it is a per-stroke property read out of the target
+  // `Layer` once, at pen-down, by `app/StrokeSession.cpp` -- a lock cleared or
+  // set mid-drag must not change which composite the dabs already spent are
+  // read back through. Defaulted to `false` so every existing caller that
+  // painted an unlocked layer keeps compiling and keeps its behaviour.
+  void begin(const std::array<float, 3>& straightLinearRgb, float opacity,
+            bool alphaLocked = false) noexcept;
 
   bool active() const noexcept { return active_; }
 
@@ -366,6 +429,7 @@ class RgbStroke {
   std::array<float, 3> ink_{0.0f, 0.0f, 0.0f};
   float opacity_ = 1.0f;
   bool active_ = false;
+  bool alphaLocked_ = false;
   StrokeAlphaStore alpha_;
 };
 

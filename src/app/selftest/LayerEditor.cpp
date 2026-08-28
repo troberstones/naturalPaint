@@ -58,7 +58,7 @@ bool runLayerEditorTest() {
   // range is well defined to cast.
   {
     const std::vector<LayerCommand>& all = allLayerCommands();
-    check(all.size() == 18, "the menu walks all 18 commands");
+    check(all.size() == 19, "the menu walks all 19 commands");
     bool everyValueListed = true;
     size_t named = 0;
     for (int v = 0; v < 64; ++v) {
@@ -175,6 +175,61 @@ bool runLayerEditorTest() {
     check(vis.ok, "and still allows Toggle Visibility, which changes nothing about it");
     applyLayerCommand(od, LayerCommand::ToggleLocked, 1);
     check(!od.document.layers[1].locked, "the lock can always be taken off again");
+  }
+
+  // --- Part C.2: alpha lock -------------------------------------------------
+  //
+  // ToggleAlphaLock through the SAME funnel every other flag uses. What is
+  // worth asserting here, that brush/RgbDeposit's own suite cannot, is the
+  // command's availability and refusal -- both live in app/LayerEditor and
+  // core/LayerOps, not in the deposit arithmetic -- so this is where a
+  // Pigment layer's refusal and an RGB layer's success are each checked by
+  // NAME.
+  {
+    OpenDocument od = makeDoc();
+    applyLayerCommand(od, LayerCommand::NewRgbLayer, 0);       // layer 1: RGB
+    applyLayerCommand(od, LayerCommand::NewPigmentLayer, 1);   // layer 2: Pigment
+
+    check(!od.document.layers[1].alphaLocked, "a new RGB layer starts alpha-unlocked");
+    check(layerCommandAvailable(od.document, LayerCommand::ToggleAlphaLock, 1),
+          "Lock Transparent Pixels is offered on an RGB layer");
+    const LayerEditResult lockRgb = applyLayerCommand(od, LayerCommand::ToggleAlphaLock, 1);
+    check(lockRgb.ok && od.document.layers[1].alphaLocked,
+          "Lock Transparent Pixels sets the flag on an RGB layer");
+    const LayerEditResult unlockRgb = applyLayerCommand(od, LayerCommand::ToggleAlphaLock, 1);
+    check(unlockRgb.ok && !od.document.layers[1].alphaLocked,
+          "and toggles it back off, through the same command");
+
+    // Requirement 5: a Pigment layer holds latent+mass, not alpha, so the
+    // command is unavailable there and refused by name if reached anyway --
+    // never a silent no-op, and never a mass-lock invented to give it meaning.
+    check(!layerCommandAvailable(od.document, LayerCommand::ToggleAlphaLock, 2),
+          "Lock Transparent Pixels is UNAVAILABLE on a Pigment layer -- the menu greys it "
+          "rather than offering a gesture with nowhere to act");
+    const LayerEditResult lockPigment = applyLayerCommand(od, LayerCommand::ToggleAlphaLock, 2);
+    check(!lockPigment.ok && contains(lockPigment.error, "Pigment") &&
+              !od.document.layers[2].alphaLocked,
+          "and core/LayerOps' own setter refuses it by name if the command is reached anyway "
+          "-- the availability check is a backstop, not the only guard");
+
+    // A document that arrives with the (otherwise unreachable) combination --
+    // PRD I10, a foreign or hand-edited .npaint -- must still have a way out.
+    od.document.layers[2].alphaLocked = true;
+    check(layerCommandAvailable(od.document, LayerCommand::ToggleAlphaLock, 2),
+          "un-locking is always offered, even on a Pigment layer that arrived already "
+          "alpha-locked -- a state a document can hold must be one a user can leave");
+    const LayerEditResult unlockPigment = applyLayerCommand(od, LayerCommand::ToggleAlphaLock, 2);
+    check(unlockPigment.ok && !od.document.layers[2].alphaLocked,
+          "and the command actually clears it, never refusing the OFF direction by kind");
+
+    // The general lock freezes it too, `setLayerBlend()`/`setLayerClipped()`'s
+    // own rule applied to this flag.
+    applyLayerCommand(od, LayerCommand::ToggleLocked, 1);
+    const LayerEditResult lockedRefusal = applyLayerCommand(od, LayerCommand::ToggleAlphaLock, 1);
+    check(!lockedRefusal.ok && contains(lockedRefusal.error, "locked") &&
+              !od.document.layers[1].alphaLocked,
+          "a LOCKED layer refuses Lock Transparent Pixels too, core/LayerOps' general rule");
+    applyLayerCommand(od, LayerCommand::ToggleLocked, 1);  // unlock again for cleanliness
   }
 
   // --- Part D: reorder, duplicate, delete, and where the selection lands ---

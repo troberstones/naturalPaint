@@ -811,6 +811,121 @@ bool runRgbDepositTest() {
           "independent -- and this build really does have the OIIO backend compiled in");
   }
 
+  // ======================================================================
+  // 14. Alpha lock: a FREEZE, not another bound (core/Layer.hpp's
+  //     `alphaLocked`; brush/RgbDeposit.hpp §4.5)
+  // ======================================================================
+  //
+  // The distinction this section exists to prove: a bound (`sel * dst.a` on
+  // the weight, composited through the ordinary §2 rule) still lets a SECOND
+  // separate stroke push the alpha further, because the bound is computed
+  // fresh from whatever `dst.a` the first stroke left -- section 8 measures
+  // exactly that creep for the selection, "0.5, then 0.75". A freeze must
+  // not: `dst.a` is copied through unchanged by §4.5's rule, so there is
+  // nothing for a later pass to read that the first pass could have moved.
+  // This is the assertion sabotage (a) in this task's brief reddens.
+  {
+    OpenDocument od = makeRgbDoc(256, 256, 0);
+    TileStore& store = *od.document.layers[0].rgbTiles;
+    od.document.layers[0].alphaLocked = true;
+
+    // A texel starting at alpha 0.5 -- not 0 and not 1, so a freeze (stays
+    // 0.5), a bound computed from `dst.a` (climbs, section 8's shape) and an
+    // unlocked composite (climbs to `opacity`) would each read differently.
+    // Straight (0.3, 0.3, 0.3) at a=0.5: premultiplied (0.15, 0.15, 0.15,
+    // 0.5), all exactly representable in binary16.
+    {
+      const PixelCoord p{64, 64};
+      Tile& t0 = store.getOrCreate(tileCoordAt(p));
+      t0.writePixel(tileLocalOffset(p), {0.15f, 0.15f, 0.15f, 0.5f});
+    }
+    const BrushTip t = discTip(20.0f, 1.0f, {1.0f, 1.0f, 1.0f});  // white ink, full flow
+
+    for (int pass = 0; pass < 2; ++pass) {
+      RgbStroke stroke;
+      stroke.begin(t.linearRgb, 1.0f, /*alphaLocked=*/true);
+      stroke.depositDab(store, t, Vec2{64.5f, 64.5f}, 256, 256, nullptr, nullptr);
+      stroke.end();
+    }
+    const std::array<float, 4> after = readAt(store, 64, 64);
+    std::printf("  [measured] alpha lock, two SEPARATE full-strength strokes: alpha stays "
+                "%.9f (started at 0.5; a bound would have reached ~0.75 after the first pass "
+                "alone, section 8's own shape)\n",
+                static_cast<double>(after[3]));
+    check(after[3] == 0.5f,
+          "alpha lock: alpha is EXACTLY 0.5 after two separate full-strength strokes, at zero "
+          "tolerance -- a freeze copies dst.a through unchanged, so there is nothing left for "
+          "a second stroke to move; this is the assertion that tells a freeze from a bound");
+    check(nearHalf(after[0], 0.5f) && nearHalf(after[1], 0.5f) && nearHalf(after[2], 0.5f),
+          "alpha lock: and the COLOUR did change -- two full-strength white dabs over grey at "
+          "a=0.5 land the straight colour at white, premultiplied by the frozen 0.5 -- so this "
+          "is a lock that still paints, not a second `locked`");
+
+    // The un-frozen control, same fixture, same dabs, `alphaLocked=false`: the
+    // alpha DOES move, which is what makes the assertion above a real claim
+    // about the flag rather than a coincidence of the numbers chosen.
+    OpenDocument odCtrl = makeRgbDoc(256, 256, 0);
+    TileStore& storeCtrl = *odCtrl.document.layers[0].rgbTiles;
+    {
+      const PixelCoord p{64, 64};
+      storeCtrl.getOrCreate(tileCoordAt(p)).writePixel(tileLocalOffset(p),
+                                                        {0.15f, 0.15f, 0.15f, 0.5f});
+    }
+    RgbStroke unlocked;
+    unlocked.begin(t.linearRgb, 1.0f, /*alphaLocked=*/false);
+    unlocked.depositDab(storeCtrl, t, Vec2{64.5f, 64.5f}, 256, 256, nullptr, nullptr);
+    unlocked.end();
+    check(readAt(storeCtrl, 64, 64)[3] == 1.0f,
+          "alpha lock: the IDENTICAL dab with the flag off reaches alpha 1.0 in one pass -- "
+          "the control that shows section 14's premise (a starting alpha the flag actually "
+          "has to hold back) is real");
+  }
+
+  // ======================================================================
+  // 15. depositRgbTexel() directly: the composite rule, at zero tolerance
+  // ======================================================================
+  //
+  // Section 14 exercises the flag through `RgbStroke`, which is what a real
+  // stroke does; this is brush/RgbDeposit.hpp §4.5's formula checked against
+  // the pure function it is written on, the same relationship section 1
+  // through 5 already have with `dabCoverage()`.
+  {
+    // `a == 1` (weight and cap both saturate the accumulator from 0 in one
+    // dab) makes the arithmetic checkable by hand: `out.rgb = ink * dst.a`,
+    // `out.a = dst.a`.
+    const std::array<float, 4> dst{0.1f, 0.2f, 0.3f, 0.5f};
+    const std::array<float, 3> ink{1.0f, 1.0f, 1.0f};
+    const RgbDepositStep locked = depositRgbTexel(dst, ink, 0.0f, 1.0f, 1.0f, /*alphaLocked=*/true);
+    check(locked.dabAlpha == 1.0f && locked.strokeAlpha == 1.0f,
+          "§4.5: the accumulator arithmetic (`a`, `A'`) is UNCHANGED by the flag -- it is not "
+          "an input to either, only to which composite reads it");
+    check(locked.premultiplied[0] == 0.5f && locked.premultiplied[1] == 0.5f &&
+              locked.premultiplied[2] == 0.5f && locked.premultiplied[3] == 0.5f,
+          "§4.5: white ink at a=1 over dst.a=0.5 gives premultiplied (0.5,0.5,0.5,0.5) exactly "
+          "-- straight white at the FROZEN alpha, not the unlocked route's (1,1,1,1)");
+
+    const RgbDepositStep unlocked =
+        depositRgbTexel(dst, ink, 0.0f, 1.0f, 1.0f, /*alphaLocked=*/false);
+    check(unlocked.premultiplied[3] == 1.0f,
+          "§4.5: the SAME inputs with the flag off reach alpha 1.0 -- the control that shows "
+          "the branch above is not vacuous");
+
+    // `dst.a == 0`: "no paint on transparent texels", produced by the
+    // arithmetic itself rather than by a special-cased branch (§4.5's own
+    // claim). `dabAlpha` is still 1 -- the caller's cue that a dab happened
+    // -- even though the texel it wrote is bit-identical to what was there.
+    const std::array<float, 4> transparent{0.0f, 0.0f, 0.0f, 0.0f};
+    const RgbDepositStep onTransparent =
+        depositRgbTexel(transparent, ink, 0.0f, 1.0f, 1.0f, /*alphaLocked=*/true);
+    check(onTransparent.premultiplied == transparent,
+          "§4.5: an alpha-locked dab on a fully TRANSPARENT texel comes back bit-identical to "
+          "the input -- dst.rgb is 0 (premultiplied) and dst.a is 0, so both terms of the "
+          "rule are 0 with no branch written to special-case it");
+    check(onTransparent.dabAlpha == 1.0f,
+          "§4.5: and `dabAlpha` still reports the dab as having HAPPENED -- the no-op is a "
+          "property of the arithmetic's result, not of a refusal that skipped the texel");
+  }
+
   std::printf("[selftest] rgb deposit %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

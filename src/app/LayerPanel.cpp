@@ -241,6 +241,15 @@ std::string layerRowSubLine(const Layer& layer) {
     s += kSep;
     s += "LOCKED";
   }
+  // Alpha lock, its own word rather than folded into "LOCKED" -- the two are
+  // different promises (core/Layer.hpp's own comment on `alphaLocked`: one
+  // freezes everything, the other freezes only alpha and leaves painting
+  // free), and a row that said "LOCKED" for both would tell a user who can
+  // still paint that they cannot.
+  if (layer.alphaLocked) {
+    s += kSep;
+    s += "ALPHA LOCK";
+  }
   // The colour label (PLAN.md Phase 5 step 11, PRD C15), last because it is
   // organisation rather than anything about how the layer composites. Absent
   // for an unlabelled layer -- which is every layer this build created before

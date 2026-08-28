@@ -6,7 +6,7 @@ namespace np {
 
 RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
                                const std::array<float, 3>& straightLinearRgb, float strokeAlpha,
-                               float weight, float opacity) noexcept {
+                               float weight, float opacity, bool alphaLocked) noexcept {
   RgbDepositStep out;
   // The no-op answer, returned by every one of the four refusals below. `dst`
   // rather than something recomputed from it: a texel this dab does not change
@@ -44,24 +44,37 @@ RgbDepositStep depositRgbTexel(const std::array<float, 4>& dst,
   // the reader.
   if (a > 1.0f) a = 1.0f;
 
-  // Premultiplied source-over of an OPAQUE source scaled by `a`:
-  //     s' = (rgb * a, a),   out = s' + dst * (1 - a)
-  // All four channels take the same `keep`, which is what makes a rim texel
-  // half *present* rather than half *bright* -- the identical argument
-  // `fillThroughSelection()` makes for the bucket's feathered edge, and the
-  // reason there is no fringe (§1).
   const float keep = 1.0f - a;
-  out.premultiplied = {straightLinearRgb[0] * a + dst[0] * keep,
-                       straightLinearRgb[1] * a + dst[1] * keep,
-                       straightLinearRgb[2] * a + dst[2] * keep, a + dst[3] * keep};
+  if (alphaLocked) {
+    // Header §4.5: the SAME `a`, spent on colour only. `dst[3]` is copied
+    // through rather than recomputed, which is what makes this a freeze
+    // rather than a bound that a second dab could still move -- there is no
+    // expression here `dst[3]` is an input to, so there is nothing left for a
+    // later pass to climb.
+    out.premultiplied = {dst[0] * keep + straightLinearRgb[0] * a * dst[3],
+                         dst[1] * keep + straightLinearRgb[1] * a * dst[3],
+                         dst[2] * keep + straightLinearRgb[2] * a * dst[3], dst[3]};
+  } else {
+    // Premultiplied source-over of an OPAQUE source scaled by `a`:
+    //     s' = (rgb * a, a),   out = s' + dst * (1 - a)
+    // All four channels take the same `keep`, which is what makes a rim texel
+    // half *present* rather than half *bright* -- the identical argument
+    // `fillThroughSelection()` makes for the bucket's feathered edge, and the
+    // reason there is no fringe (§1).
+    out.premultiplied = {straightLinearRgb[0] * a + dst[0] * keep,
+                         straightLinearRgb[1] * a + dst[1] * keep,
+                         straightLinearRgb[2] * a + dst[2] * keep, a + dst[3] * keep};
+  }
   out.strokeAlpha = a1;
   out.dabAlpha = a;
   return out;
 }
 
-void RgbStroke::begin(const std::array<float, 3>& straightLinearRgb, float opacity) noexcept {
+void RgbStroke::begin(const std::array<float, 3>& straightLinearRgb, float opacity,
+                      bool alphaLocked) noexcept {
   ink_ = straightLinearRgb;
   opacity_ = std::clamp(opacity, 0.0f, 1.0f);
+  alphaLocked_ = alphaLocked;
   // A fresh accumulator, not a cleared one: assigning a default-constructed
   // store drops every `shared_ptr` slot and therefore every tile the previous
   // stroke held, which is `end()`'s free as well as this one's.
@@ -173,8 +186,9 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           // exactly); and into the ceiling, so *no number of passes* takes that
           // texel past half. The first alone is a speed limit rather than a
           // bound, and a scrubbed stroke walks straight through it.
-          const RgbDepositStep step =
-              depositRgbTexel(before, ink_, accumulated, tip.flow * cov * sel, opacity_ * sel);
+          const RgbDepositStep step = depositRgbTexel(before, ink_, accumulated,
+                                                      tip.flow * cov * sel, opacity_ * sel,
+                                                      alphaLocked_);
           // The ceiling, the transparent tail of the falloff, and a texel the
           // selection excluded all arrive here as `dabAlpha == 0`, and all three
           // mean the same thing: do not touch this texel, do not allocate its

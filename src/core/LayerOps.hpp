@@ -38,13 +38,28 @@
 //
 // core/Layer.hpp shipped `locked` inert, with the note that "nothing edits
 // layers through a checked path yet, so nothing consults this". This step is
-// where it gets teeth, and the honest scope of those teeth is worth being blunt
-// about: **there is still no pixel-edit path to a layer.** `sim::PaintSim` owns
-// one dense GPU texture, a stroke reaches no `Layer::rgbTiles`, and no tool
-// writes a texel into a document. So "locked layers reject edits" cannot mean
-// "a brush refuses to paint on it" today, because no brush can paint on any
-// layer, locked or not. Inventing a fake refusal path to demonstrate the lock
-// would be worse than a narrow real one.
+// where it gets teeth.
+//
+// **This paragraph used to end with a claim that has since gone false, and it
+// is corrected in place rather than deleted, because the shape of the rot is
+// the useful part.** It read: "there is still no pixel-edit path to a layer.
+// `sim::PaintSim` owns one dense GPU texture, a stroke reaches no
+// `Layer::rgbTiles`, and no tool writes a texel into a document. So 'locked
+// layers reject edits' cannot mean 'a brush refuses to paint on it' today."
+// Every sentence of that was true when written and every one is now wrong:
+// `app/StrokeSession.hpp`'s `StrokeRoute` has carried `CpuDeposit`,
+// `RgbDeposit`, `RgbErase` and `PigmentErase` since PLAN.md Phase 5, and all
+// four write a `Layer`'s own tiles. A brush **does** refuse to paint on a
+// locked layer, and it refuses in the brush rather than in a caller that has
+// to remember: `strokeRouteFor()` tests `target->locked` at
+// `app/StrokeSession.cpp:203`, before it looks at the layer's kind, and
+// returns `StrokeRoute::None`, which `begin()` turns into a named refusal.
+//
+// The same stale sentence lived on `Layer::locked`'s own comment and was
+// corrected there in the same step. Two files repeated one claim, so one
+// change of fact left two lies -- which is the argument
+// docs/reachability-audit.md's R13 note makes about absence-claims, arriving
+// here as a capability-claim instead.
 //
 // What it means here, and all it means here:
 //
@@ -242,6 +257,27 @@ LayerOpResult setLayerOpacity(Document& doc, size_t index, float opacity);
 
 // Sets the lock. Allowed in both directions on a locked layer.
 LayerOpResult setLayerLocked(Document& doc, size_t index, bool locked);
+
+// Sets `Layer::alphaLocked` -- "Lock transparent pixels" (core/Layer.hpp's own
+// comment on the member derives the composite rule; brush/RgbDeposit.hpp §4.5
+// derives why it is a freeze and not a bound). Refused on a `locked` layer,
+// `setLayerBlend()`'s reason: which parts of a layer paint is part of how
+// that layer behaves, and a lock that froze everything else but not this
+// would be a lock in name only.
+//
+// **Refused when TURNING ON on anything but an RGB layer.** Only an RGB
+// layer's texel has an alpha channel this flag could freeze -- a Pigment
+// layer stores latent-times-mass (core/Pigment.hpp), a different quantity
+// with no lock of its own here, and `app::layerCommandAvailable()` greys the
+// command out first so this is the backstop rather than the only guard, the
+// same relationship `setLayerClipped()` has with the panel's row-availability
+// check for the bottom layer.
+//
+// **Never refused when turning OFF**, whatever the kind -- `setLayerClipped()`
+// own rule: a state a document can hold (a foreign or hand-edited `.npaint`
+// carries the combination verbatim, PRD I10) must always be one a user can
+// get out of.
+LayerOpResult setLayerAlphaLocked(Document& doc, size_t index, bool alphaLocked);
 
 // Sets the blend mode (PRD C4's "blend mode"). Refused on a locked layer --
 // which blend a layer uses is part of how that layer looks, and a lock that

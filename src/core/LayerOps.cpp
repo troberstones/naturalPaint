@@ -280,6 +280,26 @@ LayerOpResult setLayerLocked(Document& doc, size_t index, bool locked) {
   return layerOpSucceed(label, index);
 }
 
+LayerOpResult setLayerAlphaLocked(Document& doc, size_t index, bool alphaLocked) {
+  LayerOpResult refusal;
+  if (!layerOpInRange(doc, index, "set alpha lock", &refusal)) return refusal;
+  if (!layerOpNotLocked(doc, index, "set alpha lock", kLockedLayerFrozen, &refusal))
+    return refusal;
+  if (alphaLocked && doc.layers[index].kind != LayerKind::RGB) {
+    return layerOpFail(
+        "set alpha lock refused: " + layerOpDescribe(doc, index) + " is a " +
+        std::string(layerKindName(doc.layers[index].kind)) +
+        " layer. Alpha lock freezes a layer's ALPHA channel (brush/RgbDeposit.hpp §4.5) "
+        "while letting colour still change, and only an RGB layer's texel has one -- a "
+        "Pigment layer holds latent-times-mass instead (core/Pigment.hpp), a different "
+        "quantity with no lock of its own here. Turning it back off is always allowed.");
+  }
+  const std::string label =
+      std::string(alphaLocked ? "alpha-lock " : "alpha-unlock ") + layerOpDescribe(doc, index);
+  doc.layers[index].alphaLocked = alphaLocked;
+  return layerOpSucceed(label, index);
+}
+
 LayerOpResult setLayerBlend(Document& doc, size_t index, BlendMode mode) {
   LayerOpResult refusal;
   if (!layerOpInRange(doc, index, "set layer blend mode", &refusal)) return refusal;

@@ -1739,6 +1739,7 @@ const char* layerCommandGlyphFallback(LayerCommand command) noexcept {
     case LayerCommand::ToggleVisible:
     case LayerCommand::ToggleLocked:
     case LayerCommand::ToggleClipped:
+    case LayerCommand::ToggleAlphaLock:
     case LayerCommand::CaptureComp:
       return "?";
   }
@@ -1872,6 +1873,14 @@ constexpr float kLayerLineGap    = 1.0f;   // name -> metadata line
 constexpr float kLayerEyeW       = 14.0f;
 constexpr float kLayerLockW      = 12.0f;
 constexpr float kLayerMaskChipW  = 12.0f;
+// The alpha-lock indicator's own chip -- a checkerboard, not a second padlock.
+// `kLayerLockW` above already owns the padlock glyph two slots to the left of
+// the name column, and drawing a SECOND padlock here for a different flag
+// would read as "this layer is locked twice", not "locked a different way".
+// A checkerboard is the transparency mark every image editor already uses for
+// "no pixel here", so a checkerboard chip reads as "about alpha" on sight
+// instead of borrowing the general lock's own glyph for a narrower promise.
+constexpr float kLayerAlphaLockChipW = 12.0f;
 constexpr float kLayerOpacityW   = 52.0f;
 constexpr float kLayerGroupIndentW = 10.0f;  // per nesting level (PRD C7's UI half)
 constexpr float kLayerDisclosureW  = 10.0f;  // the collapse/expand triangle, Group rows only
@@ -2543,6 +2552,30 @@ void drawLayersSection(AppState& st) {
         const ImVec2 hi(lo.x + kLayerMaskChipW, lo.y + kLayerMaskChipW);
         dl->AddRectFilled(lo, ImVec2(hi.x, (lo.y + hi.y) * 0.5f), atelierToken(kRule));
         dl->AddRectFilled(ImVec2(lo.x, (lo.y + hi.y) * 0.5f), hi, atelierToken(kChromeDeep));
+        dl->AddRect(lo, hi, atelierToken(kHairline));
+        trailingX -= kLayerRowGap;
+      }
+      if (layer.alphaLocked) {
+        // Alpha lock's own status chip (this task's requirement 6): a 2x2
+        // checkerboard in the same two theme tokens the mask chip just above
+        // draws with, so it is legible on both a light and a dark canvas for
+        // the identical reason the mask chip already is -- neither token is a
+        // literal colour, both come from `atelierToken()`. Deliberately NOT a
+        // second padlock; see `kLayerAlphaLockChipW`'s own comment for why.
+        // Purely a status light, like the mask chip beside it: there is
+        // nothing here to click, `ToggleAlphaLock` is reached through the
+        // `Layer` menu and the row's own right-click menu, both of which
+        // walk `allLayerCommands()` and needed no new code to offer it.
+        trailingX -= kLayerAlphaLockChipW;
+        const ImVec2 lo(trailingX, o.y + (rowH - kLayerAlphaLockChipW) * 0.5f);
+        const ImVec2 hi(lo.x + kLayerAlphaLockChipW, lo.y + kLayerAlphaLockChipW);
+        const ImVec2 mid((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+        const ImU32 tileA = atelierToken(kRule);
+        const ImU32 tileB = atelierToken(kChromeDeep);
+        dl->AddRectFilled(lo, mid, tileA);
+        dl->AddRectFilled(ImVec2(mid.x, lo.y), ImVec2(hi.x, mid.y), tileB);
+        dl->AddRectFilled(ImVec2(lo.x, mid.y), ImVec2(mid.x, hi.y), tileB);
+        dl->AddRectFilled(mid, hi, tileA);
         dl->AddRect(lo, hi, atelierToken(kHairline));
         trailingX -= kLayerRowGap;
       }
@@ -7353,6 +7386,7 @@ MenuContext menuContextFromState(AppState& st) {
         if (command == LayerCommand::ToggleVisible) checked = d.layers[selected].visible;
         if (command == LayerCommand::ToggleLocked) checked = d.layers[selected].locked;
         if (command == LayerCommand::ToggleClipped) checked = d.layers[selected].clipped;
+        if (command == LayerCommand::ToggleAlphaLock) checked = d.layers[selected].alphaLocked;
       }
       // Grouped as the panel groups them: creation, then the whole-layer
       // operations, then the mask, then the flags.
@@ -9895,6 +9929,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           : strokeTarget->locked
               ? std::string("locked layer: \"") + strokeTarget->name + "\" cannot be " +
                     (eraseTool ? "erased" : "painted") + ". Clear its Lock in LAYERS."
+          // Alpha lock, and only for the eraser -- painting is still allowed on
+          // an alpha-locked layer (that is the whole feature), so this refusal
+          // must not read like the general lock above or a user who is not
+          // erasing would see it and think painting is blocked too.
+          // app/StrokeSession.cpp's strokeRouteFor() is what actually refused
+          // this stroke, by the identical `alphaLocked` test; this is that
+          // refusal's sentence.
+          : (eraseTool && strokeTarget->kind == LayerKind::RGB && strokeTarget->alphaLocked)
+              ? std::string("alpha locked: \"") + strokeTarget->name +
+                    "\" cannot be erased. Erasing removes alpha, and this layer's alpha is "
+                    "locked -- painting still works. Clear Lock Transparent Pixels in LAYERS "
+                    "to erase."
           : eraseTool
               ? std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +

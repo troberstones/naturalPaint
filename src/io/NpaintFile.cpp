@@ -69,6 +69,12 @@ constexpr const char* kAttrMask = "np:mask";
 // already use and one of the three docs/document-format.md measured as
 // surviving this OpenImageIO. Written **only when true** -- see the writer.
 constexpr const char* kAttrClipped = "np:clipped";
+// Whether the layer's alpha is frozen while its colour can still change
+// ("alpha lock", core/Layer.hpp's `alphaLocked`). An `int` 0/1, `np:clipped`'s
+// own type and rule: written **only when true** -- see the writer -- so a
+// document with no alpha-locked layer produces exactly the bytes it produced
+// before this attribute existed.
+constexpr const char* kAttrAlphaLocked = "np:alphaLocked";
 // **A Group layer's own stable identity** (PLAN.md Phase 5's C7/C12
 // follow-on; core/Layer.hpp's `groupTag`). Written **only on a Group-kind
 // part**, `np:mask`'s own rule and reason: meaningless on any other kind, so
@@ -261,7 +267,7 @@ bool isLayerAttributeRecognised(const std::string& name) {
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
          name == kAttrParent || name == kAttrOps || name == kAttrMask ||
          name == kAttrClipped || name == kAttrLabel || name == kAttrLink ||
-         name == kAttrGroupId;
+         name == kAttrGroupId || name == kAttrAlphaLocked;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -1879,6 +1885,14 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // `Layer::clipped`'s own default -- the same "the identity element is the
     // absent case" rule the mask channel uses for 1.0.
     if (layer.clipped) part.attributes.push_back(intAttr(kAttrClipped, 1));
+    // **Written only when the layer is actually alpha-locked**, `np:clipped`'s
+    // own rule and reason: a document with no locked alpha has to keep
+    // producing the bytes this build produced before the attribute existed,
+    // measured against a save of this same fixture with every `alphaLocked`
+    // left false rather than assumed (--selftest, io/NpaintFile.cpp's own
+    // test). Absent therefore reads as `false`, `Layer::alphaLocked`'s own
+    // default.
+    if (layer.alphaLocked) part.attributes.push_back(intAttr(kAttrAlphaLocked, 1));
     // PLAN.md Phase 5 step 11 / PRD C15. Written only when set; see the
     // attribute names at the top of this file for why these two are scalars
     // rather than a carrier, and why the range check on the link group is a
@@ -2526,6 +2540,17 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     if (const NpaintAttribute* a = findAttr(part.attributes, kAttrClipped);
         a && a->type == NpaintAttribute::Type::Int)
       layer.clipped = a->intValue != 0;
+    // Absent means `false`, `Layer::alphaLocked`'s own default, `np:clipped`'s
+    // own reason: a `.npaint` written before this step loads with no
+    // alpha-locked layers without the reader having to know that. Carried
+    // verbatim even on a Pigment layer (PRD I10) -- `core::setLayerAlphaLocked()`
+    // refuses to *set* it there, but a foreign or hand-edited file that already
+    // holds the combination is not refused on load, matching `np:clipped`'s own
+    // "a preserved attribute must never be the thing that makes a file
+    // unopenable".
+    if (const NpaintAttribute* a = findAttr(part.attributes, kAttrAlphaLocked);
+        a && a->type == NpaintAttribute::Type::Int)
+      layer.alphaLocked = a->intValue != 0;
     // PLAN.md Phase 5 step 11 / PRD C15. Absent means each member's own default
     // -- unlabelled, unlinked -- so a `.npaint` written before this step loads
     // with neither, without the reader having to know that. The label is taken

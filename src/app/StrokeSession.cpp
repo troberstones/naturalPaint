@@ -216,8 +216,18 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
   // one decision the refusal asked for.
   if (target->kind == LayerKind::Pigment && target->pigmentTiles)
     return erasing ? StrokeRoute::PigmentErase : StrokeRoute::CpuDeposit;
-  if (target->kind == LayerKind::RGB && target->rgbTiles)
+  if (target->kind == LayerKind::RGB && target->rgbTiles) {
+    // Alpha lock refuses the ERASER, and only the eraser. `StrokeRoute::RgbErase`
+    // exists to take alpha OUT of the layer (brush/RgbErase.hpp §0), which is
+    // exactly the quantity `alphaLocked` freezes (core/Layer.hpp's own comment
+    // on the member; brush/RgbDeposit.hpp §4.5 derives the rule) -- letting the
+    // erase through would make the flag decorative. `RgbDeposit` is NOT
+    // affected: painting on an alpha-locked layer is the whole feature, not a
+    // refusal, and `brush/RgbDeposit.cpp`'s `depositRgbTexel()` is where the
+    // colour-only composite actually happens, not here.
+    if (erasing && target->alphaLocked) return StrokeRoute::None;
     return erasing ? StrokeRoute::RgbErase : StrokeRoute::RgbDeposit;
+  }
 
   // Everything left is a real target that cannot take a stroke: an Adjustment
   // layer (no tiles by construction), a Media/Strokes/Text/Flats layer (no
@@ -644,8 +654,8 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
     return refuse(std::string("stroke refused: the ") + strokeEditLabel(tool) + " on layer " +
                   std::to_string(layerIndex) + " ('" + layer.name + "', " +
                   layerKindName(layer.kind) + (layer.locked ? ", locked" : "") +
-                  ") routes to " + strokeRouteName(route) +
-                  ", which does not write a layer.");
+                  (layer.alphaLocked ? ", alpha-locked" : "") + ") routes to " +
+                  strokeRouteName(route) + ", which does not write a layer.");
 
   doc_ = &doc;
   layerIndex_ = layerIndex;
@@ -665,8 +675,14 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // stroke cap the first dab of the next -- and a session begun without a
   // matching `end()` (a window blur, an interrupted drag) is the case that
   // reaches this line holding tiles.
+  // `layer.alphaLocked`, latched with the ink and the ceiling for the identical
+  // reason (brush/RgbDeposit.hpp's `begin()`): a lock cleared or set mid-drag
+  // must not change which composite the dabs already spent are read back
+  // through. Read here rather than inside `rgb_` because `Layer` is what this
+  // file already has in hand and `brush/RgbDeposit` deliberately knows nothing
+  // about one (its header §5, "No Document, no Layer").
   if (route_ == StrokeRoute::RgbDeposit)
-    rgb_.begin(tip.linearRgb, tip.opacity);
+    rgb_.begin(tip.linearRgb, tip.opacity, layer.alphaLocked);
   else
     rgb_.end();
 
