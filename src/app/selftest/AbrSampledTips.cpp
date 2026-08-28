@@ -414,7 +414,7 @@ bool runAbrSampledTipsTest() {
                                             "f00dcafe-1234-5678-9abc-def012345678");
       const AbrImportResult r = importAbrBrushes(wrapAbrWithSamp(samp, desc));
       check(r.ok && r.presets.size() == 1 &&
-                nearf(r.presets[0].radius, 1.0f, 1e-4f),
+                nearf(r.presets[0].model.tip.diameterPx / 2.0f, 1.0f, 1e-4f),
             "abr-samp: a #Prc Dmtr resolves against the SAMPLE's own larger dimension (4px), so "
             "50% is radius 1");
       check(r.notes.empty(), "abr-samp: ...and costs no note, because it DID resolve");
@@ -689,7 +689,7 @@ bool runAbrSampledTipsTest() {
     bmp->alpha.assign(9, 200);
 
     BrushPreset preset;
-    preset.radius = 12.0f;
+    preset.model.tip.diameterPx = 24.0f;
     preset.tipBitmap = bmp;
 
     BrushState brush;
@@ -715,8 +715,10 @@ bool runAbrSampledTipsTest() {
     differentBmp->height = 3;
     differentBmp->alpha.assign(9, 1);
     other.tipBitmap = differentBmp;
-    check(presetMatches(other, brush.radius, brush.hardness, brush.spacing, brush.roundness,
-                        brush.angle, brush.load, brush.wetness, brush.links, brush.grain),
+    check(presetMatches(other, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
+                        brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
+                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
+                        brush.grain),
           "abr-samp/roundtrip: presetMatches() DELIBERATELY cannot tell `other`'s different "
           "bitmap apart from `brush`'s -- documented on BrushPreset::tipBitmap and on "
           "presetMatches() itself, because nothing today can move a live bitmap independently "
@@ -771,7 +773,7 @@ bool runAbrSampledTipsTest() {
     // against that commit (uncommitted, not asserted from memory) rather
     // than assumed from the diff.
     BrushPreset preset;
-    preset.radius = 9.0f;
+    preset.model.tip.diameterPx = 18.0f;
     preset.model.texture.enabled = true;
     preset.model.texture.pattern.id = "deadbeef-0000-1111-2222-333333333333";
     preset.model.texture.pattern.name = "Kyle's Rough Watercolor Paper";

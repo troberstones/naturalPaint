@@ -454,7 +454,13 @@ BrushPreset presetFromDescriptor(
   if (const auto nm = node.field("Nm  ").asText()) p.name = std::string(*nm);
   if (p.name.empty()) p.name = "Untitled brush";
 
-  const AbrTipShape primary = readAbrTipShape(node.field("Brsh"), p.radius, p.hardness,
+  // 20.0f/0.35f: the OLD `BrushPreset::radius`/`hardness` field defaults,
+  // kept here as plain literals now that those fields are gone -- they were
+  // never anything but `readAbrTipShape()`'s own fallback for a `Brsh` with
+  // no `Dmtr`/`Hrdn` key, which real content essentially never omits
+  // (`PsTipShape::diameterPx`'s own comment: "#Pxl on all 101 presets
+  // measured").
+  const AbrTipShape primary = readAbrTipShape(node.field("Brsh"), 20.0f, 0.35f,
                                               /*readHardness=*/true, p.name, "", result,
                                               sampledTips);
   p.tipBitmap = primary.bitmap;
@@ -462,11 +468,15 @@ BrushPreset presetFromDescriptor(
   // pointer above lives as long as the library stays loaded, this id survives
   // a relaunch once app/DabLibrary has written the tip out.
   if (!primary.sampleId.empty()) p.dabId = "abr:" + primary.sampleId;
-  p.radius = primary.radius;
-  p.hardness = primary.hardness;
-  p.roundness = primary.roundness;
-  p.angle = primary.angle;
-  p.spacing = primary.spacing;
+  // **`primary.radius`/`.hardness`/`.roundness`/`.angle`/`.spacing` go
+  // nowhere else.** They used to be copied onto `BrushPreset`'s own five
+  // scalars, which are gone -- `importAbrBrushes()`'s own caller already
+  // fills the real, authoritative shape onto `preset.model` right after this
+  // function returns, via `brushModelFromDescriptor()`'s SEPARATE parse of
+  // the identical `Brsh` node (that function's own comment: "filled
+  // alongside and attached to the SAME preset it was read from"). `primary`
+  // above is kept only for its bitmap and sample id -- the two fields
+  // `p.tipBitmap`/`p.dabId` still carry, unaffected by this migration.
 
   // Dynamics. `useTipDynamics` gates the first three the way the Brush panel's
   // own Shape Dynamics checkbox does: with it off, Photoshop keeps the authored
@@ -556,7 +566,12 @@ BrushPreset presetFromDescriptor(
       // measured one: it matches "Hard Round", Photoshop's own default
       // second-tip preset, but was not checked against a real file's second
       // tip, sampled or procedural.
-      const AbrTipShape second = readAbrTipShape(dualBrsh, p.radius, /*defaultHardness=*/1.0f,
+      // `primary.radius`, not a fresh literal: the old code read this
+      // fallback off `p.radius`, which by this point had already been copied
+      // from `primary.radius` (the now-deleted `p.radius = primary.radius;`
+      // a few dozen lines up) -- reading `primary.radius` directly here is
+      // the identical value, unchanged behaviour.
+      const AbrTipShape second = readAbrTipShape(dualBrsh, primary.radius, /*defaultHardness=*/1.0f,
                                                  /*readHardness=*/false, p.name, "Dual Brush's ",
                                                  result, sampledTips);
       auto dualTip = std::make_shared<BrushTip>();

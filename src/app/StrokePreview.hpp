@@ -242,20 +242,37 @@ int runStrokePreviewDump(const char* outPath, float radiusOverride, float spacin
 //     compared with `brushTipEqual()` -- the COMPLETE tip comparison, guarded
 //     by a `static_assert` on `sizeof(BrushTip)` so a new tip field is a
 //     compile error rather than a stale picture (brush/Deposit.hpp);
-//   * the link SET, compared with `linkSetsEqual()`, because the stroke-local
-//     sources (VELOCITY, FADE, NOISE, RANDOM, DIRECTION, INITIAL DIRECTION)
-//     are resolved inside `StrokeSession` per dab and never appear in a tip
-//     at all -- a brush whose only edit was a RANDOM -> Scatter range would
-//     otherwise hand back the previous stroke unchanged.
+//   * the link SET, compared with `linkSetsEqual()` -- kept even though
+//     nothing that paints reads `BrushState::links` any more (the matrix is
+//     shelved, `ui/DynamicsMatrixPanel.hpp`); a stale key here costs nothing
+//     but a harmless extra rasterisation, and there is no reason to make the
+//     cache trust a struct's contents less than it used to;
+//   * **`model`, compared with `brushModelEqual()`.** This is the field that
+//     actually decides what a real stroke paints now -- Size/Angle/
+//     Roundness/Scatter Variance included -- and `tips[]` above cannot see
+//     any of it: `brushTipFor()` no longer varies its OUTPUT by pressure at
+//     all (its own `(void)inputs;`), so every one of the nine sampled tips
+//     is identical regardless of what `model.shape`/`model.scatter` say.
+//     Without this field, two brushes differing ONLY in Size jitter --
+//     genuinely different strokes -- would hash to the identical key and the
+//     cache would hand back a stale picture: the exact defect class this
+//     whole cache exists to make impossible, reopened by the migration that
+//     moved Variance resolution out of `brushTipFor()` and into
+//     `StrokeSession`'s per-dab loop.
 //
 // Sampled at the same nine pressures `strokePreviewReach()` uses, for the same
 // reason it uses nine: a curve or an inversion can put a difference between
-// two brushes anywhere in [0,1], and two endpoints would miss it.
+// two brushes anywhere in [0,1], and two endpoints would miss it. (`tips[]`
+// no longer actually varies across those nine samples -- see `model` above
+// -- but is kept rather than collapsed to one entry, so a future caller that
+// re-wires `brushTipFor()` to read pressure again does not also have to
+// remember to widen this array back out.)
 inline constexpr int kStrokePreviewKeyPressures = 9;
 
 struct StrokePreviewKey {
   std::array<BrushTip, kStrokePreviewKeyPressures> tips{};
   BrushLinkSet links;
+  BrushModel model;
 };
 
 StrokePreviewKey strokePreviewKeyFor(const BrushState& brush, const MixboxLut& lut);

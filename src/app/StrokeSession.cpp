@@ -25,49 +25,16 @@ constexpr float kTwoPi = 6.28318530717958647692f;
 // tangent by to find its perpendicular.
 constexpr float kHalfPi = kTwoPi * 0.25f;
 
-// Folds the per-dab corrections from `strokeLocalLinks_` -- resolved against
-// VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL-DIRECTION alone, via
-// `evaluateLinksFiltered()` -- onto a tip already resolved against the four
-// hardware sources (`brushTipFor()`'s own `dyn`, baked into `base` at
-// `setTip()` time).
-//
-// **Multiplying/adding the stroke-local factor onto the already-resolved
-// field, rather than re-running `evaluateLinks()` on the WHOLE link set with
-// both halves of the inputs filled in, is not a shortcut -- it is required by
-// this file's per-dab granularity.** The hardware four are sampled once per
-// render frame (`dynamicInputsFor()`), before this dab's position is even
-// known; the stroke-local four are sampled once per DAB, inside this very
-// loop. There is no single instant at which "the whole `DynamicInputs`" for
-// this dab actually exists. Composing two partial resolutions of the SAME
-// link set is what `evaluateLinksFiltered()`'s own comment proves equal to
-// resolving it in one pass: `TargetCombine`'s fold is commutative and
-// associative (asserted in `--selftest`'s "order independence" section), so
-// multiplying the two Multiply-target partials and adding the two Add-target
-// partials reproduces exactly the number one whole-set `evaluateLinks()`
-// call would have produced, had one been possible.
-//
-// Spacing is deliberately NOT corrected here: `BrushTip::spacingPx()` is
-// consumed once, by `StrokePath`, before this loop ever runs (`pending_` is
-// already the emitted dab stream by the time `depositPending()` executes),
-// so a stroke-local spacing correction at this point would have no consumer
-// -- it could not un-emit or re-emit a dab that has already been decided.
-// **Does NOT apply `base.sizeFloorPx`.** `out = base;` below carries it
-// through unchanged (the floor in pixels does not move just because the
-// stroke-local half of the product is about to multiply `radius` again), and
-// it stays unapplied until `depositPending()`'s own single `std::max()` after
-// this function returns -- see `BrushTip::sizeFloorPx`'s comment for why
-// applying it here, before that multiply, would be the wrong half of the
-// counter-example it works through.
-BrushTip applyStrokeLocalCorrection(const BrushTip& base, const DynamicResult& corr) noexcept {
-  BrushTip out = base;
-  out.radius *= corr.at(DynamicTarget::Size);
-  out.hardness *= corr.at(DynamicTarget::Hardness);
-  out.roundness *= corr.at(DynamicTarget::Roundness);
-  out.angle += corr.at(DynamicTarget::Angle);
-  out.flow *= corr.at(DynamicTarget::Flow) * corr.at(DynamicTarget::Concentration);
-  out.scatter += corr.at(DynamicTarget::Scatter);
-  return out;
-}
+// The per-dab correction used to be `applyStrokeLocalCorrection()`, folding a
+// `strokeLocalLinks_` resolution (VELOCITY/FADE/NOISE/RANDOM/DIRECTION/
+// INITIAL-DIRECTION against `BrushLinkSet`) onto a tip already resolved
+// against the four hardware sources. It is gone: Size, Angle, Roundness and
+// Scatter are now resolved ENTIRELY inside `depositPending()`'s own per-dab
+// loop below, in one `varianceScale()`/`varianceOffset()` call each per dab
+// per site (`brush/Variance.hpp`'s own load-bearing invariant -- its floor is
+// applied once, inside the formula, so a stroke-begin base times a second
+// per-dab correction would apply it twice). There is no longer a base value
+// to correct.
 
 }  // namespace
 
@@ -366,111 +333,85 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut, float pressu
 
 BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
                      const DynamicInputs& inputs) {
-  // Resolved here rather than at each call site so the two routes cannot drift
-  // apart. A pen configured for size-only pressure must feel the same
-  // whichever layer kind it lands on -- which is the reason the two hardcoded
-  // curves were pulled into one place before, and the reason the link set that
-  // replaced them is read in one place now.
-  //
-  // **The four HARDWARE sources only, and the filter is load-bearing rather
-  // than an optimisation.** This file's own section comment above
-  // `applyStrokeLocal()` states the split everything downstream depends on: a
-  // tip arrives at `setTip()` "already resolved against the four hardware
-  // sources", and `StrokeSession` folds the stroke-local six
-  // (VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL-DIRECTION) on per DAB,
-  // because those are sampled at a position that does not exist yet when
-  // this runs.
-  //
-  // This line used to read `evaluateLinks(brush.links, inputs)` -- the WHOLE
-  // set -- and the consequence was that every stroke-local link was applied
-  // TWICE: once here against `DynamicInputs`' defaults, and once per dab with
-  // its real value. A source defaulted to 0 makes its link contribute exactly
-  // `rangeLo`, so the spurious extra factor was the link's own floor. An
-  // imported Photoshop brush with a 30% minimum size painted at 30% of the
-  // size it asked for, and one whose floor was 0.00 painted **nothing at all**
-  // -- silently, with a completely healthy link set and no refusal anywhere.
-  //
-  // Measured over Kyle's Runny Inkers (`--brush-sheet`, peak stroke width per
-  // brush): the attenuation matched each brush's RANDOM -> Size floor across
-  // all twelve, the one brush in the library with no such link was the only
-  // one at full width, and the brush whose floor is 0.00 was invisible.
-  const DynamicResult dyn = evaluateLinksFiltered(brush.links, inputs,
-                                                  /*wantStrokeLocal=*/false);
-  const float sizeMul = dyn.at(DynamicTarget::Size);
-  const float flowMul = dyn.at(DynamicTarget::Flow);
+  // **The old `dyn`/`evaluateLinksFiltered(brush.links, ...)` resolution is
+  // gone.** The 10x12 link matrix (`brush/Dynamics.hpp`) is shelved
+  // (`ui/DynamicsMatrixPanel.hpp`) -- nothing that paints reads
+  // `BrushState::links` any more. What drives a stroke now is
+  // `brush/BrushModel`/`brush/Variance`, Photoshop's own shape, decoded
+  // straight off the `.abr` file (or authored by hand for the four built-ins,
+  // `brush/Library.cpp`'s `defaultBrushLibrary()`).
+  const BrushModel& model = brush.model;
+  (void)inputs;  // the four HARDWARE sources reach a stroke through
+                 // `StrokeSession::begin()`/`setTip()`'s own `hardwareInputs`
+                 // parameter now, latched alongside the tip rather than
+                 // resolved into it here -- see that header's own comment.
 
   BrushTip tip;
-  tip.radius = brush.radius * sizeMul;
-  // The floor UNDER this product, in pixels -- computed from `brush.radius`
-  // itself, the UNSCALED base radius, while it is still the value in hand
-  // (the line just above already multiplied it by `sizeMul` into `tip.radius`).
-  // Deliberately not applied to `tip.radius` here; see `BrushTip::sizeFloorPx`'s
-  // own comment (brush/Deposit.hpp) for the whole argument, including the
-  // worked counter-example for why applying `max()` at this point -- before
-  // the stroke-local half of the product has had its own turn -- is wrong
-  // rather than merely early.
-  tip.sizeFloorPx =
-      brush.links.multiplyFloor[static_cast<size_t>(DynamicTarget::Size)] * brush.radius;
-  tip.hardness = brush.hardness * dyn.at(DynamicTarget::Hardness);
-  // **These two used to be dropped here**, and brush/Deposit.hpp §2b is the
-  // whole account of what that cost: two sliders, two DYNAMICS columns, a
-  // shipped preset and a Photoshop importer all describing a tip shape that
-  // nothing painted. Each takes its own combine rule from the matrix rather
-  // than a rule chosen here -- Roundness multiplies (a link scales the ratio)
-  // and Angle adds (a link offsets the rotation), which is exactly what
-  // `targetCombine()` says of each, and is why `evaluateLinks()` hands back
-  // 1.0 and 0.0 respectively for an undriven target and these two lines are
-  // therefore a no-op for a brush with no links.
-  tip.roundness = brush.roundness * dyn.at(DynamicTarget::Roundness);
-  tip.angle = brush.angle + dyn.at(DynamicTarget::Angle);
-  // Straight through, unscaled by any dynamic: a sampled tip's PIXELS are not
-  // a thing SIZE/ROUNDNESS/ANGLE dynamics resolve against per dab -- those
-  // three still apply, through `tip.radius`/`tip.roundness`/`tip.angle` above,
-  // exactly as they do for the procedural tip (brush/Deposit.hpp §2c). What
-  // would NOT make sense is a `DynamicTarget` that swaps which bitmap is
-  // loaded mid-stroke, and there is no such target for the same reason there
-  // is no `DynamicTarget::Pigment`.
+  // **Size, Angle and Roundness are BASE values only -- unvaried.** Their
+  // Variance objects (`PsShapeDynamics::size`/`angle`/`roundness`) are
+  // resolved ENTIRELY inside `StrokeSession`'s per-dab loop
+  // (`depositPending()`), in one `varianceScale()`/`varianceOffset()` call
+  // each per dab, never here and never split into a base-here/correction-there
+  // pair -- `brush/Variance.hpp`'s own header is the whole argument: its
+  // floor is applied exactly once, inside the formula, so a second partial
+  // resolution composed onto this base would apply it twice and reintroduce
+  // audit B6 in a new shape.
+  //
+  // A caller that reads this tip WITHOUT going through `StrokeSession` --
+  // `app/DabPreview.cpp`'s row-icon preview is the one that matters -- sees
+  // this unvaried base and nothing else: a narrower preview than the one a
+  // real stroke paints, in the exact same "a preview cell is not a stroke"
+  // sense that file's own comment already uses for the (now-removed)
+  // `sizeFloorPx`. Stated here rather than left to be discovered.
+  tip.radius = model.tip.diameterPx * 0.5f;
+  tip.angle = model.tip.angleDeg;
+  tip.roundness = model.tip.roundness;
+  // The Add-target identity (`BrushTip::scatter`'s own comment) -- the real
+  // per-dab magnitude comes from `model.scatter.scatter` inside the per-dab
+  // loop, the identical split Size/Angle/Roundness get above.
+  tip.scatter = 0.0f;
+
+  // Straight passthrough: `PsTipShape` carries no Variance for hardness, so
+  // there is nothing to resolve per dab -- Photoshop's own panel has no
+  // Hardness jitter control either.
+  tip.hardness = model.tip.hardness;
+  // `Spcn` is a percentage OF THE DIAMETER (brush/BrushModel.hpp's own
+  // comment on `PsTipShape::spacingPercent`), but `BrushTip::spacing` is in
+  // RADII (its own comment, brush/Deposit.hpp: `spacingPx() { return spacing
+  // * radius; }`) -- a diameter is two radii, so a given fraction OF THE
+  // DIAMETER is DOUBLE that same fraction of the radius. `/100` alone would
+  // silently halve every imported brush's dab spacing; `io/AbrBrushes.cpp`'s
+  // own `abrSpacingToRadii()` names this identical conversion
+  // (`percentOfDiameter / 100 * 2`) for the sibling import path that fills a
+  // `BrushTip` directly.
+  tip.spacing = model.tip.spacingPercent / 100.0f * 2.0f;
+
+  // **`tipBitmap`/`dualTip`/`dualBlend` stay `BrushState`'s own fields, not
+  // `model.tip.dab.bitmap`/`model.dual`.** Both name the same imported data,
+  // but `BrushState`'s copies are the ones actually resolved at runtime
+  // (`app/DabLibrary`'s id -> bitmap lookup, `applyPresetToBrush()`'s
+  // lockstep copy) and are not among the five scalars this migration deletes
+  // -- reading them here is the same zero-risk passthrough the old code
+  // already did, rather than a second, unproven resolution path through the
+  // model's own `DabRef`.
   tip.bitmap = brush.tipBitmap;
-  // Straight through, unscaled by any dynamic, for the identical reason
-  // `tip.bitmap` above is: a Dual Brush's second tip (brush/Deposit.hpp §2d)
-  // is not a thing SIZE/ROUNDNESS/ANGLE dynamics resolve against per dab --
-  // those three still apply to the PRIMARY tip through `tip.radius`/
-  // `tip.roundness`/`tip.angle` above, and (§2d) the nested tip inherits none
-  // of them, exactly as it inherited none of them from the descriptor either.
   tip.dualTip = brush.dualTip;
   tip.dualBlend = brush.dualBlend;
-  // `BrushState::load` is "pigment concentration" and ranges 0..2.5; a tip's
-  // `flow` is "mass laid down per dab where coverage is 1" and is deliberately
-  // not clamped to [0,1] (brush/Deposit.hpp: "a flow above 1 is a legitimate
-  // one dab saturates the paper tip"). So this is the same number, scaled by
-  // pressure, and not a remapping that would make the LOAD slider mean two
-  // things.
-  //
-  // **`Concentration` is a SECOND Multiply column onto this same product**,
-  // not a second field -- brush/Dynamics.hpp's own comment on the target says
-  // so ("scales BrushState::load"). Composing it here, multiplied alongside
-  // `flowMul` rather than folded into a combined dynamic target, is exactly
-  // what `--selftest`'s "a Multiply target COMPOSES its sources" section
-  // already proves of two links on ONE target -- Flow and Concentration are
-  // simply two different cells the matrix lets a user drive independently,
-  // and both were always meant to reach the one number a dab actually lays
-  // down.
-  tip.flow = brush.load * flowMul * dyn.at(DynamicTarget::Concentration);
-  tip.spacing = brush.spacing * dyn.at(DynamicTarget::Spacing);
-  // `DynamicTarget::Scatter`'s resolved magnitude (an Add target, identity
-  // 0.0) -- see `BrushTip::scatter`'s own comment for why this is a magnitude
-  // and not yet a position. Undriven, every existing brush gets exactly 0.0
-  // here, which is the identity `applyPerDabScatter()` (below, in the deposit
-  // loop) treats as "no offset" and skips outright.
-  tip.scatter = dyn.at(DynamicTarget::Scatter);
-  tip.scatterBothAxes = brush.scatterBothAxes;
-  // Straight through, unscaled: there is no `DynamicTarget::Opacity` in
-  // brush/Dynamics' twelve, and inventing one here rather than in the matrix
-  // that draws them would give the DYNAMICS panel a target it cannot show. The
-  // clamp to a legal alpha is `RgbStroke::begin()`'s, at the point of use.
+  tip.scatterBothAxes = model.scatter.bothAxes;
+
+  // **Deliberately unscaled by anything Photoshop calls Transfer.** The old
+  // code multiplied `brush.load` by two matrix columns (`Flow`,
+  // `Concentration`); both are retired with the matrix. `PsTransfer::flow`/
+  // `PsToolOptions::flow` are real Photoshop settings -- 69 and 101 of 101
+  // presets respectively carry one -- but wiring them in, along with Scatter
+  // Count and the `Md ` blend mode, is explicitly the NEXT phase's job, not
+  // this one (brush/RgbDeposit.hpp §2's own style: name a deferred divergence
+  // rather than hide it). So this is `brush.load` alone, same as it always
+  // was for a brush with no Flow/Concentration link.
+  tip.flow = brush.load;
+  // Straight through, unscaled: there is no per-dab Grain dynamic in either
+  // the matrix or the model.
   tip.opacity = brush.opacity;
-  // Straight through, unscaled: no `DynamicTarget::Grain` exists, for
-  // `tip.opacity`'s own reason immediately above.
   tip.grain = brush.grain;
 
   // **The foreground, not `defaultPalette()[brush.pigment]`.** This used to
@@ -479,30 +420,20 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // that decides whether an eyedropper pick can paint at all. Header §7.
   const std::array<float, 3> fg = foregroundSrgb(brush);
 
-  // **HUE, SATURATION and VALUE shift the foreground itself, before either
-  // decode below** -- brush/Dynamics.hpp's own section comment is the whole
-  // argument for doing this in sRGB, at this exact point in the pipeline, and
-  // for what it deliberately leaves alone (the palette row's density, staining
-  // and granulation, which `drawLinkEditor()` says plainly on these three cells
-  // rather than only in a header comment).
-  //
-  // **It shifts `fg`, not `pigment.rgb`, and that is a merge decision worth
-  // recording.** The dynamics work was written against a worktree where the
-  // foreground was always the palette row, so it shifted `pigment.rgb` and said
-  // so: "a known, stated migration point once colorMode/.rgb actually lands."
-  // It has landed -- `fg` above is `foregroundSrgb(brush)`, which is the picked
-  // colour in RGB mode and the palette swatch in PIGMENT mode. Shifting the
-  // palette row here instead would mean a Hue link silently did nothing to an
-  // eyedropper-picked colour, which is the same class of half-wired path both
-  // tracks existed to remove.
-  //
-  // At the identity -- every brush with no Hue/Saturation/Value link, which
-  // today is every shipped preset -- `applyHsvDynamics()`'s own short-circuit
-  // hands back its input bit-identical, so this line changes nothing about any
-  // existing stroke.
-  const std::array<float, 3> shiftedRgb =
-      applyHsvDynamics(fg, dyn.at(DynamicTarget::Hue), dyn.at(DynamicTarget::Saturation),
-                       dyn.at(DynamicTarget::Value));
+  // **HUE, SATURATION and VALUE are identity here, deliberately, and this is
+  // a named scope boundary rather than a silent drop.** `PsColorDynamics`
+  // exists in the model (`brush/BrushModel.hpp`'s own struct) but is on for
+  // only 1 of the 101 presets measured, and how it composes with the
+  // foreground the matrix used to shift is not settled -- wiring it in is
+  // future work, not this commit's. So this stops consulting the (now
+  // shelved) matrix for Hue/Saturation/Value and passes the identity
+  // `(0, 1, 1)` instead -- hue's identity is the additive 0.0f turns, but
+  // saturation and value are MULTIPLIERS, so their identity is 1.0f, not
+  // 0.0f (`applyHsvDynamics()`'s own short-circuit checks exactly this
+  // triple). This is what hands the result back bit-identical to `fg` --
+  // i.e. every stroke's foreground reaches the canvas exactly as picked,
+  // same as a brush with no Hue/Saturation/Value link already painted.
+  const std::array<float, 3> shiftedRgb = applyHsvDynamics(fg, 0.0f, 1.0f, 1.0f);
 
   // **The same colour, decoded, for the other layer kind** (brush/Deposit.hpp's
   // `linearRgb`). Derived here, from the same `shiftedRgb` the latent below is
@@ -591,11 +522,11 @@ DynamicInputs dynamicInputsFor(const AppState& st) noexcept {
 }
 
 void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
-  brush.radius = preset.radius;
-  brush.hardness = preset.hardness;
-  brush.spacing = preset.spacing;
-  brush.roundness = preset.roundness;
-  brush.angle = preset.angle;
+  // Radius/hardness/spacing/roundness/angle used to be five explicit copies
+  // here -- gone along with the fields themselves (brush/Library.hpp's own
+  // comment); `brush.model = preset.model` below already carries all five,
+  // in lockstep, exactly as `BrushPreset::model`'s own comment always said
+  // it would once something read the model to paint.
   brush.load = preset.load;
   brush.wetness = preset.wetness;
   brush.links = preset.links;
@@ -620,11 +551,8 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
 BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   BrushPreset p;
   p.name = std::move(name);
-  p.radius = brush.radius;
-  p.hardness = brush.hardness;
-  p.spacing = brush.spacing;
-  p.roundness = brush.roundness;
-  p.angle = brush.angle;
+  // The mirror of `applyPresetToBrush()`'s own removed five-scalar copy --
+  // `p.model = brush.model` below carries all five now.
   p.load = brush.load;
   p.wetness = brush.wetness;
   p.links = brush.links;
@@ -647,12 +575,19 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
 bool brushIsEdited(const BrushState& brush) {
   if (brush.brushLibrary.active >= brush.brushLibrary.presets.size()) return false;
   const BrushPreset& p = brush.brushLibrary.presets[brush.brushLibrary.active];
-  return !presetMatches(p, brush.radius, brush.hardness, brush.spacing, brush.roundness,
-                        brush.angle, brush.load, brush.wetness, brush.links, brush.grain);
+  // The five scalars `presetMatches()` still takes as parameters (its own
+  // signature is unchanged -- only where a caller reads them from moved) now
+  // come from `brush.model` rather than from five deleted `BrushState`
+  // fields.
+  return !presetMatches(p, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
+                        brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
+                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
+                        brush.grain);
 }
 
 bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
-                          std::string* errorOut, const BrushLinkSet* strokeLocalLinks) {
+                          std::string* errorOut, const BrushModel* model,
+                          const DynamicInputs& hardwareInputs) {
   if (errorOut != nullptr) errorOut->clear();
   const auto refuse = [&](std::string why) {
     if (errorOut != nullptr) *errorOut = std::move(why);
@@ -747,7 +682,22 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // previous position, travelled distance or LATCHED heading would draw
   // correlated noise, measure velocity, read a heading and lock its initial
   // angle against a point on a different path entirely.
-  strokeLocalLinks_ = strokeLocalLinks;
+  //
+  // The model's own base values and Variance objects, copied out rather than
+  // kept as a pointer -- see `StrokeSession.hpp`'s own member comment for why.
+  // `haveModel_` false leaves every dab reading `tip_` unmodified, same as a
+  // null `model` here always has.
+  haveModel_ = model != nullptr;
+  if (haveModel_) {
+    baseDiameterPx_ = model->tip.diameterPx;
+    baseAngleDeg_ = model->tip.angleDeg;
+    baseRoundness_ = model->tip.roundness;
+    sizeVariance_ = model->shape.size;
+    angleVariance_ = model->shape.angle;
+    roundnessVariance_ = model->shape.roundness;
+    scatterVariance_ = model->scatter.scatter;
+  }
+  hardwareInputs_ = hardwareInputs;
   seed_ = 0;
   seedLatched_ = false;
   prevDabX_ = 0.0f;
@@ -895,33 +845,58 @@ void StrokeSession::depositPending() {
       initialDirectionLatched_ = true;
     }
 
+    // **Size, Angle, Roundness and Scatter are resolved HERE, per dab, in
+    // exactly one `varianceScale()`/`varianceOffset()` call each -- never a
+    // stroke-begin base multiplied/added to by a second per-dab correction.**
+    // This is `brush/Variance.hpp`'s own load-bearing invariant: a `Variance`
+    // object's floor is applied ONCE, inside its formula, so composing two
+    // partial resolutions the way the old `applyStrokeLocalCorrection()` did
+    // for the matrix would apply that floor twice and reintroduce audit B6 in
+    // a new shape. `dabTip` therefore does not start from `tip_.radius`/
+    // `.angle`/`.roundness`/`.scatter` and correct them -- it REPLACES them
+    // outright, from `baseDiameterPx_`/`baseAngleDeg_`/`baseRoundness_` and
+    // this dab's own resolution.
     BrushTip dabTip = tip_;
-    if (strokeLocalLinks_ != nullptr) {
-      DynamicInputs local{};
+    if (haveModel_) {
+      // The six stroke-local signals, fresh every dab -- unchanged from the
+      // old `local` this replaces, since Variance needs the identical inputs
+      // the matrix did for VELOCITY/FADE/NOISE/RANDOM/DIRECTION/INITIAL
+      // DIRECTION. Seeded from `hardwareInputs_` first so Pressure/Tilt/
+      // Azimuth/Barrel (and their `has*` flags) reach a PenPressure/PenTilt/
+      // Rotation Control -- at the FRAME granularity `begin()`/`setTip()`
+      // latched them at, not resampled per dab (this codebase's own standing
+      // rule; `dynamicInputsFor()`'s header is the argument for it).
+      DynamicInputs local = hardwareInputs_;
       local.velocity = dynamicVelocity(stepDist, tip_.radius);
       local.fade = dynamicFade(distanceTravelled_);
       local.noise = dynamicNoiseAt(seed_, distanceTravelled_);
       local.random = dynamicRandomDraw(seed_, static_cast<uint32_t>(dabs_));
       local.direction = dynamicDirection(dx, dy);
       local.initialDirection = initialDirection_;
-      const DynamicResult corr =
-          evaluateLinksFiltered(*strokeLocalLinks_, local, /*wantStrokeLocal=*/true);
-      dabTip = applyStrokeLocalCorrection(tip_, corr);
-    }
 
-    // The floor, applied exactly once, HERE -- the one point downstream of
-    // BOTH halves of the Multiply product: `brushTipFor()`'s hardware half,
-    // baked into `tip_.radius`/`tip_.sizeFloorPx` back at `setTip()` time,
-    // and the stroke-local half just folded in above by
-    // `applyStrokeLocalCorrection()` when there is one (when there is not,
-    // `dabTip` is `tip_` unconditionally, and this is still the correct --
-    // and only -- place to floor a product with no second half). See
-    // `BrushTip::sizeFloorPx`'s own comment (brush/Deposit.hpp) for the
-    // worked counter-example this ordering exists to satisfy. A no-op for
-    // every brush with no Minimum Diameter: `sizeFloorPx` is 0.0f there, and
-    // `std::max(x, 0.0f)` cannot lower an `x` that `linkContribution()`
-    // already never lets go negative.
-    dabTip.radius = std::max(dabTip.radius, dabTip.sizeFloorPx);
+      const auto dabIndex = static_cast<uint32_t>(dabs_);
+      dabTip.radius = (baseDiameterPx_ * 0.5f) *
+                      varianceScale(sizeVariance_, local, seed_, dabIndex, VarianceSite::Size);
+      dabTip.angle =
+          baseAngleDeg_ +
+          varianceOffset(angleVariance_, local, 180.0f, seed_, dabIndex, VarianceSite::Angle);
+      dabTip.roundness =
+          baseRoundness_ * varianceScale(roundnessVariance_, local, seed_, dabIndex,
+                                         VarianceSite::Roundness);
+      // Scatter's span is 2.0 -- two RADII, i.e. one DIAMETER -- because
+      // `PsScatter::scatter`'s own comment says the file's jitter is "a
+      // fraction of the DIAMETER" while `BrushTip::scatter` (this field) is a
+      // multiplier of RADIUS (`applyPerDabScatter()`'s `magnitude = tip.scatter
+      // * tip.radius`). A `v.jitter` of 1.0 (Photoshop's own 100%) must
+      // therefore reach a magnitude of one full diameter -- two radii -- which
+      // is exactly `span * jitter` at `span == 2.0`.
+      dabTip.scatter = varianceOffset(scatterVariance_, local, 2.0f, seed_, dabIndex,
+                                      VarianceSite::Scatter);
+    }
+    // No further flooring here: `brush/Variance.hpp`'s `minimum` is already
+    // the floor, applied inside `varianceScale()`'s own formula above. There
+    // is no second, pixel-space floor left to apply downstream of it --
+    // `BrushTip::sizeFloorPx` (and this exact `std::max()` call) is gone.
     lastDabRadius_ = dabTip.radius;
 
     const Vec2 centre =

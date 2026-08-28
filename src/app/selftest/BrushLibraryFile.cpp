@@ -182,10 +182,10 @@ bool runBrushLibraryFileTest() {
     BrushState brush;
     BrushPreset plain;
     plain.name = "Plain";
-    plain.radius = 26.0f;
-    plain.hardness = 0.42f;
-    plain.roundness = 0.55f;
-    plain.angle = 21.0f;
+    plain.model.tip.diameterPx = 52.0f;
+    plain.model.tip.hardness = 0.42f;
+    plain.model.tip.roundness = 0.55f;
+    plain.model.tip.angleDeg = 21.0f;
     plain.load = 1.1f;
     plain.links = BrushLinkSet{};
 
@@ -197,20 +197,41 @@ bool runBrushLibraryFileTest() {
           "brushlib: a cached ROW alone rasterises the byte-identical dab the loaded preset "
           "does -- the cache lost nothing an icon needs");
 
-    // The same preset with one link. Now the two must differ, because the row
-    // has no dynamics to preview -- which is the honest limit, and is also
-    // what proves the comparison above is capable of failing.
+    // **Inverted from what this section proved before.** The same preset
+    // with one link used to previews differently from its row, because the
+    // row had no dynamics to preview -- true back when a link was live data
+    // `app/DabPreview` resolved into the pictured tip. It is not any more:
+    // the matrix is shelved (`ui/DynamicsMatrixPanel.hpp`) and
+    // `app/StrokeSession::brushTipFor()` -- what both `brushPresetIconTips()`
+    // and `brushRowIconTips()` ultimately call, through `dabPreviewTipsFor()`
+    // -- does not read `BrushLinkSet` in any form any more. A link changes
+    // nothing about either icon now, so the two rasterise byte-identical,
+    // same as the unlinked case just above.
     BrushPreset linked = plain;
     addLink(linked.links, BrushLink{DynamicSource::Pressure, DynamicTarget::Size});
     const DabPreviewImage linkedPreset =
         rasteriseDabPreview(brushPresetIconTips(linked, brush, lut));
     const DabPreviewImage linkedRow =
         rasteriseDabPreview(brushRowIconTips(brushRowFor(linked), brush, lut));
-    check(linkedPreset.rgba != linkedRow.rgba,
-          "brushlib: a preset WITH a link previews differently from its row -- the row is "
-          "honestly missing the dynamics, and the identity above is not vacuous");
+    check(linkedPreset.rgba == linkedRow.rgba && !linkedPreset.rgba.empty(),
+          "brushlib: a preset WITH a link previews IDENTICALLY to its row now -- the shelved "
+          "matrix has nothing left to be honestly missing");
     check(brushRowFor(linked).linkCount == 1,
-          "brushlib: the row caches the link COUNT, so a row can say what it is missing");
+          "brushlib: the row still caches the link COUNT even though it no longer changes the "
+          "picture -- a row can still say what it is missing structurally");
+
+    // **What proves the comparison above is capable of failing, restated for
+    // the new architecture**: two structurally DIFFERENT presets (not a
+    // link, which is now inert either way) still rasterise different icons,
+    // so "the two images agree" above is a real measurement and not a
+    // vacuously-true one from a broken comparison.
+    BrushPreset wider = plain;
+    wider.model.tip.diameterPx = plain.model.tip.diameterPx * 2.0f;
+    const DabPreviewImage widerPreset =
+        rasteriseDabPreview(brushPresetIconTips(wider, brush, lut));
+    check(widerPreset.rgba != fromPreset.rgba,
+          "brushlib: a preset with a genuinely different radius previews differently -- the "
+          "rasteriser really can tell two icons apart, so its agreement above means something");
   }
 
   // ======================================================================
@@ -350,12 +371,12 @@ bool runBrushLibraryFileTest() {
           "pack went missing");
 
     const size_t activeBefore = lib.active;
-    const float radiusBefore = brush.radius;
+    const float radiusBefore = brush.model.tip.diameterPx;
     const BrushLibraryLoadResult failed = store.useLibrary(gone, lib);
     check(!failed.ok && contains(failed.status, "washes.abr"),
           "brushlib: clicking one of its rows fails with a message naming the file -- not a "
           "silent no-op, which is what a row that just does nothing would be");
-    check(lib.active == activeBefore && brush.radius == radiusBefore &&
+    check(lib.active == activeBefore && brush.model.tip.diameterPx == radiusBefore &&
               lib.presets.size() == builtIns,
           "brushlib: and NOTHING moved -- not the active index, not the live brush, not the "
           "preset list. A failed pick must not change the brush in hand");
@@ -568,7 +589,7 @@ bool runBrushLibraryFileTest() {
       if (lib.presets[i].name == "Inker Two") pick = i;
     lib.active = pick;
     applyPresetToBrush(lib.presets[pick], brush);
-    const float heldRadius = brush.radius;
+    const float heldRadius = brush.model.tip.diameterPx / 2.0f;
     check(!brushIsEdited(brush) && heldRadius == 45.0f,
           "brushlib: picking an imported brush leaves the live brush matching it, unedited");
 
@@ -579,7 +600,7 @@ bool runBrushLibraryFileTest() {
           "brush, and never dangling, because the EDITED badge is defined against it");
     check(lib.active == 0 && lib.presets[0].name == "Round Bristle 03",
           "brushlib: specifically the first built-in, which is where a fresh install starts");
-    check(brush.radius == heldRadius,
+    check(brush.model.tip.diameterPx / 2.0f == heldRadius,
           "brushlib: **the live brush did not change.** Tidying a library list must not "
           "alter the mark the user is about to make");
     check(brushIsEdited(brush),

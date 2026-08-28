@@ -160,11 +160,20 @@ void clampActiveToBuiltIn(BrushLibrary& lib) {
 BrushRow brushRowFor(const BrushPreset& preset) {
   BrushRow r;
   r.name = preset.name;
-  r.radius = preset.radius;
-  r.hardness = preset.hardness;
-  r.roundness = preset.roundness;
-  r.angle = preset.angle;
-  r.spacing = preset.spacing;
+  // Radius/hardness/roundness/angle/spacing now live on `preset.model`
+  // (brush/Library.hpp's own comment on the five deleted `BrushPreset`
+  // scalars) -- projected into the same units this row cache has always
+  // held, so a row drawn from this cache looks exactly as it did before.
+  r.radius = preset.model.tip.diameterPx / 2.0f;
+  r.hardness = preset.model.tip.hardness;
+  r.roundness = preset.model.tip.roundness;
+  r.angle = preset.model.tip.angleDeg;
+  // `BrushRow::spacing` is RADII (`ui/MacPaintUI.cpp`'s "%.2f r" row caption,
+  // and the old, now-deleted `BrushPreset::spacing` scalar's own unit) --
+  // `spacingPercent` is a percentage OF THE DIAMETER, so `/ 100 * 2` is the
+  // conversion, not a bare `/ 100` (`app/StrokeSession::brushTipFor()`'s
+  // `tip.spacing` comment names the same factor of two).
+  r.spacing = preset.model.tip.spacingPercent / 100.0f * 2.0f;
   r.load = preset.load;
   r.linkCount = static_cast<uint32_t>(preset.links.links.size());
   // `wetness` is deliberately absent: nothing in a one-dab preview depends on

@@ -6,6 +6,7 @@
 #include "app/StrokeSession.hpp"
 #include "color/Space.hpp"
 #include "core/LayerOps.hpp"
+#include "brush/BrushModelDiff.hpp"
 #include "brush/Library.hpp"
 #include "core/Pigment.hpp"
 #include "core/TileStore.hpp"
@@ -36,59 +37,48 @@ uint8_t toByte(float linear) noexcept {
 }  // namespace
 
 float strokePreviewReach(const BrushState& brush, const MixboxLut& lut) {
-  // **Sampled through `brushTipFor()` rather than read off `brush.radius` and
-  // the link ranges.** The resolved radius is a product of every enabled
-  // Multiply link, a curve, an inversion, and -- since B6 -- a floor applied
-  // outside the link set entirely (`BrushTip::sizeFloorPx`). Reconstructing
-  // that here would be a second copy of `brushTipFor()` that drifts, which is
-  // precisely what this module's §2 exists to refuse. So the widest radius is
-  // simply the widest one the engine reports across the taper this preview
-  // actually paints.
-  //
-  // Nine samples over [0,1] rather than the two endpoints: an INVERTED link,
-  // or a curve dragged into a hump, can put the maximum anywhere in between,
-  // and a preview clipped at the one pressure nobody sampled is worse than an
-  // over-generous margin.
-  float reach = 0.0f;
-  float scatter = 0.0f;
-  for (int i = 0; i <= 8; ++i) {
-    const float p = static_cast<float>(i) / 8.0f;
-    const BrushTip tip = brushTipFor(brush, lut, p);
-    float r = std::max(tip.radius, tip.sizeFloorPx);
-    // A rotated bitmap tip reaches its half-DIAGONAL, not its half-width --
-    // `app/BrushSheet.cpp`'s `widestRadius()` makes the same correction, and
-    // for the same reason: an ANGLE link turns the bitmap under the mark and
-    // a box sized to the un-rotated extent clips the corners.
-    if (tip.bitmap && tip.bitmap->width > 0 && tip.bitmap->height > 0) {
-      const float w = static_cast<float>(tip.bitmap->width);
-      const float h = static_cast<float>(tip.bitmap->height);
-      r *= std::hypot(w, h) / std::max(w, h);
-    }
-    reach = std::max(reach, r);
-    // Scatter is in RADII (brush/Deposit.hpp) and displaces the dab CENTRE, so
-    // it adds to the reach rather than scaling it.
-    scatter = std::max(scatter, tip.scatter * r);
+  // **No pressure sampling loop any more, and none is needed.** Size is no
+  // longer a hardware-resolved product `brushTipFor()` reports differently
+  // per pressure sample -- `brush/BrushModel`/`brush/Variance` moved Size
+  // resolution entirely into `StrokeSession`'s per-dab loop (app/StrokeSession
+  // .cpp), and `brushTipFor()` alone (this file never opens a real
+  // `StrokeSession` before this point) reports only the UNVARIED base radius.
+  // That base is also already the correct UPPER BOUND on what any real dab
+  // can reach: `varianceScale()`'s own formula (`brush/Variance.hpp`) can
+  // only ever ATTENUATE toward its floor, `m + (1-m)*clamp(rj*c,0,1)`, whose
+  // maximum is exactly 1.0 at every input -- so no dab this brush paints is
+  // ever WIDER than `brushTipFor()`'s own base radius, and sampling multiple
+  // pressures to find a maximum that cannot move is no longer buying
+  // anything.
+  const BrushTip tip = brushTipFor(brush, lut, 0.0f);
+  float reach = tip.radius;
+  // A rotated bitmap tip reaches its half-DIAGONAL, not its half-width --
+  // `app/BrushSheet.cpp`'s `widestRadius()` makes the same correction, and
+  // for the same reason: an Angle Variance can turn the bitmap under the
+  // mark at any angle up to a full rotation, and a box sized to the
+  // un-rotated extent clips the corners regardless of how much of that
+  // range is actually in play.
+  if (tip.bitmap && tip.bitmap->width > 0 && tip.bitmap->height > 0) {
+    const float w = static_cast<float>(tip.bitmap->width);
+    const float h = static_cast<float>(tip.bitmap->height);
+    reach *= std::hypot(w, h) / std::max(w, h);
   }
 
-  // **`tip.scatter` above is only half the story, and the missing half is the
-  // half most brushes actually use.** `brushTipFor()` resolves the HARDWARE
-  // sources only -- `evaluateLinksFiltered(..., wantStrokeLocal=false)` -- and
-  // Photoshop's Scatter arrives as a `RANDOM -> Scatter` link, RANDOM being
-  // stroke-local. So a scattered brush reports `tip.scatter == 0` here and
-  // would size its document as though the mark never left the centreline, and
-  // then scatter its dabs straight off the top of it.
-  //
-  // The link set is the only place that reach exists before the stroke runs,
-  // so it is read directly. Scatter is a `TargetCombine::Add` target, so the
-  // widest displacement a link can contribute is its own `rangeHi`, and links
-  // onto one Add target sum -- hence the sum rather than a max. `fabs` because
-  // a range may be authored negative (the sign picks a side; the reach is the
-  // same either way).
-  float linkScatter = 0.0f;
-  for (const BrushLink& l : brush.links.links)
-    if (l.enabled && l.target == DynamicTarget::Scatter)
-      linkScatter += std::fabs(l.rangeHi);
-  return reach + scatter + linkScatter * reach;
+  // **Scatter's own worst case, read directly off `PsScatter::scatter`'s
+  // `Variance` rather than sampled** -- this file never runs a real stroke
+  // before this point, so there is no per-dab `varianceOffset()` call to
+  // sample in the first place (the identical reason the radius above is a
+  // bound rather than a maximum over samples). `varianceOffset()`'s own
+  // formula bounds its output at `span * (1 + jitter)` in magnitude
+  // (`base` alone reaches at most `span`; `spread` adds at most another
+  // `span * jitter`), and `depositPending()`'s own per-dab call uses
+  // `span == 2.0f` (two radii, one diameter -- see that call's own
+  // comment), so this is that identical bound, in pixels of THIS tip's own
+  // radius.
+  const float scatterJitter =
+      std::min(1.0f, std::max(0.0f, brush.model.scatter.scatter.jitter));
+  const float scatterReachPx = 2.0f * reach * (1.0f + scatterJitter);
+  return reach + scatterReachPx;
 }
 
 int strokePreviewScale(float reach) noexcept {
@@ -169,8 +159,9 @@ StrokePreviewImage rasteriseStrokePreview(const BrushState& brush, const MixboxL
 
   StrokeSession stroke;
   std::string refusal;
-  if (!stroke.begin(od, od.document.layers.size() - 1, brushTipFor(previewBrush, lut, 0.0f),
-                    previewBrush.tool, &refusal, &previewBrush.links)) {
+  DynamicInputs beginInputs;
+  if (!stroke.begin(od, od.document.layers.size() - 1, brushTipFor(previewBrush, lut, beginInputs),
+                    previewBrush.tool, &refusal, &previewBrush.model, beginInputs)) {
     // Not swallowed and not rendered as an empty box: the panel prints this.
     img.refused = true;
     img.refusal = refusal;
@@ -186,7 +177,7 @@ StrokePreviewImage rasteriseStrokePreview(const BrushState& brush, const MixboxL
     const float t = static_cast<float>(s) / static_cast<float>(kStrokePreviewSamples);
     const float x = x0 + (x1 - x0) * t;
     // One full period, so the tangent turns through every direction and a
-    // DIRECTION -> Angle link has something to say (§1, §3).
+    // Direction-controlled Angle Variance has something to say (§1, §3).
     const float y = cy - amp * std::sin(t * 2.0f * kPi);
     // The taper: 0 at both ends, 1 in the middle (§3).
     const float pressure = std::sin(t * kPi);
@@ -194,7 +185,9 @@ StrokePreviewImage rasteriseStrokePreview(const BrushState& brush, const MixboxL
     // through, including its per-stroke reset in `begin()` above -- otherwise
     // this preview would show a brush responding to pressure a shade more
     // sharply than the one the pen actually drives.
-    stroke.setTip(brushTipFor(previewBrush, lut, stroke.smoothPressure(pressure)));
+    DynamicInputs in;
+    in.pressure = stroke.smoothPressure(pressure);
+    stroke.setTip(brushTipFor(previewBrush, lut, in), in);
     stroke.addPoint(x, y);
   }
   stroke.end();
@@ -259,13 +252,16 @@ StrokePreviewKey strokePreviewKeyFor(const BrushState& brush, const MixboxLut& l
     key.tips[static_cast<size_t>(i)] = brushTipFor(brush, lut, p);
   }
   key.links = brush.links;
+  // See this struct's own header comment: `model` is what a real stroke
+  // actually varies by now, and `tips[]`/`links` above cannot see it.
+  key.model = brush.model;
   return key;
 }
 
 bool strokePreviewKeysEqual(const StrokePreviewKey& a, const StrokePreviewKey& b) noexcept {
   for (size_t i = 0; i < a.tips.size(); ++i)
     if (!brushTipEqual(a.tips[i], b.tips[i])) return false;
-  return linkSetsEqual(a.links, b.links);
+  return linkSetsEqual(a.links, b.links) && brushModelEqual(a.model, b.model);
 }
 
 const StrokePreviewImage& StrokePreviewCache::imageFor(const BrushState& brush,
@@ -291,14 +287,24 @@ int runStrokePreviewDump(const char* outPath, float radiusOverride, float spacin
   }
 
   BrushState brush;
-  if (radiusOverride > 0.0f) brush.radius = radiusOverride;
-  if (spacingOverride > 0.0f) brush.spacing = spacingOverride;
+  // `BrushState::radius`/`spacing` are gone (Part 5) -- `model.tip.
+  // diameterPx`/`spacingPercent` are what `brushTipFor()` actually reads
+  // now, in diameter/percent units rather than this CLI flag's own
+  // radius/fraction ones.
+  if (radiusOverride > 0.0f) brush.model.tip.diameterPx = radiusOverride * 2.0f;
+  // `spacingOverride` is RADII (this flag's own long-standing unit, the same
+  // one the old, now-deleted `BrushState::spacing` scalar held) --
+  // `spacingPercent` is a percentage OF THE DIAMETER, so `* 50` is the
+  // conversion, not a bare `* 100` (`app/StrokeSession::brushTipFor()`'s
+  // `tip.spacing` comment names the same factor of two).
+  if (spacingOverride > 0.0f) brush.model.tip.spacingPercent = spacingOverride * 50.0f;
 
   const StrokePreviewImage img = rasteriseStrokePreview(brush, lut);
   std::printf(
       "stroke-preview: %dx%d at 1:%d  radius %.1f  spacing %.2f  dabs %zu  texels %zu%s%s\n",
-      img.width, img.height, img.scale, static_cast<double>(brush.radius),
-      static_cast<double>(brush.spacing), img.dabs, img.texels,
+      img.width, img.height, img.scale,
+      static_cast<double>(brush.model.tip.diameterPx / 2.0f),
+      static_cast<double>(brush.model.tip.spacingPercent / 100.0f * 2.0f), img.dabs, img.texels,
       img.refused ? "  REFUSED: " : "", img.refused ? img.refusal.c_str() : "");
 
   // Straight back out through the same RGBA bytes the panel uploads -- writing

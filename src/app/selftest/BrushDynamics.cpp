@@ -435,7 +435,7 @@ bool runBrushDynamicsTest() {
     for (size_t i = 0; i < lib.presets.size(); ++i)
       for (size_t j = i + 1; j < lib.presets.size(); ++j)
         if (lib.presets[i].name == lib.presets[j].name ||
-            (lib.presets[i].radius == lib.presets[j].radius &&
+            (lib.presets[i].model.tip.diameterPx == lib.presets[j].model.tip.diameterPx &&
              linkSetsEqual(lib.presets[i].links, lib.presets[j].links)))
           allDistinct = false;
     check(allDistinct,
@@ -463,8 +463,10 @@ bool runBrushDynamicsTest() {
           "library: a brush just loaded from a preset is NOT edited -- the badge starts clean");
 
     const BrushPreset round = presetFromBrush(lib.presets[1].name, brush);
-    check(presetMatches(round, brush.radius, brush.hardness, brush.spacing, brush.roundness,
-                        brush.angle, brush.load, brush.wetness, brush.links, brush.grain),
+    check(presetMatches(round, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
+                        brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
+                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
+                        brush.grain),
           "library: capturing a brush that was loaded from a preset reproduces that preset");
 
     // Picking a brush must not repaint in another colour or switch tools.
@@ -477,9 +479,9 @@ bool runBrushDynamicsTest() {
           "a preset holds neither, so picking a brush cannot silently repaint");
 
     // And a nudge to any one field trips the badge.
-    brush.radius += 1.0f;
+    brush.model.tip.diameterPx += 1.0f;
     check(brushIsEdited(brush), "library: nudging the radius trips EDITED");
-    brush.radius -= 1.0f;
+    brush.model.tip.diameterPx -= 1.0f;
     check(!brushIsEdited(brush), "library: and putting it back clears it again");
 
     // A link change trips it too -- the matrix is part of the brush, not a

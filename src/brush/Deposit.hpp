@@ -763,60 +763,16 @@ struct BrushTip {
   // what a half-loaded brush means physically, not a plumbing job.
   float opacity = 1.0f;
 
-  // **The floor in PIXELS beneath `radius`'s own product, computed once at
-  // `app/StrokeSession::brushTipFor()` and deliberately NOT applied there.**
-  // Photoshop's Minimum Diameter (`BrushLinkSet::multiplyFloor[Size]`,
-  // brush/Dynamics.hpp) is a fraction of the tip's UNSCALED radius, and
-  // `brushTipFor()` is the one place that unscaled radius
-  // (`BrushState::radius`, before ANY dynamic has multiplied it) is still in
-  // hand -- every consumer downstream only ever sees the already-scaled
-  // `radius` above.
-  //
-  // Stored here rather than applied immediately because a LATER Size
-  // multiply may still be coming: since commit `b704411` the Size product is
-  // resolved in two halves at two different times (`brushTipFor()`'s
-  // once-per-frame hardware half, `app/StrokeSession.cpp`'s
-  // `applyStrokeLocalCorrection()` once-per-dab stroke-local half), and
-  // `std::max()`-ing a floor into the FIRST half's result before the second
-  // half multiplies it again is provably wrong whenever a Multiply
-  // contribution exceeds 1.0 -- legal today, since the LINK editor's own
-  // range slider goes to 2.0.
-  //
-  // **Worked counter-example** (`app/selftest/MultiplyFloor.cpp`'s own
-  // `rangeHi2Counter` section turns this into an assertion): base radius
-  // 100, hardware product 0.1, floor fraction 0.25 (floor = 25 px),
-  // stroke-local product 2.0. Floored in BOTH halves:
-  // `max(max(100*0.1, 25) * 2.0, 25)` = `max(max(10, 25) * 2.0, 25)` =
-  // `max(50, 25)` = 50 -- wrong, the floor fired once on the hardware half
-  // and then got multiplied past itself. Floored ONCE, at the end, after
-  // both halves have already multiplied together:
-  // `max(100 * 0.1 * 2.0, 25)` = `max(20, 25)` = 25 -- correct, since the
-  // two partial products were always one number Photoshop's own Minimum
-  // Diameter bounds a single time.
-  //
-  // 0.0f (the same "no floor" default `BrushLinkSet::multiplyFloor` itself
-  // uses) for every tip not built from a link set that sets it -- every
-  // hand-authored `BrushTip` in this codebase (`main.cpp`'s demo, every
-  // `--selftest` fixture naming fields directly) and every imported brush
-  // with no Minimum Diameter, so `std::max(radius, 0.0f)` changes nothing
-  // for any of them.
-  //
-  // **Every consumer of `radius` must apply this, once, at ITS OWN last
-  // multiply, or a floored brush silently thins past its own promised
-  // minimum on that one path.** `app/StrokeSession.cpp`'s `depositPending()`
-  // is the route every real stroke takes, and applies it there, once, after
-  // building `dabTip` (whichever of its two branches built it).
-  // `app/DabPreview.cpp`'s `dabPreviewTipsFor()` never reaches
-  // `depositPending()` at all -- a preview cell is not a stroke -- and
-  // applies it itself immediately after `brushTipFor()` returns, because
-  // there is no later multiply on that path for the floor to wait for.
-  // `ui/MacPaintUI.cpp`'s solver route does not call `brushTipFor()` or build
-  // a `BrushTip` at all (`sim::PaintSim` has its own single
-  // `evaluateLinks()` call resolving the WHOLE link set at once, hardware and
-  // stroke-local alike, so there is only one multiply on that route to
-  // floor) and reads `multiplyFloor[Size]` off `BrushState::links` directly
-  // at that one site instead.
-  float sizeFloorPx = 0.0f;
+  // **`sizeFloorPx` is gone.** Through commit 8f6f960 this held the pixel
+  // floor beneath `radius`'s own product, computed once and applied once,
+  // downstream of both halves of a two-phase Multiply -- the whole of B6.
+  // `brush/Variance.hpp`'s `varianceScale()` makes that ordering
+  // unrepresentable-the-wrong-way now: `minimum` is applied exactly once,
+  // INSIDE the formula, by a single per-dab call
+  // (`app/StrokeSession.cpp`'s `depositPending()`), so there is no separate
+  // pixel-space floor left for a second field to carry between two
+  // resolutions that no longer exist. See `brush/Variance.hpp`'s own header
+  // for the argument this field used to make by hand.
 
   // Floored exactly as `ui/MacPaintUI`'s solver path floors it, so the two
   // stroke routes cannot emit dabs at different spacings from one tip.

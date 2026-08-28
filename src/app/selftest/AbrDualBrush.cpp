@@ -769,7 +769,7 @@ bool runAbrDualBrushTest() {
     dualTip->radius = 5.0f;
 
     BrushPreset preset;
-    preset.radius = 12.0f;
+    preset.model.tip.diameterPx = 24.0f;
     preset.dualTip = dualTip;
     preset.dualBlend = DualBrushBlend::Overlay;
 
@@ -794,8 +794,10 @@ bool runAbrDualBrushTest() {
     BrushPreset other = dup;
     other.dualTip = std::make_shared<BrushTip>();  // a DIFFERENT dual tip
     other.dualBlend = DualBrushBlend::Multiply;     // AND a different blend mode
-    check(presetMatches(other, brush.radius, brush.hardness, brush.spacing, brush.roundness,
-                        brush.angle, brush.load, brush.wetness, brush.links, brush.grain),
+    check(presetMatches(other, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
+                        brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
+                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
+                        brush.grain),
           "abr-dual/roundtrip: presetMatches() DELIBERATELY cannot tell `other`'s different dual "
           "tip and blend mode apart from `brush`'s -- documented on BrushPreset::dualTip and on "
           "presetMatches() itself, because nothing today can move a dual tip independently of "
