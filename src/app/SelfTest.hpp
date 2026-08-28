@@ -675,6 +675,21 @@ bool runSelectionToolsTest();
 // while quietly resizing it too.
 bool runSelectionDragTest();
 
+// docs/testing-issues.md T13 ("The ellipse marquee draws a rectangle while
+// you drag it"): app/SelectionDrag.hpp's ellipseMarqueePreviewPoints(), the
+// point run behind the ellipse marquee's live rubber band. Headless and
+// GPU-free.
+//
+// The live preview only ever draws between a real mouse-down and mouse-up
+// on the canvas, which nothing --selftest runs reaches (see this section's
+// own file for why --marquee-demo does not help either), so the claim
+// tested is not visual: it is that the preview's own returned points agree
+// with core/SelectionBoundary's trace of what the commit path actually
+// builds, for the identical box -- and, under Option-from-centre, that
+// feeding the generator the drag's raw corners instead of that box (T13's
+// original bug, one level down) visibly disagrees with it.
+bool runEllipseMarqueePreviewTest();
+
 // The LAYERS panel as design "naturalPaint Panels" turn 2, option 2a specifies
 // it -- app/LayerPanel's half of it, which is nearly all of it. Headless and
 // GPU-free.

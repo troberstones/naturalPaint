@@ -1536,6 +1536,11 @@ int main(int argc, char** argv) {
     // behind Shift-constrain, Option-from-centre and Space-move on the
     // rectangle/ellipse marquee drag. Headless, pure CPU.
     const bool selectionDragOk = np::runSelectionDragTest();
+    // docs/testing-issues.md T13: app/SelectionDrag.hpp's
+    // ellipseMarqueePreviewPoints() -- the ellipse marquee's live preview
+    // agrees with what the commit path actually builds, for the same box.
+    // Headless, pure CPU.
+    const bool ellipseMarqueePreviewOk = np::runEllipseMarqueePreviewTest();
     // core/SelectionBoundary (PRD E6): the true outline the marching ants draw
     // -- islands, holes and concave corners -- which replaced the bounding box
     // that made every lasso, wand and Shift-add selection render as a
@@ -2146,6 +2151,7 @@ int main(int argc, char** argv) {
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     histogramOk && pointOpsOk && gradientOk && selectionOk && channelsOk &&
                     selectionShapesOk && selectionRefineOk && selectionToolsOk && selectionDragOk &&
+                    ellipseMarqueePreviewOk &&
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&

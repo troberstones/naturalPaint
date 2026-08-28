@@ -65,6 +65,7 @@ add_executable(naturalPaint
   app/selftest/DocumentTransform.cpp
   app/selftest/Driver.cpp
   app/selftest/DynamicsSources.cpp
+  app/selftest/EllipseMarqueePreview.cpp
   app/selftest/Export.cpp
   app/selftest/ExportAs.cpp
   app/selftest/ExportStates.cpp

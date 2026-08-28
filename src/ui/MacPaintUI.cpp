@@ -1049,6 +1049,35 @@ void drawMarchingAnts(ImDrawList* dl, const ViewTransform& xform, float x0, floa
   drawAntPolyline(dl, xform, pts, /*closed=*/true, phase);
 }
 
+// docs/testing-issues.md T13 ("The ellipse marquee draws a rectangle while
+// you drag it"): the SAME kind of preview as the overload just above, for
+// the SAME box, but the ellipse it is inscribed in rather than its four
+// corners -- so the ellipse marquee's live rubber band finally draws the
+// shape mouse-up commits instead of always the bounding box every tool
+// used to share.
+//
+// A distinct overload rather than a flag on the one above: the extra
+// `segments` argument is what forces the caller to pick, at compile time,
+// which shape it means -- a boolean would let a call site silently mean
+// the wrong one and still compile. The points themselves are not built
+// here: app/SelectionDrag.hpp's `ellipseMarqueePreviewPoints()` is the same
+// function app/selftest/EllipseMarqueePreview.cpp calls to assert this
+// preview agrees with what `case Tool::EllipseMarquee:`'s commit arm
+// builds, so there is exactly one place this shape's arithmetic lives.
+void drawMarchingAnts(ImDrawList* dl, const ViewTransform& xform, float x0, float y0,
+                      float x1, float y1, int segments) {
+  float phase = marchingAntPhase();
+  const std::vector<Vec2> pts = ellipseMarqueePreviewPoints(x0, y0, x1, y1, segments);
+  drawAntPolyline(dl, xform, pts, /*closed=*/true, phase);
+}
+
+// The resolution the ellipse preview above is walked at. 32, matching the
+// brush cursor ring a few hundred lines down (`dl->AddCircle(mouse, ...,
+// 32, ...)`) -- this codebase's own existing precedent for a circular
+// canvas-space overlay drawn at whatever zoom the view happens to be at,
+// reused here rather than picked afresh.
+constexpr int kEllipseMarqueePreviewSegments = 32;
+
 // One guide, drawn across the full canvas extent (0..texW or 0..texH) --
 // not an unbounded "infinite" line -- through the same ViewTransform as
 // everything else. Bounding it to the canvas extent is a deliberate
@@ -10078,8 +10107,17 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // computeSelectionDragBox() result, already carrying Shift-constrain/
       // Option-from-centre/Space-move -- not the drag's raw corners -- so
       // this preview and what mouse-up actually commits can never disagree.
-      drawMarchingAnts(dl, xform, st.marqueeBoxX0, st.marqueeBoxY0, st.marqueeBoxX1,
-                       st.marqueeBoxY1);
+      //
+      // T13: which SHAPE that box is walked as still has to match the tool
+      // -- the box alone does not say. Both branches read the identical
+      // `marqueeBoxX0..Y1`; only the overload differs.
+      if (st.brush.tool == Tool::EllipseMarquee) {
+        drawMarchingAnts(dl, xform, st.marqueeBoxX0, st.marqueeBoxY0, st.marqueeBoxX1,
+                         st.marqueeBoxY1, kEllipseMarqueePreviewSegments);
+      } else {
+        drawMarchingAnts(dl, xform, st.marqueeBoxX0, st.marqueeBoxY0, st.marqueeBoxX1,
+                         st.marqueeBoxY1);
+      }
     } else if (st.marqueeDragging || st.polygonLassoActive) {
       // The lasso path as it is being drawn.
       //

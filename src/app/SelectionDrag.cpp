@@ -87,4 +87,29 @@ SelectionDragBox computeSelectionDragBox(float anchorX, float anchorY, float cur
   return box;
 }
 
+std::vector<Vec2> ellipseMarqueePreviewPoints(float x0, float y0, float x1, float y1,
+                                              int segments) {
+  std::vector<Vec2> pts;
+  if (segments < 3) return pts;  // see this header's doc comment on the guard
+
+  // The identical centre/half-extent reading `case Tool::EllipseMarquee:`'s
+  // commit arm gives the same box (ui/MacPaintUI.cpp), spelled out here
+  // rather than shared through a helper -- it is two subtractions and an
+  // average, and a third copy of it here is cheaper to keep honest than a
+  // dependency in either direction between a UI translation unit and this
+  // headless one.
+  const float cx = (x0 + x1) * 0.5f;
+  const float cy = (y0 + y1) * 0.5f;
+  const float rx = (x1 - x0) * 0.5f;
+  const float ry = (y1 - y0) * 0.5f;
+
+  pts.reserve(static_cast<size_t>(segments));
+  constexpr float kTwoPi = 6.283185307179586f;
+  for (int i = 0; i < segments; ++i) {
+    const float t = kTwoPi * static_cast<float>(i) / static_cast<float>(segments);
+    pts.push_back(Vec2{cx + rx * std::cos(t), cy + ry * std::sin(t)});
+  }
+  return pts;
+}
+
 }  // namespace np

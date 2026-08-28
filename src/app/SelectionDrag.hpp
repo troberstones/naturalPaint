@@ -1,5 +1,9 @@
 #pragma once
 
+#include <vector>
+
+#include "brush/StrokePath.hpp"
+
 // docs/testing-issues.md T10 ("The three selection-drag gestures are
 // missing"): the geometry behind Shift-constrain, Option-from-centre and
 // Space-move on the rectangle/ellipse marquee drag.
@@ -129,5 +133,33 @@ struct SelectionDragBox {
 SelectionDragBox computeSelectionDragBox(float anchorX, float anchorY, float curX, float curY,
                                           float offsetX, float offsetY, bool constrainSquare,
                                           bool fromCentre) noexcept;
+
+// docs/testing-issues.md T13 ("The ellipse marquee draws a rectangle while
+// you drag it"): the point run behind the ellipse marquee's LIVE preview.
+//
+// `x0,y0,x1,y1` is meant to be a `SelectionDragBox`'s own fields -- this
+// frame's `computeSelectionDragBox()` result, already carrying T10's
+// Shift-constrain, Option-from-centre and Space-move -- and NOT the drag's
+// raw anchor/cursor. `ui/MacPaintUI.cpp`'s `case Tool::EllipseMarquee:`
+// commit arm builds the real selection from that same box the identical
+// way (`selectEllipse(cx, cy, rx, ry)` with `cx,cy` the box's centre and
+// `rx,ry` its half-extents), so a caller that inscribes the SAME box here
+// draws exactly the shape mouse-up commits. Feeding this the drag's raw
+// corners instead would repeat T13's original bug one level down --
+// app/selftest/EllipseMarqueePreview.cpp's "wrong box" case measures how
+// far that disagreement runs under Option-from-centre, where the anchor
+// stops being a corner at all.
+//
+// `segments` is the caller's resolution choice, not a hidden constant --
+// ui/MacPaintUI.cpp draws with a fixed count sized for the screen (see its
+// call site's own comment), and the selftest can ask for a finer run to
+// measure agreement against core/SelectionBoundary's crack-edge trace
+// without the sampling itself dominating the measured gap. `segments < 3`
+// returns empty: fewer than three points cannot close into a shape, and an
+// empty run draws nothing rather than a degenerate sliver.
+//
+// Pure and ImGui-free, the same split every function in this header keeps.
+std::vector<Vec2> ellipseMarqueePreviewPoints(float x0, float y0, float x1, float y1,
+                                              int segments);
 
 }  // namespace np
