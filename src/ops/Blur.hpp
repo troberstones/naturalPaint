@@ -362,4 +362,36 @@ void blurPlane(const float* src, int32_t width, int32_t height, int32_t channels
 bool blurTiles(const TileStore& src, const PixelRect& outRect, const BlurParams& p,
                TileStore* dst);
 
+// **Testing hook, not a production entry point.** True when `blurPlane`'s
+// channel-vectorised fast path (`convolveLine4`/`boxLine4`, ops/Blur.cpp,
+// `channels == 4`) is bit-for-bit identical to running the *old*, unmodified
+// per-channel scalar path (`convolveLine`/`boxLine`) four times over the same
+// deterministic random data -- run at the SAME stride (4 floats: one texel)
+// production code actually uses for both, on `n` texels with kernel reach
+// `apron`/box `radius`.
+//
+// **Why this can't be checked by calling `blurPlane` twice with `channels=4`
+// and `channels=1` and diffing the results, the way app/selftest normally
+// proves an equivalence.** `convolveLine`/`boxLine` are called through
+// `blurPlane` at whatever stride `channels` makes them: 4 when `channels==4`
+// (the real RGBA case, matching `convolveLine4`'s stride exactly), but 1 --
+// contiguous -- when `channels==1` (ops/Feather's coverage plane). A
+// **contiguous** stride is exactly the layout the scalar loop CAN
+// autovectorise, and the compiler takes a materially different path for it
+// on this toolchain: `convolveLine4`'s broadcast-multiply loop compiles to a
+// single fused `fmla` (one rounding) per tap, while `convolveLine` at
+// stride=1 compiles to an unrolled tap-tree of separate `fmul`/`fadd`
+// (multiple roundings) -- so the two disagree by up to ~1 ULP on data where
+// they are mathematically equal but were never claimed to share a rounding
+// path. At stride=4 -- the shape both `convolveLine4` and every real
+// `blurPlane(channels=4, ...)` caller actually use -- the scalar loop's
+// strided/gathered access defeats that same autovectorisation (this file's
+// whole reason for existing: "close to the worst possible layout for a
+// vector unit"), so it reduces to the same single-accumulator `fmadd` shape
+// `convolveLine4` uses per channel, and the two agree bit for bit. This
+// function is the proof of that, run at the stride that is actually true
+// rather than the stride that happens to be reachable through `channels=1`.
+bool blurSelfTestChannelVectorMatchesScalar(int32_t n, int32_t apron, uint64_t seed);
+bool blurSelfTestChannelVectorMatchesScalarBox(int32_t n, int32_t radius, uint64_t seed);
+
 }  // namespace np

@@ -40,6 +40,7 @@ add_executable(naturalPaint
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
+  app/selftest/BlurSimd.cpp
   app/selftest/BrushDynamics.cpp
   app/selftest/BrushLibraryFile.cpp
   app/selftest/BucketRefusal.cpp

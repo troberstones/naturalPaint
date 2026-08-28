@@ -510,6 +510,16 @@ bool runGradientTest();
 // never had.
 bool runBlurTest();
 
+// ops/Blur.cpp's blurPlane() CPU work: channel-vectorised convolveLine4/
+// boxLine4 (RGBA processed 4-wide per texel instead of once per channel,
+// bit-identical to the scalar per-channel path by construction) and the
+// threaded row/column loop that runs it. Proves the bit-identity claim
+// directly against the scalar path (not just transitively through
+// blurTiles()'s own seam assertions) and prints the blurTiles()/
+// highpassTiles() wall-clock this optimisation was for. Headless and
+// GPU-free.
+bool runBlurSimdTest();
+
 // ops/Filters (PLAN.md "Phase 6 -- Filter and transform it": highpass as
 // `src - blur(src)`, unsharp, offset with wrap, sharpen, add noise, local
 // contrast; DESIGN-imaging.md "Class B"). Headless and GPU-free -- pure CPU

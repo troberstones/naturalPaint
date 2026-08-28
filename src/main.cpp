@@ -1496,6 +1496,10 @@ int main(int argc, char** argv) {
     // asserted bit-for-bit and then proved sensitive against the tile-local
     // blur it rejects -- and ops/Feather. Also headless and GPU-free.
     const bool blurOk = np::runBlurTest();
+    // ops/Blur.cpp's blurPlane() CPU cost: channel-vectorised convolveLine4/
+    // boxLine4 and the threaded row/column loop above blurTiles()'s own
+    // already-threaded tile loops. Headless and GPU-free.
+    const bool blurSimdOk = np::runBlurSimdTest();
     // PLAN.md "Phase 6 -- Filter and transform it": ops/Filters -- the filter
     // set that hangs off the blur spine. Highpass as `src - blur(src)`,
     // unsharp with amount/radius/threshold, sharpen, offset with wrap, add
@@ -2193,6 +2197,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
+                    blurSimdOk &&
                     filtersOk &&
                     curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
