@@ -148,17 +148,28 @@ bool runMenuModelTest() {
   //   +  6  C1: the Filter and Image menus -- Gaussian Blur, Sharpen,
   //         Unsharp Mask, Add Noise, Image Size, Canvas Size
   //   = 64
+  //   +  1  Free Transform
+  //   = 65
+  //   +  3  ops/Filters.hpp sections 7-9: Emboss, Median, Motion Blur --
+  //         three more Filter-menu items, wired through app/FilterOps.hpp's
+  //         `applyEmboss`/`applyMedian`/`applyMotionBlur` exactly like the
+  //         six C1 entries above
+  //   = 68
   //
   // This literal is exactly as brittle to the NEXT track that adds an action
   // as it was before, and that brittleness is the point -- an enumerator added
   // without a menu entry fails here rather than shipping unreachable.
-  // 66 now: track11/pan-rotate-reset added one more, `ResetView` ("Reset
-  // View", Shift+Cmd+0) -- the whole-view reset app/ZoomAndSize.hpp's
-  // `resetCanvasView()` backs, sitting next to the existing `ResetRotation`.
-  check(kMenuActionCount == 66,
-        "ids: exactly 66 actions -- the original 41-item extraction plus D1/D2's "
-        "eleven, C5's six, C1's six, Free Transform and ResetView, so an item lost "
-        "in a later edit fails here");
+  // 69 now, and the arithmetic is worth spelling out because this number
+  // moved twice in one session from two independent tracks that each landed
+  // 65 -> their own total: the whole-view reset added `ResetView` (+1), and
+  // the filter-set extension added `Emboss`/`Median`/`MotionBlur` (+3). A
+  // merge that kept either track's figure would leave this tripwire green
+  // while under-counting the other's -- which is the exact failure this
+  // pin exists to catch, so it is 65 + 1 + 3 rather than either 66 or 68.
+  check(kMenuActionCount == 69,
+        "ids: exactly 69 actions -- the original 41-item extraction plus D1/D2's "
+        "eleven, C5's six, C1's six, Free Transform, ResetView and "
+        "Emboss/Median/Motion Blur, so an item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

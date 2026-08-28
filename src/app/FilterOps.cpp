@@ -201,6 +201,18 @@ FilterOpResult applyAddNoise(OpenDocument& doc, const NoiseParams& params) {
   return applyPixelFilter(doc, addNoiseTiles, params, "add noise");
 }
 
+FilterOpResult applyEmboss(OpenDocument& doc, const EmbossParams& params) {
+  return applyPixelFilter(doc, embossTiles, params, "emboss");
+}
+
+FilterOpResult applyMedian(OpenDocument& doc, const MedianParams& params) {
+  return applyPixelFilter(doc, medianTiles, params, "median");
+}
+
+FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params) {
+  return applyPixelFilter(doc, motionBlurTiles, params, "motion blur");
+}
+
 // See this header's own comment on `previewX()`: each one below is
 // `applyX()`'s params-building preamble, feeding `computePixelFilter()`
 // instead of `applyPixelFilter()` -- same engine, same params construction,
@@ -226,6 +238,21 @@ FilterOpResult previewUnsharpMask(const OpenDocument& doc, const UnsharpParams& 
 FilterOpResult previewAddNoise(const OpenDocument& doc, const NoiseParams& params,
                                TileStore* previewOut) {
   return computePixelFilter(doc, addNoiseTiles, params, previewOut);
+}
+
+FilterOpResult previewEmboss(const OpenDocument& doc, const EmbossParams& params,
+                             TileStore* previewOut) {
+  return computePixelFilter(doc, embossTiles, params, previewOut);
+}
+
+FilterOpResult previewMedian(const OpenDocument& doc, const MedianParams& params,
+                             TileStore* previewOut) {
+  return computePixelFilter(doc, medianTiles, params, previewOut);
+}
+
+FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams& params,
+                                 TileStore* previewOut) {
+  return computePixelFilter(doc, motionBlurTiles, params, previewOut);
 }
 
 DocumentOpOutcome applyImageSize(OpenDocument& doc, uint32_t width, uint32_t height,

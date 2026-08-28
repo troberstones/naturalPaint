@@ -1514,6 +1514,12 @@ int main(int argc, char** argv) {
     // contrast cannot produce the negative light a linear unsharp does. Also
     // headless and GPU-free.
     const bool filtersOk = np::runFiltersTest();
+    // ops/Filters sections 7-9: emboss, median/despeckle, motion blur -- three
+    // filters extending the set above, each earning the tile-seam property a
+    // different way. See app/SelfTest.hpp's own comment on
+    // runFiltersExtTest() for the shape of the argument. Also headless and
+    // GPU-free.
+    const bool filtersExtOk = np::runFiltersExtTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD E1, E2, M1): core/SelectionMask's
     // uint8 coverage store, its antialiased rectangle constructor, and the
     // coverage-weighted clear. Also headless and GPU-free -- pure CPU tile
@@ -2210,7 +2216,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     blurSimdOk &&
-                    filtersOk &&
+                    filtersOk && filtersExtOk &&
                     curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&

@@ -190,6 +190,20 @@ FilterOpResult applyUnsharpMask(OpenDocument& doc, const UnsharpParams& params);
 // `NoiseParams`, for the identical reason `applyUnsharpMask()` does.
 FilterOpResult applyAddNoise(OpenDocument& doc, const NoiseParams& params);
 
+// Three filters extending the set above (ops/Filters.hpp sections 7-9):
+// emboss, median/despeckle, motion blur. Wired through the identical
+// `applyPixelFilter()`/`computePixelFilter()` machinery -- same refusal
+// vocabulary, same whole-canvas-then-composite-through-selection shape, same
+// "the original is copied before the engine runs" argument this header's own
+// sections above make -- because these three ops share `ops/Blur.hpp`'s and
+// `ops/Filters.hpp`'s six originals' exact call shape,
+// `(const TileStore&, const PixelRect&, const Params&, TileStore*) -> bool`,
+// and a filter that shares that shape has no business getting a second,
+// hand-copied wiring function.
+FilterOpResult applyEmboss(OpenDocument& doc, const EmbossParams& params);
+FilterOpResult applyMedian(OpenDocument& doc, const MedianParams& params);
+FilterOpResult applyMotionBlur(OpenDocument& doc, const MotionBlurParams& params);
+
 // ==========================================================================
 // Live preview (docs/testing-issues.md T15)
 // ==========================================================================
@@ -232,6 +246,12 @@ FilterOpResult previewUnsharpMask(const OpenDocument& doc, const UnsharpParams& 
                                   TileStore* previewOut);
 FilterOpResult previewAddNoise(const OpenDocument& doc, const NoiseParams& params,
                                TileStore* previewOut);
+FilterOpResult previewEmboss(const OpenDocument& doc, const EmbossParams& params,
+                             TileStore* previewOut);
+FilterOpResult previewMedian(const OpenDocument& doc, const MedianParams& params,
+                             TileStore* previewOut);
+FilterOpResult previewMotionBlur(const OpenDocument& doc, const MotionBlurParams& params,
+                                 TileStore* previewOut);
 
 // What one Image-menu document op did. `error` is `ops/DocumentTransform`'s
 // own message (naming the extent or the layer count that refused it) and is

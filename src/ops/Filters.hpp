@@ -17,7 +17,13 @@
 // blur split across a tile boundary is bit-identical to one computed in a
 // single call** -- is the invariant this whole phase rests on, and an op that
 // grew its own convolution would have to re-earn it. Six filters, one kernel,
-// one gather.
+// one gather -- plus three more (sections 7-9) added later, each of which
+// earns the same property by a different route: section 7's emboss is a
+// second, smaller linear combination of premultiplied samples rather than a
+// reuse of `ops/Blur`; section 8's median is a rank statistic, not a
+// combination at all, and keeps the property only by refusing the standard
+// fast algorithm for one (see that section for why); section 9's motion blur
+// is the first apron in the file whose two axes are not interchangeable.
 //
 // ==========================================================================
 // The invariant every op in this file inherits, and what it costs to keep
@@ -52,6 +58,27 @@
 //       **counter-based**: `filterRandomUniform(seed, x, y, stream)` is a pure
 //       hash of the seed and the document coordinate, holding no state at all.
 //       See section 5.
+//
+//   emboss (section 7)   inherited, the same way as the first group: two
+//       fixed-offset reads of premultiplied samples, combined pointwise. Not
+//       an `ops/Blur` call, but the same shape of argument.
+//
+//   **median (section 8) -- NOT free, but for a different reason than add
+//       noise.** Its ROI is exactly a blur's apron, `roiDilateOp(radius)`.
+//       What is not free is the STANDARD fast algorithm for a windowed rank
+//       statistic (an incrementally-updated running histogram), which
+//       bootstraps at the edge of whatever region it is asked to process and
+//       would reproduce the seam bug in rank-statistic form. Section 8 keeps
+//       the property by not using that algorithm: it re-derives the true,
+//       source-gathered window at every output texel instead.
+//
+//   **motion blur (section 9) -- NOT free.** A blur-style gather-then-combine
+//       inherits the property automatically only if its apron is computed
+//       correctly, and this is the first op in the file whose apron is a
+//       function of a continuous parameter (the angle) rather than a
+//       constant read off `blurApron()`. Getting the per-axis margin formula
+//       wrong is the failure mode; section 9 works the formula out in full
+//       rather than approximating it.
 //
 // ==========================================================================
 // The domain, twice, in opposite directions
@@ -682,5 +709,286 @@ RoiOp localContrastRoiOp(const LocalContrastParams& p) noexcept;
 
 bool localContrastTiles(const TileStore& src, const PixelRect& outRect,
                         const LocalContrastParams& p, TileStore* dst);
+
+// ==========================================================================
+// 7. Emboss -- a two-tap directional relief, blended against the source
+// ==========================================================================
+//
+// A stylize filter, not a corrective one -- Photoshop's own menu puts it
+// under "Stylize", not "Sharpen", and that distinction is the reason its
+// arithmetic looks nothing like sections 1-6: there is no blur, no apron
+// dilated by a sigma, and no `ops/Blur` call anywhere in this section.
+//
+// **The op, in one line.** `dst = lerp(src, relief * srcA, amount)` where
+// `relief = 0.5 + depth * (lum(ahead) - lum(behind))`, `ahead = src(x+dx,
+// y+dy)`, `behind = src(x-dx, y-dy)`, and `lum()` is a Rec. 709 luma weight
+// (0.2126, 0.7152, 0.0722) applied to the PREMULTIPLIED RGB the store
+// already holds -- no un-premultiply anywhere in this filter, which is the
+// decision that makes it simple rather than merely short.
+//
+// **Why luminance of the PREMULTIPLIED value, not the straight one.** Every
+// other filter in this file that leaves linear light does so because it
+// needs a *ratio* (local contrast's log-domain multiply) or a *bounded
+// visible unit* (noise's, unsharp's shaper-domain amplitude) -- neither
+// applies here. Emboss wants "how much light this texel contributes", and a
+// premultiplied texel's own three channels already answer that: a texel at
+// alpha 0 contributes luminance exactly 0 without any special case, which is
+// the same "an absent tile needs no special case" property `ops/Blur.hpp`
+// relies on for its own gather. Un-premultiplying first would need a
+// zero-alpha guard for no benefit -- the relief this filter draws at a
+// layer's own soft edge (the alpha boundary reads as a ridge) is correct
+// output, not a bug to route around, because embossing a shape's silhouette
+// along with its paint is what every emboss filter with an alpha channel
+// does.
+//
+// **This is a linear combination of premultiplied samples, so it inherits
+// the seam property exactly the way `blurPlane` does, and for the same
+// reason.** `lum()` is a fixed-weight sum of three premultiplied channels
+// (no different, arithmetically, from one output channel of a blur's
+// weighted average), and `relief` and the final `lerp` are pure functions of
+// two such sums taken at two DOCUMENT-relative offsets from the output
+// texel. Nothing here depends on where the request rectangle's own edges
+// fall, which is the whole content of the property. See section 8 below for
+// the filter in this trio where that is not true for free.
+//
+// **The apron is symmetric per axis and, in general, not square** --
+// `left = right = |dx|`, `up = down = |dy|` -- the same "per-axis, not
+// uniform" shape section 9's motion blur needs for a continuous angle, just
+// reached here by two fixed integer taps instead of a swept line. `dx = dy =
+// 0` is a legal, deliberately not-refused request: both taps read the
+// output texel itself, the gradient is identically zero at every texel, and
+// `relief` is the flat card `0.5` everywhere -- a real, testable answer
+// ("no direction was given, so there is no ridge"), not a special case to
+// avoid.
+//
+// **Where the clamp is and is not.** `depth * gradient` can push `relief`
+// outside `[0, 1]` (a strong depth on a sharp edge is the point: an
+// exaggerated ridge is what "depth" means), so `relief * srcA` can exceed
+// `srcA` or go negative -- the same HDR-overshoot-or-negative-light shape
+// section 2's unsharp already accepts in RGB and section 6's local contrast
+// already refuses via its own clamp. Emboss follows local contrast's choice,
+// not unsharp's: the output channel is clamped to `[0, kFilterMaxLinear]`
+// with `clampStorable()`, because an unbounded ridge height is not a
+// property a user dialing "depth" is asking to preserve the way unsharp's
+// overshoot is the visible signature of sharpening -- it is just a large
+// number that would otherwise poison every later blur's apron the way
+// section 6's own clamp section argues. Alpha is untouched -- `outA = srcA`
+// always, exactly section 6's "a tonal/stylize op must not move the shape's
+// boundary by a texel" argument, restated for a different op.
+//
+// **`amount` is the strength control, and `amount = 0` is the identity** --
+// the one degenerate-parameter case this filter shares with every other op
+// in the file: 0 skips the two extra reads and the luminance arithmetic
+// entirely and returns `src` bit for bit, the same short-circuit
+// `addNoiseTiles()`'s `amount` and `localContrastTiles()`'s take. `depth = 0`
+// or `dx = dy = 0` (at `amount > 0`) are NOT the identity -- they are the
+// flat mid-grey card described above, a well-defined and deterministic
+// answer, not a no-op, and --selftest checks it as exactly that rather than
+// mistaking it for a second identity case.
+struct EmbossParams {
+  // The compare offset, in document texels. `ahead` and `behind` are read at
+  // `+(dx,dy)` and `-(dx,dy)` from the output texel, so the apron this op
+  // declares is `|dx|` left/right and `|dy|` up/down regardless of sign.
+  int32_t dx = 1;
+  int32_t dy = -1;
+
+  // Gain on the luminance gradient before it is folded into `relief`.
+  // Negative is legal (it flips which side of the ridge is lit, exactly
+  // equivalent to negating both `dx` and `dy`) for the same reason local
+  // contrast's `amount` may be negative: there is no non-arbitrary sign
+  // restriction on a gain.
+  float depth = 1.0f;
+
+  // Blend against the source: 0 is the identity, 1 is the full grey relief.
+  // No upper limit, matching unsharp's "there is no non-arbitrary one" --
+  // amount above 1 extrapolates past the relief card rather than clamping
+  // to it.
+  float amount = 1.0f;
+};
+
+// False for a request no filter can be built from: a non-finite or negative
+// `amount`, a non-finite `depth`. `dx`/`dy` have no invalid values -- every
+// integer pair, including `(0, 0)`, is a legal (if degenerate) direction.
+bool embossParamsValid(const EmbossParams& p) noexcept;
+
+// The two-tap window: `RoiOp{|dx|, |dx|, |dy|, |dy|, 0, 0}`. No translation
+// -- the output texel stays exactly where the input was, this op only reads
+// a window around it.
+RoiOp embossRoiOp(const EmbossParams& p) noexcept;
+
+bool embossTiles(const TileStore& src, const PixelRect& outRect, const EmbossParams& p,
+                 TileStore* dst);
+
+// ==========================================================================
+// 8. Median / despeckle -- a rank filter, not a convolution, and what it
+//    costs to keep the seam property without one
+// ==========================================================================
+//
+// `ops/Roi.hpp`'s own header names this filter before it existed ("median
+// and dust-and-scratches are symmetric dilations of their window"), because
+// ROI-wise a rank filter's reach is exactly a blur's: a `(2r+1)x(2r+1)`
+// window centred on the output texel, declared the identical way blur
+// declares its apron -- `roiDilateOp(radius)`, uniform on all four sides.
+//
+// **So why does the task brief call this filter out as "does NOT inherit the
+// invariant the same way"?** Not because the ROI shape is any different --
+// it is `roiDilateOp`, unchanged -- but because the STANDARD FAST algorithm
+// for a windowed median is not safe to reach for here, and reaching for it
+// out of habit is exactly how this filter would silently reintroduce
+// `blurTiles()`'s original bug in rank-statistic form. The efficient way to
+// slide a median window across a row is a running histogram (or a running
+// balanced-partition structure) that is incrementally updated one column at
+// a time and is bootstrapped once at the row's own left edge. Applied naively
+// to "the requested rectangle" as the row's whole world, that bootstrap runs
+// at `outRect`'s own left edge rather than at the true window's, which is
+// precisely `blurTiles()`'s tile-clamped-at-its-own-edge failure mode,
+// wearing a different algorithm's clothes. **This file does not implement
+// that algorithm.** `medianTiles()` gathers the true, un-clamped
+// `roiBackward(medianRoiOp(p), outRect)` window from SOURCE tiles -- the
+// identical discipline `gatherBlurredPlane()` uses -- and recomputes the full
+// window's rank from scratch at every output texel via `std::nth_element`.
+// That is genuinely more expensive than a rolling algorithm (the Performance
+// section below has the number), and it is the price section 8 pays that
+// sections 1-7 do not: the invariant here is EARNED by refusing an
+// optimisation, not inherited for free by construction.
+//
+// **Colour and coverage are two independent rank problems, not one.** A
+// literal per-channel median of the four PREMULTIPLIED channels would let
+// each channel's answer come from a different source texel, and there is no
+// guarantee those four texels' `RGB/A` ratios agree -- the median could
+// synthesise a straight colour no sample in the window ever held. So this
+// filter un-premultiplies first: it takes the median of `A` over every
+// texel in the window (coverage is meaningful even where it is 0, so every
+// sample counts), and, independently, the median of each straight colour
+// channel over only the texels whose `A > 0` in the window (a fully
+// transparent sample has no colour to contribute a vote to -- "nothing there
+// is nothing to grade", section 5's rule for add noise, restated for a rank
+// filter). The straight median is then re-premultiplied by the ALPHA
+// median, so the result is `(straightMedian * alphaMedian, alphaMedian)` --
+// always a valid premultiplied texel by construction, never an
+// arithmetically-impossible one. A window whose every sample is fully
+// transparent has no straight-colour vote at all and returns `(0,0,0,0)`,
+// matching local contrast's identical convention for a texel with no light
+// to grade.
+//
+// **`radius = 0` is the identity, exactly**: a `1x1` window's "median" is
+// its own single sample, so `medianTiles()` short-circuits it to a bit-exact
+// copy rather than paying the un-premultiply/rank/re-premultiply round trip
+// for an answer that is provably its own input.
+struct MedianParams {
+  // Window half-width in document texels; the window is `(2*radius+1)^2`.
+  // 0 is the identity.
+  int32_t radius = 0;
+};
+
+// False only for a negative radius -- the one request no window can be
+// built from.
+bool medianParamsValid(const MedianParams& p) noexcept;
+
+// `roiDilateOp(radius)` -- the blur-shaped declaration ops/Roi.hpp's own
+// header anticipated for this filter.
+RoiOp medianRoiOp(const MedianParams& p) noexcept;
+
+bool medianTiles(const TileStore& src, const PixelRect& outRect, const MedianParams& p,
+                 TileStore* dst);
+
+// ==========================================================================
+// 9. Motion blur -- a rotated-line convolution, and the first apron in this
+//    file whose two axes genuinely differ
+// ==========================================================================
+//
+// Every apron declared by sections 1-8 is either a uniform `roiDilateOp` (a
+// blur-shaped op, or median's blur-shaped window) or a small symmetric
+// window whose margins happen not to be square (emboss's `|dx|`/`|dy|`, but
+// those are two fixed integers a caller chose, not a formula this file
+// derives). Motion blur is the first one where the LEFT/RIGHT margin and the
+// UP/DOWN margin are related by a continuous parameter that is not under the
+// caller's direct control -- the angle -- and getting that relation wrong is
+// exactly the "anisotropic apron" hazard the task brief names: an apron
+// computed as if the kernel reached equally in every direction would clip
+// the long axis of a near-horizontal or near-vertical smear and reproduce
+// the tile-seam bug along whichever edge the clip fell inside.
+//
+// **The kernel.** A uniform (box) average of `2*radius+1` taps spaced one
+// texel apart along the unit direction vector `(cos(angle), sin(angle))`,
+// centred on the output texel: tap `t` (for `t` in `[-radius, radius]`)
+// samples the PREMULTIPLIED plane at `(x + t*cos, y + t*sin)`. At `angle =
+// 0` every tap lands exactly on an integer texel and this degenerates to a
+// 1-D horizontal box average -- ops/Blur.hpp's own box kernel, minus its
+// vertical pass -- which is what --selftest cross-checks the general path
+// against rather than trusting the bilinear machinery on its own telling.
+//
+// **Off-grid taps are bilinear, and that is the one place this filter adds
+// error the rest of the file does not have.** For a general angle, `t*sin`
+// and `t*cos` are not integers, so each tap reads the four surrounding
+// texels and blends by fractional position -- ordinary bilinear
+// interpolation of the PREMULTIPLIED plane, which is safe for the identical
+// reason averaging premultiplied RGBA is always safe in this file: a
+// fully-transparent neighbour contributes `(0,0,0,0)`, the correct implicit
+// content of a tile that is not there, with no division anywhere in the
+// sampling.
+//
+// **The apron, worked out rather than guessed.** A tap at signed offset `t`
+// reaches `t*cos` texels in x and `t*sin` texels in y; the farthest tap is
+// `radius`, so the farthest REACH is `radius*|cos|` in x and `radius*|sin|`
+// in y -- but a bilinear sample at a non-integer position also touches the
+// texel one further out (the ceiling of its own fractional position), so
+// the declared margin adds one more texel of safety on each axis:
+//
+//     left = right = ceil(radius * |cos(angle)|) + 1
+//     up   = down  = ceil(radius * |sin(angle)|) + 1
+//
+// Both margins are needed on BOTH sides of each axis, not just the side the
+// angle points toward, because the kernel is symmetric about the output
+// texel (`t` ranges over BOTH signs) -- unlike `OffsetParams`, this is not a
+// translation and `roiOffsetOp`'s asymmetric dx/dy has no part in it. At
+// `angle = 0` the y-margin collapses to `ceil(0) + 1 = 1` even though no tap
+// ever leaves row `y` -- one texel of apron paid for a bilinear safety net
+// the axis-aligned case does not actually need, which --selftest's
+// exact-agreement-with-a-1-D-box check absorbs for free (the extra row
+// contributes nothing because it is multiplied by a zero vertical weight,
+// same argument ops/Blur.hpp's seam section makes for its own oversized taps
+// past the true kernel edge). **This is the "not free" case named at the top
+// of this file**: unlike a fixed-radius blur, the margin here is a function
+// the filter has to derive correctly for every angle, not a constant it can
+// read off `blurApron()`.
+//
+// **`radius = 0` is the exact identity** -- `motionBlurRoiOp()` returns
+// `RoiOp{}` (no apron at all, at any angle) and `motionBlurTiles()`
+// short-circuits to a bit-exact copy, matching every other filter's zero-
+// strength convention in this file and avoiding a pointless bilinear
+// self-sample (`t = 0` samples exactly the output texel's own position, so
+// the general path would already be exact here too -- the short circuit is
+// a cost saving, not a correctness fix).
+//
+// Clamped to `[0, kFilterMaxLinear]` with `clampStorable()`, for the
+// identical reason section 7's emboss is: a box average of finite
+// premultiplied samples cannot itself produce a value outside the range its
+// inputs already occupy (averaging cannot overshoot, unlike unsharp's
+// difference-based `amount`), so the clamp here only ever fires on a NaN or
+// an already-out-of-range input, and exists so this filter cannot propagate
+// one rather than because its own arithmetic manufactures one.
+struct MotionBlurParams {
+  // Direction of the smear, radians, measured from +x toward +y (this
+  // codebase's document-space convention: y increases downward, matching
+  // `core/Tile.hpp`'s own top-left origin). Any finite value is legal --
+  // the kernel is symmetric about the output texel, so `angle` and `angle +
+  // pi` declare the identical filter.
+  float angleRadians = 0.0f;
+
+  // Half-length of the smear in document texels; the kernel is
+  // `2*radius+1` taps. 0 is the identity.
+  int32_t radius = 0;
+};
+
+// False for a negative radius or a non-finite angle.
+bool motionBlurParamsValid(const MotionBlurParams& p) noexcept;
+
+// `RoiOp{}` (the exact identity) at `radius == 0`; otherwise the per-axis
+// margins worked out above, symmetric on each axis, no translation.
+RoiOp motionBlurRoiOp(const MotionBlurParams& p) noexcept;
+
+bool motionBlurTiles(const TileStore& src, const PixelRect& outRect, const MotionBlurParams& p,
+                     TileStore* dst);
 
 }  // namespace np

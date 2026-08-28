@@ -192,6 +192,9 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Sharpen, "Sharpen...", "");
     set(MenuAction::UnsharpMask, "Unsharp Mask...", "");
     set(MenuAction::AddNoise, "Add Noise...", "");
+    set(MenuAction::Emboss, "Emboss...", "");
+    set(MenuAction::Median, "Median...", "");
+    set(MenuAction::MotionBlur, "Motion Blur...", "");
 
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
@@ -383,6 +386,9 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Sharpen: return "Sharpen";
     case MenuAction::UnsharpMask: return "UnsharpMask";
     case MenuAction::AddNoise: return "AddNoise";
+    case MenuAction::Emboss: return "Emboss";
+    case MenuAction::Median: return "Median";
+    case MenuAction::MotionBlur: return "MotionBlur";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
     case MenuAction::Count: break;
@@ -436,6 +442,9 @@ MenuEffect menuActionEffect(MenuAction action) noexcept {
     case MenuAction::Sharpen:
     case MenuAction::UnsharpMask:
     case MenuAction::AddNoise:
+    case MenuAction::Emboss:
+    case MenuAction::Median:
+    case MenuAction::MotionBlur:
     case MenuAction::ImageSize:
     case MenuAction::CanvasSize:
     // The five refine dialogs -- a radius, or a colour/band plus tolerance --
@@ -707,17 +716,19 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
   // ---------------------------------------------------------------- Filter
   //
   // ops/Blur + ops/Filters, through app/FilterOps.hpp (PRD D4/D5;
-  // docs/reachability-audit.md C1). Four items share one enable predicate
-  // and one refusal sentence -- `ctx.filterLayerUsable` /
-  // `ctx.filterRefusalNote` -- because all four ask the identical question
+  // docs/reachability-audit.md C1). All seven items share one enable
+  // predicate and one refusal sentence -- `ctx.filterLayerUsable` /
+  // `ctx.filterRefusalNote` -- because all seven ask the identical question
   // of the active layer ("can it take a pixel op"), the same one the paint
   // bucket and the gradient already ask via `PixelOpRefusal`.
   //
   // Grouped as `ops/Filters.hpp` itself groups them: the blur-based
-  // sharpening pair together, Add Noise set apart -- Sharpen is
-  // `unsharpMaskTiles()` with the radius fixed (that header's own section 3
-  // says so), so it sits beside Unsharp Mask rather than beside Gaussian
-  // Blur, which is a different engine entirely.
+  // sharpening pair together; Add Noise and Median (its rough opposite --
+  // one adds grain, the other removes it) set apart; then Emboss and Motion
+  // Blur, the two stylize/directional ops added later (ops/Filters.hpp
+  // sections 7 and 9). Sharpen is `unsharpMaskTiles()` with the radius fixed
+  // (that header's own section 3 says so), so it sits beside Unsharp Mask
+  // rather than beside Gaussian Blur, which is a different engine entirely.
   {
     MenuNode filter = submenu("Filter");
     std::vector<MenuNode>& flt = filter.children;
@@ -732,6 +743,10 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     flt.push_back(filterItem(MenuAction::UnsharpMask));
     flt.push_back(separator());
     flt.push_back(filterItem(MenuAction::AddNoise));
+    flt.push_back(filterItem(MenuAction::Median));
+    flt.push_back(separator());
+    flt.push_back(filterItem(MenuAction::Emboss));
+    flt.push_back(filterItem(MenuAction::MotionBlur));
     bar.push_back(std::move(filter));
   }
 

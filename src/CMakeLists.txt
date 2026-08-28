@@ -78,6 +78,7 @@ add_executable(naturalPaint
   app/selftest/FileDialog.cpp
   app/selftest/FilterMenu.cpp
   app/selftest/Filters.cpp
+  app/selftest/FiltersExt.cpp
   app/selftest/FloodFill.cpp
   app/selftest/Fonts.cpp
   app/selftest/AtelierChrome.cpp

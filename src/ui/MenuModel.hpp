@@ -246,6 +246,14 @@ enum class MenuAction : uint16_t {
   UnsharpMask,
   AddNoise,
 
+  // Three more, extending ops/Filters.hpp's set (sections 7-9): emboss,
+  // median/despeckle, motion blur. Same wiring shape as the four above --
+  // app/FilterOps.hpp's `applyEmboss`/`applyMedian`/`applyMotionBlur` and
+  // their `preview*` twins.
+  Emboss,
+  Median,
+  MotionBlur,
+
   // --- Image ------------------------------------------------------------
   //
   // ops/DocumentTransform, Photoshop-style: geometry that changes the

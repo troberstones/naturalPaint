@@ -6783,7 +6783,16 @@ void drawRecoveryDialog(AppState& st) {
 // it would re-run the full-resolution op on every slider tick with no way to
 // tell "the user is dragging" from "the user is done" apart from waiting for
 // mouse-up -- which the display-only overlay does not need to know at all.
-enum class FilterPreviewOwner { None, GaussianBlur, Sharpen, UnsharpMask, AddNoise };
+enum class FilterPreviewOwner {
+  None,
+  GaussianBlur,
+  Sharpen,
+  UnsharpMask,
+  AddNoise,
+  Emboss,
+  Median,
+  MotionBlur
+};
 
 struct FilterPreviewState {
   FilterPreviewOwner owner = FilterPreviewOwner::None;
@@ -6987,6 +6996,9 @@ bool g_gaussianBlurRequested = false;
 bool g_sharpenRequested = false;
 bool g_unsharpMaskRequested = false;
 bool g_addNoiseRequested = false;
+bool g_embossRequested = false;
+bool g_medianRequested = false;
+bool g_motionBlurRequested = false;
 
 void drawGaussianBlurDialog(AppState& st) {
   static float sigma = 8.0f;  // texels; ops/Blur.hpp's own worked examples use this
@@ -7262,6 +7274,209 @@ void drawAddNoiseDialog(AppState& st) {
       status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "add noise");
     } else if (r.texelsChanged == 0) {
       status = "Nothing changed (amount 0, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------
+// Three more Filter-menu dialogs, extending ops/Filters.hpp sections 7-9
+// (emboss, median/despeckle, motion blur) through the identical
+// request-flag / popup / live-preview-on-release shape the four dialogs
+// above already establish. Each one's `IsItemDeactivatedAfterEdit()`
+// discipline and its Cancel-clears-the-preview behaviour are copied from
+// `drawGaussianBlurDialog()`'s own comments rather than re-argued here.
+// ---------------------------------------------------------------------------
+
+void drawEmbossDialog(AppState& st) {
+  // Angle/distance rather than raw dx/dy: `EmbossParams::dx`/`dy` are
+  // document-texel integers (ops/Filters.hpp section 7's exact two-tap
+  // offset), but a dial that reads "Angle" and "Distance" is what an Emboss
+  // dialog actually looks like everywhere else, and the conversion belongs
+  // here rather than in the engine -- ops/Filters.hpp's own params struct is
+  // deliberately the unambiguous, already-integer form a UI converts INTO,
+  // not a second place that re-derives what "45 degrees" means.
+  static float angleDeg = 135.0f;  // upper-left light, the conventional default
+  static int distance = 2;         // texels
+  static float depth = 3.0f;
+  static float amount = 1.0f;
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (g_embossRequested) {
+    g_embossRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Emboss");
+  }
+  if (!ImGui::BeginPopupModal("Emboss", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::Emboss);
+    return;
+  }
+
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Angle", &angleDeg, 0.0f, 360.0f, "%.0f deg");
+  bool paramsSettled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderInt("Distance", &distance, 0, 8, "%d texels");
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Depth", &depth, -10.0f, 10.0f, "%.2f");
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Amount", &amount, 0.0f, 1.0f, "%.2f");
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled(
+      "0 amount is the identity. Distance 0 (or Depth 0) is a flat grey card, not a no-op -- "
+      "ops/Filters.hpp section 7 says why a stylize filter's neutral point is not its "
+      "identity.");
+
+  constexpr float kPi = 3.14159265f;  // IM_PI lives in imgui_internal.h; see drawPadlockGlyph()
+  const float angleRad = angleDeg * (kPi / 180.0f);
+  EmbossParams params;
+  params.dx = static_cast<int32_t>(std::lround(static_cast<double>(distance) *
+                                               std::cos(static_cast<double>(angleRad))));
+  params.dy = static_cast<int32_t>(std::lround(static_cast<double>(distance) *
+                                               std::sin(static_cast<double>(angleRad))));
+  params.depth = depth;
+  params.amount = amount;
+
+  if (paramsSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::Emboss, previewEmboss, params);
+  wasOpen = true;
+
+  if (ImGui::Button("Emboss") && od != nullptr) {
+    const FilterOpResult r = applyEmboss(*od, params);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "emboss");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (amount 0, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+void drawMedianDialog(AppState& st) {
+  static int radius = 1;  // texels; ops/Filters.hpp section 8's despeckle
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (g_medianRequested) {
+    g_medianRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Median");
+  }
+  if (!ImGui::BeginPopupModal("Median", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::Median);
+    return;
+  }
+
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderInt("Radius", &radius, 0, 8, "%d texels");
+  const bool radiusSettled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled(
+      "0 is the identity. Window is (2*radius+1)^2 texels -- radius 8 is a 17x17 window, "
+      "the expensive end of this dial (see this task's own [measured] median timing line).");
+
+  const MedianParams params{radius};
+
+  if (radiusSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::Median, previewMedian, params);
+  wasOpen = true;
+
+  if (ImGui::Button("Despeckle") && od != nullptr) {
+    const FilterOpResult r = applyMedian(*od, params);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "median");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (radius 0, or no selected texels).";
+      ImGui::CloseCurrentPopup();
+    } else {
+      status.clear();
+      ImGui::CloseCurrentPopup();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+void drawMotionBlurDialog(AppState& st) {
+  static float angleDeg = 0.0f;
+  static int distance = 8;  // texels; ops/Filters.hpp section 9's radius
+  static std::string status;
+  static bool wasOpen = false;
+
+  if (g_motionBlurRequested) {
+    g_motionBlurRequested = false;
+    status.clear();
+    ImGui::OpenPopup("Motion Blur");
+  }
+  if (!ImGui::BeginPopupModal("Motion Blur", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    wasOpen = false;
+    clearFilterPreview(FilterPreviewOwner::MotionBlur);
+    return;
+  }
+
+  OpenDocument* od = st.documents.active();
+
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderFloat("Angle", &angleDeg, 0.0f, 180.0f, "%.0f deg");
+  bool paramsSettled = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SliderInt("Distance", &distance, 0, 60, "%d texels");
+  paramsSettled |= ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::TextDisabled(
+      "0 distance is the identity. The kernel is symmetric about the texel, so an angle and "
+      "angle+180 are the same request -- ops/Filters.hpp section 9 says so.");
+
+  constexpr float kPi = 3.14159265f;  // IM_PI lives in imgui_internal.h; see drawPadlockGlyph()
+  MotionBlurParams params;
+  params.angleRadians = angleDeg * (kPi / 180.0f);
+  params.radius = distance;
+
+  if (paramsSettled || !wasOpen)
+    updateFilterPreview(od, FilterPreviewOwner::MotionBlur, previewMotionBlur, params);
+  wasOpen = true;
+
+  if (ImGui::Button("Motion Blur") && od != nullptr) {
+    const FilterOpResult r = applyMotionBlur(*od, params);
+    if (r.refusal != PixelOpRefusal::None) {
+      status = pixelOpRefusalMessage(r.refusal, activeLayerOf(*od), "motion blur");
+    } else if (r.texelsChanged == 0) {
+      status = "Nothing changed (distance 0, or no selected texels).";
       ImGui::CloseCurrentPopup();
     } else {
       status.clear();
@@ -8281,6 +8496,9 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::Sharpen:      g_sharpenRequested = true;      break;
     case MenuAction::UnsharpMask:  g_unsharpMaskRequested = true;  break;
     case MenuAction::AddNoise:     g_addNoiseRequested = true;     break;
+    case MenuAction::Emboss:       g_embossRequested = true;       break;
+    case MenuAction::Median:       g_medianRequested = true;       break;
+    case MenuAction::MotionBlur:   g_motionBlurRequested = true;   break;
 
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
@@ -8650,13 +8868,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // because PRD O8's offer happens on launch, before any menu is touched.
   drawRecoveryDialog(st);
 
-  // docs/reachability-audit.md C1: the Filter menu's four dialogs and the
-  // Image menu's two, out here for the identical ID-stack reason as every
-  // dialog above.
+  // docs/reachability-audit.md C1: the Filter menu's seven dialogs (the
+  // original four plus emboss/median/motion blur) and the Image menu's two,
+  // out here for the identical ID-stack reason as every dialog above.
   drawGaussianBlurDialog(st);
   drawSharpenDialog(st);
   drawUnsharpMaskDialog(st);
   drawAddNoiseDialog(st);
+  drawEmbossDialog(st);
+  drawMedianDialog(st);
+  drawMotionBlurDialog(st);
   drawImageSizeDialog(st);
   drawCanvasSizeDialog(st);
   // docs/reachability-audit.md C5 (PRD E4/E8/E9): the Select menu's five

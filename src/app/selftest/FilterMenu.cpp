@@ -495,10 +495,16 @@ bool runFilterMenuTest() {
     const MenuNode* sharpenUsable = findMenuAction(usableMenus, MenuAction::Sharpen);
     const MenuNode* unsharpUsable = findMenuAction(usableMenus, MenuAction::UnsharpMask);
     const MenuNode* noiseUsable = findMenuAction(usableMenus, MenuAction::AddNoise);
+    const MenuNode* embossUsable = findMenuAction(usableMenus, MenuAction::Emboss);
+    const MenuNode* medianUsable = findMenuAction(usableMenus, MenuAction::Median);
+    const MenuNode* motionBlurUsable = findMenuAction(usableMenus, MenuAction::MotionBlur);
     check(blurUsable != nullptr && blurUsable->enabled && sharpenUsable != nullptr &&
               sharpenUsable->enabled && unsharpUsable != nullptr && unsharpUsable->enabled &&
-              noiseUsable != nullptr && noiseUsable->enabled,
-          "enable: all four Filter items are enabled when filterLayerUsable is true");
+              noiseUsable != nullptr && noiseUsable->enabled && embossUsable != nullptr &&
+              embossUsable->enabled && medianUsable != nullptr && medianUsable->enabled &&
+              motionBlurUsable != nullptr && motionBlurUsable->enabled,
+          "enable: all seven Filter items -- the original four plus Emboss/Median/Motion Blur "
+          "-- are enabled when filterLayerUsable is true");
 
     MenuContext unusable;
     unusable.hasDocument = true;
@@ -655,6 +661,112 @@ bool runFilterMenuTest() {
     check(tilesExactlyEqual(*od.document.layers[0].rgbTiles, preview),
           "preview safety: committing at the SAME sigma writes tiles BIT-IDENTICAL to what "
           "the preview held -- what the user saw during the drag IS what Blur committed");
+  }
+
+  std::printf("  -- I. the three ops/Filters.hpp sections 7-9 additions -- Emboss, Median, "
+              "Motion Blur -- reach their own engine call, and preview obeys T15 --\n");
+  {
+    // Menu reachability, section F's own predicate check restated for the
+    // three additions specifically (already folded into section F's single
+    // combined assertion above; this is the per-item reachability half --
+    // ui/MenuModel.cpp's actual built tree, not a hand-built MenuContext).
+    const MenuNode* embossItem = findMenuAction(buildMenuModel(MenuContext{}), MenuAction::Emboss);
+    const MenuNode* medianItem = findMenuAction(buildMenuModel(MenuContext{}), MenuAction::Median);
+    const MenuNode* motionBlurItem =
+        findMenuAction(buildMenuModel(MenuContext{}), MenuAction::MotionBlur);
+    check(embossItem != nullptr && medianItem != nullptr && motionBlurItem != nullptr,
+          "reach: Emboss, Median and Motion Blur are all present in the built menu tree, even "
+          "with a default (empty) MenuContext -- an item present but always disabled is still "
+          "reachable, unlike one silently dropped from the tree");
+
+    // Emboss: applyEmboss() must be bit-identical to embossTiles() called
+    // directly with the SAME params -- section A's own standard, extended to
+    // the filter this task's engine section calls "trivially inherited" so
+    // the wiring layer gets the identical rigor as the two "earned" ones.
+    OpenDocument odEmboss = makeFilterMenuDocument("emboss");
+    const TileStore embossOriginal = *odEmboss.document.layers[0].rgbTiles;
+    const EmbossParams embossParams{2, -1, 2.5f, 0.75f};
+    const FilterOpResult embossR = applyEmboss(odEmboss, embossParams);
+    check(embossR.refusal == PixelOpRefusal::None && embossR.texelsChanged > 0,
+          "emboss: a non-zero amount on a filled RGB layer changes texels and is not refused");
+    TileStore embossReference;
+    check(embossTiles(embossOriginal, kCanvasRect, embossParams, &embossReference),
+          "emboss: the reference engine call (same params as the dialog) succeeds");
+    check(tilesExactlyEqual(*odEmboss.document.layers[0].rgbTiles, embossReference),
+          "emboss: the layer's result is bit-identical to embossTiles() called directly with "
+          "the SAME params -- the wiring is not retyping dx/dy/depth/amount along the way");
+
+    // Median.
+    OpenDocument odMedian = makeFilterMenuDocument("median");
+    const TileStore medianOriginal = *odMedian.document.layers[0].rgbTiles;
+    const MedianParams medianParams{2};
+    const FilterOpResult medianR = applyMedian(odMedian, medianParams);
+    check(medianR.refusal == PixelOpRefusal::None && medianR.texelsChanged > 0,
+          "median: a non-zero radius on a filled (noisy) RGB layer changes texels and is not "
+          "refused");
+    TileStore medianReference;
+    check(medianTiles(medianOriginal, kCanvasRect, medianParams, &medianReference),
+          "median: the reference engine call (same radius as the dialog) succeeds");
+    check(tilesExactlyEqual(*odMedian.document.layers[0].rgbTiles, medianReference),
+          "median: the layer's result is bit-identical to medianTiles() called directly with "
+          "the SAME radius");
+
+    // Motion Blur.
+    OpenDocument odMotion = makeFilterMenuDocument("motion blur");
+    const TileStore motionOriginal = *odMotion.document.layers[0].rgbTiles;
+    const MotionBlurParams motionParams{0.6f, 5};
+    const FilterOpResult motionR = applyMotionBlur(odMotion, motionParams);
+    check(motionR.refusal == PixelOpRefusal::None && motionR.texelsChanged > 0,
+          "motion blur: a non-zero radius on a filled RGB layer changes texels and is not "
+          "refused");
+    TileStore motionReference;
+    check(motionBlurTiles(motionOriginal, kCanvasRect, motionParams, &motionReference),
+          "motion blur: the reference engine call (same angle/radius as the dialog) succeeds");
+    check(tilesExactlyEqual(*odMotion.document.layers[0].rgbTiles, motionReference),
+          "motion blur: the layer's result is bit-identical to motionBlurTiles() called "
+          "directly with the SAME angle and radius");
+
+    // Refusal wiring, reused: a Pigment-only ("Backdrop") layer refuses all
+    // three exactly as it refuses the original four (app/FilterOps.hpp's own
+    // argument for why -- a filter is a fill in every texel it touches, and
+    // ops/FloodFill's Pigment-layer refusal applies unchanged). Built via
+    // `makePigmentLayer()`/`addLayer()`/`recordLayerEdit()`, section D's own
+    // fixture shape, rather than hand-mutating a `Layer` this file has no
+    // other reason to know the private shape of.
+    OpenDocument odRefuse = makeBlankOpenDocument(64, 64, WorkingSpace{}, "filter refusal");
+    const size_t pigmentAt = odRefuse.document.layers.size();
+    recordLayerEdit(odRefuse,
+                    addLayer(odRefuse.document, pigmentAt, makePigmentLayer("Backdrop pigment")));
+    odRefuse.activeLayer = pigmentAt;
+    const FilterOpResult embossRefused = applyEmboss(odRefuse, embossParams);
+    const FilterOpResult medianRefused = applyMedian(odRefuse, medianParams);
+    const FilterOpResult motionRefused = applyMotionBlur(odRefuse, motionParams);
+    check(embossRefused.refusal == PixelOpRefusal::NoRgbStore &&
+              medianRefused.refusal == PixelOpRefusal::NoRgbStore &&
+              motionRefused.refusal == PixelOpRefusal::NoRgbStore,
+          "refuse: all three new filters refuse a Pigment layer with the SAME "
+          "PixelOpRefusal::NoRgbStore the original four use, not a second vocabulary");
+
+    // Preview safety (T15), compact form of section H, for Median: preview
+    // mutates nothing and records no history, and committing at the SAME
+    // params writes exactly what the preview showed.
+    OpenDocument odPreview = makeFilterMenuDocument("median preview safety");
+    const TileStore beforePreview = *odPreview.document.layers[0].rgbTiles;
+    const size_t entriesBeforePreview = odPreview.history.entries().size();
+    TileStore medianPreview;
+    const FilterOpResult medianPreviewed = previewMedian(odPreview, medianParams, &medianPreview);
+    check(medianPreviewed.refusal == PixelOpRefusal::None && medianPreviewed.texelsChanged > 0,
+          "median preview safety: the fixture's preview actually computed something");
+    check(odPreview.history.entries().size() == entriesBeforePreview &&
+              tilesExactlyEqual(*odPreview.document.layers[0].rgbTiles, beforePreview),
+          "median preview safety: computing a preview records no history entry and leaves the "
+          "document's own tiles untouched -- the identical T15 property section H pins for "
+          "Gaussian Blur");
+    const FilterOpResult medianCommitted = applyMedian(odPreview, medianParams);
+    check(medianCommitted.refusal == PixelOpRefusal::None &&
+              tilesExactlyEqual(*odPreview.document.layers[0].rgbTiles, medianPreview),
+          "median preview safety: committing at the SAME radius writes tiles BIT-IDENTICAL to "
+          "what the preview held");
   }
 
   std::printf("[selftest] filter menu %s\n", ok ? "PASS" : "FAIL");

@@ -266,6 +266,131 @@ uint64_t splitMix64(uint64_t z) noexcept {
   return z ^ (z >> 31);
 }
 
+// --- shared machinery for sections 7-9 --------------------------------------
+//
+// A near-copy of `gatherBlurredPlane()` above, minus the `blurPlane()` call:
+// every one of emboss, median and motion blur reads a WINDOW of raw,
+// premultiplied source texels and does its own arithmetic over them (a
+// two-tap combine, a rank selection, a bilinear line sample), rather than a
+// Gaussian/box average -- so there is nothing for `ops/Blur` to do here, only
+// the gather it shares the shape of. Same tiled, parallel, read-only walk;
+// same "absent tile reads as transparent black" zero-init; same reason it is
+// safe to call from `parallelFor` without a reservation phase
+// (`TileStore::find()` is a `const` read).
+bool gatherRawPlane(const TileStore& src, const PixelRect& outRect, const RoiOp& roi,
+                    PixelRect* need, std::vector<float>* plane) {
+  *need = roiBackward(roi, outRect);
+  const int32_t w = need->width();
+  const int32_t h = need->height();
+  if (w <= 0 || h <= 0) return false;
+
+  plane->assign(static_cast<size_t>(w) * static_cast<size_t>(h) *
+                    static_cast<size_t>(Tile::kChannels),
+                0.0f);
+
+  const TileRange gatherTiles = roiTileRange(*need);
+  const int32_t tilesWide = gatherTiles.tilesWide();
+  const PixelRect needRect = *need;
+  float* const planeData = plane->data();
+  parallelFor(static_cast<size_t>(gatherTiles.tileCount()), kParallelForDefaultGrain,
+             [&](size_t i) {
+               const int32_t tx = gatherTiles.x0 + static_cast<int32_t>(i) % tilesWide;
+               const int32_t ty = gatherTiles.y0 + static_cast<int32_t>(i) / tilesWide;
+               const TileCoord coord{tx, ty};
+               const Tile* tile = src.find(coord);
+               if (tile == nullptr) return;
+               const PixelRect span = roiIntersect(roiTileRect(coord), needRect);
+               const PixelCoord origin = tileOrigin(coord);
+               for (int32_t y = span.y0; y < span.y1; ++y) {
+                 for (int32_t x = span.x0; x < span.x1; ++x) {
+                   const std::array<float, 4> rgba =
+                       tile->readPixel(PixelCoord{x - origin.x, y - origin.y});
+                   const size_t base =
+                       (static_cast<size_t>(y - needRect.y0) * static_cast<size_t>(w) +
+                        static_cast<size_t>(x - needRect.x0)) *
+                       static_cast<size_t>(Tile::kChannels);
+                   planeData[base + 0] = rgba[0];
+                   planeData[base + 1] = rgba[1];
+                   planeData[base + 2] = rgba[2];
+                   planeData[base + 3] = rgba[3];
+                 }
+               }
+             });
+  return true;
+}
+
+// Bilinear sample of the gathered plane at a fractional DOCUMENT position.
+// Only `motionBlurTiles()` calls this (a general angle's taps are not on the
+// texel grid); every other reader of a gathered plane in this file indexes
+// it exactly, through `planeTexel()` above. Positions outside `need` read as
+// transparent black, the same implicit content an absent tile has -- this
+// can only happen at the very edge of the declared apron, where the
+// bilinear corner one texel further out than the true reach falls, and the
+// apron section above already argues the extra texel contributes a zero
+// weight there.
+std::array<float, 4> planeBilinear(const std::vector<float>& plane, const PixelRect& need,
+                                   float fx, float fy) {
+  const int32_t x0 = static_cast<int32_t>(std::floor(fx));
+  const int32_t y0 = static_cast<int32_t>(std::floor(fy));
+  const float tx = fx - static_cast<float>(x0);
+  const float ty = fy - static_cast<float>(y0);
+  auto at = [&](int32_t x, int32_t y) -> std::array<float, 4> {
+    if (x < need.x0 || x >= need.x1 || y < need.y0 || y >= need.y1) {
+      return {0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    return planeTexel(plane, need, x, y);
+  };
+  const std::array<float, 4> p00 = at(x0, y0);
+  const std::array<float, 4> p10 = at(x0 + 1, y0);
+  const std::array<float, 4> p01 = at(x0, y0 + 1);
+  const std::array<float, 4> p11 = at(x0 + 1, y0 + 1);
+  std::array<float, 4> out{};
+  for (int32_t c = 0; c < 4; ++c) {
+    const size_t i = static_cast<size_t>(c);
+    const float top = p00[i] + tx * (p10[i] - p00[i]);
+    const float bottom = p01[i] + tx * (p11[i] - p01[i]);
+    out[i] = top + ty * (bottom - top);
+  }
+  return out;
+}
+
+// The write half shared by sections 7-9: reserve every destination tile
+// serially (the `TileStoreOf::getOrCreate` hazard `core/Parallel.hpp`
+// documents), then parallelize the per-texel writes. Unlike `scatterFree()`
+// (offsetTiles' walk), `produce` here is required to be stateless between
+// calls -- every caller below reads only from a `plane`/`need` pair captured
+// by const reference, never from a mutable cache -- so, unlike
+// `offsetTiles()`, this one IS safe to parallelize, and does not pay the
+// serial cost that op's own comment explains.
+template <class Produce>
+void scatterPlaneParallel(const PixelRect& outRect, TileStore* dst, Produce&& produce) {
+  const TileRange writeTiles = roiTileRange(outRect);
+  struct ReservedTile {
+    PixelRect span;
+    PixelCoord origin;
+    Tile* tile;
+  };
+  std::vector<ReservedTile> reserved;
+  reserved.reserve(static_cast<size_t>(writeTiles.tileCount()));
+  for (int32_t ty = writeTiles.y0; ty < writeTiles.y1; ++ty) {
+    for (int32_t tx = writeTiles.x0; tx < writeTiles.x1; ++tx) {
+      const TileCoord coord{tx, ty};
+      const PixelRect span = roiIntersect(roiTileRect(coord), outRect);
+      if (roiIsEmpty(span)) continue;
+      Tile& tile = dst->getOrCreate(coord);
+      reserved.push_back(ReservedTile{span, tileOrigin(coord), &tile});
+    }
+  }
+  parallelFor(reserved.size(), kParallelForDefaultGrain, [&](size_t i) {
+    const ReservedTile& r = reserved[i];
+    for (int32_t y = r.span.y0; y < r.span.y1; ++y) {
+      for (int32_t x = r.span.x0; x < r.span.x1; ++x) {
+        r.tile->writePixel(PixelCoord{x - r.origin.x, y - r.origin.y}, produce(x, y));
+      }
+    }
+  });
+}
+
 }  // namespace
 
 // ==========================================================================
@@ -578,6 +703,224 @@ bool localContrastTiles(const TileStore& src, const PixelRect& outRect,
                    out[3] = a;
                    return out;
                  });
+  return true;
+}
+
+// ==========================================================================
+// 7. Emboss
+// ==========================================================================
+
+bool embossParamsValid(const EmbossParams& p) noexcept {
+  return std::isfinite(p.amount) && p.amount >= 0.0f && std::isfinite(p.depth);
+}
+
+RoiOp embossRoiOp(const EmbossParams& p) noexcept {
+  const int32_t ax = p.dx < 0 ? -p.dx : p.dx;
+  const int32_t ay = p.dy < 0 ? -p.dy : p.dy;
+  return RoiOp{ax, ax, ay, ay, 0, 0};
+}
+
+bool embossTiles(const TileStore& src, const PixelRect& outRect, const EmbossParams& p,
+                 TileStore* dst) {
+  if (dst == nullptr || dst == &src) return false;
+  if (!embossParamsValid(p)) return false;
+  if (roiIsEmpty(outRect)) return false;
+
+  // amount 0 is the identity: skip the gather, the two extra reads and the
+  // luminance arithmetic entirely, exactly `addNoiseTiles()`'s own
+  // short-circuit for the identical reason -- a neutral setting should not
+  // pay for work whose answer is already known.
+  if (!(p.amount > 0.0f)) {
+    scatterAligned(src, outRect, dst,
+                   [](int32_t, int32_t, const std::array<float, 4>& s) { return s; });
+    return true;
+  }
+
+  PixelRect need{};
+  std::vector<float> plane;
+  if (!gatherRawPlane(src, outRect, embossRoiOp(p), &need, &plane)) return false;
+
+  scatterPlaneParallel(outRect, dst, [&](int32_t x, int32_t y) -> std::array<float, 4> {
+    const std::array<float, 4> center = planeTexel(plane, need, x, y);
+    const std::array<float, 4> ahead = planeTexel(plane, need, x + p.dx, y + p.dy);
+    const std::array<float, 4> behind = planeTexel(plane, need, x - p.dx, y - p.dy);
+    // Rec. 709 luma, applied to PREMULTIPLIED RGB -- see ops/Filters.hpp's
+    // section 7 for why no un-premultiply happens anywhere in this filter.
+    auto lum = [](const std::array<float, 4>& t) noexcept {
+      return 0.2126f * t[0] + 0.7152f * t[1] + 0.0722f * t[2];
+    };
+    const float relief = 0.5f + p.depth * (lum(ahead) - lum(behind));
+    const float greyPremul = relief * center[3];
+    return std::array<float, 4>{
+        clampStorable(center[0] + p.amount * (greyPremul - center[0])),
+        clampStorable(center[1] + p.amount * (greyPremul - center[1])),
+        clampStorable(center[2] + p.amount * (greyPremul - center[2])),
+        center[3],  // untouched: a stylize op must not move the shape's boundary
+    };
+  });
+  return true;
+}
+
+// ==========================================================================
+// 8. Median / despeckle
+// ==========================================================================
+
+bool medianParamsValid(const MedianParams& p) noexcept { return p.radius >= 0; }
+
+RoiOp medianRoiOp(const MedianParams& p) noexcept { return roiDilateOp(p.radius); }
+
+bool medianTiles(const TileStore& src, const PixelRect& outRect, const MedianParams& p,
+                 TileStore* dst) {
+  if (dst == nullptr || dst == &src) return false;
+  if (!medianParamsValid(p)) return false;
+  if (roiIsEmpty(outRect)) return false;
+
+  // A 1x1 window's median is its own sample -- an exact identity, not an
+  // approximation of one, so it is worth a short circuit the same way every
+  // other zero-strength case in this file is.
+  if (p.radius == 0) {
+    scatterAligned(src, outRect, dst,
+                   [](int32_t, int32_t, const std::array<float, 4>& s) { return s; });
+    return true;
+  }
+
+  PixelRect need{};
+  std::vector<float> plane;
+  if (!gatherRawPlane(src, outRect, medianRoiOp(p), &need, &plane)) return false;
+
+  const int32_t r = p.radius;
+  scatterPlaneParallel(outRect, dst, [&](int32_t x, int32_t y) -> std::array<float, 4> {
+    // `thread_local`, not a per-texel heap allocation: `dispatch_apply`'s
+    // worker pool is a small, fixed set of OS threads that this function is
+    // called on repeatedly, so each thread's buffer is allocated once (on
+    // its first texel) and reused -- amortized cost, not per-texel cost --
+    // and reading two different worker threads' buffers can never alias
+    // because `thread_local` storage is, by definition, private to the
+    // thread that touches it.
+    thread_local std::vector<float> alphas;
+    thread_local std::vector<float> rs;
+    thread_local std::vector<float> gs;
+    thread_local std::vector<float> bs;
+    alphas.clear();
+    rs.clear();
+    gs.clear();
+    bs.clear();
+
+    // The true, source-gathered window -- see ops/Filters.hpp's section 8 on
+    // why this is a plain re-scan of `plane` rather than an incrementally
+    // updated running histogram: the incremental form is exactly the
+    // algorithm whose usual bootstrap-at-the-request-rectangle's-own-edge
+    // behaviour would reintroduce the seam bug in rank-statistic form.
+    for (int32_t wy = y - r; wy <= y + r; ++wy) {
+      for (int32_t wx = x - r; wx <= x + r; ++wx) {
+        const std::array<float, 4> t = planeTexel(plane, need, wx, wy);
+        alphas.push_back(t[3]);
+        if (t[3] > 0.0f) {
+          const float inv = 1.0f / t[3];
+          rs.push_back(t[0] * inv);
+          gs.push_back(t[1] * inv);
+          bs.push_back(t[2] * inv);
+        }
+      }
+    }
+
+    // Coverage's median: every sample votes, including the fully
+    // transparent ones -- coverage is meaningful at 0. The window is always
+    // `(2r+1)^2`, odd by construction, so `size/2` is the true middle rank
+    // rather than either half of an ambiguous even split.
+    const size_t aMid = alphas.size() / 2;
+    std::nth_element(alphas.begin(), alphas.begin() + static_cast<ptrdiff_t>(aMid), alphas.end());
+    const float aMed = alphas[aMid];
+
+    // No sample in the window had any colour to grade -- `aMed` is
+    // necessarily 0 too (a median of all-zero coverage cannot be positive),
+    // so this is the same "nothing there is nothing to grade" answer
+    // section 5 (add noise) and section 6 (local contrast) both give.
+    if (rs.empty()) return std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f};
+
+    // Each straight colour channel's OWN rank, independently -- `rs`/`gs`/
+    // `bs` may be even-sized (only the alpha list is guaranteed odd), so
+    // `size/2` picks the upper of the two middle values rather than
+    // averaging them. A deterministic, reproducible order-statistic choice,
+    // not the textbook two-value mean -- averaging would blend two distinct
+    // source colours into one no sample in the window ever held, precisely
+    // the failure this filter's un-premultiply step exists to avoid one
+    // level up.
+    const size_t rMid = rs.size() / 2;
+    std::nth_element(rs.begin(), rs.begin() + static_cast<ptrdiff_t>(rMid), rs.end());
+    const size_t gMid = gs.size() / 2;
+    std::nth_element(gs.begin(), gs.begin() + static_cast<ptrdiff_t>(gMid), gs.end());
+    const size_t bMid = bs.size() / 2;
+    std::nth_element(bs.begin(), bs.begin() + static_cast<ptrdiff_t>(bMid), bs.end());
+
+    return std::array<float, 4>{rs[rMid] * aMed, gs[gMid] * aMed, bs[bMid] * aMed, aMed};
+  });
+  return true;
+}
+
+// ==========================================================================
+// 9. Motion blur
+// ==========================================================================
+
+bool motionBlurParamsValid(const MotionBlurParams& p) noexcept {
+  return std::isfinite(p.angleRadians) && p.radius >= 0;
+}
+
+RoiOp motionBlurRoiOp(const MotionBlurParams& p) noexcept {
+  // The exact identity at radius 0 -- no apron at any angle, matching every
+  // other filter's zero-strength convention.
+  if (p.radius == 0) return RoiOp{};
+  const float c = std::fabs(std::cos(p.angleRadians));
+  const float s = std::fabs(std::sin(p.angleRadians));
+  // ceil() of the farthest tap's reach, plus one texel of bilinear safety --
+  // see ops/Filters.hpp's section 9 for the derivation. An ROI that is too
+  // large is merely slow (ops/Roi.hpp's own safety rule); this is not even
+  // that large, since the extra texel is read at a zero bilinear weight
+  // whenever the true reach already lands on the grid.
+  const int32_t mx = static_cast<int32_t>(std::ceil(static_cast<float>(p.radius) * c)) + 1;
+  const int32_t my = static_cast<int32_t>(std::ceil(static_cast<float>(p.radius) * s)) + 1;
+  return RoiOp{mx, mx, my, my, 0, 0};
+}
+
+bool motionBlurTiles(const TileStore& src, const PixelRect& outRect, const MotionBlurParams& p,
+                     TileStore* dst) {
+  if (dst == nullptr || dst == &src) return false;
+  if (!motionBlurParamsValid(p)) return false;
+  if (roiIsEmpty(outRect)) return false;
+
+  if (p.radius == 0) {
+    scatterAligned(src, outRect, dst,
+                   [](int32_t, int32_t, const std::array<float, 4>& s) { return s; });
+    return true;
+  }
+
+  PixelRect need{};
+  std::vector<float> plane;
+  if (!gatherRawPlane(src, outRect, motionBlurRoiOp(p), &need, &plane)) return false;
+
+  const float cosA = std::cos(p.angleRadians);
+  const float sinA = std::sin(p.angleRadians);
+  const int32_t radius = p.radius;
+  const int32_t taps = 2 * radius + 1;
+  const float invTaps = 1.0f / static_cast<float>(taps);
+
+  scatterPlaneParallel(outRect, dst, [&](int32_t x, int32_t y) -> std::array<float, 4> {
+    // A box average of premultiplied samples along the line, off-grid taps
+    // bilinear -- ops/Filters.hpp's section 9 argues at length for why this
+    // needs no un-premultiply anywhere, the same argument section 7 makes.
+    std::array<float, 4> sum{0.0f, 0.0f, 0.0f, 0.0f};
+    for (int32_t t = -radius; t <= radius; ++t) {
+      const float fx = static_cast<float>(x) + static_cast<float>(t) * cosA;
+      const float fy = static_cast<float>(y) + static_cast<float>(t) * sinA;
+      const std::array<float, 4> s = planeBilinear(plane, need, fx, fy);
+      sum[0] += s[0];
+      sum[1] += s[1];
+      sum[2] += s[2];
+      sum[3] += s[3];
+    }
+    return std::array<float, 4>{clampStorable(sum[0] * invTaps), clampStorable(sum[1] * invTaps),
+                                clampStorable(sum[2] * invTaps), clampStorable(sum[3] * invTaps)};
+  });
   return true;
 }
 

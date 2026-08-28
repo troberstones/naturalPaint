@@ -556,6 +556,18 @@ bool runBlurSimdTest();
 // as a `RoiOp` at all.
 bool runFiltersTest();
 
+// ops/Filters sections 7-9: emboss, median/despeckle and motion blur -- three
+// filters added to extend the set runFiltersTest() above covers, each
+// keeping the identical seam property by a different route (ops/Filters.hpp
+// argues each one out at length in its own section). Emboss inherits it for
+// free, the same shape of argument as highpass/unsharp/local contrast;
+// median and motion blur do not, and each gets its own "proved sensitive,
+// not merely satisfied" check -- a naive tile-clamped median run against the
+// real one, and a motion-blur cross-check against an independently written
+// bilinear reference at an angle that stresses the anisotropic apron formula
+// on both axes at once. Also headless and GPU-free.
+bool runFiltersExtTest();
+
 // core/SelectionMask (PLAN.md "Phase 7 -- Select and paste"; PRD E1, E2, M1).
 // The antialiased coverage store, its constructors, and PRD M1's
 // coverage-weighted clear. Headless and GPU-free -- pure CPU tile arithmetic.
