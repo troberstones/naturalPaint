@@ -406,10 +406,18 @@ int runAbrReport(const char* path) {
         ++linkHistogram[key];
       }
     }
+    // `spacingPercent` is a percentage OF THE DIAMETER; this column has
+    // always reported RADII (the old, now-deleted `BrushPreset::spacing`
+    // scalar's own unit), so `/ 100 * 2` is the conversion that keeps this
+    // report's numbers comparable across the migration, not a bare `/ 100`
+    // (`app/StrokeSession::brushTipFor()`'s `tip.spacing` comment names the
+    // same factor of two).
     std::printf("%-40.40s %7.1f %7.2f %7.2f %7.2f %7.1f  %s\n", p.name.c_str(),
-                static_cast<double>(p.radius), static_cast<double>(p.hardness),
-                static_cast<double>(p.spacing), static_cast<double>(p.roundness),
-                static_cast<double>(p.angle), linkText.c_str());
+                static_cast<double>(p.model.tip.diameterPx / 2.0f),
+                static_cast<double>(p.model.tip.hardness),
+                static_cast<double>(p.model.tip.spacingPercent / 100.0f * 2.0f),
+                static_cast<double>(p.model.tip.roundness),
+                static_cast<double>(p.model.tip.angleDeg), linkText.c_str());
   }
 
   std::printf("\n-- link cells used across the library --\n");

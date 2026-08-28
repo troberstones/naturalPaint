@@ -7,11 +7,13 @@
 
 #include "app/AppState.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "brush/BrushModel.hpp"
 #include "brush/Deposit.hpp"
 #include "brush/PigmentErase.hpp"
 #include "brush/RgbDeposit.hpp"
 #include "brush/RgbErase.hpp"
 #include "brush/StrokePath.hpp"
+#include "brush/Variance.hpp"
 #include "paint/Palette.hpp"
 #include "core/Layer.hpp"
 #include "core/Tile.hpp"
@@ -750,21 +752,35 @@ class StrokeSession {
   //
   // Records no history entry and does not move the revision -- §2.
   //
-  // `strokeLocalLinks`, latched alongside the tool and the route: the brush's
-  // own link set, read again per DAB inside the deposit loop to resolve
-  // VELOCITY, FADE, NOISE, RANDOM, DIRECTION and INITIAL DIRECTION
-  // (`dynamicInputsFor()`'s own comment on why those six cannot be resolved
-  // here, before a dab's position exists).
-  // **Defaulted to `nullptr` so every existing caller compiles unchanged** --
-  // a session built without it behaves exactly as it did before this
-  // parameter existed, because §1's frame-level `brushTipFor()` already
-  // resolves every OTHER source, and a null stroke-local set simply means no
-  // additional per-dab correction runs. `DynamicsSources.cpp` is what
-  // exercises it; nothing in `ui/MacPaintUI.cpp`'s canvas block passes it
-  // yet, which is a real, stated gap and not an oversight -- see this
-  // header's own top-of-file note on why.
+  // `model`, latched alongside the tool and the route: the brush's own
+  // Photoshop-shaped model (brush/BrushModel.hpp), read again per DAB inside
+  // the deposit loop to resolve Size/Angle/Roundness/Scatter through
+  // `brush/Variance`'s `varianceScale()`/`varianceOffset()` -- each exactly
+  // ONCE per dab per site, which is the whole invariant `brush/Variance.hpp`
+  // exists to make structurally true (its floor is applied once, inside its
+  // own formula; a stroke-begin base times a second per-dab correction would
+  // apply it twice, reintroducing audit B6 in a new shape). This replaces the
+  // old `BrushLinkSet* strokeLocalLinks` parameter -- the matrix is shelved
+  // (`ui/DynamicsMatrixPanel.hpp`) and nothing in the paint path reads
+  // `BrushState::links`/`BrushPreset::links` any more.
+  //
+  // **Defaulted to `nullptr` so a caller that only has a bare `BrushTip`
+  // compiles unchanged** -- a session begun without a model simply gets
+  // `tip_` unmodified at every dab, exactly the old null-`strokeLocalLinks`
+  // identity path this replaces. `app/selftest/VarianceConsumption.cpp` is
+  // what exercises the non-null path against a real stroke.
+  //
+  // `hardwareInputs`, latched with it: the Pressure/Tilt/Azimuth/Barrel
+  // sample (and its `has*` availability flags) that built `tip` -- what the
+  // per-dab loop feeds `varianceScale()`/`varianceOffset()` so a
+  // PenPressure/PenTilt/Rotation Control still reads the pen, at the SAME
+  // frame granularity `dynamicInputsFor()`'s own header describes (this
+  // codebase does not resample pressure per dab, and this does not change
+  // that). Defaults to a plain `DynamicInputs{}` -- a mouse at full pressure,
+  // which is the neutral reading for every caller that does not care.
   bool begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
-             std::string* errorOut, const BrushLinkSet* strokeLocalLinks = nullptr);
+             std::string* errorOut, const BrushModel* model = nullptr,
+             const DynamicInputs& hardwareInputs = DynamicInputs{});
 
   // Which of §1's four layer-writing routes this stroke took. Meaningless before
   // `begin()` succeeds.
@@ -786,7 +802,16 @@ class StrokeSession {
   // changed also changes the spacing from that point on rather than keeping
   // pen-down's -- which is what "spacing is in radii" has to mean for a
   // pressure-sized brush.
-  void setTip(const BrushTip& tip) noexcept { tip_ = tip; }
+  //
+  // `hardwareInputs`, replaced alongside it -- `begin()`'s own comment on the
+  // identical parameter. Defaults to `DynamicInputs{}` so a caller that only
+  // ever passes a bare tip (this codebase's other three, non-interactive
+  // `setTip()` call sites) keeps reading a neutral mouse sample, which is
+  // what they were already getting before this parameter existed.
+  void setTip(const BrushTip& tip, const DynamicInputs& hardwareInputs = DynamicInputs{}) noexcept {
+    tip_ = tip;
+    hardwareInputs_ = hardwareInputs;
+  }
   const BrushTip& tip() const noexcept { return tip_; }
 
   // PRESSURE SMOOTHING (brush/Dynamics.hpp's `dynamicPressureEma()`, from
@@ -925,11 +950,38 @@ class StrokeSession {
   // Dynamics.hpp's own section comment on why RANDOM must be a fresh draw per
   // dab and not per input event).
 
-  // The brush's link set, for resolving VELOCITY/FADE/NOISE/RANDOM/DIRECTION/
-  // INITIAL-DIRECTION-sourced links per dab. Null unless `begin()`'s caller
-  // passed one -- see `begin()` for why a null one is the default and today's
-  // live-paint behaviour.
-  const BrushLinkSet* strokeLocalLinks_ = nullptr;
+  // Whether `begin()`'s caller passed a `BrushModel` -- see `begin()`'s own
+  // comment. False leaves every dab of this stroke reading `tip_` unmodified,
+  // exactly the old null-`strokeLocalLinks_` identity path this replaced.
+  bool haveModel_ = false;
+
+  // Photoshop's own base Size/Angle/Roundness (`PsTipShape::diameterPx`/
+  // `angleDeg`/`roundness`) and their Variance objects (`PsShapeDynamics`),
+  // plus Scatter's own magnitude Variance (`PsScatter::scatter`) -- copied out
+  // of the brush's `BrushModel` at `begin()` rather than kept as a pointer
+  // into it, because nothing guarantees the `BrushState`/`BrushPreset` `begin()`
+  // was called with outlives the stroke.
+  //
+  // **Resolved ENTIRELY inside the per-dab loop in `depositPending()`, in ONE
+  // call each to `varianceScale()`/`varianceOffset()` per dab -- never a
+  // stroke-begin base times a separate per-dab correction.** That is
+  // `brush/Variance.hpp`'s own load-bearing invariant: its floor is applied
+  // once, inside the formula, so two calls composed onto one product would
+  // apply the floor twice and reintroduce audit B6 in a new shape.
+  float baseDiameterPx_ = 0.0f;
+  float baseAngleDeg_ = 0.0f;
+  float baseRoundness_ = 1.0f;
+  Variance sizeVariance_;
+  Variance angleVariance_;
+  Variance roundnessVariance_;
+  Variance scatterVariance_;
+
+  // The hardware sample `begin()`/`setTip()` latched -- see either's own
+  // comment. Read by the per-dab loop below to resolve a
+  // PenPressure/PenTilt/Rotation Control, alongside the six stroke-local
+  // signals (Velocity, Fade, Noise, Random, Direction, Initial Direction)
+  // that loop already computes fresh every dab.
+  DynamicInputs hardwareInputs_;
 
   // The stroke's seed (brush/Dynamics.hpp's `strokeSeedFromStart()`), latched
   // from the FIRST dab position this stroke deposits -- not at `begin()`,

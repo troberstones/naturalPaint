@@ -85,9 +85,9 @@ bool runStrokePreviewTest() {
   // ======================================================================
   {
     BrushState tight = base;
-    tight.spacing = 0.05f;
+    tight.model.tip.spacingPercent = 5.0f;
     BrushState loose = base;
-    loose.spacing = 0.90f;
+    loose.model.tip.spacingPercent = 90.0f;
 
     const StrokePreviewImage t = rasteriseStrokePreview(tight, lut);
     const StrokePreviewImage l = rasteriseStrokePreview(loose, lut);
@@ -118,29 +118,52 @@ bool runStrokePreviewTest() {
     const StrokePreviewImage ref = rasteriseStrokePreview(base, lut);
 
     // SCATTER: a per-dab positional jitter that needs more than one dab to
-    // exist at all.
+    // exist at all. Driven by `model.scatter.scatter.jitter` now, not a
+    // `RANDOM -> Scatter` link -- `varianceOffset()` (brush/Variance.hpp)
+    // draws its own per-dab spread straight off `jitter`, with no `control`
+    // needed at all.
     BrushState scattered = base;
-    addLink(scattered.links, BrushLink{DynamicSource::Random, DynamicTarget::Scatter, Curve{}, 0.0f, 1.5f});
+    scattered.model.scatter.scatter.jitter = 0.9f;
     check(differingBytes(rasteriseStrokePreview(scattered, lut), ref) > 0,
-          "a RANDOM -> Scatter link changes the strip -- scatter displaces dab CENTRES, so it "
-          "is invisible in any preview that draws one dab at one place");
+          "a jittered Scatter Variance changes the strip -- scatter displaces dab CENTRES, so "
+          "it is invisible in any preview that draws one dab at one place");
 
-    // A stroke-local source: VELOCITY has no value at all without a stroke.
-    BrushState velocity = base;
-    addLink(velocity.links, BrushLink{DynamicSource::Velocity, DynamicTarget::Size, Curve{}, 0.2f, 1.0f});
-    check(differingBytes(rasteriseStrokePreview(velocity, lut), ref) > 0,
-          "a VELOCITY -> Size link changes the strip -- sourceIsStrokeLocal(), so a stationary "
-          "dab resolves it to the target's identity and shows nothing");
+    // A stroke-local control, proven to reach a REAL stroke -- unlike
+    // `app/DabPreview`'s single stationary dab (which cannot show a
+    // distance-travelled control at all), this strip is a genuine moving
+    // stroke, and a Fade-controlled Size ramping from full size toward its
+    // `minimum` over the path's first few dabs must visibly narrow it.
+    // **VELOCITY has no Variance control at all any more, in either kind of
+    // preview** -- `VarianceControl` (brush/Variance.hpp) has no "Speed"/
+    // Velocity entry, only Fade/PenPressure/PenTilt/StylusWheel/Rotation/
+    // Direction/InitialDirection; the old matrix's `DynamicSource::Velocity`
+    // has nothing left to drive Size (or anything) through. A genuine
+    // capability the old link matrix had and Photoshop's own Variance model
+    // does not -- Fade replaces it here as this section's stroke-local
+    // example.
+    BrushState fade = base;
+    fade.model.shape.size.control = VarianceControl::Fade;
+    fade.model.shape.size.jitter = 0.0f;
+    fade.model.shape.size.minimum = 0.2f;  // a real floor to fade TOWARD, or
+                                           // the ramp has nowhere to go
+    fade.model.shape.size.fadeSteps = 6;  // a short fade, so it visibly
+                                          // finishes well within the strip's
+                                          // own dab count
+    check(differingBytes(rasteriseStrokePreview(fade, lut), ref) > 0,
+          "a Fade-controlled Size Variance changes the strip -- the ramp needs several dabs' "
+          "worth of distance to read at all, which is exactly what a real stroke preview (and "
+          "not a single dab) can show");
 
     // DIRECTION: there is no direction of travel in a dab.
     BrushState direction = base;
-    direction.roundness = 0.4f;  // an ellipse, so an angle is visible at all
+    direction.model.tip.roundness = 0.4f;  // an ellipse, so an angle is visible at all
     BrushState directionRef = direction;
-    addLink(direction.links, BrushLink{DynamicSource::Direction, DynamicTarget::Angle, Curve{}, 0.0f, 360.0f});
+    direction.model.shape.angle.control = VarianceControl::Direction;
     check(differingBytes(rasteriseStrokePreview(direction, lut),
                          rasteriseStrokePreview(directionRef, lut)) > 0,
-          "a DIRECTION -> Angle link changes an ELLIPTICAL tip's strip -- the S-curve turns "
-          "through every heading, which is the whole reason the path is a full sine period");
+          "a Direction-controlled Angle Variance changes an ELLIPTICAL tip's strip -- the "
+          "S-curve turns through every heading, which is the whole reason the path is a full "
+          "sine period");
 
     // GRAIN is keyed to ABSOLUTE document position, so it needs a mark that
     // travels before it reads as paper rather than as one sampled patch.
@@ -157,16 +180,16 @@ bool runStrokePreviewTest() {
   // ======================================================================
   {
     BrushState small = base;
-    small.radius = 8.0f;
+    small.model.tip.diameterPx = 16.0f;  // radius 8
     check(strokePreviewScale(strokePreviewReach(small, lut)) == 1,
           "a small brush previews 1:1 -- life-size, never magnified");
 
     BrushState big = base;
-    big.radius = kBrushRadiusMax;
+    big.model.tip.diameterPx = kBrushRadiusMax * 2.0f;
     const int bigScale = strokePreviewScale(strokePreviewReach(big, lut));
     check(bigScale > 1, "a 200 px brush is minified rather than clipped");
     std::printf("    [measured] radius %.0f -> reach %.1f -> 1:%d\n",
-                static_cast<double>(big.radius),
+                static_cast<double>(big.model.tip.diameterPx / 2.0f),
                 static_cast<double>(strokePreviewReach(big, lut)), bigScale);
 
     // Derived rather than measured, and derived in STRIP texels -- which is
@@ -206,17 +229,37 @@ bool runStrokePreviewTest() {
           "which is what the ceiling in strokePreviewScale() is for");
 
     // **Scatter widens the mark without touching the radius**, which is why
-    // §4 says the scale comes from reach and not from `brush.radius`.
+    // §4 says the scale comes from reach and not from the model's own base
+    // radius. Driven by `model.scatter.scatter.jitter` now, read directly
+    // by `strokePreviewReach()`'s own formula (`reach + 2*reach*(1+
+    // jitter)`) -- not sampled through a real stroke, for the identical
+    // reason `brushTipFor()` alone cannot see it either: Scatter resolves
+    // only inside `StrokeSession`'s per-dab loop, which this bound is
+    // computed WITHOUT running.
+    //
+    // **The achievable ratio is bounded, and "more than doubles" no longer
+    // is one.** At `jitter == 0` the formula already returns `reach * 3`
+    // (`2*reach*(1+0)` added to the base `reach`); at `jitter == 1` (the
+    // maximum -- `varianceOffset()`'s own clamp) it returns `reach * 5`.
+    // `wide` below (no jitter) and `wideScattered` (jitter 1.0) therefore
+    // differ by at most a `5/3` ratio, not 2x -- checked against THAT bound,
+    // derived from the formula rather than asserted at a round number that
+    // happens to have been true of the old link-based estimate.
     BrushState wide = base;
-    wide.radius = 30.0f;
+    wide.model.tip.diameterPx = 60.0f;  // radius 30
     BrushState wideScattered = wide;
-    addLink(wideScattered.links,
-            BrushLink{DynamicSource::Random, DynamicTarget::Scatter, Curve{}, 3.0f, 3.0f});
-    check(strokePreviewReach(wideScattered, lut) > strokePreviewReach(wide, lut) * 2.0f,
-          "a RANDOM -> Scatter link of 3 radii more than doubles the reach at an UNCHANGED "
-          "radius -- and RANDOM is STROKE-LOCAL, so brushTipFor() reports tip.scatter == 0 for "
-          "it and the reach has to read the link set directly or this brush scatters its dabs "
-          "straight off the top of its own document");
+    wideScattered.model.scatter.scatter.jitter = 1.0f;
+    const float wideReach = strokePreviewReach(wide, lut);
+    const float scatteredReach = strokePreviewReach(wideScattered, lut);
+    std::printf("    [measured] reach %.2f (jitter 0) vs %.2f (jitter 1.0), ratio %.3f\n",
+                static_cast<double>(wideReach), static_cast<double>(scatteredReach),
+                static_cast<double>(scatteredReach / wideReach));
+    check(scatteredReach > wideReach * 1.6f,
+          "a fully-jittered Scatter Variance widens the reach by close to its formula's own "
+          "maximum ratio (5/3) at an UNCHANGED base radius -- Scatter resolves only inside "
+          "StrokeSession's per-dab loop, so the reach bound has to read `model.scatter.scatter."
+          "jitter` directly or this brush scatters its dabs straight off the top of its own "
+          "document");
   }
 
   // ======================================================================
@@ -246,21 +289,21 @@ bool runStrokePreviewTest() {
       BrushState brush;
     };
     BrushState spacing = base;
-    spacing.spacing = 0.7f;
+    spacing.model.tip.spacingPercent = 70.0f;
     BrushState radius = base;
-    radius.radius = 40.0f;
+    radius.model.tip.diameterPx = 80.0f;  // radius 40
     BrushState hardness = base;
-    hardness.hardness = 0.9f;
+    hardness.model.tip.hardness = 0.9f;
     BrushState roundness = base;
-    roundness.roundness = 0.3f;
+    roundness.model.tip.roundness = 0.3f;
     BrushState grain = base;
     grain.grain.enabled = true;
     BrushState linked = base;
-    addLink(linked.links, BrushLink{DynamicSource::Random, DynamicTarget::Scatter, Curve{}, 0.0f, 2.0f});
+    linked.model.scatter.scatter.jitter = 0.6f;
 
     const Case cases[] = {{"spacing", spacing},     {"radius", radius},
                           {"hardness", hardness},   {"roundness", roundness},
-                          {"grain", grain},         {"a new stroke-local LINK", linked}};
+                          {"grain", grain},         {"a jittered Scatter Variance", linked}};
 
     size_t missed = 0;
     for (const Case& c : cases) {
@@ -273,21 +316,25 @@ bool runStrokePreviewTest() {
       cache.imageFor(base, lut);  // back to the reference, so each case is independent
     }
     check(missed == 0,
-          "cache: invalidates on spacing, radius, hardness, roundness, grain and a new "
-          "stroke-local link -- FOUR of those six are invisible to a single dab, so this is the "
+          "cache: invalidates on spacing, radius, hardness, roundness, grain and a Scatter "
+          "Variance jitter -- FOUR of those six are invisible to a single dab, so this is the "
           "list dabPreviewTipsEqual()'s own narrower key would have got wrong");
 
-    // The stroke-local link case deserves its own named assertion: it is the
-    // one that is not a tip field at all, so a key built only from tips would
-    // pass every other case here and still hand back a stale stroke.
+    // The Scatter Variance case deserves its own named assertion: it is the
+    // one that is not a tip field at all (`brushTipFor()` never resolves
+    // `model.scatter`), so a key built only from tips would pass every
+    // other case here and still hand back a stale stroke. Before this
+    // section's own rewrite of `StrokePreviewKey`/`strokePreviewKeyFor()`
+    // (`app/StrokePreview.hpp`'s own comment on why `model` was added), this
+    // was a real, live cache-correctness gap: two brushes differing only in
+    // Scatter (or Size/Angle/Roundness) jitter hashed to the identical key.
     StrokePreviewCache linkCache;
     linkCache.imageFor(base, lut);
     const uint64_t beforeLink = linkCache.rasterisations();
     linkCache.imageFor(linked, lut);
     check(linkCache.rasterisations() == beforeLink + 1,
-          "cache: a RANDOM -> Scatter link added with every TIP field unchanged still "
-          "invalidates -- stroke-local sources never reach a BrushTip, so the key compares the "
-          "link SET too");
+          "cache: a jittered Scatter Variance added with every TIP field unchanged still "
+          "invalidates -- Scatter never reaches a BrushTip, so the key compares `model` too");
   }
 
   // ======================================================================
@@ -312,11 +359,13 @@ bool runStrokePreviewTest() {
     axes.scatterBothAxes = !a.scatterBothAxes;
     check(!brushTipEqual(a, axes), "brushTipEqual: scatterBothAxes alone makes two tips differ");
 
-    BrushTip floor = a;
-    floor.sizeFloorPx = 5.0f;
-    check(!brushTipEqual(a, floor),
-          "brushTipEqual: sizeFloorPx alone makes two tips differ -- B6's floor is applied "
-          "downstream of the tip, so two tips can agree on radius and still deposit differently");
+    // `BrushTip::sizeFloorPx` (B6's Multiply-target floor, once carried
+    // between `brushTipFor()`'s hardware half and the per-dab stroke-local
+    // correction) is deleted -- `Variance::minimum` is now the one place a
+    // floor is applied, inside `varianceScale()`'s own formula, so there is
+    // no longer a second half of a product for a field like this to wait
+    // between. This block used to prove `brushTipEqual()` distinguished it;
+    // there is nothing left on `BrushTip` for that field to be.
 
     BrushTip opacity = a;
     opacity.opacity = 0.5f;
@@ -334,17 +383,13 @@ bool runStrokePreviewTest() {
   // ======================================================================
   {
     BrushState nothing = base;
-    // Every enabled link that could shrink Size, set to a range of exactly
-    // zero: the size product collapses and the dab has no radius to cover a
-    // texel with. The stroke still BEGINS -- there is a paintable layer -- so
-    // this is the "emitted dabs, wrote no texels" state the image's own
-    // comment distinguishes from a refusal, and it must be distinguishable.
-    nothing.radius = kBrushRadiusMin;
-    for (BrushLink& l : nothing.links.links)
-      if (l.target == DynamicTarget::Size) {
-        l.rangeLo = 0.0f;
-        l.rangeHi = 0.0f;
-      }
+    // The model's own base diameter set to exactly zero: no link can shrink
+    // Size any more (nothing that paints reads `nothing.links`), so this is
+    // the one remaining way to make the dab have no radius to cover a texel
+    // with. The stroke still BEGINS -- there is a paintable layer -- so this
+    // is the "emitted dabs, wrote no texels" state the image's own comment
+    // distinguishes from a refusal, and it must be distinguishable.
+    nothing.model.tip.diameterPx = 0.0f;
     const StrokePreviewImage img = rasteriseStrokePreview(nothing, lut);
     check(!img.refused,
           "a brush whose size product collapses is NOT reported as refused -- the stroke began "

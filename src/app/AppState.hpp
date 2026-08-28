@@ -207,18 +207,20 @@ struct BrushState {
   // carried over unchanged so the RGB picker opens where it always did.
   std::array<float, 3> rgb = {0.10f, 0.12f, 0.45f};
 
-  float radius = 20.0f;
+  // **`radius`/`hardness`/`roundness`/`angle` (and `spacing`, further down
+  // this struct) are gone.** They used to be five parallel scalars,
+  // duplicating what `model` below now owns outright: `model.tip.
+  // diameterPx / 2.0f` for radius, `model.tip.hardness`, `model.tip.
+  // roundness`, `model.tip.angleDeg`, `model.tip.spacingPercent / 100.0f`
+  // for spacing. `brushTipFor()` (app/StrokeSession.cpp) reads `model`
+  // exclusively now -- these five had already gone silently dead the moment
+  // that happened, and stayed only long enough for their own deletion to
+  // turn every remaining reader into a compile error, the checklist this
+  // migration's own commit message names. `load`/`wetness` are NOT among
+  // them (`brush/Variance`/`BrushModel` have no field for either yet -- a
+  // deferred divergence, not an oversight).
   float load = 0.9f;      // pigment concentration
   float wetness = 1.3f;   // water deposited
-  float hardness = 0.35f;
-  // Minor/major axis ratio of an elliptical tip; 1.0 is round. The design's
-  // TIP section (turn 4a) shows it beside radius, hardness and spacing, and
-  // DynamicTarget::Roundness drives it.
-  float roundness = 1.0f;
-  // Tip rotation in degrees, the axis `roundness` is measured against -- a
-  // round tip does not care, an elliptical one does. DynamicTarget::Angle
-  // drives it, and Photoshop's `Angl` imports straight into it.
-  float angle = 0.0f;
 
   // A `.abr` sampled bitmap tip (brush/Deposit.hpp §2c), or null for the
   // procedural round/elliptical tip every other field above already
@@ -268,8 +270,29 @@ struct BrushState {
   // `presetFromBrush()` would have nothing to read one back from, which is
   // exactly the asymmetry that let Duplicate discard the model in the first
   // place (`BrushPreset::model`'s comment again). Carried in lockstep with
-  // every field above it by both functions; read by nothing that paints yet.
-  BrushModel model;
+  // every field above it by both functions; and now read by everything that
+  // paints -- `app/StrokeSession::brushTipFor()`'s own comment.
+  //
+  // **`tip.hardness` is overridden to 0.35 here, off `BrushModel`'s own
+  // default of 1.0.** That default is right for an imported `.abr` preset --
+  // Photoshop's own `Hrdn` default is a hard disc (`brush/BrushModel.hpp`'s
+  // comment on `tip.hardness`) -- but it is not what this codebase's brush
+  // has ever opened with: `BrushState::hardness` (deleted by this migration,
+  // Part 5) defaulted to 0.35, and `defaultBrushLibrary()`'s own preset 0
+  // ("Round Bristle 03") is set to match it for exactly this reason (that
+  // preset's own comment). Leaving this at `BrushModel`'s bare default would
+  // silently harden a freshly launched app's brush relative to what it always
+  // painted with AND relative to the preset the library claims it is on --
+  // the same "a freshly launched app is not edited" contract `--selftest`
+  // pins (`app/selftest/BrushDynamics.cpp` section 13). Every other field
+  // (`diameterPx`, `spacingPercent`, `roundness`, `angleDeg`) already agrees
+  // with `BrushModel`'s bare default by construction; hardness is the one
+  // exception, so it is the one named here.
+  BrushModel model = [] {
+    BrushModel m;
+    m.tip.hardness = 0.35f;
+    return m;
+  }();
 
   // Which cell of the DYNAMICS matrix the LINK editor below it is showing.
   //
@@ -290,14 +313,10 @@ struct BrushState {
   // halves of that comparison drifting into different structs is how a badge
   // starts lying.
   BrushLibrary brushLibrary = defaultBrushLibrary();
-  // Arc-length dab spacing (CONTEXT.md "Dab", ADR-0003), in units of the
-  // current brush radius: a dab emits every `spacing * radius` px of travel.
-  // 0.25 is the conventional middle ground among painting apps (most sit in
-  // roughly a 0.1-0.3 range) between visibly discrete stamps (spacing too
-  // large) and dab-count/overdraw cost (spacing too small). No UI control
-  // yet -- exposing it is a later phase's job; this is just the constant
-  // default.
-  float spacing = 0.25f;
+  // `spacing` (arc-length dab spacing, CONTEXT.md "Dab", ADR-0003) is gone --
+  // see the comment above `load`/`wetness` near the top of this struct.
+  // `model.tip.spacingPercent / 100.0f` is its replacement, in the same
+  // units of the current brush radius this field always used.
 
   // **The ceiling one stroke can reach on an RGB layer**, in [0,1] --
   // deliberately NOT the same quantity as `load` above, which is how much a
@@ -999,6 +1018,16 @@ struct AppState {
   // reopened itself every launch would be a duplicate panel nobody asked for
   // covering the canvas.
   bool showBrushSettings = false;
+
+  // Whether the shelved 10x12 LINK MATRIX editor (`ui/DynamicsMatrixPanel.hpp`)
+  // draws at all. **False by default**: `brush/BrushModel`/`brush/Variance`
+  // are what a stroke actually reads now, so the matrix editor over
+  // `BrushState::links` would show live-looking controls over a brush
+  // property nothing downstream consumes any more. Set by `--advanced-dynamics`
+  // (main.cpp) -- see `ui/DynamicsMatrixPanel.hpp`'s own header for the full
+  // three-edit path back to the matrix driving a stroke again, of which this
+  // flag is only step (a).
+  bool showAdvancedDynamics = false;
 
   // `--brush-settings-demo [tab]`: which tab to open on, as a
   // `BrushSettingsTab` ordinal, or -1 for "leave it alone". **Consumed on the

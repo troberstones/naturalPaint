@@ -143,6 +143,7 @@ add_executable(naturalPaint
   app/selftest/SelectionTools.cpp
   app/selftest/SelectMenu.cpp
   app/selftest/Shaper.cpp
+  app/selftest/ShelvedLinks.cpp
   app/selftest/SolverPersistence.cpp
   app/selftest/StrokePreview.cpp
   app/selftest/StrokeBridge.cpp
@@ -239,6 +240,7 @@ add_executable(naturalPaint
   paint/Palette.cpp
   sim/PaintSim.cpp
   ui/DocumentTexture.cpp
+  ui/DynamicsMatrixPanel.cpp
   ui/MacPaintUI.cpp
   ui/NaturalPaintUI.cpp
   ui/Fonts.cpp
@@ -442,7 +444,8 @@ target_compile_options(naturalPaint PRIVATE
   # tree.** Several files argue that a `switch` over a closed enum with no
   # `default:` makes adding an enumerator a COMPILE error -- `sourceUnavailable()`
   # and `easingPresetName()` in `brush/Dynamics.cpp`, `combineDualCoverage()` in
-  # `brush/Deposit.cpp`, the LINK editor's chip tooltips in `ui/MacPaintUI.cpp`.
+  # `brush/Deposit.cpp`, the LINK editor's chip tooltips in
+  # `ui/DynamicsMatrixPanel.cpp`.
   # That was **false** until this line: clang enables `-Wswitch` by default, but
   # a warning nobody reads is not a guard, and this build elevates only the three
   # `unused-*` diagnostics above. A subagent tested it directly -- commented out a

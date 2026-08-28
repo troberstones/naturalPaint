@@ -246,12 +246,14 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept {
   // `-Werror=unused-variable` (src/CMakeLists.txt) rejects.
   //
   // A `static_assert(sizeof(BrushTip) == N)` was written here first and is NOT
-  // good enough: adding a `float` after `sizeFloorPx` landed it in the struct's
-  // existing tail padding, left `sizeof` at 136, and the guard passed while the
-  // new field went uncompared. Tested, not assumed -- which is the only reason
-  // the weaker version is not still here.
+  // good enough: adding a `float` after `sizeFloorPx` (since removed --
+  // brush/Variance.hpp now owns that floor, applied inside its own formula)
+  // once landed it in the struct's existing tail padding, left `sizeof` at
+  // 136, and the guard passed while the new field went uncompared. Tested,
+  // not assumed -- which is the only reason the weaker version is not still
+  // here.
   const auto& [radius, hardness, roundness, angle, bitmap, dualTip, dualBlend, flow, spacing,
-               scatter, scatterBothAxes, grain, pigment, linearRgb, opacity, sizeFloorPx] = a;
+               scatter, scatterBothAxes, grain, pigment, linearRgb, opacity] = a;
   // `bitmap` and `dualTip` compare by POINTER, which is `dabPreviewTipsEqual()`'s
   // established convention; its comment carries the argument.
   return radius == b.radius && hardness == b.hardness && roundness == b.roundness &&
@@ -259,7 +261,7 @@ bool brushTipEqual(const BrushTip& a, const BrushTip& b) noexcept {
          dualBlend == b.dualBlend && flow == b.flow && spacing == b.spacing &&
          scatter == b.scatter && scatterBothAxes == b.scatterBothAxes &&
          grainParamsEqual(grain, b.grain) && pigment == b.pigment &&
-         linearRgb == b.linearRgb && opacity == b.opacity && sizeFloorPx == b.sizeFloorPx;
+         linearRgb == b.linearRgb && opacity == b.opacity;
 }
 
 float dabCoverage(const BrushTip& tip, float dx, float dy) noexcept {

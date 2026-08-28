@@ -1040,6 +1040,7 @@ int main(int argc, char** argv) {
   bool openExportStates = false;
   const char* exportStatesFolder = nullptr;
   bool openLayerProperties = false;
+  bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
   // nothing, because this loop matched only `--flag` strings and fell
   // through every positional argument with no `else` to catch it -- silent,
@@ -1286,6 +1287,13 @@ int main(int argc, char** argv) {
       // --open-export-states one dialog over: it too is opened by a click and
       // --screenshot has no input. See AppState::openLayerProperties.
       openLayerProperties = true;
+    } else if (a == "--advanced-dynamics") {
+      // --advanced-dynamics : reopen the shelved 10x12 LINK MATRIX editor
+      // (ui/DynamicsMatrixPanel.hpp) in the BRUSH column. Off by default now
+      // that brush/BrushModel/brush/Variance are what a stroke actually
+      // reads; this flag is step (a) of that header's own three-edit path
+      // back to the matrix mattering again.
+      advancedDynamics = true;
     } else if (np::looksLikePositionalArgument(a)) {
       // D4: the one case none of the branches above matched -- a bare
       // filename. See this loop's own comment, just above it, and
@@ -1686,6 +1694,12 @@ int main(int argc, char** argv) {
     // hardware/stroke-local split, rather than once per contributing link or
     // once per half. Headless and GPU-free.
     const bool multiplyFloorOk = np::runMultiplyFloorTest();
+    // app/selftest/ShelvedLinks.cpp: the dedicated test for the shelved
+    // 10x12 link matrix -- a user-presets.txt fixture's link/floor/point
+    // lines round-trip byte-for-byte with no live BrushLinkSet built, and a
+    // hand-built, non-empty BrushLinkSet changes nothing brushTipFor()
+    // reads. Headless and GPU-free.
+    const bool shelvedLinksOk = np::runShelvedLinksTest();
     // app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md
     // B5's axis defect. Checks the geometry directly -- tangent component
     // ~0, perpendicular component real -- rather than a flag. Headless and
@@ -2248,7 +2262,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && shelvedLinksOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
@@ -2459,6 +2473,7 @@ int main(int argc, char** argv) {
   }
   st.openExportStatesDialog = openExportStates;
   st.openLayerProperties = openLayerProperties;
+  st.showAdvancedDynamics = advancedDynamics;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
   if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
   if (uiLayerDemo) {
@@ -2578,7 +2593,7 @@ int main(int argc, char** argv) {
   // step existed, this constructor seeded two fixed debug ops here so the
   // Apply pass (step 6) had something to show in the running app; that
   // scaffolding is gone now that real UI exists.
-  st.sim.brushRadius = st.brush.radius;
+  st.sim.brushRadius = st.brush.model.tip.diameterPx / 2.0f;
   // Fixed timestep (PRD H7): the look of a wash should not depend on the
   // frame rate. `st.sim.dt` is set once, here, to the constant physics tick
   // — never recomputed per frame — so PaintSim::frame()'s existing
@@ -2853,12 +2868,20 @@ int main(int argc, char** argv) {
         // words: "a constant is wrong across a 1..200 range"), and
         // `clampBrushRadius()` is the exact same clamp the gesture uses --
         // one range, not two.
-        else if (action == "size_down")
-          st.brush.radius = np::clampBrushRadius(
-              st.brush.radius - np::bracketStepForRadius(st.brush.radius));
-        else if (action == "size_up")
-          st.brush.radius = np::clampBrushRadius(
-              st.brush.radius + np::bracketStepForRadius(st.brush.radius));
+        // Read/written through `model.tip.diameterPx` now (`BrushState::
+        // radius` is gone, Part 5) -- `radius` here is just this block's own
+        // local view of it, in the same half-diameter units every other
+        // caller of `clampBrushRadius()`/`bracketStepForRadius()` already
+        // uses.
+        else if (action == "size_down") {
+          const float radius = st.brush.model.tip.diameterPx / 2.0f;
+          st.brush.model.tip.diameterPx =
+              np::clampBrushRadius(radius - np::bracketStepForRadius(radius)) * 2.0f;
+        } else if (action == "size_up") {
+          const float radius = st.brush.model.tip.diameterPx / 2.0f;
+          st.brush.model.tip.diameterPx =
+              np::clampBrushRadius(radius + np::bracketStepForRadius(radius)) * 2.0f;
+        }
         else if (action == "mirror_x") st.view.mirrorX = !st.view.mirrorX;
         else if (action == "mirror_y") st.view.mirrorY = !st.view.mirrorY;
         else if (action == "reset_rotation") st.view.rotation = 0.0f;

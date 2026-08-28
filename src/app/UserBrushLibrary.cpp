@@ -240,11 +240,25 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
     if (key == "scalars") {
       float n[7];
       if (takeFloats(rest, 7, n)) {
-        pending.radius = n[0];
-        pending.hardness = n[1];
-        pending.spacing = n[2];
-        pending.roundness = n[3];
-        pending.angle = n[4];
+        // Radius/hardness/spacing/roundness/angle land on `pending.model.tip`
+        // now (brush/Library.hpp's own comment on the five deleted
+        // `BrushPreset` fields) -- converted at this one boundary, into the
+        // exact units `PsTipShape` itself uses (a diameter and a percentage
+        // of it), the same "convert once, at a named edge" rule
+        // brush/BrushModel.hpp's own header states for the importer.
+        //
+        // `n[2]` is this line's `spacing`, and this line has ALWAYS written
+        // that field in RADII (the old, now-deleted `BrushPreset::spacing`
+        // scalar's own unit -- `brush/Deposit.hpp`'s `BrushTip::spacing`
+        // comment). `spacingPercent` is a percentage OF THE DIAMETER, so a
+        // radii value converts to it by `* 50` (the inverse of the `/ 100 *
+        // 2` a radii value is built FROM -- `app/StrokeSession::brushTipFor()`
+        // names the same factor of two), not by a bare `* 100`.
+        pending.model.tip.diameterPx = n[0] * 2.0f;
+        pending.model.tip.hardness = n[1];
+        pending.model.tip.spacingPercent = n[2] * 50.0f;
+        pending.model.tip.roundness = n[3];
+        pending.model.tip.angleDeg = n[4];
         pending.load = n[5];
         pending.wetness = n[6];
         haveScalars = true;
@@ -340,28 +354,20 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
         pointMode = PointMode::None;
         continue;
       }
-      const int srcOrd = static_cast<int>(n[0]);
-      const int tgtOrd = static_cast<int>(n[1]);
-      const bool inRange = srcOrd >= 0 && srcOrd < static_cast<int>(kDynamicSourceCount) &&
-                           tgtOrd >= 0 && tgtOrd < static_cast<int>(kDynamicTargetCount);
-      if (!inRange) {
-        // §2: a well-formed link this build's enum does not reach -- from a
-        // build with more sources or targets than this one. Preserved
-        // verbatim, along with the `point` lines that follow it, so this
-        // build's own save does not erase what a newer one wrote.
-        pendingUnknown.push_back(line);
-        pointMode = PointMode::PreserveBlock;
-        continue;
-      }
-      BrushLink link;
-      link.source = static_cast<DynamicSource>(srcOrd);
-      link.target = static_cast<DynamicTarget>(tgtOrd);
-      link.rangeLo = n[2];
-      link.rangeHi = n[3];
-      link.invert = n[4] != 0.0f;
-      link.enabled = n[5] != 0.0f;
-      pending.links.links.push_back(link);
-      pointMode = PointMode::ActiveLink;
+      // **Every well-formed `link` line is preserved verbatim now, in range
+      // or not.** This used to branch: an in-range ordinal built a live
+      // `BrushLink` this build could evaluate, and only an out-of-range one
+      // (§2, a newer build's source/target this enum does not reach) took
+      // the preserve-verbatim path. The matrix is shelved now
+      // (`ui/DynamicsMatrixPanel.hpp`) -- nothing that paints reads
+      // `BrushPreset::links` -- so constructing a live link here would only
+      // feed the shelved editor, and every consumer that used to need the
+      // live form is gone. One condition changed, not a rewrite: every
+      // `link` line takes the branch §2 already used to handle "a link this
+      // build cannot evaluate", because that is now true of ALL of them,
+      // not just the out-of-range ones.
+      pendingUnknown.push_back(line);
+      pointMode = PointMode::PreserveBlock;
       continue;
     }
 
@@ -398,19 +404,18 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
         pointMode = PointMode::None;
         continue;
       }
-      const int tgtOrd = static_cast<int>(n[0]);
-      if (tgtOrd < 0 || tgtOrd >= static_cast<int>(kDynamicTargetCount)) {
-        // §2's forward-compatible case, restated for a per-target floor: a
-        // future build's thirteenth `DynamicTarget` writing its own floor is
-        // correct data this build cannot evaluate but has no reason to
-        // destroy. No `point` lines can follow a `floor` (it names a target,
-        // not a curve), so this needs no `PreserveBlock` -- the single line
-        // is the whole record.
-        pendingUnknown.push_back(line);
-        pointMode = PointMode::None;
-        continue;
-      }
-      pending.links.multiplyFloor[static_cast<size_t>(tgtOrd)] = n[1];
+      // **Every well-formed `floor` line is preserved verbatim now,** the
+      // same change as `link` above and for the same reason: the matrix is
+      // shelved (`ui/DynamicsMatrixPanel.hpp`), nothing that paints reads
+      // `BrushPreset::links.multiplyFloor` any more, so there is no live
+      // structure left to write into. What was §2's forward-compatible
+      // out-of-range case (a future build's target ordinal this enum does
+      // not reach) is now the treatment for ALL of them, in range or not --
+      // one condition removed, not a rewrite. No `point` lines can follow a
+      // `floor` (it names a target, not a curve), so this needs no
+      // `PreserveBlock` -- the single line is the whole record.
+      (void)n; // tgtOrd/value are no longer consumed; the line is opaque now.
+      pendingUnknown.push_back(line);
       pointMode = PointMode::None;
       continue;
     }
@@ -473,8 +478,15 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
   for (const BrushPreset& p : lib.presets) {
     if (p.libraryId != 0 || p.builtin) continue;
     out += "preset " + sanitizeOneLine(p.name) + "\n";
-    out += "scalars " + f9(p.radius) + " " + f9(p.hardness) + " " + f9(p.spacing) + " " +
-           f9(p.roundness) + " " + f9(p.angle) + " " + f9(p.load) + " " + f9(p.wetness) + "\n";
+    // `p.radius`/`hardness`/`spacing`/`roundness`/`angle` no longer exist on
+    // `BrushPreset` (Part 5 deleted the shadow scalars) -- these five are
+    // now projections of `p.model.tip`, in the exact units this line has
+    // always used: radius is half of `diameterPx`, and spacing is RADII
+    // (`/ 100 * 2`, the inverse of `parse()`'s `* 50` above), not the bare
+    // percentage `spacingPercent` stores.
+    out += "scalars " + f9(p.model.tip.diameterPx / 2.0f) + " " + f9(p.model.tip.hardness) + " " +
+           f9(p.model.tip.spacingPercent / 100.0f * 2.0f) + " " + f9(p.model.tip.roundness) + " " +
+           f9(p.model.tip.angleDeg) + " " + f9(p.load) + " " + f9(p.wetness) + "\n";
     // A preset with grain OFF still writes this line (with `enabled` 0) --
     // consistent with `scalars` above always being written regardless of
     // whether a value sits at its default, and simpler than a second code

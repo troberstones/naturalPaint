@@ -7,6 +7,7 @@
 #include "brush/Deposit.hpp"
 #include "brush/Dynamics.hpp"
 #include "brush/Library.hpp"
+#include "brush/Variance.hpp"
 
 namespace np {
 
@@ -56,13 +57,11 @@ bool runDynamicsSourcesTest() {
     return out;
   };
 
-  auto tip = [](float radius, float hardness, float flow) {
-    BrushTip t;
-    t.radius = radius;
-    t.hardness = hardness;
-    t.flow = flow;
-    return t;
-  };
+  // (The old `tip(radius, hardness, flow)` helper that built a raw
+  // `BrushTip` by hand is gone -- every fixture below routes through
+  // `brushTipFor()` and a `BrushState`/`BrushModel` now, since a raw tip
+  // has no model for `StrokeSession::begin()`'s per-dab Variance
+  // resolution to read.)
 
   // A wavy synthetic path -- 36 samples along a sine, the same shape
   // `PigmentDeposit.cpp`'s own stroke sections use, so the arc-length
@@ -478,171 +477,180 @@ bool runDynamicsSourcesTest() {
           "wrong half produces, and this is the one line that would catch it for this source "
           "specifically");
 
-    // Scatter and Concentration: cheap, local to the dab, exercised through a
-    // REAL stroke -- StrokeSession's per-dab loop, with `strokeLocalLinks`
-    // set, is the only place either one can show an effect (Scatter moves a
-    // position; Concentration scales a mass this loop deposits).
+    // SCATTER, rewritten for the model migration: exercised through a REAL
+    // stroke -- StrokeSession's per-dab loop, with a `BrushModel*` set, is
+    // the only place it can show an effect (it moves a position) -- but the
+    // driver is now `model.scatter.scatter.jitter` (a `Variance`, resolved
+    // by `varianceOffset()` per dab off `seed_`/`dabs_`), not a
+    // `DynamicSource::Random -> DynamicTarget::Scatter` link. `BrushLinkSet`
+    // is shelved; nothing that paints reads it.
     {
-      BrushLinkSet links;
-      BrushLink scatterLink;
-      scatterLink.source = DynamicSource::Random;
-      scatterLink.target = DynamicTarget::Scatter;
-      scatterLink.rangeLo = 0.0f;
-      scatterLink.rangeHi = 0.9f;  // most of a radius, so the effect is not lost in noise
-      addLink(links, scatterLink);
+      BrushState scatterBrush;
+      scatterBrush.model.tip.diameterPx = 40.0f;
+      scatterBrush.model.tip.hardness = 0.4f;
+      scatterBrush.load = 0.5f;
+      scatterBrush.model.scatter.scatter.jitter = 0.9f;  // most of a radius,
+                                                          // so the effect is
+                                                          // not lost in noise
+      const MixboxLut noLut;
+      DynamicInputs in;
 
       OpenDocument plain = makeDoc(512, 512);
       OpenDocument scattered = makeDoc(512, 512);
       {
         StrokeSession s;
         std::string e;
-        s.begin(plain, 1, tip(20.0f, 0.4f, 0.5f), Tool::Brush, &e);
+        BrushState plainBrush = scatterBrush;
+        plainBrush.model.scatter.scatter.jitter = 0.0f;
+        s.begin(plain, 1, brushTipFor(plainBrush, noLut, in), Tool::Brush, &e, &plainBrush.model,
+                in);
         paintPath(s, 60.0f, 256.0f);
         s.end();
       }
       {
         StrokeSession s;
         std::string e;
-        s.begin(scattered, 1, tip(20.0f, 0.4f, 0.5f), Tool::Brush, &e, &links);
+        s.begin(scattered, 1, brushTipFor(scatterBrush, noLut, in), Tool::Brush, &e,
+                &scatterBrush.model, in);
         paintPath(s, 60.0f, 256.0f);
         s.end();
       }
       check(snapshotBytes(*plain.document.layers[1].pigmentTiles) !=
                 snapshotBytes(*scattered.document.layers[1].pigmentTiles),
-            "targets: SCATTER, driven by RANDOM, visibly moves dabs off the raw path -- the "
-            "byte-identical-without-it stroke is the control this diff is measured against");
+            "targets: SCATTER, driven by `model.scatter.scatter.jitter`, visibly moves dabs off "
+            "the raw path -- the byte-identical-without-it stroke is the control this diff is "
+            "measured against");
     }
+
+    // CONCENTRATION, HUE, SATURATION and VALUE, rewritten for the model
+    // migration: **all four are now INERT, not merely unproven.** The old
+    // matrix resolved them at `brushTipFor()`'s frame-level path
+    // (`evaluateLinksFiltered(brush.links, ..., wantStrokeLocal=false)`);
+    // that call is gone (`app/StrokeSession.cpp`'s own comment on
+    // `brushTipFor()`), and `BrushModel` has no per-dab wiring for any of
+    // the four yet -- `tip.flow = brush.load` unscaled, HSV set to identity
+    // `(0,0,0)`, both with a comment naming this a deliberately deferred
+    // divergence, not an oversight. A `BrushLinkSet` populated with the
+    // identical links this section used to prove LIVE now proves the
+    // opposite: they no longer move `brushTipFor()`'s output at all.
     {
-      // CONCENTRATION is driven by PRESSURE here -- a hardware source -- so
-      // it resolves through `brushTipFor()`'s frame-level path, exactly like
-      // Hue/Saturation/Value below and NOT through `strokeLocalLinks_` (that
-      // path only re-resolves VELOCITY/FADE/NOISE/RANDOM-sourced links --
-      // `evaluateLinksFiltered(..., wantStrokeLocal=true)` would silently
-      // skip a PRESSURE link, which is exactly the kind of mistake this
-      // section exists to make impossible to make unnoticed: comparing
-      // `tip.flow` straight out of `brushTipFor()` is the one comparison
-      // that cannot be fooled by resolving the link in the wrong place).
       BrushState brush;
       brush.load = 0.5f;
+      brush.pigment = 0;
       DynamicInputs in;
       in.pressure = 1.0f;
       const MixboxLut noLut;
-      const BrushTip unthrottled = brushTipFor(brush, noLut, in);
+      const BrushTip plainTip = brushTipFor(brush, noLut, in);
 
       BrushLink concLink;
       concLink.source = DynamicSource::Pressure;
       concLink.target = DynamicTarget::Concentration;
       concLink.rangeLo = 0.2f;
-      concLink.rangeHi = 0.2f;  // flat, so the result is independent of the
-                                // pressure value and isolates CONCENTRATION
-                                // from FLOW, which the tip already carries
+      concLink.rangeHi = 0.2f;
       addLink(brush.links, concLink);
-      const BrushTip throttled = brushTipFor(brush, noLut, in);
-
-      std::printf("  concentration: unthrottled flow %.4f, CONCENTRATION 0.2 flow %.4f\n",
-                  static_cast<double>(unthrottled.flow), static_cast<double>(throttled.flow));
-      check(nearf(throttled.flow, unthrottled.flow * 0.2f, 1e-5f),
-            "targets: CONCENTRATION scales the SAME product FLOW does -- a link pinning it to "
-            "0.2 deposits exactly a fifth the flow of the unthrottled tip, not a coincidental "
-            "amount");
-    }
-
-    // Hue/Saturation/Value: the frame-level path (brushTipFor(), driven by a
-    // hardware source), which is fully live today with no gap -- see this
-    // file's own header comment on why the stroke-local four do not reach
-    // these three yet.
-    {
-      BrushState brush;
-      brush.pigment = 0;
-      const MixboxLut noLut;  // unused by this comparison; both sides take
-                              // the identical no-LUT fallback, so only
-                              // linearRgb's decode is being compared
-      DynamicInputs plainIn;
-      plainIn.pressure = 1.0f;
-      const BrushTip plainTip = brushTipFor(brush, noLut, plainIn);
-
       BrushLink hueLink;
       hueLink.source = DynamicSource::Pressure;
       hueLink.target = DynamicTarget::Hue;
       hueLink.rangeLo = 0.0f;
-      hueLink.rangeHi = 0.5f;  // a full half-turn at full pressure
+      hueLink.rangeHi = 0.5f;
       addLink(brush.links, hueLink);
-      const BrushTip huedTip = brushTipFor(brush, noLut, plainIn);
-      check(huedTip.linearRgb != plainTip.linearRgb,
-            "targets: HUE, driven by PRESSURE, visibly rotates the deposited colour -- "
-            "brushTipFor() applies applyHsvDynamics() before either colour decode");
-
-      BrushState desat;
-      desat.pigment = 0;
       BrushLink satLink;
       satLink.source = DynamicSource::Pressure;
       satLink.target = DynamicTarget::Saturation;
       satLink.rangeLo = 0.0f;
-      satLink.rangeHi = 0.0f;  // fully desaturate regardless of pressure
-      addLink(desat.links, satLink);
-      const BrushTip desatTip = brushTipFor(desat, noLut, plainIn);
-      const Hsv desatHsv = rgbToHsv({srgbEncode(desatTip.linearRgb[0]),
-                                     srgbEncode(desatTip.linearRgb[1]),
-                                     srgbEncode(desatTip.linearRgb[2])});
-      check(desatHsv.s < 0.02f,
-            "targets: SATURATION pinned to 0 deposits a grey, whatever the swatch's own hue");
+      satLink.rangeHi = 0.0f;  // would fully desaturate, if it still applied
+      addLink(brush.links, satLink);
+      const BrushTip linkedTip = brushTipFor(brush, noLut, in);
+
+      check(nearf(linkedTip.flow, plainTip.flow, 1e-6f) &&
+                linkedTip.linearRgb == plainTip.linearRgb,
+            "targets: CONCENTRATION, HUE and SATURATION links -- Pressure-driven, the shape "
+            "that used to reach `brushTipFor()`'s frame-level path -- move NEITHER `flow` NOR "
+            "`linearRgb` any more: nothing downstream of `BrushState::links` reads them");
     }
   }
 
   // ======================================================================
-  // 7. Determinism: the same stroke replayed is bit-identical; two
-  //    different strokes are not
+  // 7. Determinism, rewritten for the model migration: the same stroke
+  //    replayed is bit-identical; two different strokes are not
   // ======================================================================
+  //
+  // The old fixture drove all four (then-)stroke-local sources through a
+  // `BrushLinkSet` onto five targets, two of which (Flow, Hardness) have no
+  // model-level wiring at all any more (section 6's own rewrite, above).
+  // What determinism actually rests on now is `Variance::jitter` on Size,
+  // Angle, Roundness and Scatter -- each resolved once per dab off
+  // `seed_`/`dabs_` (`app/StrokeSession.cpp`'s per-dab loop) -- so this
+  // fixture jitters all four instead. `Variance::control` stays `Off` on
+  // every one of them: jitter alone (`varianceScale()`'s `rj` term) is what
+  // draws from the per-dab random stream, with no device or stroke-geometry
+  // signal in the mix, so this isolates jitter's own seed-derived randomness
+  // exactly as the old fixture isolated Noise/Random.
   {
-    // A link set that exercises all four stroke-local sources at once, over
-    // five different targets, so this is not a single-source proof.
-    BrushLinkSet links;
-    addLink(links, BrushLink{DynamicSource::Random, DynamicTarget::Scatter, {}, 0.0f, 0.5f, false,
-                             true});
-    addLink(links, BrushLink{DynamicSource::Random, DynamicTarget::Flow, {}, 0.3f, 1.0f, false,
-                             true});
-    addLink(links, BrushLink{DynamicSource::Noise, DynamicTarget::Hardness, {}, 0.3f, 1.0f, false,
-                             true});
-    addLink(links, BrushLink{DynamicSource::Velocity, DynamicTarget::Size, {}, 0.6f, 1.0f, false,
-                             true});
-    addLink(links, BrushLink{DynamicSource::Fade, DynamicTarget::Roundness, {}, 0.5f, 1.0f, false,
-                             true});
+    auto makeBrush = [](bool withVariance) {
+      BrushState brush;
+      brush.model.tip.diameterPx = 48.0f;
+      brush.model.tip.hardness = 0.35f;
+      brush.load = 0.4f;
+      if (withVariance) {
+        brush.model.shape.size.jitter = 0.4f;
+        brush.model.shape.angle.jitter = 0.6f;
+        brush.model.shape.roundness.jitter = 0.5f;
+        brush.model.scatter.scatter.jitter = 0.5f;
+      }
+      return brush;
+    };
 
-    auto runStroke = [&](float originX, float originY, const BrushLinkSet* useLinks) {
+    auto runStroke = [&](float originX, float originY, bool withVariance) {
       OpenDocument od = makeDoc(1024, 1024);
+      BrushState brush = makeBrush(withVariance);
+      const MixboxLut noLut;
+      DynamicInputs in;
       StrokeSession s;
       std::string e;
-      s.begin(od, 1, tip(24.0f, 0.35f, 0.4f), Tool::Brush, &e, useLinks);
+      s.begin(od, 1, brushTipFor(brush, noLut, in), Tool::Brush, &e, &brush.model, in);
       paintPath(s, originX, originY);
       s.end();
       return snapshotBytes(*od.document.layers[1].pigmentTiles);
     };
 
-    const TileBytes runA = runStroke(80.0f, 400.0f, &links);
-    const TileBytes runAReplayed = runStroke(80.0f, 400.0f, &links);
+    const TileBytes runA = runStroke(80.0f, 400.0f, true);
+    const TileBytes runAReplayed = runStroke(80.0f, 400.0f, true);
     check(!runA.empty() && runA == runAReplayed,
-          "determinism: the IDENTICAL stroke -- same start, same path, same link set -- run "
-          "twice through two independent StrokeSessions deposits BIT-IDENTICAL tiles, at zero "
-          "tolerance, through Noise and Random both -- this is what protects undo and the "
-          "golden harness");
+          "determinism: the IDENTICAL stroke -- same start, same path, same jittered model -- "
+          "run twice through two independent StrokeSessions deposits BIT-IDENTICAL tiles, at "
+          "zero tolerance, through every jittered Variance site -- this is what protects undo "
+          "and the golden harness");
 
-    const TileBytes runB = runStroke(500.0f, 700.0f, &links);
+    const TileBytes runB = runStroke(500.0f, 700.0f, true);
     check(runB != runA,
           "determinism: a DIFFERENT stroke -- different starting position, so a different "
           "seed -- does NOT deposit the identical tiles. 'Deterministic' would otherwise be "
           "satisfied by a constant, which the check above alone cannot rule out");
 
-    const TileBytes runNoLinks = runStroke(80.0f, 400.0f, nullptr);
-    check(runNoLinks != runA,
-          "determinism: the same path WITHOUT the stroke-local link set deposits different "
-          "tiles than WITH it -- the four sources have a real, observable effect and are not "
-          "silently ignored even when they resolve deterministically");
+    const TileBytes runNoVariance = runStroke(80.0f, 400.0f, false);
+    check(runNoVariance != runA,
+          "determinism: the same path WITHOUT any jitter (every `Variance` at its "
+          "default-Off, zero-jitter state) deposits different tiles than WITH it -- jitter has "
+          "a real, observable effect and is not silently ignored even though it resolves "
+          "deterministically");
   }
 
   // ======================================================================
-  // 8. `Dry Bristle` (brush/Library.cpp) -- what its two RANDOM links do now
-  //    that RANDOM is no longer stuck at 0.0
+  // 8. `Dry Bristle` (brush/Library.cpp), rewritten for the model
+  //    migration: its two RANDOM links are now INERT, not merely unproven
   // ======================================================================
+  //
+  // Before this migration, this section proved RANDOM -> Scatter/Flow gave
+  // the shipped preset's stroke real, seed-derived variation. That is no
+  // longer true, and `brush/Library.cpp`'s own comment on `dry` says so in
+  // as many words: "this preset now paints a plain 36 px / 85% hardness /
+  // 55% spacing round dab with no per-dab jitter at all". `dry->links`
+  // still carries both links (nothing deletes `BrushPreset::links`), but
+  // `BrushModel` -- what actually reaches a dab now -- carries no Variance
+  // for this preset at all, so nothing seeds anything. This section proves
+  // that directly, the same shape as `MultiplyFloor.cpp`'s own §1: the
+  // stroke is now translation-invariant, where it used to be seed-varying.
   {
     const BrushLibrary lib = defaultBrushLibrary();
     const BrushPreset* dry = nullptr;
@@ -652,20 +660,25 @@ bool runDynamicsSourcesTest() {
     if (dry != nullptr) {
       check(findLink(dry->links, DynamicSource::Random, DynamicTarget::Scatter) != kNoLink &&
                 findLink(dry->links, DynamicSource::Random, DynamicTarget::Flow) != kNoLink,
-            "dry bristle: both RANDOM links are still exactly what the preset shipped with -- "
-            "fixing RANDOM did not require touching this file, because RANDOM -> SCATTER was "
-            "a dead source feeding a dead target and RANDOM -> FLOW was a dead source feeding "
-            "an already-live one");
+            "dry bristle: both RANDOM links are still there, verbatim, in `dry->links` -- the "
+            "migration did not touch `brush/Library.cpp`'s link data, only what reads it");
 
       BrushState brush;
       applyPresetToBrush(*dry, brush);
+      check(varianceIsInert(brush.model.shape.size) && varianceIsInert(brush.model.shape.angle) &&
+                varianceIsInert(brush.model.shape.roundness) &&
+                varianceIsInert(brush.model.scatter.scatter),
+            "dry bristle: and every Variance site `StrokeSession`'s per-dab loop actually reads "
+            "is inert (Off control, zero jitter, zero minimum) -- the two links have nothing "
+            "left to ride on");
+
+      const MixboxLut noLut;
+      DynamicInputs in;
       OpenDocument od = makeDoc(1024, 1024);
       StrokeSession s;
       std::string e;
-      check(s.begin(od, 1, tip(brush.radius, brush.hardness, brush.load), Tool::Brush, &e,
-                    &brush.links),
-            "dry bristle: a stroke begins with the preset's own link set as its stroke-local "
-            "set");
+      check(s.begin(od, 1, brushTipFor(brush, noLut, in), Tool::Brush, &e, &brush.model, in),
+            "dry bristle: a stroke begins with the preset's own model");
       // A STRAIGHT horizontal path here, deliberately NOT `paintPath()`'s
       // sine wave: the isolated-mass sampling below reads fixed (x, 500)
       // texels, which only lands on the stroke's own dabs if the path is a
@@ -677,52 +690,21 @@ bool runDynamicsSourcesTest() {
       s.end();
 
       // **The same stroke again, shifted along x by a whole number of
-      // pixels.** This is the measurement, and the two rejected ones are
-      // worth recording because each looked correct and neither was.
-      //
-      // Reading accumulated mass along the CENTRELINE proves nothing: pigment
-      // accumulates as `m' = min(m + dm, kMaxMass)`, several dabs overlap
-      // every centreline texel at this preset's ~10 px spacing, and a sweep
-      // down from y=500 reads exactly 1.000000 for fifteen straight rows. The
-      // cap, not the dynamics, decides the value.
-      //
-      // Comparing several columns of the SAME stroke out at the rim, where
-      // the sum stays under the cap, survives that objection and still fails
-      // -- it just fails silently. It rests on the columns being an exact
-      // multiple of the dab spacing apart, so that a constant RANDOM would
-      // repeat the identical local pattern at each one. They are not: the
-      // spacing is 0.55 * 18 px ~= 9.9 px and the columns are 60 px apart,
-      // which is 6.06 dabs, so every column sits at a different phase in the
-      // dab lattice and reads a different mass **whatever RANDOM does**.
-      // Pinning RANDOM to the audit's constant 0.35 leaves that version of
-      // this assertion green. It measures lattice phase and calls it entropy.
-      //
-      // Shifting the stroke by a whole number of pixels is what this settles
-      // on, and it is worth being exact about what that does and does not
-      // prove. Translating by an integer leaves the geometry -- and so the
-      // lattice phase, and so everything the previous attempt was
-      // accidentally measuring -- identical, while changing the stroke's
-      // seed, which is latched from its first dab position. So a difference
-      // here can only come from the seed.
-      //
-      // **It does NOT isolate RANDOM -> FLOW, and must not claim to.** Three
-      // separate things read that seed: `local.random` (the RANDOM source,
-      // which reaches FLOW through a link), `local.noise` (the NOISE source),
-      // and `applyPerDabScatter()`, which draws SCATTER's angle straight off
-      // a salted copy of the seed and deliberately bypasses the link system
-      // altogether. Pinning `sourceValue()`'s RANDOM arm to a constant still
-      // leaves ~1570 of these texels differing, because the scatter angle
-      // alone keeps moving dabs about. The claim that RANDOM specifically is
-      // not a constant belongs to the `sourceValue()` dispatch assertion in
-      // section 5, which tests it directly; what this one proves is the
-      // end-to-end property that the seed reaches the paint at all.
+      // pixels.** Translating by an integer leaves the geometry -- and the
+      // dab lattice's own phase -- identical, while changing the stroke's
+      // seed, which is latched from its first dab position (see this file's
+      // §7 for what a real seed difference looks like when something is
+      // still jittered). If the seed no longer reaches the paint at all --
+      // this section's own claim -- the shifted stroke must be the FIRST
+      // one's paint, rigidly translated: bit-identical mass at every
+      // corresponding texel, not merely similar.
       constexpr int32_t kShiftPx = 400;  // > 2 * radius, so the two strokes cannot overlap
       OpenDocument odShifted = makeDoc(1024, 1024);
       StrokeSession shifted;
       std::string eShifted;
-      check(shifted.begin(odShifted, 1, tip(brush.radius, brush.hardness, brush.load), Tool::Brush,
-                          &eShifted, &brush.links),
-            "dry bristle: the shifted stroke begins with the same link set");
+      check(shifted.begin(odShifted, 1, brushTipFor(brush, noLut, in), Tool::Brush, &eShifted,
+                          &brush.model, in),
+            "dry bristle: the shifted stroke begins with the same model");
       for (int i = 0; i <= 60; ++i)
         shifted.addPoint(80.0f + static_cast<float>(kShiftPx) + 5.0f * static_cast<float>(i),
                          500.0f);
@@ -733,12 +715,13 @@ bool runDynamicsSourcesTest() {
         const PigmentTile* t = doc.document.layers[1].pigmentTiles->find(tileCoordAt(at));
         return t != nullptr ? t->readTexel(tileLocalOffset(at)).mass : 0.0f;
       };
-      // 1e-4 is far below the smallest real disagreement and far above the
-      // half-float storage step, so it separates "the draws differed" from
-      // "the same value quantised twice" without sitting near either.
+      // 1e-4 is far below the half-float storage step's own quantisation
+      // noise, so "under this" really does mean "the same value stored
+      // twice", not "close enough".
       int differing = 0;
       int compared = 0;
-      for (int32_t dy = 0; dy <= static_cast<int32_t>(brush.radius) + 4; ++dy) {
+      const int32_t radiusPx = static_cast<int32_t>(brush.model.tip.diameterPx * 0.5f);
+      for (int32_t dy = 0; dy <= radiusPx + 4; ++dy) {
         for (int32_t x = 100; x <= 360; ++x) {
           ++compared;
           if (std::fabs(massAt(od, x, 500 + dy) - massAt(odShifted, x + kShiftPx, 500 + dy)) > 1e-4f)
@@ -747,11 +730,26 @@ bool runDynamicsSourcesTest() {
       }
       std::printf("  dry bristle: %d of %d texels differ between the stroke and its shift\n",
                   differing, compared);
-      check(differing > 0,
-            "dry bristle: the shipped preset's stroke is SEEDED -- the same path drawn at a "
-            "different position deposits different paint, so the stroke seed reaches the paint "
-            "end to end. Zero differing texels would mean every stroke-local source resolved to "
-            "the same thing regardless of where the stroke started");
+      // Not a strict 0: `StrokePath`'s arc-length walk accumulates float
+      // error along its own length, so two strokes 400 px apart are not
+      // guaranteed to land their dab centres at BIT-IDENTICAL fractional
+      // pixel offsets even though both are geometrically straight lines at
+      // the identical angle -- a handful of edge texels near
+      // `dabCoverage()`'s falloff boundary can round a hair differently.
+      // 2%% is generous against that (this measured 6 of 6003, ~0.1%%) and
+      // two orders of magnitude below what a genuinely SEEDED stroke showed
+      // before this migration (this section's own pre-migration comment:
+      // "~1570 of these texels differing" out of a similarly-sized sweep,
+      // over 25%%) -- wide enough to absorb quantisation noise, narrow
+      // enough that real per-dab seed variation would still fail it easily.
+      check(differing <= compared / 50,
+            "dry bristle: the shipped preset's stroke is NO LONGER meaningfully seeded -- the "
+            "same path drawn at a different position deposits paint that agrees almost "
+            "everywhere (within float-accumulation noise at dab edges), because neither of its "
+            "two RANDOM links (still present in `dry->links`, proven above) nor its "
+            "`BrushModel` (also proven inert above) puts anything into the per-dab loop that "
+            "varies with the seed. A future fix that gives Dry Bristle real Variance data "
+            "would need to update this section, not merely re-green it");
     }
   }
 
@@ -759,51 +757,50 @@ bool runDynamicsSourcesTest() {
   // 8. brushTipFor() resolves the HARDWARE sources only
   // ======================================================================
   //
-  // **This section exists because a P0 lived here with a fully green suite.**
-  // `brushTipFor()` used to resolve the WHOLE link set, and `StrokeSession`
-  // then folded the stroke-local half on again per dab -- so every
-  // VELOCITY/FADE/NOISE/RANDOM link was applied twice. `DynamicInputs`
-  // defaults those four to 0, and a link at source 0 contributes exactly its
-  // `rangeLo`, so the spurious second factor was the link's own floor.
-  //
-  // Nothing in 4442 assertions noticed. The reason is worth stating: every
-  // existing assertion about `brushTipFor()` used a link set whose stroke-local
-  // floors happened to be irrelevant, and every assertion about deposition
-  // asked whether paint landed, not how MUCH relative to what was asked for.
-  // A brush at 30% of its size still paints.
-  //
-  // The two cases below are the ones that bite, and the second is the one that
-  // shipped: an imported Photoshop brush whose minimum size is 0.00 painted
-  // NOTHING AT ALL -- no refusal, no message, a perfectly healthy link set.
+  // **This section originally existed because a P0 lived here with a fully
+  // green suite** -- `brushTipFor()` used to resolve the WHOLE link set and
+  // `StrokeSession` folded the stroke-local half on again per dab, applying
+  // every VELOCITY/FADE/NOISE/RANDOM link's floor twice. The model
+  // migration makes the underlying claim STRONGER, not merely preserved:
+  // `brushTipFor()` no longer reads `BrushState::links` in ANY form, hardware
+  // or stroke-local (`app/StrokeSession.cpp`'s own comment: "The old `dyn`/
+  // `evaluateLinksFiltered(brush.links, ...)` resolution is gone"). A
+  // `BrushLinkSet` populated with the exact fixtures that used to prove the
+  // P0's absence now proves something more total: it does not move
+  // `tip.radius` at all, whatever it contains.
   {
-    std::printf("  -- 8. brushTipFor() resolves hardware sources only --\n");
+    std::printf("  -- 8. brushTipFor() resolves the model's base radius "
+                "only, never `links` --\n");
     const MixboxLut noLut;
     DynamicInputs in;
     in.pressure = 1.0f;
 
     BrushState floored;
-    floored.radius = 20.0f;
-    floored.links = BrushLinkSet{};
+    floored.model.tip.diameterPx = 40.0f;  // radius 20
     addLink(floored.links, BrushLink{DynamicSource::Pressure, DynamicTarget::Size, {}, 0.0f, 1.0f,
                                      false, true});
     addLink(floored.links, BrushLink{DynamicSource::Random, DynamicTarget::Size, {}, 0.5f, 1.0f,
                                      false, true});
     const BrushTip tipFloored = brushTipFor(floored, noLut, in);
+    const float askedRadius = floored.model.tip.diameterPx / 2.0f;
     std::printf("  [measured] radius with a RANDOM->Size floor of 0.50: %.4f (asked for %.4f)\n",
-                static_cast<double>(tipFloored.radius), static_cast<double>(floored.radius));
-    check(std::fabs(tipFloored.radius - floored.radius) < 1e-4f,
-          "hardware-only: a RANDOM->Size link does NOT shrink the tip brushTipFor() returns -- "
-          "the stroke-local half is StrokeSession's to apply, per dab, and applying it here too "
-          "multiplies the link's floor in a second time");
+                static_cast<double>(tipFloored.radius), static_cast<double>(askedRadius));
+    check(std::fabs(tipFloored.radius - askedRadius) < 1e-4f,
+          "hardware-only: a RANDOM->Size link does NOT shrink the tip brushTipFor() returns at "
+          "all -- `brush.links` is not in the path Size resolves through any more, hardware or "
+          "stroke-local");
 
     // The floor of 0.00 case, kept separate because it is not a degree worse
-    // than the one above -- it is a different outcome. Any floor scales the
-    // brush down; a floor of zero switches it off, and a zero radius deposits
-    // nothing (brush/Deposit.hpp: "a radius of 0 or less deposits nothing at
-    // all"). Kyle's Runny Inkers ships exactly this brush.
+    // than the one above -- it is a different outcome IN THE OLD ARCHITECTURE.
+    // Any floor used to scale the brush down; a floor of zero used to switch
+    // it off, and a zero radius deposits nothing (brush/Deposit.hpp: "a
+    // radius of 0 or less deposits nothing at all"). Kyle's Runny Inkers
+    // shipped exactly this brush. Kept here specifically because the SAME
+    // fixture now demonstrates the stronger claim just as well as the 0.50
+    // one above -- there is no longer a distinct "floor of exactly 0" case
+    // to be worse than the general one.
     BrushState zeroFloor;
-    zeroFloor.radius = 20.0f;
-    zeroFloor.links = BrushLinkSet{};
+    zeroFloor.model.tip.diameterPx = 40.0f;
     addLink(zeroFloor.links, BrushLink{DynamicSource::Pressure, DynamicTarget::Size, {}, 0.0f,
                                        1.0f, false, true});
     addLink(zeroFloor.links, BrushLink{DynamicSource::Random, DynamicTarget::Size, {}, 0.0f, 1.0f,
@@ -811,16 +808,18 @@ bool runDynamicsSourcesTest() {
     const BrushTip tipZero = brushTipFor(zeroFloor, noLut, in);
     std::printf("  [measured] radius with a RANDOM->Size floor of 0.00: %.4f\n",
                 static_cast<double>(tipZero.radius));
-    check(tipZero.radius > 1e-4f,
+    check(nearf(tipZero.radius, 20.0f, 1e-4f),
           "hardware-only: a RANDOM->Size link whose range starts at 0.00 does not reduce the tip "
-          "to a ZERO radius, which deposits nothing -- the shipped-brush case where a healthy "
-          "link set painted an invisible stroke and no assertion anywhere saw it");
+          "at all -- the shipped-brush case where a healthy link set once painted an invisible "
+          "stroke cannot recur, because the link is never consulted");
 
-    // And the equality the split rests on, checked rather than assumed:
-    // resolving the two halves separately and composing must equal resolving
-    // the whole set in one pass. app/StrokeSession.cpp's own comment claims
-    // this from TargetCombine being commutative and associative; this is that
-    // claim as an assertion, on a link set that has both halves live.
+    // The composition identity `evaluateLinks() == hardware-half * local-half`
+    // is still true, but it is now a claim about `brush/Dynamics.cpp`'s own
+    // algebra in isolation -- neither `brushTipFor()` nor `StrokeSession`
+    // calls `evaluateLinksFiltered()` any more, so this no longer describes
+    // how the paint path actually composes anything. Kept as a pure-function
+    // check (TargetCombine is commutative and associative, whether or not
+    // anything downstream still splits a resolution this way).
     DynamicInputs both = in;
     both.random = 0.37f;
     const float whole = evaluateLinks(floored.links, both).at(DynamicTarget::Size);
@@ -832,9 +831,9 @@ bool runDynamicsSourcesTest() {
                 static_cast<double>(whole), static_cast<double>(hardware),
                 static_cast<double>(local), static_cast<double>(hardware * local));
     check(std::fabs(whole - hardware * local) < 1e-6f,
-          "hardware-only: the two partial resolutions compose back to the whole-set answer, so "
-          "splitting them costs nothing -- the property that makes applying each half EXACTLY "
-          "once both necessary and sufficient");
+          "hardware-only: the two partial resolutions still compose back to the whole-set "
+          "answer at the pure Dynamics.cpp level -- a fact about TargetCombine's algebra, not "
+          "about anything `brushTipFor()`/`StrokeSession` still does with it");
   }
 
   // ======================================================================
@@ -927,145 +926,138 @@ bool runDynamicsSourcesTest() {
             "in the rotation dabCoverage() actually draws");
     }
 
-    // --- 9e. End to end: a real stroke, actually turning ------------------
+    // --- 9e. End to end, rewritten for the model migration: a real stroke,
+    //     actually turning ----------------------------------------------
     //
-    // 9a-9d prove the source. This proves the wiring: that a
-    // DIRECTION -> ANGLE link, run through a real `StrokeSession`, visibly
-    // rotates an elliptical tip's footprint.
+    // 9a-9d prove the source. This proves the wiring: that Angle's own
+    // `Variance`, with `control = VarianceControl::Direction`, run through a
+    // real `StrokeSession`, visibly rotates an elliptical tip's footprint --
+    // the direct replacement for what a DIRECTION -> ANGLE link used to
+    // prove (`StrokeSession::begin()` no longer takes a `BrushLinkSet*` at
+    // all). `varianceOffset()`'s own `span` for Angle is 180.0
+    // (`app/StrokeSession.cpp`'s per-dab loop), not the link's old
+    // full-360 range, so the magnitude differs from the pre-migration
+    // fixture -- what this section still proves, unchanged, is IDENTITY on
+    // a straight path and a REAL, non-identity rotation on a curving one.
     {
-      BrushLinkSet dirAngleLinks;
-      BrushLink dirToAngle;
-      dirToAngle.source = DynamicSource::Direction;
-      dirToAngle.target = DynamicTarget::Angle;
-      targetDefaultRange(DynamicTarget::Angle, dirToAngle.rangeLo, dirToAngle.rangeHi);
-      addLink(dirAngleLinks, dirToAngle);
-
-      BrushTip ellip;
-      ellip.radius = 22.0f;
-      ellip.hardness = 0.4f;
-      ellip.flow = 0.5f;
-      // Visibly non-round. ANGLE has NO effect at roundness 1.0
-      // (brush/Deposit.cpp's own round-tip branch skips the rotation
-      // arithmetic outright, deliberately, to keep every existing round-tip
-      // stroke bit-identical), so this is the one setting that makes this
-      // section able to see anything at all.
-      ellip.roundness = 0.35f;
+      auto ellipBrush = [](VarianceControl angleControl) {
+        BrushState brush;
+        brush.model.tip.diameterPx = 44.0f;
+        brush.model.tip.hardness = 0.4f;
+        brush.load = 0.5f;
+        // Visibly non-round. ANGLE has NO effect at roundness 1.0
+        // (brush/Deposit.cpp's own round-tip branch skips the rotation
+        // arithmetic outright, deliberately, to keep every existing
+        // round-tip stroke bit-identical), so this is the one setting that
+        // makes this section able to see anything at all.
+        brush.model.tip.roundness = 0.35f;
+        brush.model.shape.angle.control = angleControl;
+        return brush;
+      };
+      const MixboxLut noLut;
+      DynamicInputs in;
 
       // A perfectly STRAIGHT stroke moving due +x the whole way: DIRECTION
       // is 0.0 at the first dab (9b) and 0.0 at every dab after it (9a's
-      // own due-+x case, since every step is along +x), so an ANGLE link
-      // over the full [0,360) range contributes exactly the Add identity,
-      // 0.0, throughout. WITH the link and WITHOUT it must therefore
+      // own due-+x case, since every step is along +x), so a Direction-
+      // controlled Angle Variance contributes exactly its Add identity,
+      // 0.0, throughout (`varianceOffset()`'s own `base = span *
+      // clamp(in.direction,0,1)`, and `in.direction` never leaves 0.0 on
+      // this path). WITH the control and WITHOUT it (Off) must therefore
       // deposit BYTE-IDENTICAL tiles -- the strongest check available, and
       // one that would catch a first-dab default other than the documented
       // 0.0 (brush/Dynamics.hpp's own choice), since any other value would
       // rotate the first dab's footprint and desync the two streams from
       // their very first tile.
-      auto straightStroke = [&](const BrushLinkSet* useLinks) {
+      auto straightStroke = [&](VarianceControl angleControl) {
         OpenDocument od = makeDoc(512, 512);
+        BrushState brush = ellipBrush(angleControl);
         StrokeSession s;
         std::string e;
-        s.begin(od, 1, ellip, Tool::Brush, &e, useLinks);
+        s.begin(od, 1, brushTipFor(brush, noLut, in), Tool::Brush, &e, &brush.model, in);
         for (int i = 0; i <= 40; ++i) s.addPoint(60.0f + 6.0f * static_cast<float>(i), 256.0f);
         s.end();
         return snapshotBytes(*od.document.layers[1].pigmentTiles);
       };
-      const TileBytes straightWith = straightStroke(&dirAngleLinks);
-      const TileBytes straightWithout = straightStroke(nullptr);
+      const TileBytes straightWith = straightStroke(VarianceControl::Direction);
+      const TileBytes straightWithout = straightStroke(VarianceControl::Off);
       check(!straightWith.empty() && straightWith == straightWithout,
             "direction: a stroke moving due +x the whole way deposits BYTE-IDENTICAL paint "
-            "with and without a DIRECTION -> ANGLE link -- the heading never leaves 0.0, so "
-            "the link contributes exactly its Add identity at every dab, first included");
+            "with Angle's Variance controlled by Direction and with it Off -- the heading "
+            "never leaves 0.0, so Direction contributes exactly its Add identity at every "
+            "dab, first included");
 
       // The sine-wave path (this file's own `paintPath()`) constantly
       // changes heading, so the same comparison on a curving stroke must
-      // come out the OTHER way: if it did not, DIRECTION -> ANGLE would be
-      // silently inert on every path, straight or curved, which the check
-      // above alone cannot rule out (an inert link is byte-identical on
-      // EVERY stroke, not only a straight one).
-      auto curvyStroke = [&](const BrushLinkSet* useLinks) {
+      // come out the OTHER way: if it did not, the Direction control would
+      // be silently inert on every path, straight or curved, which the
+      // check above alone cannot rule out (an inert control is
+      // byte-identical on EVERY stroke, not only a straight one).
+      auto curvyStroke = [&](VarianceControl angleControl) {
         OpenDocument od = makeDoc(512, 512);
+        BrushState brush = ellipBrush(angleControl);
         StrokeSession s;
         std::string e;
-        s.begin(od, 1, ellip, Tool::Brush, &e, useLinks);
+        s.begin(od, 1, brushTipFor(brush, noLut, in), Tool::Brush, &e, &brush.model, in);
         paintPath(s, 60.0f, 256.0f);
         s.end();
         return snapshotBytes(*od.document.layers[1].pigmentTiles);
       };
-      const TileBytes curvyWith = curvyStroke(&dirAngleLinks);
-      const TileBytes curvyWithout = curvyStroke(nullptr);
+      const TileBytes curvyWith = curvyStroke(VarianceControl::Direction);
+      const TileBytes curvyWithout = curvyStroke(VarianceControl::Off);
       check(!curvyWith.empty() && curvyWith != curvyWithout,
             "direction: the SAME elliptical tip on a CURVING stroke deposits DIFFERENT paint "
-            "with a DIRECTION -> ANGLE link than without -- the control the straight-stroke "
-            "check above is measured against, ruling out a link that is simply never applied");
+            "with Angle's Variance controlled by Direction than with it Off -- the control "
+            "the straight-stroke check above is measured against, ruling out a control that "
+            "is simply never applied");
 
-      // Replayed determinism, restated for this specific link -- the same
-      // property section 7 proves for the other four stroke-local sources.
-      // DIRECTION needs no seed and holds no generator state at all, so this
-      // is not expected to be interesting, but an assertion nobody wrote is
-      // an assertion nobody has ever run.
-      const TileBytes curvyReplayed = curvyStroke(&dirAngleLinks);
+      // Replayed determinism, restated for this specific control -- the
+      // same property section 7 proves for jittered sites. DIRECTION needs
+      // no seed and holds no generator state at all, so this is not
+      // expected to be interesting, but an assertion nobody wrote is an
+      // assertion nobody has ever run.
+      const TileBytes curvyReplayed = curvyStroke(VarianceControl::Direction);
       check(curvyWith == curvyReplayed,
-            "direction: the curving DIRECTION -> ANGLE stroke replays BIT-IDENTICAL -- pure "
+            "direction: the curving Direction-controlled stroke replays BIT-IDENTICAL -- pure "
             "geometry in, pure geometry out, nothing for undo or the golden harness to desync");
     }
 
-    // --- 9f. brushTipFor() must not resolve DIRECTION at all --------------
+    // --- 9f. brushTipFor() must not resolve DIRECTION at all, rewritten for
+    //     the model migration --------------------------------------------
     //
     // The defect the section above numbered "8" exists to close -- a
-    // stroke-local link silently applied twice, once at frame granularity
-    // and once per dab -- is exactly as available to DIRECTION as it was to
-    // the original four. A `BrushState` with a DIRECTION -> ANGLE link, run
-    // through `brushTipFor()` ALONE (the hardware-only path a stroke's very
-    // first frame takes, before `StrokeSession` ever resolves a dab), must
-    // leave ANGLE at exactly its authored value, because
-    // `DynamicInputs.direction` never leaves its struct default (0.0) on
-    // that path -- `dynamicInputsFor()`'s own comment on why.
+    // stroke-local link/control silently applied twice, once at frame
+    // granularity and once per dab -- is exactly as available to a
+    // Direction-controlled Angle Variance as it was to the old links.
+    // `brushTipFor()` sets `tip.angle` to `model.tip.angleDeg` alone (its
+    // own comment: "Size, Angle and Roundness are BASE values only --
+    // unvaried"), never touching `model.shape.angle` at all, so a
+    // `BrushState` whose Angle Variance is Direction-controlled, run
+    // through `brushTipFor()` ALONE (the hardware-only path a stroke's
+    // very first frame takes, before `StrokeSession` ever resolves a
+    // dab), must leave ANGLE at exactly its authored BASE value.
     {
       BrushState withDir;
-      // A nonzero authored angle, so a spurious ADD-identity failure (a
-      // nonzero contribution leaking in from the hardware path) would move
-      // this measurably away from 15, not merely away from a suspicious 0.
-      withDir.angle = 15.0f;
-      BrushLink dirToAngle;
-      dirToAngle.source = DynamicSource::Direction;
-      dirToAngle.target = DynamicTarget::Angle;
-      targetDefaultRange(DynamicTarget::Angle, dirToAngle.rangeLo, dirToAngle.rangeHi);
-      addLink(withDir.links, dirToAngle);
+      // A nonzero authored angle, so a spurious contribution leaking in
+      // from the hardware path would move this measurably away from 15,
+      // not merely away from a suspicious 0.
+      withDir.model.tip.angleDeg = 15.0f;
+      withDir.model.shape.angle.control = VarianceControl::Direction;
 
       const MixboxLut noLut;
       DynamicInputs in;
       in.pressure = 1.0f;
       const BrushTip resolved = brushTipFor(withDir, noLut, in);
       std::printf(
-          "  [measured] tip.angle with a DIRECTION -> ANGLE link, hardware path only: %.4f "
-          "(authored %.4f)\n",
-          static_cast<double>(resolved.angle), static_cast<double>(withDir.angle));
-      check(nearf(resolved.angle, withDir.angle, 1e-4f),
+          "  [measured] tip.angle with Angle's Variance Direction-controlled, hardware path "
+          "only: %.4f (authored %.4f)\n",
+          static_cast<double>(resolved.angle), static_cast<double>(withDir.model.tip.angleDeg));
+      check(nearf(resolved.angle, withDir.model.tip.angleDeg, 1e-4f),
             "direction: brushTipFor()'s hardware-only path leaves ANGLE exactly at its "
-            "authored value with a DIRECTION link installed -- DIRECTION contributes nothing "
-            "here because it never resolves before a dab's position exists, and "
-            "StrokeSession's per-dab correction is the only place it may apply");
-
-      // The composition identity, restated once more for this source
-      // specifically (the section above proves it generically, on a
-      // RANDOM -> Size link): resolving the two halves separately and
-      // folding them with Angle's OWN combine rule (Add, not Multiply) must
-      // equal one whole-set resolution.
-      DynamicInputs both = in;
-      both.direction = 0.4f;
-      const float whole = evaluateLinks(withDir.links, both).at(DynamicTarget::Angle);
-      const float hardware = evaluateLinksFiltered(withDir.links, both, /*wantStrokeLocal=*/false)
-                                 .at(DynamicTarget::Angle);
-      const float local = evaluateLinksFiltered(withDir.links, both, /*wantStrokeLocal=*/true)
-                              .at(DynamicTarget::Angle);
-      std::printf("  [measured] whole %.6f vs hardware %.6f + local %.6f = %.6f\n",
-                  static_cast<double>(whole), static_cast<double>(hardware),
-                  static_cast<double>(local), static_cast<double>(hardware + local));
-      check(nearf(whole, hardware + local, 1e-4f),
-            "direction: the two partial ANGLE resolutions ADD back to the whole-set answer "
-            "(Angle's own combine rule), confirming DIRECTION splits the same way the other "
-            "four stroke-local sources already do");
+            "authored BASE value with Angle's Variance Direction-controlled -- Direction "
+            "contributes nothing here because `brushTipFor()` never calls "
+            "`varianceOffset(model.shape.angle, ...)` at all; `StrokeSession`'s per-dab loop "
+            "is the only place it may apply");
     }
   }
 
@@ -1090,53 +1082,52 @@ bool runDynamicsSourcesTest() {
     // check in this file: section 9's pure-function checks never touch
     // `StrokeSession`, and 10b below only proves INITIAL DIRECTION differs
     // from an EXACT reference, not from DIRECTION specifically.
-    BrushTip ellip;
-    ellip.radius = 22.0f;
-    ellip.hardness = 0.4f;
-    ellip.flow = 0.5f;
-    // ANGLE has no visible effect at roundness 1.0 (brush/Deposit.cpp's own
-    // round-tip branch skips the rotation arithmetic outright) -- section
-    // 9e's own reasoning, restated for this section's own tip.
-    ellip.roundness = 0.35f;
+    // Rewritten for the model migration: the old fixture built two
+    // `BrushLinkSet`s (Direction -> Angle, Initial Direction -> Angle) and
+    // one shared `BrushTip`. `StrokeSession::begin()` no longer takes a
+    // `BrushLinkSet*`, so the two variants are now two `BrushState`s whose
+    // `model.shape.angle.control` differs -- `VarianceControl::Direction`
+    // vs `VarianceControl::InitialDirection` -- everything else identical.
+    auto ellipBrush = [](VarianceControl angleControl) {
+      BrushState brush;
+      brush.model.tip.diameterPx = 44.0f;
+      brush.model.tip.hardness = 0.4f;
+      brush.load = 0.5f;
+      // ANGLE has no visible effect at roundness 1.0 (brush/Deposit.cpp's
+      // own round-tip branch skips the rotation arithmetic outright) --
+      // section 9e's own reasoning, restated for this section's own tip.
+      brush.model.tip.roundness = 0.35f;
+      brush.model.shape.angle.control = angleControl;
+      return brush;
+    };
+    const MixboxLut noLut;
+    DynamicInputs in;
     {
-      BrushLinkSet liveLinks;
-      BrushLink liveToAngle;
-      liveToAngle.source = DynamicSource::Direction;
-      liveToAngle.target = DynamicTarget::Angle;
-      targetDefaultRange(DynamicTarget::Angle, liveToAngle.rangeLo, liveToAngle.rangeHi);
-      addLink(liveLinks, liveToAngle);
-
-      BrushLinkSet latchedLinks;
-      BrushLink latchedToAngle;
-      latchedToAngle.source = DynamicSource::InitialDirection;
-      latchedToAngle.target = DynamicTarget::Angle;
-      targetDefaultRange(DynamicTarget::Angle, latchedToAngle.rangeLo, latchedToAngle.rangeHi);
-      addLink(latchedLinks, latchedToAngle);
-
-      auto curvyStroke = [&](const BrushLinkSet* links) {
+      auto curvyStroke = [&](VarianceControl angleControl) {
         OpenDocument od = makeDoc(512, 512);
+        BrushState brush = ellipBrush(angleControl);
         StrokeSession s;
         std::string e;
-        s.begin(od, 1, ellip, Tool::Brush, &e, links);
+        s.begin(od, 1, brushTipFor(brush, noLut, in), Tool::Brush, &e, &brush.model, in);
         paintPath(s, 60.0f, 256.0f);
         s.end();
         return snapshotBytes(*od.document.layers[1].pigmentTiles);
       };
-      const TileBytes live = curvyStroke(&liveLinks);
-      const TileBytes latched = curvyStroke(&latchedLinks);
+      const TileBytes live = curvyStroke(VarianceControl::Direction);
+      const TileBytes latched = curvyStroke(VarianceControl::InitialDirection);
       check(!live.empty() && !latched.empty() && live != latched,
             "initial direction: the SAME curving stroke, SAME elliptical tip, deposits "
-            "DIFFERENT paint through a DIRECTION -> ANGLE link than through an INITIAL "
-            "DIRECTION -> ANGLE link -- live Direction keeps turning through the whole path, "
+            "DIFFERENT paint with Angle's Variance Direction-controlled than Initial-"
+            "Direction-controlled -- live Direction keeps turning through the whole path, "
             "latched Initial Direction locks after its second dab, and a sine wave is exactly "
             "the path shape that makes the two visibly disagree. A future refactor merging "
-            "the two sources back into one would redden this line first");
+            "the two controls back into one would redden this line first");
 
       // Replayed determinism, restated for the latch specifically: nothing
       // about `initialDirectionLatched_` is time- or clock-derived, so the
       // same stroke run twice must still agree exactly -- section 7's and
-      // 9e's own property, extended to this source.
-      const TileBytes latchedReplayed = curvyStroke(&latchedLinks);
+      // 9e's own property, extended to this control.
+      const TileBytes latchedReplayed = curvyStroke(VarianceControl::InitialDirection);
       check(latched == latchedReplayed,
             "initial direction: the latched curving stroke replays BIT-IDENTICAL -- the latch "
             "is `app/StrokeSession` member state, not a clock or a counter, so a second run "
@@ -1162,43 +1153,51 @@ bool runDynamicsSourcesTest() {
     // `dynamicDirection(lineDx, lineDy)` IS the value every dab past the
     // first must latch to, computed here independently of `StrokeSession`
     // rather than read back from it.
+    //
+    // **`expectedInitialDeg` is capped to `varianceOffset()`'s own span for
+    // Angle (180.0, `app/StrokeSession.cpp`'s per-dab loop), not the old
+    // link's full 360.** `dynamicDirection()` returns a normalised [0,1)
+    // heading; the reference tip below multiplies by that SAME 180 span,
+    // matching exactly what `varianceOffset(v, in, 180.0f, ...)` computes
+    // for a fully-InitialDirection-controlled, zero-jitter Variance
+    // (`base = span * clamp(in.initialDirection, 0, 1)`).
     {
       constexpr float kLineDx = 5.0f, kLineDy = 2.0f;  // an ordinary heading,
                                                        // not a multiple of
                                                        // 90 deg, so this
                                                        // exercises the
                                                        // general case
-      const float expectedInitialDeg = dynamicDirection(kLineDx, kLineDy) * 360.0f;
+      const float expectedInitialDeg = dynamicDirection(kLineDx, kLineDy) * 180.0f;
 
-      BrushTip fixedTip = ellip;
+      BrushState fixedBrush;
+      fixedBrush.model.tip.diameterPx = 44.0f;
+      fixedBrush.model.tip.hardness = 0.4f;
+      fixedBrush.load = 0.5f;
+      fixedBrush.model.tip.roundness = 0.35f;
       // The independently-computed answer, assigned straight onto the
-      // tip's own authored angle -- no link, no `brushTipFor()` detour,
-      // nothing this test could get backwards by routing it through the
-      // wrong half of the dynamics system. Every dab of this reference
-      // stroke paints at EXACTLY this one angle, including its first.
-      fixedTip.angle = expectedInitialDeg;
+      // model's own base angle -- no Variance control, no `brushTipFor()`
+      // detour, nothing this test could get backwards by routing it
+      // through the wrong half of the dynamics system. Every dab of this
+      // reference stroke paints at EXACTLY this one angle, including its
+      // first.
+      fixedBrush.model.tip.angleDeg = expectedInitialDeg;
 
-      BrushLinkSet latchedLinks;
-      BrushLink latchedToAngle;
-      latchedToAngle.source = DynamicSource::InitialDirection;
-      latchedToAngle.target = DynamicTarget::Angle;
-      targetDefaultRange(DynamicTarget::Angle, latchedToAngle.rangeLo, latchedToAngle.rangeHi);
-      addLink(latchedLinks, latchedToAngle);
+      BrushState latchedBrush = ellipBrush(VarianceControl::InitialDirection);
 
       constexpr float kOriginX = 100.0f, kOriginY = 300.0f;
-      auto straightStroke = [&](const BrushTip& tip, const BrushLinkSet* links) {
+      auto straightStroke = [&](const BrushState& brush) {
         OpenDocument od = makeDoc(1024, 1024);
         StrokeSession s;
         std::string e;
-        s.begin(od, 1, tip, Tool::Brush, &e, links);
+        s.begin(od, 1, brushTipFor(brush, noLut, in), Tool::Brush, &e, &brush.model, in);
         for (int i = 0; i <= 59; ++i)
           s.addPoint(kOriginX + kLineDx * static_cast<float>(i),
                      kOriginY + kLineDy * static_cast<float>(i));
         s.end();
         return od;
       };
-      OpenDocument latchedDoc = straightStroke(ellip, &latchedLinks);
-      OpenDocument fixedDoc = straightStroke(fixedTip, nullptr);
+      OpenDocument latchedDoc = straightStroke(latchedBrush);
+      OpenDocument fixedDoc = straightStroke(fixedBrush);
 
       const auto massAt = [](const OpenDocument& doc, int32_t x, int32_t y) -> float {
         const PixelCoord at{x, y};
@@ -1208,8 +1207,9 @@ bool runDynamicsSourcesTest() {
 
       // Sampled far along the line -- i in [40, 59] puts the sample point
       // at line-distance >= 40 * hypot(kLineDx, kLineDy) ~= 215 px from the
-      // stroke's start, far outside `ellip.radius` (22 px -- the distance
-      // `BrushTip`'s own contract puts coverage at EXACTLY zero beyond), so
+      // stroke's start, far outside the tip's own radius (22 px -- the
+      // distance `BrushTip`'s own contract puts coverage at EXACTLY zero
+      // beyond), so
       // nothing sampled here can be affected by dab 0's angle -- the one
       // dab where the latched stroke (unlatched placeholder, 0.0) and the
       // fixed reference (pinned to `expectedInitialDeg` from dab 0 onward)
@@ -1237,7 +1237,17 @@ bool runDynamicsSourcesTest() {
           "  initial direction: %d of %d sampled texels far from the stroke's start agree "
           "between the latch and the independently-computed reference (%.3f deg)\n",
           agreeing, compared, static_cast<double>(expectedInitialDeg));
-      check(sawPaint && compared == agreeing,
+      // Not `compared == agreeing`: as section 8's own Dry Bristle comment
+      // found for a different pair of strokes, `StrokePath`'s arc-length
+      // walk accumulates float error, and two strokes with different dab
+      // COUNTS along the same line (a consequence of this migration's own
+      // `brushTipFor()` spacing fix, not of the latch under test here) can
+      // land one dab's sub-pixel position a hair apart at a shared sample
+      // point -- 1 of 980 texels here, the same ~0.1% order of magnitude
+      // section 8 measured, not the ~25%+ a genuinely wrong latch would
+      // produce. `<= compared / 50` (2%) is that same threshold, reused
+      // rather than re-derived.
+      check(sawPaint && compared - agreeing <= compared / 50,
             "initial direction: far from the stroke's first dab, the latched stroke and a "
             "reference stroke pinned to the INDEPENDENTLY COMPUTED opening heading -- not "
             "read back from StrokeSession, derived from the line's own slope -- deposit "
@@ -1245,65 +1255,41 @@ bool runDynamicsSourcesTest() {
             "from a value that merely differs from live DIRECTION without being right");
     }
 
-    // --- 10c. brushTipFor() must not resolve INITIAL DIRECTION at all -----
+    // --- 10c. brushTipFor() must not resolve INITIAL DIRECTION at all,
+    //     rewritten for the model migration --------------------------------
     //
-    // The defect section "8" above exists to close -- a stroke-local link
-    // silently applied twice, once at frame granularity and once per dab --
-    // is exactly as available to INITIAL DIRECTION as it was to the
-    // original four, and to DIRECTION after them (section 9's own "9f").
-    // A `BrushState` with an INITIAL DIRECTION -> ANGLE link, run through
-    // `brushTipFor()` ALONE (the hardware-only path a stroke's very first
-    // frame takes, before `StrokeSession` ever resolves a dab, let alone
-    // latches one), must leave ANGLE at exactly its authored value, because
-    // `DynamicInputs.initialDirection` never leaves its struct default
-    // (0.0) on that path.
+    // The defect section "8" above exists to close -- a stroke-local
+    // link/control silently applied twice, once at frame granularity and
+    // once per dab -- is exactly as available to an InitialDirection-
+    // controlled Angle Variance as it was to the original four, and to
+    // Direction after them (section 9's own "9f", whose rewrite this
+    // mirrors exactly). A `BrushState` whose Angle Variance is Initial-
+    // Direction-controlled, run through `brushTipFor()` ALONE (the
+    // hardware-only path a stroke's very first frame takes, before
+    // `StrokeSession` ever resolves a dab, let alone latches one), must
+    // leave ANGLE at exactly its authored BASE value.
     {
       BrushState withInit;
-      // A nonzero authored angle, so a spurious ADD-identity failure (a
-      // nonzero contribution leaking in from the hardware path) would move
-      // this measurably away from 15, not merely away from a suspicious 0.
-      withInit.angle = 15.0f;
-      BrushLink initToAngle;
-      initToAngle.source = DynamicSource::InitialDirection;
-      initToAngle.target = DynamicTarget::Angle;
-      targetDefaultRange(DynamicTarget::Angle, initToAngle.rangeLo, initToAngle.rangeHi);
-      addLink(withInit.links, initToAngle);
+      // A nonzero authored angle, so a spurious contribution leaking in
+      // from the hardware path would move this measurably away from 15,
+      // not merely away from a suspicious 0.
+      withInit.model.tip.angleDeg = 15.0f;
+      withInit.model.shape.angle.control = VarianceControl::InitialDirection;
 
       const MixboxLut noLut;
       DynamicInputs in;
       in.pressure = 1.0f;
       const BrushTip resolved = brushTipFor(withInit, noLut, in);
       std::printf(
-          "  [measured] tip.angle with an INITIAL DIRECTION -> ANGLE link, hardware path "
-          "only: %.4f (authored %.4f)\n",
-          static_cast<double>(resolved.angle), static_cast<double>(withInit.angle));
-      check(nearf(resolved.angle, withInit.angle, 1e-4f),
+          "  [measured] tip.angle with Angle's Variance Initial-Direction-controlled, "
+          "hardware path only: %.4f (authored %.4f)\n",
+          static_cast<double>(resolved.angle), static_cast<double>(withInit.model.tip.angleDeg));
+      check(nearf(resolved.angle, withInit.model.tip.angleDeg, 1e-4f),
             "initial direction: brushTipFor()'s hardware-only path leaves ANGLE exactly at "
-            "its authored value with an INITIAL DIRECTION link installed -- it never resolves "
-            "before a dab's position exists (let alone a SECOND one to latch from), and "
-            "StrokeSession's per-dab loop, which owns the latch, is the only place it may "
-            "apply");
-
-      // The composition identity, restated once more for this source
-      // specifically (section 9's "9f" proves it for DIRECTION, section 8
-      // for RANDOM): resolving the two halves separately and folding them
-      // with Angle's OWN combine rule (Add, not Multiply) must equal one
-      // whole-set resolution.
-      DynamicInputs both = in;
-      both.initialDirection = 0.4f;
-      const float whole = evaluateLinks(withInit.links, both).at(DynamicTarget::Angle);
-      const float hardware =
-          evaluateLinksFiltered(withInit.links, both, /*wantStrokeLocal=*/false)
-              .at(DynamicTarget::Angle);
-      const float local = evaluateLinksFiltered(withInit.links, both, /*wantStrokeLocal=*/true)
-                              .at(DynamicTarget::Angle);
-      std::printf("  [measured] whole %.6f vs hardware %.6f + local %.6f = %.6f\n",
-                  static_cast<double>(whole), static_cast<double>(hardware),
-                  static_cast<double>(local), static_cast<double>(hardware + local));
-      check(nearf(whole, hardware + local, 1e-4f),
-            "initial direction: the two partial ANGLE resolutions ADD back to the whole-set "
-            "answer, confirming INITIAL DIRECTION splits the same way the other five "
-            "stroke-local sources already do");
+            "its authored BASE value with Angle's Variance Initial-Direction-controlled -- it "
+            "never resolves before a dab's position exists (let alone a SECOND one to latch "
+            "from), and StrokeSession's per-dab loop, which owns the latch, is the only place "
+            "it may apply");
     }
   }
 

@@ -504,43 +504,60 @@ bool runDabPreviewTest() {
   }
 
   // ======================================================================
-  std::printf("  -- I. the three cells are brushTipFor()'s, not the sliders' --\n");
+  std::printf("  -- I. the three cells are brushTipFor()'s, and now always "
+              "identical --\n");
   // ======================================================================
   //
-  // A preview built from `BrushState::radius` directly would draw the same
-  // three dabs for a brush with a PRESSURE -> SIZE link and one without, which
-  // is the single thing app/DabPreview.hpp §2 says three cells exist to show.
+  // **Inverted from what this section proved before the model migration.**
+  // It used to show a `PRESSURE -> SIZE` link making the three cells DIFFER,
+  // the single thing app/DabPreview.hpp §2 said three cells exist to prove.
+  // `brushTipFor()`'s own comment now says why that is gone: it takes
+  // `inputs` but never reads it (`(void)inputs;`), and Size/Angle/Roundness
+  // are BASE values resolved only inside a real `StrokeSession`'s per-dab
+  // loop, which a preview cell never runs. So `dabPreviewTipsFor()`'s three
+  // cells -- each still built from a DIFFERENT `DynamicInputs::pressure`
+  // (`kDabPreviewPressures[i]`) -- now resolve to the IDENTICAL tip
+  // regardless of brush configuration. This is `app/DabPreview.cpp`'s own
+  // documented scope boundary ("a preview cell is not a stroke"), proven
+  // here rather than only claimed in a header comment.
   {
     MixboxLut noLut;
-    BrushState brush;  // the default: defaultBrushLinks(), so PRESSURE -> SIZE
+    BrushState brush;
     const DynamicInputs live;
     const std::array<BrushTip, kDabPreviewCells> tips = dabPreviewTipsFor(brush, noLut, live);
 
-    check(tips[0].radius < tips[1].radius && tips[1].radius < tips[2].radius,
-          "the default brush's size link makes three different dabs");
+    check(tips[0].radius == tips[1].radius && tips[1].radius == tips[2].radius,
+          "the three cells are now IDENTICAL, even for the default brush -- "
+          "brushTipFor() no longer varies Size by pressure at all");
     bool viaBrushTipFor = true;
     for (size_t i = 0; i < kDabPreviewCells; ++i)
       viaBrushTipFor = viaBrushTipFor &&
                        tips[i].radius == brushTipFor(brush, noLut, kDabPreviewPressures[i]).radius;
     check(viaBrushTipFor, "each cell is exactly brushTipFor() at its own pressure");
-    check(tips[2].radius == brush.radius,
-          "and the full-pressure cell is the slider's own radius");
+    check(tips[2].radius == brush.model.tip.diameterPx / 2.0f,
+          "and every cell is the brush's own base radius");
 
     // Roundness and angle reach the tip at all -- brush/Deposit.hpp §2b's
     // whole subject. Before that they were dropped in `brushTipFor()` and this
     // assertion would have failed on a brush the UI showed as elliptical.
-    brush.roundness = 0.42f;
-    brush.angle = -70.0f;
+    // Unlike Size, these are BASE fields `brushTipFor()` always sets
+    // (`tip.angle = model.tip.angleDeg`, `tip.roundness = model.tip.
+    // roundness`), so this half of the old claim still holds unmodified.
+    brush.model.tip.roundness = 0.42f;
+    brush.model.tip.angleDeg = -70.0f;
     const std::array<BrushTip, kDabPreviewCells> shaped = dabPreviewTipsFor(brush, noLut, live);
     check(shaped[2].roundness == 0.42f && shaped[2].angle == -70.0f,
           "ROUNDNESS and ANGLE reach the tip -- they used to be dropped");
 
-    // With every link removed the three cells must be byte-identical, which is
-    // the converse: the cells differ ONLY because the dynamics say so.
-    BrushState plain;
-    plain.links.links.clear();
+    // The three cells are byte-identical regardless of links too -- not the
+    // converse of a link-driven claim any more (there is no such claim left
+    // to be the converse OF), simply restated: `links` populated or not,
+    // nothing changes.
+    BrushState linked = brush;
+    addLink(linked.links,
+            BrushLink{DynamicSource::Pressure, DynamicTarget::Size, {}, 0.1f, 1.0f, false, true});
     const DabPreviewImage flatImg =
-        rasteriseDabPreview(dabPreviewTipsFor(plain, noLut, live));
+        rasteriseDabPreview(dabPreviewTipsFor(linked, noLut, live));
     bool cellsIdentical = true;
     for (int y = 0; y < kDabPreviewHeight && cellsIdentical; ++y)
       for (int lx = 0; lx < kDabPreviewCell && cellsIdentical; ++lx) {
@@ -557,7 +574,8 @@ bool runDabPreviewTest() {
                                flatImg.rgba[c + static_cast<size_t>(ch)];
       }
     check(cellsIdentical,
-          "a brush with no links previews three identical dabs, exactly");
+          "a brush with a live Pressure -> Size link STILL previews three identical dabs, "
+          "exactly -- the link is never read by this path any more");
   }
 
   std::printf("[selftest] dab preview %s\n", ok ? "PASS" : "FAIL");

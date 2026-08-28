@@ -348,7 +348,7 @@ bool runAbrBrushesTest() {
       check(p.name == "Inker 7", "abr: the brush keeps its own name");
       // Diameter is a DIAMETER; radius is half of it. Import it whole and
       // every brush arrives twice the size the artist made it.
-      check(nearf(p.radius, 20.0f, 1e-4f),
+      check(nearf(p.model.tip.diameterPx / 2.0f, 20.0f, 1e-4f),
             "abr: `Dmtr` is a DIAMETER, so radius is half of it -- importing it whole doubles "
             "every brush");
       // **The angle's MAGNITUDE is pinned; its SIGN is deliberately not.**
@@ -365,8 +365,16 @@ bool runAbrBrushesTest() {
       // number survives import unscaled) and leaves the open question to
       // docs/reachability-audit.md **B9**, where it can be closed by looking
       // at Photoshop rather than by reasoning.
-      check(nearf(p.spacing, 0.5f, 1e-4f) && nearf(p.roundness, 0.5f, 1e-4f) &&
-                nearf(std::fabs(p.angle), 30.0f, 1e-4f),
+      // `p.model.tip.spacingPercent / 100.0f * 2.0f` is RADII -- the old,
+      // now-deleted `BrushPreset::spacing` scalar's own unit, which this
+      // check compared against directly. `spec.spacingPercent = 25.0`
+      // survives import unchanged as a raw percent (checked separately, the
+      // importer's own `readRawField()`), and 25% of the diameter is 0.5 of
+      // the radius -- `io/AbrBrushes.cpp`'s `abrSpacingToRadii()` names the
+      // identical `/ 100 * 2` conversion.
+      check(nearf(p.model.tip.spacingPercent / 100.0f * 2.0f, 0.5f, 1e-4f) &&
+                nearf(p.model.tip.roundness, 0.5f, 1e-4f) &&
+                nearf(std::fabs(p.model.tip.angleDeg), 30.0f, 1e-4f),
             "abr: spacing and roundness arrive unchanged, and `Angl` arrives with its MAGNITUDE "
             "intact (30 degrees, unscaled) -- the SIGN convention is an open question, audit B9, "
             "and is deliberately not asserted either way rather than canonizing a guess");
@@ -382,7 +390,7 @@ bool runAbrBrushesTest() {
       skew.angleDeg = 125.0;
       const AbrImportResult rSkew = importAbrBrushes(wrapAbr(oneBrushLibrary(skew)));
       check(rSkew.ok && rSkew.presets.size() == 1 &&
-                nearf(std::fabs(rSkew.presets[0].angle), 125.0f, 1e-4f),
+                nearf(std::fabs(rSkew.presets[0].model.tip.angleDeg), 125.0f, 1e-4f),
             "abr: a second, asymmetric `Angl` (125.0) also survives import at full magnitude -- "
             "125 has no 90-degree symmetry for an error to hide behind, unlike the round number "
             "the section above shares with the spacing/roundness checks");

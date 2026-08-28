@@ -74,11 +74,17 @@ struct BrushPreset {
   // brush, and the EDITED badge must not trip because of it.
   bool builtin = false;
 
-  float radius = 20.0f;
-  float hardness = 0.35f;
-  float spacing = 0.25f;
-  float roundness = 1.0f;
-  float angle = 0.0f;
+  // Radius/hardness/spacing/roundness/angle used to live here as their own
+  // five scalars, read by `app/StrokeSession::brushTipFor()` alongside
+  // `links` below. They are gone: `model` (below) is now authoritative for
+  // all five -- `model.tip.diameterPx / 2.0f` for radius,
+  // `model.tip.hardness` for hardness, `model.tip.spacingPercent / 100.0f`
+  // for spacing, `model.tip.roundness` for roundness, `model.tip.angleDeg`
+  // for angle -- and every reader of the old fields was moved to read the
+  // model equivalent instead, mechanically, at the same relocation
+  // `tipBitmap`/`dualTip`/`grain` below already went through when THEY
+  // gained a durable home. `load` and `wetness` stay: naturalPaint's own two
+  // concepts, not Photoshop's, with no equivalent in `BrushModel`.
   float load = 0.9f;
   float wetness = 1.3f;
   BrushLinkSet links;

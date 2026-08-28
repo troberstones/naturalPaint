@@ -1083,6 +1083,13 @@ bool runAbrBrushesTest();
 // new per-target floor.
 bool runMultiplyFloorTest();
 
+// app/selftest/ShelvedLinks.cpp: the dedicated test for the shelved 10x12
+// link matrix (brush/Dynamics.hpp) -- a `user-presets.txt` fixture's
+// link/floor/point lines round-trip byte-for-byte with no live
+// `BrushLinkSet` ever built from them, and a hand-built, non-empty
+// `BrushLinkSet` changes nothing `app/StrokeSession::brushTipFor()` reads.
+bool runShelvedLinksTest();
+
 // app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md B5's
 // axis defect. Asserted geometrically -- each dab's displacement is
 // projected onto the stroke's own tangent and perpendicular -- that the
