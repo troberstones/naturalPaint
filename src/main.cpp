@@ -1076,6 +1076,10 @@ int main(int argc, char** argv) {
   const char* abrKeysPath = nullptr;
   bool dabScan = false;
   const char* dabImportPath = nullptr;
+  // --patt-write <file.abr> : the `patt`-block equivalent of --dab-import --
+  // extract a pack's scanned patterns into patterns-imported/ and report what
+  // landed. See app/DabLibrary's extractAbrPatterns().
+  const char* pattWritePath = nullptr;
   const char* dabDemoId = nullptr;
   bool brushSettingsDemo = false;
   int brushSettingsDemoTab = -1;
@@ -1286,6 +1290,8 @@ int main(int argc, char** argv) {
       // --open-export-states one dialog over: it too is opened by a click and
       // --screenshot has no input. See AppState::openLayerProperties.
       openLayerProperties = true;
+    } else if (a == "--patt-write") {
+      if (i + 1 < argc) pattWritePath = argv[++i];
     } else if (np::looksLikePositionalArgument(a)) {
       // D4: the one case none of the branches above matched -- a bare
       // filename. See this loop's own comment, just above it, and
@@ -1308,6 +1314,7 @@ int main(int argc, char** argv) {
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
   if (dabImportPath != nullptr) return np::runDabImport(dabImportPath);
+  if (pattWritePath != nullptr) return np::runPattWrite(pattWritePath);
   if (dabScan) return np::runDabScan();
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
@@ -1711,6 +1718,10 @@ int main(int argc, char** argv) {
     // app/DabLibrary: the watched folder -- an unchanged rescan decoding
     // nothing, and a rename not orphaning the presets that point at it.
     const bool dabLibraryOk = np::runDabLibraryTest();
+    // app/DabLibrary's pattern extraction: a decoded `.abr` pattern written to
+    // patterns-imported/<uuid>.png, single-channel and byte-exact, the
+    // patt-block sibling of the dab-library test's own tip-extraction section.
+    const bool patternExtractOk = np::runPatternExtractTest();
     // ui/DabPicker: the grid arithmetic, including the hit test as the exact
     // inverse of the cell placement.
     const bool dabPickerOk = np::runDabPickerTest();
@@ -2248,7 +2259,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

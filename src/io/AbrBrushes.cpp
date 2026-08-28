@@ -1166,11 +1166,16 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     PsPatternResult pat = parseAbrPatterns(bytes.subspan(pattAt, pattLen));
     result.patternsDecoded = pat.patterns.size();
     result.patternsSkipped = pat.skipped;
+    result.patternSamples.reserve(pat.patterns.size());
     for (PsPattern& q : pat.patterns) {
       auto field = std::make_shared<PaperField>();
       field->width = q.width;
       field->height = q.height;
       field->height8 = std::move(q.height8);
+      // `result.patternSamples` gets the same shared_ptr `patternsById` keeps
+      // -- one allocation, two owners, exactly how `tipsById`/`tipSamples`
+      // already share a `BrushTipBitmap` a few lines below.
+      result.patternSamples.push_back(AbrPatternSample{q.id, q.name, field});
       patternsById.emplace(std::move(q.id), std::move(field));
     }
   }

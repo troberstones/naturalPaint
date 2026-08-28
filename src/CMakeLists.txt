@@ -44,6 +44,7 @@ add_executable(naturalPaint
   app/selftest/CoverageBlend.cpp
   app/selftest/PaperTexture.cpp
   app/selftest/DabLibrary.cpp
+  app/selftest/PatternExtract.cpp
   app/selftest/DabPicker.cpp
   app/selftest/BrushSettingsWindow.cpp
   app/selftest/BrushModelIo.cpp
