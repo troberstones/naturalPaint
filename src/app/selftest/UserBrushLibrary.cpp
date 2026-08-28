@@ -1,5 +1,8 @@
 #include "app/selftest/Support.hpp"
 
+#include "brush/BrushModelDiff.hpp"
+#include "brush/BrushModelIo.hpp"
+
 #include "app/BrushLibraryFile.hpp"
 #include "app/BrushRowIcon.hpp"
 #include "app/DabPreview.hpp"
@@ -602,6 +605,124 @@ bool runUserBrushLibraryTest() {
   }
 
   // Restore the environment for whatever runs after this section.
+  // =====================================================================
+  std::printf("  -- the BrushModel survives the file --\n");
+  // =====================================================================
+  //
+  // **This is the assertion Phase A exists for.** Before it, a `BrushModel`
+  // was built by the importer, handed back on a vector parallel to the
+  // presets, and destroyed when the import call returned -- so Duplicate on
+  // an imported brush kept fourteen scalars and silently discarded the other
+  // 137 leaves: the texture pattern, the dual tip's own scatter, the transfer
+  // curves, the blend mode. The copy painted differently from the original
+  // and nothing said so.
+  //
+  // The round trip is asserted with `brushModelDiff()` rather than a
+  // hand-written field comparison, and that is not a convenience: a
+  // comparison written here would be a SECOND enumeration of the 151 fields,
+  // free to omit exactly the field the writer forgot -- the fork
+  // brush/BrushModelFields.hpp exists to prevent. It also means a failure
+  // names the field instead of saying "the model did not survive", which is
+  // the difference between an actionable red and a puzzle.
+  {
+    UserBrushLibraryStore store;
+    BrushLibrary lib;
+    BrushPreset p;
+    p.name = "model round trip";
+    p.libraryId = 0;
+    p.builtin = false;
+
+    // Every leaf set to a DISTINCT non-default value, walked through the one
+    // field list. Distinct matters: a fixture that set every float to 1.0f
+    // would pass just as happily against a writer that swapped two
+    // same-typed fields, which is the "what other implementation would also
+    // pass this?" question every green here has to survive.
+    int tick = 0;
+    visitBrushModelFields(p.model, [&](const std::string&, auto& ref) {
+      using T = std::decay_t<decltype(ref)>;
+      ++tick;
+      if constexpr (std::is_same_v<T, float>) ref = 0.5f + static_cast<float>(tick);
+      else if constexpr (std::is_same_v<T, bool>) ref = true;
+      else if constexpr (std::is_same_v<T, int32_t>) ref = tick;
+      else if constexpr (std::is_same_v<T, std::string>) ref = "v" + std::to_string(tick);
+      else if constexpr (std::is_same_v<T, VarianceControl>)
+        ref = static_cast<VarianceControl>(tick % 8);
+      else if constexpr (std::is_same_v<T, CoverageBlend>)
+        ref = static_cast<CoverageBlend>(tick % 10);
+    });
+    check(tick == 151, "userbrushlib/model: the fixture touched all 151 leaves");
+    check(!brushModelToLines(p.model).empty(),
+          "userbrushlib/model: a fully-populated model writes lines at all");
+
+    lib.presets.push_back(p);
+    std::string err;
+    check(store.saveToFile(userPath, lib, &err), "userbrushlib/model: saves");
+
+    // **Read back through a FRESH store and a FRESH library**, never through
+    // the objects that still hold the originals in memory -- an assertion
+    // that reads back through the writer proves the writer can remember, not
+    // that the file can carry.
+    UserBrushLibraryStore reread;
+    BrushLibrary lib2;
+    check(reread.loadFromFile(userPath, lib2, &err), "userbrushlib/model: loads");
+
+    const BrushPreset* got = nullptr;
+    for (const BrushPreset& q : lib2.presets)
+      if (q.name == "model round trip") got = &q;
+    check(got != nullptr, "userbrushlib/model: the preset came back");
+
+    if (got != nullptr) {
+      const std::vector<std::string> differing = brushModelDiff(p.model, got->model);
+      if (!differing.empty()) {
+        std::printf("  [measured] %zu leaf/leaves did not survive, first few:\n",
+                    differing.size());
+        for (size_t i = 0; i < differing.size() && i < 6; ++i)
+          std::printf("      %s\n", differing[i].c_str());
+      }
+      check(differing.empty(),
+            "userbrushlib/model: all 151 leaves survive save -> load at zero tolerance");
+      check(brushModelEqual(p.model, got->model),
+            "userbrushlib/model: and brushModelEqual() agrees with the diff");
+    }
+  }
+
+  // =====================================================================
+  std::printf("  -- a model field this build does not know is KEPT --\n");
+  // =====================================================================
+  //
+  // The forward-compatible case, which is the one a user meets by opening a
+  // file a newer build wrote. An unknown path is preserved verbatim and
+  // written back on save, so an older build cannot silently strip settings it
+  // did not understand -- the same promise the `floor` branch already makes
+  // for an out-of-range target ordinal.
+  {
+    const std::string fromTheFuture =
+        std::string(kUserPresetsFileHeader) + " 1\n"
+        "preset future brush\n"
+        "scalars 21 0.3 0.25 1 0 0.9 1.3\n"
+        "model tip.diameterPx 44\n"
+        "model tip.thisFieldDoesNotExistYet 7\n";
+    { std::ofstream f(userPath, std::ios::binary); f << fromTheFuture; }
+
+    UserBrushLibraryStore store;
+    BrushLibrary lib;
+    std::string err;
+    check(store.loadFromFile(userPath, lib, &err),
+          "userbrushlib/future: a file with an unknown model path still loads");
+    const BrushPreset* got = nullptr;
+    for (const BrushPreset& q : lib.presets)
+      if (q.name == "future brush") got = &q;
+    check(got != nullptr && got->model.tip.diameterPx == 44.0f,
+          "userbrushlib/future: the KNOWN field beside it was still read");
+
+    check(store.saveToFile(userPath, lib, &err), "userbrushlib/future: saves again");
+    std::string back;
+    { std::ifstream f(userPath, std::ios::binary);
+      back.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()); }
+    check(back.find("tip.thisFieldDoesNotExistYet 7") != std::string::npos,
+          "userbrushlib/future: the unknown field is still in the file after a save");
+  }
+
   if (savedUser.empty()) unsetenv("NP_USER_PRESETS");
   else setenv("NP_USER_PRESETS", savedUser.c_str(), 1);
   if (savedAbr.empty()) unsetenv("NP_BRUSH_LIBRARIES");

@@ -10,6 +10,8 @@
 #include <iterator>
 #include <sstream>
 
+#include "brush/BrushModelIo.hpp"
+
 namespace np {
 namespace {
 
@@ -269,6 +271,39 @@ void UserBrushLibraryStore::parse(const std::string& text, BrushLibrary& lib) {
       continue;
     }
 
+    if (key == "model") {
+      // One line per non-default leaf of `BrushPreset::model` -- Photoshop's
+      // whole Brush Settings panel, 151 addressable fields
+      // (brush/BrushModelFields.hpp). A SEPARATE keyword for the third time
+      // and for the third statement of the same rule: growing `scalars`'
+      // required count would make a file written before this existed fail
+      // `takeFloats()`'s exact-count contract and drop the whole preset.
+      //
+      // **One key repeated, not 151 keys.** The alternative -- a keyword per
+      // field -- would put the field list in this parser as well as in the
+      // visitor, which is the fork brush/BrushModelFields.hpp exists to
+      // prevent. Here the parser knows only that `model` carries "a path and
+      // a value" and hands both to the one walk that knows what paths exist.
+      if (!brushModelApplyLine(pending.model, rest)) {
+        // **A path this build does not know is a NEWER build's field, and
+        // correct data.** Same call the `floor` branch below makes for an
+        // out-of-range target ordinal, for the same reason: this build cannot
+        // evaluate it and has no business destroying it. Preserved verbatim
+        // and written back out on save, so a user who opens a newer file in
+        // an older build and saves does not silently strip what the newer one
+        // understood.
+        //
+        // This also swallows a genuinely CORRUPT line -- a bad float, a
+        // truncated path -- and preserves that too. A deliberate trade: this
+        // parser cannot tell "from the future" from "damaged", and of the two
+        // ways to be wrong, keeping a line nobody can read is recoverable by
+        // hand and deleting a line somebody needed is not.
+        pendingUnknown.push_back(line);
+      }
+      pointMode = PointMode::None;
+      continue;
+    }
+
     if (key == "grain") {
       // A SEPARATE keyword rather than an eighth `scalars` field --
       // `BrushPreset::grain`'s own comment gives the reason: growing
@@ -451,6 +486,13 @@ std::string UserBrushLibraryStore::serialize(const BrushLibrary& lib) const {
     // written by this build byte-identical to one written before the key
     // existed, for every preset that does not use it.
     if (!p.dabId.empty()) out += "dab " + sanitizeOneLine(p.dabId) + "\n";
+    // Only the leaves that differ from a default `BrushModel`, so a preset
+    // nobody has touched the Photoshop panels on writes nothing at all and
+    // stays byte-identical to a file written before this key existed. A
+    // fully-specified imported brush writes on the order of 30-60 lines; 151
+    // is the ceiling, not the typical cost.
+    for (const std::string& modelLine : brushModelToLines(p.model))
+      out += "model " + sanitizeOneLine(modelLine) + "\n";
     out += "grain " + std::string(p.grain.enabled ? "1" : "0") + " " +
            std::to_string(p.grain.periodX) + " " + std::to_string(p.grain.periodY) + " " +
            f9(p.grain.depth) + " " + f9(p.grain.strength) + "\n";

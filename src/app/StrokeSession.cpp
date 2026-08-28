@@ -608,6 +608,13 @@ void applyPresetToBrush(const BrushPreset& preset, BrushState& brush) {
   brush.dualBlend = preset.dualBlend;
   brush.scatterBothAxes = preset.scatterBothAxes;
   brush.grain = preset.grain;
+  // Carried in lockstep with everything above, for the reason
+  // `BrushState::model`'s own comment gives: this is the one direction that,
+  // until now, had somewhere to write a model FROM (`BrushPreset::model`) but
+  // nowhere to write it TO -- fixing only this half without the mirror below
+  // would make picking a preset look like it worked while Duplicate still
+  // dropped everything the model carries.
+  brush.model = preset.model;
 }
 
 BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
@@ -627,6 +634,13 @@ BrushPreset presetFromBrush(std::string name, const BrushState& brush) {
   p.dualBlend = brush.dualBlend;
   p.scatterBothAxes = brush.scatterBothAxes;
   p.grain = brush.grain;
+  // The other half of the lockstep above. This is the direction that used to
+  // not exist at all -- `BrushState` had no `model` field to read -- which is
+  // the exact mechanism of the defect `BrushPreset::model`'s comment
+  // describes: Duplicate on an imported brush produced a preset whose model
+  // was default-constructed, silently discarding the texture, transfer,
+  // Dual Brush cadence and blend mode the import decoded.
+  p.model = brush.model;
   return p;
 }
 

@@ -1717,6 +1717,13 @@ int main(int argc, char** argv) {
     // ui/BrushSettingsWindow: the tab table -- one row per group of brush
     // settings, each carrying its own id.
     const bool brushSettingsWindowOk = np::runBrushSettingsWindowTest();
+    // brush/BrushModelIo: the text form of a BrushModel -- one templated
+    // visitor over all 151 leaves rather than 151 hand-written branches, in
+    // both directions. Headless and GPU-free.
+    const bool brushModelIoOk = np::runBrushModelIoTest();
+    // brush/BrushModelDiff: the diff/equal pair over the same 151 leaves,
+    // which presetMatches() and the round-trip proof both need. Headless.
+    const bool brushModelDiffOk = np::runBrushModelDiffTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
@@ -2241,7 +2248,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && dabPickerOk && brushSettingsWindowOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && dabPickerOk && brushSettingsWindowOk && brushModelIoOk && brushModelDiffOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

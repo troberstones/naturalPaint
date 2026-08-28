@@ -98,20 +98,21 @@ struct AbrImportResult {
   bool ok = false;
   std::string error;  // set when ok is false, and then presets is empty
 
-  std::vector<BrushPreset> presets;
-
-  // The same brushes as `presets`, read into Photoshop's own panel structure
-  // (brush/BrushModel.hpp) rather than flattened onto the link matrix. One
-  // entry per preset, in the same order.
+  // Each preset's `model` (`brush/Library.hpp`'s `BrushPreset::model`) is
+  // filled alongside it, read into Photoshop's own panel structure
+  // (brush/BrushModel.hpp) rather than flattened onto the link matrix.
   //
-  // **Filled alongside `presets`, and read by nothing that paints -- yet.**
-  // Keeping both while the engine moves over means the switchover is one
-  // commit changing what CONSUMES this data, rather than one changing producer
-  // and consumer in the same breath. Today its whole job is to let
-  // `--abr-report` say what is actually in the file: Texture, Transfer,
-  // Scatter Count, the Dual Brush's own cadence and the tool options were all
-  // dropped without a note before it existed.
-  std::vector<BrushModel> models;
+  // **This USED to be a separate `models` vector here, index-parallel to
+  // `presets` and read by nothing but `--abr-report`.** That shape is exactly
+  // the bug `presetFromBrush()` used to have no way around: a model that
+  // lives in a second vector, one call's lifetime away from the preset it
+  // describes, is a model Duplicate has no path to carry (`BrushPreset::model`
+  // has the full account). Writing it directly onto `presets[i].model`
+  // removes the index to get out of step, and gives the model the same
+  // lifetime as the preset it belongs to -- for as long as the preset
+  // survives, whether that is the length of this function call or, via
+  // Duplicate, well beyond it.
+  std::vector<BrushPreset> presets;
 
   // The `samp` block's tips, flat and in file order, beside the presets that
   // reference them.

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "brush/BrushModel.hpp"
 #include "brush/Dynamics.hpp"
 #include "brush/Library.hpp"
 #include "app/DabLibrary.hpp"
@@ -259,6 +260,16 @@ struct BrushState {
   // field's own comment. No slider writes this yet; it moves only with
   // `applyPresetToBrush()`/`presetFromBrush()`, alongside `tipBitmap`.
   bool scatterBothAxes = false;
+
+  // Mirrors `brush/Library.hpp`'s `BrushPreset::model` -- see that field's own
+  // comment for the whole argument. The live brush needs a slot to carry a
+  // Photoshop model INTO, not just a preset to carry one FROM: without this,
+  // `applyPresetToBrush()` would have somewhere to read a model out of and
+  // `presetFromBrush()` would have nothing to read one back from, which is
+  // exactly the asymmetry that let Duplicate discard the model in the first
+  // place (`BrushPreset::model`'s comment again). Carried in lockstep with
+  // every field above it by both functions; read by nothing that paints yet.
+  BrushModel model;
 
   // Which cell of the DYNAMICS matrix the LINK editor below it is showing.
   //

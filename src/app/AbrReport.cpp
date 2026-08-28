@@ -175,7 +175,7 @@ struct PanelRow {
 };
 
 void printPanelCoverage(const AbrImportResult& r) {
-  if (r.models.empty()) return;
+  if (r.presets.empty()) return;
 
   PanelRow rows[] = {
       {"Brush Tip Shape", 0, 0, ""},
@@ -195,7 +195,15 @@ void printPanelCoverage(const AbrImportResult& r) {
   enum { kTip, kShape, kScatter, kCount, kTexture, kDual, kColor, kTransfer,
          kBlend, kNoise, kWet, kAir, kPose };
 
-  for (const BrushModel& m : r.models) {
+  // Read off `presets[i].model` rather than a separate `AbrImportResult::models`
+  // vector -- that vector used to exist, index-parallel to `presets`, and was
+  // deleted in favour of the model living on the preset it describes
+  // (`brush/Library.hpp`'s `BrushPreset::model` and this header's own comment
+  // on `AbrImportResult::presets`). This loop reading the same table it always
+  // did, from its new home, is the proof that move changed nothing this
+  // report says.
+  for (const BrushPreset& preset : r.presets) {
+    const BrushModel& m = preset.model;
     if (!m.tip.dab.id.empty()) {
       ++rows[kTip].requested;
       if (m.tip.dab.bitmap != nullptr) ++rows[kTip].rendered;
@@ -235,7 +243,7 @@ void printPanelCoverage(const AbrImportResult& r) {
     }
     std::printf("%-20s %9zu %9zu  %s\n", row.name, row.requested, row.rendered, row.note);
   }
-  std::printf("(of %zu presets; %zu pattern(s) decoded from `patt`", r.models.size(),
+  std::printf("(of %zu presets; %zu pattern(s) decoded from `patt`", r.presets.size(),
               r.patternsDecoded);
   if (r.patternsSkipped > 0) std::printf(", %zu skipped", r.patternsSkipped);
   std::printf(")\n");

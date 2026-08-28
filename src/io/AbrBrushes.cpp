@@ -616,12 +616,16 @@ BrushPreset presetFromDescriptor(
 // ===========================================================================
 //
 // **This runs ALONGSIDE `presetFromDescriptor()` above, not instead of it.**
-// The engine still paints from `BrushPreset` and its link matrix; this fills
-// the model the engine will move to, so the switchover is one commit that
-// changes what CONSUMES the data rather than one that changes both producer
-// and consumer in the same breath. Until then the model's whole job is to let
-// `--abr-report` say what is in the file -- which for Texture, Transfer and
-// Scatter Count is the first time anything has said so.
+// The engine still paints from `BrushPreset`'s fourteen scalars and its link
+// matrix; this fills the model the engine will move to, so the switchover is
+// one commit that changes what CONSUMES the data rather than one that changes
+// both producer and consumer in the same breath. The model is attached to
+// the preset it belongs to (`BrushPreset::model`, filled just below) so it
+// survives past the `importAbrBrushes()` call and follows the preset through
+// Duplicate -- but nothing reads it to paint yet. Until the engine moves
+// over, the model's job is `--abr-report`'s: saying what is actually in the
+// file, which for Texture, Transfer and Scatter Count is the first time
+// anything has said so.
 
 Variance readVariance(const DescriptorRef& owner, const char* key) {
   Variance v;
@@ -1193,14 +1197,21 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
 
   for (size_t i = 0; i < list.childCount(); ++i) {
     result.presets.push_back(presetFromDescriptor(list.child(i), result, tipsById));
-    // The Photoshop-shaped model, filled alongside -- see the
-    // `brushModelFromDescriptor()` block's own comment on why both, for now.
-    result.models.push_back(brushModelFromDescriptor(list.child(i), tipsById));
+    BrushPreset& preset = result.presets.back();
+    // The Photoshop-shaped model, filled alongside and attached to the SAME
+    // preset it was read from -- see the `brushModelFromDescriptor()` block's
+    // own comment on why both, for now. Written directly onto `preset.model`
+    // rather than into a second, index-parallel vector: that used to be
+    // `AbrImportResult::models`, and a vector that has to stay aligned with
+    // another one by construction is exactly the shape of bug that let
+    // Duplicate silently drop it (`brush/Library.hpp`'s `BrushPreset::model`
+    // comment has the whole story) -- there is no index to get out of step
+    // with when the model lives on the thing it describes.
+    preset.model = brushModelFromDescriptor(list.child(i), tipsById);
 
     // The Texture panel, resolved against this file's own patterns and
     // attached to the preset that will paint with it.
-    const BrushModel& model = result.models.back();
-    BrushPreset& preset = result.presets.back();
+    const BrushModel& model = preset.model;
     if (model.texture.enabled) {
       std::string why;
       if (grainFromTexture(model.texture, patternsById, preset.grain, why)) {

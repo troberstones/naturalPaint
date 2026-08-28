@@ -46,6 +46,8 @@ add_executable(naturalPaint
   app/selftest/DabLibrary.cpp
   app/selftest/DabPicker.cpp
   app/selftest/BrushSettingsWindow.cpp
+  app/selftest/BrushModelIo.cpp
+  app/selftest/BrushModelDiff.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
@@ -169,6 +171,8 @@ add_executable(naturalPaint
   app/WheelInput.cpp
   app/ZoomAndSize.cpp
   brush/BrushModel.cpp
+  brush/BrushModelIo.cpp
+  brush/BrushModelDiff.cpp
   brush/CoverageBlend.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp

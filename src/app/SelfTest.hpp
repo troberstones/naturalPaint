@@ -1218,6 +1218,34 @@ bool runDabPickerTest();
 // which is completely invisible on inspection. Headless and GPU-free.
 bool runBrushSettingsWindowTest();
 
+// brush/BrushModelIo: the text format for a `BrushModel` (Photoshop's Brush
+// Settings panel, ~117 addressable leaves once every `Variance` is counted
+// out) and the one templated visitor (brush/BrushModelIo.hpp's
+// `visitBrushModelFields()`) both `brushModelToLines()` and
+// `brushModelApplyLine()` walk instead of ~117 hand-written branches. Round-
+// trips a model with every field set to a distinct value at zero tolerance,
+// asserts a default model writes zero lines, that every path is unique, that
+// the path count is pinned to a literal (so a field added to `BrushModel`
+// without a matching visitor call fails here), and that an unknown path, a
+// malformed value, and an out-of-range enum ordinal are each refused without
+// mutating the model. Headless and GPU-free.
+bool runBrushModelIoTest();
+
+// brush/BrushModelDiff: `brushModelDiff()`/`brushModelEqual()`, the two
+// functions that will let `presetMatches()` compare BrushModel's full ~151
+// leaves instead of the 14 scalars it checks today, and let a round-trip
+// test name which field did not survive instead of just that one didn't.
+// Both are built on ONE templated visitor (brush/BrushModelDiff.hpp's
+// `detail::visitBrushModel`) walked in two modes: read-only over two const
+// models here, and read-write over one mutable model in this file's own
+// "every field is reachable" section, which sets exactly the k-th leaf (in
+// the visitor's own walk order) and nothing else, then asserts the diff
+// names exactly that path. Also pins `brushModelDiffPaths().size()` to a
+// literal, so a field added to BrushModel without its one visitor line
+// fails here instead of silently under-counting. Pure CPU, no GPU, no file
+// I/O -- BrushModel is a plain struct.
+bool runBrushModelDiffTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/

@@ -102,6 +102,38 @@ std::vector<uint8_t> wrapAbrWithSamp(const std::vector<uint8_t>& sampBody,
   return f.bytes;
 }
 
+// A one-brush `desc` body with the Texture panel ON: `useTexture` plus a
+// `Txtr` object naming a pattern by `Idnt`/`Nm  ` -- the two fields
+// `brushModelFromDescriptor()` (io/AbrBrushes.cpp) reads into
+// `BrushModel::texture.pattern`, and deliberately nothing else Texture has
+// (scale, depth, blend mode...): section E below is testing that the model
+// SURVIVES past import, not re-testing what `brushModelFromDescriptor()`
+// already decodes correctly on its own account, which is out of this file's
+// scope (io/AbrBrushes.hpp's own reader is where that belongs).
+//
+// Chosen over a Dual Brush or Shape Dynamics fixture as the discriminating
+// field because it is the cheapest panel to fabricate that no other field
+// on `BrushPreset` or `BrushModel` already carries: `GrainParams` (attached
+// separately, from this SAME `Txtr` block, by `grainFromTexture()`) stores
+// the pattern's pixel data, never its name -- so an assertion on
+// `model.texture.pattern.name` cannot be satisfied by accident through
+// `preset.grain` and proves the model itself, and nothing upstream of it,
+// made the trip.
+std::vector<uint8_t> oneTexturedBrushDesc(const char* name, const char* patternId,
+                                          const char* patternName) {
+  DescFixture f;
+  f.version();
+  f.descriptor("null", "null", 1);
+  f.key4("Brsh").vlls(1);
+  f.objc("brushPreset", "brushPreset", 3);
+  f.key4("Nm  ").textv(name);
+  f.keyN("useTexture").boolv(true);
+  f.keyN("Txtr").objc("texturePattern", "texturePattern", 2);
+  f.key4("Idnt").textv(patternId);
+  f.key4("Nm  ").textv(patternName);
+  return f.bytes;
+}
+
 }  // namespace
 
 // io/AbrBrushes' `samp` block (brush/Deposit.hpp §2c): the bitmap tip a
@@ -689,6 +721,91 @@ bool runAbrSampledTipsTest() {
           "bitmap apart from `brush`'s -- documented on BrushPreset::tipBitmap and on "
           "presetMatches() itself, because nothing today can move a live bitmap independently "
           "of picking a whole preset");
+  }
+
+  // ==========================================================================
+  std::printf("  -- E. the Photoshop-shaped model travels with the preset --\n");
+  // ==========================================================================
+  // brush/BrushModel.hpp's ~117 fields used to be decoded correctly and then
+  // discarded: `AbrImportResult::models` (io/AbrBrushes.hpp) lived exactly as
+  // long as `importAbrBrushes()`'s own stack frame, `BrushPreset` and
+  // `BrushState` had nowhere to hold one, and the only reader of a
+  // `BrushModel` outside its own header was `--abr-report`'s table. This
+  // section is the defect described on `BrushPreset::model`'s own comment
+  // (brush/Library.hpp), proven rather than asserted in prose.
+  {
+    // E1. The importer writes the model onto the SAME preset it decoded it
+    // from (`preset.model`, io/AbrBrushes.cpp), not into a side vector --
+    // and it is not left default-constructed for a preset whose Texture
+    // panel is on. `model.texture.pattern.name` is the discriminating field:
+    // `preset.grain`, filled from this identical `Txtr` block by
+    // `grainFromTexture()` a few lines below where `preset.model` is set,
+    // carries the pattern's PIXELS but never its name -- so this assertion
+    // cannot pass by accident through the grain path, only through the model
+    // itself having made the trip.
+    const auto desc = oneTexturedBrushDesc("Textured Inker",
+                                           "a1b2c3d4-0000-1111-2222-333333333333",
+                                           "Kyle's Rough Watercolor Paper");
+    const AbrImportResult r = importAbrBrushes(wrapAbrWithSamp({}, desc));
+    check(r.ok && r.presets.size() == 1,
+          "abr-samp/model: a textured one-brush library still imports");
+    if (r.ok && r.presets.size() == 1) {
+      const BrushModel& m = r.presets[0].model;
+      check(m.texture.enabled &&
+                m.texture.pattern.id == "a1b2c3d4-0000-1111-2222-333333333333" &&
+                m.texture.pattern.name == "Kyle's Rough Watercolor Paper",
+            "abr-samp/model: the importer writes the Texture panel onto presets[i].model, by "
+            "name and id -- not just a bit saying something was on");
+    }
+
+    // E2. Duplicate preserves the model. This is the defect itself: before
+    // `BrushState` had a `model` field, `applyPresetToBrush()` had nowhere to
+    // COPY a model TO and `presetFromBrush()` had nowhere to read one BACK
+    // FROM, so this round trip built a preset whose model was silently
+    // default-constructed -- discarding the Texture panel just proven above,
+    // and with it Transfer, the Dual Brush's own cadence and the blend mode.
+    // At the base commit this block does not compile at all: `BrushState`
+    // and `BrushPreset` had no `model` member for `brush.model`/`dup.model`
+    // to name, which is the sharpest form "fails on the base commit" can
+    // take for a structural fix -- verified by actually building this file
+    // against that commit (uncommitted, not asserted from memory) rather
+    // than assumed from the diff.
+    BrushPreset preset;
+    preset.radius = 9.0f;
+    preset.model.texture.enabled = true;
+    preset.model.texture.pattern.id = "deadbeef-0000-1111-2222-333333333333";
+    preset.model.texture.pattern.name = "Kyle's Rough Watercolor Paper";
+
+    BrushState brush;
+    applyPresetToBrush(preset, brush);
+    check(brush.model.texture.enabled &&
+              brush.model.texture.pattern.name == "Kyle's Rough Watercolor Paper",
+          "abr-samp/model: applyPresetToBrush() carries the model onto the live brush");
+
+    const BrushPreset dup = presetFromBrush("Duplicate", brush);
+    check(dup.model.texture.enabled &&
+              dup.model.texture.pattern.id == "deadbeef-0000-1111-2222-333333333333" &&
+              dup.model.texture.pattern.name == "Kyle's Rough Watercolor Paper",
+          "abr-samp/model: presetFromBrush() (Duplicate) carries the model back into a preset "
+          "-- Duplicate on an imported brush no longer discards its Photoshop panels");
+
+    // E3. The model travels WITH BrushState, so picking a different preset
+    // and picking the first one back does not leave the model stuck, stale,
+    // or partially merged -- `applyPresetToBrush()` overwrites `brush.model`
+    // wholesale on every call, the same all-or-nothing copy `tipBitmap` and
+    // `dualTip` already get and for the identical reason (Library.hpp's own
+    // comments on both): a model that survived by merging fields could leave
+    // a brush painting with one preset's Texture and another's Dual Brush.
+    BrushPreset plain;  // default BrushModel{}: texture off, empty pattern name
+    applyPresetToBrush(plain, brush);
+    check(!brush.model.texture.enabled && brush.model.texture.pattern.name.empty(),
+          "abr-samp/model: switching to a preset with no model clears the previous one's, "
+          "rather than leaving it stuck on the live brush");
+    applyPresetToBrush(preset, brush);
+    check(brush.model.texture.enabled &&
+              brush.model.texture.pattern.name == "Kyle's Rough Watercolor Paper",
+          "abr-samp/model: ...and switching back restores it exactly, because the source is "
+          "presets[active].model and not the live brush's own history");
   }
 
   std::printf("[selftest] abr sampled tips %s\n", ok ? "PASS" : "FAIL");

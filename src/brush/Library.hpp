@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "brush/BrushModel.hpp"
 #include "brush/Deposit.hpp"
 #include "brush/Dynamics.hpp"
 
@@ -187,6 +188,44 @@ struct BrushPreset {
   // verbatim by that parser's own forward-compatible "a key this version does
   // not know" branch -- no code needed here to earn that.
   GrainParams grain;
+
+  // Photoshop's own Brush Settings panel, in its own shape (brush/BrushModel.hpp),
+  // carried beside the fourteen scalars/pointers above rather than folded into
+  // them.
+  //
+  // **Why a whole second copy of the brush lives here.** `io/AbrBrushes.cpp`
+  // decodes every one of the ~117 fields Photoshop writes -- Texture, Transfer,
+  // Scatter Count, the Dual Brush's own cadence, the tool options -- and until
+  // this field existed that decode was thrown away the moment `importAbrBrushes()`
+  // returned: `AbrImportResult::models` was a vector parallel to `presets` that
+  // died with the import call, and the only thing that ever read a `BrushModel`
+  // was `--abr-report`'s table. Everything that actually painted, `applyPresetToBrush()`
+  // below, worked from the lossy 14-scalar projection alone. The cost of that
+  // was invisible until Duplicate: `presetFromBrush()` had nowhere to WRITE a
+  // model, because `BrushState` had none either, so duplicating an imported
+  // preset silently discarded its texture pattern, its transfer curves, its
+  // blend mode, its dual tip's own scatter -- everything this struct's other
+  // fields have no room for. This field is that room.
+  //
+  // **Deliberately inert for now.** Nothing reads `model` to paint yet --
+  // `brushTipFor()` and the stroke engine still work exclusively from
+  // `radius`/`hardness`/`links`/`grain`/etc above, so this commit changes no
+  // pixel. It exists so the model has somewhere durable to live WHILE it is
+  // carried in lockstep with every other field by `applyPresetToBrush()` and
+  // `presetFromBrush()` (app/StrokeSession.cpp) -- the same lockstep discipline
+  // `tipBitmap` and `dualTip` above already follow, and for the identical
+  // reason: a field only one of the two directions copies is a field
+  // Duplicate quietly drops.
+  //
+  // Not yet compared by `presetMatches()`, and not yet persisted by
+  // `app/UserBrushLibraryStore` -- both are the next step, not this one. A
+  // model with no reader has no independent control that could disagree with
+  // the fourteen scalars above the way `grain`'s slider can, so leaving it out
+  // of the EDITED-badge comparison cannot yet produce a wrong badge; that
+  // reasoning stops holding the moment something in `ui/` gets its own control
+  // over a `BrushModel` field, at which point this paragraph needs revisiting
+  // exactly as `grain`'s own comment above describes for itself.
+  BrushModel model;
 };
 
 struct BrushLibrary {
