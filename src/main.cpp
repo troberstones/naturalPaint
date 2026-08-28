@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "app/AbrReport.hpp"
+#include "app/DabLibrary.hpp"
 #include "app/BrushSheet.hpp"
 #include "app/StrokePreview.hpp"
 #include "app/AppState.hpp"
@@ -1072,6 +1073,7 @@ int main(int argc, char** argv) {
   // table and a census of every descriptor key the file actually contains.
   // See app/AbrReport.hpp on why measuring beats remembering here.
   const char* abrKeysPath = nullptr;
+  bool dabScan = false;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1102,6 +1104,8 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) abrReportPath = argv[++i];
     } else if (a == "--abr-keys") {
       if (i + 1 < argc) abrKeysPath = argv[++i];
+    } else if (a == "--dab-scan") {
+      dabScan = true;
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
       if (i + 1 < argc) brushSheetOut = argv[++i];
@@ -1263,6 +1267,7 @@ int main(int argc, char** argv) {
   // the GPU path does.
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
+  if (dabScan) return np::runDabScan();
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
   if (strokePreviewOut != nullptr)
@@ -1662,6 +1667,9 @@ int main(int argc, char** argv) {
     // brush/Grain's sampled `PaperField` -- a `.abr`'s own scanned paper under
     // the brush -- and the three deposit routes that had no grain call at all.
     const bool paperTextureOk = np::runPaperTextureTest();
+    // app/DabLibrary: the watched folder -- an unchanged rescan decoding
+    // nothing, and a rename not orphaning the presets that point at it.
+    const bool dabLibraryOk = np::runDabLibraryTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
@@ -2186,7 +2194,7 @@ int main(int argc, char** argv) {
                     lutBakeOk && applyPassOk && transformOk && documentTransformOk &&
                     transformSessionOk && transformPreviewTextureOk && blurOk &&
                     filtersOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk && paperTextureOk && dabLibraryOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

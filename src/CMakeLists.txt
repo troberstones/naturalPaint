@@ -1,6 +1,7 @@
 add_executable(naturalPaint
   main.cpp
   app/BrushLibraryFile.cpp
+  app/DabLibrary.cpp
   app/AbrReport.cpp
   app/BrushSheet.cpp
   app/BrushRowIcon.cpp
@@ -42,6 +43,7 @@ add_executable(naturalPaint
   app/selftest/Variance.cpp
   app/selftest/CoverageBlend.cpp
   app/selftest/PaperTexture.cpp
+  app/selftest/DabLibrary.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp

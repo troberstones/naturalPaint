@@ -1170,6 +1170,28 @@ bool runCoverageBlendTest();
 // solid". Headless and GPU-free.
 bool runPaperTextureTest();
 
+// app/DabLibrary: the watched folder, and the two claims it stands on.
+//
+//   * **An unchanged rescan decodes nothing** -- asserted against
+//     `decodeCount()`, not described. It is what makes a scan cheap enough to
+//     run on a window-focus event, and a rescan that quietly re-decoded a
+//     500-file folder would pass every correctness assertion here and still
+//     make the feature unusable.
+//   * **A rename does not orphan a preset** -- a `file:` id names a path, so
+//     the index carries a fingerprint of the decoded coverage and a rescan
+//     recognises the file under its new name. Section E walks up to one of
+//     the edges that mitigation admits to.
+//
+// Also: the one rule that turns a picture into coverage (a real alpha channel
+// if there is one, otherwise `1 - display-encoded luminance`), the index's
+// escaping and version discipline, and that a library with no folders scans
+// to nothing without creating a folder or a stub index.
+//
+// Runs entirely against a scratch directory under the system temp path --
+// the roots are injected, so this never touches
+// `~/Library/Application Support/naturalPaint`. Headless and GPU-free.
+bool runDabLibraryTest();
+
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
 // `BrushTip::angle`'s positive sense is clockwise on screen (brush/
