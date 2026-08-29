@@ -2,6 +2,22 @@
 
 #include "imgui.h"
 
+// "Is a modal popup open right now?" has no answer in the public Dear ImGui
+// header. `GetTopMostPopupModal()` is the one that does, and it lives in
+// imgui_internal.h -- which ui/MacPaintUI.cpp, the only other file that would
+// want this, deliberately does not include (see `drawPadlockGlyph()` there,
+// which hand-writes pi rather than pull that header in for `IM_PI`).
+//
+// Declaring the one entry point instead of including the header keeps that
+// decision intact and costs a forward declaration: the result is only ever
+// compared against null, so an incomplete `ImGuiWindow` is enough. Copied
+// verbatim from imgui_internal.h line 3751 -- if it ever stops matching, this
+// stops linking, which is the failure mode we want.
+struct ImGuiWindow;
+namespace ImGui {
+IMGUI_API ImGuiWindow* GetTopMostPopupModal();
+}  // namespace ImGui
+
 namespace np {
 namespace {
 
@@ -138,7 +154,54 @@ void applyAtelierTheme() {
   c[ImGuiCol_TextSelectedBg]       = col(kRowSelected);
   c[ImGuiCol_DragDropTarget]       = col(kAccent);
   c[ImGuiCol_NavCursor]            = col(kAccent);
-  c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.0f, 0.0f, 0.0f, 0.55f);
+  // **Zero on purpose, and it is not "no dim" -- the dim moved.** ImGui draws
+  // this token as one rect over the whole viewport, which is all or nothing,
+  // and what was wanted is a wash over the chrome with the image left alone.
+  // `washCurrentWindowForModal()` and ui/MacPaintUI.cpp's chrome scrim do that
+  // instead; this header's own block above them carries the design. Setting a
+  // non-zero value back here does not restore anything, it double-greys the
+  // chrome and puts the wash back over the image.
+  //
+  // The instruction, in two parts: *"dont' gray out the UI when any modal
+  // panels are opened"*, then *"what if the image stayed un-grayed, but the
+  // toolbox and control panels were grayed out"*.
+  //
+  // The token was 55 % black, and one dialog -- Layer Properties -- already
+  // pushed it to transparent around its own `BeginPopupModal()`, with a long
+  // argument for why that suppression was scoped to one popup rather than made
+  // the theme's rule: the five *decision gates* (Revert, Recover Documents, the
+  // document-path prompt, and both Export dialogs) were held to want the dim,
+  // because greying what is behind them is the sentence "nothing else is live
+  // until you answer". That reasoning is **not** overruled -- it is what the
+  // second half of the instruction preserves. Those gates still grey everything
+  // a click could otherwise reach; the one surface exempted is the image, which
+  // was never clickable while a modal was up anyway.
+  //
+  // What that buys is what the one-dialog exception was reaching for, now for
+  // all of them: an adjustment dialog is an *editor whose output is the
+  // canvas*, and a wash over the canvas defeats the only feedback its controls
+  // have. Image > Adjustments added thirteen such dialogs, each with a live
+  // preview, which is what turned a one-dialog exception into the rule.
+  c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+}
+
+bool modalDimActive() { return ImGui::GetTopMostPopupModal() != nullptr; }
+
+void washRectForModal(float x0, float y0, float x1, float y1) {
+  if (x1 <= x0 || y1 <= y0) return;
+  // Lighter than the 0.55 black the full-viewport token above used to carry.
+  // That value was picked to read over the *canvas*, which can be white; the
+  // chrome is already near-black, and 55 % more black on top of it is off
+  // rather than greyed.
+  constexpr ImU32 kWash = IM_COL32(0, 0, 0, 115);
+  ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), kWash);
+}
+
+void washCurrentWindowForModal() {
+  if (!modalDimActive()) return;
+  const ImVec2 p = ImGui::GetWindowPos();
+  const ImVec2 s = ImGui::GetWindowSize();
+  washRectForModal(p.x, p.y, p.x + s.x, p.y + s.y);
 }
 
 }  // namespace np

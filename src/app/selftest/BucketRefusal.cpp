@@ -42,9 +42,17 @@ namespace np {
 // dialog's modal dim so the user can watch their adjustment take effect is
 // worth nothing if what they are watching is a stale picture, so the claim is
 // asserted rather than assumed. Everything else about that change --
-// `ImGuiCol_ModalWindowDimBg` pushed around one `BeginPopupModal()` -- is ImGui
-// state inside a window this suite has no window for, and is stated as
-// untestable rather than given a test that asserts something else.
+// `ImGuiCol_ModalWindowDimBg` -- is ImGui state inside a window this suite has
+// no window for, and is stated as untestable rather than given a test that
+// asserts something else.
+//
+// **That suppression is no longer this dialog's alone.** On the user's
+// instruction the dim over the *image* is gone for every modal in the
+// application, and the chrome is greyed instead -- ui/AtelierTheme.hpp holds
+// the design. Section G's question is unchanged and, if anything, asked of more
+// dialogs than before: thirteen Image > Adjustments dialogs now draw a live
+// preview over an undimmed canvas, and every one of them depends on the same
+// re-composite this section pins.
 // ---------------------------------------------------------------------------
 bool runBucketRefusalTest() {
   bool ok = true;

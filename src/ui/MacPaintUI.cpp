@@ -2930,38 +2930,33 @@ void drawLayersSection(AppState& st) {
     st.openLayerProperties = false;
     ImGui::OpenPopup("Layer Properties");
   }
-  // --- this modal alone does not dim the canvas ----------------------------
+  // --- no dim behind this modal, and no longer a special case --------------
   //
   // **It stays modal.** Modality is what the paragraph above relies on: it is
   // why `selected` cannot change under the dialog mid-edit, and dropping it
   // would hand this dialog the layer-deleted-underneath-you hazard
   // app/StrokeSession §5 spends a page on and cannot close today, because
-  // `Layer::id` is 0 on every layer this build creates. So the modality is
-  // kept and only the *dimming* is dropped.
+  // `Layer::id` is 0 on every layer this build creates. Only the *dimming* is
+  // dropped, and it always was.
   //
-  // The dim is right for a modal that asks a question -- Revert, Recover
-  // Documents, Document path, and both Export dialogs are decision gates, and
-  // greying what is behind them is the sentence "nothing else is live until you
-  // answer". **This dialog is not a question; it is an editor whose output is
-  // the canvas.** It holds the layer's op stack, so a user changing a curve or
-  // an exposure here is looking *past* the dialog at the thing they are
-  // changing -- and a 55 %-black wash over it defeats the only feedback the
-  // control has. So the suppression is scoped to this one popup rather than
-  // applied to `applyAtelierTheme()`'s token, where it would also strip the
-  // five gates that want it.
+  // This block used to `PushStyleColor(ImGuiCol_ModalWindowDimBg, transparent)`
+  // around the `BeginPopupModal()` below, because the suppression was scoped to
+  // this one popup: the five decision gates (Revert, Recover Documents, the
+  // document-path prompt, both Export dialogs) were held to want the wash.
+  // **That is the theme's rule now, on the user's instruction** -- see
+  // `applyAtelierTheme()`'s `ImGuiCol_ModalWindowDimBg`, which carries the
+  // instruction verbatim and what dropping it costs. The push here would be a
+  // no-op pushing transparent over transparent, so it is gone rather than left
+  // as a line that looks load-bearing and is not.
   //
-  // **The push must bracket `BeginPopupModal()` and nothing else.** ImGui
-  // captures the dim colour once, per modal window, into `window->DC.
-  // ModalDimBgColor` inside `Begin()`, and `RenderDimmedBackgroundBehindWindow()`
-  // reads *that* at end-of-frame rather than re-reading the live style -- which
-  // is exactly what makes a per-dialog override possible at all. Pushing after
-  // the Begin, or around the popup's body, would change nothing; pushing around
-  // the whole block would dim nothing anywhere.
-  ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-  const bool layerPropertiesOpen =
-      ImGui::BeginPopupModal("Layer Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-  ImGui::PopStyleColor();
-  if (layerPropertiesOpen) {
+  // One ImGui fact worth keeping, since it is why the per-dialog override was
+  // possible at all and would be needed again if any modal ever wants its dim
+  // back: the colour is captured ONCE per modal window, into
+  // `window->DC.ModalDimBgColor` inside `Begin()`, and read at end-of-frame by
+  // `RenderDimmedBackgroundBehindWindow()` rather than re-read live. So an
+  // override has to bracket `BeginPopupModal()` and nothing else -- pushing
+  // around the popup's body changes nothing.
+  if (ImGui::BeginPopupModal("Layer Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     if (selected >= doc.layers.size()) {
       ImGui::TextDisabled("This layer no longer exists.");
     } else {
@@ -10391,6 +10386,59 @@ void drawDockEdge(AppState& st, PanelPlacement placement, const AtelierRect& doc
 // it costs the docks nothing and disappears entirely when no panel is in
 // flyout mode.
 
+// ---------------------------------------------------------------------------
+// The chrome scrim: the modal dim, with the image held out of it.
+//
+// ui/AtelierTheme.hpp carries the design and both of the measured mistakes that
+// shaped it -- read that before changing anything here, particularly before
+// "simplifying" this into a wash inside each chrome window (a dock's panels are
+// child windows with their own draw lists and would stay bright) or adding
+// `NoBringToFrontOnFocus` to the flags below (that would sink it behind every
+// window it exists to cover).
+//
+// Begun twice per frame: once early, empty, to claim its slot ahead of any
+// popup, and once here to draw. `NoInputs` keeps it out of hit-testing -- the
+// modal already blocks clicks to the chrome; this only makes that visible.
+bool beginChromeScrimWindow() {
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(vp->Pos);
+  ImGui::SetNextWindowSize(vp->Size);
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBackground |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoFocusOnAppearing;
+  return ImGui::Begin("##modalchromescrim", nullptr, flags);
+}
+
+// **Geometry is `viewport minus bands.canvas`, as four strips** -- not a list
+// of the windows to cover. That is what makes it survive: the title band, the
+// tab strip, the status bar and all four docks are greyed because they are
+// outside the canvas rect, and a dock the user drags wider stays covered
+// without this knowing docks exist.
+void drawModalChromeScrim(const AtelierBands& bands) {
+  const bool open = beginChromeScrimWindow();
+  if (!open || !modalDimActive()) {
+    ImGui::End();
+    return;
+  }
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const float vx0 = vp->Pos.x, vy0 = vp->Pos.y;
+  const float vx1 = vx0 + vp->Size.x, vy1 = vy0 + vp->Size.y;
+
+  const AtelierRect& c = bands.canvas;
+  if (c.empty()) {
+    // No canvas region at all: nothing to hold out, so the wash is the whole
+    // viewport -- which is what ImGui would have drawn.
+    washRectForModal(vx0, vy0, vx1, vy1);
+  } else {
+    washRectForModal(vx0, vy0, vx1, c.y);               // title, tabs, top dock
+    washRectForModal(vx0, c.bottom(), vx1, vy1);        // bottom dock, status bar
+    washRectForModal(vx0, c.y, c.x, c.bottom());        // left dock
+    washRectForModal(c.right(), c.y, vx1, c.bottom());  // right dock
+  }
+  ImGui::End();
+}
+
 void drawPanelRail(AppState& st, const AtelierRect& canvas, bool* layoutChanged) {
   const std::vector<ControlsSection> flyouts = st.panels.sectionsIn(PanelPlacement::Flyout);
   if (flyouts.empty() || canvas.empty()) return;
@@ -10443,6 +10491,9 @@ void drawPanelRail(AppState& st, const AtelierRect& canvas, bool* layoutChanged)
       }
       ImGui::PopID();
     }
+    // Last inside the window, so it lands over the cells. This window overlays
+    // the canvas by design, so it is not covered by any band's own wash.
+    washCurrentWindowForModal();
   }
   ImGui::End();
   ImGui::PopStyleColor();
@@ -10493,8 +10544,15 @@ void drawFlyoutPanel(AppState& st, const AtelierRect& canvas, std::unique_ptr<Pa
       const AtelierRect inner{fbody.x, fbody.y, ImGui::GetContentRegionAvail().x,
                               ImGui::GetContentRegionAvail().y};
       drawPanelBody(st, st.flyoutSection, sim, gpu, lut, inner, /*vertical=*/true);
+      // Inside the child, not after `EndChild()`: a child window owns its own
+      // draw list and renders after its parent's, so a wash added to the parent
+      // would sit under everything this body just drew. That is the same trap
+      // the dock hit -- ui/AtelierTheme.hpp.
+      washCurrentWindowForModal();
     }
     ImGui::EndChild();
+    // And the parent, for the grip and border around that child.
+    washCurrentWindowForModal();
   }
   ImGui::End();
 }
@@ -10835,6 +10893,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
+
+  // Claim the chrome scrim's slot in `g.Windows`, before the first dialog is
+  // begun and with nothing drawn into it. A window's slot is fixed when it is
+  // created (imgui.cpp:7077) and the scrim's whole job depends on sitting above
+  // the chrome and below the dialog -- so it has to be created before any popup
+  // window is, and a modal can already be open on frame 1 (--open-layer-
+  // properties, or the crash-recovery prompt at launch). ui/AtelierTheme.hpp
+  // carries the full argument and the measurement that forced it. The rects go
+  // in during the second Begin, after the chrome; a window may be begun more
+  // than once in a frame and the second pass appends without moving it.
+  beginChromeScrimWindow();
+  ImGui::End();
 
   // docs/testing-issues.md T9 ("New Document has no size dialog"), out here
   // for the same ID-stack reason as every dialog below: a popup opened from a
@@ -13163,6 +13233,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawDockEdge(st, PanelPlacement::Left, bands.leftDock, &panelLayoutChanged);
   drawDockEdge(st, PanelPlacement::Right, bands.rightDock, &panelLayoutChanged);
   drawDockEdge(st, PanelPlacement::Bottom, bands.bottomDock, &panelLayoutChanged);
+
+  // The second Begin of the window claimed above, now that `bands` is known.
+  // After every band and dock, though it does not depend on that: they all
+  // carry `NoBringToFrontOnFocus` and this does not, which is what puts it over
+  // them. See ui/AtelierTheme.hpp.
+  drawModalChromeScrim(bands);
 
   // Last, and on the foreground draw list: a 2 px rule that a neighbouring
   // window overdrew by a pixel would be a 1 px rule, and the design's whole

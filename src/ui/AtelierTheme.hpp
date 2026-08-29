@@ -154,4 +154,74 @@ void unpackRgb(uint32_t rgb, float out[3]) noexcept;
 // picker, one shadow (on the canvas)."
 void applyAtelierTheme();
 
+// ---------------------------------------------------------------------------
+// The modal dim, restricted to the chrome.
+//
+// The user's instruction, in two parts. First: *"dont' gray out the UI when any
+// modal panels are opened."* Then, on seeing that: *"what if the image stayed
+// un-grayed, but the toolbox and control panels were grayed out"* -- which is
+// the better answer, because the two halves of the screen want opposite things
+// from a modal.
+//
+// A modal dialog here is usually an **editor whose output is the canvas**:
+// thirteen of the Image > Adjustments dialogs carry a live preview, and a wash
+// over the image defeats the only feedback their sliders have. The chrome is
+// the opposite case -- a toolbox that is not clickable should not look
+// clickable, and the dim was the only thing ever saying so. So: image at full
+// strength, chrome greyed.
+//
+// ImGui cannot express that. `ImGuiCol_ModalWindowDimBg` is one rect over the
+// whole viewport, captured per-modal in `Begin()` and drawn at end of frame; it
+// is all or nothing. That token is therefore held at alpha 0 in
+// `applyAtelierTheme()` (which records the reasoning at length) and the
+// selective wash is these two functions instead.
+//
+// The wash is drawn two ways, and which one a window gets is decided by one
+// ImGui rule that is easy to get backwards. **imgui.cpp:7077**, in
+// `CreateNewWindow()`: a window flagged `NoBringToFrontOnFocus` is
+// `push_front`ed into `g.Windows` and every other window is `push_back`ed, into
+// a list that is render order. So that flag does not mean "keeps its place", it
+// means **"goes to the very back, permanently"** -- `FocusWindow()` then
+// refuses to lift it (imgui.cpp:13938). A window's slot is chosen once, when it
+// is created, and nothing but a focus event moves it again.
+//
+//   1. **`ui/MacPaintUI.cpp`'s chrome scrim** covers every window that carries
+//      that flag: the title band, the tab strip, all four docks and the status
+//      bar (`beginBand()` in ui/AtelierChrome.cpp sets it) plus the canvas. One
+//      window, geometry `viewport minus bands.canvas`, and being an ordinary
+//      `push_back` window is exactly what puts it above all of them -- for good,
+//      whenever each was created. It has to be a separate window rather than a
+//      wash inside each: **a child window owns its own draw list and renders
+//      after its parent's**, so a dock washing itself greys its background and
+//      leaves every swatch, layer row and tool button at full brightness. That
+//      was built, measured, and is why the scrim exists.
+//   2. **`washCurrentWindowForModal()`** is for the chrome that the scrim
+//      cannot reach: the flyout rail and an open flyout panel. Both sit inside
+//      the canvas rect on purpose -- that is what makes them cost the docks
+//      nothing -- and neither carries the flag, so both are `push_back` windows
+//      created after the scrim and therefore above it. They grey themselves,
+//      which is order-free: the rect is over that window's content because it
+//      was submitted after it, and under every other window because it belongs
+//      to that window's list.
+//
+// The scrim's other ordering claim -- that it stays *below* the dialog -- rests
+// on the same one-slot-per-window rule, and cost a second measured mistake to
+// get right. Dialogs are submitted early in the frame and the chrome late, so a
+// modal already open on frame 1 (`--open-layer-properties`, or a crash-recovery
+// prompt at launch) would create its popup window *before* a scrim first
+// submitted after the chrome, leaving the scrim on top of the dialog. A
+// sabotage that widened the scrim to the whole viewport greyed the dialog and
+// showed it. The scrim is therefore `Begin()`/`End()`ed once, empty, before the
+// dialog pass purely to claim its slot, and appended to later with the actual
+// rects -- ImGui allows a window to be begun more than once per frame, and the
+// second pass draws into the same list without moving it.
+bool modalDimActive();
+
+// Grey the current ImGui window. Call last, inside the window, before `End()`.
+void washCurrentWindowForModal();
+
+// Grey one rect into the current window's draw list, so both routes above use
+// one colour.
+void washRectForModal(float x0, float y0, float x1, float y1);
+
 }  // namespace np
