@@ -535,6 +535,67 @@ CursorBitmap rasterizeLucideGlyphCursor(uint32_t codepoint, float scale,
   return out;
 }
 
+// **The funnel-point outline.** A black glyph is invisible against a black
+// canvas -- exactly the report this whole change answers -- so every
+// rasterised cursor gets a white halo drawn behind it, run here rather than
+// inside `drawMarqueeCrosshair()` or `rasterizeLucideGlyphCursor()` so both
+// glyph-drawing paths stay unaware of it and a tool added to either one gets
+// the outline for free, with nothing to duplicate.
+//
+// A grayscale dilation of the ORIGINAL alpha channel, not a binary one: the
+// stamped alpha is the source pixel's own coverage, so an anti-aliased glyph
+// edge grows a softly anti-aliased halo instead of a hard-edged ring. A core
+// (already-inked) pixel is never touched by the loop below -- only a
+// neighbour that was fully transparent in the ORIGINAL bitmap gets painted --
+// so "white ring, black glyph on top" falls out of that skip rather than
+// needing a second compositing pass over the whole buffer.
+//
+// Drawn inside the EXISTING canvas, not a grown one: `rasterizeToolCursorBitmap()`
+// hands back `round(kCursorDesignUnits * scale)` exactly, which
+// `app/selftest/ToolCursor.cpp` section H pins byte-for-byte, so widening the
+// buffer here to fit the halo would break that pin for a reason unrelated to
+// what it actually guards. The margin already left in the 32-unit design
+// space -- 5 units above and below the glyph's 22-unit height, and a couple
+// of units around the marquee's own crosshair -- covers the 1-2px this draws
+// at every scale `create()` actually asks for; the one place it does not (the
+// marquee's crosshair arm already reaches its own canvas edge at the base
+// scale) the halo simply clips there the same way the arm itself already
+// does, which is a cosmetic loss on one edge of one cursor, not a defect.
+void applyCursorOutline(CursorBitmap& bmp, float scale) {
+  const int w = bmp.width, h = bmp.height;
+  if (w <= 0 || h <= 0 || bmp.rgba.empty()) return;
+
+  // The same formula `strokeWidth()` uses for a stroke's own thickness, so the
+  // halo grows with scale the way every other shape in this file does, rather
+  // than via a second constant that could quietly drift from it.
+  const int r = strokeWidth(scale);
+
+  const std::vector<uint8_t> core = bmp.rgba;  // the black ink, before any halo
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const uint8_t a = core[(static_cast<size_t>(y) * w + x) * 4 + 3];
+      if (a == 0) continue;  // only an inked pixel spreads a halo
+      for (int dy = -r; dy <= r; ++dy) {
+        for (int dx = -r; dx <= r; ++dx) {
+          if (dx * dx + dy * dy > r * r) continue;  // a disc footprint, not a square one
+          const int nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const size_t idx = (static_cast<size_t>(ny) * w + nx) * 4;
+          if (core[idx + 3] != 0) continue;  // core ink already lives here -- never overwritten
+          uint8_t* p = &bmp.rgba[idx];
+          // More than one inked pixel can reach the same halo texel; keep the
+          // strongest coverage that reaches it rather than whichever wrote
+          // last, so the result does not depend on iteration order.
+          if (a > p[3]) {
+            p[0] = p[1] = p[2] = 255;
+            p[3] = a;
+          }
+        }
+      }
+    }
+  }
+}
+
 }  // namespace
 
 int cursorBasePoints() noexcept { return kCursorBasePoints; }
@@ -648,6 +709,11 @@ CursorBitmap rasterizeToolCursorBitmap(Tool tool, float scale) noexcept {
     out = rasterizeLucideGlyphCursor(toolIconCodepoint(tool), scale,
                                      cursorHotspotAnchorFor(tool));
   }
+
+  // The white halo, applied here rather than inside either generator above --
+  // see `applyCursorOutline()`'s own comment for why this one call covers
+  // both the marquee composite and every Lucide glyph.
+  applyCursorOutline(out, scale);
 
   // Non-blank iff at least one pixel actually carries ink -- computed here,
   // generically, over whatever the font path or the procedural path above

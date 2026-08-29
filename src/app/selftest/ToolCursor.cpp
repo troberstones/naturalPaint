@@ -626,6 +626,40 @@ bool runToolCursorTest() {
     // placement, and the second half of each is what makes it a test of the
     // FIX rather than of the shape: a regression to centre-of-glyph reddens
     // them, and nothing above.
+    // Like `alphaBounds` above, but restricted to the glyph's own black ink --
+    // excluding `ui/ToolCursor.cpp`'s `applyCursorOutline()` white halo, which
+    // by design paints INTO pixels that were transparent in the original
+    // glyph and would otherwise widen every one of these bounds outward by
+    // the halo's radius. The three checks just below pin a hotspot to the
+    // exact edge of the GLYPH -- the lasso's tail, the wand's tip -- not to
+    // the edge of a couple of pixels of pure decoration drawn outside it, so
+    // this is the bounds function that actually answers the question those
+    // checks ask. `p[0] != 0` is enough to tell the two apart because every
+    // pixel this file draws is either black ink (`setPixel()`, RGB 0/0/0) or
+    // the halo's white (`applyCursorOutline()`, RGB 255/255/255) -- nothing
+    // else ever writes into a cursor bitmap.
+    auto inkBounds = [](const CursorBitmap& b, int* minX, int* minY, int* maxX, int* maxY) {
+      bool any = false;
+      *minX = *minY = 0;
+      *maxX = *maxY = 0;
+      for (int y = 0; y < b.height; ++y)
+        for (int x = 0; x < b.width; ++x) {
+          const size_t idx = (static_cast<size_t>(y) * b.width + x) * 4;
+          if (b.rgba[idx + 3] == 0 || b.rgba[idx] != 0) continue;  // transparent, or the white halo
+          if (!any) {
+            *minX = *maxX = x;
+            *minY = *maxY = y;
+            any = true;
+          } else {
+            *minX = std::min(*minX, x);
+            *maxX = std::max(*maxX, x);
+            *minY = std::min(*minY, y);
+            *maxY = std::max(*maxY, y);
+          }
+        }
+      return any;
+    };
+
     auto anchorReport = [&](Tool t, const char* what) {
       const CursorBitmap b = rasterizeToolCursorBitmap(t);
       int x0, y0, x1, y1;
@@ -639,7 +673,7 @@ bool runToolCursorTest() {
     {
       const CursorBitmap lasso = anchorReport(Tool::Lasso, "tail");
       int x0, y0, x1, y1;
-      alphaBounds(lasso, &x0, &y0, &x1, &y1);
+      inkBounds(lasso, &x0, &y0, &x1, &y1);
       check(lasso.hotspotX == x0 && lasso.hotspotY == y1 && lasso.hotspotY != (y0 + y1) / 2,
             "hotspot: the lasso points from its TAIL -- the bottom-left of its own ink -- and "
             "that is provably not the centre of the loop, which is where a centre-of-glyph "
@@ -648,7 +682,7 @@ bool runToolCursorTest() {
     {
       const CursorBitmap wand = anchorReport(Tool::MagicWand, "tip");
       int x0, y0, x1, y1;
-      alphaBounds(wand, &x0, &y0, &x1, &y1);
+      inkBounds(wand, &x0, &y0, &x1, &y1);
       check(wand.hotspotX == x1 && wand.hotspotY == y0,
             "hotspot: the wand points from its TIP -- the top-right end of the shaft, where "
             "the icon draws its sparkles -- not from the middle of the stick");
