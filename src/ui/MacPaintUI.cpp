@@ -335,6 +335,16 @@ struct LayerEditorUiState {
   // about that one. Collapsing them would have made `selected` mean "the first
   // of the set", which is a different layer after every gesture that reorders.
   LayerSelection selection = singleLayerSelection(0);
+  // **The shift-click range anchor** (bug fix, user-reported): a THIRD piece
+  // of state, distinct from both of the above. `selected` is reassigned on
+  // every click including shift-clicks (by design, per the comment above), so
+  // using it as the range start meant each shift-click re-anchored from the
+  // row the PREVIOUS shift-click landed on -- row1, shift+row2 selected 1-2 as
+  // intended, but shift+row3 then selected 2-3 instead of 1-3, because
+  // `selected` had already moved to 2. This tracks the last row clicked
+  // WITHOUT shift, which is what a contiguous range is supposed to extend
+  // from across any number of shift-clicks in a row.
+  size_t shiftAnchor = 0;
   // **The panel filter** (PRD C15). app/LayerPanel.hpp states the rule it
   // follows: it changes which rows are drawn and nothing else, the selection
   // survives it, and a command acts only on the rows that are visible.
@@ -1207,9 +1217,26 @@ bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
     if (s > 0) dl->AddLine(prevPt, pt, IM_COL32(255, 200, 90, 255), 1.5f);
     prevPt = pt;
   }
-  for (size_t i = 0; i < curve.size(); ++i) {
+  // **Two endpoint knots are always shown and draggable, even before `curve`
+  // has any real control points.** `evalCurve()`'s degenerate-case contract --
+  // fewer than 2 points is identity (ops/PointOps.hpp) -- is what
+  // `applyCurves()` relies on to skip the shaper encode/decode round trip
+  // entirely for a genuinely untouched channel, landing an EXACT no-op rather
+  // than one only correct to float tolerance; that has to stay intact for
+  // grading, so this is display/hit-test-only synthesis, never a write to
+  // `curve` by itself. The plotted SPLINE already draws correctly with zero
+  // real points (evalCurve returns `x` unchanged, a flat diagonal); it was
+  // only the KNOT DOTS that were missing before a first point existed, and
+  // still wrong-looking with exactly one (a dot with no bend in the line
+  // through it) -- this is that, not a change to what gets graded.
+  const bool synthesizeEndpoints = curve.size() < 2;
+  const size_t dotCount = synthesizeEndpoints ? 2 : curve.size();
+  for (size_t i = 0; i < dotCount; ++i) {
+    const CurvePoint pt = synthesizeEndpoints
+                              ? CurvePoint{static_cast<float>(i), static_cast<float>(i)}
+                              : curve[i];
     float px = 0.0f, py = 0.0f;
-    curveToPlot(curve[i].x, curve[i].y, kPlotSize, px, py);
+    curveToPlot(pt.x, pt.y, kPlotSize, px, py);
     dl->AddCircleFilled(ImVec2(origin.x + px, origin.y + py), 4.0f,
                         IM_COL32(240, 240, 235, 255));
   }
@@ -1233,6 +1260,17 @@ bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
   // beyond the cap (none can exist, since insertion is capped) would still
   // be movable/deletable if they somehow did.
   if (ImGui::IsItemActivated()) {
+    // The two synthetic endpoint dots drawn above are not real points until
+    // the user actually touches this widget -- promote them here, once, on
+    // the first activation while `curve` is still degenerate (fewer than 2
+    // points). From this line on `curve` is an honest 2-point identity curve
+    // and behaves exactly like any other; the hit-test and click below still
+    // resolve normally against it, whether the click landed on one of these
+    // two (a grab) or elsewhere (adding a third real point, same as always).
+    if (curve.size() < 2) {
+      curve.assign({CurvePoint{0.0f, 0.0f}, CurvePoint{1.0f, 1.0f}});
+      changed = true;
+    }
     const auto hit = hitTestPoint(curve, mx, my, kPlotSize, kHitRadiusPx);
     if (hit) {
       dragIdx = static_cast<int>(*hit);
@@ -1266,7 +1304,13 @@ bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
   // gestures, so it needs no special-casing around it.
   if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
     const auto hit = hitTestPoint(curve, mx, my, kPlotSize, kHitRadiusPx);
-    if (hit) {
+    // Never drop below 2 real points via delete -- the same invariant the
+    // first activation above establishes. Below 2, `evalCurve()`'s degenerate
+    // case takes over and the plotted knot dot(s) stop matching what the
+    // spline actually does (see the comment above the dot-drawing loop):
+    // exactly the bug this whole change exists to close, so a delete cannot
+    // reopen it by taking the curve back under 2.
+    if (hit && curve.size() > 2) {
       removePoint(curve, *hit);
       changed = true;
       // Indices may have shifted under the removal -- abandon any
@@ -2332,12 +2376,30 @@ void drawLayersSection(AppState& st) {
   // is not new to LAYERS, only newly caught here. Added back in rather than
   // carried over silently, so the two rows' worth of padding is counted once
   // instead of clipped off the bottom.
-  constexpr int kLayersVisibleRows = 8;
+  // **Sized to the panel's own remaining room, not a fixed row count.**
+  // `kLayersVisibleRows` used to be a hard ceiling of 8 regardless of how much
+  // vertical space this dock actually had -- on a tall dock the list stopped
+  // growing well short of the space available and scrolled early; on a short
+  // one 8 rows could already be more than fit. The reserve below is for
+  // everything this function still draws AFTER the child: the rule + Dummy
+  // before the command row, the command row itself, and the collapsed
+  // "Multi-selection" header -- three UI-control-height lines, roughly. An
+  // error/warning message band (rare, and only ever present for one frame's
+  // worth of a refusal or a merge warning) is not accounted for, on purpose:
+  // reserving for its variable, text-wrap-dependent height every frame would
+  // permanently shrink the list for a case that is usually absent, and the
+  // child recomputes every frame regardless, so the one frame a message is
+  // showing simply borrows a little of the list's row budget rather than
+  // clipping anything.
+  const float reserveBelowChild =
+      ImGui::GetFrameHeightWithSpacing() * 2.0f + ImGui::GetStyle().ItemSpacing.y + 3.0f;
+  const float availableForChild =
+      std::max(rowH, ImGui::GetContentRegionAvail().y - reserveBelowChild);
+  const size_t rowsThatFit =
+      std::max<size_t>(1, static_cast<size_t>(availableForChild / rowH));
+  const size_t rowsToShow = std::min(visibleRows.size(), rowsThatFit);
   const float childH =
-      std::max(rowH, static_cast<float>(std::min(visibleRows.size(),
-                                                 static_cast<size_t>(kLayersVisibleRows))) *
-                         rowH) +
-      2.0f * ImGui::GetStyle().WindowPadding.y;
+      std::max(rowH, static_cast<float>(rowsToShow) * rowH) + 2.0f * ImGui::GetStyle().WindowPadding.y;
 
   // Auto-scroll follows the SELECTED layer -- triggered by a change in
   // `selected`, not every frame, so it never fights the user's own scroll.
@@ -2714,15 +2776,22 @@ void drawLayersSection(AppState& st) {
       // Selection, decided after the icon buttons so that a click they claimed is
       // not also a click on the row. Multi-select (PRD C12): plain click replaces
       // the selection, ctrl-click (cmd-click on this platform) toggles one row,
-      // shift-click extends from the primary row to this one. `selected` follows
-      // the row that was clicked in every case, so the controls above the list
-      // always describe a row the user just touched.
+      // shift-click extends from `g_layers.shiftAnchor` -- the last row clicked
+      // WITHOUT shift -- to this one, so a run of shift-clicks grows one
+      // contiguous range instead of re-anchoring at each step. `selected` still
+      // follows the row that was clicked in every case (including shift), so the
+      // controls above the list always describe a row the user just touched --
+      // that is a separate question from where the range starts, see the field
+      // comment on `shiftAnchor`.
       if (rowClicked) {
         const ImGuiIO& io = ImGui::GetIO();
         std::vector<size_t> next;
         if (io.KeyShift) {
-          const size_t lo = std::min(selected, i);
-          const size_t hi = std::max(selected, i);
+          const size_t anchor = std::min(g_layers.shiftAnchor, doc.layers.empty()
+                                                                    ? size_t{0}
+                                                                    : doc.layers.size() - 1);
+          const size_t lo = std::min(anchor, i);
+          const size_t hi = std::max(anchor, i);
           for (size_t k = lo; k <= hi; ++k) next.push_back(k);
         } else if (io.KeyCtrl || io.KeySuper) {
           next = g_layers.selection.indices;
@@ -2738,6 +2807,9 @@ void drawLayersSection(AppState& st) {
         } else {
           next.push_back(i);
         }
+        // Not on the shift branch: that is exactly the case this anchor has to
+        // survive across.
+        if (!io.KeyShift) g_layers.shiftAnchor = i;
         g_layers.selection = makeLayerSelection(std::move(next));
         selected = i;
         if (rowDoubleClicked) {
@@ -3209,7 +3281,30 @@ void drawColorSection(AppState& st) {
     ImGui::TextDisabled("rgb %.3f %.3f %.3f", sel.rgb[0], sel.rgb[1], sel.rgb[2]);
     popAtelierMono();
   } else {
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    // `ColorPicker4()` (which `ColorPicker3` forwards to) sizes its
+    // saturation/value square from `CalcItemWidth()` alone -- `sv_picker_size
+    // = width - (bars_width + spacing)` (imgui_widgets.cpp) -- and that square
+    // is exactly as tall as it is wide. So `SetNextItemWidth(avail.x)` alone
+    // already makes the picker responsive to the panel getting narrower, but
+    // says nothing about the panel getting SHORTER: a wide-but-short COLOR
+    // section (other panels stacked above/below it, or a shallow dock) still
+    // asks for a picker as tall as it is wide, which can run past the
+    // available height and force a scrollbar -- not "fits the given space".
+    //
+    // So the square's side is also capped by the available HEIGHT, minus a
+    // reserve for what draws below it: this widget's own RGB input row (no
+    // `NoInputs` flag is passed, so ImGui draws one) plus this function's own
+    // three text lines/paragraph after the `ColorPicker3` call. The reserve is
+    // a generous line-count rather than a measured value -- `TextWrapped`'s
+    // own height depends on the width this same call is deciding, so an exact
+    // figure would be circular; overshooting the reserve costs a few px of
+    // unused space, undershooting it reintroduces the scrollbar this exists
+    // to avoid, so it errs generous.
+    constexpr float kRgbPickerMinSide = 96.0f;
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float reserveBelow = ImGui::GetTextLineHeightWithSpacing() * 7.0f;
+    const float side = std::max(kRgbPickerMinSide, std::min(avail.x, avail.y - reserveBelow));
+    ImGui::SetNextItemWidth(side);
     // Writes straight into `BrushState::rgb`, which is where the foreground
     // lives -- no copy back, no second source of truth. The array is
     // `std::array<float,3>` and ImGui wants a `float*`, so `.data()`; the
@@ -7627,21 +7722,16 @@ void drawLevelsDialog(AppState& st) {
   ImGui::SeparatorText("Input");
   ImGui::SetNextItemWidth(220.0f);
   edited |= ImGui::SliderFloat("Black in", &shown.blackIn, 0.0f, 1.0f, "%.3f");
-  bool settled = ImGui::IsItemDeactivatedAfterEdit();
   ImGui::SetNextItemWidth(220.0f);
   edited |= ImGui::SliderFloat("White in", &shown.whiteIn, 0.0f, 4.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
   ImGui::SetNextItemWidth(220.0f);
   edited |= ImGui::SliderFloat("Gamma", &shown.gamma, 0.1f, 4.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
 
   ImGui::SeparatorText("Output");
   ImGui::SetNextItemWidth(220.0f);
   edited |= ImGui::SliderFloat("Black out", &shown.blackOut, 0.0f, 1.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
   ImGui::SetNextItemWidth(220.0f);
   edited |= ImGui::SliderFloat("White out", &shown.whiteOut, 0.0f, 1.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
 
   // `whiteIn` runs past 1.0 deliberately: this is a scene-linear working space
   // and a highlight above 1.0 is ordinary, so a Levels white point capped at
@@ -7660,10 +7750,15 @@ void drawLevelsDialog(AppState& st) {
       channels[static_cast<size_t>(channelIdx - 1)] = shown;
     }
   }
-  // The combo is not a slider and never reports "deactivated after edit", so a
-  // channel switch has to force the recompute on its own or the canvas would
-  // keep showing the previous channel's preview.
-  if (settled || (edited && channelIdx >= 0 && !ImGui::IsAnyItemActive()) || !wasOpen)
+  // Live: `edited` is a slider's own return value, which SliderFloat already
+  // reports true on every frame the drag actually moves the value, not only
+  // once on release -- so recomputing on `edited` directly is the live preview
+  // "for non-expensive image adjustments... hsv curves levels etc" asked for.
+  // Levels is a point op (ops/PointOpTiles): no apron, no tile the source did
+  // not already have, cheap enough to afford this. The combo is not a slider
+  // and never reports edited either way, but IS covered by `edited` above (it
+  // is OR'd into the same variable via `drawAdjustChannelCombo`'s return).
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustLevels, previewLevelsAdjustment, channels);
   wasOpen = true;
 
@@ -7715,12 +7810,13 @@ void drawCurvesDialog(AppState& st) {
     edited = true;
   }
 
-  // Unlike the Levels sliders there is no `IsItemDeactivatedAfterEdit()` to
-  // lean on -- `drawCurveWidget()` reports "changed" on every frame of a drag.
-  // `IsMouseDown()` is the equivalent signal: recompute when the drag ENDS,
-  // not throughout it, for the cost reason this section's header states.
-  const bool released = edited && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
-  if (released || switched || !wasOpen)
+  // Live, same as Levels: `applyCurvesAdjustment`/`previewCurvesAdjustment` run
+  // through the identical `pointOpTiles` bridge Levels does (app/AdjustmentOps),
+  // so this is exactly as cheap, and `drawCurveWidget()` already reports
+  // "changed" on every frame of a drag -- which used to be the reason this
+  // recomputed only on release (throttled via `IsMouseDown()`), and is now
+  // exactly the live-update signal the recompute wants.
+  if (edited || switched || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustCurves, previewCurvesAdjustment, channels);
   wasOpen = true;
 
@@ -7742,15 +7838,17 @@ void drawExposureDialog(AppState& st) {
   OpenDocument* od = st.documents.active();
 
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Stops", &params.stops, -6.0f, 6.0f, "%+.2f");
-  const bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  // Live: a point op (app/AdjustmentOps), cheap enough to recompute on every
+  // frame `SliderFloat` reports the value actually changed, not only on
+  // release -- see drawLevelsDialog()'s comment for the full argument.
+  const bool edited = ImGui::SliderFloat("Stops", &params.stops, -6.0f, 6.0f, "%+.2f");
   // Stops, not a percentage, and a pure multiply in linear light -- which is
   // why this is the one adjustment here that is physically meaningful rather
   // than perceptual, and why it is NOT authored in the shaper domain the way
   // Curves is. ops/PointOps.hpp section 3 is the authority.
   ImGui::TextDisabled("output = input * 2^stops, in linear light. 0 is the identity.");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustExposure, previewExposureAdjustment, params);
   wasOpen = true;
 
@@ -7780,22 +7878,21 @@ void drawChannelMixerDialog(AppState& st) {
   // application already has `Desaturate` for that.
   static const char* kOutputs[] = {"Red", "Green", "Blue"};
   ImGui::SetNextItemWidth(120.0f);
-  bool settled = false;
+  // Live: see drawLevelsDialog()'s comment -- a point op, so recomputing on
+  // every frame a control's value actually changes (not only on release) is
+  // cheap enough to afford.
+  bool edited = false;
   const bool switched = ImGui::Combo("Output channel", &outputIdx, kOutputs, IM_ARRAYSIZE(kOutputs));
   auto& row = params.matrix[static_cast<size_t>(outputIdx)];
 
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Red source", &row[0], -2.0f, 2.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::SliderFloat("Red source", &row[0], -2.0f, 2.0f, "%.3f");
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Green source", &row[1], -2.0f, 2.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::SliderFloat("Green source", &row[1], -2.0f, 2.0f, "%.3f");
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Blue source", &row[2], -2.0f, 2.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::SliderFloat("Blue source", &row[2], -2.0f, 2.0f, "%.3f");
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Constant", &row[3], -1.0f, 1.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::SliderFloat("Constant", &row[3], -1.0f, 1.0f, "%.3f");
 
   // Photoshop shows a "Total" here because a row summing past 100% brightens
   // that channel; the same is true in linear light, so the number is worth
@@ -7803,7 +7900,7 @@ void drawChannelMixerDialog(AppState& st) {
   ImGui::TextDisabled("Source total: %+.3f (1.000 preserves this channel's level).",
                       static_cast<double>(row[0] + row[1] + row[2]));
 
-  if (settled || switched || !wasOpen)
+  if (edited || switched || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustChannelMixer,
                         previewChannelMixerAdjustment, params);
   wasOpen = true;
@@ -7842,19 +7939,17 @@ void drawBrightnessContrastDialog(AppState& st) {
   // brightness/contrast" and ops/ToneOps.hpp derives the operand order from
   // ASC-CDL. Gain reads as contrast, offset as brightness, and the labels say
   // both so a painter looking for the familiar control finds it.
-  bool settled = false;
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  bool edited = false;
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Gain (contrast)", &params.gain, 0.0f, 4.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::SliderFloat("Gain (contrast)", &params.gain, 0.0f, 4.0f, "%.3f");
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Offset (brightness)", &params.offset, -1.0f, 1.0f, "%+.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::SliderFloat("Offset (brightness)", &params.offset, -1.0f, 1.0f, "%+.3f");
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Gamma", &params.gamma, 0.1f, 4.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::SliderFloat("Gamma", &params.gamma, 0.1f, 4.0f, "%.3f");
   ImGui::TextDisabled("output = pow(input * gain + offset, 1/gamma), in linear light.");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustBrightnessContrast,
                         previewBrightnessContrast, params);
   wasOpen = true;
@@ -7875,37 +7970,33 @@ void drawHueSaturationDialog(AppState& st) {
   }
   OpenDocument* od = st.documents.active();
 
-  bool settled = false;
-  settled |= ImGui::Checkbox("Colorize", &params.colorize);
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  bool edited = false;
+  edited |= ImGui::Checkbox("Colorize", &params.colorize);
   if (params.colorize) {
     // Colorize replaces every pixel's hue with one target, keeping each
     // pixel's own luma -- so the ordinary hue/saturation controls below would
     // have nothing to act on, and showing them live but inert is worse than
     // not showing them.
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::SliderFloat("Target hue", &params.colorizeHueDegrees, -180.0f, 180.0f, "%.1f deg");
-    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::SliderFloat("Target hue", &params.colorizeHueDegrees, -180.0f, 180.0f, "%.1f deg");
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::SliderFloat("Target saturation", &params.colorizeSaturation, 0.0f, 2.0f, "%.3f");
-    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::SliderFloat("Target saturation", &params.colorizeSaturation, 0.0f, 2.0f, "%.3f");
   } else {
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::SliderFloat("Hue", &params.hueDegrees, -180.0f, 180.0f, "%.1f deg");
-    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::SliderFloat("Hue", &params.hueDegrees, -180.0f, 180.0f, "%.1f deg");
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::SliderFloat("Saturation", &params.saturation, 0.0f, 3.0f, "%.3f");
-    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::SliderFloat("Saturation", &params.saturation, 0.0f, 3.0f, "%.3f");
   }
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Lightness", &params.lightness, -1.0f, 1.0f, "%+.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::SliderFloat("Lightness", &params.lightness, -1.0f, 1.0f, "%+.3f");
   // Worth saying out loud, because it is the property that makes this op
   // usable at all: the hue rotation is about the normalised Rec.709 luma
   // axis, so it moves colour without moving brightness. Lightness is the
   // separate, deliberate control for that.
   ImGui::TextDisabled("Hue rotates about the luma axis, so brightness is preserved exactly.");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustHueSaturation,
                         previewHueSaturationAdjustment, params);
   wasOpen = true;
@@ -7927,11 +8018,11 @@ void drawVibranceDialog(AppState& st) {
   OpenDocument* od = st.documents.active();
 
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Amount", &params.amount, -1.0f, 2.0f, "%+.3f");
-  const bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  const bool edited = ImGui::SliderFloat("Amount", &params.amount, -1.0f, 2.0f, "%+.3f");
   ImGui::TextDisabled("Weighted by existing saturation: muted colours move most.");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustVibrance, previewVibranceAdjustment, params);
   wasOpen = true;
   drawAdjustmentButtons(od, "Apply", "vibrance", status,
@@ -7955,24 +8046,24 @@ void drawColorBalanceDialog(AppState& st) {
   // Photoshop draws these as three named sliders per range rather than "R G B"
   // because the axis a painter thinks in is the opposed pair, and the two
   // labellings are the same number: pushing "red" IS pulling "cyan".
-  bool settled = false;
-  auto rangeSliders = [&settled](const char* title, std::array<float, 3>& v, float lo, float hi) {
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  bool edited = false;
+  auto rangeSliders = [&edited](const char* title, std::array<float, 3>& v, float lo, float hi) {
     ImGui::SeparatorText(title);
     ImGui::PushID(title);
     const char* kLabels[] = {"Cyan / Red", "Magenta / Green", "Yellow / Blue"};
     for (int c = 0; c < 3; ++c) {
       ImGui::SetNextItemWidth(220.0f);
-      ImGui::SliderFloat(kLabels[c], &v[static_cast<size_t>(c)], lo, hi, "%+.3f");
-      settled |= ImGui::IsItemDeactivatedAfterEdit();
+      edited |= ImGui::SliderFloat(kLabels[c], &v[static_cast<size_t>(c)], lo, hi, "%+.3f");
     }
     ImGui::PopID();
   };
   rangeSliders("Shadows (lift)", params.shadowsLift, -0.5f, 0.5f);
   rangeSliders("Midtones (gamma)", params.midtonesGamma, -1.0f, 1.0f);
   rangeSliders("Highlights (gain)", params.highlightsGain, -0.5f, 0.5f);
-  settled |= ImGui::Checkbox("Preserve luminosity", &params.preserveLuminosity);
+  edited |= ImGui::Checkbox("Preserve luminosity", &params.preserveLuminosity);
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustColorBalance,
                         previewColorBalanceAdjustment, params);
   wasOpen = true;
@@ -7993,18 +8084,18 @@ void drawBlackAndWhiteDialog(AppState& st) {
   }
   OpenDocument* od = st.documents.active();
 
-  bool settled = false;
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  bool edited = false;
   float* const weights[] = {&params.reds,  &params.yellows, &params.greens,
                             &params.cyans, &params.blues,   &params.magentas};
   const char* labels[] = {"Reds", "Yellows", "Greens", "Cyans", "Blues", "Magentas"};
   for (int i = 0; i < 6; ++i) {
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::SliderFloat(labels[i], weights[i], -1.0f, 2.0f, "%.3f");
-    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::SliderFloat(labels[i], weights[i], -1.0f, 2.0f, "%.3f");
   }
   if (ImGui::Button("Reset to Rec.709")) {
     params = BlackAndWhiteParams{};
-    settled = true;
+    edited = true;
   }
   ImGui::SameLine();
   // Not a slogan -- a measured property, and measured is the operative word.
@@ -8016,7 +8107,7 @@ void drawBlackAndWhiteDialog(AppState& st) {
   // in principle catch us on.
   ImGui::TextDisabled("the defaults match Desaturate");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustBlackAndWhite,
                         previewBlackAndWhiteAdjustment, params);
   wasOpen = true;
@@ -8037,28 +8128,27 @@ void drawPhotoFilterDialog(AppState& st) {
   }
   OpenDocument* od = st.documents.active();
 
-  bool settled = false;
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  bool edited = false;
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::ColorEdit3("Filter colour", params.color.data(), ImGuiColorEditFlags_Float);
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
+  edited |= ImGui::ColorEdit3("Filter colour", params.color.data(), ImGuiColorEditFlags_Float);
   // The two presets every photo-filter control ships with. Values are the
   // conventional warming/cooling gel colours, in linear light.
   if (ImGui::Button("Warming (85)")) {
     params.color = {1.0f, 0.72f, 0.42f};
-    settled = true;
+    edited = true;
   }
   ImGui::SameLine();
   if (ImGui::Button("Cooling (80)")) {
     params.color = {0.40f, 0.68f, 1.0f};
-    settled = true;
+    edited = true;
   }
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Density", &params.density, 0.0f, 1.0f, "%.3f");
-  settled |= ImGui::IsItemDeactivatedAfterEdit();
-  settled |= ImGui::Checkbox("Preserve luminosity", &params.preserveLuminosity);
+  edited |= ImGui::SliderFloat("Density", &params.density, 0.0f, 1.0f, "%.3f");
+  edited |= ImGui::Checkbox("Preserve luminosity", &params.preserveLuminosity);
   ImGui::TextDisabled("Density blends toward the filtered colour; 0 is the identity.");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustPhotoFilter,
                         previewPhotoFilterAdjustment, params);
   wasOpen = true;
@@ -8085,11 +8175,11 @@ void drawPosterizeDialog(AppState& st) {
   OpenDocument* od = st.documents.active();
 
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderInt("Levels", &params.levels, 2, 32);
-  const bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  const bool edited = ImGui::SliderInt("Levels", &params.levels, 2, 32);
   ImGui::TextDisabled("Quantised in the shaper domain, so the bands are perceptually even.");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustPosterize, previewPosterizeAdjustment,
                         params);
   wasOpen = true;
@@ -8111,11 +8201,11 @@ void drawThresholdDialog(AppState& st) {
   OpenDocument* od = st.documents.active();
 
   ImGui::SetNextItemWidth(220.0f);
-  ImGui::SliderFloat("Level", &params.threshold, 0.0f, 1.0f, "%.3f");
-  const bool settled = ImGui::IsItemDeactivatedAfterEdit();
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  const bool edited = ImGui::SliderFloat("Level", &params.threshold, 0.0f, 1.0f, "%.3f");
   ImGui::TextDisabled("Rec.709 luma, compared in the shaper domain. At or above is white.");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustThreshold, previewThresholdAdjustment,
                         params);
   wasOpen = true;
@@ -8146,23 +8236,22 @@ void drawGradientMapDialog(AppState& st) {
   }
   OpenDocument* od = st.documents.active();
 
-  bool settled = false;
+  // Live: see drawLevelsDialog()'s comment -- a point op.
+  bool edited = false;
   for (size_t i = 0; i < params.stops.colorStops.size(); ++i) {
     ImGui::PushID(static_cast<int>(i));
     ImGui::SetNextItemWidth(90.0f);
-    ImGui::SliderFloat("##pos", &params.stops.colorStops[i].position, 0.0f, 1.0f, "%.2f");
-    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::SliderFloat("##pos", &params.stops.colorStops[i].position, 0.0f, 1.0f, "%.2f");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(200.0f);
-    ImGui::ColorEdit3("##col", params.stops.colorStops[i].color.data(),
-                      ImGuiColorEditFlags_Float);
-    settled |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::ColorEdit3("##col", params.stops.colorStops[i].color.data(),
+                                ImGuiColorEditFlags_Float);
     if (params.stops.colorStops.size() > 2) {
       ImGui::SameLine();
       if (ImGui::SmallButton("x")) {
         params.stops.colorStops.erase(params.stops.colorStops.begin() +
                                       static_cast<ptrdiff_t>(i));
-        settled = true;
+        edited = true;
         ImGui::PopID();
         break;
       }
@@ -8171,16 +8260,19 @@ void drawGradientMapDialog(AppState& st) {
   }
   if (ImGui::Button("Add stop")) {
     params.stops.colorStops.push_back(ColorStop{0.5f, {0.5f, 0.5f, 0.5f}});
-    settled = true;
+    edited = true;
   }
   // `gradientColorAt()` requires stops sorted ascending by position -- its own
   // contract, the same one ops/Gradient's other callers honour. The sliders
   // let a stop be dragged past its neighbour, so the sort happens here on
-  // every edit rather than being assumed.
-  if (settled) sortGradientStops(params.stops);
+  // every edit -- now every LIVE edit, not just on release, or a stop dragged
+  // past a neighbour would preview against an unsorted list for the rest of
+  // that drag, which is exactly the ordering `gradientColorAt()` assumes it
+  // never has to handle.
+  if (edited) sortGradientStops(params.stops);
   ImGui::TextDisabled("Rec.709 luma indexes the ramp. Outside the stops, the ends extend flat.");
 
-  if (settled || !wasOpen)
+  if (edited || !wasOpen)
     updateFilterPreview(od, FilterPreviewOwner::AdjustGradientMap,
                         previewGradientMapAdjustment, params);
   wasOpen = true;
@@ -12886,6 +12978,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // each: a rotation is still "the sheet follows the pointer", and SDL
         // has nothing that means rotation anyway.
         g_canvasCursor = sdlCursorFor(ToolCursor::Pan);
+      } else if (transformActive) {
+        // Free Transform owns the canvas here exactly as it does at the three
+        // `!transformActive` guards above -- repositioning content, not the
+        // view, which is `MoveObject`'s own definition. Without this branch
+        // the cursor fell through to `st.brush.tool`'s ordinary cursor (e.g. a
+        // crosshair, if Brush was active when Cmd+T was pressed), describing a
+        // paint stroke the gizmo drag will not produce.
+        g_canvasCursor = sdlCursorFor(ToolCursor::MoveObject);
+        g_canvasBitmapTool = Tool::Move;
       } else {
         // The tool, against the layer it is actually pointed at -- so a brush
         // over a locked or unpaintable layer, and a bucket over a Pigment

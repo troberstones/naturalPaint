@@ -218,7 +218,7 @@ struct ToolGroup {
 
 // Display order matches the user's own table exactly (Move+Frame,
 // Marquee, Lasso+PolygonLasso, MagicWand, Crop+Slice, Eyedropper+Measure,
-// CloneStamp, Eraser, Gradient+PaintBucket, Brush+Pencil+Water+DryBrush,
+// CloneStamp, Eraser, PaintBucket+Gradient, Brush+Pencil+Water+DryBrush,
 // Smudge, Dodge+Burn, Pen+Curve, Text, Shape, Hand, Zoom) -- derived from
 // Photoshop's real tool groups, not arbitrary, which is why a group of one
 // today (MagicWand, CloneStamp, Eraser, Smudge, Text, Shape, Hand, Zoom)
