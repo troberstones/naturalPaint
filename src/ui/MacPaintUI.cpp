@@ -7668,6 +7668,153 @@ bool drawAdjustChannelCombo(int* channelIdx) {
                       IM_ARRAYSIZE(kAdjustChannelLabels));
 }
 
+// The Levels dialog's histogram: the bins `drawHistogramSection()` already
+// draws, with the current channel's black point / white point / gamma
+// overlaid as three draggable handles, so a black/white point can be set by
+// looking at where the data actually is rather than by number alone.
+//
+// **A domain crossing sits at the middle of this widget, and getting it wrong
+// silently mis-sets every drag.** The histogram's bins are `srgbEncode()`d --
+// display/perceptual, `core/Histogram.cpp`'s own choice -- but `blackIn` /
+// `whiteIn` are LINEAR (`ops/PointOps.hpp`'s own header: "scene-linear HDR
+// headroom above 1.0" is a legal `whiteIn`, which only makes sense for a
+// linear quantity). So a handle's SCREEN position is always
+// `srgbEncode(linearValue)` and a drag always writes back
+// `srgbDecode(screenPosition)` -- never the raw fraction across the plot.
+// Getting this backwards would not crash or look obviously wrong, only
+// silently set the wrong linear value for wherever the user dragged to, which
+// is worse than a crash.
+//
+// The white handle's drag range is clamped to the plot itself (linear-domain
+// values up to `srgbDecode(1.0)`, i.e. display white): scene-linear headroom
+// above that is real and the numeric "White in" slider still reaches it (up
+// to 4.0, unrestricted), but a histogram plotted over [0,1] display has no
+// picture to drag a handle past its own right edge onto.
+bool drawLevelsHistogramWidget(const HistogramResult& hist, int channelIdx, LevelsParams& shown) {
+  if (hist.sampleCount == 0 || hist.r.empty()) {
+    ImGui::TextDisabled("Nothing painted yet.");
+    return false;
+  }
+
+  const std::vector<uint64_t>* channelBins = nullptr;
+  switch (channelIdx) {
+    case 1: channelBins = &hist.r; break;
+    case 2: channelBins = &hist.g; break;
+    case 3: channelBins = &hist.b; break;
+    default: break;  // RGB composite: all four, overlaid, below.
+  }
+
+  uint64_t maxCount = 1;
+  for (size_t i = 0; i < hist.r.size(); ++i)
+    maxCount = std::max({maxCount, hist.r[i], hist.g[i], hist.b[i], hist.luma[i]});
+
+  constexpr float kPlotH = 100.0f;
+  constexpr float kHandleH = 14.0f;  // The triangle strip below the plot.
+  const float plotW = 220.0f;        // Matches every slider's `SetNextItemWidth` in this dialog.
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(origin, ImVec2(origin.x + plotW, origin.y + kPlotH), IM_COL32(20, 20, 22, 255));
+
+  auto plotChannel = [&](const std::vector<uint64_t>& bins, ImU32 col) {
+    const size_t n = bins.size();
+    for (size_t i = 0; i < n; ++i) {
+      const float x0 = origin.x + plotW * (static_cast<float>(i) / static_cast<float>(n));
+      const float x1 = origin.x + plotW * (static_cast<float>(i + 1) / static_cast<float>(n));
+      const float h = kPlotH * (static_cast<float>(bins[i]) / static_cast<float>(maxCount));
+      dl->AddRectFilled(ImVec2(x0, origin.y + kPlotH - h),
+                        ImVec2(std::max(x1, x0 + 1.0f), origin.y + kPlotH), col);
+    }
+  };
+  if (channelBins != nullptr) {
+    plotChannel(*channelBins, IM_COL32(225, 225, 220, 200));
+  } else {
+    // Same stacked-alpha overlay drawHistogramSection() uses, so a reader who
+    // has seen that panel reads this one the same way.
+    plotChannel(hist.r, IM_COL32(235, 70, 70, 110));
+    plotChannel(hist.g, IM_COL32(70, 215, 110, 110));
+    plotChannel(hist.b, IM_COL32(80, 150, 235, 110));
+    plotChannel(hist.luma, IM_COL32(235, 235, 230, 150));
+  }
+  dl->AddRect(origin, ImVec2(origin.x + plotW, origin.y + kPlotH),
+              ImGui::GetColorU32(ImGuiCol_Border));
+
+  // Display-domain (0..1) positions of the three handles. `whiteIn` clamped
+  // for DRAWING only -- see the header comment on why the stored value is
+  // never clamped here.
+  const float blackDisp = std::clamp(srgbEncode(shown.blackIn), 0.0f, 1.0f);
+  const float whiteDisp = std::clamp(srgbEncode(shown.whiteIn), 0.0f, 1.0f);
+  // Photoshop's own convention for where the midtone (gamma) handle sits: the
+  // input fraction across [black, white] that maps to 50% output, inverting
+  // `t = pow(midFrac, 1/gamma)` at `t = 0.5`. Display-only, like the other two
+  // -- gamma itself has no linear/display distinction to get wrong.
+  const float midFrac = std::pow(0.5f, 1.0f / std::clamp(shown.gamma, 0.1f, 4.0f));
+  const float gammaDisp = blackDisp + (whiteDisp - blackDisp) * midFrac;
+
+  // The true, unclamped position (used for hit-testing/dragging below) vs. the
+  // position actually drawn (nudged inward so a handle at disp=0 or disp=1 --
+  // the common default state -- draws its full triangle rather than half of it
+  // hanging past the plot's own border).
+  auto handleX = [&](float disp) { return origin.x + plotW * disp; };
+  constexpr float kHandleHalfW = 5.0f;
+  auto drawHandle = [&](float disp, ImU32 col) {
+    const float x = std::clamp(handleX(disp), origin.x + kHandleHalfW, origin.x + plotW - kHandleHalfW);
+    const float y0 = origin.y + kPlotH;
+    dl->AddTriangleFilled(ImVec2(x - kHandleHalfW, y0 + kHandleH), ImVec2(x + kHandleHalfW, y0 + kHandleH),
+                          ImVec2(x, y0 + 2.0f), col);
+  };
+  drawHandle(blackDisp, IM_COL32(40, 40, 40, 255));
+  drawHandle(gammaDisp, IM_COL32(170, 170, 170, 255));
+  drawHandle(whiteDisp, IM_COL32(240, 240, 240, 255));
+
+  ImGui::Dummy(ImVec2(plotW, kPlotH + kHandleH));
+
+  // One combined hit-test/drag strip spanning the plot plus the handle row --
+  // simpler than three separate InvisibleButtons, and there is no case where
+  // two handles need independent simultaneous drags (one mouse). Nearest
+  // handle wins a click, same tie-break shape as `hitTestPoint()`
+  // (app/CurveEdit.cpp) uses for curve knots.
+  ImGui::SetCursorScreenPos(origin);
+  ImGui::InvisibleButton("##levelshist", ImVec2(plotW, kPlotH + kHandleH));
+  bool edited = false;
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  const ImGuiID dragKey = ImGui::GetID("levelsHistDrag");
+  int dragHandle = storage->GetInt(dragKey, -1);  // 0 black, 1 gamma, 2 white
+  if (ImGui::IsItemActivated()) {
+    const float mx = ImGui::GetIO().MousePos.x - origin.x;
+    const float dBlack = std::fabs(mx - handleX(blackDisp));
+    const float dGamma = std::fabs(mx - handleX(gammaDisp));
+    const float dWhite = std::fabs(mx - handleX(whiteDisp));
+    const float best = std::min({dBlack, dGamma, dWhite});
+    dragHandle = (best == dBlack) ? 0 : (best == dGamma ? 1 : 2);
+    storage->SetInt(dragKey, dragHandle);
+  }
+  if (dragHandle >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    const float disp = std::clamp((ImGui::GetIO().MousePos.x - origin.x) / plotW, 0.0f, 1.0f);
+    if (dragHandle == 0) {
+      shown.blackIn = srgbDecode(std::min(disp, whiteDisp));
+      edited = true;
+    } else if (dragHandle == 2) {
+      shown.whiteIn = srgbDecode(std::max(disp, blackDisp));
+      edited = true;
+    } else {
+      // Solve `pow(t, 1/gamma) = 0.5` for `gamma` at the dragged position's
+      // fraction across [black, white] -- the inverse of `midFrac` above.
+      // Clamped strictly inside (0,1): at either end the equation has no
+      // finite solution (gamma -> 0 or -> infinity), and clamped to the same
+      // [0.1, 4.0] the numeric slider allows, so a drag cannot produce a
+      // gamma the slider itself would reject.
+      const float span = std::max(whiteDisp - blackDisp, 1e-4f);
+      const float t = std::clamp((disp - blackDisp) / span, 0.02f, 0.98f);
+      shown.gamma = std::clamp(std::log(0.5f) / std::log(t), 0.1f, 4.0f);
+      edited = true;
+    }
+  } else if (dragHandle >= 0) {
+    dragHandle = -1;
+    storage->SetInt(dragKey, dragHandle);
+  }
+  return edited;
+}
+
 // Shared tail of all four dialogs: the commit button, Cancel, and the refusal
 // line. `applyFn` returns the `FilterOpResult` its `applyX()` produced.
 //
@@ -7704,6 +7851,12 @@ void drawLevelsDialog(AppState& st) {
   static int channelIdx = 0;
   static std::string status;
   static bool wasOpen = false;  // see drawGaussianBlurDialog()'s own comment
+  // Computed once, on the frame the dialog opens, not every frame it is held
+  // open: `adjustmentHistogramFor()` walks the active layer's tiles, and
+  // nothing else can repaint them while a modal Adjustments dialog owns the
+  // frame, so a fresh read every frame would cost real time for a number that
+  // cannot have changed since the last one.
+  static HistogramResult histogram;
 
   if (!ImGui::BeginPopupModal("Levels", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     wasOpen = false;
@@ -7711,6 +7864,7 @@ void drawLevelsDialog(AppState& st) {
     return;
   }
   OpenDocument* od = st.documents.active();
+  if (!wasOpen) histogram = (od != nullptr) ? adjustmentHistogramFor(*od) : HistogramResult{};
 
   bool edited = drawAdjustChannelCombo(&channelIdx);
   // The values shown are channel 0's whenever RGB is selected -- see
@@ -7718,6 +7872,8 @@ void drawLevelsDialog(AppState& st) {
   // same numbers to all three, so channel 0 is a faithful reading of what the
   // composite holds, not an arbitrary pick among three.
   LevelsParams shown = channels[channelIdx == 0 ? 0 : channelIdx - 1];
+
+  edited |= drawLevelsHistogramWidget(histogram, channelIdx, shown);
 
   ImGui::SeparatorText("Input");
   ImGui::SetNextItemWidth(220.0f);
