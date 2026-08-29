@@ -200,6 +200,42 @@ const char* layerSetCommandLabel(LayerSetCommand command) noexcept {
   return "?";
 }
 
+uint32_t layerSetCommandIconCodepoint(LayerSetCommand command) noexcept {
+  switch (command) {
+    // NOT align-left/align-right (U+E185/U+E183) -- those are Lucide's *text*-
+    // alignment glyphs (three ragged horizontal lines) and read wrong next to
+    // these six: align-start-horizontal/align-end-horizontal are the
+    // *object*-alignment pair, the same "reference line + flush-edge blocks"
+    // family as align-start-vertical/align-end-vertical below, verified by
+    // rendering all six glyphs and comparing families, not by name alone --
+    // Lucide ships both a text-alignment and an object-alignment icon set,
+    // and it is easy to grab the wrong one by name.
+    case LayerSetCommand::AlignSelectionLeft:     return 0xE270u;  // align-start-horizontal
+    case LayerSetCommand::AlignSelectionCenterX:  return 0xE26Cu;  // align-center-horizontal
+    case LayerSetCommand::AlignSelectionRight:    return 0xE26Eu;  // align-end-horizontal
+    case LayerSetCommand::AlignSelectionTop:      return 0xE271u;  // align-start-vertical
+    case LayerSetCommand::AlignSelectionCenterY:  return 0xE26Du;  // align-center-vertical
+    case LayerSetCommand::AlignSelectionBottom:   return 0xE26Fu;  // align-end-vertical
+    case LayerSetCommand::DistributeHorizontally: return 0xE03Cu;  // align-horizontal-distribute-center
+    case LayerSetCommand::DistributeVertically:   return 0xE27Eu;  // align-vertical-distribute-center
+    default:                                      return 0u;
+  }
+}
+
+const std::vector<uint32_t>& layerSetCommandIconCodepoints() {
+  static const std::vector<uint32_t> kPoints = [] {
+    std::vector<uint32_t> points;
+    for (const LayerSetCommand command : allLayerSetCommands()) {
+      const uint32_t cp = layerSetCommandIconCodepoint(command);
+      if (cp == 0u) continue;
+      if (std::find(points.begin(), points.end(), cp) == points.end()) points.push_back(cp);
+    }
+    std::sort(points.begin(), points.end());
+    return points;
+  }();
+  return kPoints;
+}
+
 namespace {
 
 // The label a `Label*` command writes, or nullptr when the command is not one.

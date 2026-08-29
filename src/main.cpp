@@ -43,6 +43,7 @@
 #include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
 #include "core/LayerOps.hpp"
+#include "core/LayerSetOps.hpp"
 #include "core/Tile.hpp"
 #include "core/LayerCompOps.hpp"
 #include "core/ResourcePaths.hpp"
@@ -2363,14 +2364,22 @@ int main(int argc, char** argv) {
     std::printf("[fonts] %s\n", fontResult.error.c_str());
 
   // The tool palette's Lucide icons (docs/ui.md section 2: "Toolbox uses
-  // Lucide icons at 15px, one per tool"). A second, independent merge from
-  // the layer-kind one above -- see ui/Fonts.hpp's installToolIconFont() for
-  // why it cannot just reuse that call -- so it gets its own report line
-  // rather than being folded into fontResult's.
-  const np::ToolIconLoadResult iconResult = np::installToolIconFont(np::toolIconCodepoints());
+  // Lucide icons at 15px, one per tool"), unioned with the Multi-selection
+  // panel's alignment/distribute icons (`core::layerSetCommandIconCodepoints()`)
+  // -- both draw from the same vendored Lucide font, so one merge covers
+  // both rather than fighting over `g_fonts.text`. A second, independent
+  // merge from the layer-kind one above -- see ui/Fonts.hpp's
+  // installToolIconFont() for why it cannot just reuse that call -- so it
+  // gets its own report line rather than being folded into fontResult's.
+  std::vector<uint32_t> toolIconPoints = np::toolIconCodepoints();
+  for (const uint32_t cp : np::layerSetCommandIconCodepoints())
+    if (std::find(toolIconPoints.begin(), toolIconPoints.end(), cp) == toolIconPoints.end())
+      toolIconPoints.push_back(cp);
+  std::sort(toolIconPoints.begin(), toolIconPoints.end());
+  const np::ToolIconLoadResult iconResult = np::installToolIconFont(toolIconPoints);
   if (iconResult.ok)
     std::printf("[fonts] merged %s for %zu tool-palette icons\n", iconResult.path.c_str(),
-                np::toolIconCodepoints().size());
+                toolIconPoints.size());
   else
     std::printf("[fonts] %s\n", iconResult.error.c_str());
 

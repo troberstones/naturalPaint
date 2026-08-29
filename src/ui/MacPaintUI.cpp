@@ -1868,6 +1868,68 @@ void layerCommandIconButton(AppState& st, LayerCommand command) {
     ImGui::SetTooltip("%s", layerCommandLabel(command));
 }
 
+// `layerCommandGlyphFallback()`'s twin for the eight `LayerSetCommand`s the
+// Multi-selection section draws as an icon row instead of a text button --
+// only reached when `drawToolGlyph()` cannot draw the merged Lucide glyph
+// (its own no-usable-glyph-source failure case, `ui/Fonts.cpp`'s
+// installToolIconFont() degrading silently).
+const char* layerSetCommandGlyphFallback(LayerSetCommand command) noexcept {
+  switch (command) {
+    case LayerSetCommand::AlignSelectionLeft: return "[L]";
+    case LayerSetCommand::AlignSelectionCenterX: return "[CH]";
+    case LayerSetCommand::AlignSelectionRight: return "[R]";
+    case LayerSetCommand::AlignSelectionTop: return "[T]";
+    case LayerSetCommand::AlignSelectionCenterY: return "[CV]";
+    case LayerSetCommand::AlignSelectionBottom: return "[B]";
+    case LayerSetCommand::DistributeHorizontally: return "[DH]";
+    case LayerSetCommand::DistributeVertically: return "[DV]";
+    default: return "?";
+  }
+}
+
+// `layerCommandIconButton()`'s twin for `LayerSetCommand`, hand-drawn like
+// `toolFlyoutRow()` rather than an `ImGui::SmallButton` with the glyph
+// embedded in its text label -- `toolFlyoutRow()`'s own comment explains why:
+// a merged Lucide glyph is only proven to bake at `kToolIconSizePx`
+// (`drawToolGlyph()`'s fixed size, `ui/Fonts.hpp`), and drawing it as widget
+// label text at whatever size the ambient font happens to be is a different,
+// unproven bake -- in practice, at this panel's compact text size, the thin
+// strokes of e.g. align-left/align-right collapse into near-identical blurs.
+// Same availability predicate (`core::layerSetCommandAvailable()`), same
+// tooltip, same `runLayerSetCommand()` dispatch as `layerCommandIconButton()`;
+// only reachable for the eight commands `layerSetCommandIconCodepoint()`
+// actually has a glyph for. `visible` is the selection already restricted to
+// the active filter, computed once by the caller and threaded through rather
+// than recomputed per button.
+void layerSetCommandIconButton(AppState& st, const Document& doc, const LayerSelection& visible,
+                                LayerSetCommand command) {
+  const bool available = layerSetCommandAvailable(doc, command, visible);
+  ImGui::PushID(static_cast<int>(command));
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const float sz = ImGui::GetFrameHeight();
+  const ImVec2 size(sz, sz);
+  const bool clickedRaw = ImGui::InvisibleButton("##align", size);
+  const bool clicked = clickedRaw && available;
+  const bool hovered = ImGui::IsItemHovered();
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImU32 bg = (hovered && available) ? ImGui::GetColorU32(ImGuiCol_ButtonHovered)
+                                           : ImGui::GetColorU32(ImGuiCol_Button);
+  dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), bg, ImGui::GetStyle().FrameRounding);
+
+  const ImU32 fg = available ? ImGui::GetColorU32(ImGuiCol_Text)
+                              : (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110);
+  const ImVec2 c(p.x + size.x * 0.5f, p.y + size.y * 0.5f);
+  if (!drawToolGlyph(dl, layerSetCommandIconCodepoint(command), c, fg)) {
+    const char* fb = layerSetCommandGlyphFallback(command);
+    const ImVec2 ts = ImGui::CalcTextSize(fb);
+    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), fg, fb);
+  }
+  if (hovered) ImGui::SetTooltip("%s", layerSetCommandLabel(command));
+  if (clicked) runLayerSetCommand(st, command);
+  ImGui::PopID();
+}
+
 // --- LAYERS (design "naturalPaint Panels" turn 2, option 2a) ----------------
 //
 // 2a's own summary of what it changes over 1a: "every row now shows an
@@ -2967,7 +3029,51 @@ void drawLayersSection(AppState& st) {
     ImGui::TextDisabled("shift-click to extend.");
     const LayerSelection visible =
         restrictSelectionToFilter(doc, g_layers.selection, g_layers.filter);
+
+    // ALIGNMENT -- the six align-to-selection-bounds commands plus the two
+    // distribute commands, as an icon row rather than the flat text-button
+    // list below: this is Figma's own presentation of the identical
+    // operations (align left/centre-h/right, top/centre-v/bottom, then
+    // distribute h/v), and the icons are the same Lucide glyphs the tool
+    // palette already uses (`core::layerSetCommandIconCodepoints()`, merged
+    // into the shared icon font by `main.cpp` alongside `toolIconCodepoints()`).
+    // `AlignCanvas*` stays in the text list below: it is the same six ops
+    // against a different reference frame, and its own label already says
+    // "to Canvas" -- a second icon row for it would teach two icon sets for
+    // one operation instead of one icon set plus a text distinction.
+    ImGui::TextDisabled("Alignment");
+    layerSetCommandIconButton(st, doc, visible, LayerSetCommand::AlignSelectionLeft);
+    ImGui::SameLine();
+    layerSetCommandIconButton(st, doc, visible, LayerSetCommand::AlignSelectionCenterX);
+    ImGui::SameLine();
+    layerSetCommandIconButton(st, doc, visible, LayerSetCommand::AlignSelectionRight);
+    ImGui::SameLine();
+    layerSetCommandIconButton(st, doc, visible, LayerSetCommand::AlignSelectionTop);
+    ImGui::SameLine();
+    layerSetCommandIconButton(st, doc, visible, LayerSetCommand::AlignSelectionCenterY);
+    ImGui::SameLine();
+    layerSetCommandIconButton(st, doc, visible, LayerSetCommand::AlignSelectionBottom);
+    layerSetCommandIconButton(st, doc, visible, LayerSetCommand::DistributeHorizontally);
+    ImGui::SameLine();
+    layerSetCommandIconButton(st, doc, visible, LayerSetCommand::DistributeVertically);
+
     for (const LayerSetCommand command : allLayerSetCommands()) {
+      // The eight commands above already have their own icon row; skip them
+      // here so the operation isn't offered twice under two different
+      // controls.
+      switch (command) {
+        case LayerSetCommand::AlignSelectionLeft:
+        case LayerSetCommand::AlignSelectionCenterX:
+        case LayerSetCommand::AlignSelectionRight:
+        case LayerSetCommand::AlignSelectionTop:
+        case LayerSetCommand::AlignSelectionCenterY:
+        case LayerSetCommand::AlignSelectionBottom:
+        case LayerSetCommand::DistributeHorizontally:
+        case LayerSetCommand::DistributeVertically:
+          continue;
+        default:
+          break;
+      }
       // **Enabled exactly when `core::layerSetCommandAvailable()` says so,
       // and no second rule** -- core/LayerSetOps.hpp's own line: "Every
       // other reason a command may not go ahead ... is a REFUSAL, offered

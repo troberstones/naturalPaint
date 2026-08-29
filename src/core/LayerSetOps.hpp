@@ -377,6 +377,36 @@ const std::vector<LayerSetCommand>& allLayerSetCommands();
 // Menu text: "Delete Layers", "Align Left (to selection)". Title case.
 const char* layerSetCommandLabel(LayerSetCommand command) noexcept;
 
+// A Lucide codepoint for the eight selection-relative align/distribute
+// commands (the icon toolbar `ui/MacPaintUI.cpp` draws, Figma's own
+// presentation of the same operations), 0 for the other 26. PUA codepoints
+// from `third_party/lucide`, verified against the vendored font's own cmap
+// (`lucide.ttf`) rather than guessed. Returned as a raw codepoint, not a
+// UTF-8 glyph string: the drawing side (`ui/MacPaintUI.cpp`'s
+// `layerSetCommandIconButton()`) must render it through `drawToolGlyph()` at
+// `ui/Fonts.hpp`'s fixed `kToolIconSizePx` -- the same reason
+// `toolFlyoutRow()` there hand-draws instead of embedding the glyph in an
+// `ImGui::SmallButton` label: a merged Lucide glyph is only proven to bake at
+// that one fixed size, and drawing it as plain widget-label text at whatever
+// size the ambient font happens to be is a different, unproven bake. A raw
+// codepoint makes that the only path available, rather than a string that
+// invites re-deriving the codepoint by hand at the call site (or worse,
+// tempting a second `ImGui::SmallButton(glyphString)` call). `AlignCanvas*`
+// intentionally shares no icon of its own: it is the same six operations
+// against a different reference frame, and the toolbar's label ("to the
+// selection's own bounds") is what disambiguates, not a second icon set six
+// users would have to learn.
+uint32_t layerSetCommandIconCodepoint(LayerSetCommand command) noexcept;
+
+// The nonzero codepoints `layerSetCommandIconCodepoint()` can return, for the
+// Lucide font merge (`installToolIconFont()`, `ui/Fonts.hpp`) -- the exact
+// role `toolIconCodepoints()` (`ui/AtelierChrome.hpp`) plays for the tool
+// palette, which is why this is a second, INDEPENDENT list rather than an
+// addition to that one: `toolIconCodepoints()`'s whole contract is "walks
+// `kToolMeta`", and `LayerSetCommand` is not a `Tool`. `main.cpp` merges both
+// lists into one `installToolIconFont()` call.
+const std::vector<uint32_t>& layerSetCommandIconCodepoints();
+
 // Whether the command can be offered at all for this selection --
 // `app::layerCommandAvailable()`'s rule exactly, one level up: **availability,
 // not permission.** Unavailable means the gesture is meaningless for this
