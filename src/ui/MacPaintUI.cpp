@@ -8653,6 +8653,7 @@ void drawAdjustmentDialogs(AppState& st) {
 // translated through a second vocabulary.
 bool g_imageSizeRequested = false;
 bool g_canvasSizeRequested = false;
+bool g_numericTransformRequested = false;
 
 void drawImageSizeDialog(AppState& st) {
   static int width = 0;
@@ -8760,6 +8761,124 @@ void drawCanvasSizeDialog(AppState& st) {
   if (!valid) ImGui::EndDisabled();
   ImGui::SameLine();
   if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  if (!status.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::EndPopup();
+}
+
+// PRD item 10: a Photoshop-style numeric Transform dialog -- typed rotate/
+// scale/translate fields instead of dragging the Free Transform gizmo's
+// handles. Begins the identical `app/TransformSession` a Cmd+T gizmo would
+// (same beginLayer()/beginSelectionPixels() choice, same undo funnel at
+// commit), but drives `pending()` from these fields via `setPending()`
+// instead of a drag -- see app/TransformSession.hpp's `composeNumericTransform()`
+// and `setPending()` for why that is this session's own sanctioned path, not
+// a bypass of "no setter but through a drag".
+void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
+  static float rotateDeg = 0.0f;
+  static float scaleXPercent = 100.0f;
+  static float scaleYPercent = 100.0f;
+  static float translateX = 0.0f;
+  static float translateY = 0.0f;
+  static std::string status;
+
+  OpenDocument* od = st.documents.active();
+  if (g_numericTransformRequested) {
+    g_numericTransformRequested = false;
+    status.clear();
+    // A session already active (e.g. the user has Free Transform's gizmo
+    // open from Cmd+T) is refused rather than silently reused or restarted:
+    // reusing it would need to read the CURRENT pending() back into these
+    // numeric fields (an inverse-compose this dialog does not implement),
+    // and restarting would silently discard whatever the user already
+    // dragged in. Both are surprising; naming the conflict is not.
+    if (st.transform.active()) {
+      status = "A transform is already in progress. Press Return to apply it or "
+               "Escape to cancel it, then try again.";
+      ImGui::OpenPopup("Numeric Transform");
+    } else if (od == nullptr) {
+      status = "Numeric Transform needs an open document with a layer.";
+      ImGui::OpenPopup("Numeric Transform");
+    } else {
+      const std::optional<size_t> li = activeLayerIndex(*od);
+      if (!li) {
+        status = "Numeric Transform needs an open document with a layer.";
+      } else {
+        const TransformBeginResult began =
+            od->selection ? st.transform.beginSelectionPixels(od->document, *od->selection, *li)
+                          : st.transform.beginLayer(od->document, *li);
+        if (!began.ok) {
+          status = began.error;
+        } else {
+          rotateDeg = 0.0f;
+          scaleXPercent = 100.0f;
+          scaleYPercent = 100.0f;
+          translateX = 0.0f;
+          translateY = 0.0f;
+          beginTransformPreview(st, gpu);
+        }
+      }
+      ImGui::OpenPopup("Numeric Transform");
+    }
+  }
+  if (!ImGui::BeginPopupModal("Numeric Transform", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    return;
+
+  if (!st.transform.active()) {
+    // Reached only on a refusal path above (no document, no layer, or
+    // beginLayer/beginSelectionPixels itself refused) -- nothing to show but
+    // why, and an OK to dismiss.
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+    if (ImGui::Button("OK")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return;
+  }
+
+  const DocumentRegion& bounds = st.transform.sourceBounds();
+  const Point2 pivot{static_cast<float>(bounds.x) + static_cast<float>(bounds.width) * 0.5f,
+                     static_cast<float>(bounds.y) + static_cast<float>(bounds.height) * 0.5f};
+
+  bool edited = false;
+  ImGui::SetNextItemWidth(200.0f);
+  edited |= ImGui::DragFloat("Rotate (deg)", &rotateDeg, 0.5f, -360.0f, 360.0f, "%.1f");
+  ImGui::SetNextItemWidth(200.0f);
+  edited |= ImGui::DragFloat("Scale X (%)", &scaleXPercent, 0.5f, 1.0f, 1000.0f, "%.1f");
+  ImGui::SetNextItemWidth(200.0f);
+  edited |= ImGui::DragFloat("Scale Y (%)", &scaleYPercent, 0.5f, 1.0f, 1000.0f, "%.1f");
+  ImGui::SetNextItemWidth(200.0f);
+  edited |= ImGui::DragFloat("Move X (px)", &translateX, 0.5f, -100000.0f, 100000.0f, "%.1f");
+  ImGui::SetNextItemWidth(200.0f);
+  edited |= ImGui::DragFloat("Move Y (px)", &translateY, 0.5f, -100000.0f, 100000.0f, "%.1f");
+
+  if (edited) {
+    const Mat3 m = composeNumericTransform(rotateDeg, scaleXPercent / 100.0f,
+                                           scaleYPercent / 100.0f, translateX, translateY, pivot);
+    st.transform.setPending(m);
+  }
+
+  ImGui::TextDisabled(
+      "Rotate and scale are about the centre of the %s; Move is an additional offset.",
+      od != nullptr && od->selection ? "selection" : "layer");
+
+  if (ImGui::Button("Apply") && od != nullptr) {
+    const TransformCommitResult done = st.transform.commit(*od);
+    status = done.ok ? std::string() : done.error;
+    if (done.ok) {
+      ImGui::CloseCurrentPopup();
+      g_transformPreview.reset();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel")) {
+    st.transform.cancel();
+    g_transformPreview.reset();
+    ImGui::CloseCurrentPopup();
+  }
   if (!status.empty()) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.40f, 1.0f));
     ImGui::TextWrapped("%s", status.c_str());
@@ -9497,6 +9616,9 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // here on rather than two that can drift.
     case MenuAction::FreeTransform:
       st.requestFreeTransform = true;
+      break;
+    case MenuAction::NumericTransform:
+      g_numericTransformRequested = true;
       break;
     case MenuAction::Cut:
       st.requestCut = true;
@@ -11297,6 +11419,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   drawAdjustmentDialogs(st);
   drawImageSizeDialog(st);
   drawCanvasSizeDialog(st);
+  drawNumericTransformDialog(st, gpu);
   // docs/reachability-audit.md C5 (PRD E4/E8/E9): the Select menu's five
   // refine dialogs, same placement rule again.
   drawSelectMenuDialogs(st);

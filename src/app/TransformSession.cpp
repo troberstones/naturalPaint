@@ -247,6 +247,13 @@ Mat3 computeDropFitTransform(const DocumentRegion& sourceBounds,
                       transformScale(scale, scale));
 }
 
+Mat3 composeNumericTransform(float rotateDegrees, float scaleXFraction, float scaleYFraction,
+                             float translateX, float translateY, Point2 pivot) noexcept {
+  const Mat3 scaled = transformScaleAbout(scaleXFraction, scaleYFraction, pivot);
+  const Mat3 rotatedAndScaled = mat3Multiply(transformRotateDegreesAbout(rotateDegrees, pivot), scaled);
+  return mat3Multiply(transformTranslate(translateX, translateY), rotatedAndScaled);
+}
+
 // --------------------------------------------------------------------------
 // TransformSession
 // --------------------------------------------------------------------------

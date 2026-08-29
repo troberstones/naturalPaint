@@ -177,11 +177,13 @@ bool runMenuModelTest() {
   // the whole of what docs/operations.md §1.2 lists minus the four this build
   // deliberately does not claim (selective colour, colour lookup, and the two
   // that are class B rather than class A).
-  check(kMenuActionCount == 88,
-        "ids: exactly 88 actions -- the original 41-item extraction plus D1/D2's "
+  // 88 -> 89: the numeric Transform dialog (item 10) -- MenuAction::NumericTransform,
+  // next to Free Transform in the Edit menu.
+  check(kMenuActionCount == 89,
+        "ids: exactly 89 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
-        "Emboss/Median/Motion Blur and Adjustments' nineteen, so an item lost in "
-        "a later edit fails here");
+        "Emboss/Median/Motion Blur, Adjustments' nineteen and the numeric Transform "
+        "dialog, so an item lost in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

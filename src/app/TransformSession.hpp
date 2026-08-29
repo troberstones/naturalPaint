@@ -362,6 +362,17 @@ Mat3 computeTransformDragMatrix(TransformHandle handle, const DocumentRegion& so
 Mat3 computeDropFitTransform(const DocumentRegion& sourceBounds,
                              const DocumentRegion& canvas) noexcept;
 
+// The absolute matrix a numeric-entry transform dialog's fields describe,
+// composed the same order Photoshop's own numeric transform box uses when
+// both scale and rotation are non-identity: scale first, in the ORIGINAL
+// (unrotated) axes, about `pivot`; then rotate about the same `pivot`; then
+// an independent translate on top, which does not itself depend on `pivot`
+// at all. `scaleXFraction`/`scaleYFraction` are fractions (1.0 == 100%, i.e.
+// no change), `rotateDegrees` is clockwise. All-defaults
+// (0 degrees, 1.0, 1.0, 0, 0) returns exactly `mat3Identity()`.
+Mat3 composeNumericTransform(float rotateDegrees, float scaleXFraction, float scaleYFraction,
+                             float translateX, float translateY, Point2 pivot) noexcept;
+
 struct TransformBeginResult {
   bool ok = false;
   std::string error;
@@ -406,6 +417,19 @@ class TransformSession {
   // at commit.
   ExactRemap pendingExactRemap() const noexcept { return exactRemapKind(pending_); }
 
+  // Sets pending() directly to `m`. The one caller is the numeric Transform
+  // dialog (ui/MacPaintUI.cpp's drawNumericTransformDialog()), which computes
+  // the WHOLE matrix itself from its own fields every time one changes, rather
+  // than deriving a delta from a drag the way beginDrag()/updateDrag() do --
+  // so this is that session's own explicit-update path, not a bypass of the
+  // "no setter" rule beginLayer()'s own comment states: it is exactly as
+  // legitimate an operation as a drag, just driven by typed numbers instead of
+  // a mouse. A no-op when no session is active, matching updateDrag()'s own
+  // "no session, no effect" contract -- there is no pending() to set.
+  void setPending(const Mat3& m) noexcept {
+    if (active_) pending_ = m;
+  }
+
   bool dragging() const noexcept { return drag_.active; }
 
   // Begins a transform of `doc.layers[layerIndex]`'s own pixels (and, at
@@ -419,9 +443,11 @@ class TransformSession {
   // already knows this fresh layer needs a non-identity starting point
   // (app/OpenAnyFile.cpp's drop path, via `computeDropFitTransform()` above,
   // for an oversize dropped image) passes it here rather than mutating
-  // `pending()` after the fact, which this class exposes no setter for on
-  // purpose (section 1: `pending_` only ever changes through a drag or an
-  // explicit begin).
+  // `pending()` after the fact. (Section 1's rule was once "no setter, on
+  // purpose" -- `setPending()` below is now that setter, for the one caller,
+  // the numeric Transform dialog, that legitimately needs to replace the
+  // whole matrix outside a drag; every other caller should still prefer
+  // `initialPending` at `begin*()` or a drag, not this.)
   TransformBeginResult beginLayer(const Document& doc, size_t layerIndex,
                                   const Mat3& initialPending = mat3Identity());
 

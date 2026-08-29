@@ -158,6 +158,13 @@ enum class MenuAction : uint16_t {
   // is one enumerator to move, the same relocation note the selection items
   // below already carry.
   FreeTransform,
+  // Opens the numeric Transform dialog (app/TransformSession's
+  // setPending()/composeNumericTransform() path): typed rotate/scale/
+  // translate fields instead of dragging the Free Transform gizmo's handles.
+  // Same predicate as FreeTransform (needs an editable layer) and sits right
+  // next to it for the identical reason -- this build has no Transform
+  // submenu to put either one in.
+  NumericTransform,
   Cut,
   Copy,
   CopyMerged,

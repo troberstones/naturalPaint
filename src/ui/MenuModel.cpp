@@ -87,6 +87,12 @@ const MenuItemSpec* specTable() {
     set(MenuAction::FreeTransform, "Free Transform", "Cmd+T",
         MenuKeyEquivalent{'t', kMenuModCmd, "free_transform"});
 
+    // The numeric Transform dialog: no chord of its own (two-argument `set()`,
+    // like MenuAction::NewDocument above -- a three-argument call with a real
+    // MenuKeyEquivalent would need a matching binding in
+    // keymaps/default.json, which this item does not have).
+    set(MenuAction::NumericTransform, "Transform...", "");
+
     // D2: the other nine. Chords are `keymaps/default.json`'s own, already
     // shipped and already resolving through main.cpp's dispatch -- this is
     // the menu catching up to keys that worked all along, not a new binding.
@@ -392,6 +398,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Quit: return "Quit";
     case MenuAction::Undo: return "Undo";
     case MenuAction::FreeTransform: return "FreeTransform";
+    case MenuAction::NumericTransform: return "NumericTransform";
     case MenuAction::Redo: return "Redo";
     case MenuAction::Cut: return "Cut";
     case MenuAction::Copy: return "Copy";
@@ -664,6 +671,9 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
     // and offering it without one would put a refusal behind a click that
     // looked available.
     e.push_back(item(MenuAction::FreeTransform, ctx.hasEditableLayer));
+    // Same predicate, same reasoning as FreeTransform just above -- the
+    // numeric dialog begins the identical session, just from typed fields.
+    e.push_back(item(MenuAction::NumericTransform, ctx.hasEditableLayer));
     e.push_back(separator());
     e.push_back(item(MenuAction::Cut, ctx.hasEditableLayer));
     e.push_back(item(MenuAction::Copy, ctx.hasActiveLayer));

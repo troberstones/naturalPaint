@@ -584,6 +584,77 @@ bool runTransformSessionTest() {
     ts2.cancel();
   }
 
+  // --- 13. composeNumericTransform() -- the numeric Transform dialog's math -
+  //
+  // Pure function, no session or document at all -- the same style as
+  // section 12's `computeDropFitTransform()`. Every case below is hand-
+  // verified against the composition order the header states (scale about
+  // `pivot`, then rotate about `pivot`, then an independent translate) and
+  // against `ops/Transform.hpp`'s own conventions: `transformRotateDegrees()`
+  // is "counter-clockwise in a y-down image space, i.e. visually clockwise on
+  // screen", and `Mat3::m` is row-major so `p' = (c*x - s*y, s*x + c*y)`.
+  {
+    std::printf("-- 13. composeNumericTransform(): rotate/scale/translate, in the numeric "
+               "dialog's own order --\n");
+
+    // (a) All defaults -- 0 degrees, 100%/100%, no move -- is exactly
+    // identity, bit for bit, regardless of pivot (an off-origin pivot that
+    // leaked into the result under all-default inputs would be the classic
+    // "translate(pivot) * op * translate(-pivot)" bug this composition is
+    // built from).
+    const Mat3 defaults =
+        composeNumericTransform(0.0f, 1.0f, 1.0f, 0.0f, 0.0f, Point2{5.0f, 5.0f});
+    check(defaults.m == mat3Identity().m,
+          "all-defaults returns exactly mat3Identity(), even with a non-origin pivot");
+
+    // (b) A pure 90-degree rotation about pivot (10, 10). Point (20, 10) is
+    // local (10, 0) relative to the pivot; transformRotateDegrees(90)'s matrix
+    // is [[0,-1],[1,0]], so local (x,y) -> (-y, x) = (0, 10), i.e. world
+    // (10, 20) -- the point swings from "right of pivot" to "below pivot",
+    // which is visually clockwise on screen (y-down), matching this header's
+    // "rotateDegrees is clockwise" contract.
+    {
+      const Mat3 rot90 =
+          composeNumericTransform(90.0f, 1.0f, 1.0f, 0.0f, 0.0f, Point2{10.0f, 10.0f});
+      const Point2 p = mat3MapPoint(rot90, Point2{20.0f, 10.0f});
+      check(std::fabs(p.x - 10.0f) < 1e-4f && std::fabs(p.y - 20.0f) < 1e-4f,
+            "pure 90-degree rotate about (10,10): (20,10) -> (10,20), visually clockwise");
+    }
+
+    // (c) Non-uniform scale (sx=2, sy=3) about pivot (5, 5), no rotate or
+    // move. Two points, each offset along ONE axis only, so a bug that
+    // swapped sx/sy or applied one factor to both axes shows up as a wrong
+    // coordinate on a specific axis rather than a uniformly-wrong magnitude --
+    // the same "two different ratios" idea section 12 already uses.
+    {
+      const Mat3 nonUniform =
+          composeNumericTransform(0.0f, 2.0f, 3.0f, 0.0f, 0.0f, Point2{5.0f, 5.0f});
+      const Point2 px = mat3MapPoint(nonUniform, Point2{7.0f, 5.0f});   // local (2,0) -> (4,0)
+      const Point2 py = mat3MapPoint(nonUniform, Point2{5.0f, 8.0f});   // local (0,3) -> (0,9)
+      check(std::fabs(px.x - 9.0f) < 1e-4f && std::fabs(px.y - 5.0f) < 1e-4f,
+            "non-uniform scale (2x, 3y) about (5,5): an X-offset point scales by sx alone");
+      check(std::fabs(py.x - 5.0f) < 1e-4f && std::fabs(py.y - 14.0f) < 1e-4f,
+            "...and a Y-offset point scales by sy alone -- the two axes are independent");
+    }
+
+    // (d) Translate composing on top of a non-identity rotate+scale. Pivot
+    // (1,1), sx=2, sy=1, rotate 90 degrees, then move by (3,4). Point (3,1)
+    // is local (2,0) relative to pivot: scale -> (4,0), world (5,1); rotate
+    // 90 about (1,1) maps local (4,0) -> (0,4), world (1,5); translate (3,4)
+    // -> (4,9). Hand-worked in three steps because that is the order the
+    // header states the composition happens in, and matching it step for
+    // step is what makes this catch an ordering bug (e.g. translate folded
+    // into the pivot instead of applied after it) rather than only a
+    // magnitude bug.
+    {
+      const Mat3 combined =
+          composeNumericTransform(90.0f, 2.0f, 1.0f, 3.0f, 4.0f, Point2{1.0f, 1.0f});
+      const Point2 p = mat3MapPoint(combined, Point2{3.0f, 1.0f});
+      check(std::fabs(p.x - 4.0f) < 1e-4f && std::fabs(p.y - 9.0f) < 1e-4f,
+            "rotate+scale about (1,1) then translate (3,4): (3,1) -> (4,9)");
+    }
+  }
+
   return ok;
 }
 
