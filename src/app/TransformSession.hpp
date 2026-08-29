@@ -337,6 +337,31 @@ Mat3 computeTransformDragMatrix(TransformHandle handle, const DocumentRegion& so
                                 const Mat3& baseMatrix, Point2 startCursor, Point2 curCursor,
                                 bool shiftHeld, bool optionHeld) noexcept;
 
+// The initial `pending()` a freshly-dropped layer's transform session should
+// start from, when the dropped image overflows the canvas: a PROPORTIONAL
+// (aspect-preserving) scale-to-fit, centred on the canvas, computed from
+// `sourceBounds` (the layer's own content bounds -- the image at native
+// pixel size, wherever `writeDecodedImageIntoLayer()` put it) and `canvas`
+// (`documentCanvasRegion(doc)`).
+//
+// Returns `mat3Identity()`, UNCHANGED, whenever the image already fits both
+// dimensions -- no forced upscale, and no seeded transform at all for
+// content that already fit before this feature existed. `scale` is
+// `min(canvas.width / sourceBounds.width, canvas.height / sourceBounds.height)`
+// (whichever axis is more oversize governs both, so the image is never
+// cropped) applied about `sourceBounds`'s own origin and then re-centred, so
+// the result is a box of size `sourceBounds * scale` sitting in the middle
+// of `canvas` regardless of where `sourceBounds` itself started -- see
+// app/OpenAnyFile.cpp's drop path (this build's one caller) for why "centred
+// on canvas" rather than "centred on the drop point" is the right read of a
+// pending gizmo the user has not yet touched.
+//
+// A pure function, like every other builder in this file's section 6 --
+// `main.cpp`'s drop handler calls it once, right before `beginLayer()`, and
+// `--selftest` drives it directly with no session or document at all.
+Mat3 computeDropFitTransform(const DocumentRegion& sourceBounds,
+                             const DocumentRegion& canvas) noexcept;
+
 struct TransformBeginResult {
   bool ok = false;
   std::string error;
@@ -388,8 +413,17 @@ class TransformSession {
   // name, and refuses a layer with no content to transform -- either no
   // pixel storage at all (Adjustment/Text/Strokes/Flats/Media/Group) or
   // storage that is empty. `sourceBounds()` becomes
-  // `core::layerContentBounds()`. `pending()` starts at identity.
-  TransformBeginResult beginLayer(const Document& doc, size_t layerIndex);
+  // `core::layerContentBounds()`. `pending()` starts at `initialPending`,
+  // which defaults to identity -- the ordinary case, e.g. Cmd+T on a layer
+  // that is already where the user wants it to start from. A caller that
+  // already knows this fresh layer needs a non-identity starting point
+  // (app/OpenAnyFile.cpp's drop path, via `computeDropFitTransform()` above,
+  // for an oversize dropped image) passes it here rather than mutating
+  // `pending()` after the fact, which this class exposes no setter for on
+  // purpose (section 1: `pending_` only ever changes through a drag or an
+  // explicit begin).
+  TransformBeginResult beginLayer(const Document& doc, size_t layerIndex,
+                                  const Mat3& initialPending = mat3Identity());
 
   // Begins a transform of the pixels `selection` covers on
   // `doc.layers[layerIndex]`. Refuses a locked layer, an out-of-range index,

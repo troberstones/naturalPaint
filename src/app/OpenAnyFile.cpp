@@ -371,6 +371,18 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
     if (out.problems.size() < kMaxNamedProblems) out.problems.push_back(std::move(problem));
   };
 
+  // Index into `out.warnings` of the oversize-canvas warning
+  // `importImageAsLayer()` appends for whichever import most recently set
+  // `out.transformableLayer` -- reset by every subsequent import so it never
+  // outlives the one call it describes. Withdrawn below alongside
+  // `transformableLayer` itself, for the identical reason: main.cpp's drop
+  // handler seeds exactly that layer's TransformSession with a fit-to-canvas
+  // scale (`computeDropFitTransform()`) the instant this function returns, so
+  // the overflow this warning describes is about to stop being true before
+  // the user even reads it. See the withdrawal below for the case where it
+  // stays.
+  std::optional<size_t> transformableLayerOversizeWarningIndex;
+
   for (const std::string& path : paths) {
     // Re-asked per file, which is the whole multi-file rule: the first picture
     // of a batch dropped onto an empty session opens a document, and by the
@@ -423,7 +435,14 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
           // layer landed -- app/ImportImage.hpp returns it precisely so a
           // caller does not re-derive `layers.size() - 1` and drift.
           out.transformableLayer = imported.layerIndex;
-          for (const std::string& w : imported.warnings) out.warnings.push_back(w);
+          // Reset every time `transformableLayer` is (re)set, so a warning
+          // from an EARLIER import in a multi-file drop is never withdrawn
+          // by a LATER one's own bookkeeping -- see the withdrawal below.
+          transformableLayerOversizeWarningIndex.reset();
+          for (const std::string& w : imported.warnings) {
+            out.warnings.push_back(w);
+            transformableLayerOversizeWarningIndex = out.warnings.size() - 1;
+          }
         } else {
           // app/ImportImage's own sentence, which already names the file and
           // forwards the decoder's reason. Not reworded here -- two modules
@@ -464,7 +483,21 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
   // eleven layers have no non-arbitrary "the one you meant", and a gesture
   // that also opened a document has moved the active document out from under
   // the index.
-  if (out.imported != 1 || out.opened != 0) out.transformableLayer.reset();
+  if (out.imported != 1 || out.opened != 0) {
+    out.transformableLayer.reset();
+  } else if (transformableLayerOversizeWarningIndex &&
+             *transformableLayerOversizeWarningIndex < out.warnings.size()) {
+    // The unambiguous case: main.cpp is about to seed THIS layer's
+    // TransformSession with a fit-to-canvas scale the moment this function
+    // returns (see app/TransformSession.hpp's `computeDropFitTransform()`),
+    // so the oversize warning importImageAsLayer() appended -- "the part
+    // past the canvas edge is ... never composited" -- describes a problem
+    // that stops being true before the user can read it. Withdrawn here,
+    // and only here: a multi-file or mixed drop (the branch above) gets no
+    // seeded transform for anything, so its oversize warnings, if any, stay.
+    out.warnings.erase(out.warnings.begin() +
+                       static_cast<std::ptrdiff_t>(*transformableLayerOversizeWarningIndex));
+  }
 
   const size_t total = paths.size();
   out.status = std::to_string(total) + (total == 1 ? " file dropped: " : " files dropped: ");

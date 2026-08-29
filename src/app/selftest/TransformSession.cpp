@@ -512,6 +512,78 @@ bool runTransformSessionTest() {
     }
   }
 
+  // --- 12. computeDropFitTransform() and beginLayer()'s seeded pending() ---
+  //
+  // The drop-fit feature: an oversize dropped image seeds `pending()` with a
+  // proportional (aspect-preserving), centred scale-to-fit instead of
+  // identity, and an image that already fits gets identity, unchanged -- no
+  // forced upscale, no change from today's behaviour. `io/ImageIO.cpp`'s
+  // `writeDecodedImageIntoLayer()` writes a dropped image's pixels straight
+  // into tile storage at native size, origin (0,0), with no notion of the
+  // document's own canvas size -- so a layer whose content is larger than
+  // `doc.width`/`doc.height` is exactly what an oversize drop looks like,
+  // and painting past the canvas edge directly, as below, reproduces it
+  // without going through io/ImageIO or a real file at all.
+  {
+    std::printf("-- 12. drop-fit: oversize seeds a fit scale, same-size-or-smaller stays "
+               "identity --\n");
+
+    // A 20x20 canvas with a 40x30 layer -- oversize on BOTH axes, and by a
+    // different ratio on each, so a bug that used only one axis's ratio
+    // (rather than the smaller of the two) would show up as a stretch, not
+    // just a wrong overall size.
+    OpenDocument oversized = makeBlankOpenDocument(20, 20, WorkingSpace{});
+    fillRgb(*oversized.document.layers[0].rgbTiles, 40, 30);
+    oversized.recordEdit("oversize fixture", EditKind::Content);
+
+    const DocumentRegion srcBounds =
+        regionFromBounds(layerContentBounds(oversized.document.layers[0]));
+    check(srcBounds.width == 40u && srcBounds.height == 30u,
+          "fixture sanity: the layer's own content really is larger than its 20x20 canvas");
+
+    const Mat3 fit = computeDropFitTransform(srcBounds, documentCanvasRegion(oversized.document));
+    check(fit.m != mat3Identity().m,
+          "oversize: computeDropFitTransform() is NOT identity");
+
+    // scale = min(20/40, 20/30) = 0.5 -- the tighter (width) axis governs
+    // both, so the 40x30 box becomes 20x15, centred in the 20x20 canvas:
+    // top-left at (0, 2.5), bottom-right at (20, 17.5).
+    const Point2 tl = mat3MapPoint(fit, Point2{0.0f, 0.0f});
+    const Point2 br = mat3MapPoint(fit, Point2{40.0f, 30.0f});
+    check(std::fabs(tl.x - 0.0f) < 1e-4f && std::fabs(tl.y - 2.5f) < 1e-4f &&
+              std::fabs(br.x - 20.0f) < 1e-4f && std::fabs(br.y - 17.5f) < 1e-4f,
+          "...and is a proportional half-scale, centred on the canvas (not stretched to fill "
+          "20x20, not left off-centre)");
+
+    TransformSession ts;
+    check(ts.beginLayer(oversized.document, 0, fit).ok,
+          "beginLayer() accepts a seeded initial pending matrix");
+    check(ts.pending().m == fit.m,
+          "...and pending() starts at exactly the seeded matrix, not identity -- the whole "
+          "point of a fresh oversize drop being transformable-and-already-fit the instant it "
+          "lands");
+    ts.cancel();
+
+    // The companion case: a layer that already fits gets identity back, and
+    // beginLayer() with that identity behaves exactly as the no-argument
+    // call every other section above already exercises -- i.e. this feature
+    // changes nothing for content that was never oversize.
+    OpenDocument fits = makeDoc(20, 20);
+    const DocumentRegion fitsBounds = regionFromBounds(layerContentBounds(fits.document.layers[0]));
+    const Mat3 identitySeed = computeDropFitTransform(fitsBounds, documentCanvasRegion(fits.document));
+    check(identitySeed.m == mat3Identity().m,
+          "same-size: computeDropFitTransform() returns identity, unchanged -- no forced "
+          "upscale, nothing seeded for content that already fit");
+
+    TransformSession ts2;
+    check(ts2.beginLayer(fits.document, 0, identitySeed).ok,
+          "beginLayer() accepts the identity seed the same way");
+    check(ts2.pending().m == mat3Identity().m,
+          "...and pending() stays identity -- a same-size-or-smaller drop is unaffected, "
+          "matching today's behaviour exactly");
+    ts2.cancel();
+  }
+
   return ok;
 }
 

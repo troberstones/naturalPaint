@@ -1,5 +1,6 @@
 #include "app/TransformSession.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "core/LayerGeometry.hpp"
@@ -212,6 +213,40 @@ Mat3 computeTransformDragMatrix(TransformHandle handle, const DocumentRegion& so
   return mat3Multiply(baseMatrix, transformScaleAbout(sx, sy, Point2{anchorX, anchorY}));
 }
 
+Mat3 computeDropFitTransform(const DocumentRegion& sourceBounds,
+                             const DocumentRegion& canvas) noexcept {
+  // Either side missing content, or a canvas with no area at all (shouldn't
+  // happen for an open document, but `beginLayer()` itself already refused
+  // an empty `sourceBounds` before a caller could reach this): nothing to
+  // fit, and identity is the only sane answer.
+  if (sourceBounds.empty() || canvas.empty()) return mat3Identity();
+
+  const float srcW = static_cast<float>(sourceBounds.width);
+  const float srcH = static_cast<float>(sourceBounds.height);
+  const float dstW = static_cast<float>(canvas.width);
+  const float dstH = static_cast<float>(canvas.height);
+
+  // Already fits both dimensions: identity, unchanged -- no forced upscale,
+  // and no seeded transform at all for content that fit before this feature
+  // existed (this header's own comment on `computeDropFitTransform()`).
+  if (srcW <= dstW && srcH <= dstH) return mat3Identity();
+
+  // Whichever axis overflows more governs both, so the image shrinks enough
+  // to clear the tighter dimension without ever needing to crop the other.
+  const float scale = std::min(dstW / srcW, dstH / srcH);
+
+  // Centre the scaled box on the canvas: the source's own origin need not be
+  // (0, 0) in principle, so this is computed as "translate the scaled
+  // top-left to the centred target", not assumed away.
+  const float srcX = static_cast<float>(sourceBounds.x);
+  const float srcY = static_cast<float>(sourceBounds.y);
+  const float targetX = (dstW - srcW * scale) * 0.5f;
+  const float targetY = (dstH - srcH * scale) * 0.5f;
+
+  return mat3Multiply(transformTranslate(targetX - srcX * scale, targetY - srcY * scale),
+                      transformScale(scale, scale));
+}
+
 // --------------------------------------------------------------------------
 // TransformSession
 // --------------------------------------------------------------------------
@@ -243,7 +278,8 @@ void TransformSession::endDrag() noexcept { drag_.active = false; }
 
 void TransformSession::cancel() noexcept { *this = TransformSession{}; }
 
-TransformBeginResult TransformSession::beginLayer(const Document& doc, size_t layerIndex) {
+TransformBeginResult TransformSession::beginLayer(const Document& doc, size_t layerIndex,
+                                                  const Mat3& initialPending) {
   TransformBeginResult r;
   if (layerIndex >= doc.layers.size()) {
     r.error = "transform refused: index " + std::to_string(layerIndex) +
@@ -273,6 +309,7 @@ TransformBeginResult TransformSession::beginLayer(const Document& doc, size_t la
   sourceBounds_ = regionFromBounds(bounds);
   layerIndex_ = layerIndex;
   target_ = TransformTarget::Layer;
+  pending_ = initialPending;
   active_ = true;
   r.ok = true;
   return r;

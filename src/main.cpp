@@ -2813,7 +2813,24 @@ int main(int argc, char** argv) {
             // would report the wrong operation as having failed.
             if (dropped.transformableLayer) {
               if (np::OpenDocument* od = st.documents.active()) {
-                st.transform.beginLayer(od->document, *dropped.transformableLayer);
+                // Seeds the session at a proportional scale-to-fit, centred
+                // on the canvas, instead of identity, when the dropped
+                // image's native size overflows it -- `computeDropFitTransform()`
+                // itself is the no-op-for-content-that-already-fits guard
+                // (app/TransformSession.hpp), so this is unconditional here:
+                // an image that already fit gets identity back, matching
+                // today's behaviour exactly. The layer's own pixels are
+                // still written at native size (io/ImageIO.cpp), preserving
+                // every source pixel; only the PENDING gizmo starts
+                // pre-scaled, so the user sees the whole picture immediately
+                // and can commit as-is or adjust further.
+                const np::Layer& droppedLayer =
+                    od->document.layers[*dropped.transformableLayer];
+                const np::Mat3 initialPending = np::computeDropFitTransform(
+                    np::regionFromBounds(np::layerContentBounds(droppedLayer)),
+                    np::documentCanvasRegion(od->document));
+                st.transform.beginLayer(od->document, *dropped.transformableLayer,
+                                        initialPending);
                 // T14: the SAME live-pixel-preview upload drawUI()'s own
                 // Free Transform handler makes -- this is the session's
                 // other begin*() call site (docs/testing-issues.md T14's own
