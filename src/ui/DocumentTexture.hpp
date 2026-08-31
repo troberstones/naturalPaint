@@ -268,6 +268,14 @@ DocumentTextureKey documentTextureKey(const OpenDocument& doc) noexcept;
 std::vector<uint16_t> compositeDocumentStraightHalf(
     const Document& doc, std::vector<std::string>* warningsOut = nullptr);
 
+// The per-texel body of that same pack, exposed for a caller that composites
+// a REGION (rather than the whole canvas) and needs to pack it identically --
+// `DocumentTexture::viewFor()`'s own incremental path, and
+// app/ProfileToggle.cpp, which mirrors that path's CPU cost without a GPU.
+// `premultiplied` is `texels` RGBA floats; `out` receives `texels` RGBA
+// halves, straight-alpha, in the same row-major layout.
+void packStraightHalfRow(const float* premultiplied, size_t texels, uint16_t* out);
+
 // The GPU half: one texture, re-uploaded only when the key changes.
 class DocumentTexture {
  public:

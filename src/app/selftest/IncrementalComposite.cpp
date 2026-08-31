@@ -188,19 +188,77 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
       const DocumentDirtyTiles d = documentDirtyTiles(snap, doc);
       return d.everything ? d.reason : FullRecompositeReason::None;
     };
+    auto dirtyAfter = [&](auto&& mutate) {
+      Document doc = baseDocument();
+      const Document snap = doc;
+      mutate(doc);
+      return documentDirtyTiles(snap, doc);
+    };
+    // Proved by patching, not asserted: take the old composite, recomposite
+    // only the reported dirty tiles into it, and compare against a full
+    // recomposite of `after`. Used throughout this section and by §3's own
+    // reorder fixture below -- one implementation, so a change to this
+    // section's story cannot leave it inconsistent with the one it was copied
+    // from.
+    auto patchedComposite = [&](const Document& before, const Document& after) {
+      std::vector<float> buffer = compositeDocumentPremultiplied(before);
+      const DocumentDirtyTiles d = documentDirtyTiles(before, after);
+      CompositeRegion region;
+      region.pixels = buffer.data();
+      region.origin = PixelCoord{0, 0};
+      region.width = after.width;
+      region.height = after.height;
+      compositeDocumentTilesPremultiplied(after, d.tiles, region, nullptr);
+      return buffer;
+    };
 
-    check(reasonAfter([&](Document& d) { setLayerVisible(d, 1, false); }) ==
-              FullRecompositeReason::LayerVisibilityChanged,
-          "classify: visibility moves every texel the layer covers -> full");
-    check(reasonAfter([&](Document& d) { setLayerOpacity(d, 1, 0.5f); }) ==
-              FullRecompositeReason::LayerOpacityChanged,
-          "classify: opacity -> full, and it is the layer editor's hottest knob");
-    check(reasonAfter([&](Document& d) { setLayerBlend(d, 1, BlendMode::Multiply); }) ==
-              FullRecompositeReason::LayerBlendChanged,
-          "classify: a blend mode -> full");
-    check(reasonAfter([&](Document& d) { setLayerClipped(d, 1, true); }) ==
-              FullRecompositeReason::LayerClipChanged,
-          "classify: a clip changes which layer composites which -> full");
+    // **Narrowed, not full**, for a layer that holds pixels and is not an
+    // Adjustment layer: core/DirtyTiles.hpp §4's "no op reads a neighbour"
+    // means visible/opacity/blend can only move texels inside that layer's
+    // own tile footprint, and clipped only widens that to its clip base's too
+    // (neither applies here -- layer 1 has no base). "upper" holds exactly one
+    // painted texel at (300, 300), tile (2, 2), so that is the whole dirty set.
+    const TileCoord upperTile{2, 2};
+    {
+      const DocumentDirtyTiles d = dirtyAfter([&](Document& d) { setLayerVisible(d, 1, false); });
+      check(!d.everything && d.tiles.size() == 1 && d.tiles[0] == upperTile,
+            "classify: visibility narrows to the layer's own tile, not full");
+    }
+    {
+      const DocumentDirtyTiles d = dirtyAfter([&](Document& d) { setLayerOpacity(d, 1, 0.5f); });
+      check(!d.everything && d.tiles.size() == 1 && d.tiles[0] == upperTile,
+            "classify: opacity narrows to the layer's own tile, not full");
+    }
+    {
+      const DocumentDirtyTiles d =
+          dirtyAfter([&](Document& d) { setLayerBlend(d, 1, BlendMode::Multiply); });
+      check(!d.everything && d.tiles.size() == 1 && d.tiles[0] == upperTile,
+            "classify: a blend mode narrows to the layer's own tile, not full");
+    }
+    {
+      // Clipped narrows to the layer's own tile UNION its clip base's --
+      // here that is layer 0, whose own paint is at (10, 10), tile (0, 0).
+      const DocumentDirtyTiles d = dirtyAfter([&](Document& d) { setLayerClipped(d, 1, true); });
+      check(!d.everything && d.tiles.size() == 2 && d.tiles[0] == TileCoord{0, 0} &&
+                d.tiles[1] == upperTile,
+            "classify: a clip narrows to the layer's tile UNION its base's, not full");
+    }
+
+    // **The Adjustment-layer exception, still full.** Its op stack "reaches
+    // everything below it" (§3), which is not its own tile footprint -- it
+    // has none -- so none of the four narrowings above apply to it.
+    {
+      Document doc = baseDocument();
+      addLayer(doc, doc.layers.size(), makeAdjustmentLayer("exposure"));
+      const size_t adj = doc.layers.size() - 1;
+      const Document snap = doc;
+      setLayerVisible(doc, adj, false);
+      const DocumentDirtyTiles d = documentDirtyTiles(snap, doc);
+      check(d.everything && d.reason == FullRecompositeReason::LayerVisibilityChanged &&
+                d.layerIndex == adj,
+            "classify: an Adjustment layer's visibility stays full -- its stack has no tile of "
+            "its own");
+    }
     check(reasonAfter([&](Document& d) { d.layers[1].ops.add(exposureOp(1.0f)); }) ==
               FullRecompositeReason::LayerOpsChanged,
           "classify: an op stack -> full (an adjustment's reaches everything below)");
@@ -223,11 +281,25 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
     check(reasonAfter([&](Document& d) { d.workingSpace.primaries.redX = 0.7f; }) ==
               FullRecompositeReason::WorkingSpaceChanged,
           "classify: a working space -> full, though nothing reads it today");
-    check(reasonAfter([&](Document& d) {
-            setLayerBlend(d, 1, BlendMode::Multiply);
-            moveLayer(d, 1, 0);
-          }) != FullRecompositeReason::None,
-          "classify: a reorder of layers that differ -> full, caught per index");
+    // **No longer automatically full.** Before this narrowing landed, ANY
+    // per-index property difference forced `whole()`, so a reorder that also
+    // changes a property was indistinguishable from one that does not narrow
+    // at all. Now it is exactly as narrow as the sum of its parts: layer 1's
+    // blend changed (narrows to its own tile) and the reorder itself moved
+    // storage identity at both indices (caught by the ordinary tile diff --
+    // §3's very next fixture demonstrates that half on its own), so the union
+    // is still tile-local, and proved bit-identical rather than merely sized.
+    {
+      Document doc = baseDocument();
+      const Document snap = doc;
+      setLayerBlend(doc, 1, BlendMode::Multiply);
+      moveLayer(doc, 1, 0);
+      const DocumentDirtyTiles d = documentDirtyTiles(snap, doc);
+      check(!d.everything && !d.tiles.empty() && d.tiles.size() < canvasTileCount(doc),
+            "classify: a reorder plus a property change is STILL tile-local, not full");
+      check(sameFloats(patchedComposite(snap, doc), compositeDocumentPremultiplied(doc)),
+            "classify: and patching only those tiles equals a full recomposite");
+    }
 
     // The members the compositor provably never reads. Each is an *empty*
     // edit: the revision moves and nothing is recomposited at all.
@@ -261,20 +333,8 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
     // **The reorder that IS tile-local**, and the one a reader will doubt.
     // Two layers agreeing on every compared property are interchangeable
     // except for their tiles, so the per-index tile diff reports exactly the
-    // coordinates where the two stacks differ. Proved by patching, not
-    // asserted: take the old composite, recomposite only the dirty tiles into
-    // it, and compare against a full recomposite of the reordered document.
-    auto patchedComposite = [&](const Document& before, const Document& after) {
-      std::vector<float> buffer = compositeDocumentPremultiplied(before);
-      const DocumentDirtyTiles d = documentDirtyTiles(before, after);
-      CompositeRegion region;
-      region.pixels = buffer.data();
-      region.origin = PixelCoord{0, 0};
-      region.width = after.width;
-      region.height = after.height;
-      compositeDocumentTilesPremultiplied(after, d.tiles, region, nullptr);
-      return buffer;
-    };
+    // coordinates where the two stacks differ. Proved by patching (the
+    // `patchedComposite` defined above), not merely asserted.
     Document swapped = baseDocument();
     const Document swapSnap = swapped;
     moveLayer(swapped, 1, 0);
@@ -286,17 +346,191 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
           "classify: and patching only those two tiles equals a full recomposite");
 
     // The conservative direction, as a check rather than a comment: the
-    // reason names the layer, so a slow frame can say why it was slow.
+    // reason names the layer, so a slow frame can say why it was slow. An
+    // opacity change on an Adjustment layer is the fixture now, rather than
+    // an ordinary RGB one -- the RGB case above narrows, and this is exactly
+    // the case that still does not: an Adjustment layer's op stack reaches
+    // everything below it, which no per-layer tile footprint can express.
     Document faded = baseDocument();
+    addLayer(faded, faded.layers.size(), makeAdjustmentLayer("exposure"));
+    const size_t fadedAdj = faded.layers.size() - 1;
+    faded.layers[fadedAdj].ops.add(exposureOp(1.0f));
     const Document fadedSnap = faded;
-    setLayerOpacity(faded, 1, 0.25f);
+    setLayerOpacity(faded, fadedAdj, 0.25f);
     const DocumentDirtyTiles fadedDirty = documentDirtyTiles(fadedSnap, faded);
-    check(fadedDirty.everything && fadedDirty.layerIndex == 1 &&
+    check(fadedDirty.everything && fadedDirty.layerIndex == fadedAdj &&
+              fadedDirty.reason == FullRecompositeReason::LayerOpacityChanged &&
               fullRecompositeExplanation(fadedDirty.reason, fadedDirty.layerIndex)
-                      .find("layer 1") != std::string::npos,
+                      .find("layer " + std::to_string(fadedAdj)) != std::string::npos,
           "classify: the reason names the layer that forced the full path");
     std::printf("    %s\n",
                 fullRecompositeExplanation(fadedDirty.reason, fadedDirty.layerIndex).c_str());
+
+    // -----------------------------------------------------------------------
+    // 2b. Bit-identity of the narrowing, on OVERLAPPING layers, plus sabotage
+    // -----------------------------------------------------------------------
+    //
+    // The classify checks above prove the *tile set*; they do not prove the
+    // *pixels*, and a single-layer-per-tile fixture like `baseDocument()`
+    // could not catch a dirty set that under-reports by one tile -- there is
+    // nothing else at that coordinate for a missing tile to leave stale. This
+    // fixture overlaps two RGB layers on purpose, so a dropped tile of the
+    // upper layer leaves the LOWER layer's old, un-blended pixel showing
+    // through where the two actually overlap.
+    std::printf("  -- 2b. bit-identity of the narrowing, on overlapping layers --\n");
+    auto overlapDocument = [&]() {
+      Document doc = Document::createBlank(384, 384, WorkingSpace{});
+      for (int32_t y = 0; y < 320; ++y)
+        for (int32_t x = 0; x < 320; ++x) writeRgb(doc, 0, x, y, {0.6f, 0.3f, 0.1f, 0.8f});
+      addLayer(doc, doc.layers.size(), makeRgbLayer("upper"));
+      for (int32_t y = 64; y < 384; ++y)
+        for (int32_t x = 64; x < 384; ++x) writeRgb(doc, 1, x, y, {0.15f, 0.55f, 0.85f, 0.5f});
+      return doc;
+    };
+
+    auto proveBitIdentical = [&](auto&& mutate, const char* what) {
+      Document doc = overlapDocument();
+      const Document snap = doc;
+      mutate(doc);
+      check(sameFloats(patchedComposite(snap, doc), compositeDocumentPremultiplied(doc)), what);
+    };
+
+    proveBitIdentical(
+        [&](Document& d) { setLayerVisible(d, 1, false); },
+        "bit-identity: a visibility toggle, patched narrow, matches a full recomposite");
+    proveBitIdentical(
+        [&](Document& d) { setLayerOpacity(d, 1, 0.4f); },
+        "bit-identity: an opacity change, patched narrow, matches a full recomposite");
+    proveBitIdentical(
+        [&](Document& d) { setLayerBlend(d, 1, BlendMode::Multiply); },
+        "bit-identity: a blend change, patched narrow, matches a full recomposite");
+
+    // --- The clip case, and its base -----------------------------------
+    //
+    // Toggling layer 1's clipped flag changes what layer 0 (its base) itself
+    // renders wherever the two overlap, so the proof needs the base's own
+    // tiles in the patch too, not just the member's.
+    proveBitIdentical(
+        [&](Document& d) { setLayerClipped(d, 1, true); },
+        "bit-identity: clipping ON, patched narrow (member UNION base), matches a full "
+        "recomposite");
+    {
+      Document doc = overlapDocument();
+      setLayerClipped(doc, 1, true);
+      const Document snap = doc;
+      setLayerClipped(doc, 1, false);
+      check(sameFloats(patchedComposite(snap, doc), compositeDocumentPremultiplied(doc)),
+            "bit-identity: clipping OFF, patched narrow (member UNION base), matches a full "
+            "recomposite");
+    }
+
+    // The base's own rendered pixel really does move when the flag flips
+    // (within the member's own footprint here -- `overlapDocument()`'s two
+    // layers happen to share the same tile span, so this fixture alone does
+    // not distinguish "the base's tiles are necessary" from "they are a
+    // redundant-but-harmless superset of the member's own"; sabotage (b)
+    // below is the one that needs the base's footprint to genuinely differ
+    // from the member's to say which).
+    {
+      Document unclipped = overlapDocument();
+      Document clipped = unclipped;
+      setLayerClipped(clipped, 1, true);
+      check(!sameFloats(compositeDocumentPremultiplied(unclipped),
+                        compositeDocumentPremultiplied(clipped)),
+            "bit-identity: clipping really does change the base's own rendered pixels");
+    }
+
+    // --- Sabotage: an under-reported dirty set really does go wrong --------
+    //
+    // This codebase's established pattern for a correctness-critical check
+    // (app/selftest/TransformSession.cpp's "SABOTAGE PROOF" sections,
+    // app/selftest/TransformPreviewTexture.cpp's): construct the WRONG
+    // computation explicitly, beside the right one, and prove it disagrees --
+    // never just trust that a broken version would have been caught. Two ways
+    // an implementation could under-report, one at a time.
+    auto patchWith = [&](const Document& before, const Document& after,
+                         const std::vector<TileCoord>& tiles) {
+      std::vector<float> buffer = compositeDocumentPremultiplied(before);
+      CompositeRegion region;
+      region.pixels = buffer.data();
+      region.origin = PixelCoord{0, 0};
+      region.width = after.width;
+      region.height = after.height;
+      compositeDocumentTilesPremultiplied(after, tiles, region, nullptr);
+      return buffer;
+    };
+    {
+      // (a) drop one tile of the correct set -- e.g. an implementation that
+      // only unioned the layer's AFTER tiles and not its BEFORE ones too.
+      Document doc = overlapDocument();
+      const Document snap = doc;
+      setLayerOpacity(doc, 1, 0.4f);
+      const DocumentDirtyTiles correct = documentDirtyTiles(snap, doc);
+      check(!correct.everything && correct.tiles.size() > 1,
+            "sabotage: the fixture has more than one dirty tile, so one can be dropped");
+      const std::vector<TileCoord> oneShort(correct.tiles.begin(), correct.tiles.end() - 1);
+      check(!sameFloats(patchWith(snap, doc, oneShort), compositeDocumentPremultiplied(doc)),
+            "sabotage: an under-reported tile set (one short) is caught -- the bit-identity "
+            "check above has teeth");
+    }
+    {
+      // (b) drop the MEMBER's own tiles, keeping only the base's -- a fixture
+      // where the member's footprint genuinely extends past the base's, so
+      // some of its tiles are NEVER visited by the base's own walk (§17: "a
+      // clipped layer's own tiles are never visited for their own sake").
+      // Unclipped, the member composites independently over its WHOLE
+      // footprint; clipped, it is invisible outside the base's -- so at those
+      // tiles the member goes from painted to gone, and a patch that only
+      // carries the base's tiles never touches them at all.
+      Document doc = Document::createBlank(384, 384, WorkingSpace{});
+      for (int32_t y = 0; y < 256; ++y)
+        for (int32_t x = 0; x < 256; ++x) writeRgb(doc, 0, x, y, {0.6f, 0.3f, 0.1f, 0.8f});
+      addLayer(doc, doc.layers.size(), makeRgbLayer("member"));
+      for (int32_t y = 0; y < 384; ++y)
+        for (int32_t x = 0; x < 384; ++x) writeRgb(doc, 1, x, y, {0.15f, 0.55f, 0.85f, 0.5f});
+      const Document snap = doc;
+      setLayerClipped(doc, 1, true);
+
+      std::vector<TileCoord> baseOnly;
+      if (doc.layers[0].rgbTiles)
+        for (const auto& [coord, tile] : *doc.layers[0].rgbTiles) {
+          (void)tile;
+          baseOnly.push_back(coord);
+        }
+      check(baseOnly.size() < canvasTileCount(doc),
+            "sabotage: the base's own footprint really is smaller than the member's");
+      check(!sameFloats(patchWith(snap, doc, baseOnly), compositeDocumentPremultiplied(doc)),
+            "sabotage: dropping the member's own tiles (keeping only the base's) is caught too");
+    }
+
+    // --- The clip TOPOLOGY ripple, proven as a classification too ----------
+    //
+    // core/Composite.hpp §12's `base` is a running variable that advances
+    // only at a non-clipped layer, so un-clipping the MIDDLE of a run of
+    // clipped layers re-parents every layer ABOVE it in that run to a new
+    // base -- a layer that never appears in the before/after property diff at
+    // all. `documentDirtyTiles()` answers this with a full recomposite
+    // (pass 3a) rather than trying to compute the union precisely; proved
+    // here as a classification, the same style as §2's own checks.
+    {
+      Document doc = Document::createBlank(384, 384, WorkingSpace{});
+      for (int32_t y = 0; y < 128; ++y)
+        for (int32_t x = 0; x < 384; ++x) writeRgb(doc, 0, x, y, {0.5f, 0.3f, 0.2f, 0.9f});
+      addLayer(doc, doc.layers.size(), makeRgbLayer("mid"));
+      for (int32_t y = 0; y < 128; ++y)
+        for (int32_t x = 0; x < 384; ++x) writeRgb(doc, 1, x, y, {0.1f, 0.6f, 0.2f, 0.5f});
+      setLayerClipped(doc, 1, true);
+      addLayer(doc, doc.layers.size(), makeRgbLayer("top"));
+      for (int32_t y = 0; y < 384; ++y)
+        for (int32_t x = 0; x < 384; ++x) writeRgb(doc, 2, x, y, {0.2f, 0.2f, 0.8f, 0.7f});
+      setLayerClipped(doc, 2, true);
+
+      const Document snap = doc;
+      setLayerClipped(doc, 1, false);  // un-clip "mid": "top" re-parents to it
+      const DocumentDirtyTiles ripple = documentDirtyTiles(snap, doc);
+      check(ripple.everything && ripple.reason == FullRecompositeReason::LayerClipChanged,
+            "classify: un-clipping the middle of a run re-parents the layer above it -> full");
+    }
   }
 
   std::printf("  -- 3. the region walk, tile by tile, against the full one --\n");
@@ -472,8 +706,17 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
               dt.lastUploadedTexels() == 2u * static_cast<uint64_t>(kTileSize) * kTileSize,
           "sequence: two tiles with two clean tiles between them, bit-identical");
 
-    // 3. A layer property change: NOT tile-local, and the layer it belongs to
-    //    covers far more of the canvas than the two tiles painted so far.
+    // 3. A layer property change whose layer covers the WHOLE canvas -- so
+    //    narrowing to "that layer's own tiles" (core/DirtyTiles.cpp's new
+    //    per-layer footprint) still lands on all 16 of 16 tiles, and
+    //    `preferFullRecomposite()`'s own crossover (core/DirtyTiles.hpp §6)
+    //    takes the full path anyway, because at that point the two cost the
+    //    same and full is one upload instead of sixteen. The reason is reset
+    //    to `None` when THAT is why -- DocumentTexture's own comment calls it
+    //    "nothing was wrong; it was just cheaper" -- which is what
+    //    distinguishes this from the Adjustment-layer case, whose reason
+    //    stays `LayerOpacityChanged` because there the classifier itself
+    //    could not narrow at all.
     addLayer(od.document, od.document.layers.size(), makeRgbLayer("upper"));
     for (int32_t y = 8; y < 500; ++y)
       for (int32_t x = 8; x < 500; ++x) writeRgb(od.document, 1, x, y, {0.2f, 0.4f, 0.6f, 1.0f});
@@ -484,8 +727,10 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
     od.recordEdit("opacity", EditKind::Structural);
     const bool opacityOk = step("layer property change");
     check(opacityOk && dt.fullRecomposites() == fullsBeforeOpacity + 1 &&
-              dt.lastFullRecompositeReason() == FullRecompositeReason::LayerOpacityChanged,
-          "sequence: a property change recomposites the WHOLE layer, not a corner");
+              dt.lastDirtyTiles() == canvasTileCount(od.document) &&
+              dt.lastFullRecompositeReason() == FullRecompositeReason::None,
+          "sequence: a property change over the WHOLE canvas takes the full path via the size "
+          "crossover, not the classifier");
 
     // 4. A reorder of two layers whose compared properties are identical.
     setLayerOpacity(od.document, 1, 1.0f);
@@ -512,8 +757,11 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
     check(maskOk && dt.incrementalUpdates() == incBeforeMask + 1 && dt.lastDirtyTiles() == 1,
           "sequence: a mask edit is tile-local -> 1 tile, bit-identical");
 
-    // 7. A clipped run: the flag is full, painting into the clipped layer is
-    //    not, and the clip still has to be honoured inside the dirty tile.
+    // 7. A clipped run: the flag itself is tile-local too now (the member's
+    //    own tiles UNION its base's -- here the member is freshly added and
+    //    empty, so it is just the base's), and painting into the clipped
+    //    layer afterwards stays tile-local as well, with the clip honoured
+    //    inside the dirty tile either way.
     addLayer(od.document, od.document.layers.size(), makeRgbLayer("clipped"));
     setLayerClipped(od.document, 1, true);
     od.recordEdit("clip it", EditKind::Structural);
@@ -792,10 +1040,12 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
     od.recordEdit("a stroke", EditKind::Content);
     shot("3-multi-tile-stroke");
 
-    // **The property change**: not tile-local. It carries a paint edit in the
-    // same revision on purpose -- otherwise the rejected reading's answer is
-    // "nothing changed at all", and the failure this classification exists to
-    // prevent is better shown as the corner it really produces.
+    // **The property change**: tile-local now, but to the WHOLE of the
+    // magenta layer's own 36-tile footprint (a 6x6 block of the 8x8 canvas),
+    // not to the two or three tiles the paint dab alone would touch. It
+    // carries that paint edit in the same revision on purpose -- to show what
+    // an even more optimistic reading (the dab's own tiny tile set standing
+    // in for the whole edit) would have gotten wrong, immediately below.
     const Document beforeChange = od.document;
     for (int32_t y = 380; y < 420; ++y)
       for (int32_t x = 380; x < 420; ++x)
@@ -846,7 +1096,8 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
         ++written;
     }
 
-    // And a visibility toggle, the other whole-layer change.
+    // And a visibility toggle, the other property change -- narrowed to the
+    // same 36-tile footprint rather than the whole 64-tile canvas.
     setLayerVisible(od.document, 1, false);
     od.recordEdit("hide magenta", EditKind::Structural);
     shot("5-layer-hidden");

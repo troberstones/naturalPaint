@@ -10,21 +10,14 @@
 #include "core/TileStore.hpp"
 
 namespace np {
-namespace {
 
-// Whether a layer has an alpha of its own for something to be clipped by --
-// i.e. whether the walk would ever composite a texel *from* it. Exactly the
-// test `compositeDocumentPremultiplied()` makes before it walks a layer's
-// tiles, kept in one place so a clip base and a compositable layer cannot
-// become two different ideas. An Adjustment layer is false here by
-// construction (it holds no tiles at all), which is core/Composite.hpp §12's
-// "the alpha of the layer below is not a quantity such a layer has".
+// Declared in core/Composite.hpp now that core/DirtyTiles.cpp needs the
+// identical question; body unchanged from when this lived in this file's own
+// anonymous namespace.
 bool layerHoldsPixels(const Layer& layer) noexcept {
   return (layer.kind == LayerKind::RGB && layer.rgbTiles.has_value()) ||
          (layer.kind == LayerKind::Pigment && layer.pigmentTiles.has_value());
 }
-
-}  // namespace
 
 float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept {
   if (!layer.mask.has_value()) return 1.0f;

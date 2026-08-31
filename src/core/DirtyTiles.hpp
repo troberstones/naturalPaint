@@ -170,11 +170,34 @@
 // here.
 //
 //   kind          compared -- it selects the whole projection path.
-//   visible       compared -- PRD C3, whole-layer coverage.
-//   opacity       compared -- likewise, and the layer editor's hottest knob.
-//   blend         compared -- resolved once per layer, applies everywhere.
-//   clipped       compared -- changes which layer composites which, over the
-//                 whole of a base's extent (core/Composite.hpp §§12-17).
+//   visible       compared -- PRD C3, whole-layer coverage -- but narrowed to
+//                 that layer's own occupied tiles rather than the whole
+//                 canvas when the layer holds pixels and is not an Adjustment
+//                 layer, per §4's "no op reads a neighbour". Left at a full
+//                 recomposite for an Adjustment layer (its stack reaches
+//                 everything below it, which is not its own footprint) and
+//                 for a layer entangled in a Pigment `Mix` pairing (the pair
+//                 composites over the union of BOTH layers' tiles, which
+//                 neither layer's own footprint covers -- see
+//                 `documentDirtyTiles()`'s own comment on why that case is not
+//                 narrowed instead of guessed at).
+//   opacity       compared -- likewise, and the layer editor's hottest knob;
+//                 narrowed under the identical conditions as `visible`.
+//   blend         compared -- resolved once per layer; narrowed under the
+//                 identical conditions, with one more: a blend of `mix` is
+//                 itself what makes a Pigment pairing exist at all, so a
+//                 change into or out of it is exactly the entanglement case
+//                 above and stays a full recomposite.
+//   clipped       compared -- changes which layer composites which. Narrowed
+//                 to the layer's own tiles UNION its clip base's (found via
+//                 `clipRuns()`, checked on both `before` and `after` since the
+//                 flag is flipping) under the same holds-pixels/not-Adjustment
+//                 condition -- core/Composite.hpp §17: "the base's tiles are
+//                 the clipping run's whole extent", so nothing outside that
+//                 union can move. Also stays a full recomposite when the flag
+//                 flip changes a Pigment `Mix` pairing's eligibility
+//                 (`blendModeAvailableForLayer()` refuses a pair when either
+//                 half is clipped), for the identical reason `blend` does.
 //   ops           compared **structurally**, entry by entry, not by
 //                 `OpStack::version()`. Version is monotonic per stack and
 //                 would be a complete detector for one layer over time, but

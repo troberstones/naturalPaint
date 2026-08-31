@@ -779,6 +779,16 @@ float layerCoverage(const Document& doc, size_t index) noexcept;
 // produce different answers.
 float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept;
 
+// Whether a layer has an alpha of its own for something to be clipped by --
+// i.e. whether the walk would ever composite a texel *from* it. Exactly the
+// test `compositeWalk()` makes before it walks a layer's own tiles, exported
+// (rather than kept file-local, which is where it lived before core/DirtyTiles
+// needed the identical question) so that a clip base and a compositable layer
+// cannot become two different ideas in two files. An Adjustment layer is false
+// here by construction (it holds no tiles at all), which is §12's "the alpha
+// of the layer below is not a quantity such a layer has".
+bool layerHoldsPixels(const Layer& layer) noexcept;
+
 // **A layer whose blend this build cannot composite is composited as `over`
 // and warned about by name -- never silently.** Two cases reach here and the
 // sentence distinguishes them, because the answer to "when will this work" is
