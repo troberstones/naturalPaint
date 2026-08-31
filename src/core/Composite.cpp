@@ -857,26 +857,52 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
 
 }  // namespace
 
-std::vector<float> compositeDocumentPremultiplied(const Document& doc,
-                                                  std::vector<std::string>* warningsOut) {
-  if (doc.width <= 0 || doc.height <= 0) return {};
+void compositeDocumentPremultipliedInto(const Document& doc, std::vector<float>& buffer,
+                                        std::vector<std::string>* warningsOut) {
+  if (doc.width <= 0 || doc.height <= 0) {
+    buffer.clear();
+    return;
+  }
 
+  const size_t n = static_cast<size_t>(doc.width) * static_cast<size_t>(doc.height) * 4;
   // Zero-filled: an untouched pixel is transparent black, exactly what
   // core::Tile gives an unwritten texel, so nothing needs a separate "was
   // anything here" flag -- and, per core/Blend.hpp's transparent-backdrop
   // identity, an all-zero accumulator composites the first contributing layer
   // through unchanged **under every mode**, not only under `over`.
-  std::vector<float> out(static_cast<size_t>(doc.width) * static_cast<size_t>(doc.height) * 4,
-                         0.0f);
+  //
+  // `buffer` keeps its allocation when the size already matches -- the
+  // repeat-call case this function exists for -- and is only reallocated on
+  // a size mismatch (the first call, or a canvas-size change), via
+  // `assign()`, which zero-fills exactly as the constructor below did. A
+  // buffer that already has the right size is re-zeroed with `std::fill`
+  // instead: still a full pass over the buffer (see this function's own
+  // header comment on why that pass cannot be skipped), just not an
+  // allocation.
+  if (buffer.size() != n) {
+    buffer.assign(n, 0.0f);
+  } else {
+    std::fill(buffer.begin(), buffer.end(), 0.0f);
+  }
 
   CompositeRegion region;
-  region.pixels = out.data();
+  region.pixels = buffer.data();
   region.origin = PixelCoord{0, 0};
   region.width = doc.width;
   region.height = doc.height;
   // `nullptr` is "every tile a store holds", which is byte-for-byte the walk
   // this function performed before the incremental path existed.
   compositeWalk(doc, nullptr, region, warningsOut);
+}
+
+std::vector<float> compositeDocumentPremultiplied(const Document& doc,
+                                                  std::vector<std::string>* warningsOut) {
+  // A fresh, empty buffer every call, so this is exactly the one-shot
+  // allocate-and-zero-and-walk `compositeDocumentPremultipliedInto()`
+  // documents itself as reducing to when its caller does not reuse `buffer`
+  // -- the two functions cannot drift because this *is* that function.
+  std::vector<float> out;
+  compositeDocumentPremultipliedInto(doc, out, warningsOut);
   return out;
 }
 

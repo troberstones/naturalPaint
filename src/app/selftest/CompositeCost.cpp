@@ -14,6 +14,12 @@
 // bare allocate-and-zero of a buffer the accumulator's own size, so the
 // zero-fill's share of the single-layer cost is a measured number rather
 // than a guess.
+//
+// A later section (below the per-texel-vs-accumulator-size table) measures
+// the fix that reading came out of: `compositeDocumentPremultipliedInto()`
+// reuses a caller-owned accumulator across calls instead of paying that
+// allocate-and-zero fresh every time, and prints a fresh-vs-reused wall-clock
+// comparison alongside a pixel-identity and a stale-buffer correctness proof.
 namespace np {
 
 bool runCompositeCostTest() {
@@ -185,6 +191,98 @@ bool runCompositeCostTest() {
              "MiB; roughly flat means the per-texel arithmetic is what costs, not the round trip "
              "to the accumulator)\n",
              sizes[3], sizes[3], sizes[0], sizes[0], perTexelGrowth);
+
+  // --- Buffer reuse: compositeDocumentPremultipliedInto() vs.
+  // compositeDocumentPremultiplied() ------------------------------------
+  //
+  // xctrace profiling of a real 5000x2559, 50-layer document found
+  // `compositeDocumentPremultiplied()`'s fresh `std::vector<float>
+  // out(w*h*4, 0.0f)` -- for that document, ~205 MB, reallocated and
+  // zero-filled from scratch on every full recomposite -- was ~8.5% of
+  // composite time on its own, even though the caller that matters
+  // (ui/DocumentTexture, on every live full recomposite of an open document)
+  // composites the *same* canvas size call after call.
+  // `compositeDocumentPremultipliedInto()` is the fix: it takes the
+  // accumulator as an in/out parameter and only reallocates it when the size
+  // actually changed, per its own header comment in core/Composite.hpp.
+  //
+  // This isolates that saving directly: repeated calls through the
+  // fresh-allocation path against repeated calls through the reused-buffer
+  // path, same document, same canvas -- so the only thing that differs
+  // between the two loops is whether the accumulator is a new allocation
+  // every time.
+  std::printf("  -- buffer reuse: compositeDocumentPremultipliedInto() vs. "
+             "compositeDocumentPremultiplied() --\n");
+  {
+    const Document reuseDoc = buildDoc(8);  // 8 full-canvas layers, matches the table above
+    constexpr int kCalls = 8;
+
+    // One untimed call each first, matching this file's own convention
+    // elsewhere (`timeComposite()`'s discarded first sample) of keeping page
+    // faults and first-touch cache misses out of the timed average.
+    double freshS = 0.0;
+    {
+      const std::vector<float> warm = compositeDocumentPremultiplied(reuseDoc);
+      (void)warm;
+      const auto t0 = std::chrono::steady_clock::now();
+      for (int i = 0; i < kCalls; ++i) {
+        const std::vector<float> v = compositeDocumentPremultiplied(reuseDoc);
+        if (v.empty()) std::printf("      (unexpected empty composite)\n");
+      }
+      const auto t1 = std::chrono::steady_clock::now();
+      freshS = std::chrono::duration<double>(t1 - t0).count() / kCalls;
+    }
+
+    double reusedS = 0.0;
+    std::vector<float> reused;
+    {
+      compositeDocumentPremultipliedInto(reuseDoc, reused);  // first call still allocates
+      const auto t0 = std::chrono::steady_clock::now();
+      for (int i = 0; i < kCalls; ++i) compositeDocumentPremultipliedInto(reuseDoc, reused);
+      const auto t1 = std::chrono::steady_clock::now();
+      reusedS = std::chrono::duration<double>(t1 - t0).count() / kCalls;
+    }
+
+    std::printf("    [measured] %d repeated 8-layer %dx%d composites, fresh allocation each "
+               "call: %.4f s/call average\n",
+               kCalls, kSide, kSide, freshS);
+    std::printf("    [measured] %d repeated 8-layer %dx%d composites, one buffer reused across "
+               "calls: %.4f s/call average (%.1f%% of the fresh-allocation cost)\n",
+               kCalls, kSide, kSide, reusedS, freshS > 1e-9 ? 100.0 * reusedS / freshS : -1.0);
+
+    // Pixel-identity: reuse must change nothing about what gets composited,
+    // only how the accumulator's memory is obtained. Zero tolerance, the same
+    // bound every other composite assertion in this codebase is held to.
+    const std::vector<float> oracle = compositeDocumentPremultiplied(reuseDoc);
+    check(reused == oracle,
+          "reuse: compositeDocumentPremultipliedInto()'s result is bit-identical to "
+          "compositeDocumentPremultiplied()'s");
+
+    // The correctness case that actually matters, and the one a benchmark
+    // alone would never catch: a buffer that is the RIGHT SIZE (so no
+    // reallocation happens) but holds STALE, NON-ZERO content left over from
+    // a *previous, differently shaped* composite. A defect that skipped the
+    // re-zero on the theory that "the walk writes every texel anyway" would
+    // only show up on a texel the new composite's layers do NOT cover --
+    // core/Composite.cpp's compositeWalk() only ever writes texels a layer's
+    // tiles actually reach, and relies on the caller's zero-fill for every
+    // other one (see core/Composite.hpp on `compositeDocumentPremultiplied()`).
+    std::vector<float> stale(oracle.size(), 12345.0f);  // no premultiplied channel is ever near
+    const Document sparse = [&] {
+      // One tile of the same canvas occupied, so every texel outside it is
+      // "untouched" by the walk and must come from the zero-fill, not from
+      // whatever `stale` already held.
+      Document doc = Document::createBlank(kSide, kSide, WorkingSpace{});
+      writeRgb(doc, 0, 5, 5, {0.4f, 0.2f, 0.1f, 1.0f});
+      return doc;
+    }();
+    compositeDocumentPremultipliedInto(sparse, stale);
+    const std::vector<float> sparseOracle = compositeDocumentPremultiplied(sparse);
+    check(stale == sparseOracle,
+          "reuse: a buffer carried over from a DIFFERENT, differently-shaped composite still "
+          "reads transparent black wherever the new composite does not touch -- the re-zero runs "
+          "every call, stale data or not");
+  }
 
   return ok;
 }

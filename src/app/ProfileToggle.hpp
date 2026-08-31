@@ -19,7 +19,11 @@ namespace np {
 //
 // Temporary: exists to be profiled under Instruments/xctrace, not to become
 // a permanent CLI surface. Prints min/median/mean/max milliseconds per
-// composite across `iterations` alternating toggles once done.
+// composite across `iterations` alternating toggles once done, then repeats
+// the identical toggle sequence a second time through the buffer-reuse path
+// `ui::DocumentTexture`'s own full recomposite now takes (one accumulator
+// held and reused across every toggle, rather than a fresh one per call) and
+// prints a second min/median/mean/max line for it.
 int runProfileToggle(const char* psdPath, int layerIndex, int iterations);
 
 }  // namespace np

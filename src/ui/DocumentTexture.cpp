@@ -137,7 +137,27 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
   lastFullReason_ = dirty.everything ? dirty.reason : FullRecompositeReason::None;
 
   if (dirty.everything) {
-    halves_ = compositeDocumentStraightHalf(doc.document, warningsOut);
+    // Composited into `premultScratch_`, an accumulator this object owns
+    // across calls, instead of through `compositeDocumentStraightHalf()`'s
+    // own fresh-vector-per-call path -- profiling a real 5000x2559, 50-layer
+    // document found a plain `std::vector<float> out(w*h*4, 0.0f)` allocated
+    // and zero-filled from scratch on *every* full recomposite was ~8.5% of
+    // composite time on its own, even though this object recomposites the
+    // same canvas size call after call. `compositeDocumentPremultipliedInto()`
+    // reuses `premultScratch_`'s allocation and only re-zeros it (still a
+    // full pass -- an untouched texel must still read transparent black,
+    // see that function's own comment) once the size already matches.
+    //
+    // `compositeDocumentStraightHalf()` itself is untouched and still pays
+    // its own one-shot allocation for its many other callers (io/Export,
+    // `--selftest`'s oracle calls), none of which repeat on the same
+    // canvas -- this is the same `unpremultiply()` + `floatToHalf()` packing
+    // that function does, via the identical `packStraightHalf()` the
+    // incremental band path below already uses, just reading from
+    // `premultScratch_` instead of that function's temporary.
+    compositeDocumentPremultipliedInto(doc.document, premultScratch_, warningsOut);
+    if (halves_.size() != canvasTexels * 4) halves_.resize(canvasTexels * 4);
+    packStraightHalf(premultScratch_.data(), canvasTexels, halves_.data());
 
     WGPUTexelCopyBufferLayout layout = {};
     // 4 channels x 2 bytes. **Not padded to 256**, and that asymmetry is the
@@ -328,6 +348,8 @@ void DocumentTexture::release() {
   halves_.shrink_to_fit();
   scratch_.clear();
   scratch_.shrink_to_fit();
+  premultScratch_.clear();
+  premultScratch_.shrink_to_fit();
   snapshot_ = Document{};
   haveSnapshot_ = false;
 }
