@@ -1019,6 +1019,32 @@ std::string clippedLayerWithoutBaseWarning(const Document& doc, size_t layerInde
 std::vector<float> compositeDocumentPremultiplied(
     const Document& doc, std::vector<std::string>* warningsOut = nullptr);
 
+// The same walk as `compositeDocumentPremultiplied()`, writing into a
+// caller-owned buffer instead of returning a freshly allocated one --
+// `compositeDocumentPremultiplied()` is in fact implemented in terms of this
+// function with a local, empty `buffer`, so the two can never drift.
+//
+// For a one-shot caller (io/Export, `--selftest`) this costs exactly what
+// `compositeDocumentPremultiplied()` always has. It exists for the caller
+// that composites the *same document size* repeatedly and would otherwise
+// pay a fresh `width * height * 4` allocate-and-zero -- for a large canvas,
+// hundreds of MB -- on every single call: `buffer` is resized (discarding
+// its old contents) only when its size no longer matches the canvas, which
+// is the first call and every call after a canvas-size change; every other
+// call reuses the existing allocation.
+//
+// **The zero-fill itself still happens on every call, reused buffer or
+// not.** An untouched destination texel has to read transparent black
+// afterward exactly as it does for `compositeDocumentPremultiplied()` (see
+// that function's own comment on why), and this walk does not write every
+// texel -- only the ones a layer's tiles actually cover -- so a stale
+// non-zero texel left over from a *previous* call's content would otherwise
+// leak through. Skipping only the allocator, via `std::fill` on an
+// already-correctly-sized buffer, is the entire saving this function offers
+// over the plain one.
+void compositeDocumentPremultipliedInto(const Document& doc, std::vector<float>& buffer,
+                                        std::vector<std::string>* warningsOut = nullptr);
+
 // --- The same walk, restricted to a tile set (the incremental composite) ---
 //
 // **Why this is the same function and not a second compositor.** Everything

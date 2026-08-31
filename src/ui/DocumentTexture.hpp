@@ -337,10 +337,13 @@ class DocumentTexture {
   const std::vector<uint16_t>& uploadedHalves() const noexcept { return halves_; }
 
   // Bytes this object holds that scale with the canvas: the half buffer that
-  // mirrors the texture, plus the float scratch the region walk composites
-  // into. What decision 4 costs, so a caller can print it rather than guess.
+  // mirrors the texture, the float scratch the incremental region walk
+  // composites into, and the float scratch a full recomposite composites
+  // into. What decision 4 (plus the full-recomposite buffer reuse above it)
+  // costs, so a caller can print it rather than guess.
   size_t residentBytes() const noexcept {
-    return halves_.capacity() * sizeof(uint16_t) + scratch_.capacity() * sizeof(float);
+    return halves_.capacity() * sizeof(uint16_t) + scratch_.capacity() * sizeof(float) +
+           premultScratch_.capacity() * sizeof(float);
   }
 
   // The texture behind the current view. Created `CopySrc` so that a caller
@@ -442,6 +445,17 @@ class DocumentTexture {
   // Reused across calls; bounded by one tile row of the canvas, because the
   // region walk is driven a tile band at a time (decision 4).
   std::vector<float> scratch_;
+
+  // The premultiplied float accumulator a **full** recomposite composites
+  // into -- canvas-sized, like `halves_`, rather than one-tile-row-bounded
+  // like `scratch_` above, because a full recomposite has no band to bound
+  // it by. Held across calls and handed to
+  // `compositeDocumentPremultipliedInto()`, which resizes it only when the
+  // canvas size no longer matches, so a live document's repeated full
+  // recomposites (the common case: this object's whole reason to exist)
+  // reuse one allocation instead of paying a fresh multi-hundred-MB
+  // allocate-and-zero every time.
+  std::vector<float> premultScratch_;
 
   uint64_t uploads_ = 0;
   uint64_t hits_ = 0;

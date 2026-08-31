@@ -24,11 +24,19 @@ namespace np {
 // see `applyDocumentUpdate()` in ProfileToggle.cpp, which is that logic with
 // the `wgpuQueueWriteTexture` calls removed (a DMA of already-computed bytes,
 // not a source of per-frame variance the way the composite walk is) and
-// nothing else changed, so it needs no GPU device.
+// nothing else changed, so it needs no GPU device. Its full-recomposite
+// branch also matches `DocumentTexture::viewFor()`'s own: composited into a
+// persistent buffer reused across calls (`premultScratch_`'s analogue here),
+// not a fresh allocation per call -- the same buffer-reuse optimisation, so a
+// key miss that does take the full path is not measured against a stale,
+// pre-optimisation cost.
 //
 // Temporary: exists to be profiled under Instruments/xctrace, not to become
 // a permanent CLI surface. Prints min/median/mean/max milliseconds per
-// composite across `iterations` alternating toggles once done.
+// composite across `iterations` alternating toggles, plus how many of those
+// iterations actually took the full-canvas path vs. the narrowed incremental
+// one vs. an empty (nothing-to-composite) key miss -- the number this fix
+// exists to move, made visible rather than left implicit in the timing alone.
 int runProfileToggle(const char* psdPath, int layerIndex, int iterations);
 
 }  // namespace np

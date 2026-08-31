@@ -27,9 +27,15 @@ namespace {
 // (`DocumentTexture::halves_`'s analogue here), patched in place for an
 // incremental key miss rather than rebuilt, so a caller timing this does not
 // credit the incremental path with a canvas-sized allocation it does not pay
-// for in production.
+// for in production. `premultScratch` is the same object's `premultScratch_`
+// analogue -- reused across calls exactly as that member is, so a full-
+// recomposite key miss does not credit itself with an allocation a live
+// `DocumentTexture` would not pay either (see that class's own comment on
+// `premultScratch_` for why: profiling found the fresh-vector-per-call
+// allocation `compositeDocumentStraightHalf()` does on its own was ~8.5% of
+// a full recomposite's cost).
 void applyDocumentUpdate(const Document& snapshot, const Document& doc,
-                         std::vector<uint16_t>& halves) {
+                         std::vector<uint16_t>& halves, std::vector<float>& premultScratch) {
   DocumentDirtyTiles dirty = documentDirtyTiles(snapshot, doc);
   if (!dirty.everything &&
       preferFullRecomposite(dirty.tiles.size(), canvasTileCount(doc))) {
@@ -38,7 +44,11 @@ void applyDocumentUpdate(const Document& snapshot, const Document& doc,
   }
 
   if (dirty.everything) {
-    halves = compositeDocumentStraightHalf(doc, nullptr);
+    compositeDocumentPremultipliedInto(doc, premultScratch, nullptr);
+    const size_t canvasTexels =
+        static_cast<size_t>(doc.width) * static_cast<size_t>(doc.height);
+    if (halves.size() != canvasTexels * 4) halves.resize(canvasTexels * 4);
+    packStraightHalfRow(premultScratch.data(), canvasTexels, halves.data());
     return;
   }
   if (dirty.tiles.empty()) return;  // an empty key miss: nothing to composite or pack
@@ -124,11 +134,12 @@ int runProfileToggle(const char* path, int layerIndex, int iterations) {
   // One untimed composite first: the timed loop below should measure steady-
   // state cost, not the allocator growth and page faults the very first
   // composite of a freshly-imported document always pays. It also seeds
-  // `halves`, exactly as `DocumentTexture::viewFor()`'s first (always full)
-  // key miss seeds `halves_`, and `snapshot` -- the previous composite's
-  // document -- for the first timed iteration's `documentDirtyTiles()` call
-  // to compare against.
+  // `halves` and `premultScratch`, exactly as `DocumentTexture::viewFor()`'s
+  // first (always full) key miss seeds `halves_`/`premultScratch_`, and
+  // `snapshot` -- the previous composite's document -- for the first timed
+  // iteration's `documentDirtyTiles()` call to compare against.
   std::vector<uint16_t> halves = compositeDocumentStraightHalf(doc, nullptr);
+  std::vector<float> premultScratch;
   Document snapshot = doc;
 
   std::vector<double> ms(static_cast<size_t>(iterations));
@@ -147,7 +158,7 @@ int runProfileToggle(const char* path, int layerIndex, int iterations) {
       ++incrementalCount;
 
     const auto t0 = std::chrono::steady_clock::now();
-    applyDocumentUpdate(snapshot, doc, halves);
+    applyDocumentUpdate(snapshot, doc, halves, premultScratch);
     const auto t1 = std::chrono::steady_clock::now();
     ms[static_cast<size_t>(i)] = std::chrono::duration<double, std::milli>(t1 - t0).count();
 

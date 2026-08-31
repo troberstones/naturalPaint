@@ -886,7 +886,8 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
                 100.0 * static_cast<double>(dt.totalUploadedTexels()) /
                     static_cast<double>(dt.uploads() * 512ull * 512ull));
     std::printf("    canvas-proportional memory held for a 512x512 document: %.2f MiB (the f16 "
-                "mirror plus the float scratch)\n",
+                "mirror plus the incremental-band float scratch plus the full-recomposite float "
+                "scratch)\n",
                 static_cast<double>(dt.residentBytes()) / (1024.0 * 1024.0));
     dt.release();
     check(dt.residentBytes() == 0,
