@@ -112,6 +112,52 @@ Straight lighterColorHSL(const Straight& cb, const Straight& cs) {
   return lumHSL(cb) >= lumHSL(cs) ? cb : cs;
 }
 
+// Shared shape for all six non-separable modes: guard the two
+// division-by-alpha cases explicitly (an unguarded `src[i]/as` at as==0 is
+// 0/0 = NaN, and 0*NaN is NaN, not 0 -- so the "transparent source is a
+// bit-exact identity" invariant every other mode holds would silently break
+// for these six without this), then un-premultiply into straight triples,
+// run the PDF-1.7 formula, and recombine via the same three-term Porter-Duff
+// split every other mode in blendPixel() uses.
+//
+// `B` is a non-type template parameter (the formula function itself, not a
+// runtime function pointer) so each of the six call sites below gets its OWN
+// instantiation with the callee baked in as a compile-time constant, rather
+// than all six sharing one instantiation that takes `B` as a runtime value.
+// That distinction is not stylistic: with `B` as a runtime function-pointer
+// parameter (this used to be a local lambda inside blendPixel() taking
+// `Straight (*b)(const Straight&, const Straight&)`), the optimiser folded
+// all six switch cases' identical-shaped bodies into ONE shared block reached
+// through a genuine indirect call (`blr` on arm64) -- confirmed in the
+// linked binary's disassembly, one `blr` shared by the Hue/Saturation/Color/
+// Luminosity/DarkerColor/LighterColor cases, each just loading its own
+// formula's address into a register before jumping into the shared code.
+// That merge is legal (it doesn't change any formula or branch) but it
+// means every non-separable-mode pixel pays a real indirect call rather than
+// having its specific formula inlined -- measured below.
+template <Straight (*B)(const Straight&, const Straight&)>
+void nonSeparable(float as, float ab, float sOnly, float bOnly, const std::array<float, 4>& src,
+                  const std::array<float, 4>& dst, std::array<float, 4>& out) {
+  if (as == 0.0f) {
+    out[0] = dst[0];
+    out[1] = dst[1];
+    out[2] = dst[2];
+    return;
+  }
+  if (ab == 0.0f) {
+    out[0] = src[0];
+    out[1] = src[1];
+    out[2] = src[2];
+    return;
+  }
+  const Straight cs{src[0] / as, src[1] / as, src[2] / as};
+  const Straight cb{dst[0] / ab, dst[1] / ab, dst[2] / ab};
+  const Straight blended = B(cb, cs);
+  out[0] = src[0] * sOnly + dst[0] * bOnly + as * ab * blended.r;
+  out[1] = src[1] * sOnly + dst[1] * bOnly + as * ab * blended.g;
+  out[2] = src[2] * sOnly + dst[2] * bOnly + as * ab * blended.b;
+}
+
 // The table. Order is the dropdown's order (see allBlendModes()).
 //
 // Aggregate-initialised with every field named by position, so adding a mode
@@ -314,34 +360,6 @@ std::array<float, 4> blendPixel(BlendMode mode, const std::array<float, 4>& src,
   const float ao = as + ab * bOnly;
 
   std::array<float, 4> out{0.0f, 0.0f, 0.0f, ao};
-
-  // Stage 3's six non-separable modes share one shape: guard the two
-  // division-by-alpha cases explicitly (an unguarded `src[i]/as` at as==0 is
-  // 0/0 = NaN, and 0*NaN is NaN, not 0 -- so the "transparent source is a
-  // bit-exact identity" invariant every other mode holds would silently
-  // break for these six without this), then un-premultiply into straight
-  // triples, run the PDF-1.7 formula, and recombine via the same three-term
-  // Porter-Duff split every other mode here uses.
-  auto nonSeparable = [&](Straight (*b)(const Straight&, const Straight&)) {
-    if (as == 0.0f) {
-      out[0] = dst[0];
-      out[1] = dst[1];
-      out[2] = dst[2];
-      return;
-    }
-    if (ab == 0.0f) {
-      out[0] = src[0];
-      out[1] = src[1];
-      out[2] = src[2];
-      return;
-    }
-    const Straight cs{src[0] / as, src[1] / as, src[2] / as};
-    const Straight cb{dst[0] / ab, dst[1] / ab, dst[2] / ab};
-    const Straight blended = b(cb, cs);
-    out[0] = src[0] * sOnly + dst[0] * bOnly + as * ab * blended.r;
-    out[1] = src[1] * sOnly + dst[1] * bOnly + as * ab * blended.g;
-    out[2] = src[2] * sOnly + dst[2] * bOnly + as * ab * blended.b;
-  };
 
   switch (mode) {
     case BlendMode::Plus:
@@ -694,38 +712,38 @@ std::array<float, 4> blendPixel(BlendMode mode, const std::array<float, 4>& src,
     case BlendMode::Hue:
       // Hue(Cb,Cs) = SetLum(SetSat(Cs, Sat(Cb)), Lum(Cb)) -- take the
       // source's hue and saturation, but the backdrop's luminance.
-      nonSeparable(hueHSL);
+      nonSeparable<hueHSL>(as, ab, sOnly, bOnly, src, dst, out);
       break;
 
     case BlendMode::Saturation:
       // Saturation(Cb,Cs) = SetLum(SetSat(Cb, Sat(Cs)), Lum(Cb)) -- the
       // backdrop's hue and luminance, the source's saturation.
-      nonSeparable(saturationHSL);
+      nonSeparable<saturationHSL>(as, ab, sOnly, bOnly, src, dst, out);
       break;
 
     case BlendMode::Color:
       // Color(Cb,Cs) = SetLum(Cs, Lum(Cb)) -- the source's hue and
       // saturation, the backdrop's luminance. One SetLum() call: no
       // SetSat() needed at all.
-      nonSeparable(colorHSL);
+      nonSeparable<colorHSL>(as, ab, sOnly, bOnly, src, dst, out);
       break;
 
     case BlendMode::Luminosity:
       // Luminosity(Cb,Cs) = SetLum(Cb, Lum(Cs)) -- the mirror of Color:
       // the backdrop's hue and saturation, the source's luminance.
-      nonSeparable(luminosityHSL);
+      nonSeparable<luminosityHSL>(as, ab, sOnly, bOnly, src, dst, out);
       break;
 
     case BlendMode::DarkerColor:
       // No ClipColor/SetLum machinery: a whole-triple compare-and-select
       // on luminance, not a per-channel min (which is `Min` above).
-      nonSeparable(darkerColorHSL);
+      nonSeparable<darkerColorHSL>(as, ab, sOnly, bOnly, src, dst, out);
       break;
 
     case BlendMode::LighterColor:
       // The mirror of DarkerColor: whole-triple select, not a per-channel
       // max (which is `Max` above).
-      nonSeparable(lighterColorHSL);
+      nonSeparable<lighterColorHSL>(as, ab, sOnly, bOnly, src, dst, out);
       break;
 
     case BlendMode::Normal:
