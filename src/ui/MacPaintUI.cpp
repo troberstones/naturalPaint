@@ -16,6 +16,7 @@
 
 #include <functional>
 #include <optional>
+#include <utility>
 #include <set>
 #include <string>
 #include <vector>
@@ -61,7 +62,9 @@
 #include "ui/DocumentTexture.hpp"
 #include "ui/Fonts.hpp"
 #include "ui/MacNativeMenu.hpp"
+#include "app/TouchGestureSession.hpp"
 #include "ui/MacTrackpadGestures.hpp"
+#include "ui/MacTrackpadTouch.hpp"
 #include "ui/MenuModel.hpp"
 #include "ui/ToolCursor.hpp"
 #include "ui/TransformPreviewTexture.hpp"
@@ -581,7 +584,10 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   if (!drawToolGlyph(dl, toolIconCodepoint(t), c, fg))
     drawToolIcon(dl, t, c, size.x * 0.62f, fg);  // graceful fallback -- see drawToolGlyph()'s comment
 
-  if (hovered) {
+  // Separate from `hovered`, which also picks the cell's fill colour above --
+  // gating that on the tooltip's own stationary+delay timer would make the
+  // cell itself feel laggy to hover, not just its tooltip.
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     const std::string tip = toolTooltip(t);
     ImGui::SetTooltip("%s", tip.c_str());
   }
@@ -602,7 +608,7 @@ void moreToolsButton(float cellSize) {
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(cellSize, cellSize);
   ImGui::InvisibleButton("##more", size);
-  const bool hovered = ImGui::IsItemHovered();
+  const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal);
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
   dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), ImGui::GetColorU32(ImGuiCol_Button));
@@ -686,7 +692,10 @@ bool toolFlyoutRow(Tool member, bool isCurrent, float rowW) {
   const ImVec2 textPos(p.x + kFlyoutIconGutter, p.y + (size.y - ImGui::GetTextLineHeight()) * 0.5f);
   dl->AddText(textPos, fg, label.c_str());
 
-  if (hovered) {
+  // Separate from `hovered`, which also picks the row's fill above -- gating
+  // that on the tooltip's own stationary+delay timer would make the row
+  // itself feel laggy to hover, not just its tooltip.
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
     const std::string tip = toolTooltip(member);
     ImGui::SetTooltip("%s", tip.c_str());
   }
@@ -1320,7 +1329,10 @@ bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
     }
   }
 
-  if (hovered)
+  // Separate from `hovered`, which also gates the right-click delete above
+  // -- delaying that shared bool would delay the delete gesture itself, not
+  // just the tooltip.
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
     ImGui::SetTooltip("Click empty area: add point\nDrag a point: move it\n"
                       "Right-click a point: delete it");
 
@@ -1536,8 +1548,7 @@ void drawOpStackEditor(const OpStackBinding& bound) {
 // would be a lie about what undo would take back.
 void drawGradeSection(AppState& st) {
   ImGui::Checkbox("Preview Graded Output", &st.view.grade);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Shows the canvas through the op stack below\n"
+  ImGui::SetItemTooltip("Shows the canvas through the op stack below\n"
                       "(PLAN.md Phase 3's grading pipeline). Off by\n"
                       "default, the same as Grayscale Preview above --\n"
                       "grading never turns on just because the stack\n"
@@ -1845,8 +1856,7 @@ void layerCommandButton(AppState& st, LayerCommand command, const char* text) {
   ImGui::BeginDisabled(!available);
   if (ImGui::SmallButton(text)) runLayerCommand(st, command);
   ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("%s", layerCommandLabel(command));
+  ImGui::SetItemTooltip("%s", layerCommandLabel(command));
 }
 
 // The compact icon toolbar's own button: `layerCommandButton()`'s twin, same
@@ -1864,8 +1874,7 @@ void layerCommandIconButton(AppState& st, LayerCommand command) {
   ImGui::BeginDisabled(!available);
   if (ImGui::SmallButton(id.c_str())) runLayerCommand(st, command);
   ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("%s", layerCommandLabel(command));
+  ImGui::SetItemTooltip("%s", layerCommandLabel(command));
 }
 
 // `layerCommandGlyphFallback()`'s twin for the eight `LayerSetCommand`s the
@@ -1925,7 +1934,11 @@ void layerSetCommandIconButton(AppState& st, const Document& doc, const LayerSel
     const ImVec2 ts = ImGui::CalcTextSize(fb);
     dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), fg, fb);
   }
-  if (hovered) ImGui::SetTooltip("%s", layerSetCommandLabel(command));
+  // Separate from `hovered`, which also picks the button's fill above --
+  // gating that on the tooltip's own stationary+delay timer would make the
+  // button itself feel laggy to hover, not just its tooltip.
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+    ImGui::SetTooltip("%s", layerSetCommandLabel(command));
   if (clicked) runLayerSetCommand(st, command);
   ImGui::PopID();
 }
@@ -2003,7 +2016,7 @@ void layerSetCommandIconButton(AppState& st, const Document& doc, const LayerSel
 //
 // The `(!)` marker is drawn, on exactly the modes `core::blendIsImplemented()`
 // says are not composited: `normal`, `plus`, `multiply`, `screen`, `min`, `max`
-// and `mix` are, so a `linear-burn` arriving from a newer build (PRD I10) is
+// and `mix` are, so a `dissolve` arriving from a newer build (PRD I10) is
 // the case that gets marked and nothing this build can set ever does.
 
 // One row's geometry. Named rather than left as literals at the eight sites
@@ -2177,8 +2190,7 @@ bool newLayerKindMenuItem(const NewLayerKindEntry& entry, float w, float glyphCo
   const std::string label = std::string("##newkind") + layerKindName(entry.kind);
   const bool pressed = ImGui::Selectable(label.c_str(), false, 0, ImVec2(w, h));
   ImGui::EndDisabled();
-  if (!entry.buildable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("%s", layerKindUnbuildableReason(entry.kind));
+  if (!entry.buildable) ImGui::SetItemTooltip("%s", layerKindUnbuildableReason(entry.kind));
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImU32 rail = atelierToken(layerKindRailRgb(entry.kind));
@@ -2274,8 +2286,7 @@ void drawLayersSection(AppState& st) {
     dl->AddText(ImVec2(at.x + panelW - sz.x, at.y + 2.0f), mutedCol, countText.c_str());
     popAtelierMono();
     ImGui::Dummy(ImVec2(panelW, h));
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%d x %d, %zu layer(s).\n"
+    ImGui::SetItemTooltip("%d x %d, %zu layer(s).\n"
                         "Painting is still separate: sim::PaintSim owns one dense\n"
                         "texture with no layer awareness, so a stroke reaches no\n"
                         "layer and nothing painted appears here.",
@@ -2301,8 +2312,7 @@ void drawLayersSection(AppState& st) {
     if (ImGui::InputTextWithHint("##layerfilter", "Filter by name", g_layers.filterBuf,
                                  sizeof(g_layers.filterBuf)))
       g_layers.filter.text = g_layers.filterBuf;
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Filters which rows are drawn -- nothing else.\n"
+    ImGui::SetItemTooltip("Filters which rows are drawn -- nothing else.\n"
                         "A hidden row stays selected, so clearing this\n"
                         "brings it back, and a Multi-selection command\n"
                         "acts only on the rows you can see.");
@@ -2367,8 +2377,7 @@ void drawLayersSection(AppState& st) {
       }
       ImGui::EndCombo();
     }
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("The selected layer's blend mode. Blend modes are\n"
+    ImGui::SetItemTooltip("The selected layer's blend mode. Blend modes are\n"
                         "chosen for the linear working space; Screen only\n"
                         "behaves above 1.0 if 1.0 is white, so it is labelled\n"
                         "display-referred (PRD B7). Mix is offered only on a\n"
@@ -2386,8 +2395,7 @@ void drawLayersSection(AppState& st) {
                                          ImGui::GetTextLineHeight() + 2.0f);
     popAtelierMono();
     if (moved) run(setLayerOpacity(doc, selected, opacity));
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("The selected layer's opacity -- click or drag anywhere\n"
+    ImGui::SetItemTooltip("The selected layer's opacity -- click or drag anywhere\n"
                         "across the meter. A locked layer refuses every frame of\n"
                         "the drag, not merely the first.");
   } else {
@@ -2802,14 +2810,12 @@ void drawLayersSection(AppState& st) {
       ImGui::SetCursorScreenPos(eyeAt);
       if (ImGui::InvisibleButton("##vis", ImVec2(kLayerEyeW, kLayerEyeW)))
         run(setLayerVisible(doc, i, !layer.visible));
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Visibility. Allowed even on a locked layer --\n"
+      ImGui::SetItemTooltip("Visibility. Allowed even on a locked layer --\n"
                           "hiding a layer changes nothing about it.");
       ImGui::SetCursorScreenPos(lockAt);
       if (ImGui::InvisibleButton("##lock", ImVec2(kLayerLockW, kLayerLockW)))
         run(setLayerLocked(doc, i, !layer.locked));
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s. A locked layer refuses edits that change its\n"
+      ImGui::SetItemTooltip("%s. A locked layer refuses edits that change its\n"
                           "pixels or its place in the stack -- visibility and\n"
                           "this padlock itself still work.",
                           layer.locked ? "Locked -- click to unlock"
@@ -2830,8 +2836,7 @@ void drawLayersSection(AppState& st) {
           // given a second flag that means the same thing.
           structureChanged = true;
         }
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("%s", groupCollapsed ? "Expand group -- show its members"
+        ImGui::SetItemTooltip("%s", groupCollapsed ? "Expand group -- show its members"
                                                   : "Collapse group -- hide its members");
       }
 
@@ -2950,8 +2955,7 @@ void drawLayersSection(AppState& st) {
     const bool pressed = ImGui::SmallButton("NEW +");
     popAtelierMono();
     if (pressed) ImGui::OpenPopup("newLayerKind");
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("New layer -- pick a kind. Three of the seven kinds can be\n"
+    ImGui::SetItemTooltip("New layer -- pick a kind. Three of the seven kinds can be\n"
                         "made in this build; the other four are listed and disabled,\n"
                         "because the kinds exist and their content does not.");
     if (ImGui::BeginPopup("newLayerKind")) {
@@ -3004,8 +3008,7 @@ void drawLayersSection(AppState& st) {
     if (ImGui::SmallButton(glyphOrFallback("\xE2\x9A\x99", "[Props]").c_str()))
       ImGui::OpenPopup("Layer Properties");
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("Layer Properties -- name, opacity, blend mode,\n"
+    ImGui::SetItemTooltip("Layer Properties -- name, opacity, blend mode,\n"
                         "colour label, visibility, lock, clip and this\n"
                         "layer's op stack, all in one place.");
   }
@@ -3174,8 +3177,7 @@ void drawLayersSection(AppState& st) {
         }
         ImGui::EndCombo();
       }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Blend modes are chosen for the linear working space.\n"
+      ImGui::SetItemTooltip("Blend modes are chosen for the linear working space.\n"
                           "One of them -- Screen -- only behaves above 1.0 if 1.0\n"
                           "is white, so it is labelled display-referred (PRD B7).\n"
                           "Mix is offered only on a Pigment layer sitting on\n"
@@ -3200,7 +3202,7 @@ void drawLayersSection(AppState& st) {
         if (ImGui::Button("##colorLabel", ImVec2(18.0f, 18.0f)))
           run(setLayerColorLabel(doc, i, name));
         if (swatch.has_value()) ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", name);
+        ImGui::SetItemTooltip("%s", name);
         ImGui::PopID();
       }
 
@@ -3215,8 +3217,7 @@ void drawLayersSection(AppState& st) {
       bool clipped = layer.clipped;
       if (ImGui::Checkbox("Clip to Layer Below", &clipped)) run(setLayerClipped(doc, i, clipped));
       ImGui::EndDisabled();
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Clip to the layer below (PRD C9): this layer shows only\n"
+      ImGui::SetItemTooltip("Clip to the layer below (PRD C9): this layer shows only\n"
                           "where the layer beneath it has alpha. The bottom layer\n"
                           "cannot be clipped: there is nothing below it.");
 
@@ -3226,8 +3227,7 @@ void drawLayersSection(AppState& st) {
       // added *and* enabled.
       if (ImGui::TreeNodeEx("layerOps", ImGuiTreeNodeFlags_DefaultOpen, "Ops (%zu)",
                             layer.ops.size())) {
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("This layer's own non-destructive op stack. It\n"
+        ImGui::SetItemTooltip("This layer's own non-destructive op stack. It\n"
                             "composites through core/Composite: over the layer's\n"
                             "own pixels for a layer that has them, and over\n"
                             "everything beneath for an Adjustment layer.\n"
@@ -3369,22 +3369,31 @@ void drawColorSection(AppState& st) {
       dl->AddRect(p, ImVec2(p.x + sw, p.y + sw),
                   on ? atelierToken(kAccent) : atelierToken(kDivider), 0.0f, 0,
                   on ? kRuleThickness : kDividerThickness);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", pg.name);
+      ImGui::SetItemTooltip("%s", pg.name);
       ImGui::PopID();
       rowX += sw + 3.0f;
     }
     ImGui::Dummy(ImVec2(0, 2));
     ImGui::TextUnformatted(sel.name);
 
-    // The three constants, which are the whole argument for this mode. On two
-    // lines because all three plus their labels do not fit a 322 px column at
-    // this font, and a clipped `granulation` would hide the one of the three a
-    // reader is least likely to guess from the swatch.
+    // The three constants, which are the whole argument for this mode. One
+    // row each rather than doubled up: doubling up ("density ... staining
+    // ...") only saved a line at the cost of a ragged second line
+    // ("granulation ..." alone, its value landing under a different column
+    // than either value above it, since "granulation" and "density" are
+    // different lengths). A fixed 12-column label field -- wide enough for
+    // "granulation", the longest of the four labels below -- makes every
+    // value in this block line up in the same column instead, and there is
+    // vertical room to spare for the extra row (this branch's own square is
+    // capped by the panel's WIDTH, not its height, in the panels this mode
+    // is actually shown in -- see the `else` branch's own comment on the
+    // same trade for the mode that matters more here).
     pushAtelierMono();
-    ImGui::TextDisabled("density %.2f    staining %.2f", sel.density, sel.staining);
+    ImGui::TextDisabled("density     %.2f", sel.density);
+    ImGui::TextDisabled("staining    %.2f", sel.staining);
     ImGui::TextDisabled("granulation %.2f", sel.granulation);
     // "The RGB readout stays visible as the resulting colour, read-only."
-    ImGui::TextDisabled("rgb %.3f %.3f %.3f", sel.rgb[0], sel.rgb[1], sel.rgb[2]);
+    ImGui::TextDisabled("rgb         %.3f %.3f %.3f", sel.rgb[0], sel.rgb[1], sel.rgb[2]);
     popAtelierMono();
   } else {
     // `ColorPicker4()` (which `ColorPicker3` forwards to) sizes its
@@ -3400,16 +3409,34 @@ void drawColorSection(AppState& st) {
     // So the square's side is also capped by the available HEIGHT, minus a
     // reserve for what draws below it: this widget's own RGB input row (no
     // `NoInputs` flag is passed, so ImGui draws one) plus this function's own
-    // three text lines/paragraph after the `ColorPicker3` call. The reserve is
-    // a generous line-count rather than a measured value -- `TextWrapped`'s
-    // own height depends on the width this same call is deciding, so an exact
-    // figure would be circular; overshooting the reserve costs a few px of
-    // unused space, undershooting it reintroduces the scrollbar this exists
-    // to avoid, so it errs generous.
+    // two `TextDisabled` lines after the `ColorPicker3` call -- the
+    // paragraph that used to follow them moved behind the panel's "?" button
+    // (see the comment at the end of this branch), so it no longer costs
+    // space here. Still a generous line-count rather than a measured value,
+    // for the same reason as before: overshooting costs a few px of unused
+    // space, undershooting reintroduces the scrollbar this exists to avoid.
+    //
+    // That "few px of unused space" stops being a rounding error once the
+    // panel is much TALLER than it is wide: the square is capped at
+    // `avail.x` regardless of how much vertical room there is, so a tall
+    // dock leaves a second, much bigger gap below `side + reserveBelow`
+    // that this reserve was never meant to cover -- content pinned to the
+    // top with dead air trailing off underneath it, not "fits the given
+    // space" either. `blockHeight` below is the true total height of
+    // everything this branch draws (picker, its own input row, the three
+    // readout lines); when the panel offers more than that, the whole
+    // block is nudged down by half the difference so the leftover space
+    // splits evenly above and below it instead of pooling entirely at the
+    // bottom. On a panel exactly tall enough for `blockHeight` (the
+    // previously-tuned case) the offset is zero and nothing changes.
     constexpr float kRgbPickerMinSide = 96.0f;
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float reserveBelow = ImGui::GetTextLineHeightWithSpacing() * 7.0f;
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    const float reserveBelow = lineH * 5.0f;  // input row + 3 aligned readout lines + margin
     const float side = std::max(kRgbPickerMinSide, std::min(avail.x, avail.y - reserveBelow));
+    const float blockHeight = side + reserveBelow;
+    if (avail.y > blockHeight)
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (avail.y - blockHeight) * 0.5f);
     ImGui::SetNextItemWidth(side);
     // Writes straight into `BrushState::rgb`, which is where the foreground
     // lives -- no copy back, no second source of truth. The array is
@@ -3429,14 +3456,15 @@ void drawColorSection(AppState& st) {
     // plausible rather than true"); it says nothing about the constants,
     // because there is nothing to say: three floats cannot produce them.
     pushAtelierMono();
-    ImGui::TextDisabled("density %.2f    staining %.2f", sel.density, sel.staining);
+    ImGui::TextDisabled("density     %.2f", sel.density);
+    ImGui::TextDisabled("staining    %.2f", sel.staining);
     ImGui::TextDisabled("granulation %.2f", sel.granulation);
     popAtelierMono();
-    ImGui::TextWrapped(
-        "This colour paints: RGB layers take it exactly, Pigment layers through RGB->latent. "
-        "The three constants above are NOT from it -- an RGB triple has none -- and still come "
-        "from %s. Switch to PIGMENT to change them.",
-        sel.name);
+    // The paragraph that used to sit here permanently ("This colour paints:
+    // RGB layers take it exactly...") now lives behind this panel's "?"
+    // button (ui/ControlsLayout.cpp's `Color` entry, drawn by
+    // `drawPanelGrip()`) -- it is context that matters occasionally, not on
+    // every glance at the panel.
   }
 }
 
@@ -3646,7 +3674,15 @@ void drawTestStroke(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     ImGui::TextDisabled("1:%d   %zu dabs", img.scale, img.dabs);
   }
   popAtelierMono();
-  if (ImGui::IsItemHovered() || ImGui::IsMouseHoveringRect(o, ImVec2(o.x + w, o.y + h)))
+  // `IsMouseHoveringRect()` covers the image itself (the text label above is
+  // the actual last item once `IsItemHovered()` is asked, so it alone would
+  // miss most of the swatch) -- a raw geometry test with no delay mechanism
+  // of its own, so only the `IsItemHovered()` half of this OR gets
+  // `DelayNormal`. Hovering the image directly still shows the tooltip
+  // without a delay; this is a known, minor inconsistency rather than a
+  // trap this build has a clean fix for.
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) ||
+      ImGui::IsMouseHoveringRect(o, ImVec2(o.x + w, o.y + h)))
     ImGui::SetTooltip(
         "One test stroke on empty paper -- the same S-curve and the same\n"
         "0 -> 1 -> 0 pressure taper `--brush-sheet` paints every imported\n"
@@ -3782,14 +3818,15 @@ void drawDynamicsMatrix(AppState& st) {
       ImGui::InvisibleButton(id, ImVec2(cellW, kMatrixRowH));
       ImGui::EndDisabled();
       if (unbuildable != nullptr) {
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled |
+                                 ImGuiHoveredFlags_DelayNormal)) {
           popAtelierMono();
           ImGui::SetTooltip("%s \xE2\x86\x92 %s\n%s", sourceName(source), targetName(target),
                             unbuildable);
           pushAtelierMono();
         }
       } else {
-        if (ImGui::IsItemHovered()) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
           popAtelierMono();
           ImGui::SetTooltip("%s \xE2\x86\x92 %s%s", sourceName(source), targetName(target),
                             at == kNoLink ? "  (no link)" : "");
@@ -3961,7 +3998,7 @@ void drawLinkEditor(AppState& st) {
     if (active) ImGui::PushStyleColor(ImGuiCol_Button, atelierToken(kAccent));
     if (ImGui::Button(easingPresetName(preset))) link.curve = easingCurve(preset);
     if (active) ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", chipTooltip(preset));
+    ImGui::SetItemTooltip("%s", chipTooltip(preset));
   }
 }
 
@@ -4212,7 +4249,10 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
   if (ImGui::SmallButton("+")) requestBrushLibraryImport();
   ImGui::SameLine();
   ImGui::TextDisabled("Import a Photoshop .abr library");
-  if (ImGui::IsItemHovered() || ImGui::IsItemClicked())
+  // The click branch stays undelayed on purpose: a click is a deliberate
+  // gesture, not an incidental pass-through, so there is nothing to guard it
+  // from -- only the hover branch gets the stationary+delay treatment.
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) || ImGui::IsItemClicked())
     ImGui::SetTooltip(
         "Imports the brush PARAMETERS -- size, spacing, roundness, angle and the whole\n"
         "dynamics graph. Sampled bitmap tips are not imported: those brushes will behave\n"
@@ -4253,7 +4293,12 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
     if (ImGui::Selectable(label.c_str(), isActive)) clickedRow = index;
     if (broken || !loaded) ImGui::PopStyleColor();
 
-    if (ImGui::IsItemHovered()) drawBrushRowTooltip(st, gpu, lut, r, lib, edited);
+    // `drawBrushRowTooltip()` draws its own tooltip window via
+    // BeginTooltip()/EndTooltip() rather than SetTooltip(), so it does not
+    // pick up style.HoverFlagsForTooltipMouse's delay on its own -- the
+    // delay has to live on this gate instead.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+      drawBrushRowTooltip(st, gpu, lut, r, lib, edited);
     ImGui::PopID();
   };
 
@@ -4271,15 +4316,14 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
     popAtelierMono();
     ImGui::SameLine();
     ImGui::TextDisabled("%zu | %s", entry.rows.size(), brushLibraryStatusName(entry.status));
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entry.path.c_str());
+    ImGui::SetItemTooltip("%s", entry.path.c_str());
 
     ImGui::SameLine();
     // Remove, at the right of the group's own header, so it is unambiguous
     // *which* library it removes -- a Remove button in the pane's footer would
     // act on whatever happened to be selected.
     if (ImGui::SmallButton("Remove")) unloadRequest = entry.id;
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Removes this library's brushes and forgets it. Brushes you made\n"
+    ImGui::SetItemTooltip("Removes this library's brushes and forgets it. Brushes you made\n"
                         "with Duplicate are yours and stay.");
     if (entry.status == BrushLibraryStatus::Missing ||
         entry.status == BrushLibraryStatus::Failed) {
@@ -4444,8 +4488,8 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
     }
   }
   ImGui::EndDisabled();
-  if (activeIsImported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip(
+  if (activeIsImported)
+    ImGui::SetItemTooltip(
         "This brush belongs to an imported library, which mirrors its file.\n"
         "Duplicate it to keep a copy of your own, or Remove the whole library.");
 
@@ -4511,13 +4555,13 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
       saveUserBrushLibrary(st);
     }
     ImGui::EndDisabled();
-    if (fromLibrary && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip(
+    if (fromLibrary)
+      ImGui::SetItemTooltip(
           "'%s' came from an imported .abr, and this build does not write .abr files.\n"
           "Duplicate keeps your version as a brush of your own.",
           lib.presets[lib.active].name.c_str());
-    if (isBuiltIn && edited && ImGui::IsItemHovered())
-      ImGui::SetTooltip(
+    if (isBuiltIn && edited)
+      ImGui::SetItemTooltip(
           "'%s' is a built-in brush, so it cannot be overwritten -- there would be no way\n"
           "back to it. This makes a brush of your own with these settings, the same as\n"
           "Duplicate, and saves it.",
@@ -4772,20 +4816,16 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
 void drawPigmentSection(AppState& st) {
   ImGui::BeginDisabled();
   ctlSlider("Density", &st.sim.density, 0.0f, 1.0f);
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("How fast pigment drops out of suspension.");
+  ImGui::SetItemTooltip("How fast pigment drops out of suspension.");
   ctlSlider("Staining", &st.sim.staining, 0.02f, 1.0f);
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("Resistance to being lifted back into the water.");
+  ImGui::SetItemTooltip("Resistance to being lifted back into the water.");
   ctlSlider("Granulation", &st.sim.granulation, 0.0f, 1.0f);
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("Affinity for the paper's valleys.");
+  ImGui::SetItemTooltip("Affinity for the paper's valleys.");
   ImGui::EndDisabled();
   ImGui::TextDisabled("Owned by the loaded pigment -- pick a different paint to change these.");
 
   ctlSlider("Diffusion", &st.sim.pigmentDiffuse, 0.0f, 1.0f);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Pigment spreading through the wet film.\n"
+  ImGui::SetItemTooltip("Pigment spreading through the wet film.\n"
                       "At zero the water outruns the pigment and the\n"
                       "leading edge of a wash runs clear.");
 }
@@ -4797,55 +4837,44 @@ void drawMediumSection(AppState& st, PaintSim* sim) {
   ImGui::TextDisabled("%s", paintModeName(st.mode));
   if (st.mode == PaintMode::Oil) {
     ctlSlider("Brush load", &st.sim.brushLoad, 0.0f, 3.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Paint the brush picks up when a stroke starts.\n"
+    ImGui::SetItemTooltip("Paint the brush picks up when a stroke starts.\n"
                         "It runs out as you paint, like a real one.");
     ctlSlider("Pressure", &st.sim.penetration, 0.05f, 2.0f);
     ctlSlider("Squish", &st.sim.oilPressure, 0.0f, 4.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("vp = -c * grad(penetration): paint pushed out\n"
+    ImGui::SetItemTooltip("vp = -c * grad(penetration): paint pushed out\n"
                         "sideways from under the bristles.");
     ctlSlider("Transfer", &st.sim.xferFraction, 0.0f, 0.5f);
     ctlSlider("Max transfer", &st.sim.maxXfer, 0.0f, 0.1f, "%.4f");
     ctlSlider("Levelling", &st.sim.viscosity, 0.0f, 0.25f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Wet paint relaxing under surface tension.\n"
+    ImGui::SetItemTooltip("Wet paint relaxing under surface tension.\n"
                         "At zero the brush stamps leave periodic ridges.");
     ctlSlider("Impasto light", &st.sim.impastoLight, 0.0f, 1.5f);
     ctlSlider("Adhesion", &st.sim.adhesion, 0.0f, 0.4f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Paint never fully leaves a cell. At zero the\n"
+    ImGui::SetItemTooltip("Paint never fully leaves a cell. At zero the\n"
                         "canvas feels like Teflon.");
   } else if (st.mode == PaintMode::Ink) {
     ctlSlider("Relaxation", &st.sim.omega, 0.5f, 1.95f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("LBE omega. Viscosity = (1/omega - 1/2)/3.");
+    ImGui::SetItemTooltip("LBE omega. Viscosity = (1/omega - 1/2)/3.");
     ctlSlider("Blocking", &st.sim.blocking, 0.0f, 0.9f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Base permeability of the paper. Higher blocks\n"
+    ImGui::SetItemTooltip("Base permeability of the paper. Higher blocks\n"
                         "more flow and pins the mark's edge.");
     ctlSlider("Grain block", &st.sim.grainBlock, 0.0f, 0.9f);
     ctlSlider("Glue", &st.sim.glue, 0.0f, 0.6f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Artists add glue to limit spread.");
+    ImGui::SetItemTooltip("Artists add glue to limit spread.");
     ctlSlider("Receptivity", &st.sim.receptivity, 0.1f, 2.5f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Wet paper takes less ink. Lower this and a second\n"
+    ImGui::SetItemTooltip("Wet paper takes less ink. Lower this and a second\n"
                         "stroke over a damp mark barely registers.");
     ctlSlider("Settle rate", &st.sim.settleScale, 0.0f, 0.05f, "%.4f");
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("How fast ink fixes to the fibres. Too high and it\n"
+    ImGui::SetItemTooltip("How fast ink fixes to the fibres. Too high and it\n"
                         "deposits before it can travel, so nothing bleeds.");
     if (sim) ctlSliderInt("Lattice steps", &sim->inkSubsteps, 1, 20);
     ctlSlider("Evaporation", &st.sim.evaporation, 0.0f, 0.03f, "%.4f");
   } else {
     ctlSlider("Viscosity", &st.sim.viscosity, 0.0f, 0.5f);
     ctlSlider("Drag", &st.sim.drag, 0.0f, 1.5f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Above ~0.5 the velocity field dies before water moves.");
+    ImGui::SetItemTooltip("Above ~0.5 the velocity field dies before water moves.");
     ctlSlider("Edge darkening", &st.sim.edgeDarkening, 0.0f, 2.0f, "%.3f");
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Curtis FlowOutward: pulls pigment to the stroke rim.\n"
+    ImGui::SetItemTooltip("Curtis FlowOutward: pulls pigment to the stroke rim.\n"
                         "Zero this and washes go flat.");
     ctlSlider("Paper slope", &st.sim.paperSlope, 0.0f, 4.0f);
 
@@ -4854,19 +4883,16 @@ void drawMediumSection(AppState& st, PaintSim* sim) {
     // only makes the timing unpredictable, and neither means much alone.
     if (ctlSlider("Working time", &st.workingTime, 1.0f, 20.0f, "%.1f s"))
       setWorkingTime(st.sim, st.workingTime);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("How long a wash keeps bleeding before it sets.\n"
+    ImGui::SetItemTooltip("How long a wash keeps bleeding before it sets.\n"
                         "Good to about 15%% across this range. Past ~20 s the\n"
                         "wash spreads thin enough that capillary dilution ends\n"
                         "it regardless of how slowly it dries.");
 
     ctlSlider("Max film", &st.sim.maxFilm, 0.2f, 8.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Deepest water the paper holds before it runs.\n"
+    ImGui::SetItemTooltip("Deepest water the paper holds before it runs.\n"
                         "Raise it far and a wash empties into its own rim.");
     ctlSlider("Capillary diffuse", &st.sim.diffuseRate, 0.0f, 1.0f);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("How fast water wicks through the fibres.\n"
+    ImGui::SetItemTooltip("How fast water wicks through the fibres.\n"
                         "Sets how far a wash reaches, not how long it lasts.");
   }
 }
@@ -4883,8 +4909,7 @@ void drawBoardTiltSection(AppState& st) {
   ImGui::Dummy(ImVec2(0, 4));
   if (ImGui::SmallButton("Level")) { st.sim.tiltX = 0.0f; st.sim.tiltY = 0.0f; }
   ImGui::EndGroup();
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Only wet paint runs — the force scales with film\n"
+  ImGui::SetItemTooltip("Only wet paint runs — the force scales with film\n"
                       "depth, so a puddle streaks and damp paper does not.\n"
                       "Double-click the pad to level.");
 }
@@ -4900,8 +4925,7 @@ void drawGridSection(AppState& st) {
   ctlSlider("Spacing", &st.gridSpacing, 4.0f, 512.0f, "%.0f px");
   ctlSliderInt("Subdivisions", &st.gridSubdivisions, 1, 10);
   ImGui::Checkbox("Snap", &st.snappingEnabled);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Snaps guide creation/dragging to guides, the grid\n"
+  ImGui::SetItemTooltip("Snaps guide creation/dragging to guides, the grid\n"
                       "and canvas edges. Never affects freehand painting.");
 }
 
@@ -5296,8 +5320,7 @@ void drawHistorySection(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext
   ImGui::SameLine();
   if (ImGui::SmallButton("Snapshot"))
     h.takeSnapshot("snapshot " + std::to_string(h.snapshots().size() + 1), od->document);
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("A named state exempt from the byte budget's eviction\n"
+  ImGui::SetItemTooltip("A named state exempt from the byte budget's eviction\n"
                       "until you dismiss it (PRD O4). Kept in its own list, not\n"
                       "in the undo chain, so undoing past it cannot lose it.");
 
@@ -5395,7 +5418,7 @@ void drawHistorySection(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext
       // will clip some of them. A row is a list item rather than a label, so it
       // is clipped rather than wrapped -- and the full text is one hover away,
       // which is the part that was missing.
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text.c_str());
+      ImGui::SetItemTooltip("%s", text.c_str());
       if (followCursor && row.state == HistoryRowState::Current) ImGui::SetScrollHereY();
       ImGui::PopID();
     }
@@ -5502,8 +5525,7 @@ void drawCompsSection(AppState& st) {
 
   textDisabledWrapped("%zu comp(s) -- named sets of layer visibility, opacity, blend and clip",
                       rows.size());
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("A comp captures every layer's visibility, opacity, blend\n"
+  ImGui::SetItemTooltip("A comp captures every layer's visibility, opacity, blend\n"
                       "and clip, and restores them in one click (PRD C14).\n"
                       "It is saved in the document, as np:comps on part 0.\n"
                       "\n"
@@ -5566,8 +5588,8 @@ void drawCompsSection(AppState& st) {
       ImGui::PushID(static_cast<int>(row.index));
       if (ImGui::Selectable(compRowText(row).c_str(), selected == row.index))
         selected = row.index;
-      if (ImGui::IsItemHovered() && compRowIsPartial(row))
-        ImGui::SetTooltip("%zu of this comp's %zu layers are still in the document.\n"
+      if (compRowIsPartial(row))
+        ImGui::SetItemTooltip("%zu of this comp's %zu layers are still in the document.\n"
                           "Restoring applies those and reports the rest -- a comp is\n"
                           "matched by layer id, never by position, so nothing lands\n"
                           "on a layer it was not captured from.",
@@ -5576,8 +5598,8 @@ void drawCompsSection(AppState& st) {
       ImGui::BeginDisabled(!row.known);
       if (ImGui::SmallButton("Restore")) restore = row.index;
       ImGui::EndDisabled();
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !row.known)
-        ImGui::SetTooltip("This comp was written by a build whose comp format this\n"
+      if (!row.known)
+        ImGui::SetItemTooltip("This comp was written by a build whose comp format this\n"
                           "one does not read. It is kept and written back unchanged\n"
                           "(PRD I10), but its contents cannot be applied.");
       ImGui::SameLine();
@@ -5763,7 +5785,8 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
       }
       if (!writable) {
         ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled |
+                                 ImGuiHoveredFlags_DelayNormal)) {
           const std::string why =
               exportRefusalReason(caps.format, request.targetSpace, request.bitDepth, nullptr,
                                   nullptr);
@@ -5853,8 +5876,7 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
       }
       if (!why.empty()) {
         ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-          ImGui::SetTooltip("%s", why.c_str());
+        ImGui::SetItemTooltip("%s", why.c_str());
       }
     }
     ImGui::EndCombo();
@@ -6040,8 +6062,7 @@ void drawExportStatesDialog(AppState& st) {
       }
       if (!why.empty()) {
         ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-          ImGui::SetTooltip("%s", why.c_str());
+        ImGui::SetItemTooltip("%s", why.c_str());
       }
     }
     ImGui::EndCombo();
@@ -9363,10 +9384,12 @@ void drawMenuNodes(AppState& st, const std::vector<MenuNode>& nodes, uint32_t ca
         // whichever backend is drawing. `AllowWhenDisabled` for the disabled
         // ones is the whole point: "Import Image..." is greyed precisely when
         // it has something to explain.
-        if (!n.tooltip.empty() &&
-            ImGui::IsItemHovered(n.enabled ? ImGuiHoveredFlags_None
-                                           : ImGuiHoveredFlags_AllowWhenDisabled))
-          ImGui::SetTooltip("%s", n.tooltip.c_str());
+        // `n.enabled` used to pick between `ImGuiHoveredFlags_None` and
+        // `_AllowWhenDisabled` here; SetItemTooltip()'s own default flags
+        // already carry `AllowWhenDisabled`, and that flag is a no-op on an
+        // item that is not disabled, so the ternary added nothing this
+        // could not get from the default.
+        if (!n.tooltip.empty()) ImGui::SetItemTooltip("%s", n.tooltip.c_str());
         ImGui::PopID();
         break;
       }
@@ -10091,8 +10114,7 @@ void drawToolsPanelBody(AppState& st, float availW, float availH, bool vertical)
   dl->AddRect(p, ImVec2(p.x + swatchSide, p.y + swatchSide), atelierToken(kRule), 0.0f, 0,
               kRuleThickness);
   ImGui::Dummy(ImVec2(swatchSide, swatchSide));
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
+  ImGui::SetItemTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
                       "or picked with the eyedropper (PRD Q10)",
                       foregroundName(st.brush));
   ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
@@ -10231,6 +10253,12 @@ constexpr float kPanelRailW = 14.0f;
 // grip is a small target and a collapse is cheap to undo, so this is a little
 // larger than that to keep an imprecise click from becoming a move.
 constexpr float kPanelDragThresholdPx = 8.0f;
+// The "?" help button's diameter, and the gap it keeps from the grip's right
+// edge -- one shared constant so `panelGripFor()`'s title-fit check and
+// `drawPanelGrip()`'s own drawing can never disagree about how much width
+// the button costs.
+constexpr float kPanelHelpBtnSize = 16.0f;
+constexpr float kPanelHelpBtnMargin = 6.0f;
 
 enum class PanelGripKind { Bar, Rail };
 
@@ -10258,13 +10286,18 @@ PanelGripLayout panelGripFor(ControlsSection section, const AtelierRect& slot, b
 
   g.kind = PanelGripKind::Bar;
   g.extent = std::min(kPanelHeaderExtent, std::max(1.0f, slot.h));
+  const ControlsSectionSpec& spec = controlsSectionSpec(section);
   pushAtelierMono();
-  const float titleW = ImGui::CalcTextSize(controlsSectionSpec(section).title).x;
+  const float titleW = ImGui::CalcTextSize(spec.title).x;
   popAtelierMono();
   // 22 px for the triangle and its gap, 4 px of breathing room after the word
   // -- the same two numbers `drawPanelGrip()` lays the bar out with, so the
-  // two cannot disagree about whether the title fits.
-  g.showTitle = slot.w >= 22.0f + titleW + 4.0f;
+  // two cannot disagree about whether the title fits. Sections with a "?"
+  // help button (`spec.helpText != nullptr`) also reserve the button's own
+  // width, or a tight panel could draw a title running straight into it.
+  const float helpReserve =
+      spec.helpText != nullptr ? (kPanelHelpBtnSize + kPanelHelpBtnMargin) : 0.0f;
+  g.showTitle = slot.w >= 22.0f + titleW + 4.0f + helpReserve;
   return g;
 }
 
@@ -10321,6 +10354,14 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
 
   ImGui::SetCursorScreenPos(ImVec2(grip.x, grip.y));
   ImGui::PushID(static_cast<int>(section));
+  // Without this, the "?" help button drawn later in this same function --
+  // on top of this button, inside its own bounding box -- would never
+  // receive a hover or a click: Dear ImGui's default hit-testing gives the
+  // FIRST item submitted at a given pixel the hover, not the last (topmost)
+  // one, so the whole-bar grip button would silently eat every click in the
+  // help button's corner. `SetNextItemAllowOverlap()` is the documented fix
+  // (imgui.h: "allow next item to be overlapped by a subsequent item").
+  ImGui::SetNextItemAllowOverlap();
   const bool clicked = ImGui::InvisibleButton(
       "##grip", ImVec2(std::max(1.0f, grip.w), std::max(1.0f, grip.h)));
   const bool hovered = ImGui::IsItemHovered();
@@ -10379,6 +10420,40 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
       const float th = ImGui::GetFontSize();
       dl->AddText(ImVec2(grip.x + 22.0f, cy - th * 0.5f), atelierToken(kTextPrimary), spec.title);
       popAtelierMono();
+
+      // The "?" help button -- context that matters occasionally (what a
+      // Pigment vs. RGB colour actually carries, say) rather than on every
+      // glance at the panel, so it is one click away instead of a permanent
+      // paragraph in the body. Only drawn where there is something to show
+      // (`spec.helpText != nullptr`) and only when the title itself fits --
+      // `panelGripFor()` already reserved this button's own width as part of
+      // that same fit check, so the two can never disagree.
+      if (spec.helpText != nullptr) {
+        const ImVec2 btnCenter(grip.right() - kPanelHelpBtnMargin - kPanelHelpBtnSize * 0.5f, cy);
+        ImGui::PushID(static_cast<int>(section));
+        ImGui::PushID("##help");
+        ImGui::SetCursorScreenPos(
+            ImVec2(btnCenter.x - kPanelHelpBtnSize * 0.5f, btnCenter.y - kPanelHelpBtnSize * 0.5f));
+        ImGui::InvisibleButton("##helpBtn", ImVec2(kPanelHelpBtnSize, kPanelHelpBtnSize));
+        const bool helpHovered = ImGui::IsItemHovered();
+        if (helpHovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##helpPopup");
+        const uint32_t helpInk = atelierToken(helpHovered ? kTextPrimary : kTextSecondary);
+        dl->AddCircle(btnCenter, kPanelHelpBtnSize * 0.5f - 1.0f, helpInk, 0, kDividerThickness);
+        pushAtelierMono();
+        const ImVec2 qSize = ImGui::CalcTextSize("?");
+        dl->AddText(ImVec2(btnCenter.x - qSize.x * 0.5f, btnCenter.y - qSize.y * 0.5f), helpInk,
+                    "?");
+        popAtelierMono();
+        if (ImGui::BeginPopup("##helpPopup")) {
+          ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+          ImGui::TextUnformatted(spec.helpText);
+          ImGui::PopTextWrapPos();
+          ImGui::EndPopup();
+        }
+        ImGui::PopID();
+        ImGui::PopID();
+      }
     } else {
       // No room for the word, so the strip says "grabbable" the way every
       // drag handle does: two rows of dots. Without this a titleless bar is
@@ -10407,8 +10482,11 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
 
   // The tooltip is unconditional: it is the only name a titleless grip has,
   // and on a wide one it still says which panel the pointer is over without
-  // the user having to read back up to the bar.
-  if (hovered && !st.panelDragActive)
+  // the user having to read back up to the bar. A fresh, delayed
+  // IsItemHovered() rather than the shared `hovered` above: that bool also
+  // sets the cursor and the `ink` colour, and delaying either would make the
+  // grip itself feel laggy to hover, not just its tooltip.
+  if (!st.panelDragActive && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
     ImGui::SetTooltip("%s -- in the %s\nClick to %s, drag to move it, right-click for the menu",
                       spec.title, panelPlacementKey(st.panels.placementOf(section)),
                       collapsed ? "expand" : "collapse");
@@ -10493,11 +10571,13 @@ AtelierRect drawStackGrip(AppState& st, const PanelSlot& slot, const AtelierRect
     st.panels.setCollapsed(slot.leader(), !collapsed);
     *layoutChanged = true;
   }
-  if (triHovered) {
-    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+  if (triHovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+  // Separate from `triHovered`, which also picks the `ink` colour below --
+  // gating that on the tooltip's own stationary+delay timer would make the
+  // triangle itself feel laggy to hover, not just its tooltip.
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
     ImGui::SetTooltip("%s this stack of %d panels", collapsed ? "Expand" : "Collapse",
                       static_cast<int>(slot.members.size()));
-  }
   ImGui::PopID();
   {
     const uint32_t ink = atelierToken(triHovered ? kTextPrimary : kTextSecondary);
@@ -10594,7 +10674,11 @@ AtelierRect drawStackGrip(AppState& st, const PanelSlot& slot, const AtelierRect
                   label.c_str());
     popAtelierMono();
 
-    if (hovered && !st.panelDragActive)
+    // A fresh, delayed IsItemHovered() rather than the shared `hovered`
+    // above: that bool also sets the cursor and the label colour, and
+    // delaying either would make the tab itself feel laggy to hover, not
+    // just its tooltip.
+    if (!st.panelDragActive && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
       ImGui::SetTooltip("%s -- tab %d of %d\nClick to show it, drag to move it, right-click "
                         "for the menu",
                         spec.title, static_cast<int>(i + 1), static_cast<int>(n));
@@ -10959,7 +11043,7 @@ void drawPanelRail(AppState& st, const AtelierRect& canvas, bool* layoutChanged)
         st.flyoutOpen = !isOpen;
         st.flyoutSection = s;
       }
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", spec.title);
+      ImGui::SetItemTooltip("%s", spec.title);
       if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##railctx");
       if (ImGui::BeginPopup("##railctx")) {
         if (drawPanelPlacementItems(st, s)) *layoutChanged = true;
@@ -11056,8 +11140,7 @@ void drawPanelMenu(AppState& st) {
   pushAtelierMono();
   const bool clicked = ImGui::SmallButton("PANELS");
   popAtelierMono();
-  if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Where every panel is docked, and how to move it.\n"
+  ImGui::SetItemTooltip("Where every panel is docked, and how to move it.\n"
                       "Right-click any panel's header for the same menu.");
   if (clicked) ImGui::OpenPopup(kPanelMenuPopup);
   if (!ImGui::BeginPopup(kPanelMenuPopup)) return;
@@ -11157,6 +11240,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
   const ImGuiViewport* vp = ImGui::GetMainViewport();
 
+  // The document-tabs sub-rect, computed early -- `drawAtelierTabStrip()` has
+  // to run from inside the `BeginMainMenuBar()`/`EndMainMenuBar()` block just
+  // below (see its own declaration comment for why: it draws into the
+  // caller's window now rather than opening one of its own), which is well
+  // before `bands` -- the full layout, with the live dock extents -- gets
+  // computed further down this function. That is not a problem: `titleBar`
+  // and `tabStrip` are the only two `AtelierBands` fields `atelierLayout()`
+  // computes before it even looks at `docks`, so asking for them early with
+  // the default dock extents gives the identical rect the later, real call
+  // will -- this is the same value computed twice, not two different
+  // answers.
+  const AtelierRect earlyTabStrip =
+      atelierLayout(vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y, !st.documents.empty()).tabStrip;
+
   // ------------------------------------------------------------ title bar
   //
   // docs/ui.md section 2's first band: 36 px, wordmark then menus, undo/redo
@@ -11165,6 +11262,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // exactly the `BeginMainMenuBar()` call that reads it and popped
   // immediately, leaving every *menu item* at its normal size. The band is
   // 36 px because the design says 36 px; the items are then centred in it.
+  //
+  // **This is also the document tab strip's row now.** The user's own words
+  // -- "The tab bar and the space where the menus used to live take up too
+  // much space, collapse them into one band" -- merged what used to be two
+  // stacked bands (this 36 px one and a 34 px one under it) into this single
+  // one: `ui/AtelierLayout.hpp`'s `kTitleWordmarkW`/`kTitleControlsW` reserve
+  // this band's two ends for the wordmark and for Undo/Redo/PANELS/fps, and
+  // `AtelierBands::tabStrip` is the space left over in the middle, drawn by
+  // `drawAtelierTabStrip()` -- called near the end of this very
+  // `BeginMainMenuBar()`/`EndMainMenuBar()` block, below, straight into this
+  // window rather than one of its own. It used to open its own window and
+  // draw later in the frame, over the canvas block; see that function's
+  // declaration comment (ui/AtelierChrome.hpp) for why sharing this window is
+  // now required rather than optional -- a window of its own would sit
+  // BEHIND this one once the two overlap in screen space, painted over and
+  // invisible. Nothing here had to change to make room for it -- the
+  // wordmark and the right-aligned cluster below were already nowhere near
+  // the row's centre.
   // ---- the menu model (ui/MenuModel) --------------------------------------
   //
   // Built, published and handed to the native backend **before**
@@ -11217,11 +11332,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // reserved by `atelierLayout()` (ui/AtelierLayout.cpp, `b.titleBar`,
     // `kTitleBarH` = 36 px from docs/ui.md section 2) and it carries four
     // things that are not menus and have nowhere else to go: the naturalPaint
-    // wordmark, the one-line document status, the Undo and Redo buttons the
-    // design puts at the right of this band, and the frame rate. Reclaiming
-    // the 36 px would delete Undo and Redo from the chrome to remove a strip
-    // that is not actually dead -- so what macOS reclaims is the *menus'*
-    // share of the band, and the band keeps doing its other job.
+    // wordmark, the one-line document status (documents-empty only, see
+    // below), the Undo and Redo buttons the design puts at the right of this
+    // band, and the frame rate -- plus, now, the document tabs the band below
+    // used to hold. Reclaiming the 36 px would delete Undo and Redo from the
+    // chrome to remove a strip that is not actually dead -- so what macOS
+    // reclaims is the *menus'* share of the band, and the band keeps doing
+    // its other jobs.
     if (!nativeMenuBarInstalled()) {
       for (const MenuNode& menu : menus) {
         // --open-layer-menu: the same id `BeginMenu()` below opens on a click,
@@ -11250,17 +11367,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // The active document's name used to be here, with a `*` dirty marker,
     // and the argument for it was that "a Save whose target is not on screen
     // is how the wrong file gets overwritten". That argument is now the tab
-    // strip's -- the band directly below shows every open document by name
-    // with an accent dot on the dirty one, which is strictly more of what the
-    // name was here to provide. Two copies of it would be the design's own
-    // redundancy, not a safeguard.
+    // strip's -- it shows every open document by name with an accent dot on
+    // the dirty one, which is strictly more of what the name was here to
+    // provide. Two copies of it would be the design's own redundancy, not a
+    // safeguard.
     OpenDocument* activeForBar = st.documents.active();
-    if (!g_docStatus.empty()) {
+    // **Only drawn with no documents open.** Before the tab strip merged into
+    // this row it sat in a band of its own, so a transient message here
+    // (`setDocumentStatusLine()`, e.g. "12 files dropped") never competed
+    // with anything for the space. Now the middle of this row is
+    // `bands.tabStrip`, drawn later in the frame and on top -- see this
+    // function's earlier comment -- so a message here while documents are
+    // open would either draw underneath the tab strip's own background and
+    // vanish, or draw into the wordmark's reserved width and clip. Neither is
+    // an improvement on the tab strip's own dirty-dot and tooltip, which is
+    // why this only fires when there is no tab strip to compete with.
+    if (!g_docStatus.empty() && st.documents.empty()) {
       const size_t firstLine = g_docStatus.find('\n');
       const std::string oneLine =
           firstLine == std::string::npos ? g_docStatus : g_docStatus.substr(0, firstLine);
       ImGui::TextDisabled("| %s", oneLine.c_str());
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", g_docStatus.c_str());
+      ImGui::SetItemTooltip("%s", g_docStatus.c_str());
     }
 
     // Right-aligned: undo / redo, where docs/ui.md section 2 draws them.
@@ -11308,6 +11435,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     ImGui::EndDisabled();
     ImGui::SameLine(ImGui::GetWindowWidth() - statusW - 12.0f);
     ImGui::TextDisabled("%s", status);
+
+    // The document tabs, drawn into this same window -- see
+    // `drawAtelierTabStrip()`'s declaration comment for why it takes no
+    // window of its own any more. It only ever reads `bands.tabStrip`, so a
+    // bands value with nothing else filled in is exactly as good as the real
+    // one -- and `earlyTabStrip` rather than `bands.tabStrip` because `bands`
+    // itself (with the live dock extents) is not computed until later in
+    // this function; see this variable's own comment above for why that is
+    // the same rect regardless.
+    AtelierBands tabBands;
+    tabBands.tabStrip = earlyTabStrip;
+    if (drawAtelierTabStrip(st, tabBands, g_split, &g_docStatus)) {
+      // **The same dialog File > New raises, not a second way to make a
+      // document.** See this call's own comment where it used to live, a few
+      // hundred lines below, for the full argument -- unchanged by the move.
+      requestNewDocumentDialog();
+      g_docStatus.clear();
+    }
     ImGui::EndMainMenuBar();
   }
 
@@ -11434,9 +11579,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // function is testable without a window (see `--selftest`, atelier chrome).
   // The tab strip appears when there is a document to name. Not "when there
   // is more than one": a single open document still has a name, a dirty
-  // marker and a `+` beside it, and a band that materialised on the second
-  // document would move every other band down by 36 px at the moment a user
-  // opened one.
+  // marker and a `+` beside it. It costs no other band anything either way --
+  // `AtelierBands::tabStrip` is nested inside the title row rather than a
+  // band of its own now, so a document opening or closing never moves
+  // anything below it.
   // T12: read the user's arrangement on the first frame that draws the chrome,
   // not at startup -- see AppState::panelsLoaded. A missing file is the
   // ordinary first-run case and yields the default arrangement, so there is
@@ -12069,34 +12215,86 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         applyZoomFactor(1.0f + wheelY * 0.12f, mouse);
       }
     }
-    // --- pinch-to-zoom, anchored under the cursor the same way the wheel
-    // above is. `pollPinchMagnification()` (ui/MacTrackpadGestures.hpp) is
-    // drained every frame regardless of `hovered` -- a pinch that started
-    // over a side panel must not leave a stale sample to be misread as
-    // "just started" the next time the cursor happens to be over the
-    // canvas, the same reasoning `toolZoomsView`'s callers already apply to
-    // clicks. SDL3, as vendored in this build, has no path for this at all
-    // -- see ui/MacTrackpadGestures.hpp for exactly what was checked before
-    // reaching past it.
+    // --- raw two-finger trackpad gesture (item 4, ui/MacTrackpadTouch.hpp) --
+    // pinch-to-zoom and two-finger rotate BOTH still fire through
+    // `pollPinchMagnification()`/`pollRotationDegrees()` below (AppKit
+    // synthesises those independently of what this app does at the touch
+    // level), so both are drained UNCONDITIONALLY every frame either way --
+    // a sample that arrives during a raw-touch gesture must not leak into a
+    // later, unrelated one, the same reasoning that already applied when
+    // this file had only the classifier-driven path. Which path actually
+    // MOVES the view is decided once, by whether raw touch capture reports
+    // an active two-finger touch this frame: see ui/TouchGesture.hpp's own
+    // header comment for why the classifier alone produces the "now zoom,
+    // now rotate around centre, now pan" mode-switching this replaces --
+    // pivoting at the CURSOR (not always the canvas centre, unlike the old
+    // rotate-only path immediately below) is the fix for the "not pinned to
+    // the two points" half of that complaint.
+    static TouchGestureSession touchGestureSession;
+    const std::optional<std::pair<TrackpadTouchPoint, TrackpadTouchPoint>> twoFingerTouch =
+        pollTwoFingerTouch();
     const float pinchMagnification = pollPinchMagnification();
-    if (hovered && pinchMagnification != 0.0f)
-      applyZoomFactor(zoomFactorForPinch(pinchMagnification), mouse);
-    // --- two-finger trackpad rotate, the same shape as pinch-to-zoom just
-    // above: drained every frame regardless of `hovered` for the identical
-    // reason (a gesture that started over a side panel must not leave a
-    // stale sample), applied only when the canvas was actually hovered.
-    // Unlike zoom/pan there is no anchor to preserve here -- `view.rotation`
-    // is always about the canvas's own centre (`ViewTransform`'s
-    // `canvasCenter`, PRD Q4), the same pivot the existing `R`+drag rotate
-    // gesture above already turns the canvas about, so this is not a second,
-    // disagreeing rotation origin. app/WheelInput.hpp's
-    // `canvasRotationRadiansForTrackpad()`/`wrapRotationRadians()` header
-    // comments carry the sign derivation and the wraparound reasoning;
-    // neither is re-derived here.
     const float rotationDegrees = pollRotationDegrees();
-    if (hovered && rotationDegrees != 0.0f)
-      st.view.rotation =
-          wrapRotationRadians(st.view.rotation + canvasRotationRadiansForTrackpad(rotationDegrees));
+    if (twoFingerTouch.has_value()) {
+      if (hovered) {
+        const Vec2 canvasCenterVec{texW * 0.5f, texH * 0.5f};
+        const Vec2 paintOriginVec{paintOrigin.x, paintOrigin.y};
+        const Vec2 availVec{avail.x, avail.y};
+        const Vec2 texVec{texW, texH};
+        const Vec2 cursorVec{mouse.x, mouse.y};
+        touchGestureSession.update(twoFingerTouch, st.view, canvasCenterVec, paintOriginVec,
+                                   availVec, texVec, cursorVec);
+        // The touch pair's own translation (the shared midpoint sliding --
+        // a two-finger drag riding along with a pinch/rotate, or on its
+        // own) is NOT part of the anchored zoom/rotate `update()` just
+        // applied; added here, converted from the trackpad's own
+        // dimensionless [0,1] fraction to screen points via its physical
+        // `deviceSize`, and sign-adjusted for the System Settings natural/
+        // traditional scrolling preference -- see ui/MacTrackpadTouch.hpp's
+        // header comment on `trackpadDeviceSize()`/`trackpadNaturalScrolling()`
+        // for why neither conversion belongs in the pure math itself.
+        const TwoTouchDelta delta = touchGestureSession.lastDelta();
+        const TrackpadDeviceSize deviceSize = trackpadDeviceSize();
+        float extraPanX = delta.panDx * deviceSize.width;
+        float extraPanY = delta.panDy * deviceSize.height;
+        if (!trackpadNaturalScrolling()) {
+          extraPanX = -extraPanX;
+          extraPanY = -extraPanY;
+        }
+        st.view.panX += extraPanX;
+        st.view.panY += extraPanY;
+      } else {
+        // Not hovered: no anchor to pin to, so this frame does not drive a
+        // gesture -- but the session's own "was a pair active last frame"
+        // state must still see the gap, or the NEXT frame that regains
+        // hover would (wrongly) treat itself as a continuation of a
+        // gesture this file never actually applied any of.
+        touchGestureSession.update(std::nullopt, st.view, Vec2{}, Vec2{}, Vec2{}, Vec2{}, Vec2{});
+      }
+    } else {
+      // No live raw-touch pair this frame (0, 1, or 3+ fingers, or raw
+      // capture unavailable this session at all) -- clear any prior
+      // gesture's baseline and fall back to the classifier-driven path
+      // exactly as it worked before this track, so a session where raw
+      // capture failed to install (ui/MacTrackpadTouch.mm's own stderr
+      // message says so) degrades to "the old behaviour", not "broken".
+      touchGestureSession.update(std::nullopt, st.view, Vec2{}, Vec2{}, Vec2{}, Vec2{}, Vec2{});
+      // --- pinch-to-zoom, anchored under the cursor the same way the wheel
+      // above is.
+      if (hovered && pinchMagnification != 0.0f)
+        applyZoomFactor(zoomFactorForPinch(pinchMagnification), mouse);
+      // --- two-finger trackpad rotate. Unlike zoom/pan there is no anchor
+      // to preserve here -- `view.rotation` is always about the canvas's
+      // own centre (`ViewTransform`'s `canvasCenter`, PRD Q4), the same
+      // pivot the existing `R`+drag rotate gesture above already turns the
+      // canvas about. app/WheelInput.hpp's
+      // `canvasRotationRadiansForTrackpad()`/`wrapRotationRadians()` header
+      // comments carry the sign derivation and the wraparound reasoning;
+      // neither is re-derived here.
+      if (hovered && rotationDegrees != 0.0f)
+        st.view.rotation = wrapRotationRadians(st.view.rotation +
+                                               canvasRotationRadiansForTrackpad(rotationDegrees));
+    }
     const ImVec2 viewportCenter(paintOrigin.x + avail.x * 0.5f, paintOrigin.y + avail.y * 0.5f);
     if (st.requestZoomIn) {
       applyZoomFactor(kZoomStepFactor, viewportCenter);
@@ -13513,23 +13711,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
   // ------------------------------------------------------- the other bands
   //
-  // After the canvas rather than before it, for one reason that is not
-  // cosmetic: both read `st.brush` and `st.view`, and a band drawn first
-  // would show the values as they were before this frame's canvas input
-  // changed them -- a zoom readout one frame stale, which is exactly the
-  // juddering docs/ui.md section 5 asks the monospace numerics to prevent.
-  if (drawAtelierTabStrip(st, bands, g_split, &g_docStatus)) {
-    // **The same dialog File > New raises, not a second way to make a
-    // document.** This used to call `makeBlankOpenDocument(canvasW, canvasH)`
-    // directly, which sized the new document from the *solver canvas* -- a
-    // number the user never chose and which has nothing to do with the
-    // document they are asking for. That is docs/testing-issues.md T5's
-    // canvas-versus-document conflation, and with T9's dialog in the tree it
-    // would have left two "new document" affordances producing different
-    // sizes from the same intent.
-    requestNewDocumentDialog();
-    g_docStatus.clear();
-  }
+  // **The tab strip is no longer drawn here.** It moved up into the title
+  // row's own `BeginMainMenuBar()`/`EndMainMenuBar()` block, near this
+  // function's top, when the two merged into one band -- see
+  // `drawAtelierTabStrip()`'s declaration comment for why a window that now
+  // shares screen space with the menu bar has to share the menu bar's window
+  // too. What is left here is the status bar, drawn after the canvas rather
+  // than before it, for one reason that is not cosmetic: it reads `st.view`,
+  // and a band drawn first would show the value as it was before this
+  // frame's canvas input changed it -- a zoom readout one frame stale, which
+  // is exactly the juddering docs/ui.md section 5 asks the monospace
+  // numerics to prevent.
+  //
   // **The options bar is no longer drawn here.** It is a panel now
   // (`ControlsSection::Options`), so it is drawn by whichever dock holds it,
   // up with the other docks -- see this file's "dockable panel system"

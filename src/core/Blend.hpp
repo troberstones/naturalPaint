@@ -35,7 +35,7 @@
 // name<->enum mapping". Two things argue against converting the member:
 //
 //  1. **PRD I10 at the value level is free with a string and machinery with an
-//     enum.** A newer build's `np:blend = "linear-burn"` survives a load, an
+//     enum.** A newer build's `np:blend = "dissolve"` survives a load, an
 //     edit and a save through this build byte-for-byte, because nothing
 //     between io/NpaintFile's reader and its writer ever parses it into a
 //     closed set. With an enum the loader would have to detect the unknown
@@ -187,6 +187,43 @@ enum class BlendMode {
   Min,
   Max,
   Mix,
+  // Stage 1 (docs/blend-mode-gaps.md): the separable modes. Like Stage 2 and
+  // Stage 3 below, none of these has a division-free premultiplied form --
+  // Photoshop defines them on STRAIGHT [0,1] colour, so blendPixel()
+  // un-premultiplies (guarded against as/ab == 0, where the division would
+  // otherwise poison a well-formed transparent pixel with NaN) rather than
+  // deriving a premultiplied closed form. All seven are
+  // BlendSpace::DisplayReferred.
+  Difference,
+  Exclusion,
+  Subtract,
+  LinearBurn,
+  ColorDodge,
+  ColorBurn,
+  Divide,
+  // Stage 2 (docs/blend-mode-gaps.md): the Photoshop "light family" plus
+  // Overlay and Hard Mix. Same un-premultiply-with-guard shape as Stage 1;
+  // all seven are BlendSpace::DisplayReferred: every one of them treats 1.0
+  // as a reference white or reference black, so none is monotone over the
+  // whole non-negative range a linear working space can hold.
+  HardLight,
+  Overlay,
+  VividLight,
+  LinearLight,
+  PinLight,
+  SoftLight,
+  HardMix,
+  // Stage 3: Photoshop's non-separable modes. Each depends on the whole RGB
+  // triple's luminance/saturation (PDF 1.7's Lum()/Sat()/SetLum()/SetSat()/
+  // ClipColor(), the same non-separable-blend-function machinery CSS
+  // Compositing 1 §3 cites), not on matching channels independently like
+  // every mode above. See core/Blend.cpp for the derivations.
+  Hue,
+  Saturation,
+  Color,
+  Luminosity,
+  DarkerColor,
+  LighterColor,
 };
 
 struct BlendModeInfo {

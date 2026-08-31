@@ -468,7 +468,7 @@ bool runLayerStackTest() {
     // `mix` left this list at PLAN.md Phase 5 step 3, which implemented it at
     // the layer level, so what remains outside the set is what was always the
     // real case: a name from a newer build, and a blank one.
-    check(blendIsImplemented("mix") && !blendIsImplemented("linear-burn") &&
+    check(blendIsImplemented("mix") && !blendIsImplemented("dissolve") &&
               !blendIsImplemented(""),
           "blend: a newer build's name and an empty string are reported unimplemented "
           "rather than assumed to be `over`");
@@ -476,13 +476,13 @@ bool runLayerStackTest() {
     Document odd = Document::createBlank(1, 1, WorkingSpace{});
     odd.layers[0].name = "Line pass";
     addRgbLayer(odd, "");
-    odd.layers[1].blend = "linear-burn";
+    odd.layers[1].blend = "dissolve";
     writeStraight(odd, 0, 0, 0, 1.0f, 0.0f, 0.0f, 0.5f);
     writeStraight(odd, 1, 0, 0, 0.0f, 0.0f, 1.0f, 0.5f);
 
     std::vector<std::string> warnings;
     const DecodedImage flat = flattenDocumentToLinear(odd, &warnings);
-    check(warnings.size() == 1 && contains(warnings[0], "linear-burn") &&
+    check(warnings.size() == 1 && contains(warnings[0], "dissolve") &&
               contains(warnings[0], "layer 1"),
           "blend: an unimplemented blend produces exactly one warning, naming the layer and "
           "the blend it asked for");
@@ -499,7 +499,7 @@ bool runLayerStackTest() {
                           flat.pixels.size() * sizeof(float)) == 0,
           "blend: and the composite is byte-identical to `over` -- the warning describes what "
           "actually happened rather than hinting at something else");
-    check(odd.layers[1].blend == "linear-burn",
+    check(odd.layers[1].blend == "dissolve",
           "blend: while the value itself is untouched, so PRD I10 still carries it to disk");
 
     // A hidden layer with an unimplemented blend is still warned about: the
@@ -516,7 +516,7 @@ bool runLayerStackTest() {
     // The export boundary carries it too, on success and on refusal alike.
     const ExportResult png = exportDocument(odd, ImageFormat::Png, ExportTargetSpace::Rec709Srgb,
                                             ExportBitDepth::UInt8);
-    check(png.ok && png.warnings.size() == 1 && contains(png.warnings[0], "linear-burn"),
+    check(png.ok && png.warnings.size() == 1 && contains(png.warnings[0], "dissolve"),
           "blend: exportDocument() carries the warning out with the bytes");
     const ExportResult refused = exportDocument(odd, ImageFormat::Jpeg,
                                                 ExportTargetSpace::Rec709Srgb,
@@ -602,8 +602,8 @@ bool runLayerStackTest() {
               "RGB \xC2\xB7 NORMAL \xC2\xB7 72% \xC2\xB7 HIDDEN \xC2\xB7 LOCKED",
           "panel: hidden and locked are spelled out on the sub-line, so --selftest can read "
           "state the eye and lock glyphs otherwise only show");
-    row.blend = "linear-burn";
-    check(contains(layerRowSubLine(row), "LINEAR-BURN (!)"),
+    row.blend = "dissolve";
+    check(contains(layerRowSubLine(row), "DISSOLVE (!)"),
           "panel: an unrecognised blend shows as itself, marked (!) -- the panel's half of "
           "\"never silently composited as over\"");
 

@@ -84,6 +84,28 @@ void applyAtelierTheme() {
   s.ScrollbarSize = kScrollbarSize;
   s.GrabMinSize = 10.0f;
 
+  // Tooltips used to appear the instant the pointer crossed a widget's rect
+  // -- the user's own complaint: with 70-odd tooltip-bearing controls in this
+  // chrome, a caption popping up on every incidental pass-through gets in the
+  // way while working. Dear ImGui's own default for SetItemTooltip() /
+  // IsItemHovered(ImGuiHoveredFlags_ForTooltip) is
+  // `style.HoverFlagsForTooltipMouse`, which ships as
+  // `Stationary | DelayShort | AllowWhenDisabled` (imgui.cpp's
+  // ImGuiStyle constructor) -- DelayShort is ~0.15s (imgui.cpp:1611),
+  // barely distinguishable from instant once the ~0.15s Stationary
+  // requirement (imgui.h:1541) is already spent settling the cursor.
+  // DelayNormal is ~0.40s (imgui.cpp:1612) -- long enough that resting the
+  // pointer mid-stroke or while dragging a slider does not summon a caption,
+  // short enough that a deliberate pause does not feel broken. Swapping the
+  // tier here (rather than tuning HoverDelayShort's raw duration) means
+  // every ImGui::SetItemTooltip() call site inherits the new delay for
+  // free, and the handful of call sites that keep an explicit
+  // IsItemHovered() (because they share the hovered bool with a highlight
+  // or click check, or gate on more than hover) pass
+  // ImGuiHoveredFlags_DelayNormal explicitly to match this same tier.
+  s.HoverFlagsForTooltipMouse = ImGuiHoveredFlags_Stationary | ImGuiHoveredFlags_DelayNormal |
+                                ImGuiHoveredFlags_AllowWhenDisabled;
+
   ImVec4* c = s.Colors;
 
   c[ImGuiCol_Text]                 = col(kTextPrimary);

@@ -1,6 +1,7 @@
 #pragma once
 
-#include "app/AppState.hpp"  // Tool
+#include "app/AppState.hpp"      // Tool, CanvasView
+#include "brush/StrokePath.hpp"  // Vec2
 
 namespace np {
 
@@ -52,6 +53,45 @@ namespace np {
 // One function, four callers -- not a second zoom path.
 float panForAnchoredZoom(float anchorScreen, float originOld, float zoomOld, float zoomNew,
                           float paintOriginAxis, float availAxis, float texAxis) noexcept;
+
+// `panForAnchoredZoom()`'s own header admits a limitation by name: it
+// "ignores rotation/mirror" and inherits "anchoring under a rotated view is
+// a pre-existing limitation" at every one of its call sites. This is the
+// generalisation that does NOT ignore them -- built for the raw two-finger
+// trackpad gesture (below, section 3), which combines pan+zoom+rotate in one
+// continuous motion and would show that limitation immediately (a pinch
+// anchor that visibly drifts the instant the same gesture also twists).
+// Existing callers of `panForAnchoredZoom()` (wheel/pinch/scrubby/keyboard
+// zoom) are UNCHANGED and untouched by this addition on purpose -- their own
+// limitation was a prior track's deliberate, stated scope boundary
+// ("nothing here makes that better or worse"), not a defect this one is
+// trying to also close.
+//
+// Solves for the NEW pan (both axes at once, since rotation couples them)
+// that keeps `anchorScreen` mapped to the same canvas point across a
+// combined zoom+rotate+mirror change, using `ViewTransform`'s own analytic
+// forward/inverse -- not a second, hand-derived rotation formula:
+//
+//   1. `oldXform` (built from `oldView` and the CURRENT `pivotScreenOld`)
+//      finds the canvas point currently under `anchorScreen`.
+//   2. A throwaway `ViewTransform` for `newView` with `pivotScreen == (0,0)`
+//      isolates exactly what that new zoom/rotation/mirror does to a vector
+//      from canvas-centre -- `M_new * (anchorCanvas - canvasCenter)` -- via
+//      the SAME public `toScreen()` every other caller uses, rather than a
+//      new accessor onto `ViewTransform`'s private matrix.
+//   3. The pivotScreen that would put `anchorCanvas` back at `anchorScreen`
+//      follows by subtraction; `pan` is recovered from it by inverting
+//      `pivotScreen = paintOrigin + margin(zoomNew) + pan + drawSize(zoomNew)/2`
+//      -- `panForAnchoredZoom()`'s own algebra, one axis at a time, with
+//      `margin` recomputed at the NEW zoom for the identical reason that
+//      function already recomputes it.
+struct AnchoredPan {
+  float panX;
+  float panY;
+};
+AnchoredPan panForAnchoredZoomRotate(const CanvasView& oldView, const CanvasView& newView,
+                                     Vec2 canvasCenter, Vec2 pivotScreenOld, Vec2 anchorScreen,
+                                     Vec2 paintOrigin, Vec2 avail, Vec2 tex) noexcept;
 
 // The existing zoom limits (`ui/MacPaintUI.cpp`'s `requestFitWindow`/
 // `applyZoomFactor` both already clamp to this exact pair) -- named here so

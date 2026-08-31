@@ -242,7 +242,7 @@ std::string layerRowTitle(const Layer& layer, size_t layerIndex);
 //
 // The blend name is upper-cased **as carried**, never mapped through a table:
 // an unrecognised `np:blend` from a newer build shows as itself
-// (`LINEAR-BURN`), which is the value-level PRD I10 preservation core/Layer.hpp
+// (`DISSOLVE`), which is the value-level PRD I10 preservation core/Layer.hpp
 // keeps the member a string for. A blend this build cannot composite is marked
 // with a trailing `(!)` -- the panel's half of core/Composite's "never
 // silently" rule -- and a display-referred one (PRD B7) additionally reads

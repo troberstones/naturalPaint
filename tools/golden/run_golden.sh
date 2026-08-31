@@ -197,13 +197,25 @@ measure_n="${2:-10}"
 #     4 separately-launched captures diffed against the first: 0 mismatched
 #     px, max channel diff 0, every time -- exact-zero, the same as
 #     toolbar/tools/canvas, so it is blessed at (0, 0) rather than skipped.
-#   titlebar  -- docs/reachability-audit.md F2: the y=0..71 title band, never
-#     covered before this view -- when the native menu bar landed and removed
-#     seven labels from it, all five views of the day still passed. Full
-#     window width (0, 0, 2560, 77) under --demo-document, the same demo
-#     `toolbar` uses: the naturalPaint wordmark at the left, and at the
-#     right, Undo (enabled -- --demo-document leaves an undoable edit on the
-#     stack), Redo (disabled) and the fps readout.
+#   titlebar  -- docs/reachability-audit.md F2: the title band, never covered
+#     before this view -- when the native menu bar landed and removed seven
+#     labels from it, all five views of the day still passed. Full window
+#     width (0, 0, 2560, 41) under --demo-document, the same demo `toolbar`
+#     uses: the naturalPaint wordmark at the left, the "Untitled" document tab
+#     (dirty dot, close box, accent underline) and the disabled split icons in
+#     the middle, and at the right, Undo (enabled -- --demo-document leaves an
+#     undoable edit on the stack), Redo (disabled) and the fps readout.
+#
+#     The crop was (0, 0, 2560, 77) -- y=0..71 rounded up, per the comment
+#     this replaced -- until the title bar and tab strip merged into one row
+#     (docs/ui.md section 2's own account of the user's words asking for
+#     that collapse). The document tabs used to sit in a second, separate
+#     34px band directly under this one, invisible to a titlebar view that
+#     stopped at y=71; now they are drawn inside this same row, so this crop
+#     is where they actually are, not a second view away. Shrunk to h=41
+#     (36px row + 2px rule + the same +3 slack `toolbar`'s own y carries)
+#     rather than re-measured from scratch, because the row's own height did
+#     not change -- only the second band's disappearance did.
 #
 #     The fps text changes every real run -- `"%.1f fps"`, MacPaintUI.cpp,
 #     right-aligned -- so a byte-equality view over the full band could never
@@ -357,8 +369,107 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # the LAYERS list's scrollbar, which is gone because the panel now has room for
 # all five rows without scrolling. That is the property this revision exists to
 # produce, so it is a change to accept rather than a drift to chase.
+#
+# 5. **The title bar and tab strip merged into one row** (docs/ui.md section 2,
+#    the user's own words: "collapse them into one band"). Every band from the
+#    top dock down used to sit 36 logical / 72 device px lower than it does
+#    now, because the tab strip's 34px band and its 2px rule no longer exist as
+#    a *second* band -- the document tabs moved into the title row itself
+#    (`AtelierBands::tabStrip`, nested in `titleBar`). Re-derived the same way
+#    every earlier move in this block was: a fresh capture at a candidate y,
+#    diffed against the untouched old reference, at a range of offsets, and the
+#    sharp minimum (not an assumption) is what shipped. Every view below the
+#    title row moved by exactly this amount EXCEPT where noted:
+#
+#      toolbar    y 77   -> 5     (-72, exact top-anchored shift)
+#      canvas     y 1037 -> 965   (-72, EXACT byte match against the untouched
+#                                  reference -- confirms -72 is the real number,
+#                                  not a rounding artefact)
+#      tools      y 220  -> 148   (-72, the grip's own top edge, which is
+#                                  top-anchored like everything else)
+#      rail       y 230  -> 158   (-72, exact minimum; residual is the same
+#                                  small text/AA noise this view's threshold
+#                                  already exists to absorb)
+#      tabs       y 238  -> 166   (-72, EXACT byte match)
+#      flyout     y 700  -> 664   (-36, NOT -72 -- see below)
+#      transform  y 700  -> 628   (-72, exact minimum)
+#      layers     y 975  -> 927   (-48, NOT -72 -- see below)
+#      titlebar   unchanged (0, 0, 2560, 77) -- see below
+#      tabs_shut  unchanged (1900, 238, 660, 64 stays; y=1462) -- see below
+#
+#    **`toolbar`, `tools`, `canvas`, `rail`, `tabs`, `transform` are the clean
+#    cases**: every one of them is anchored to the TOP of a band whose y moved
+#    by exactly the reclaimed 72 device px and nothing else about its content
+#    changed, so re-aiming by that fixed amount is the whole story. `canvas`
+#    and `tabs` land at an EXACT byte match against their old references (0
+#    mismatched px), which is the strongest evidence -72 is the right number
+#    rather than a close-enough one. `toolbar` and `transform` do not match
+#    exactly at their own sharp minima, and that is expected, not a loose end:
+#    `toolbar`'s crop used to catch the bottom ~31px of the old tab strip band
+#    (text and an accent underline that no longer exist anywhere in this
+#    crop's region, now that the tabs moved up into the title row), and
+#    `transform`'s residual is a single 2px-tall horizontal line unrelated to
+#    this revision -- present at every y tried, not resolved by re-aiming, and
+#    not this band-collapse's doing.
+#
+#    **`flyout` and `tools` share a second, independent effect**: the left
+#    dock (the tool palette) is also 36 logical px taller now, because it is
+#    part of the row *below* the title band and inherits the reclaimed space
+#    the same way every other mid-row band does. `atelierToolCellSize()`
+#    (ui/AtelierLayout.cpp) computes the tool grid's cell size fresh from that
+#    height, and at this window's size the extra room pushes the cell from 31
+#    to 33 logical px (62 to 66 device) -- still short of `kToolCellMax` (36),
+#    so a real size change, not a clamp. `tools`' own crop shows this directly
+#    (bigger icons, so the same 402px-tall window frames slightly fewer of
+#    them) -- `--selftest`'s Part H (app/selftest/AtelierChrome.cpp) asserts
+#    the same 31->33 arithmetic headlessly. `flyout`'s popup is anchored to
+#    the Brush cell's own screen rect, several cells down the column, so its
+#    anchor point inherits both effects at once: -72 from the row it is
+#    nested under, plus the cumulative *growth* of every cell above Brush (9
+#    of them, 2 logical px taller each) pushing it back down -- net -36
+#    rather than -72. Re-derived by the same bisection as everything else, not
+#    computed from that arithmetic directly, because the exact cell-by-cell
+#    accounting was not worth re-deriving by hand when the screenshot already
+#    settles it.
+#
+#    **`titlebar` needed no coordinate change at all.** Its crop (0, 0, 2560,
+#    77) was always sized to the title row alone (kTitleBarH + its rule, in
+#    device px, plus the same few px of slack `toolbar`'s own y carries) --
+#    never the old two-band total, going by its own description ("the
+#    naturalPaint wordmark at the left... Undo... Redo... fps", no mention of
+#    tabs at all). The row's own height did not change in this revision, only
+#    what is drawn inside it -- the document tabs are now part of this exact
+#    same crop for the first time, which is the point of the view and the
+#    reason its reference needed regenerating even though its coordinates did
+#    not.
+#
+#    **`tabs_shut` needed no coordinate change either, and that is a real
+#    finding, not an oversight.** Bisected across the full frame height (not
+#    just near the old y), and the sharp, EXACT (0 mismatched px) minimum is
+#    the untouched original y=1462. `tabs`, captured from the same screenshot,
+#    moved by the usual -72; `tabs_shut` did not move at all, which says the
+#    collapsed HISTORY stack this view frames is positioned from the BOTTOM of
+#    the right dock rather than from the top the way the expanded COLOR stack
+#    (`tabs`) is -- consistent with ui/AtelierLayout.cpp's own bottom-up
+#    placement rule for the parts of this chrome that anchor to the window's
+#    lower edge. A dock's own height is unchanged by this revision (only where
+#    its top edge sits moved), so bottom-anchored content inside it has no
+#    reason to move and, measured, does not.
+#
+#    `layers`' y is the one number here that is neither a clean -72 nor
+#    explained by cell growth (LAYERS panel rows are fixed-height, not part of
+#    the tool grid). -48 is what a wide bisection actually found -- a sharp,
+#    near-exact minimum (479 of 121 600 px, mostly a handful of text-edge
+#    pixels plus one small block in the same bottom-right corner a scrollbar
+#    track already occupies in this capture). Not chased further: this view's
+#    own history (immediately above) already documents that this exact panel's
+#    row positions move for reasons beyond a pure header-height shift --
+#    scrollbar presence changed the reference once before -- and the same kind
+#    of secondary effect, not a mistake in this revision's own arithmetic, is
+#    the more likely explanation than a bug in a shift that six other views
+#    confirm cleanly.
 view_crop_x=(0    1916 920  0   0   0    900 1830 1900 1900)
-view_crop_y=(77   975  1037 220 700 0    700 230  238  1462)
+view_crop_y=(5    927  965  148 664 0    628 158  166  1462)
 view_crop_w=(1400 640  384  100 400 2560 700 100  660  660)
 view_crop_h=(166  190  192  402 350 77   500 500  64   64)
 view_frames=(90 90 90 90 90 90 90 90 90 90)

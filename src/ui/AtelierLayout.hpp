@@ -6,12 +6,29 @@
 // ui/AtelierLayout -- docs/ui.md section 2's window layout, as arithmetic.
 //
 // The ASCII diagram in that section is dimensioned, and those dimensions are
-// the whole content of this file: bands 36 / 34 / 46 / 26 px tall, a 104 px
+// the whole content of this file: bands 36 / 46 / 26 px tall, a 104 px
 // tool palette, a 322 px right-hand column, and 2 px rules between major
 // regions. What the outgoing chrome had instead were three constants invented
 // in place -- a 78 px palette (`kToolCol * kToolSize + 18`), a 300 px controls
 // column and a 62 px swatch strip along the bottom that the design does not
 // have at all.
+//
+// **The title bar and the tab strip were two stacked 36/34 px bands until the
+// user's own words collapsed them: "The tab bar and the space where the
+// menus used to live take up too much space, collapse them into one band."**
+// `ui/MacNativeMenu.mm` had already emptied the title band of the "File Edit
+// … Help" the diagram below still drew -- macOS's own menu bar took the
+// menus, leaving a 36 px strip holding only the wordmark, Undo/Redo, PANELS
+// and the fps readout, with an open gap in the middle exactly where a user
+// would notice. Below it, `kTabStripH` (34 px, now retired -- see
+// `AtelierBands::tabStrip`) reserved a second full-width band for the
+// document tabs. Two rows for what fits, and mostly empties, in one: the
+// merged row is still `kTitleBarH`, 36 px, because that is the taller of the
+// two and neither the wordmark's controls nor a tab's close box need more
+// room than they already had. `atelierLayout()` no longer adds `kTabStripH`
+// or its own rule when documents are open; opening a document costs the
+// canvas nothing now, where it used to cost 34 px plus a 2 px rule --
+// `app/selftest/AtelierChrome.cpp` Part C asserts exactly that.
 //
 // Deliberately free of ImGui itself: the geometry is the part worth testing,
 // and a test that needs a window, a device and a font atlas to check that
@@ -36,10 +53,29 @@ struct AtelierRect {
 // two under it (52, 322) are the column widths -- kToolPaletteW is defined
 // just below, next to the arithmetic that produces its 52.
 constexpr float kTitleBarH   = 36.0f;
-constexpr float kTabStripH   = 34.0f;
 constexpr float kOptionsBarH = 46.0f;
 constexpr float kStatusBarH  = 26.0f;
 constexpr float kRightColumnW = 322.0f;
+
+// The merged title row's two fixed-width end reservations -- see
+// `AtelierBands::tabStrip`'s comment for what sits between them. Both are
+// upper bounds on real, dynamically-measured ImGui content (the wordmark's
+// text width, and the PANELS/Undo/Redo/fps cluster's), not a second,
+// hand-copied account of it: `ui/MacPaintUI.cpp` still lays that content out
+// with `ImGui::CalcTextSize()` and `ImGui::SameLine()` exactly as it always
+// has, and these two constants only say how much of the row's 60-ish px of
+// slack either end is allowed to claim before it would collide with the
+// document tabs drawn between them.
+//
+// Measured off the unmodified title bar (--demo-document --screenshot, a
+// 1280-logical-px window): "naturalPaint" ends around x=70 and the
+// PANELS/Undo/Redo/"-- fps" cluster starts around x=1073 of 1280, i.e. it
+// claims about 207 px. Both constants below carry roughly 30 px of headroom
+// over those measurements -- enough for a wider fps reading than the
+// screenshot's frozen "-- fps" (`AppState::screenshotCliActive`) without
+// enough slack to swallow a meaningful width of tab.
+constexpr float kTitleWordmarkW  = 100.0f;
+constexpr float kTitleControlsW  = 230.0f;
 
 // **The user's own correction, stated plainly: "make the toolbar fit
 // without scrolling ... the buttons are too large."** A fixed 36px cell
@@ -139,11 +175,13 @@ static_assert(kToolPaletteW - 2.0f * kWindowPaddingX >= kToolCellMax,
 // `--selftest` can assert it fits at a table of window heights without a
 // window -- see app/selftest/AtelierChrome.cpp's Part G/H.
 //
-// **The honest limit.** Below roughly a 540px window (18 cells *
-// kToolCellMin + kToolSeparatorsH + kToolSwatchAreaH, worked back through
-// atelierLayout()'s band arithmetic -- lower than the 28-cell design's
-// ~670px, because nesting cut the cell count nearly in half), the grid
-// genuinely cannot fit even at the smallest legible cell size -- clamping
+// **The honest limit.** Below roughly a 540px window with no document open
+// (18 cells * kToolCellMin + kToolSeparatorsH + kToolSwatchAreaH, worked back
+// through atelierLayout()'s band arithmetic -- lower than the 28-cell
+// design's ~670px, because nesting cut the cell count nearly in half) -- or
+// roughly 504px with one open, now that the title bar/tab strip merge gives
+// every band below the title row 36 more px whenever `showTabStrip` is true
+// -- the grid genuinely cannot fit even at the smallest legible cell size -- clamping
 // stops the cells from shrinking past legibility, it does not stop the
 // window from being too short. ui/MacPaintUI.cpp does not clip the grid or
 // hide any tool in that case: the child keeps `ImGuiWindowFlags_NoScrollbar`
@@ -237,8 +275,29 @@ constexpr AtelierDockExtents kDefaultDockExtents{kToolPaletteW, kRightColumnW, k
 // `atelierLayout()` -- ImGui viewport work coordinates at the call site, but
 // this file does not know that and does not care.
 struct AtelierBands {
-  AtelierRect titleBar;    // wordmark, menus, undo/redo/panels
-  AtelierRect tabStrip;    // documents; empty until PLAN.md Phase 5 step 14
+  // The merged row: wordmark and PANELS/Undo/Redo/fps at the two ends,
+  // document tabs filling the space between them. One band where the outgoing
+  // chrome stacked two (see this file's header comment for the user's own
+  // words asking for exactly that collapse) -- `titleBar` is the field name
+  // that survives the merge because every caller that only cared about "the
+  // band at the top of the window" already spelled it that way.
+  AtelierRect titleBar;
+  // **Nested inside `titleBar`, not a second band below it.** Same `y` and
+  // `h` as `titleBar`; `x`/`w` are the space left over after
+  // `kTitleWordmarkW` on the left and `kTitleControlsW` on the right --
+  // `ui/AtelierChrome.cpp`'s `drawAtelierTabStrip()` draws the document tabs
+  // (and, at its own right edge, the "+" and the two split icons) into
+  // exactly this rect, and `app/OpenAnyFile`'s drag-and-drop classifier and
+  // `main.cpp`'s `--split-demo` both still read it as a plain rectangle --
+  // neither had to change for the merge, because a rect nested in a taller
+  // one is still just a rect.
+  //
+  // Empty when `showTabStrip` is false (no document open) -- the same
+  // contract this field carried when it was its own band below the title
+  // bar, and the reason a caller can still test "are there tabs to draw" with
+  // `.empty()` rather than asking `atelierLayout()`'s own `showTabStrip`
+  // argument a second time.
+  AtelierRect tabStrip;
   AtelierRect topDock;     // panels docked to the top edge (OPTIONS by default)
   AtelierRect leftDock;    // panels docked to the left edge (TOOLS by default)
   AtelierRect canvas;      // canvas + rulers + navigator
@@ -246,13 +305,16 @@ struct AtelierBands {
   AtelierRect bottomDock;  // panels docked to the bottom edge (empty by default)
   AtelierRect statusBar;   // zoom, working space, resident/budget, view state
 
-  // 2 px `#201e1d` between major regions (docs/ui.md section 1). Five
-  // horizontal (under the title bar, under the tab strip, under the top dock,
-  // over the bottom dock, over the status bar) and two vertical (either side
-  // of the canvas) at most; a rule adjacent to an empty band is itself empty,
-  // so suppressing any band suppresses exactly one rule and the bands still
-  // tile.
-  static constexpr size_t kMaxRules = 7;
+  // 2 px `#201e1d` between major regions (docs/ui.md section 1). Four
+  // horizontal (under the title bar, under the top dock, over the bottom
+  // dock, over the status bar) and two vertical (either side of the canvas)
+  // at most; a rule adjacent to an empty band is itself empty, so suppressing
+  // any band suppresses exactly one rule and the bands still tile.
+  //
+  // One fewer than before the title bar and tab strip merged: `tabStrip` used
+  // to be a band of its own with a rule under it, and a nested sub-rect has
+  // no edge of the tiling to put a rule on.
+  static constexpr size_t kMaxRules = 6;
   AtelierRect rules[kMaxRules];
   size_t ruleCount = 0;
 };
@@ -264,6 +326,14 @@ struct AtelierBands {
 // the band belongs to the layout now -- what is missing is the thing that
 // fills it, and a layout that cannot express the design's own diagram would
 // have to be rewritten rather than switched on.
+//
+// Since the title bar and tab strip merged into one row, `showTabStrip` no
+// longer changes any band's *height* -- the row is `kTitleBarH` either way.
+// What it still decides is whether `AtelierBands::tabStrip` is the nested,
+// document-tab sub-rect or an empty one, which is why the parameter survives
+// the merge unchanged rather than being dropped: every call site was already
+// answering "is there a document to name", and that question did not go
+// away just because the answer stopped moving the canvas.
 //
 // `docks` gives the four dock extents; a zero extent suppresses that dock and
 // its rule (see `AtelierDockExtents`). The top and bottom docks span the full

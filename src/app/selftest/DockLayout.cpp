@@ -354,7 +354,12 @@ bool runDockLayoutTest() {
           "atelier bands: the canvas is exactly the room the two side docks leave");
     check(q.canvas.y == q.topDock.bottom() + kRuleThickness,
           "atelier bands: and it starts exactly below the top dock's rule");
-    check(q.ruleCount == 7, "atelier bands: all four docks plus the tab strip is seven rules");
+    // Six now, not seven: the tab strip merged into the title row (see
+    // ui/AtelierLayout.hpp's header comment) and no longer owns a rule of its
+    // own, whether or not `showTabStrip` is true -- title, top dock, left,
+    // right, bottom, status.
+    check(q.ruleCount == 6, "atelier bands: all four docks is six rules now that the tab "
+                            "strip shares the title row instead of owning one");
 
     // Every dock off: nothing but the fixed chrome, and the canvas is
     // everything between the title bar and the status bar.

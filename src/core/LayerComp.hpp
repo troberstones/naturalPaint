@@ -71,7 +71,7 @@
 //             layers show but not how much would not restore the picture.
 //   blend     ditto, and it is per-layer appearance in exactly the same sense.
 //             Carried and restored **as the stored string**, so a value this
-//             build has never heard of (`linear-burn`, PRD I10's value-level
+//             build has never heard of (`dissolve`, PRD I10's value-level
 //             carry, core/Layer.hpp) survives a capture and a restore
 //             untouched -- but see restoreLayerComp(), which cannot *set* a
 //             mode `core::blendModeFromName()` does not know and says so with

@@ -4106,6 +4106,36 @@ bool runCanvasDimensionsTest();
 //    trackpad sample after the above changes -- the classifier this whole
 //    file exists for did not quietly stop being exercised by the new code.
 bool runWheelInputTest();
+
+// item 4 ("trackpad interactions feel unnatural"): app/TouchGesture.hpp's
+// pure geometry -- the two-touch pan+zoom+rotate delta the raw-touch
+// capture layer (`ui/MacTrackpadTouch.hpp`/`.mm`) feeds every frame, in
+// place of AppKit's own magnify/rotate gesture classifier (see that
+// header's own comment for the documented platform reason it alternates
+// between the two mid-gesture rather than reporting a combined motion).
+// Covers `computeTwoTouchDelta()`: identity for no motion; each of pure
+// zoom/rotate/pan in isolation (proving the three are not coupled); all
+// three at once (proving that isolation-only coverage was not hiding a
+// coupling bug); a hand-worked +90-degree rotation case pinning the exact
+// clockwise-positive sign this app's own `view.rotation` convention needs;
+// and a degenerate near-zero starting separation falling back to a no-op
+// scale rather than a division blow-up.
+bool runTouchGestureTest();
+
+// item 4 continued: app/TouchGestureSession's "hold a gesture's own fixed
+// baseline across frames" half -- the piece computeTwoTouchDelta() alone
+// cannot exercise, since that function is stateless and this class is what
+// remembers a gesture's start across many frames (see its own header
+// comment for the drift argument, mirroring app/TransformSession's
+// beginDrag()/updateDrag()). Covers: a rising edge leaves `view` untouched;
+// a no-motion second frame is a true no-op; a pure-zoom gesture anchored
+// off-centre, verified by round-trip through the real ViewTransform; a
+// falling edge then a fresh rising edge re-baselines from the NEW touch
+// pair rather than drifting from the old gesture's remembered start; and
+// `lastDelta()` exposing the touch pair's own raw pan independently of
+// what `update()` wrote into `view`.
+bool runTouchGestureSessionTest();
+
 // track10/feel: PaintCopilot §3.2 (arXiv:2605.20941)'s two pressure-feel
 // contributions -- brush/Dynamics.hpp's own header comment on
 // `EasingPreset::LogTaper`/`PowerIn` has the curve-vs-hard-code argument in

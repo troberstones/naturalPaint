@@ -170,6 +170,13 @@ struct ControlsSectionSpec {
   const char* title;
   // Whether the header starts open in a fresh session.
   bool defaultOpen;
+  // Prose for the header's "?" button (ui/MacPaintUI.cpp's `drawPanelGrip()`)
+  // -- context that matters occasionally and would clutter the panel body if
+  // it stayed on screen permanently, so it lives one click away instead.
+  // `nullptr` (the default -- every entry below but COLOR's still omits this
+  // field entirely) means the section has nothing that needs saying beyond
+  // its controls, and the grip draws no "?" at all rather than an empty one.
+  const char* helpText = nullptr;
 };
 
 // Every section, in the order the column draws them. The list is data rather

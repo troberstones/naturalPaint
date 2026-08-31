@@ -149,19 +149,34 @@
 // io/ImageDecode.cpp's own convention.
 //
 // **What is read from each layer.** The rectangle, the channel data (R, G,
-// B and the transparency-mask alpha channel, id -1 -- a user-supplied layer
-// mask, ids -2/-3, is walked past correctly to stay aligned with the file
-// but its pixels are not imported into `Layer::mask`; this landing produces
-// pixels and stacking, not masks), the blend mode key, the opacity byte,
-// the visibility bit, the clipping byte (mapped to `Layer::clipped`, PRD C9
-// -- PSD's "non-base" clipping is the identical relationship
-// core/Layer.hpp's own `clipped` member documents: a run of non-base layers
-// clips to the one base beneath the run, not to each other progressively),
-// and the name -- preferring the Unicode `luni` Additional Layer
-// Information block over the legacy Pascal-string name when both are
-// present, exactly as Photoshop itself has since version 5.0. Layer
-// effects (`lrFX`), adjustment-layer parameters, smart-object links, vector
-// masks, and the group/folder structure (`lsct`) are none of them
+// B and the transparency-mask alpha channel, id -1), the blend mode key,
+// the opacity byte, the visibility bit, the clipping byte (mapped to
+// `Layer::clipped`, PRD C9 -- PSD's "non-base" clipping is the identical
+// relationship core/Layer.hpp's own `clipped` member documents: a run of
+// non-base layers clips to the one base beneath the run, not to each other
+// progressively), and the name -- preferring the Unicode `luni` Additional
+// Layer Information block over the legacy Pascal-string name when both are
+// present, exactly as Photoshop itself has since version 5.0.
+//
+// **The raster layer mask (channel id -2) is read into `Layer::mask`**,
+// docs/psd-import-gaps.md section 1's own dispatch note. The mask's
+// rectangle is decoded at ITS OWN dimensions, not the layer's -- verified
+// against a real file, the two are almost always different sizes, mask
+// smaller than layer -- and the mask's own "default colour" byte (255 =
+// reveal, 0 = hide) governs every texel outside that rectangle but still
+// inside the layer's own extent. `flags` bit 1 (mask disabled) imports as
+// no mask at all, and bit 0 (mask rectangle stored relative to the layer's
+// own origin rather than in absolute document coordinates) is resolved
+// before any tile is written. A mask record larger than the plain 20-byte
+// shape (a second "real" mask, vector-mask-derived) is refused by name, not
+// guessed at -- none of the three sample files this module was checked
+// against ever carries one. The secondary "user-supplied" mask channel
+// (id -3, present only alongside a vector mask) is walked past to stay
+// aligned with the file but not imported, the one raster-mask gap this
+// landing still states rather than closes.
+//
+// Layer effects (`lrFX`), adjustment-layer parameters, smart-object links,
+// vector masks, and the group/folder structure (`lsct`) are none of them
 // interpreted: a group's own boundary marker layers import as ordinary
 // (typically near-empty) layers rather than as `LayerKind::Group` with real
 // membership, which is a stated scope limit rather than a silent gap --
@@ -173,14 +188,28 @@
 // `norm`->Normal, `mul `->Multiply, `scrn`->Screen, `dark`->Min (Photoshop's
 // Darken is an exact per-channel minimum, the same arithmetic `BlendMode::
 // Min` implements), `lite`->Max (Lighten is the per-channel maximum,
-// symmetrically) -- and is reported by name and imported as Normal,
-// **explicitly, with a warning naming the PSD key**, for every key with no
-// equivalent (`over`/Overlay, `sLit`/Soft Light, `hLit`/Hard Light, and the
-// rest of Photoshop's non-separable and second-generation modes). Never a
-// silent substitution: `PsdImportResult::warnings` names every layer whose
-// blend mode was not carried across, the same "say what was dropped rather
-// than approximate it" discipline io/AbrBrushes.hpp already holds itself to
-// for a different Photoshop artifact.
+// symmetrically), `lddg`->Plus (Linear Dodge/Add is `Cs + Cb`, the same
+// arithmetic `BlendMode::Plus` implements) -- and is reported by name and
+// imported as Normal, **explicitly, with a warning naming the PSD key**,
+// for every key with no equivalent (`over`/Overlay, `sLit`/Soft Light,
+// `hLit`/Hard Light, `colr`/Color, and the rest of Photoshop's
+// non-separable and second-generation modes). Never a silent substitution:
+// `PsdImportResult::warnings` names every layer whose blend mode was not
+// carried across, the same "say what was dropped rather than approximate
+// it" discipline io/AbrBrushes.hpp already holds itself to for a different
+// Photoshop artifact.
+//
+// **Only `dark` and `lite` are an EXACT match, and `lddg` must not be read
+// as a third.** Min and max are order-preserving, so they commute with any
+// monotone transfer function -- Photoshop's per-channel Darken/Lighten and
+// this codebase's `Min`/`Max` agree exactly regardless of which space the
+// comparison happens in. Addition does not commute with a transfer
+// function: Photoshop's Linear Dodge adds in gamma space by default
+// ("Blend RGB Colors Using Gamma 1.0" off) and `BlendMode::Plus` here adds
+// in linear light. That is the identical compromise `mul `/`scrn` already
+// carry (both are exact only in the space they are computed in, and this
+// codebase computes every blend in linear light) -- consistent with what
+// this table already does, but genuinely inexact, not a second exact row.
 //
 // --- What has since been verified against real Photoshop files --------------
 //
@@ -220,10 +249,24 @@
 //
 // **What is still unverified**, and is not covered by any of the three:
 // PSB (version 2), 16-bit and 32-bit depth, ZIP-compressed layer data,
-// non-RGB colour modes, astral-plane (surrogate-pair) `luni` names, layer
-// masks, and the odd-row-padding reading of the spec's ambiguous prose --
-// every one of which is either refused by name above or exercised only by
-// this project's own fixtures.
+// non-RGB colour modes, astral-plane (surrogate-pair) `luni` names, and the
+// odd-row-padding reading of the spec's ambiguous prose -- every one of
+// which is either refused by name above or exercised only by this
+// project's own fixtures.
+//
+// **Layer masks (channel id -2) are a narrower case of "unverified" than
+// that list.** docs/psd-import-gaps.md's own wire layout -- the 20-byte
+// mask record's field order and byte offsets -- WAS checked against
+// `Peter_confronts_a_small_monster_with_fire.psd` byte for byte (that
+// document's own "Wire layout" section states the evidence). What has NOT
+// been checked against any of the three files is THIS module's *decode* of
+// it -- no psd-tools comparison of this module's mask output against that
+// file's actual mask pixels has been run, because the three files are the
+// user's own artwork and this module was extended to read masks in a
+// session with no access to them. Exercised only by this project's own
+// hand-written fixtures (app/selftest/PsdImport.cpp section F) until a
+// `--psd-report` run against a real masked file closes that gap the same
+// way it already closed the stacking-order and flags-inversion ones above.
 namespace np {
 
 // One PSD import's outcome.

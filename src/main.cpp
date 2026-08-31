@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "app/AbrReport.hpp"
+#include "app/ProfileToggle.hpp"
 #include "app/PsdReport.hpp"
 #include "app/BrushSheet.hpp"
 #include "app/StrokePreview.hpp"
@@ -55,6 +56,7 @@
 #include "ui/CanvasQuad.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/MacNativeMenu.hpp"
+#include "ui/MacTrackpadTouch.hpp"
 #include "ui/MacPaintUI.hpp"
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierLayout.hpp"
@@ -1082,6 +1084,11 @@ int main(int argc, char** argv) {
   // every hidden layer shown, a blend key quietly downgraded -- and none of
   // them is visible from a canvas.
   const char* psdReportPath = nullptr;
+  // --profile-toggle <file.psd> <layer-index> <iterations> : headless
+  // benchmarking scaffold, see app/ProfileToggle.hpp. Temporary.
+  const char* profileTogglePath = nullptr;
+  int profileToggleLayer = -1;
+  int profileToggleIterations = 50;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1112,6 +1119,10 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) abrReportPath = argv[++i];
     } else if (a == "--psd-report") {
       if (i + 1 < argc) psdReportPath = argv[++i];
+    } else if (a == "--profile-toggle") {
+      if (i + 1 < argc) profileTogglePath = argv[++i];
+      if (i + 1 < argc) profileToggleLayer = std::atoi(argv[++i]);
+      if (i + 1 < argc && argv[i + 1][0] != '-') profileToggleIterations = std::atoi(argv[++i]);
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
       if (i + 1 < argc) brushSheetOut = argv[++i];
@@ -1281,6 +1292,8 @@ int main(int argc, char** argv) {
   // the GPU path does.
   if (abrReportPath != nullptr) return np::runAbrReport(abrReportPath);
   if (psdReportPath != nullptr) return np::runPsdReport(psdReportPath);
+  if (profileTogglePath != nullptr)
+    return np::runProfileToggle(profileTogglePath, profileToggleLayer, profileToggleIterations);
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
   if (strokePreviewOut != nullptr)
@@ -1328,6 +1341,18 @@ int main(int argc, char** argv) {
   // but keeps the whole of the platform's window setup in one place and means
   // a failed window is never behind a menu bar advertising commands for it.
   np::installNativeMenuBar();
+
+  // ---- raw two-finger trackpad touch capture (ui/MacTrackpadTouch) --------
+  //
+  // item 4: bypasses AppKit's own magnify/rotate gesture classifier for the
+  // canvas's two-finger zoom/rotate/pan. Same placement reasoning as
+  // `setFileDialogParentWindow()` above: needs the real `SDL_Window*`,
+  // which only exists once `SDL_CreateWindow()` has returned. A no-op off
+  // Apple; a failure here (see ui/MacTrackpadTouch.mm's own stderr
+  // message) degrades gracefully to the existing AppKit-classified
+  // pinch/rotate path in ui/MacPaintUI.cpp, so nothing worse than "the old
+  // behaviour" can result.
+  np::installTrackpadTouchCapture(window);
 
   np::GpuContext gpu;
   if (!gpu.init(window)) return 1;
@@ -2226,6 +2251,15 @@ int main(int argc, char** argv) {
     // the pinch-to-zoom path's arithmetic -- app/WheelInput.hpp. Headless;
     // the SDL/ImGui dispatch sites this feeds are unreachable from here (F4).
     const bool wheelInputOk = np::runWheelInputTest();
+    // item 4 ("trackpad interactions feel unnatural"): app/TouchGesture.hpp's
+    // pure two-touch pan+zoom+rotate geometry, the half of the raw-touch
+    // capture --selftest can reach (the NSTouch/AppKit dispatch itself is
+    // unreachable from here, F4, the same as every other native trackpad path).
+    const bool touchGestureOk = np::runTouchGestureTest();
+    // item 4 continued: app/TouchGestureSession's gesture-start-baseline
+    // half, the part computeTwoTouchDelta() alone (just tested above)
+    // cannot exercise since it is stateless.
+    const bool touchGestureSessionOk = np::runTouchGestureSessionTest();
     // track10/feel (PaintCopilot §3.2, arXiv:2605.20941): the log/power
     // pressure-response curves and the pressure EMA's per-stroke reset.
     const bool pressureFeelOk = np::runPressureFeelTest();
@@ -2305,7 +2339,8 @@ int main(int argc, char** argv) {
                     openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk &&
                     selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk &&
-                    canvasDimensionsOk && angleConventionOk && wheelInputOk && pressureFeelOk &&
+                    canvasDimensionsOk && angleConventionOk && wheelInputOk && touchGestureOk &&
+                    touchGestureSessionOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk;
     s->shutdown();

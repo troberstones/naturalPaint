@@ -236,7 +236,7 @@ bool runMergeFamilyTest() {
     check(f.ok && compare(fadedBefore, fadedAfter).over == 0,
           "and a layer at opacity 0 does merge, exactly as that sentence promises");
 
-    for (const char* mode : {"multiply", "screen", "linear-burn"}) {
+    for (const char* mode : {"multiply", "screen", "dissolve"}) {
       Document blended = threeLayerDoc();
       blended.layers[2].blend = mode;
       const LayerOpResult b = mergeLayerDown(blended, 2);

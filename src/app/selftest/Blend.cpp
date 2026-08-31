@@ -54,8 +54,10 @@ bool runBlendTest() {
 
   // --- The vocabulary: one table, one parse, one spelling ----------------
   {
-    check(allBlendModes().size() == 7,
-          "table: seven modes -- the linear-safe six plus `Mix` (PLAN.md Phase 5 step 2)");
+    check(allBlendModes().size() == 27,
+          "table: twenty-seven modes -- the linear-safe six, `Mix`, Stage 1's/Stage 2's seven "
+          "new display-referred modes each, and Stage 3's six non-separable modes "
+          "(docs/blend-mode-gaps.md)");
 
     bool indexedByEnumerator = true, namesUnique = true, labelsUnique = true,
          roundTrips = true;
@@ -75,13 +77,18 @@ bool runBlendTest() {
     check(namesUnique && labelsUnique,
           "table: every np:blend name and every UI label is distinct");
     check(roundTrips,
-          "table: name -> mode -> name round-trips for all seven, so nothing on disk means "
+          "table: name -> mode -> name round-trips for all fourteen, so nothing on disk means "
           "two things");
 
     check(blendModeFromName(kDefaultBlendName) == BlendMode::Normal,
           "table: core/Layer.hpp's kDefaultBlendName (\"normal\") IS `over` -- the default a "
           "Layer is constructed with must resolve, or every untouched document warns");
-    check(!blendModeFromName("linear-burn").has_value() && !blendModeFromName("").has_value(),
+    // "linear-burn" used to be this file's stock example of a name outside the
+    // set; Stage 1 (docs/blend-mode-gaps.md) made it a real mode, so "dissolve"
+    // (still unimplemented -- one of Photoshop's non-separable modes, out of
+    // scope for every stage of this effort) takes over as the unrecognised
+    // fixture here and at every other use below.
+    check(!blendModeFromName("dissolve").has_value() && !blendModeFromName("").has_value(),
           "table: an unrecognised name and an empty one both fail to parse rather than "
           "resolving to a default");
     check(!blendModeFromName("Multiply").has_value() && !blendModeFromName("MULTIPLY").has_value(),
@@ -113,7 +120,7 @@ bool runBlendTest() {
               blendIsImplemented("min") && blendIsImplemented("max") &&
               blendIsImplemented("plus"),
           "table: the five modes step 1 could not composite are implemented now");
-    check(blendIsImplemented("mix") && !blendIsImplemented("linear-burn") &&
+    check(blendIsImplemented("mix") && !blendIsImplemented("dissolve") &&
               !blendIsImplemented(""),
           "table: `mix` is implemented too now, at the layer level -- and an unrecognised "
           "name and an empty one still are not");
@@ -137,9 +144,12 @@ bool runBlendTest() {
           "B7: every mode's menu entry carries the display-referred marker exactly when its "
           "BlendModeInfo::space says so -- the label is derived from the data on every call, "
           "so there is no path from a mode to menu text that skips it");
-    check(displayReferred == 1 &&
+    check(displayReferred == 21 &&
               blendModeInfo(BlendMode::Screen).space == BlendSpace::DisplayReferred,
-          "B7: exactly one mode in the set is display-referred, and it is `screen`");
+          "B7: twenty-one modes in the set are display-referred -- `screen` plus Stage 1's, "
+          "Stage 2's and Stage 3's seven/seven/six new modes (docs/blend-mode-gaps.md), each "
+          "of which treats 1.0 as a reference white or black (or, for Stage 3, bakes in "
+          "[0,1] semantics via Lum()/Sat()/ClipColor())");
 
     // ...and here is why, numerically, rather than by assertion. The criterion
     // core/Blend.hpp states is monotonicity over the whole non-negative range
@@ -232,6 +242,51 @@ bool runBlendTest() {
           "opaque: min takes the darker channel of each pair");
     check(eq4(blendPixel(BlendMode::Max, s, d), 0.5f, 1.0f, 0.75f, 1.0f),
           "opaque: max takes the lighter channel of each pair");
+  }
+
+  // --- Stage 2, opaque: Hard Light, Overlay, Linear Light, hand-computed -
+  //
+  // Both fully opaque again, so as = ab = 1, sOnly = bOnly = 0, and
+  // out = B(Cb,Cs) directly -- the un-premultiply in blendPixel() divides by
+  // exactly 1.0, so this is as exact as the OPAQUE section above.
+  //
+  //   src straight = premultiplied = Cs = (0.25, 0.5,  0.75), a = 1
+  //   dst straight = premultiplied = Cb = (0.75, 0.25, 0.5 ), a = 1
+  //
+  // Deliberately Cb != Cs in every channel, so Overlay's argument swap
+  // (Overlay(Cb,Cs) = HardLight(Cs,Cb), condition on Cb not Cs) cannot pass
+  // by accidental symmetry -- a reverted swap would test Cs instead and
+  // give Hard Light's own answer, which channel r below catches.
+  //
+  //   HardLight(Cb,Cs) = Cs<=0.5 ? Cb*2Cs : Cb+(2Cs-1)-Cb*(2Cs-1)
+  //     r: Cb=0.75, Cs=0.25 <=0.5 -> 0.75*0.5              = 0.375
+  //     g: Cb=0.25, Cs=0.5  <=0.5 -> 0.25*1.0              = 0.25
+  //     b: Cb=0.5,  Cs=0.75 >0.5  -> 0.5+0.5-0.5*0.5       = 0.75
+  //   HardLight(s,d) = (0.375, 0.25, 0.75)
+  //
+  //   Overlay(Cb,Cs) = HardLight(Cs,Cb), i.e. Cb<=0.5 ? Cs*2Cb : Cs+(2Cb-1)-Cs*(2Cb-1)
+  //     r: Cb=0.75 >0.5  -> Cs+(2Cb-1)-Cs*(2Cb-1) = 0.25+0.5-0.25*0.5 = 0.625
+  //     g: Cb=0.25 <=0.5 -> Cs*2Cb = 0.5*0.5                          = 0.25
+  //     b: Cb=0.5  <=0.5 -> Cs*2Cb = 0.75*1.0                         = 0.75
+  //   Overlay(s,d) = (0.625, 0.25, 0.75) -- channel r differs from Hard
+  //   Light's 0.375 precisely because the swap matters there and not in g/b.
+  //
+  //   LinearLight(Cb,Cs) = Cb + 2Cs - 1
+  //     r: 0.75 + 0.5 - 1 = 0.25
+  //     g: 0.25 + 1.0 - 1 = 0.25
+  //     b: 0.5  + 1.5 - 1 = 1.0
+  //   LinearLight(s,d) = (0.25, 0.25, 1.0)
+  {
+    const std::array<float, 4> s{0.25f, 0.5f, 0.75f, 1.0f};
+    const std::array<float, 4> d{0.75f, 0.25f, 0.5f, 1.0f};
+    check(eq4(blendPixel(BlendMode::HardLight, s, d), 0.375f, 0.25f, 0.75f, 1.0f),
+          "stage2 opaque: hard light gives (0.375, 0.25, 0.75) exactly");
+    check(eq4(blendPixel(BlendMode::Overlay, s, d), 0.625f, 0.25f, 0.75f, 1.0f),
+          "stage2 opaque: overlay gives (0.625, 0.25, 0.75) exactly -- channel r differs from "
+          "hard light's 0.375, which is exactly what breaks if the Cb<->Cs swap gets reverted");
+    check(eq4(blendPixel(BlendMode::LinearLight, s, d), 0.25f, 0.25f, 1.0f, 1.0f),
+          "stage2 opaque: linear light gives (0.25, 0.25, 1.0) exactly, via the single closed "
+          "form Cb + 2Cs - 1");
   }
 
   // --- Every mode against a hand-computed reference: PARTIAL ALPHA -------
@@ -350,6 +405,217 @@ bool runBlendTest() {
           "transparent: and a fully transparent backdrop passes the source through bit-"
           "exactly for every mode -- which is why a single-layer document composites the "
           "same whatever its blend");
+  }
+
+  // --- Stage 1: the same two invariants, for the 7 new separable modes ---
+  //
+  // docs/blend-mode-gaps.md, Stage 1 of 3: Difference, Exclusion, Subtract,
+  // Linear Burn, Color Dodge, Color Burn, Divide. Unlike the modes above,
+  // these are not division-free in premultiplied form -- each un-premultiplies
+  // to straight colour, applies Photoshop's own [0,1] formula, and
+  // re-premultiplies, guarded so `src/as` can never divide by zero. `kImplemented`
+  // above is deliberately NOT widened to include them: that array's loop
+  // asserts monotonicity (B7's LinearLight criterion), and none of these seven
+  // are monotone over the whole non-negative range -- they are
+  // BlendSpace::DisplayReferred precisely because they are not. So the same
+  // two checks are re-run here against a separate, local array instead.
+  {
+    const BlendMode kStage1[] = {BlendMode::Difference, BlendMode::Exclusion, BlendMode::Subtract,
+                                  BlendMode::LinearBurn, BlendMode::ColorDodge, BlendMode::ColorBurn,
+                                  BlendMode::Divide};
+    bool alphaIsOver = true;
+    const float alphas[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+    for (float as : alphas) {
+      for (float ab : alphas) {
+        const std::array<float, 4> s{0.25f * as, 0.5f * as, 0.75f * as, as};
+        const std::array<float, 4> d{0.75f * ab, 0.25f * ab, 0.5f * ab, ab};
+        const float expect = compositeOver(s, d)[3];
+        for (BlendMode m : kStage1)
+          if (blendPixel(m, s, d)[3] != expect) alphaIsOver = false;
+      }
+    }
+    check(alphaIsOver, "stage1: alpha is over for all 7 new modes too");
+
+    const std::array<float, 4> clear{0.0f, 0.0f, 0.0f, 0.0f};
+    const std::array<float, 4> backdrops[] = {
+        {0.75f, 0.25f, 0.5f, 1.0f}, {0.375f, 0.125f, 0.25f, 0.5f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.5f, 0.0f, 2.25f, 1.0f}};
+    bool identity = true, passthrough = true;
+    for (const auto& b : backdrops) {
+      for (BlendMode m : kStage1) {
+        if (blendPixel(m, clear, b) != b) identity = false;
+        if (blendPixel(m, b, clear) != b) passthrough = false;
+      }
+    }
+    check(identity, "stage1: transparent source is a bit-exact identity for all 7 new modes");
+    check(passthrough, "stage1: transparent backdrop passes the source through for all 7 new modes");
+  }
+
+  // --- Stage 1: hand-computed references, opaque alpha -------------------
+  //
+  // Both fully opaque, so premultiplied == straight and each formula's B(Cb,Cs)
+  // is the whole answer directly (sOnly = bOnly = 0, as*ab = 1).
+  //
+  //   src straight (Cs) = (0.5, 0.75, 0.25), a = 1
+  //   dst straight (Cb) = (0.25, 0.125, 0.0), a = 1
+  //
+  //   difference  |Cb - Cs|                       = (0.25, 0.625, 0.25)
+  //   subtract    Cb - Cs                         = (-0.25, -0.625, -0.25)
+  //   color dodge R: Cb=0.25 != 0, Cs=0.5 < 1: min(1, 0.25/(1-0.5))  = min(1, 0.5)      = 0.5
+  //               G: Cb=0.125 != 0, Cs=0.75 < 1: min(1, 0.125/(1-0.75)) = min(1, 0.5)   = 0.5
+  //               B: Cb=0.0 -> the Cb==0 branch fires regardless of Cs             = 0.0
+  //               so color dodge                                    = (0.5, 0.5, 0.0)
+  {
+    const std::array<float, 4> s{0.5f, 0.75f, 0.25f, 1.0f};
+    const std::array<float, 4> d{0.25f, 0.125f, 0.0f, 1.0f};
+    check(eq4(blendPixel(BlendMode::Difference, s, d), 0.25f, 0.625f, 0.25f, 1.0f),
+          "stage1 opaque: difference gives (0.25, 0.625, 0.25) exactly, |Cb - Cs| per channel");
+    check(eq4(blendPixel(BlendMode::Subtract, s, d), -0.25f, -0.625f, -0.25f, 1.0f),
+          "stage1 opaque: subtract gives (-0.25, -0.625, -0.25) exactly, Cb - Cs -- unclamped, "
+          "matching this file's own stated policy that nothing here clamps the output");
+    check(eq4(blendPixel(BlendMode::ColorDodge, s, d), 0.5f, 0.5f, 0.0f, 1.0f),
+          "stage1 opaque: color dodge gives (0.5, 0.5, 0.0) exactly -- the blue channel "
+          "exercises the Cb==0 special case, which must fire before any division is attempted");
+  }
+
+  // --- Stage 2: the same two invariants, for the 7 new "light family" modes --
+  {
+    const BlendMode kStage2[] = {BlendMode::HardLight, BlendMode::Overlay, BlendMode::VividLight,
+                                  BlendMode::LinearLight, BlendMode::PinLight, BlendMode::SoftLight,
+                                  BlendMode::HardMix};
+    bool alphaIsOver = true;
+    const float alphas[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+    for (float as : alphas) {
+      for (float ab : alphas) {
+        const std::array<float, 4> s{0.25f * as, 0.5f * as, 0.75f * as, as};
+        const std::array<float, 4> d{0.75f * ab, 0.25f * ab, 0.5f * ab, ab};
+        const float expect = compositeOver(s, d)[3];
+        for (BlendMode m : kStage2)
+          if (blendPixel(m, s, d)[3] != expect) alphaIsOver = false;
+      }
+    }
+    check(alphaIsOver, "stage2: alpha is over for all 7 new modes too");
+
+    const std::array<float, 4> clear{0.0f, 0.0f, 0.0f, 0.0f};
+    const std::array<float, 4> backdrops[] = {
+        {0.75f, 0.25f, 0.5f, 1.0f}, {0.375f, 0.125f, 0.25f, 0.5f}, {0.0f, 0.0f, 0.0f, 0.0f}, {1.5f, 0.0f, 2.25f, 1.0f}};
+    bool identity = true, passthrough = true;
+    for (const auto& b : backdrops) {
+      for (BlendMode m : kStage2) {
+        if (blendPixel(m, clear, b) != b) identity = false;
+        if (blendPixel(m, b, clear) != b) passthrough = false;
+      }
+    }
+    check(identity, "stage2: transparent source is a bit-exact identity for all 7 new modes");
+    check(passthrough, "stage2: transparent backdrop passes the source through for all 7 new modes");
+  }
+
+  // --- Stage 3: the same two invariants, for the 6 new non-separable modes -
+  //
+  // Hue/Saturation/Color/Luminosity/DarkerColor/LighterColor un-premultiply
+  // (divide by alpha) before doing anything else, which is exactly the
+  // operation that turns a well-formed as==0 texel into NaN if it is not
+  // guarded: 0.0f/0.0f is NaN, and 0.0f * NaN is NaN, not 0.0f, so the
+  // guard is load-bearing rather than defensive decoration. This section is
+  // the six modes' own version of the two checks above.
+  {
+    const BlendMode kStage3[] = {BlendMode::Hue,        BlendMode::Saturation,
+                                 BlendMode::Color,      BlendMode::Luminosity,
+                                 BlendMode::DarkerColor, BlendMode::LighterColor};
+
+    bool alphaIsOver = true;
+    const float alphas[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+    for (float as : alphas) {
+      for (float ab : alphas) {
+        const std::array<float, 4> s{0.25f * as, 0.5f * as, 0.75f * as, as};
+        const std::array<float, 4> d{0.75f * ab, 0.25f * ab, 0.5f * ab, ab};
+        const float expect = compositeOver(s, d)[3];
+        for (BlendMode m : kStage3)
+          if (blendPixel(m, s, d)[3] != expect) alphaIsOver = false;
+      }
+    }
+    check(alphaIsOver, "stage3: alpha is over for all 6 new non-separable modes too");
+
+    const std::array<float, 4> clear{0.0f, 0.0f, 0.0f, 0.0f};
+    const std::array<float, 4> backdrops[] = {
+        {0.75f, 0.25f, 0.5f, 1.0f},
+        {0.375f, 0.125f, 0.25f, 0.5f},
+        {0.0f, 0.0f, 0.0f, 0.0f},
+        {1.5f, 0.0f, 2.25f, 1.0f},
+    };
+    bool identity = true, passthrough = true;
+    for (const auto& b : backdrops) {
+      for (BlendMode m : kStage3) {
+        if (blendPixel(m, clear, b) != b) identity = false;
+        if (blendPixel(m, b, clear) != b) passthrough = false;
+      }
+    }
+    check(identity, "stage3: transparent source is a bit-exact identity for all 6 new modes -- "
+                    "this is THE assertion that catches a missing or wrong alpha==0 early-return "
+                    "guard around the un-premultiply division");
+    check(passthrough, "stage3: transparent backdrop passes the source through for all 6 new modes");
+
+    // --- Hand-computed references: Color and Luminosity, opaque ------------
+    //
+    // as = ab = 1, so Cs = src and Cb = dst directly -- no division, the
+    // simplest case to hand-verify. Photoshop's own luma weights (0.3, 0.59,
+    // 0.11) are NOT dyadic, unlike the rest of this file's fixtures, so the
+    // per-channel results below use `near()` rather than `==`: hand-computed
+    // decimal arithmetic and the actual float32 sequence of multiplies/adds
+    // are not guaranteed to land on the identical bit pattern even though
+    // both compute "the same" value. `kHslTol` is generous relative to the
+    // few float ops involved (two lumHSL() evaluations -- 3 multiplies + 2
+    // adds each -- one subtraction, three additions: at most ~15 rounding
+    // steps on operands of magnitude <= 1, i.e. <= 15 * 2^-24 =~ 9.0e-7);
+    // alpha needs no tolerance since it is exactly 1.0f by construction
+    // (as = ab = 1 makes ao = as + ab*(1-as) = 1 + 0 exactly).
+    //
+    //   Cs (source straight) = (0.6, 0.2, 0.2)
+    //   Cb (backdrop straight) = (0.2, 0.2, 0.8)
+    //   lumHSL(Cb) = 0.3*0.2 + 0.59*0.2 + 0.11*0.8 = 0.06 + 0.118 + 0.088 = 0.266
+    //   lumHSL(Cs) = 0.3*0.6 + 0.59*0.2 + 0.11*0.2 = 0.18 + 0.118 + 0.022 = 0.32
+    //
+    //   Color(Cb,Cs) = setLumHSL(Cs, lumHSL(Cb)):
+    //     d = 0.266 - 0.32 = -0.054
+    //     result = (0.6-0.054, 0.2-0.054, 0.2-0.054) = (0.546, 0.146, 0.146)
+    //     (n = 0.146 >= 0 and x = 0.546 <= 1, so ClipColor's branches do not
+    //     trigger -- chosen deliberately so this stays simple arithmetic)
+    //
+    //   Luminosity(Cb,Cs) = setLumHSL(Cb, lumHSL(Cs)):
+    //     d = 0.32 - 0.266 = 0.054
+    //     result = (0.2+0.054, 0.2+0.054, 0.8+0.054) = (0.254, 0.254, 0.854)
+    //     (n = 0.254 >= 0 and x = 0.854 <= 1, no clip here either)
+    constexpr float kHslTol = 2.0e-6f;
+    const std::array<float, 4> hslSrc{0.6f, 0.2f, 0.2f, 1.0f};
+    const std::array<float, 4> hslDst{0.2f, 0.2f, 0.8f, 1.0f};
+    const std::array<float, 4> colorResult = blendPixel(BlendMode::Color, hslSrc, hslDst);
+    check(near(colorResult[0], 0.546f, kHslTol) && near(colorResult[1], 0.146f, kHslTol) &&
+              near(colorResult[2], 0.146f, kHslTol) && colorResult[3] == 1.0f,
+          "stage3: color gives (0.546, 0.146, 0.146) at alpha 1 -- source hue/saturation, "
+          "backdrop luminance, hand-verified above");
+    const std::array<float, 4> lumResult = blendPixel(BlendMode::Luminosity, hslSrc, hslDst);
+    check(near(lumResult[0], 0.254f, kHslTol) && near(lumResult[1], 0.254f, kHslTol) &&
+              near(lumResult[2], 0.854f, kHslTol) && lumResult[3] == 1.0f,
+          "stage3: luminosity gives (0.254, 0.254, 0.854) at alpha 1 -- the mirror of color, "
+          "hand-verified above");
+
+    // --- Darker/Lighter Color: a whole-triple select, no arithmetic --------
+    //
+    // Unlike Color/Luminosity, these two never add or rescale -- they return
+    // one of the two input triples completely unchanged. At alpha 1 the
+    // premultiplied and straight forms coincide, so the result is bit-exact
+    // equal to one of the two source arrays and `eq4` is exact, not `near`.
+    //
+    //   lumHSL(bright) = 0.9 * (0.3+0.59+0.11) = 0.9 * 1.0 = 0.9
+    //   lumHSL(dark)   = 0.1 * 1.0 = 0.1
+    //   DarkerColor:  lum(dark) <= lum(bright)  -> true  -> returns dark
+    //   LighterColor: lum(dark) >= lum(bright)  -> false -> returns bright
+    const std::array<float, 4> bright{0.9f, 0.9f, 0.9f, 1.0f};
+    const std::array<float, 4> dark{0.1f, 0.1f, 0.1f, 1.0f};
+    check(eq4(blendPixel(BlendMode::DarkerColor, bright, dark), 0.1f, 0.1f, 0.1f, 1.0f),
+          "stage3: darker-color of a bright source over a dark backdrop returns the dark "
+          "triple verbatim -- a whole-triple select, not a per-channel min");
+    check(eq4(blendPixel(BlendMode::LighterColor, bright, dark), 0.9f, 0.9f, 0.9f, 1.0f),
+          "stage3: lighter-color of the same pair returns the bright triple verbatim");
   }
 
   // --- `over` did not move by one ulp ------------------------------------
@@ -546,10 +812,14 @@ bool runBlendTest() {
       return doc;
     };
 
-    Document unknown = oneLayerDoc("linear-burn");
+    // "dissolve" here, not "linear-burn" -- see the comment where this file's
+    // vocabulary section first makes the swap: Stage 1 made "linear-burn" a
+    // real, implemented name, so it can no longer stand in for one this build
+    // has never heard of.
+    Document unknown = oneLayerDoc("dissolve");
     std::vector<std::string> unknownWarnings;
     const DecodedImage unknownFlat = flattenDocumentToLinear(unknown, &unknownWarnings);
-    check(unknownWarnings.size() == 1 && contains(unknownWarnings[0], "linear-burn") &&
+    check(unknownWarnings.size() == 1 && contains(unknownWarnings[0], "dissolve") &&
               contains(unknownWarnings[0], "Line pass") &&
               contains(unknownWarnings[0], "newer build"),
           "unknown: an unrecognised blend still produces exactly one warning, naming the "
@@ -557,7 +827,7 @@ bool runBlendTest() {
     check(contains(unknownWarnings[0], "multiply") && contains(unknownWarnings[0], "screen"),
           "unknown: and the sentence lists the modes that ARE implemented, generated from "
           "core/Blend's table rather than typed into the message");
-    check(unknown.layers[1].blend == "linear-burn",
+    check(unknown.layers[1].blend == "dissolve",
           "unknown: the value itself is untouched, so PRD I10 still carries it to disk "
           "verbatim -- which is the whole reason Layer::blend stayed a std::string");
 
@@ -609,17 +879,20 @@ bool runBlendTest() {
 
     Document rgbOnly = Document::createBlank(4, 4, WorkingSpace{});
     rgbOnly.layers.push_back(layerOfKind(LayerKind::RGB));
-    check(blendMenuForLayer(rgbOnly, 1).size() == 6 &&
+    check(blendMenuForLayer(rgbOnly, 1).size() == 26 &&
               !menuHas(blendMenuForLayer(rgbOnly, 1), BlendMode::Mix),
-          "L5: an RGB layer over an RGB layer is offered the six linear modes and NOT `Mix`");
+          "L5: an RGB layer over an RGB layer is offered every non-`Mix` mode (twenty-six: the "
+          "six linear ones plus Stage 1's, Stage 2's and Stage 3's seven/seven/six new modes) "
+          "and NOT `Mix`");
 
     Document pigments = Document::createBlank(4, 4, WorkingSpace{});
     pigments.layers.clear();
     pigments.layers.push_back(layerOfKind(LayerKind::Pigment));
     pigments.layers.push_back(layerOfKind(LayerKind::Pigment));
     check(menuHas(blendMenuForLayer(pigments, 1), BlendMode::Mix) &&
-              blendMenuForLayer(pigments, 1).size() == 7,
-          "L5: a Pigment layer sitting on another Pigment layer IS offered `Mix`");
+              blendMenuForLayer(pigments, 1).size() == 27,
+          "L5: a Pigment layer sitting on another Pigment layer IS offered `Mix` -- twenty-seven "
+          "entries total, every mode");
     check(!menuHas(blendMenuForLayer(pigments, 0), BlendMode::Mix),
           "L5: but the BOTTOM Pigment layer is not -- there is nothing beneath it to mix "
           "with, and `layers` is bottom-to-top so `beneath` is index - 1");

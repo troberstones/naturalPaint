@@ -327,17 +327,17 @@ bool runLayerCompTest() {
 
     // A blend name from a newer build (PRD I10's value-level carry).
     Document newer = makeThreeLayerDoc();
-    newer.layers[1].blend = "linear-burn";
+    newer.layers[1].blend = "dissolve";
     captureLayerComp(newer, "from a newer build");
     newer.layers[1].blend = "normal";
     LayerCompRestoreReport blendReport;
     restoreLayerComp(newer, 0, &blendReport);
     check(blendReport.unsettableBlends.size() == 1 &&
-              contains(blendReport.unsettableBlends[0], "linear-burn"),
+              contains(blendReport.unsettableBlends[0], "dissolve"),
           "blend: a mode this build has no implementation for is NAMED, never substituted");
     check(newer.layers[1].blend == "normal",
           "blend: and the layer keeps what it had rather than being quietly set to Normal");
-    check(newer.comps[0].layers[1].blend == "linear-burn",
+    check(newer.comps[0].layers[1].blend == "dissolve",
           "blend: the comp still carries the value verbatim, so a build that knows it can "
           "restore it (PRD I10 at the value level)");
   }

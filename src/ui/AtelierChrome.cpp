@@ -352,10 +352,30 @@ AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session,
 bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
                          AtelierSplitState& split, std::string* statusOut) {
   if (bands.tabStrip.empty()) return false;
-  beginBand("##atelierTabs", bands.tabStrip, kChromeMid);
+  // **Content only -- no window of its own**, unlike every earlier revision
+  // of this function. See this function's declaration comment
+  // (ui/AtelierChrome.hpp) for why: `bands.tabStrip` now overlaps
+  // `BeginMainMenuBar()`'s own window in screen space, and a `NoBringToFront
+  // OnFocus` band window (this one's old `beginBand()`) is inserted at the
+  // *front* of Dear ImGui's window list on creation (`CreateNewWindow()`,
+  // imgui.cpp) -- the opposite end from a plain window like the menu bar's,
+  // which always ends up on top of it. Two overlapping windows would not
+  // merely look wrong: the tab strip's own window would draw and immediately
+  // be painted over by the menu bar's background, which is exactly what the
+  // first attempt at this merge did, silently. Drawing straight into the
+  // caller's already-open window sidesteps the question entirely -- there is
+  // only one window in this row now, and it owns one draw list.
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  // The kChromeMid fill `beginBand()` used to give this band as a WHOLE
+  // window background, painted by hand instead: the two-shade look (this
+  // region a step lighter than the title row's own kChromeBase) is still the
+  // design's, it is just one rect on the caller's draw list now rather than
+  // a second window's background.
+  dl->AddRectFilled(ImVec2(bands.tabStrip.x, bands.tabStrip.y),
+                    ImVec2(bands.tabStrip.right(), bands.tabStrip.bottom()),
+                    atelierToken(kChromeMid));
 
   bool newDocument = false;
-  ImDrawList* dl = ImGui::GetWindowDrawList();
   const float h = bands.tabStrip.h;
   float x = bands.tabStrip.x;
   const float top = bands.tabStrip.y;
@@ -405,7 +425,12 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
     // False while the pointer is over the close box, which is what makes the
     // tab stop painting its hover fill the moment the `x` takes the hit.
     const bool hovered = ImGui::IsItemHovered();
-    if (hovered) ImGui::SetTooltip("%s", name.c_str());
+    // The delayed tooltip check is deliberately separate from `hovered`
+    // above: that bool also drives the tab's hover fill a few lines down,
+    // and gating the fill on the same stationary+delay timer would make the
+    // tab itself feel laggy to hover, not just its tooltip.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+      ImGui::SetTooltip("%s", name.c_str());
 
     dl->AddRectFilled(ImVec2(x, top), ImVec2(x + tabW, top + h),
                       active         ? atelierToken(kChromeDeep)
@@ -469,7 +494,7 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
   if (ImGui::InvisibleButton("##newdoc", ImVec2(h, h))) newDocument = true;
   const ImU32 plusCol =
       ImGui::IsItemHovered() ? atelierToken(kAccent) : atelierToken(kTextSecondary);
-  if (ImGui::IsItemHovered()) ImGui::SetTooltip("New document");
+  ImGui::SetItemTooltip("New document");
   const ImVec2 pc(x + h * 0.5f, top + h * 0.5f);
   dl->AddLine(ImVec2(pc.x - 6, pc.y), ImVec2(pc.x + 6, pc.y), plusCol, 1.5f);
   dl->AddLine(ImVec2(pc.x, pc.y - 6), ImVec2(pc.x, pc.y + 6), plusCol, 1.5f);
@@ -508,7 +533,10 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
       // The way out is the way in: pressing the arrangement that is already on
       // returns to a single pane, so two icons cover three states.
       split.mode = on ? AtelierSplit::Single : modes[i];
-    if (hovered)
+    // Separate from `hovered`, which also colours the icon itself a few
+    // lines down -- delaying that shared bool would delay the hover tint,
+    // not just the tooltip.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
       ImGui::SetTooltip("%s", canSplit ? tips[i]
                                        : "Split needs a second open document");
 
@@ -536,7 +564,6 @@ bool drawAtelierTabStrip(AppState& st, const AtelierBands& bands,
       dl->AddLine(ImVec2(bx, by + 7.0f), ImVec2(bx + 16.0f, by + 7.0f), col, 1.5f);
   }
 
-  endBand();
   return newDocument;
 }
 
@@ -647,7 +674,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
         // it. A user who never opens the tooltip still gets the right answer;
         // one who wonders why a hidden layer sampled differently in two modes
         // finds out here instead of by experiment.
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kSources[i].tip);
+        ImGui::SetItemTooltip("%s", kSources[i].tip);
       }
       ImGui::EndCombo();
     }
@@ -779,7 +806,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     ImGui::Text("-> %s", writes ? "rgb-fill" : "none");
     ImGui::PopStyleColor();
     popAtelierMono();
-    if (ImGui::IsItemHovered()) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       // The refusal's own sentence in the tooltip rather than a second wording
       // of it, and shown whether or not the user has clicked yet -- so the
       // answer is available *before* the wasted gesture as well as after it.
@@ -800,9 +827,8 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     ImGui::Text("-> %s", strokeRouteName(route));
     ImGui::PopStyleColor();
     popAtelierMono();
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("The active layer is \"%s\".\nA %s stroke on it goes to: %s",
-                        target->name.c_str(), toolName(st.brush.tool), strokeRouteName(route));
+    ImGui::SetItemTooltip("The active layer is \"%s\".\nA %s stroke on it goes to: %s",
+                          target->name.c_str(), toolName(st.brush.tool), strokeRouteName(route));
   }
 }
 

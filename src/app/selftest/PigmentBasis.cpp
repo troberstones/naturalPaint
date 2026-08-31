@@ -375,9 +375,9 @@ bool runPigmentBasisTest() {
           "-- the negative control, so the next assertion is about the document and not about "
           "the plumbing");
 
-    const ExportResult odd = exportDocumentWithRequest(docWithApproximatedBlend("linear-burn"),
+    const ExportResult odd = exportDocumentWithRequest(docWithApproximatedBlend("dissolve"),
                                                        png8);
-    check(odd.ok && !odd.warnings.empty() && contains(odd.warnings[0], "linear-burn") &&
+    check(odd.ok && !odd.warnings.empty() && contains(odd.warnings[0], "dissolve") &&
               contains(odd.warnings[0], "Line pass"),
           "export warnings: and a blend this build only approximates now REACHES the caller through "
           "exportDocumentWithRequest(), naming the layer and the value (was always empty)");
@@ -389,15 +389,15 @@ bool runPigmentBasisTest() {
     tooBig.resize.mode = ExportResizeMode::Percent;
     tooBig.resize.percent = 400.0f;
     const ExportResult refused =
-        exportDocumentWithRequest(docWithApproximatedBlend("linear-burn"), tooBig);
+        exportDocumentWithRequest(docWithApproximatedBlend("dissolve"), tooBig);
     check(!refused.ok && !refused.warnings.empty() &&
-              contains(refused.warnings[0], "linear-burn"),
+              contains(refused.warnings[0], "dissolve"),
           "export warnings: and on a REFUSED request too -- a user who fixes the resize and re-exports "
           "must not learn about the approximation only then");
 
     // The other entry point was already correct and must stay so: this step
     // fixed one caller, not the flattener.
-    const ExportResult direct = exportDocument(docWithApproximatedBlend("linear-burn"),
+    const ExportResult direct = exportDocument(docWithApproximatedBlend("dissolve"),
                                                ImageFormat::Png, ExportTargetSpace::Rec709Srgb,
                                                ExportBitDepth::UInt8);
     check(direct.ok && direct.warnings.size() == odd.warnings.size() &&

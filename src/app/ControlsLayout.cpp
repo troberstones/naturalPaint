@@ -15,7 +15,14 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
       // should ever start in.
       {ControlsSection::Tools, R::Tool, "TOOLS", true},
       {ControlsSection::Options, R::Tool, "OPTIONS", true},
-      {ControlsSection::Color, R::Tool, "COLOR", true},
+      {ControlsSection::Color, R::Tool, "COLOR", true,
+       "PIGMENT mode picks a real pigment: its colour and its physical "
+       "constants (density, staining, granulation) together. RGB mode picks "
+       "a colour directly -- Pigment layers still take it through an "
+       "RGB->latent decomposition, but the three constants shown below are "
+       "NOT derived from an RGB triple, which has none; they stay whatever "
+       "pigment was last selected in PIGMENT mode. Switch to PIGMENT to "
+       "change them."},
       {ControlsSection::BrushLibrary, R::Tool, "BRUSH LIBRARY", false},
       {ControlsSection::Brush, R::Tool, "BRUSH EDITOR", false},
       {ControlsSection::Layers, R::Document, "LAYERS", true},

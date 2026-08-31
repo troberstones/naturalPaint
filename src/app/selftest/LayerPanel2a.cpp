@@ -225,18 +225,21 @@ bool runLayerPanel2aTest() {
 
   std::printf("  -- E. `(!)` marks the modes that are not composited, and only those --\n");
 
-  // The design's eighth row is `RGB - LINEAR-BURN (!) - 100%`, where `(!)` says
+  // The design's eighth row is `RGB - DISSOLVE (!) - 100%`, where `(!)` says
   // this build cannot composite the mode the file carries (PRD I10 keeps the
   // name rather than dropping the layer). Both halves matter: an unmarked
   // unimplemented mode is a silent wrong picture, and a marked implemented one
   // is a warning about nothing that teaches a user to ignore the marker.
+  // Dissolve stands in for "linear-burn" (docs/blend-mode-gaps.md's stages
+  // made that a real mode) -- permanently unimplemented, so this fixture
+  // stays valid no matter how many more Photoshop modes later land.
   {
     Layer carried;
     carried.kind = LayerKind::RGB;
-    carried.blend = "linear-burn";
+    carried.blend = "dissolve";
     check(layerRowSubLine(carried) ==
-              std::string("RGB") + kSep + "LINEAR-BURN (!)" + kSep + "100%",
-          "blend: `RGB - LINEAR-BURN (!) - 100%` -- the design's own eighth row, and the "
+              std::string("RGB") + kSep + "DISSOLVE (!)" + kSep + "100%",
+          "blend: `RGB - DISSOLVE (!) - 100%` -- the design's own eighth row, and the "
           "name is upper-cased as carried rather than mapped through a table");
 
     bool anyImplementedMarked = false;

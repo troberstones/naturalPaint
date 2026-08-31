@@ -141,11 +141,11 @@ bool runNpaintFormatTest() {
     // claim -- the save would produce no warnings and the assertion below
     // would have to be deleted -- and weakened the first, since a name the
     // build recognises proves nothing about carrying one it does not.
-    // "linear-burn" is outside core/Blend's set, so both claims are back.
+    // "dissolve" is outside core/Blend's set, so both claims are back.
     // Layer 0 keeps "multiply" so the round trip also covers a name that IS
     // in the set. No pixel changes: this layer has no tiles, is hidden and
     // sits at opacity 0, so it has never contributed to the composite.
-    top.blend = "linear-burn";
+    top.blend = "dissolve";
     top.opacity = 0.0f;
     top.visible = false;  // see `mid.visible` above for why the false lives here
     top.locked = true;
@@ -336,13 +336,13 @@ bool runNpaintFormatTest() {
     // rather than merely its count is what makes "never silently" checkable.
     //
     // Step 2 took this from two warnings to one: "multiply" is implemented
-    // now, so only the deliberately-unknown "linear-burn" on the top layer
+    // now, so only the deliberately-unknown "dissolve" on the top layer
     // remains. See the fixture for why that layer's name was changed rather
     // than the assertion relaxed.
     {
       bool warnedUnknown = false;
       for (const std::string& w : saved.warnings)
-        if (contains(w, "\"linear-burn\"") && contains(w, "Layer 1")) warnedUnknown = true;
+        if (contains(w, "\"dissolve\"") && contains(w, "Layer 1")) warnedUnknown = true;
       check(saved.warnings.size() == 1 && warnedUnknown,
             "save: the one layer whose blend this build cannot composite is named, with its "
             "blend, rather than silently composited as `over`");
@@ -417,7 +417,7 @@ bool runNpaintFormatTest() {
       check(l0.name == "Line pass" && l1.name == "Flats" && l2.name == "Layer 1",
             "np:name: the user-facing name round-trips, and is allowed to duplicate -- the "
             "part id (L0001) is what has to be unique");
-      check(l0.blend == "multiply" && l1.blend == "normal" && l2.blend == "linear-burn",
+      check(l0.blend == "multiply" && l1.blend == "normal" && l2.blend == "dissolve",
             "np:blend: the blend identity round-trips verbatim");
       check(l0.opacity == 0.72f && l1.opacity == 1.0f && l2.opacity == 0.0f,
             "np:opacity: exact float equality, including 0.0 (an absent attribute would "

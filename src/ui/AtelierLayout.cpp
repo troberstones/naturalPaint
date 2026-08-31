@@ -75,16 +75,18 @@ AtelierBands atelierLayout(float x, float y, float w, float h, bool showTabStrip
   cy += kTitleBarH;
   addRule(hRule(x, w, cy));
 
-  // The tab strip and *its* rule vanish together. Reserving 34 px of empty
-  // chrome for a feature that does not exist yet would be worse than either
-  // shipping it or leaving it out: the user would see a band that never
-  // does anything, and the layout would still have to change when it did.
+  // The document tabs live INSIDE the row just reserved, not below it -- see
+  // `AtelierBands::tabStrip`'s comment. No extra height, no extra rule:
+  // turning tabs on costs the canvas nothing, which is the point of the
+  // merge. `w - kTitleWordmarkW - kTitleControlsW` can go negative on a
+  // window too narrow to hold both end reservations; clamped at zero rather
+  // than handed to a caller as a rect with negative width, matching this
+  // file's own "undersized windows" rule for every other band.
   if (showTabStrip) {
-    b.tabStrip = AtelierRect{x, cy, w, kTabStripH};
-    cy += kTabStripH;
-    addRule(hRule(x, w, cy));
+    const float tabsW = std::max(0.0f, w - kTitleWordmarkW - kTitleControlsW);
+    b.tabStrip = AtelierRect{x + kTitleWordmarkW, b.titleBar.y, tabsW, kTitleBarH};
   } else {
-    b.tabStrip = AtelierRect{x, cy, w, 0.0f};
+    b.tabStrip = AtelierRect{x, b.titleBar.y, 0.0f, 0.0f};
   }
 
   // The top dock, where the outgoing chrome had a permanent options bar. Same

@@ -784,7 +784,7 @@ float layerMaskCoverageAt(const Layer& layer, PixelCoord at) noexcept;
 // sentence distinguishes them, because the answer to "when will this work" is
 // different:
 //
-//   * a name outside `BlendMode` entirely (a newer build's "linear-burn"), and
+//   * a name outside `BlendMode` entirely (a newer build's "dissolve"), and
 //   * `mix`, which this build knows the name of and cannot apply, because
 //     `Mix` lerps *latents* and no layer stores one until PLAN.md Phase 5
 //     step 3's Pigment tiles (core/Blend.hpp's `mixLatents()` argues it).

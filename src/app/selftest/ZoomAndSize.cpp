@@ -1,5 +1,6 @@
 #include "app/selftest/Support.hpp"
 
+#include "app/ViewTransform.hpp"
 #include "app/ZoomAndSize.hpp"
 
 namespace np {
@@ -64,6 +65,123 @@ bool runZoomAndSizeTest() {
       // subtraction-then-division chain above without the tolerance itself
       // becoming the thing being tested.
       check(near(canvasPtAfter, canvasPtBefore, 1e-3f), label);
+    }
+  }
+
+  // ==========================================================================
+  // (a2) panForAnchoredZoomRotate(): the generalisation that does not
+  // "ignore rotation/mirror" the way (a)'s function admits it does.
+  // ==========================================================================
+  {
+    const Vec2 paintOrigin{0.0f, 0.0f};
+    const Vec2 avail{800.0f, 600.0f};
+    const Vec2 tex{400.0f, 300.0f};
+    const Vec2 canvasCenter{tex.x * 0.5f, tex.y * 0.5f};
+
+    // (i) Both views at rotation==0, mirror==false: this function must land
+    // on EXACTLY the same pan (a)'s simpler, independently-shaped function
+    // does -- a strong cross-check between two formulas that share no code,
+    // not merely "this one also satisfies its own property".
+    {
+      CanvasView oldView;
+      oldView.zoom = 1.0f;
+      oldView.panX = -40.0f;
+      oldView.panY = 15.0f;
+      CanvasView newView = oldView;
+      newView.zoom = 1.8f;
+      const float marginOldX = std::max(0.0f, (avail.x - tex.x * oldView.zoom) * 0.5f);
+      const float marginOldY = std::max(0.0f, (avail.y - tex.y * oldView.zoom) * 0.5f);
+      const Vec2 pivotOld{paintOrigin.x + marginOldX + oldView.panX + tex.x * oldView.zoom * 0.5f,
+                          paintOrigin.y + marginOldY + oldView.panY + tex.y * oldView.zoom * 0.5f};
+      const Vec2 anchor{260.0f, 210.0f};
+
+      const AnchoredPan viaRotate = panForAnchoredZoomRotate(
+          oldView, newView, canvasCenter, pivotOld, anchor, paintOrigin, avail, tex);
+      const float originOldX = paintOrigin.x + marginOldX + oldView.panX;
+      const float panXViaSimple = panForAnchoredZoom(anchor.x, originOldX, oldView.zoom,
+                                                     newView.zoom, paintOrigin.x, avail.x, tex.x);
+      const float originOldY = paintOrigin.y + marginOldY + oldView.panY;
+      const float panYViaSimple = panForAnchoredZoom(anchor.y, originOldY, oldView.zoom,
+                                                     newView.zoom, paintOrigin.y, avail.y, tex.y);
+      check(near(viaRotate.panX, panXViaSimple, 1e-3f) && near(viaRotate.panY, panYViaSimple, 1e-3f),
+            "panForAnchoredZoomRotate: at rotation==0 matches panForAnchoredZoom() exactly, "
+            "axis for axis -- two independently-shaped formulas agreeing is not a coincidence "
+            "a shared bug could produce");
+    }
+
+    // (ii) A COMBINED zoom+rotate change -- the case (a)'s function admits
+    // it gets wrong. Verified by ROUND-TRIP through the real ViewTransform
+    // (not re-derived arithmetic): build the OLD transform, read the canvas
+    // point under the anchor; build the NEW transform at the pan this
+    // function returns; confirm THAT transform maps the SAME canvas point
+    // back to the SAME anchor screen position.
+    {
+      CanvasView oldView;
+      oldView.zoom = 1.0f;
+      oldView.rotation = 0.3f;
+      oldView.panX = 20.0f;
+      oldView.panY = -35.0f;
+      CanvasView newView = oldView;
+      newView.zoom = 2.4f;
+      newView.rotation = -0.85f;  // a real gesture changes both at once
+      const float marginOldX = std::max(0.0f, (avail.x - tex.x * oldView.zoom) * 0.5f);
+      const float marginOldY = std::max(0.0f, (avail.y - tex.y * oldView.zoom) * 0.5f);
+      const Vec2 pivotOld{paintOrigin.x + marginOldX + oldView.panX + tex.x * oldView.zoom * 0.5f,
+                          paintOrigin.y + marginOldY + oldView.panY + tex.y * oldView.zoom * 0.5f};
+      const Vec2 anchor{310.0f, 180.0f};
+
+      const ViewTransform oldXform(oldView, canvasCenter, pivotOld);
+      const Vec2 anchorCanvas = oldXform.toCanvas(anchor);
+
+      const AnchoredPan panNew = panForAnchoredZoomRotate(oldView, newView, canvasCenter,
+                                                          pivotOld, anchor, paintOrigin, avail, tex);
+      newView.panX = panNew.panX;
+      newView.panY = panNew.panY;
+      const float marginNewX = std::max(0.0f, (avail.x - tex.x * newView.zoom) * 0.5f);
+      const float marginNewY = std::max(0.0f, (avail.y - tex.y * newView.zoom) * 0.5f);
+      const Vec2 pivotNew{paintOrigin.x + marginNewX + newView.panX + tex.x * newView.zoom * 0.5f,
+                          paintOrigin.y + marginNewY + newView.panY + tex.y * newView.zoom * 0.5f};
+      const ViewTransform newXform(newView, canvasCenter, pivotNew);
+      const Vec2 anchorAfter = newXform.toScreen(anchorCanvas);
+
+      check(near(anchorAfter.x, anchor.x, 1e-2f) && near(anchorAfter.y, anchor.y, 1e-2f),
+            "panForAnchoredZoomRotate: a COMBINED zoom+rotate change still leaves the same "
+            "canvas point exactly under the anchor, round-tripped through the real "
+            "ViewTransform both views actually render with -- not just this function's own "
+            "arithmetic checking itself");
+    }
+
+    // (iii) Zoom UNCHANGED, rotation ALONE -- isolates the coupling rotation
+    // introduces between the two pan axes (a bug that solved each axis
+    // independently, as if rotation were still 0, would fail only this
+    // case: (i) and (ii) both have zoom changing too, which could mask an
+    // axis-coupling bug behind a magnitude that is merely close).
+    {
+      CanvasView oldView;
+      oldView.zoom = 1.5f;
+      oldView.panX = 10.0f;
+      oldView.panY = 10.0f;
+      CanvasView newView = oldView;
+      newView.rotation = 1.2f;  // ~69 degrees, zoom untouched
+      const float margin = std::max(0.0f, (avail.x - tex.x * oldView.zoom) * 0.5f);
+      const float marginY = std::max(0.0f, (avail.y - tex.y * oldView.zoom) * 0.5f);
+      const Vec2 pivotOld{paintOrigin.x + margin + oldView.panX + tex.x * oldView.zoom * 0.5f,
+                          paintOrigin.y + marginY + oldView.panY + tex.y * oldView.zoom * 0.5f};
+      const Vec2 anchor{500.0f, 150.0f};
+
+      const ViewTransform oldXform(oldView, canvasCenter, pivotOld);
+      const Vec2 anchorCanvas = oldXform.toCanvas(anchor);
+      const AnchoredPan panNew = panForAnchoredZoomRotate(oldView, newView, canvasCenter,
+                                                          pivotOld, anchor, paintOrigin, avail, tex);
+      newView.panX = panNew.panX;
+      newView.panY = panNew.panY;
+      const Vec2 pivotNew{paintOrigin.x + margin + newView.panX + tex.x * newView.zoom * 0.5f,
+                          paintOrigin.y + marginY + newView.panY + tex.y * newView.zoom * 0.5f};
+      const ViewTransform newXform(newView, canvasCenter, pivotNew);
+      const Vec2 anchorAfter = newXform.toScreen(anchorCanvas);
+      check(near(anchorAfter.x, anchor.x, 1e-2f) && near(anchorAfter.y, anchor.y, 1e-2f),
+            "panForAnchoredZoomRotate: rotation ALONE (zoom unchanged) still keeps the "
+            "anchor fixed -- catches an axis-coupling bug (a), (ii) could both mask");
     }
   }
 

@@ -109,11 +109,30 @@ practice, since the same hue needs more luminance to hold up against dark chrome
 > app"*, and *"All four edges but move the brush setting and the tool pallet to dockable
 > panels as well, this makes the UI modular and customizable."* See §2c below.
 
+> ⚠️ **The title bar and the tab strip are ONE band now, not two**, per the user's own
+> words: *"The tab bar and the space where the menus used to live take up too much space,
+> collapse them into one band."* Two things changed from the diagram below, and neither is
+> new information the diagram used to carry correctly: first, `File Edit … Help` has not
+> lived in this row for a while -- `ui/MacNativeMenu.mm` moved the menus into the real
+> macOS menu bar outside this window, and the diagram kept drawing them anyway, so the row
+> the user was actually looking at was already down to the wordmark, PANELS, Undo, Redo and
+> an fps readout, with an open gap where the menu labels used to sit. Second, the document
+> tabs -- `▨ study-plate ●│ ref.tif …` below -- now fill exactly that gap instead of owning
+> a 34px band of their own underneath it. The merged row is still **36px**, the taller of
+> the two originals, because that is what the wordmark's controls and a tab's close box both
+> already needed; what disappears is the *second* 34px band and its 2px rule, not any
+> content. `ui/AtelierLayout.hpp`'s `kTitleWordmarkW` (100px) and `kTitleControlsW` (230px)
+> reserve this row's two ends for the wordmark and for Undo/Redo/PANELS/fps; the document
+> tabs, the `+`, and the two split icons fill whatever the row leaves between them --
+> `AtelierBands::tabStrip`, nested inside `AtelierBands::titleBar` rather than a band beside
+> it. Opening a document now costs the canvas nothing at all, where it used to cost 34px
+> plus a rule; `--selftest`'s atelier-chrome section asserts exactly that. The `titlebar`
+> and `toolbar` golden views moved with it -- see `tools/golden/run_golden.sh`'s own account
+> of the crop-coordinate shift.
+
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ naturalPaint │ File Edit … Help        undo redo ⟲ panels  │ 36
-├────────────────────────────────────────────────────────────┤
-│ ▨ study-plate-04.npaint ●│ retouch-ref.tif 64% │ … │ +  ⫿⫿ ⊞ │ 34
+│ naturalPaint │▨ study-plate ● │ ref.tif … │ +⫿⫿⊞ panels undo redo │ 36
 ├────────────────────────────────────────────────────────────┤
 │ ■BRUSH│ PRESET ▣ Round Bristle 03 │ SIZE ── 48px │ HARD …  │ 46
 ├───┬──────────────────────────────────────────────┬──────────┤

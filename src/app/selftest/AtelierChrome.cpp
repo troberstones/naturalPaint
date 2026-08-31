@@ -137,11 +137,18 @@ bool runAtelierChromeTest() {
     // makes it the size whose numbers can be read straight off the document.
     constexpr float kW = 1366.0f, kH = 1024.0f;
 
+    // Seven top-level regions, not eight: `b.tabStrip` is deliberately absent
+    // from this list. Since the title bar and tab strip merged into one row,
+    // `tabStrip` is a rect NESTED inside `titleBar` (same y, same height, a
+    // narrower x/w) rather than a band beside it -- see
+    // `AtelierBands::tabStrip`'s comment. Feeding it into the same
+    // disjoint-and-sums-to-the-window-area check this loop runs would be
+    // asking the check to fail on a nesting relationship that is correct by
+    // construction; Part C below asserts that nesting directly instead.
     const auto tiles = [&](const AtelierBands& b, float w, float h, const char* what) {
-      AtelierRect all[8 + AtelierBands::kMaxRules];
+      AtelierRect all[7 + AtelierBands::kMaxRules];
       size_t n = 0;
       all[n++] = b.titleBar;
-      all[n++] = b.tabStrip;
       all[n++] = b.topDock;
       all[n++] = b.leftDock;
       all[n++] = b.canvas;
@@ -212,17 +219,32 @@ bool runAtelierChromeTest() {
     std::printf("  [measured] at 1366x1024 the canvas gets %.0f x %.0f of %.0f x %.0f\n",
                 b.canvas.w, b.canvas.h, kW, kH);
 
-    // The tab strip is a band of the layout even though nothing fills it yet
-    // (PRD A5 / PLAN.md Phase 5 step 14). Switching it on has to keep the
-    // tiling exact and cost the canvas exactly the strip plus its rule --
-    // which is the property that makes step 14 a change to one bool.
+    // The tab strip is nested inside the title row now (see
+    // `AtelierBands::tabStrip`'s comment), so switching it on must NOT change
+    // the tiling of the seven top-level regions at all -- the whole point of
+    // the merge is that opening a document costs the canvas nothing.
     const AtelierBands withTabs = atelierLayout(0.0f, 0.0f, kW, kH, /*showTabStrip=*/true);
     check(tiles(withTabs, kW, kH, "with tab strip"), "and still tile with the tab strip on");
-    check(withTabs.tabStrip.h == kTabStripH && kTabStripH == 34.0f, "the tab strip is 34 px");
-    check(withTabs.canvas.h == b.canvas.h - kTabStripH - kRuleThickness,
-          "turning it on costs the canvas exactly the strip and one rule");
-    check(b.ruleCount == 5 && withTabs.ruleCount == 6,
-          "a suppressed band suppresses exactly one rule");
+    check(withTabs.canvas.h == b.canvas.h,
+          "turning the tab strip on costs the canvas nothing now -- it shares the title "
+          "row instead of adding a band");
+    check(b.ruleCount == 5 && withTabs.ruleCount == 5,
+          "the merged title row adds no rule of its own for the tab strip, so the rule "
+          "count does not depend on whether one is open");
+
+    // The nested rect itself: same y/h as the row it lives in, and its x/w
+    // are exactly what is left after the wordmark's and the controls'
+    // reservations.
+    check(withTabs.tabStrip.y == withTabs.titleBar.y && withTabs.tabStrip.h == withTabs.titleBar.h,
+          "the tab strip spans the full merged row's height rather than a second band's");
+    check(withTabs.tabStrip.x == withTabs.titleBar.x + kTitleWordmarkW,
+          "...reserving the wordmark's width on the left");
+    check(std::fabs(withTabs.tabStrip.right() - (withTabs.titleBar.right() - kTitleControlsW)) <
+              0.01f,
+          "...and the controls' width on the right");
+    check(b.tabStrip.empty(),
+          "and with no documents open, the tab strip sub-rect is empty rather than a "
+          "permanent gap in the row");
 
     // Non-square and odd sizes, because the real window is neither: the design
     // size is the only one whose numbers are quotable and the only one a
@@ -671,14 +693,21 @@ bool runAtelierChromeTest() {
   // instead of trusting atelierLayout()'s own answer. 940 and 790 are the
   // same roomy/middling window heights the 28-cell design used, recomputed
   // for kToolCellCount=18 (940 now clamps at kToolCellMax=36 rather than
-  // shrinking to 26 the way 28 cells forced it to; 790 lands at 31, not
-  // 20). 530 is the one below this revision's honest limit (~540px, down
-  // from ~670px now that nesting nearly halved the cell count) -- its raw
-  // (unclamped) quotient is floor(314/18)=17.4, one case where the *floor*
-  // of the division is not what ships, only the *clamp* to kToolCellMin
-  // is, and where the packed total (18*18+4=328) genuinely exceeds the
-  // 318px grid band this window leaves, which is exactly the disclosed
-  // fallback rather than a bug this check should paper over.
+  // shrinking to 26 the way 28 cells forced it to).
+  //
+  // **790 and the third case both moved when the title bar and tab strip
+  // merged into one row** (this file's header comment on that change): every
+  // case here runs `showTabStrip=true`, so every band below the title row is
+  // now 36px taller than it was. 790 used to land at 31; it lands at 33 now,
+  // still short of kToolCellMax. The third case exists only to exercise the
+  // "below the honest limit" clamp -- 530 no longer sits below that limit (it
+  // now resolves to 19, a real fit), so the window height moved to 494 (530
+  // minus the 36 reclaimed px) to land it back on the exact same internal
+  // arithmetic the old 530 case exercised: raw quotient floor(314/18)=17.4,
+  // clamped to kToolCellMin, packed total (18*18+4=328) still exceeding the
+  // 318px grid band this window leaves. The case is unchanged; only the
+  // window height that produces it moved, by exactly the height this
+  // revision reclaimed.
   {
     const struct {
       float winH;
@@ -686,8 +715,8 @@ bool runAtelierChromeTest() {
       const char* note;
     } kCases[] = {
         {940.0f, kToolCellMax, "roomy: clamps at kToolCellMax (36) with room to spare"},
-        {790.0f, 31.0f, "middling: shrinks below kToolCellMax, still fits exactly"},
-        {530.0f, kToolCellMin,
+        {790.0f, 33.0f, "middling: shrinks below kToolCellMax, still fits exactly"},
+        {494.0f, kToolCellMin,
          "below the honest limit: the unclamped quotient is 17.4, but "
          "kToolCellMin (18) wins the clamp -- the grid does not fully fit "
          "here, and NoScrollbar's wheel-only fallback carries the rest"},

@@ -11,6 +11,7 @@
 
 #include "app/OpenAnyFile.hpp"
 #include "color/Space.hpp"
+#include "core/Mask.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 #include "io/ImageIO.hpp"
@@ -49,6 +50,10 @@
 //      content (ZIP) is refused outright rather than silently flattened.
 //   E. Transparent regions cost no tiles -- the guard on the empty-tile
 //      skip a real 180 MB Photoshop file made necessary.
+//   F. Layer groups ('lsct'): a flat group, a nested one (fixture-only --
+//      no sample file exercises depth > 0), a non-'pass' group blend key
+//      (imports anyway, warns by name), and both directions of an
+//      unbalanced divider/header stack (total refusal, neither repaired).
 namespace np {
 namespace {
 
@@ -181,6 +186,35 @@ struct ChannelSpec {
   std::vector<uint32_t> samples;
 };
 
+// One `lsct` ("Section divider setting") additional-layer-info block --
+// docs/psd-import-gaps.md section 3's wire layout: a divider record
+// (`type = 3`, len 4) writes only `type`; a header record (`type` 1 or 2)
+// optionally follows it with `8BIM` + a 4-byte blend key (`hasBlendKey`,
+// len >= 12) and optionally a u32 sub-type past that (`hasSubType`, len >=
+// 16) -- this fixture writer supports the sub-type field for shape-fidelity
+// with a real file even though io/PsdImport.cpp never reads it.
+struct LsctSpec {
+  uint32_t type = 0;
+  bool hasBlendKey = false;
+  std::string blendKey = "pass";
+  bool hasSubType = false;
+  uint32_t subType = 0;
+};
+
+// The 20-byte layer mask record (docs/psd-import-gaps.md section 1), the
+// fixture-builder's mirror of io/PsdImport.cpp's own `ParsedLayer` mask
+// fields. `overrideSize`, when set, writes a DIFFERENT size field than the
+// natural 20 -- used by the one fixture that checks the "size > 20 is
+// refused by name" path, the same `layerCountOverride` trick `buildPsd()`
+// already uses for its own "declares a truthful-looking but wrong count"
+// fixture.
+struct MaskSpec {
+  int32_t top = 0, left = 0, bottom = 0, right = 0;
+  uint8_t defaultColor = 255;
+  uint8_t flags = 0;
+  std::optional<uint32_t> overrideSize;
+};
+
 struct LayerSpec {
   int32_t top = 0, left = 0, bottom = 0, right = 0;
   std::string blendKey = "norm";
@@ -189,8 +223,11 @@ struct LayerSpec {
   bool hidden = false;
   std::string pascalName;
   std::optional<std::string> uniName;
+  std::optional<uint32_t> lspfFlags;  // unset = no `lspf` block at all
   int compression = 0;
   std::vector<ChannelSpec> channels;
+  std::optional<LsctSpec> lsct;
+  std::optional<MaskSpec> mask;
 };
 
 // Builds a whole PSD file's bytes from a list of `LayerSpec`s, following
@@ -245,7 +282,25 @@ std::vector<uint8_t> buildPsd(uint32_t width, uint32_t height, uint16_t depth,
                                                        L.compression)});
 
     ByteWriter ew;
-    ew.u32(0);  // layer mask data: none
+    if (L.mask) {
+      ByteWriter mw;
+      mw.i32(L.mask->top);
+      mw.i32(L.mask->left);
+      mw.i32(L.mask->bottom);
+      mw.i32(L.mask->right);
+      mw.u8(L.mask->defaultColor);
+      mw.u8(L.mask->flags);
+      mw.u16(0);  // padding -- present only in the plain 20-byte shape
+      ew.u32(L.mask->overrideSize.value_or(static_cast<uint32_t>(mw.b.size())));
+      ew.bytes(mw.b);
+      // A non-default `overrideSize` deliberately does not resize `mw.b` to
+      // match -- the ">20, refused by name" fixture wants a size field that
+      // claims more than actually follows it, to prove the refusal comes
+      // from the declared size alone (io/PsdImport.cpp reads that size and
+      // refuses before it would ever try to read the extra bytes it claims).
+    } else {
+      ew.u32(0);  // layer mask data: none
+    }
     ew.u32(0);  // layer blending ranges: none
     std::string pname = L.pascalName.substr(0, 255);
     ew.u8(static_cast<uint32_t>(pname.size()));
@@ -262,6 +317,29 @@ std::vector<uint8_t> buildPsd(uint32_t width, uint32_t height, uint16_t depth,
       ByteWriter tagged;
       tagged.str4("8BIM");
       tagged.str4("luni");
+      tagged.u32(static_cast<uint32_t>(payload.b.size()));
+      tagged.bytes(payload.b);
+      ew.bytes(tagged.b);
+    }
+    if (L.lspfFlags) {
+      ByteWriter tagged;
+      tagged.str4("8BIM");
+      tagged.str4("lspf");
+      tagged.u32(4);
+      tagged.u32(*L.lspfFlags);
+      ew.bytes(tagged.b);
+    }
+    if (L.lsct) {
+      ByteWriter payload;
+      payload.u32(L.lsct->type);
+      if (L.lsct->hasBlendKey) {
+        payload.str4("8BIM");
+        payload.str4(L.lsct->blendKey.c_str());
+      }
+      if (L.lsct->hasSubType) payload.u32(L.lsct->subType);
+      ByteWriter tagged;
+      tagged.str4("8BIM");
+      tagged.str4("lsct");
       tagged.u32(static_cast<uint32_t>(payload.b.size()));
       tagged.bytes(payload.b);
       ew.bytes(tagged.b);
@@ -349,6 +427,16 @@ std::array<float, 4> pixelAt(const Layer& layer, int32_t x, int32_t y) {
   return t->readPixel(tileLocalOffset(doc));
 }
 
+// The mask-store mirror of `pixelAt()` above, at document coordinates --
+// `nullopt` mask reads as 1.0 (core/Mask.hpp: absent means reveal), and an
+// engaged-but-unallocated tile reads as 1.0 too, through the same
+// `maskCoverage()` leaf core/Composite's own walk goes through.
+float maskCoverageAtDoc(const Layer& layer, int32_t x, int32_t y) {
+  if (!layer.mask.has_value()) return 1.0f;
+  const PixelCoord doc{x, y};
+  return maskCoverage(layer.mask->find(tileCoordAt(doc)), tileLocalOffset(doc));
+}
+
 bool nearf(float a, float b, float tol) { return std::fabs(a - b) <= tol; }
 
 bool contains(const std::string& haystack, const std::string& needle) {
@@ -421,7 +509,14 @@ bool runPsdImportTest() {
 
     LayerSpec unmapped;
     unmapped.top = 0; unmapped.left = 0; unmapped.bottom = 2; unmapped.right = 2;
-    unmapped.blendKey = "sLit";  // Soft Light -- no core::BlendMode equivalent
+    // "diss" (Dissolve) -- permanently unmapped: a stochastic per-pixel
+    // dither is incompatible with blendPixel()'s pure two-pixel-in,
+    // one-pixel-out signature (docs/blend-mode-gaps.md's own "out of scope"
+    // section), so this key stays the safe "unrecognised blend name" fixture
+    // no matter how many more Photoshop modes later land. Was "sLit" (Soft
+    // Light), then "diff" (Difference) -- both got real mappings below/on
+    // another stage's branch and had to move.
+    unmapped.blendKey = "diss";
     unmapped.pascalName = "Unmapped Blend";
     unmapped.compression = 0;
     unmapped.channels = {{0, std::vector<uint32_t>(4, 255)},
@@ -489,8 +584,32 @@ bool runPsdImportTest() {
       check(l2.blend == "min",
             "A: 'dark' (Darken) maps to core::BlendMode::Min -- an exact per-channel minimum, "
             "not an approximation");
-      check(l3.blend == "normal" && anyContains(r.warnings, "sLit"),
-            "A: 'sLit' (Soft Light, no equivalent) imports as Normal AND is named in a warning");
+      check(l3.blend == "normal" && anyContains(r.warnings, "diss"),
+            "A: 'diss' (Dissolve, permanently out of scope) imports as Normal AND is named in "
+            "a warning");
+    }
+
+    // Stage 2 (docs/blend-mode-gaps.md): 'sLit' now has a real equivalent --
+    // a one-layer fixture, imported and checked on its own, rather than
+    // folded into the four-layer one above.
+    {
+      LayerSpec soft;
+      soft.top = 0; soft.left = 0; soft.bottom = 2; soft.right = 2;
+      soft.blendKey = "sLit";
+      soft.pascalName = "Soft Light Layer";
+      soft.compression = 0;
+      soft.channels = {{0, std::vector<uint32_t>(4, 255)},
+                       {1, std::vector<uint32_t>(4, 255)},
+                       {2, std::vector<uint32_t>(4, 255)},
+                       {-1, std::vector<uint32_t>(4, 255)}};
+      const std::vector<uint8_t> softBytes = buildPsd(2, 2, 8, {soft});
+      const PsdImportResult softR =
+          importPsd(std::span<const uint8_t>(softBytes.data(), softBytes.size()));
+      check(softR.ok && softR.document.layers.size() == 1 &&
+                softR.document.layers[0].blend == "soft-light" && softR.warnings.empty(),
+            "A: 'sLit' now maps to core::BlendMode::SoftLight (Stage 2) with no warning -- an "
+            "approximation in substance (linear- vs gamma-space blending) but not the 'no "
+            "equivalent' case, so mapBlendKey() rightly reports it exact");
     }
   }
 
@@ -861,6 +980,573 @@ bool runPsdImportTest() {
     } else {
       check(false, "E2/E3: the sparse layer produced no tile store at all");
     }
+  }
+
+  // ==========================================================================
+  std::printf("  -- F. lspf layer protection flags: bit 0 -> alphaLocked --\n");
+  // ==========================================================================
+  //
+  // docs/psd-import-gaps.md section 4. Bit 0 (transparency-locked) has a
+  // direct home, Layer::alphaLocked -- io/PsdImport.cpp's own comment at the
+  // `lspf` case explains why bits 1/2 (composite-/position-locked) are read
+  // and then deliberately dropped rather than forced onto Layer::locked,
+  // whose promise is broader than either. Two layers here: one with `lspf`
+  // bit 0 set, one with no `lspf` block at all -- the second is the
+  // anti-vacuity partner, proving the flag is actually read off the file
+  // rather than defaulting true by accident.
+  {
+    LayerSpec locked;
+    locked.top = 0; locked.left = 0; locked.bottom = 2; locked.right = 2;
+    locked.pascalName = "Alpha Locked";
+    locked.compression = 0;
+    locked.lspfFlags = 0x00000001u;  // bit 0 set (bits 1/2 clear)
+    locked.channels = {{0, std::vector<uint32_t>(4, 255)},
+                       {1, std::vector<uint32_t>(4, 255)},
+                       {2, std::vector<uint32_t>(4, 255)},
+                       {-1, std::vector<uint32_t>(4, 255)}};
+
+    LayerSpec unlocked;
+    unlocked.top = 0; unlocked.left = 0; unlocked.bottom = 2; unlocked.right = 2;
+    unlocked.pascalName = "No lspf Block";
+    unlocked.compression = 0;
+    // .lspfFlags left unset -- no `lspf` block is written for this layer.
+    unlocked.channels = {{0, std::vector<uint32_t>(4, 255)},
+                         {1, std::vector<uint32_t>(4, 255)},
+                         {2, std::vector<uint32_t>(4, 255)},
+                         {-1, std::vector<uint32_t>(4, 255)}};
+
+    const std::vector<uint8_t> bytes = buildPsd(2, 2, 8, {locked, unlocked});
+    const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+    check(r.ok && r.document.layers.size() == 2, "F0: a 2-layer PSD with one lspf block parses");
+    if (r.ok && r.document.layers.size() == 2) {
+      check(r.document.layers[0].alphaLocked,
+            "F1: lspf bit 0 set -> Layer::alphaLocked is true");
+      check(!r.document.layers[1].alphaLocked,
+            "F2: no lspf block at all -> Layer::alphaLocked stays false "
+            "(anti-vacuity: proves F1 is not just always true)");
+    }
+  }
+
+  // ==========================================================================
+  std::printf("  -- H. Raster layer masks (docs/psd-import-gaps.md section 1) --\n");
+  // ==========================================================================
+  //
+  // Every mask channel below is RAW-compressed (compression 0) deliberately:
+  // `encodeChannel()`'s RAW path serialises `samples` verbatim and ignores
+  // the width/height it is passed, so a mask fixture's own sample count is
+  // free to differ from its layer's -- exactly the shape this section needs
+  // to exercise -- without this file's builder needing a second, mask-aware
+  // encode path. RLE would chop rows using the wrong dimensions for a mask
+  // channel whose size differs from its layer's, which is why it is not
+  // used here.
+  {
+    // H1: a mask SMALLER than its layer and OFFSET from it, decoded at the
+    // mask's own dimensions. This is THE fixture the "decode at
+    // layerWidth x layerHeight" sabotage must catch: reusing the layer's
+    // 8x8 for a channel whose declared length was encoded for the mask's
+    // own 4x4 makes `decodeChannelData()`'s byte-count check fail outright,
+    // so the whole import refuses rather than merely misplacing the mask.
+    {
+      LayerSpec l;
+      l.top = 0; l.left = 0; l.bottom = 8; l.right = 8;
+      l.pascalName = "H1";
+      l.compression = 0;
+      l.channels = {{0, std::vector<uint32_t>(64, 100)},
+                    {1, std::vector<uint32_t>(64, 100)},
+                    {2, std::vector<uint32_t>(64, 100)},
+                    {-1, std::vector<uint32_t>(64, 255)},
+                    {-2, std::vector<uint32_t>(16, 128)}};  // 4x4 mask, mid coverage
+      l.mask = MaskSpec{/*top=*/2, /*left=*/2, /*bottom=*/6, /*right=*/6,
+                        /*defaultColor=*/255, /*flags=*/0x00};
+      const std::vector<uint8_t> bytes = buildPsd(8, 8, 8, {l});
+      const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+      check(r.ok && r.document.layers.size() == 1 && r.document.layers[0].mask.has_value(),
+            "H1: a masked layer parses and carries an engaged Layer::mask");
+      if (r.ok && !r.document.layers.empty() && r.document.layers[0].mask.has_value()) {
+        const Layer& layer = r.document.layers[0];
+        check(nearf(maskCoverageAtDoc(layer, 3, 3), 128.0f / 255.0f, kTol),
+              "H1: a point INSIDE the (smaller, offset) mask rect reads the mask's own decoded "
+              "value -- the property that breaks if the mask is decoded at layerWidth x "
+              "layerHeight instead of its own 4x4");
+        check(nearf(maskCoverageAtDoc(layer, 0, 0), 1.0f, kTol),
+              "H1: a point OUTSIDE the mask rect but still inside the layer reveals (default "
+              "colour 255), matching an unallocated tile's own meaning for free");
+      }
+    }
+
+    // H2: a mask LARGER than its layer -- extends past the layer's own
+    // rectangle on every side. No -2 channel at all (metadata rect only),
+    // deliberately: this keeps H2 insensitive to the layerWidth/layerHeight
+    // decode-size sabotage above (there is no decode call to corrupt), so
+    // that sabotage reddens H1 alone, not H1 and H2 together.
+    {
+      LayerSpec l;
+      l.top = 0; l.left = 0; l.bottom = 4; l.right = 4;
+      l.pascalName = "H2";
+      l.compression = 0;
+      l.channels = {{-1, std::vector<uint32_t>(16, 255)}};
+      l.mask = MaskSpec{/*top=*/-2, /*left=*/-2, /*bottom=*/6, /*right=*/6,
+                        /*defaultColor=*/255, /*flags=*/0x00};
+      const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {l});
+      const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+      check(r.ok && r.document.layers.size() == 1 && r.document.layers[0].mask.has_value(),
+            "H2: a mask rect LARGER than its layer's own rect still parses, carrying a mask");
+      if (r.ok && !r.document.layers.empty() && r.document.layers[0].mask.has_value()) {
+        const Layer& layer = r.document.layers[0];
+        check(layer.mask->occupiedTileCount() == 0,
+              "H2: with no channel content, the oversized mask still allocates nothing");
+        check(nearf(maskCoverageAtDoc(layer, 1, 1), 1.0f, kTol),
+              "H2: and reads as fully revealed, same as an absent mask would");
+      }
+    }
+
+    // H3: default colour 0 -- everything OUTSIDE a small mask rect, but
+    // still inside the layer, must be HIDDEN rather than the revealed-by-
+    // default an absent tile means. No -2 channel here either, for the same
+    // sabotage-isolation reason as H2: this fixture's only job is to prove
+    // the default-colour byte is honoured, not to also re-prove mask
+    // content decodes at the right size (H1 already owns that).
+    {
+      LayerSpec l;
+      l.top = 0; l.left = 0; l.bottom = 8; l.right = 8;
+      l.pascalName = "H3";
+      l.compression = 0;
+      l.channels = {{-1, std::vector<uint32_t>(64, 255)}};
+      l.mask = MaskSpec{/*top=*/2, /*left=*/2, /*bottom=*/6, /*right=*/6,
+                        /*defaultColor=*/0, /*flags=*/0x00};
+      const std::vector<uint8_t> bytes = buildPsd(8, 8, 8, {l});
+      const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+      check(r.ok && r.document.layers.size() == 1 && r.document.layers[0].mask.has_value(),
+            "H3: a default-colour-0 masked layer parses and carries a mask");
+      if (r.ok && !r.document.layers.empty() && r.document.layers[0].mask.has_value()) {
+        const Layer& layer = r.document.layers[0];
+        check(nearf(maskCoverageAtDoc(layer, 0, 0), 0.0f, kTol),
+              "H3: a point OUTSIDE the mask rect but inside the layer is HIDDEN -- default "
+              "colour 0, written explicitly rather than left at the tile's own reveal default");
+      }
+    }
+
+    // H4: flags bit 1 (mask disabled) -- imported as NO mask at all, not as
+    // an applied-but-empty one. A real -2 channel is present, at the SAME
+    // dimensions as the layer (so this fixture is insensitive to the
+    // decode-size sabotage too), specifically to prove the content is
+    // discarded wholesale rather than merely its "outside the rect" half.
+    {
+      LayerSpec l;
+      l.top = 0; l.left = 0; l.bottom = 4; l.right = 4;
+      l.pascalName = "H4";
+      l.compression = 0;
+      l.channels = {{-1, std::vector<uint32_t>(16, 255)}, {-2, std::vector<uint32_t>(16, 10)}};
+      l.mask = MaskSpec{/*top=*/0, /*left=*/0, /*bottom=*/4, /*right=*/4,
+                        /*defaultColor=*/255, /*flags=*/0x02};  // bit 1: disabled
+      const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {l});
+      const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+      check(r.ok && r.document.layers.size() == 1 && !r.document.layers[0].mask.has_value(),
+            "H4: flags bit 1 (disabled) imports as Layer::mask == nullopt, not an applied mask");
+    }
+
+    // H5/H6: the anti-vacuity pairing Section E already established for
+    // RGB, here for a mask -- a mask that is fully revealed (255) except
+    // ONE painted texel must occupy exactly ONE tile (the inverted empty-
+    // tile rule: skip on 1.0, not 0.0) AND that texel's own value must
+    // still be readable, so H5 cannot be satisfied by a reader that simply
+    // wrote nothing.
+    {
+      constexpr uint32_t kSide = 300;  // spans a 3x3 grid of 128x128 tiles
+      constexpr uint32_t kPx = 200;
+      const size_t n = static_cast<size_t>(kSide) * kSide;
+      std::vector<uint32_t> maskSamples(n, 255);
+      const size_t hit = static_cast<size_t>(kPx) * kSide + kPx;
+      maskSamples[hit] = 64;
+
+      LayerSpec l;
+      l.top = 0; l.left = 0;
+      l.bottom = static_cast<int32_t>(kSide); l.right = static_cast<int32_t>(kSide);
+      l.pascalName = "H5H6";
+      l.compression = 0;
+      // Alpha 0 everywhere -- this fixture is about the MASK store, not the
+      // RGB one, so the layer's own tiles are left empty on purpose (cheap)
+      // rather than decoding a 300x300 opaque fill nothing here checks.
+      l.channels = {{-1, std::vector<uint32_t>(n, 0)}, {-2, maskSamples}};
+      l.mask = MaskSpec{/*top=*/0, /*left=*/0, /*bottom=*/static_cast<int32_t>(kSide),
+                        /*right=*/static_cast<int32_t>(kSide), /*defaultColor=*/255,
+                        /*flags=*/0x00};
+      const std::vector<uint8_t> bytes = buildPsd(kSide, kSide, 8, {l});
+      const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+      check(r.ok && r.document.layers.size() == 1 && r.document.layers[0].mask.has_value(),
+            "H5/H6: a 300x300 mask holding one non-reveal texel imports");
+      if (r.ok && !r.document.layers.empty() && r.document.layers[0].mask.has_value()) {
+        const Layer& layer = r.document.layers[0];
+        check(layer.mask->occupiedTileCount() == 1,
+              "H5: it occupies exactly ONE tile, not the 9 its rectangle spans -- reveal (1.0) "
+              "samples allocate nothing, the mask's own inverted empty-tile rule");
+        check(nearf(maskCoverageAtDoc(layer, static_cast<int32_t>(kPx), static_cast<int32_t>(kPx)),
+                    64.0f / 255.0f, kTol),
+              "H6: and that one texel's own value is still there -- so H5 was not bought by "
+              "discarding content");
+        check(nearf(maskCoverageAtDoc(layer, 5, 5), 1.0f, kTol),
+              "H6: a point far from the painted texel, in a different (unallocated) tile, "
+              "still reveals");
+      }
+    }
+
+    // H7/H8: flags bit 0, "position relative to layer", both ways, on a
+    // layer whose own origin is NOT (0,0) -- the one property none of the
+    // three real sample files can discriminate (io/PsdImport.hpp's header:
+    // every masked layer in them sits at (0,0)). The identical raw mask
+    // bytes (0,0)-(4,4)) are read twice, once with each flag state, and
+    // resolve to two different, individually-checkable places: with the
+    // bit set, "relative" means the layer's own (top, left) is added to the
+    // mask's raw coordinates, so a (0,0)-(4,4) mask lands exactly ON a
+    // layer sitting at (200, 100); with the bit clear, the same raw
+    // coordinates are already absolute and land nowhere near it. This is a
+    // judgement call this module makes in the absence of a real file that
+    // exercises it (docs/psd-import-gaps.md says as much); these two
+    // fixtures pin THIS module's own choice down, not Photoshop's.
+    {
+      LayerSpec base;
+      base.top = 100; base.left = 200; base.bottom = 104; base.right = 204;  // 4x4 at (200,100)
+      base.compression = 0;
+      base.channels = {{-1, std::vector<uint32_t>(16, 0)},  // alpha 0: RGB tiles irrelevant here
+                       {-2, std::vector<uint32_t>(16, 77)}};
+      base.mask = MaskSpec{/*top=*/0, /*left=*/0, /*bottom=*/4, /*right=*/4,
+                           /*defaultColor=*/255, /*flags=*/0x01};  // bit 0: relative
+
+      LayerSpec relative = base;
+      const std::vector<uint8_t> relBytes = buildPsd(300, 300, 8, {relative});
+      const PsdImportResult relResult =
+          importPsd(std::span<const uint8_t>(relBytes.data(), relBytes.size()));
+      check(relResult.ok && relResult.document.layers.size() == 1,
+            "H7: a relative-flagged mask, on a non-(0,0) layer, parses");
+      if (relResult.ok && !relResult.document.layers.empty()) {
+        const Layer& layer = relResult.document.layers[0];
+        check(nearf(maskCoverageAtDoc(layer, 202, 102), 77.0f / 255.0f, kTol),
+              "H7: relative (bit 0 set) -- the mask's raw (0,0)-(4,4) is added to the layer's "
+              "own (200,100) origin, so a point INSIDE the layer reads real mask content");
+      }
+
+      LayerSpec absolute = base;
+      absolute.mask->flags = 0x00;  // bit 0 clear: NOT relative
+      const std::vector<uint8_t> absBytes = buildPsd(300, 300, 8, {absolute});
+      const PsdImportResult absResult =
+          importPsd(std::span<const uint8_t>(absBytes.data(), absBytes.size()));
+      check(absResult.ok && absResult.document.layers.size() == 1,
+            "H8: the identical mask bytes with the relative flag clear also parse");
+      if (absResult.ok && !absResult.document.layers.empty()) {
+        const Layer& layer = absResult.document.layers[0];
+        check(nearf(maskCoverageAtDoc(layer, 202, 102), 1.0f, kTol),
+              "H8: absolute (bit 0 clear) -- the SAME raw (0,0)-(4,4) is read as already-"
+              "absolute document coordinates, nowhere near the layer at (200,100), so that "
+              "same layer-interior point now reveals instead");
+        check(nearf(maskCoverageAtDoc(layer, 1, 1), 77.0f / 255.0f, kTol),
+              "H8: and the mask's real content landed at (0,0)-(4,4) instead, confirming the "
+              "flag changed WHERE the mask applies, not merely whether H7's point matched");
+      }
+    }
+
+    // H9 (bonus, not itself one of docs/psd-import-gaps.md's four listed
+    // sabotages): a mask record whose declared size is larger than the
+    // plain 20-byte shape is refused BY NAME, matching this project's
+    // "refuse rather than guess" discipline for exactly the same shape of
+    // decision C5 (ZIP) and C6 (PSB) already make elsewhere in this file.
+    //
+    // The declared size (36) must actually be reachable inside this layer's
+    // own extra-data field, or `readLayerRecord()` refuses one field
+    // earlier with a DIFFERENT message ("runs past the extra-data field") --
+    // a true but less specific refusal that would not be testing what this
+    // fixture is for. The Pascal name is padded out with extra bytes purely
+    // to buy that room; its content is otherwise irrelevant.
+    {
+      LayerSpec l;
+      l.top = 0; l.left = 0; l.bottom = 2; l.right = 2;
+      l.pascalName = "H9-PADDING";
+      l.compression = 0;
+      l.channels = {{-1, std::vector<uint32_t>(4, 255)}};
+      l.mask = MaskSpec{0, 0, 2, 2, 255, 0x00, /*overrideSize=*/36};
+      const std::vector<uint8_t> bytes = buildPsd(2, 2, 8, {l});
+      const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+      check(!r.ok && !r.noLayerData && contains(r.error, "refused by name"),
+            "H9: a mask record larger than the plain 20-byte shape is refused by name, not "
+            "guessed at");
+    }
+  }
+
+  // ==========================================================================
+  std::printf("  -- G. Layer groups ('lsct'): a bounding-section divider\n");
+  std::printf("        opens a group reading forward, its header closes and names it --\n");
+  // ==========================================================================
+  //
+  // docs/psd-import-gaps.md section 3. No sample file this project holds
+  // exercises anything past a single flat run of groups (both real files'
+  // own table says "group nesting depth: 0"), so G2 below is a hand-written
+  // fixture, not something a real Photoshop file has proven -- stated here
+  // rather than left to be assumed from the fact that it exists.
+  {
+    // G1: a single, flat group, alongside a top-level layer outside it. The
+    // divider's own Pascal name is set to Photoshop's own real junk string
+    // ("</Layer group>", observed on both sample files) specifically so its
+    // absence from the imported result is a positive check, not merely an
+    // absence of counter-evidence.
+    LayerSpec div1;
+    div1.top = 0; div1.left = 0; div1.bottom = 0; div1.right = 0;
+    div1.pascalName = "</Layer group>";
+    div1.lsct = LsctSpec{3, false, "pass", false, 0};  // bounding section divider
+
+    LayerSpec alpha;
+    alpha.top = 0; alpha.left = 0; alpha.bottom = 2; alpha.right = 2;
+    alpha.pascalName = "Alpha";
+    alpha.channels = {{0, std::vector<uint32_t>(4, 10)}, {1, std::vector<uint32_t>(4, 10)},
+                      {2, std::vector<uint32_t>(4, 10)}};
+
+    LayerSpec beta;
+    beta.top = 0; beta.left = 0; beta.bottom = 2; beta.right = 2;
+    beta.pascalName = "Beta";
+    beta.channels = {{0, std::vector<uint32_t>(4, 20)}, {1, std::vector<uint32_t>(4, 20)},
+                     {2, std::vector<uint32_t>(4, 20)}};
+
+    LayerSpec hdr1;
+    hdr1.top = 0; hdr1.left = 0; hdr1.bottom = 0; hdr1.right = 0;
+    hdr1.pascalName = "</Layer group>";  // Photoshop writes this on the header too, on
+                                         // some files -- the `luni` name below must win.
+    hdr1.uniName = "My Group";
+    hdr1.lsct = LsctSpec{1, true, "pass", true, 0};  // open folder, blend key 'pass'
+
+    LayerSpec gamma;
+    gamma.top = 0; gamma.left = 0; gamma.bottom = 2; gamma.right = 2;
+    gamma.pascalName = "Gamma";
+    gamma.channels = {{0, std::vector<uint32_t>(4, 30)}, {1, std::vector<uint32_t>(4, 30)},
+                      {2, std::vector<uint32_t>(4, 30)}};
+
+    const std::vector<uint8_t> bytes = buildPsd(8, 8, 8, {div1, alpha, beta, hdr1, gamma});
+    const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+
+    check(r.ok, "G1: a flat group (2 members) plus one top-level layer parses (ok)");
+    check(r.document.layers.size() == 4,
+          "G1: 5 records (divider, 2 members, header, 1 outside) import as 4 layers -- "
+          "the divider is dropped, the header becomes one Group layer");
+
+    bool noJunkName = true;
+    for (const Layer& l : r.document.layers)
+      if (l.name == "</Layer group>") noJunkName = false;
+    check(noJunkName, "G1: '</Layer group>' (the divider's own Pascal name) appears nowhere "
+                      "in the imported result");
+
+    if (r.ok && r.document.layers.size() == 4) {
+      const Layer& l0 = r.document.layers[0];
+      const Layer& l1 = r.document.layers[1];
+      const Layer& l2 = r.document.layers[2];
+      const Layer& l3 = r.document.layers[3];
+
+      // [group-count] -- deliberately separate from the [membership] check
+      // below it: docs/psd-import-gaps.md's sabotage (swap which end of a
+      // frame's range is "inside" it) leaves this one green while reddening
+      // that one, which is the whole reason these are two `check()` calls
+      // and not one. Confirmed by hand: see this file's own note further
+      // down, after G2.
+      check(l0.name == "Alpha" && l1.name == "Beta" && l2.kind == LayerKind::Group &&
+                l2.name == "My Group" && l3.name == "Gamma",
+            "G1 [group-count / identity]: order is Alpha, Beta, the group (named from the "
+            "header's own luni name, not its Pascal one), then Gamma -- one Group layer, "
+            "sitting above the members it closes, exactly where core/LayerSetOps.cpp's own "
+            "GroupLayers puts a freshly created one");
+      check(!l2.groupTag.empty() && l2.groupTag[0] == 'G',
+            "G1: the group carries a freshly assigned groupTag ('G' + Document::nextGroupId)");
+
+      // [membership]
+      check(l0.parent == l2.groupTag && l1.parent == l2.groupTag,
+            "G1 [membership]: Alpha and Beta both carry `parent` == the group's own groupTag");
+      check(l3.parent.empty(),
+            "G1 [membership]: Gamma, outside the group, has an empty `parent`");
+
+      check(!anyContains(r.warnings, "My Group"),
+            "G1: a 'pass' group blend key emits no warning (pass-through is this build's own "
+            "compositing model, not a mismatch)");
+    }
+  }
+
+  {
+    // G2: nesting -- the stack gives it for free, but **no sample file this
+    // project holds exercises depth > 0** (both real files' own feature
+    // table says nesting depth 0), so this fixture is the only evidence for
+    // this part of the mapping. Outer group holds D directly and a nested
+    // inner group (holding E) directly.
+    LayerSpec outerDiv;
+    outerDiv.top = 0; outerDiv.left = 0; outerDiv.bottom = 0; outerDiv.right = 0;
+    outerDiv.pascalName = "</Layer group>";
+    outerDiv.lsct = LsctSpec{3, false, "pass", false, 0};
+
+    LayerSpec d;
+    d.top = 0; d.left = 0; d.bottom = 2; d.right = 2;
+    d.pascalName = "D";
+    d.channels = {{0, std::vector<uint32_t>(4, 1)}};
+
+    LayerSpec innerDiv;
+    innerDiv.top = 0; innerDiv.left = 0; innerDiv.bottom = 0; innerDiv.right = 0;
+    innerDiv.pascalName = "</Layer group>";
+    innerDiv.lsct = LsctSpec{3, false, "pass", false, 0};
+
+    LayerSpec e;
+    e.top = 0; e.left = 0; e.bottom = 2; e.right = 2;
+    e.pascalName = "E";
+    e.channels = {{0, std::vector<uint32_t>(4, 2)}};
+
+    LayerSpec innerHdr;
+    innerHdr.top = 0; innerHdr.left = 0; innerHdr.bottom = 0; innerHdr.right = 0;
+    innerHdr.uniName = "Inner";
+    innerHdr.lsct = LsctSpec{2, true, "pass", true, 0};  // closed folder
+
+    LayerSpec f;
+    f.top = 0; f.left = 0; f.bottom = 2; f.right = 2;
+    f.pascalName = "F";
+    f.channels = {{0, std::vector<uint32_t>(4, 3)}};
+
+    LayerSpec outerHdr;
+    outerHdr.top = 0; outerHdr.left = 0; outerHdr.bottom = 0; outerHdr.right = 0;
+    outerHdr.uniName = "Outer";
+    outerHdr.lsct = LsctSpec{1, true, "pass", true, 0};
+
+    const std::vector<uint8_t> bytes =
+        buildPsd(8, 8, 8, {outerDiv, d, innerDiv, e, innerHdr, f, outerHdr});
+    const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+
+    check(r.ok, "G2 (fixture-only, no real file has depth > 0): a nested group parses (ok)");
+    check(r.document.layers.size() == 5,
+          "G2: 7 records (2 dividers, D, E, 2 headers, F) import as 5 layers -- D, E, "
+          "the inner group, F, the outer group");
+
+    if (r.ok && r.document.layers.size() == 5) {
+      const Layer& lD = r.document.layers[0];
+      const Layer& lE = r.document.layers[1];
+      const Layer& lInner = r.document.layers[2];
+      const Layer& lF = r.document.layers[3];
+      const Layer& lOuter = r.document.layers[4];
+
+      check(lD.name == "D" && lE.name == "E" && lInner.kind == LayerKind::Group &&
+                lInner.name == "Inner" && lF.name == "F" && lOuter.kind == LayerKind::Group &&
+                lOuter.name == "Outer",
+            "G2: stacking order is D, E, the inner group, F, the outer group");
+      check(lE.parent == lInner.groupTag,
+            "G2 [membership]: E belongs to the INNER group, not the outer one");
+      check(lD.parent == lOuter.groupTag && lF.parent == lOuter.groupTag,
+            "G2 [membership]: D and F are the outer group's own direct children");
+      check(lInner.parent == lOuter.groupTag,
+            "G2 [membership]: the inner group's own entry is itself a direct child of the "
+            "outer group -- nesting is carried by chaining `parent`, not by flattening");
+      check(lOuter.parent.empty(), "G2: the outer group is top-level");
+    }
+  }
+
+  // Sabotage, run by hand and reverted before this file was left as it is
+  // (matching section D3-control's own precedent for recording a sabotage
+  // result in prose rather than as a permanent runtime toggle): swapped the
+  // two bounds of the membership-stamping loop in io/PsdImport.cpp's group
+  // header handling (`for (idx = frameStart; idx < doc.layers.size(); ...)`
+  // became `for (idx = doc.layers.size(); idx < frameStart; ...)`, an empty
+  // range whenever `frameStart` is the loop's natural start rather than its
+  // end). Rebuilt and reran this suite: G1's "[group-count / identity]"
+  // check STAYED GREEN (the group is still created, still named from the
+  // header, still sits above where its members were) while G1's
+  // "[membership]" check WENT RED (Alpha and Beta both kept an empty
+  // `parent` instead of the group's tag) -- exactly the split
+  // docs/psd-import-gaps.md predicts for "swap the push/pop roles", and the
+  // reason this file asserts group identity and membership as two `check()`
+  // calls rather than one. Reverted immediately after; the source in this
+  // file's own tree has never carried the sabotage.
+
+  {
+    // G3: a group whose own blend key is NOT 'pass' (an isolated group, in
+    // Photoshop's vocabulary) -- imported anyway (core/Composite.hpp:688
+    // composites every group here as pass-through regardless) and warned by
+    // name, the same discipline an ordinary layer's unmapped blend key gets.
+    LayerSpec div3;
+    div3.top = 0; div3.left = 0; div3.bottom = 0; div3.right = 0;
+    div3.lsct = LsctSpec{3, false, "pass", false, 0};
+
+    LayerSpec x;
+    x.top = 0; x.left = 0; x.bottom = 2; x.right = 2;
+    x.pascalName = "X";
+    x.channels = {{0, std::vector<uint32_t>(4, 5)}};
+
+    LayerSpec hdr3;
+    hdr3.top = 0; hdr3.left = 0; hdr3.bottom = 0; hdr3.right = 0;
+    hdr3.uniName = "Isolated Group";
+    hdr3.lsct = LsctSpec{1, true, "norm", true, 0};  // NOT 'pass'
+
+    const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {div3, x, hdr3});
+    const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+
+    check(r.ok && r.document.layers.size() == 2,
+          "G3: a non-'pass' group blend key still imports the group (ok, 2 layers)");
+    if (r.ok && r.document.layers.size() == 2) {
+      check(r.document.layers[1].kind == LayerKind::Group &&
+                r.document.layers[1].name == "Isolated Group",
+            "G3: the group itself imports, named correctly, despite the mismatched blend key");
+      check(r.document.layers[0].parent == r.document.layers[1].groupTag,
+            "G3: X is still grouped normally -- the blend-key mismatch is a warning, not a "
+            "membership change");
+    }
+    check(anyContains(r.warnings, "Isolated Group") && anyContains(r.warnings, "norm"),
+          "G3: the non-'pass' blend key is named in a warning, by group name and by key, "
+          "not silently treated as pass-through");
+  }
+
+  {
+    // G4: unbalanced -- a divider with no matching header anywhere before
+    // end of file. Total refusal (io/Descriptor.hpp's own "a refusal is
+    // total"), not a best-effort import of everything up to the gap.
+    LayerSpec div4;
+    div4.top = 0; div4.left = 0; div4.bottom = 0; div4.right = 0;
+    div4.lsct = LsctSpec{3, false, "pass", false, 0};
+
+    LayerSpec y;
+    y.top = 0; y.left = 0; y.bottom = 2; y.right = 2;
+    y.pascalName = "Y";
+    y.channels = {{0, std::vector<uint32_t>(4, 7)}};
+
+    const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {div4, y});
+    const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+    check(!r.ok && r.document.layers.empty(),
+          "G4: a bounding-section divider with no matching header refuses cleanly, and the "
+          "refusal is total (no half-built document)");
+  }
+
+  {
+    // G5: unbalanced the other way -- a header with no divider ever opened
+    // before it.
+    LayerSpec z;
+    z.top = 0; z.left = 0; z.bottom = 2; z.right = 2;
+    z.pascalName = "Z";
+    z.channels = {{0, std::vector<uint32_t>(4, 9)}};
+
+    LayerSpec hdr5;
+    hdr5.top = 0; hdr5.left = 0; hdr5.bottom = 0; hdr5.right = 0;
+    hdr5.uniName = "Orphan";
+    hdr5.lsct = LsctSpec{1, true, "pass", true, 0};
+
+    const std::vector<uint8_t> bytes = buildPsd(4, 4, 8, {z, hdr5});
+    const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+    check(!r.ok && r.document.layers.empty(),
+          "G5: a group header with no matching divider open before it refuses cleanly, and "
+          "the refusal is total");
+  }
+  std::printf("  -- I. 'lddg' (Linear Dodge / Add) -> BlendMode::Plus --\n");
+  // ==========================================================================
+  {
+    LayerSpec l;
+    l.top = 0; l.left = 0; l.bottom = 2; l.right = 2;
+    l.blendKey = "lddg";
+    l.pascalName = "I1";
+    l.compression = 0;
+    l.channels = {{0, std::vector<uint32_t>(4, 10)},
+                  {1, std::vector<uint32_t>(4, 20)},
+                  {2, std::vector<uint32_t>(4, 30)},
+                  {-1, std::vector<uint32_t>(4, 255)}};
+    const std::vector<uint8_t> bytes = buildPsd(2, 2, 8, {l});
+    const PsdImportResult r = importPsd(std::span<const uint8_t>(bytes.data(), bytes.size()));
+    check(r.ok && r.document.layers.size() == 1 && r.document.layers[0].blend == "plus",
+          "I1: 'lddg' (Linear Dodge/Add) maps to core::BlendMode::Plus");
+    check(r.ok && r.warnings.empty(),
+          "I1: and, being an exact key-table entry, emits no 'no equivalent' warning");
   }
 
   // The section footer every other file in `app/selftest/` prints. Not

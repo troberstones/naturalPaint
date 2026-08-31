@@ -347,8 +347,28 @@ struct AtelierPaneDocuments {
 // to ask twice.
 AtelierPaneDocuments atelierPaneDocuments(DocumentSession& session, AtelierSplitState& state);
 
-// docs/ui.md section 2's 34px band: the open documents as tabs (PRD **A5**),
+// docs/ui.md section 2's tab strip: the open documents as tabs (PRD **A5**),
 // and at its right edge the two split icons that section 5 asks for.
+//
+// **Nested inside the title row, not a band of its own, and NOT a window of
+// its own either.** `bands.tabStrip` (`ui/AtelierLayout.hpp`) is a rect
+// narrower than the row it shares, reserved between the wordmark's width and
+// the Undo/Redo/PANELS/fps cluster's -- see that header's comment for the
+// merge. **Content only: the caller must call this from between its own
+// `ImGui::BeginMainMenuBar()`/`EndMainMenuBar()`**, the same convention
+// `drawAtelierOptionsBarContent()` below uses for a dock slot. This function
+// used to open its own `Begin()`/`End()` (`beginBand()`), which was correct
+// while the tab strip was a band of its own, non-overlapping with the title
+// row above it -- once the two merged, that window and the menu bar's own
+// occupy the same screen rect, and a `NoBringToFrontOnFocus` window (this
+// one's old flags) is inserted at the *front* of Dear ImGui's window list on
+// creation (`CreateNewWindow()`, imgui.cpp), the opposite end from a plain
+// window like the menu bar's, which always ends up drawn on top of it. That
+// silently painted the menu bar's own background over every tab -- caught by
+// screenshotting the merged row and finding it empty, not by `--selftest`,
+// which has no window to notice a z-order fight in. Drawing straight into
+// the caller's already-open window removes the second window and the
+// question of its order entirely.
 //
 // `statusOut`, when non-null, receives the one sentence a close produced --
 // "Closed <name>." for a clean document, or a refusal for a request that could

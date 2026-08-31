@@ -5,6 +5,9 @@
 
 #include "color/Space.hpp"
 #include "core/Blend.hpp"
+#include "core/LayerOps.hpp"  // makeGroupLayer() -- the receiving model this
+                               // module maps `lsct` onto, not reinvented here
+#include "core/Mask.hpp"
 #include "core/Tile.hpp"
 #include "io/AbrBrushes.hpp"  // checkedAdd() -- shared overflow-safe addition
 
@@ -221,8 +224,11 @@ bool decodePackBits(std::span<const uint8_t> body, uint32_t rows, size_t expecte
 //
 // io/PsdImport.hpp argues each mapping (and the deliberate absence of the
 // rest) at length; this table is just the wire keys next to the
-// core::BlendMode each one is an exact match for. Every key not listed here
-// is reported by name and left as Normal -- see `mapBlendKey()`.
+// core::BlendMode each one maps to. Every key not listed here is reported by
+// name and left as Normal -- see `mapBlendKey()`. **Not every row here is an
+// EXACT match** -- `dark`/`lite` are; `lddg` is not; see each row's own
+// comment and io/PsdImport.hpp's "Blend mode mapping" section for the full
+// argument.
 struct BlendKeyMap {
   const char* psdKey;  // exactly 4 bytes, including a trailing space where
                        // Photoshop pads a short key with one
@@ -239,6 +245,73 @@ constexpr BlendKeyMap kBlendKeyMap[] = {
     // than an approximation.
     {"dark", BlendMode::Min},
     {"lite", BlendMode::Max},
+    // Linear Dodge (Add) is `Cs + Cb`, exactly core::Blend.cpp's
+    // `BlendMode::Plus` (additive light). **Not exact, unlike the two rows
+    // above**: min/max are order-preserving, so they commute with any
+    // monotone transfer function and agree with Photoshop whether the
+    // addition happens before or after gamma encoding. Addition does not
+    // commute with a transfer function -- Photoshop adds in gamma space by
+    // default ("Blend RGB Colors Using Gamma 1.0" off) and this codebase
+    // adds in linear light. That is the identical compromise `mul `/`scrn`
+    // already ship with above, not a new one.
+    {"lddg", BlendMode::Plus},
+    // Stage 1 (docs/blend-mode-gaps.md): these 7 are NOT exact matches, unlike
+    // `dark`/`lite` above. This codebase composites them in premultiplied,
+    // LINEAR-LIGHT RGBA (core/Blend.hpp), while Photoshop's default is to
+    // blend in whichever (usually gamma-encoded) space the document works in
+    // -- the same reason a `mul`/`scrn`/`lddg`-style key would only be an
+    // approximation rather than an exact match. Listed anyway, and not
+    // reported as a mismatch, because "approximate but visually close" is a
+    // materially better outcome than falling back to Normal.
+    {"diff", BlendMode::Difference},  // Difference
+    {"smud", BlendMode::Exclusion},   // Exclusion
+    {"fsub", BlendMode::Subtract},    // Subtract
+    {"lbrn", BlendMode::LinearBurn},  // Linear Burn
+    {"div ", BlendMode::ColorDodge},  // Color Dodge
+    {"idiv", BlendMode::ColorBurn},   // Color Burn
+    {"fdiv", BlendMode::Divide},      // Divide
+    // Stage 2's seven "light family" modes (docs/blend-mode-gaps.md). Unlike
+    // `dark`/`lite` above, these are NOT exact matches in substance, even
+    // though `mapBlendKey()` reports them as one (there is no third bucket
+    // between "exact" and "no equivalent, warn and fall back to Normal", and
+    // a mode this build genuinely composites belongs on this side of that
+    // line, not the other). The approximation: this codebase composites in
+    // LINEAR light and Photoshop's default compositing is GAMMA-space, and
+    // none of Hard Light/Overlay/Vivid Light/Linear Light/Pin Light/Soft
+    // Light/Hard Mix is invariant to that choice of space (unlike Darken/
+    // Lighten's per-channel min/max above, which are). A PSD written by
+    // Photoshop with one of these blend keys will therefore round-trip
+    // through this importer with the right blend *mode* but not bit-exact
+    // pixels -- the same caveat this build already carries for any
+    // gamma-space blend, stated here rather than left implicit.
+    {"hLit", BlendMode::HardLight},
+    {"over", BlendMode::Overlay},
+    {"vLit", BlendMode::VividLight},
+    {"lLit", BlendMode::LinearLight},
+    {"pLit", BlendMode::PinLight},
+    {"sLit", BlendMode::SoftLight},
+    {"hMix", BlendMode::HardMix},
+    // Stage 3's six non-separable modes. These, like `lddg` (Linear Dodge),
+    // are approximations rather than exact matches for the same reason: this
+    // codebase blends in premultiplied LINEAR light, while Photoshop's own
+    // Hue/Saturation/Color/Luminosity/Darker-Color/Lighter-Color operate in
+    // gamma (display-encoded) space, so the same PSD file can composite
+    // visibly differently between the two. `colr` and `lum ` are the two
+    // that matter most in practice -- they are the modes actually present in
+    // the user's own real PSD file (three `colr` layers) -- so getting those
+    // two exactly right (mode selection, not the linear-vs-gamma gap, which
+    // is a known, stated approximation) is worth more than the rest of this
+    // table.
+    //
+    // Three of the six keys carry a trailing space, matching Photoshop's own
+    // 4-byte padding of a 3-character key -- get it exactly right or
+    // fourccEquals() silently fails to match real files.
+    {"hue ", BlendMode::Hue},
+    {"sat ", BlendMode::Saturation},
+    {"colr", BlendMode::Color},
+    {"lum ", BlendMode::Luminosity},
+    {"dkCl", BlendMode::DarkerColor},
+    {"lgCl", BlendMode::LighterColor},
 };
 
 // `std::nullopt`-free by design: every key maps to a BlendMode, and the
@@ -267,6 +340,18 @@ struct ParsedChannel {
   uint32_t length = 0;  // this channel's own byte count, PSD (non-PSB) width
 };
 
+// A layer record's own `lsct` ("Section divider setting") tag, if it carries
+// one -- docs/psd-import-gaps.md section 3's wire layout. `type` 0 ("other")
+// is an ordinary layer that merely happens to carry an lsct block (every
+// non-group layer in `Testforautoflats 2.psd` does, always type 0) and is
+// treated identically to a layer with no lsct block at all: `kNone` covers
+// both. Only `kDivider` (type 3, the bounding-section marker that OPENS a
+// group reading forward through the bottom-first record list) and `kHeader`
+// (type 1 "open folder" / 2 "closed folder", which CLOSES and names the
+// group) change how this module treats the record -- see `importPsd()`'s
+// group-stack walk.
+enum class LsctRole { kNone, kDivider, kHeader };
+
 struct ParsedLayer {
   int32_t top = 0, left = 0, bottom = 0, right = 0;
   std::vector<ParsedChannel> channels;
@@ -275,6 +360,34 @@ struct ParsedLayer {
   uint8_t clipping = 0;
   bool hidden = false;
   std::string name;      // luni, if present; else the Pascal name
+  bool alphaLocked = false;  // lspf bit 0 ("Lock transparent pixels"); see
+                              // the `lspf` case in readLayerRecord() for why
+                              // bits 1/2 have no field here to land in.
+
+  // Set only when this record's `lsct` additional-layer-info block declared
+  // type 1, 2 or 3 -- see `LsctRole`'s own comment.
+  LsctRole lsctRole = LsctRole::kNone;
+  // The group's own blend key ("pass" for Photoshop's Pass Through, or an
+  // ordinary blend-mode key for an isolated group), read from the `lsct`
+  // block's optional second field. Only meaningful when `lsctRole ==
+  // kHeader` AND `lsctHasBlendKey` is true -- the field is itself optional
+  // (present only when the block's declared length is >= 12), and no sample
+  // file omits it, but a hand-built or older-Photoshop-written file might.
+  std::array<char, 4> lsctBlendKey{'p', 'a', 's', 's'};
+  bool lsctHasBlendKey = false;
+
+  // The 20-byte layer mask record (docs/psd-import-gaps.md section 1), raw
+  // and un-resolved: `maskTop`/`maskLeft`/`maskBottom`/`maskRight` are the
+  // WIRE values, which are either absolute document coordinates or an
+  // offset from this layer's own (top, left) depending on `maskFlags` bit 0
+  // -- resolving that is `importPsd()`'s job, not this parse step's, because
+  // resolution needs `top`/`left` above, which belong to the same struct and
+  // are already in scope there. `hasMask` false means this layer carries no
+  // mask block at all (the common case, and every layer before this step).
+  bool hasMask = false;
+  int32_t maskTop = 0, maskLeft = 0, maskBottom = 0, maskRight = 0;
+  uint8_t maskDefaultColor = 255;  // 255 = reveal outside the mask rect, 0 = hide
+  uint8_t maskFlags = 0;           // bit 0 = relative to layer, bit 1 = disabled
 };
 
 // Photoshop's own thirteen Additional-Layer-Information keys that widen to
@@ -413,17 +526,67 @@ bool readLayerRecord(Cursor& c, ParsedLayer& layer, std::string& error) {
   // against `ec`'s own size.
   Cursor ec(c.data().subspan(extraStart, extraLen));
 
-  // Layer mask / adjustment layer data: a self-length-prefixed block this
-  // module does not interpret (io/PsdImport.hpp: masks are walked past, not
-  // imported, in this landing). Skipping by its own declared size, rather
-  // than by the fixed 0/20/36-byte shapes the spec's table enumerates,
-  // means this module never has to reproduce that table's internal layout
-  // at all -- it only has to trust the one length field every shape shares.
+  // Layer mask / adjustment layer data: a self-length-prefixed block.
+  // docs/psd-import-gaps.md section 1 gives the 20-byte shape byte for byte,
+  // verified against a real file: 0 means no mask, 20 means the shape below,
+  // and anything larger means a second "real" mask (vector-mask-derived
+  // render) follows, which this module refuses BY NAME rather than guess at
+  // -- none of the three sample files this module was checked against ever
+  // exercises it (all ten of their masks are exactly size 20).
+  //
+  // Scoped to a SUB-cursor over exactly `maskLen` bytes, the same discipline
+  // `ec` itself is scoped to `extraLen` bytes for: a malformed `maskLen`
+  // that undershoots must not let the 20-byte read below wander into the
+  // blending-ranges field that follows it and misparse that as mask data.
   uint32_t maskLen = 0;
-  if (!ec.u32(maskLen) || !ec.skip(maskLen)) {
-    error = "layer record: truncated layer mask data at byte " + std::to_string(extraStart + ec.pos());
+  if (!ec.u32(maskLen)) {
+    error = "layer record: truncated layer mask data length at byte " +
+            std::to_string(extraStart + ec.pos());
     return false;
   }
+  std::span<const uint8_t> maskSpan;
+  if (!ec.bytes(maskLen, maskSpan)) {
+    error = "layer record: layer mask data length " + std::to_string(maskLen) +
+            " runs past the extra-data field at byte " + std::to_string(extraStart + ec.pos());
+    return false;
+  }
+  if (maskLen == 20) {
+    Cursor mc(maskSpan);
+    int32_t mTop = 0, mLeft = 0, mBottom = 0, mRight = 0;
+    uint8_t mDefault = 0, mFlags = 0;
+    if (!(mc.i32(mTop) && mc.i32(mLeft) && mc.i32(mBottom) && mc.i32(mRight) &&
+          mc.u8(mDefault) && mc.u8(mFlags) && mc.skip(2))) {
+      error = "layer record: internal: 20-byte mask record did not fit its own sub-cursor";
+      return false;
+    }
+    // A well-formed mask rectangle never inverts either -- the identical
+    // discipline the layer's own rectangle is held to above, and for the
+    // same reason: a clamped rectangle would decode SOME mask samples for a
+    // rect whose own bytes never described a valid one.
+    if (mBottom < mTop || mRight < mLeft) {
+      error = "layer record: inverted mask rectangle (top=" + std::to_string(mTop) +
+              " left=" + std::to_string(mLeft) + " bottom=" + std::to_string(mBottom) +
+              " right=" + std::to_string(mRight) + ") at byte " + std::to_string(extraStart);
+      return false;
+    }
+    layer.hasMask = true;
+    layer.maskTop = mTop;
+    layer.maskLeft = mLeft;
+    layer.maskBottom = mBottom;
+    layer.maskRight = mRight;
+    layer.maskDefaultColor = mDefault;
+    layer.maskFlags = mFlags;
+  } else if (maskLen != 0) {
+    error = "layer record: layer mask data of size " + std::to_string(maskLen) +
+            " at byte " + std::to_string(extraStart) +
+            " is not the plain 20-byte shape this module reads -- a size other than 0 or 20 "
+            "means a second 'real' (vector-mask-derived) mask follows, which is refused by "
+            "name rather than guessed at (no sample file this module was checked against ever "
+            "carries one).";
+    return false;
+  }
+  // maskLen == 0: `layer.hasMask` stays false, its default -- no mask block
+  // at all, the common case.
 
   // Layer blending ranges: same shape, same treatment.
   uint32_t blendRangesLen = 0;
@@ -570,6 +733,73 @@ bool readLayerRecord(Cursor& c, ParsedLayer& layer, std::string& error) {
       // the Pascal name already read above is a perfectly good fallback,
       // and one damaged optional block should not cost the rest of a
       // document that otherwise parses cleanly.
+    } else if (fourccEquals(key, "lspf")) {
+      // "Protected Setting" -- a plain u32 bitfield, no Descriptor framing
+      // (same reasoning as `luni` above: this is one of PSD's own small
+      // fixed-shape primitives, not an Action Descriptor value). Bit 0 =
+      // protect transparency ("Lock transparent pixels"); bit 1 = protect
+      // composite ("Lock image pixels", i.e. no painting); bit 2 = protect
+      // position ("Lock position", i.e. no move).
+      //
+      // Bit 0 is wired: it is exactly the promise `Layer::alphaLocked`
+      // already makes (Layer.hpp's own comment on the field, landed
+      // 4931d6d) -- "freezes the layer's alpha while still letting colour
+      // change underneath it" is a direct restatement of Photoshop's own
+      // "Lock transparent pixels".
+      //
+      // Bits 1 and 2 are read but DELIBERATELY left unmapped to
+      // `Layer::locked`, the "nearest thing" this codebase has. They are
+      // not a match: `Layer::locked` is enforced by core/LayerOps.hpp and
+      // app/StrokeSession.cpp's `strokeRouteFor()` against remove, move,
+      // rename, re-opacity AND painting all at once ("locked before kind,
+      // so a locked layer refuses for being locked whatever it is made
+      // of" -- Layer.hpp's own comment), which is strictly broader than
+      // either PSD flag alone claims. Setting `locked` from bit 2
+      // (position-only) would also freeze painting, renaming and opacity
+      // the source file never asked to freeze; setting it from bit 1
+      // (composite-only) would also freeze move, rename and opacity.
+      // Either mapping would report a protection state stronger than the
+      // one actually recorded in the PSD -- which is worse than reporting
+      // none, so both bits are read here (for a future, better-fitted
+      // field) and go nowhere, rather than being forced onto a field whose
+      // promise they do not keep.
+      if (blockData.size() >= 4) {
+        Cursor lc(blockData);
+        uint32_t flags = 0;
+        if (lc.u32(flags)) {
+          layer.alphaLocked = (flags & 0x1u) != 0;
+        }
+      }
+    } else if (fourccEquals(key, "lsct")) {
+      // Section divider setting -- docs/psd-import-gaps.md section 3's wire
+      // layout, verified against `Testforautoflats 2.psd` and `Peter_...
+      // fire.psd`: a u32 `type`, then optionally (blockData.size() >= 12) an
+      // `8BIM` signature plus a 4-byte blend key, then optionally
+      // (blockData.size() >= 16) a u32 sub-type this module has no use for
+      // and does not read. Exactly like `luni` above, a block too short to
+      // even carry its own `type` field is not a whole-file refusal -- the
+      // record simply keeps `lsctRole == kNone` and imports as an ordinary
+      // (very likely empty) layer, the same graceful-degradation choice
+      // `luni` makes for a truncated name.
+      Cursor lc(blockData);
+      uint32_t lsctType = 0;
+      if (lc.u32(lsctType)) {
+        if (lsctType == 3) {
+          layer.lsctRole = LsctRole::kDivider;
+        } else if (lsctType == 1 || lsctType == 2) {
+          layer.lsctRole = LsctRole::kHeader;
+          std::array<char, 4> blendSig{};
+          std::array<char, 4> blendKey{};
+          if (lc.fourcc(blendSig) && lc.fourcc(blendKey) && fourccEquals(blendSig, "8BIM")) {
+            layer.lsctBlendKey = blendKey;
+            layer.lsctHasBlendKey = true;
+          }
+        }
+        // type 0 ("other"): leave `lsctRole` at `kNone` -- an ordinary
+        // layer that happens to carry this tag, per `LsctRole`'s own
+        // comment. The optional sub-type field past this point (present
+        // when blockData.size() >= 16) is never read, on any type.
+      }
     }
   }
 
@@ -679,6 +909,65 @@ void writeLayerPixelsAt(std::span<const float> straightRgba, uint32_t width, uin
       const std::array<float, 4> premultiplied{src[0] * a, src[1] * a, src[2] * a, a};
       const PixelCoord doc{left + static_cast<int32_t>(x), top + static_cast<int32_t>(y)};
       tiles.getOrCreate(tileCoordAt(doc)).writePixel(tileLocalOffset(doc), premultiplied);
+    }
+  }
+}
+
+// Writes one mask channel's decoded coverage samples into `maskTiles` at
+// document coordinates offset by (`left`, `top`) -- the RESOLVED mask rect's
+// origin (already adjusted for the "position relative to layer" flag by the
+// caller, so this function itself never has to know about it).
+//
+// **Skips writing a texel whose coverage is exactly 1.0 when `skipReveal` is
+// true**, the mask analogue of `writeLayerPixelsAt`'s alpha==0 skip, and
+// deliberately the INVERSE of it: core/Mask.hpp is explicit that an
+// unallocated `MaskTile` already means 1.0 (reveal), the identity of the
+// multiply a mask feeds, so writing 1.0 explicitly would only spend a whole
+// 32 KiB tile to store a value an absent tile already gives for free. Get
+// the direction backwards -- skip on 0.0 instead -- and a mask that is
+// mostly "reveal everything" with one small painted region allocates a tile
+// for every 1.0 texel and none for the one that matters, which is precisely
+// the "discovered by the user as a black layer" failure Mask.hpp's own
+// header warns about, arriving from the opposite direction.
+//
+// `skipReveal` is false only for the "default colour 0" case
+// (`fillMaskHiddenAt` below): there, an absent tile no longer means this
+// layer's own default, so a 1.0 sample inside the mask rect must be written
+// explicitly to overwrite the 0.0 the whole-layer fill already put there.
+void writeMaskPixelsAt(std::span<const float> coverage, uint32_t width, uint32_t height,
+                       int32_t left, int32_t top, bool skipReveal, MaskTileStore& maskTiles) {
+  if (width == 0 || height == 0) return;
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      const float v = coverage[static_cast<size_t>(y) * width + x];
+      if (skipReveal && v >= 1.0f) continue;
+      const PixelCoord doc{left + static_cast<int32_t>(x), top + static_cast<int32_t>(y)};
+      maskTiles.getOrCreate(tileCoordAt(doc)).writeCoverage(tileLocalOffset(doc), v);
+    }
+  }
+}
+
+// The "default colour 0" half of docs/psd-import-gaps.md section 1: fills
+// `maskTiles` with explicit 0.0 (hidden) coverage across THIS LAYER's own
+// [left, left+width) x [top, top+height) extent -- not the whole canvas,
+// because a mask only ever multiplies THIS layer's own coverage, and this
+// layer holds no pixels anywhere outside its own rectangle for a mask value
+// there to affect.
+//
+// Unlike `writeMaskPixelsAt` above, every texel here is written, none
+// skipped: 0.0 is the mask's real content (core/Mask.hpp: "all 0.0 ... is
+// not free: it is real content, 32 KiB per tile, exactly as a painted
+// stroke is"), the opposite of the 1.0 an absent tile already means, so
+// there is no free case to skip. Called BEFORE the mask channel's own
+// samples are written (`writeMaskPixelsAt` above, with `skipReveal = false`
+// in this case), so the real samples inside the mask rect overwrite this
+// fill rather than the other way around.
+void fillMaskHiddenAt(uint32_t width, uint32_t height, int32_t left, int32_t top,
+                      MaskTileStore& maskTiles) {
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      const PixelCoord doc{left + static_cast<int32_t>(x), top + static_cast<int32_t>(y)};
+      maskTiles.getOrCreate(tileCoordAt(doc)).writeCoverage(tileLocalOffset(doc), 0.0f);
     }
   }
 }
@@ -853,6 +1142,32 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
   doc.workingSpace = WorkingSpace{};
   doc.layers.reserve(layers.size());
 
+  // --- Layer groups (`lsct`) -----------------------------------------------
+  //
+  // docs/psd-import-gaps.md section 3. The flat record list runs
+  // bottom-first, and a group's members sit BETWEEN its divider (type 3,
+  // read FIRST) and its header (type 1/2, read LAST): the divider opens the
+  // group as this loop reads forward, the header closes and names it. A
+  // stack of pending frames gives nesting for free -- each element is the
+  // `doc.layers.size()` at the moment its divider was seen, i.e. "how many
+  // output layers existed when this group started", so `[frameStart,
+  // doc.layers.size())` at the matching header is exactly this frame's
+  // direct children, whether ordinary layers or (for a nested group) that
+  // inner group's own single entry -- **never** its inner group's members,
+  // which were already stamped with the INNER group's tag when the inner
+  // frame closed. That is what "only stamp `parent` where it is still
+  // empty" below buys: a doubly-nested member is never overwritten by an
+  // outer frame that closes later.
+  //
+  // Getting this backward -- treating the header as the opener and the
+  // divider as the closer -- produces a document that still has the right
+  // NUMBER of groups (every header still closes exactly one frame) but
+  // silently inverts or empties every group's membership, with no crash and
+  // no refusal anywhere to catch it. `app/selftest/PsdImport.cpp`'s section F
+  // sabotage exercises exactly this and confirms the group-count assertion
+  // stays green while the membership assertion reddens.
+  std::vector<size_t> groupStack;
+
   for (size_t li = 0; li < layers.size(); ++li) {
     ParsedLayer& pl = layers[li];
     const uint32_t layerWidth = static_cast<uint32_t>(pl.right - pl.left);
@@ -868,15 +1183,122 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
     std::vector<float> pixels(pixelCount * 4, 0.0f);
     bool hasAlphaChannel = false;
 
+    // --- Resolve this layer's mask, if it has one, before the channel walk
+    // reaches its -2 channel -- docs/psd-import-gaps.md section 1.
+    //
+    // `top`/`left`/`bottom`/`right` below are ABSOLUTE document coordinates,
+    // resolved from `pl.mask*`'s wire values according to `maskFlags` bit 0
+    // ("position relative to layer"): when set, the wire values are an
+    // offset from this layer's own (top, left) rather than already-absolute
+    // coordinates -- widened to int64_t for the add so two independently
+    // untrusted int32_t values (the layer's own origin, and the mask's) can
+    // never signed-overflow, the same `layerWidth64`-style widening
+    // `readLayerRecord()` already uses for this layer's own rectangle.
+    bool maskPresent = false;
+    bool maskDisabled = false;
+    int32_t maskAbsTop = 0, maskAbsLeft = 0, maskAbsBottom = 0, maskAbsRight = 0;
+    if (pl.hasMask) {
+      constexpr uint8_t kMaskFlagRelative = 0x01;
+      constexpr uint8_t kMaskFlagDisabled = 0x02;
+      maskPresent = true;
+      maskDisabled = (pl.maskFlags & kMaskFlagDisabled) != 0;
+      if (pl.maskFlags & kMaskFlagRelative) {
+        maskAbsTop = static_cast<int32_t>(static_cast<int64_t>(pl.top) + pl.maskTop);
+        maskAbsLeft = static_cast<int32_t>(static_cast<int64_t>(pl.left) + pl.maskLeft);
+        maskAbsBottom = static_cast<int32_t>(static_cast<int64_t>(pl.top) + pl.maskBottom);
+        maskAbsRight = static_cast<int32_t>(static_cast<int64_t>(pl.left) + pl.maskRight);
+      } else {
+        maskAbsTop = pl.maskTop;
+        maskAbsLeft = pl.maskLeft;
+        maskAbsBottom = pl.maskBottom;
+        maskAbsRight = pl.maskRight;
+      }
+      if (pl.maskDefaultColor != 0 && pl.maskDefaultColor != 255) {
+        return fail("layer " + std::to_string(li) + " (" + pl.name +
+                   "): mask default colour " + std::to_string(pl.maskDefaultColor) +
+                   " is neither 0 (hide outside the mask rect) nor 255 (reveal outside it) -- "
+                   "this module does not guess at an intermediate default and refuses rather "
+                   "than silently treating it as one or the other.");
+      }
+    }
+    // `maskTiles` is populated here, in document-coordinate space, and moved
+    // onto the Layer once it exists below -- the `Layer` object itself isn't
+    // constructed until after the channel walk (its RGBA `pixels` still
+    // needs to be gathered first), so there is nowhere on it yet to write a
+    // mask sample as the channel loop reads one.
+    std::optional<MaskTileStore> maskTiles;
+    if (maskPresent && !maskDisabled) {
+      maskTiles.emplace();
+      // "default colour 0" (docs/psd-import-gaps.md): everything outside the
+      // mask rect, across this layer's own extent, is HIDDEN -- and unlike
+      // the 255 case, that is not what an absent tile already means, so it
+      // must be written explicitly, before the mask channel's own samples
+      // (below) overwrite the rect itself with real content.
+      if (pl.maskDefaultColor == 0) {
+        fillMaskHiddenAt(layerWidth, layerHeight, pl.left, pl.top, *maskTiles);
+      }
+    }
+
     for (const ParsedChannel& ch : pl.channels) {
       std::span<const uint8_t> channelSpan;
       if (!c.bytes(ch.length, channelSpan))
         return fail("layer " + std::to_string(li) + ": channel data length " +
                    std::to_string(ch.length) + " runs past the end of the file.");
 
-      // A layer mask channel (-2 real, -3 user-supplied-when-both-present):
-      // walked past to stay aligned with the next layer, not imported --
-      // io/PsdImport.hpp's stated scope limit.
+      // The "real" layer mask channel -- docs/psd-import-gaps.md section 1.
+      // Decoded at the MASK's own rectangle, never the layer's: verified
+      // against a real file, a masked layer's mask rectangle is almost
+      // always smaller than (and offset from) its layer's rectangle, so
+      // reusing `layerWidth`/`layerHeight` here would read the wrong number
+      // of samples for this channel's declared length and desynchronise
+      // nothing (each channel's length is self-declared) while decoding
+      // garbage into the wrong-shaped store.
+      if (ch.id == -2) {
+        if (maskTiles.has_value()) {
+          const uint32_t maskWidth = static_cast<uint32_t>(maskAbsRight - maskAbsLeft);
+          const uint32_t maskHeight = static_cast<uint32_t>(maskAbsBottom - maskAbsTop);
+          const size_t maskPixelCount = static_cast<size_t>(maskWidth) * maskHeight;
+          if (maskPixelCount > 0) {
+            std::vector<uint8_t> raw;
+            std::string channelError;
+            if (!decodeChannelData(channelSpan, maskWidth, maskHeight, bytesPerSample, raw,
+                                   channelError))
+              return fail("layer " + std::to_string(li) + " (" + pl.name + "): mask " +
+                         channelError);
+            const float maxValue = bytesPerSample == 2 ? 65535.0f : 255.0f;
+            std::vector<float> coverage(maskPixelCount);
+            for (size_t px = 0; px < maskPixelCount; ++px) {
+              uint32_t sample;
+              if (bytesPerSample == 2)
+                sample = (static_cast<uint32_t>(raw[px * 2]) << 8) | raw[px * 2 + 1];
+              else
+                sample = raw[px];
+              // A mask sample is a coverage, not a colour -- linear already,
+              // matching alpha's own treatment just below: no `srgbDecode()`.
+              coverage[px] = static_cast<float>(sample) / maxValue;
+            }
+            // `skipReveal` follows the default colour: with a 255 default,
+            // an unwritten (1.0) texel already reads correctly as absent, so
+            // it is skipped (the "inverted empty-tile rule" core/Mask.hpp
+            // states); with a 0 default, `fillMaskHiddenAt()` above already
+            // put an explicit 0.0 everywhere in this rect, so every sample
+            // -- 1.0 included -- must be written to overwrite it.
+            writeMaskPixelsAt(coverage, maskWidth, maskHeight, maskAbsLeft, maskAbsTop,
+                              /*skipReveal=*/pl.maskDefaultColor != 0, *maskTiles);
+          }
+        }
+        continue;
+      }
+      // The secondary "user-supplied" mask channel, present only alongside a
+      // vector mask when both a vector-derived and a user-painted mask
+      // exist on the same layer -- out of scope, the same stated limit the
+      // 20-vs-more-than-20 mask-record refusal above already draws, and
+      // unexercised by any of the three sample files (all ten of their
+      // masks are plain -2 channels). Its bytes are already consumed by
+      // `c.bytes()` above, so skipping it here costs this layer nothing but
+      // the (unimplemented) second mask.
+      if (ch.id == -3) continue;
+
       if (ch.id != 0 && ch.id != 1 && ch.id != 2 && ch.id != -1) continue;
       if (pixelCount == 0) continue;  // an empty layer: nothing to decode
 
@@ -909,10 +1331,79 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
       for (size_t px = 0; px < pixelCount; ++px) pixels[px * 4 + 3] = 1.0f;
     }
 
+    // A bounding-section divider (type 3): not a layer at all -- Photoshop
+    // gives it a junk Pascal name (`</Layer group>` on every sample file)
+    // and it is dropped here entirely rather than imported as an empty
+    // layer, which is today's defect (docs/psd-import-gaps.md section 3).
+    // Its own (typically zero-length) channel data was already consumed
+    // above, so the shared cursor `c` stays aligned with the next record
+    // regardless. Opens a new group frame: everything pushed to `doc.layers`
+    // from here until the matching header belongs to it.
+    if (pl.lsctRole == LsctRole::kDivider) {
+      groupStack.push_back(doc.layers.size());
+      continue;
+    }
+
+    // A group header (type 1 "open folder" / 2 "closed folder"): closes and
+    // names the frame its matching divider opened.
+    if (pl.lsctRole == LsctRole::kHeader) {
+      if (groupStack.empty()) {
+        return fail("layer " + std::to_string(li) + " (" + pl.name +
+                   "): a layer group header ('lsct' type 1 or 2) appeared with no matching "
+                   "bounding-section divider ('lsct' type 3) open before it -- an unbalanced "
+                   "group stack is refused rather than repaired, the same posture "
+                   "io/Descriptor.hpp's Action Descriptor reader takes ('a refusal is total').");
+      }
+      const size_t frameStart = groupStack.back();
+      groupStack.pop_back();
+
+      Layer group = makeGroupLayer(doc, pl.name.empty() ? std::string("Group") : pl.name);
+      // The header record carries a full layer record's own opacity/hidden
+      // flags, and core/Composite.hpp's group section reads exactly these
+      // two off a Group layer ("its own visible/opacity scale every member
+      // uniformly") -- so, unlike a Group created fresh in-app (which always
+      // starts fully visible at 100%), an imported one should carry
+      // whatever Photoshop's own file says.
+      group.opacity = static_cast<float>(pl.opacity) / 255.0f;
+      group.visible = !pl.hidden;
+
+      // Only every DIRECT child -- an ordinary layer, or a nested group's
+      // own single entry -- gets this frame's tag; anything already
+      // carrying a (necessarily more deeply nested) parent is left alone.
+      // See this loop's own header comment for why that is the whole of
+      // "nesting for free".
+      for (size_t idx = frameStart; idx < doc.layers.size(); ++idx) {
+        if (doc.layers[idx].parent.empty()) doc.layers[idx].parent = group.groupTag;
+      }
+
+      // The group's own blend key names Photoshop's Pass Through vs an
+      // isolated group; core/Composite.hpp:688 argues every group this
+      // build composites is pass-through (there is no isolated-group
+      // accumulator here at all), so a non-`pass` key is a real, if
+      // harmless-to-this-build, semantic mismatch -- imported anyway (PRD
+      // I10: a foreign feature round-trips rather than vanishing) and
+      // warned by name, the identical discipline `mapBlendKey()`'s own
+      // caller uses just below for an ordinary layer's unmapped blend mode.
+      if (pl.lsctHasBlendKey && !fourccEquals(pl.lsctBlendKey, "pass")) {
+        result.warnings.push_back(
+            "group '" + (pl.name.empty() ? std::string("(unnamed)") : pl.name) +
+            "': PSD group blend mode '" + fourccToString(pl.lsctBlendKey) +
+            "' is not Pass Through ('pass'); this build always composites a group as "
+            "pass-through and does not isolate it.");
+      }
+
+      doc.layers.push_back(std::move(group));
+      continue;
+    }
+
     Layer layer;
     layer.kind = LayerKind::RGB;
     layer.rgbTiles.emplace();
     writeLayerPixelsAt(pixels, layerWidth, layerHeight, pl.left, pl.top, layer);
+    // flags bit 1 (mask disabled) imports as no mask at all -- `maskTiles`
+    // was never engaged for a disabled mask (guarded above), so this is
+    // simply "move it across when there was one to move".
+    if (maskTiles.has_value()) layer.mask = std::move(*maskTiles);
 
     layer.name = pl.name;
     layer.opacity = static_cast<float>(pl.opacity) / 255.0f;
@@ -920,10 +1411,17 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
     // The bottom layer can never be clipped (core/Layer.hpp's own stated
     // invariant, enforced elsewhere by core::setLayerClipped() -- this
     // module builds `doc.layers` directly rather than through that
-    // function, so it owes the same invariant by hand). PSD layer 0 in
-    // file order is this document's bottom layer (io/PsdImport.hpp's
-    // "Layer stacking order" section), so it alone is exempted.
-    layer.clipped = (pl.clipping != 0) && (li != 0);
+    // function, so it owes the same invariant by hand). PSD layer 0 in file
+    // order is this document's bottom layer (io/PsdImport.hpp's "Layer
+    // stacking order" section) -- checked here as "is `doc.layers` still
+    // empty", NOT as "is `li` still 0": a group's bounding-section divider
+    // (dropped above, just before this point) can occupy record 0 without
+    // contributing a layer, which would make `li == 0` true for this
+    // layer's record while it is still genuinely `doc.layers`' first entry.
+    layer.clipped = (pl.clipping != 0) && !doc.layers.empty();
+    // `lspf` bit 0 only -- see the "lspf" case in readLayerRecord() above
+    // for why bits 1/2 have nothing to land in here.
+    layer.alphaLocked = pl.alphaLocked;
 
     bool exactBlend = false;
     const BlendMode mode = mapBlendKey(pl.blendKey, exactBlend);
@@ -935,6 +1433,13 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
     }
 
     doc.layers.push_back(std::move(layer));
+  }
+
+  if (!groupStack.empty()) {
+    return fail("this PSD's layer groups are unbalanced: " + std::to_string(groupStack.size()) +
+               " bounding-section divider(s) ('lsct' type 3) were never closed by a matching "
+               "group header ('lsct' type 1 or 2) -- an unbalanced group stack is refused "
+               "rather than repaired.");
   }
   // The symmetric check to the one after the layer-records loop: the
   // channel data this module just read must not have run past the Layer

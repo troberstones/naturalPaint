@@ -249,7 +249,7 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
     // skipping the walk outright, and it is the reason the exemption is
     // "no texel reads it" and not "nothing reads it".
     Document warned = baseDocument();
-    warned.layers[1].blend = "linear-burn";
+    warned.layers[1].blend = "dissolve";
     std::vector<std::string> beforeRename, afterRename;
     compositeDocumentTilesPremultiplied(warned, {}, CompositeRegion{}, &beforeRename);
     setLayerName(warned, 1, "a renamed layer");
@@ -356,7 +356,7 @@ bool runIncrementalCompositeTest(GpuContext& gpu) {
 
     addLayer(doc, 5, makeRgbLayer("a blend this build cannot honour"));
     writeRgb(doc, 5, 5, 5, {0.5f, 0.5f, 0.5f, 1.0f});
-    doc.layers[5].blend = "linear-burn";
+    doc.layers[5].blend = "dissolve";
 
     std::vector<std::string> fullWarnings;
     const std::vector<float> full = compositeDocumentPremultiplied(doc, &fullWarnings);

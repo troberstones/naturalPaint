@@ -17,6 +17,7 @@ add_executable(naturalPaint
   app/Keymap.cpp
   app/PenAxes.cpp
   app/PsdReport.cpp
+  app/ProfileToggle.cpp
   app/Screenshot.cpp
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
@@ -157,6 +158,8 @@ add_executable(naturalPaint
   app/selftest/TileStore.cpp
   app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
+  app/selftest/TouchGesture.cpp
+  app/selftest/TouchGestureSession.cpp
   app/selftest/Transform.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
@@ -173,6 +176,8 @@ add_executable(naturalPaint
   app/StrokePreview.cpp
   app/StrokeSession.cpp
   app/DocumentPresets.cpp
+  app/TouchGesture.cpp
+  app/TouchGestureSession.cpp
   app/UserBrushLibrary.cpp
   app/ViewTransform.cpp
   app/WheelInput.cpp
@@ -321,6 +326,19 @@ if(APPLE)
   target_sources(naturalPaint PRIVATE ui/MacTrackpadGestures.mm)
   set_source_files_properties(ui/MacTrackpadGestures.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   message(STATUS "naturalPaint: native pinch-to-zoom (ui/MacTrackpadGestures.mm)")
+
+  # ---- raw two-finger touch capture (ui/MacTrackpadTouch.mm) ----------------
+  #
+  # item 4 ("trackpad interactions feel unnatural"): bypasses AppKit's own
+  # magnify/rotate gesture classifier by reading NSTouch positions directly --
+  # see ui/MacTrackpadTouch.hpp's header comment for the full reasoning (why
+  # this needs the real NSWindow, unlike the local-monitor pollers immediately
+  # above). Same language/ARC/Cocoa-link rationale as both files above; this
+  # one additionally needs SDL3's own header for SDL_GetWindowProperties() and
+  # SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, already linked into this target.
+  target_sources(naturalPaint PRIVATE ui/MacTrackpadTouch.mm)
+  set_source_files_properties(ui/MacTrackpadTouch.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  message(STATUS "naturalPaint: native raw two-finger touch capture (ui/MacTrackpadTouch.mm)")
 endif()
 
 target_include_directories(naturalPaint PRIVATE

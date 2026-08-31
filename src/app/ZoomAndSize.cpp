@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "app/ViewTransform.hpp"
+
 namespace np {
 
 float panForAnchoredZoom(float anchorScreen, float originOld, float zoomOld, float zoomNew,
@@ -26,6 +28,35 @@ float panForAnchoredZoom(float anchorScreen, float originOld, float zoomOld, flo
   const float drawSizeNew = texAxis * zoomNew;
   const float marginNew = std::max(0.0f, (availAxis - drawSizeNew) * 0.5f);
   return originNew - paintOriginAxis - marginNew;
+}
+
+AnchoredPan panForAnchoredZoomRotate(const CanvasView& oldView, const CanvasView& newView,
+                                     Vec2 canvasCenter, Vec2 pivotScreenOld, Vec2 anchorScreen,
+                                     Vec2 paintOrigin, Vec2 avail, Vec2 tex) noexcept {
+  // Step 1: the canvas point currently under the anchor, through the OLD
+  // view's own (already-proven) inverse.
+  const ViewTransform oldXform(oldView, canvasCenter, pivotScreenOld);
+  const Vec2 anchorCanvas = oldXform.toCanvas(anchorScreen);
+
+  // Step 2: what the NEW zoom/rotation/mirror alone (pivotScreen held at the
+  // origin) does to the vector from canvas-centre to that point -- i.e.
+  // `M_new * (anchorCanvas - canvasCenter)`, read off `toScreen()` rather
+  // than a second copy of `ViewTransform`'s private matrix build.
+  const ViewTransform newXformAtOrigin(newView, canvasCenter, Vec2{0.0f, 0.0f});
+  const Vec2 rotatedOffset = newXformAtOrigin.toScreen(anchorCanvas);
+
+  // Step 3: the pivotScreen that puts `anchorCanvas` back at `anchorScreen`
+  // under the new transform, then `panForAnchoredZoom()`'s own algebra
+  // (pivotScreen == paintOrigin + margin + pan + drawSize/2) inverted for
+  // `pan`, one axis at a time, with margin recomputed at the NEW zoom.
+  const float pivotNewX = anchorScreen.x - rotatedOffset.x;
+  const float pivotNewY = anchorScreen.y - rotatedOffset.y;
+  const float drawSizeNewX = tex.x * newView.zoom;
+  const float drawSizeNewY = tex.y * newView.zoom;
+  const float marginNewX = std::max(0.0f, (avail.x - drawSizeNewX) * 0.5f);
+  const float marginNewY = std::max(0.0f, (avail.y - drawSizeNewY) * 0.5f);
+  return AnchoredPan{pivotNewX - paintOrigin.x - marginNewX - drawSizeNewX * 0.5f,
+                     pivotNewY - paintOrigin.y - marginNewY - drawSizeNewY * 0.5f};
 }
 
 float clampViewZoom(float zoom) noexcept {

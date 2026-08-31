@@ -141,7 +141,7 @@ inline std::optional<LayerKind> layerKindFromName(std::string_view name) {
 //
 // A string also makes PRD I10 ("attributes the reader does not understand
 // are preserved verbatim") true for free at the *value* level, not just the
-// attribute level: a newer build's `np:blend = "linear-burn"` survives a
+// attribute level: a newer build's `np:blend = "dissolve"` survives a
 // load/save through this build exactly, because nothing here ever parses it
 // into a closed set and back. With an enum, an unrecognised name would have
 // to be caught, stashed in a side channel and re-emitted -- machinery whose
