@@ -618,6 +618,62 @@ bool runBlendTest() {
           "stage3: lighter-color of the same pair returns the bright triple verbatim");
   }
 
+  // --- Non-separable-mode cost (docs/blend-mode-gaps.md profiling finding) --
+  //
+  // xctrace on a real 50-layer PSD found colorHSL() alone at ~7% of the
+  // WHOLE composite's wall-clock despite backing only 2-3 of 50 layers.
+  // Measured here the same way CompositeCost.cpp measures composite cost:
+  // best-of-N wall clock over many calls, against BlendMode::Multiply (a
+  // separable mode: no un-premultiply, no helper call) as the baseline every
+  // other mode's cost should be read relative to. Inputs vary with the loop
+  // counter (not a compile-time constant) and feed a summed sink so the
+  // optimiser cannot fold the loop away, the same discipline
+  // CompositeCost.cpp's timeZeroFill() documents for the same hazard under
+  // this LTO'd build.
+  {
+    constexpr int kIters = 2000000;
+    auto timeMode = [&](BlendMode mode) {
+      double best = 1e30;
+      for (int trial = 0; trial < 7; ++trial) {
+        volatile float sink = 0.0f;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kIters; ++i) {
+          const float t = static_cast<float>(i % 997) / 997.0f;
+          const std::array<float, 4> s{0.2f + 0.3f * t, 0.4f * t, 0.6f * t, 0.3f + 0.7f * t};
+          const std::array<float, 4> d{0.7f * t, 0.5f + 0.2f * t, 0.1f + 0.4f * t, 0.4f + 0.5f * t};
+          const std::array<float, 4> out = blendPixel(mode, s, d);
+          sink += out[0] + out[1] + out[2] + out[3];
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        (void)sink;
+        best = std::min(best, std::chrono::duration<double>(t1 - t0).count());
+      }
+      return best;
+    };
+    const double multiplyS = timeMode(BlendMode::Multiply);
+    const double hueS = timeMode(BlendMode::Hue);
+    const double saturationS = timeMode(BlendMode::Saturation);
+    const double colorS = timeMode(BlendMode::Color);
+    const double luminosityS = timeMode(BlendMode::Luminosity);
+    const double darkerS = timeMode(BlendMode::DarkerColor);
+    const double lighterS = timeMode(BlendMode::LighterColor);
+    std::printf("    [measured] %d calls/mode, best of 7:\n", kIters);
+    std::printf("      [measured] multiply:      %.4fs (%.2f ns/call)\n", multiplyS,
+               multiplyS * 1e9 / kIters);
+    std::printf("      [measured] hue:           %.4fs (%.2f ns/call, %.2fx multiply)\n", hueS,
+               hueS * 1e9 / kIters, hueS / multiplyS);
+    std::printf("      [measured] saturation:    %.4fs (%.2f ns/call, %.2fx multiply)\n",
+               saturationS, saturationS * 1e9 / kIters, saturationS / multiplyS);
+    std::printf("      [measured] color:         %.4fs (%.2f ns/call, %.2fx multiply)\n", colorS,
+               colorS * 1e9 / kIters, colorS / multiplyS);
+    std::printf("      [measured] luminosity:    %.4fs (%.2f ns/call, %.2fx multiply)\n",
+               luminosityS, luminosityS * 1e9 / kIters, luminosityS / multiplyS);
+    std::printf("      [measured] darker-color:  %.4fs (%.2f ns/call, %.2fx multiply)\n", darkerS,
+               darkerS * 1e9 / kIters, darkerS / multiplyS);
+    std::printf("      [measured] lighter-color: %.4fs (%.2f ns/call, %.2fx multiply)\n",
+               lighterS, lighterS * 1e9 / kIters, lighterS / multiplyS);
+  }
+
   // --- `over` did not move by one ulp ------------------------------------
   //
   // Step 1's regression boundary rests on `compositeOver()` being exactly what
