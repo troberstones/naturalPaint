@@ -22,14 +22,27 @@ namespace np {
 // covers the canvas), so this harness has to run `documentDirtyTiles()` and
 // the tile-band composite-and-pack loop itself to measure the real cost --
 // see `applyDocumentUpdate()` in ProfileToggle.cpp, which is that logic with
-// the `wgpuQueueWriteTexture` calls removed (a DMA of already-computed bytes,
-// not a source of per-frame variance the way the composite walk is) and
-// nothing else changed, so it needs no GPU device. Its full-recomposite
-// branch also matches `DocumentTexture::viewFor()`'s own: composited into a
-// persistent buffer reused across calls (`premultScratch_`'s analogue here),
-// not a fresh allocation per call -- the same buffer-reuse optimisation, so a
-// key miss that does take the full path is not measured against a stale,
-// pre-optimisation cost.
+// the `wgpuQueueWriteTexture` calls removed, so it needs no GPU device. Its
+// full-recomposite branch also matches `DocumentTexture::viewFor()`'s own:
+// composited into a persistent buffer reused across calls
+// (`premultScratch_`'s analogue here), not a fresh allocation per call -- the
+// same buffer-reuse optimisation, so a key miss that does take the full path
+// is not measured against a stale, pre-optimisation cost.
+//
+// **The omitted upload calls are not free, and this harness cannot see
+// that.** A user-reported ~2s stall toggling a layer covering 780 of 800
+// tiles on a real 5000x2559, 50-layer document measured ~15ms here (small
+// layer, few tiles) and ~450ms live for the large one -- almost entirely
+// `wgpuQueueWriteTexture` driver-call overhead, once tiles are packed one at
+// a time regardless of how many sit adjacent in a row. `ui/DocumentTexture.cpp`
+// now batches each contiguous run of adjacent dirty tiles into one upload
+// call instead of one per tile (this file's own loop was updated to match
+// its packing shape, run by run, for the same reason it always mirrors that
+// class: so the two do not silently drift apart on what "the real cost"
+// means). This harness still cannot measure the fix, or a regression in it --
+// only a live run can, with `--frame-trace` (main.cpp) printing per-phase
+// timing plus the pool's `lastDirtyTiles()`/`lastFullRecompositeReason()` for
+// exactly this reason.
 //
 // Temporary: exists to be profiled under Instruments/xctrace, not to become
 // a permanent CLI surface. Prints min/median/mean/max milliseconds per

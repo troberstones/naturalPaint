@@ -682,6 +682,16 @@ namespace np {
 // canvas.
 float layerCoverage(const Layer& layer) noexcept;
 
+// **Test-only.** Turns `compositeWalk()`'s opaque-floor early exit (see
+// core/Composite.cpp's own section on it) off or back on; on by default.
+// The only intended caller is app/selftest/OpaqueFloor.cpp, which needs to
+// composite the SAME document both ways to prove the optimization changes
+// nothing about the result -- nothing in the running application ever calls
+// this. Not declared `noexcept` to match this header's style for a function
+// with an observable side effect on process-wide state, and deliberately
+// not thread-safe: `--selftest`'s sections run sequentially on one thread.
+void setOpaqueFloorEnabledForTesting(bool enabled);
+
 // --- Groups (PLAN.md Phase 5's C7/C12 follow-on; PRD C7) -------------------
 //
 // **The one decision this build makes about groups, stated once and made

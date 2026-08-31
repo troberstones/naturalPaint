@@ -21,9 +21,11 @@ namespace np {
 namespace {
 
 // `ui/DocumentTexture::viewFor()`'s CPU-only work for one key miss, with the
-// `wgpuQueueWriteTexture` calls removed and nothing else changed -- see
-// ProfileToggle.hpp for why that omission does not change what this measures.
-// `halves` is the canvas-sized straight-alpha f16 mirror
+// `wgpuQueueWriteTexture` calls removed -- see ProfileToggle.hpp for why that
+// omission means this measures composite-and-pack cost only, **not** the
+// full picture for a wide, mostly-contiguous incremental update, where the
+// upload calls this harness cannot make are exactly where a real regression
+// was once hiding (see the header). `halves` is the canvas-sized straight-alpha f16 mirror
 // (`DocumentTexture::halves_`'s analogue here), patched in place for an
 // incremental key miss rather than rebuilt, so a caller timing this does not
 // credit the incremental path with a canvas-sized allocation it does not pay
@@ -81,23 +83,39 @@ void applyDocumentUpdate(const Document& snapshot, const Document& doc,
                                       dirty.tiles.begin() + static_cast<ptrdiff_t>(j));
     compositeDocumentTilesPremultiplied(doc, band, region, nullptr);
 
-    for (size_t k = i; k < j; ++k) {
-      const PixelCoord origin = tileOrigin(dirty.tiles[k]);
-      const int32_t tx0 = std::max(origin.x, 0);
-      const int32_t tx1 = std::min(origin.x + kTileSize, doc.width);
-      if (tx1 <= tx0) continue;
+    // Packed one contiguous run of adjacent tiles at a time -- mirrors
+    // ui/DocumentTexture.cpp's own run-batched packing exactly (see that
+    // file for why a run, not a whole band, is the safe unit), so this stays
+    // the same shape of work the real upload loop does, minus the upload
+    // calls this harness cannot make without a GPU device.
+    size_t k = i;
+    while (k < j) {
+      size_t runEnd = k + 1;
+      while (runEnd < j && tileOrigin(dirty.tiles[runEnd]).x ==
+                               tileOrigin(dirty.tiles[runEnd - 1]).x + kTileSize)
+        ++runEnd;
+
+      const PixelCoord runFirst = tileOrigin(dirty.tiles[k]);
+      const PixelCoord runLast = tileOrigin(dirty.tiles[runEnd - 1]);
+      const int32_t rtx0 = std::max(runFirst.x, 0);
+      const int32_t rtx1 = std::min(runLast.x + kTileSize, doc.width);
+      if (rtx1 <= rtx0) {
+        k = runEnd;
+        continue;
+      }
       for (int32_t y = y0; y < y1; ++y) {
         packStraightHalfRow(
             scratch.data() +
                 (static_cast<size_t>(y - y0) * static_cast<size_t>(region.width) +
-                 static_cast<size_t>(tx0 - x0)) *
+                 static_cast<size_t>(rtx0 - x0)) *
                     4u,
-            static_cast<size_t>(tx1 - tx0),
+            static_cast<size_t>(rtx1 - rtx0),
             halves.data() +
                 (static_cast<size_t>(y) * static_cast<size_t>(doc.width) +
-                 static_cast<size_t>(tx0)) *
+                 static_cast<size_t>(rtx0)) *
                     4u);
       }
+      k = runEnd;
     }
     i = j;
   }

@@ -351,6 +351,7 @@ class TileStoreOf {
   // barrier: every write path goes through here or `findForWrite()`, and
   // never through `find()`.
   T& getOrCreate(TileCoord coord) {
+    invalidateCoverageCache(coord);
     const auto it = tiles_.find(coord);
     if (it == tiles_.end()) {
       Slot fresh = std::make_shared<T>();
@@ -382,6 +383,7 @@ class TileStoreOf {
   // otherwise a writable tile this store alone holds, copying first if it was
   // shared.
   T* findForWrite(TileCoord coord) {
+    invalidateCoverageCache(coord);
     const auto it = tiles_.find(coord);
     if (it == tiles_.end()) return nullptr;
     unshare(it->second);
@@ -406,6 +408,7 @@ class TileStoreOf {
   bool shareTileFrom(const TileStoreOf& src, TileCoord coord) {
     const auto it = src.tiles_.find(coord);
     if (it == src.tiles_.end()) return false;
+    invalidateCoverageCache(coord);
     tiles_[coord] = it->second;  // shared_ptr copy: one refcount increment
     return true;
   }
@@ -488,6 +491,92 @@ class TileStoreOf {
                     std::move(entry.second));
     }
     tiles_ = std::move(moved);
+    // Every cache entry is keyed by a coordinate that just moved out from
+    // under it -- coordinate c's entry, if any, now describes whatever tile
+    // (possibly none, possibly an unrelated one that got rekeyed *into* c)
+    // ends up at c after the rename. Clearing the whole cache rather than
+    // rekeying it too is the conservative-and-correct choice, and it is
+    // cheap here: this call already rebuilds the whole tile map, so clearing
+    // a second, much smaller map costs nothing next to that.
+    coverageCache_.clear();
+  }
+
+  // --- Opaque-floor cache (core/Composite.cpp's early-exit optimization) --
+  //
+  // Caches, per tile coordinate, whether a caller-supplied per-texel
+  // predicate holds for EVERY texel of that tile -- e.g. "this RGB tile's
+  // alpha channel is 1.0 everywhere", "this Pigment tile's mass is 1.0
+  // everywhere", or "this mask tile reveals everywhere"
+  // (`MaskTile::isFullyRevealed()`). core/Composite.cpp is the only caller,
+  // for the opaque-floor early exit its own header section derives; this
+  // header owns only the cache mechanism, not what any predicate means.
+  //
+  // **Invalidation is a plain `bool`, not a tile-identity comparison, and
+  // that is deliberate rather than a missed opportunity to reuse
+  // core/DirtyTiles.hpp's copy-on-write pointer trick.** That trick needs
+  // the cache to hold its own `shared_ptr` reference into the slot so that
+  // holding it forces `unshare()`'s `use_count() > 1` branch on the next
+  // write -- but `use_count()` is exactly what `tileUseCount()`,
+  // `isTileShared()`, `sharedTileCount()` and `exclusiveTileBytes()` above
+  // report to callers (Phase 5 step 7's undo-history byte budget among
+  // them), and every one of those contracts is about *external* sharing.
+  // An extra reference this cache itself held would inflate every one of
+  // those counts by one, silently, for any tile this cache had ever looked
+  // at -- turning a read-only optimization into something that changes what
+  // `exclusiveTileBytes()` answers a caller that never heard of this cache.
+  // Not worth it for a `bool`.
+  //
+  // Instead, invalidation piggybacks on the **complete enumeration** this
+  // header already gives its write paths (`getOrCreate()`, `findForWrite()`,
+  // `shareTileFrom()`, `rekeyTiles()` above): each one erases (or, for
+  // `rekeyTiles()`, clears) the relevant entry itself, unconditionally, on
+  // every call whether or not the caller goes on to actually change a byte.
+  // That is deliberately more conservative than tile-identity comparison
+  // would be -- a `getOrCreate()` call that reads without writing evicts a
+  // cache entry it did not need to -- and the conservative direction is the
+  // one core/DirtyTiles.hpp's own §3 already argues for: "recomposite more"
+  // costs a wasted rescan of one tile's texels, never a stale answer.
+  // **Soundness rests on that enumeration being closed**, which is this
+  // header's own claim (find()/begin()/end() are const-only specifically so
+  // the enumeration of writers stays short and auditable) -- a fifth way to
+  // reach a writable `T&` would be a fifth call site this cache needs, same
+  // as it would be a fifth call site core/DirtyTiles.hpp's own proof needs.
+  mutable std::unordered_map<TileCoord, bool> coverageCache_;
+
+  // Returns whether `predicate` holds for every texel of the tile at
+  // `coord`, computing it at most once per write since the last one (see
+  // `coverageCache_`'s own comment for why that is exactly as fresh as it
+  // needs to be). `predicate` is `bool(const T&) noexcept`-compatible.
+  //
+  // **The cache is keyed by coordinate alone, not by which predicate
+  // produced the cached answer.** Calling this with two DIFFERENT
+  // predicates against the same store is not supported and is not
+  // detected: the second call sees the first predicate's cached result.
+  // Every call site in this codebase (core/Composite.cpp) uses exactly one
+  // fixed predicate per store type -- `tileAlphaIsOneEverywhere` for
+  // `TileStore`, `pigmentTileMassIsOneEverywhere` for `PigmentTileStore`,
+  // `MaskTile::isFullyRevealed()` for `MaskTileStore` -- so this never
+  // comes up today. A caller that ever needs two different predicates over
+  // the same `T` should key its own cache on `(coord, which predicate)`
+  // rather than assume this one will.
+  //
+  // **False when the tile does not exist**, unconditionally and without
+  // consulting the cache -- an absent tile is never "the predicate holds
+  // everywhere" for any of this header's callers' predicates (an absent
+  // RGB/Pigment tile means transparent, the opposite of opaque; an absent
+  // mask tile means fully-revealing, but core/Composite.cpp's own caller
+  // handles that case *before* reaching here, per this file's header
+  // comment on the mask store, precisely so this function does not have to
+  // know two different meanings of "absent").
+  template <class Predicate>
+  bool tileSatisfiesEverywhere(TileCoord coord, Predicate&& predicate) const {
+    const auto it = tiles_.find(coord);
+    if (it == tiles_.end()) return false;
+    const auto cached = coverageCache_.find(coord);
+    if (cached != coverageCache_.end()) return cached->second;
+    const bool result = predicate(*it->second);
+    coverageCache_.emplace(coord, result);
+    return result;
   }
 
   // --- Iteration ----------------------------------------------------------
@@ -553,6 +642,13 @@ class TileStoreOf {
   static void unshare(Slot& slot) {
     if (slot.use_count() > 1) slot = std::make_shared<T>(*slot);
   }
+
+  // The opaque-floor cache's own write barrier: every public method that can
+  // change what coordinate `coord` refers to or holds calls this first. See
+  // `coverageCache_`'s comment for why "erase unconditionally, even when the
+  // caller turns out not to write" is the correct, conservative rule rather
+  // than a missed refinement.
+  void invalidateCoverageCache(TileCoord coord) const { coverageCache_.erase(coord); }
 
   Map tiles_;
 };

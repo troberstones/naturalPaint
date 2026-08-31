@@ -1001,6 +1001,16 @@ int main(int argc, char** argv) {
   float diagSeconds = 0.0f;
   bool modeTest = false;
   bool latencyVerbose = false;
+  // --frame-trace: per-phase timing for every frame (poll/newframe/drawUI/
+  // render/present) plus the active document's revision, printed to stderr,
+  // and an on-screen frame counter + a marker circle at the pointer for a
+  // couple of seconds after every mouse-button-down -- so a screen recording
+  // of a real click can be lined up frame-for-frame against the log. Added to
+  // chase a user report of ~2s between clicking a layer's eye icon and the
+  // canvas visibly updating, which --profile-toggle's headless numbers
+  // (~14-17ms for this exact PSD post-fix) do not explain; this measures the
+  // real interactive path instead of guessing which part of it is slow.
+  bool frameTrace = false;
   const char* screenshotPath = nullptr;
   int screenshotFrames = 30;
   bool penDemo = false;
@@ -1141,6 +1151,8 @@ int main(int argc, char** argv) {
     } else if (a == "--latency") {
       // Prints a line per recorded sample, not just the per-stroke summary.
       latencyVerbose = true;
+    } else if (a == "--frame-trace") {
+      frameTrace = true;
     } else if (a == "--screenshot") {
       // --screenshot <path> [frames] : render, photograph the window into
       // <path>, and exit. See app/Screenshot.hpp for why the app captures
@@ -2305,6 +2317,14 @@ int main(int argc, char** argv) {
     // this task added so the binary can leave the machine that built it.
     // Headless and GPU-free -- pure filesystem, no PaintSim involvement.
     const bool resourcePathsOk = np::runResourcePathsTest();
+    // core/Composite.cpp's opaque-floor early exit: a layer, clip base, or
+    // Mix pair whose own effective alpha is exactly 1.0 everywhere in a
+    // tile makes everything strictly below it in that tile provably
+    // irrelevant, so the walk can skip it there. Bit-identical on/off for
+    // every qualifying and disqualifying case, a document-surgery sabotage
+    // proof, a stale-cache invalidation proof, and a printed (not asserted)
+    // performance sanity check. Headless and GPU-free.
+    const bool opaqueFloorOk = np::runOpaqueFloorTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2342,7 +2362,8 @@ int main(int argc, char** argv) {
                     canvasDimensionsOk && angleConventionOk && wheelInputOk && touchGestureOk &&
                     touchGestureSessionOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
-                    clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk;
+                    clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
+                    opaqueFloorOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -2748,8 +2769,20 @@ int main(int argc, char** argv) {
   // Frame counter, used only by --screenshot: the first frames are not
   // representative (ImGui lays out docked panels on frame 1).
   uint64_t frameIndex = 0;
+
+  // --frame-trace's marker-circle state: when the last mouse-button-down
+  // landed and where, so the circle can keep drawing at that screen position
+  // for a couple of seconds even across however many frames a stall spans.
+  // Wall-clock (SDL_GetTicksNS()), not a frame count, precisely because a
+  // frame-count TTL would itself be stretched by the very stall this exists
+  // to make visible.
+  uint64_t clickMarkerUntilNs = 0;
+  ImVec2 clickMarkerPos{};
+
   while (!st.quit) {
+    const uint64_t frameStartNs = SDL_GetTicksNS();
     st.lastInputEventNs = 0;
+    bool clickedThisFrame = false;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       ImGui_ImplSDL3_ProcessEvent(&e);
@@ -2758,6 +2791,11 @@ int main(int argc, char** argv) {
       // happened to drain the queue for it — using our own SDL_GetTicksNS()
       // here would understate latency by however long the event sat queued.
       if (isPointerSampleEvent(e)) st.lastInputEventNs = e.common.timestamp;
+      if (frameTrace && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        clickedThisFrame = true;
+        clickMarkerPos = ImVec2(e.button.x, e.button.y);
+        clickMarkerUntilNs = frameStartNs + 2'000'000'000ull;  // 2s, plenty over any real frame
+      }
 
       // `requestQuit`, not `quit` — a user asking to leave is a request that
       // has to be answered against the open documents first (app/QuitSequence).
@@ -3159,6 +3197,7 @@ int main(int argc, char** argv) {
     }
 
     ImGui::NewFrame();
+    const uint64_t newFrameNs = frameTrace ? SDL_GetTicksNS() : 0;
 
     // ---- the stroke bridge: dried paint moves into the document -----------
     //
@@ -3180,7 +3219,33 @@ int main(int argc, char** argv) {
       st.bakeCycle.step(gpu, *sim, st.documents.active(), sim->mode(), frameIndex);
     }
 
+    // --frame-trace: revision of the active document immediately before and
+    // after drawUI() -- drawUI() is where a layer edit (e.g. the eye icon)
+    // both gets recorded (bumping this) and where ui/DocumentTexture reads
+    // that bump to decide whether/how to recompose, so a revision change here
+    // is "this frame is the one that processed the click."
+    const uint64_t revisionBeforeUI =
+        frameTrace && st.documents.active() ? st.documents.active()->revision : 0;
+
     np::drawUI(st, sim, gpu, lut, kCanvasW, kCanvasH);
+
+    const uint64_t drawUiNs = frameTrace ? SDL_GetTicksNS() : 0;
+    const uint64_t revisionAfterUI =
+        frameTrace && st.documents.active() ? st.documents.active()->revision : 0;
+
+    if (frameTrace) {
+      ImDrawList* fg = ImGui::GetForegroundDrawList();
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "frame %llu", (unsigned long long)frameIndex);
+      fg->AddText(ImVec2(12.0f, 12.0f), IM_COL32(0, 255, 0, 255), buf);
+      if (revisionAfterUI != revisionBeforeUI) {
+        fg->AddText(ImVec2(12.0f, 30.0f), IM_COL32(255, 220, 0, 255), "REVISION CHANGED");
+      }
+      if (frameStartNs < clickMarkerUntilNs) {
+        fg->AddCircle(clickMarkerPos, 24.0f, IM_COL32(255, 32, 32, 255), 32, 3.0f);
+        fg->AddCircle(clickMarkerPos, 8.0f, IM_COL32(255, 32, 32, 255), 16, 2.0f);
+      }
+    }
 
     // **The one place the mouse cursor is set** (ui/ToolCursor §6). After
     // `drawUI()`, because the canvas's request is produced inside it and every
@@ -3203,6 +3268,7 @@ int main(int argc, char** argv) {
     cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest());
 
     ImGui::Render();
+    const uint64_t renderNs = frameTrace ? SDL_GetTicksNS() : 0;
 
     // ---- simulation ----
     //
@@ -3366,6 +3432,48 @@ int main(int argc, char** argv) {
     ++frameIndex;
 
     wgpuSurfacePresent(gpu.surface);
+
+    if (frameTrace) {
+      const uint64_t presentNs = SDL_GetTicksNS();
+      // Which pool slot (if any) holds the active document, so the trace can
+      // report *why* this frame's composite was full or narrow -- not just
+      // how long it took. `--frame-trace`'s whole point is telling "the
+      // toggled layer's own footprint legitimately covers the canvas" apart
+      // from "the narrowing logic missed a case it should have caught".
+      const char* fullReasonName = "n/a";
+      size_t dirtyTiles = 0;
+      uint64_t uploadedTexels = 0;
+      double compositeMs = 0.0, packMs = 0.0, lastUploadMs = 0.0;
+      if (const np::OpenDocument* od = st.documents.active()) {
+        const np::DocumentTexturePool& pool = np::canvasDocumentTexture();
+        for (size_t s = 0; s < np::kVisibleDocumentCap; ++s) {
+          if (pool.slotDocument(s) == od->id) {
+            fullReasonName = np::fullRecompositeReasonName(pool.slot(s).lastFullRecompositeReason());
+            dirtyTiles = pool.slot(s).lastDirtyTiles();
+            uploadedTexels = pool.slot(s).lastUploadedTexels();
+            compositeMs = pool.slot(s).lastCompositeMs();
+            packMs = pool.slot(s).lastPackMs();
+            lastUploadMs = pool.slot(s).lastUploadMs();
+            break;
+          }
+        }
+      }
+      std::fprintf(stderr,
+                    "[frame-trace] frame=%llu%s rev=%llu->%llu poll_to_newframe_ms=%.2f "
+                    "drawui_ms=%.2f render_ms=%.2f present_ms=%.2f total_ms=%.2f "
+                    "reason=%s dirty_tiles=%zu uploaded_texels=%llu upload_total_ms=%.2f "
+                    "composite_ms=%.2f pack_ms=%.2f upload_calls_ms=%.2f\n",
+                    static_cast<unsigned long long>(frameIndex - 1), clickedThisFrame ? " CLICK" : "",
+                    static_cast<unsigned long long>(revisionBeforeUI),
+                    static_cast<unsigned long long>(revisionAfterUI),
+                    static_cast<double>(newFrameNs - frameStartNs) / 1e6,
+                    static_cast<double>(drawUiNs - newFrameNs) / 1e6,
+                    static_cast<double>(renderNs - drawUiNs) / 1e6,
+                    static_cast<double>(presentNs - renderNs) / 1e6,
+                    static_cast<double>(presentNs - frameStartNs) / 1e6, fullReasonName, dirtyTiles,
+                    static_cast<unsigned long long>(uploadedTexels), lastUploadMs, compositeMs, packMs,
+                    lastUploadMs - compositeMs - packMs);
+    }
     // st.paintingThisFrame (not st.sim.brushActive): post-1.3 brushActive
     // means "oil has a fresh dab-sourced segment," true on only a fraction
     // of painting frames — the wrong thing to correlate pen-to-photon

@@ -134,6 +134,8 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
   lastUploadedTexels_ = 0;
   lastDirtyTiles_ = dirty.everything ? canvasTileCount(doc.document) : dirty.tiles.size();
   lastFullReason_ = dirty.everything ? dirty.reason : FullRecompositeReason::None;
+  lastCompositeMs_ = 0.0;
+  lastPackMs_ = 0.0;
 
   if (dirty.everything) {
     // Composited into `premultScratch_`, an accumulator this object owns
@@ -154,9 +156,19 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
     // that function does, via the identical `packStraightHalfRow()` the
     // incremental band path below already uses, just reading from
     // `premultScratch_` instead of that function's temporary.
-    compositeDocumentPremultipliedInto(doc.document, premultScratch_, warningsOut);
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      compositeDocumentPremultipliedInto(doc.document, premultScratch_, warningsOut);
+      lastCompositeMs_ +=
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
     if (halves_.size() != canvasTexels * 4) halves_.resize(canvasTexels * 4);
-    packStraightHalfRow(premultScratch_.data(), canvasTexels, halves_.data());
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      packStraightHalfRow(premultScratch_.data(), canvasTexels, halves_.data());
+      lastPackMs_ +=
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
 
     WGPUTexelCopyBufferLayout layout = {};
     // 4 channels x 2 bytes. **Not padded to 256**, and that asymmetry is the
@@ -228,58 +240,99 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
       region.height = y1 - y0;
       const std::vector<TileCoord> band(dirty.tiles.begin() + static_cast<ptrdiff_t>(i),
                                         dirty.tiles.begin() + static_cast<ptrdiff_t>(j));
-      compositeDocumentTilesPremultiplied(doc.document, band, region,
-                                          warned ? nullptr : warningsOut);
+      {
+        const auto t0 = std::chrono::steady_clock::now();
+        compositeDocumentTilesPremultiplied(doc.document, band, region,
+                                            warned ? nullptr : warningsOut);
+        lastCompositeMs_ +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      }
       warned = true;
 
-      // Packed and uploaded **one dirty tile at a time, never one band at a
-      // time**, and that is a correctness requirement rather than a shape
-      // preference: a band is a run of tiles sharing a tile row and they need
-      // not be adjacent, so the columns between two dirty tiles were never
-      // composited and `scratch_` still holds whatever the previous call left
-      // there. Packing a whole band would write that into the CPU mirror --
-      // invisible on the GPU, because those columns are not uploaded either,
-      // and therefore exactly the kind of divergence that would surface later
-      // as a stale rectangle. `--selftest` dirties two tiles with a gap
-      // between them for this reason.
-      for (size_t k = i; k < j; ++k) {
-        const PixelCoord origin = tileOrigin(dirty.tiles[k]);
-        const int32_t tx0 = std::max(origin.x, 0);
-        const int32_t tx1 = std::min(origin.x + kTileSize, key.width);
-        if (tx1 <= tx0) continue;
+      // Packed and uploaded **one contiguous run of adjacent tiles at a
+      // time, never a whole band in one shot and never one tile at a time
+      // either**. A band is a run of tiles sharing a tile row and they need
+      // not be adjacent, so packing (and, worse, uploading) a whole band in
+      // one call would carry the columns between two non-adjacent dirty
+      // tiles -- never composited this call, so `scratch_` still holds
+      // whatever a previous call left there -- onto the GPU as if they had
+      // changed. `--selftest` dirties two tiles with a gap between them for
+      // exactly this reason, and a run stops at that gap.
+      //
+      // Within a run, though, there is no gap: every texel from the first
+      // tile's left edge to the last tile's right edge was just composited
+      // into `scratch_` above, so packing and uploading the run's whole
+      // x-range in one call each is bit-identical to doing it tile by tile --
+      // `unpremultiply()`/`floatToHalf()` are pure per-texel functions with
+      // no cross-texel state -- and costs one `wgpuQueueWriteTexture` call
+      // instead of however many tiles the run spans. A run of one tile (the
+      // previous behaviour, and the common case for scattered single-tile
+      // edits) costs exactly what the old per-tile loop cost; this is a
+      // strict generalisation of it, not a separate fast path with its own
+      // risk of drifting from the slow one.
+      //
+      // **Measured to not be where a real 5000x2559, 50-layer document's
+      // ~450ms toggling a layer covering 780 of 800 tiles goes** -- fewer
+      // upload calls is worth having regardless, but `lastCompositeMs()`
+      // against `lastUploadMs()` (main.cpp's `--frame-trace`) says the
+      // composite math dominates, not the call count this collapses. See
+      // that split before assuming this paragraph's optimism about upload
+      // calls generalises to why any large-footprint toggle is slow.
+      size_t k = i;
+      while (k < j) {
+        size_t runEnd = k + 1;
+        while (runEnd < j && tileOrigin(dirty.tiles[runEnd]).x ==
+                                 tileOrigin(dirty.tiles[runEnd - 1]).x + kTileSize)
+          ++runEnd;
 
-        for (int32_t y = y0; y < y1; ++y) {
-          packStraightHalfRow(scratch_.data() + (static_cast<size_t>(y - y0) *
-                                                  static_cast<size_t>(region.width) +
-                                              static_cast<size_t>(tx0 - x0)) *
-                                                 4u,
-                           static_cast<size_t>(tx1 - tx0),
-                           halves_.data() + (static_cast<size_t>(y) *
-                                                 static_cast<size_t>(key.width) +
-                                             static_cast<size_t>(tx0)) *
-                                                4u);
+        const PixelCoord runFirst = tileOrigin(dirty.tiles[k]);
+        const PixelCoord runLast = tileOrigin(dirty.tiles[runEnd - 1]);
+        const int32_t rtx0 = std::max(runFirst.x, 0);
+        const int32_t rtx1 = std::min(runLast.x + kTileSize, key.width);
+        if (rtx1 <= rtx0) {
+          k = runEnd;
+          continue;  // a run entirely outside the canvas
         }
 
-        dst.origin = {static_cast<uint32_t>(tx0), static_cast<uint32_t>(y0), 0};
+        {
+          const auto t0 = std::chrono::steady_clock::now();
+          for (int32_t y = y0; y < y1; ++y) {
+            packStraightHalfRow(scratch_.data() + (static_cast<size_t>(y - y0) *
+                                                    static_cast<size_t>(region.width) +
+                                                static_cast<size_t>(rtx0 - x0)) *
+                                                   4u,
+                             static_cast<size_t>(rtx1 - rtx0),
+                             halves_.data() + (static_cast<size_t>(y) *
+                                                   static_cast<size_t>(key.width) +
+                                               static_cast<size_t>(rtx0)) *
+                                                  4u);
+          }
+          lastPackMs_ +=
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                  .count();
+        }
 
-        WGPUTexelCopyBufferLayout tileLayout = {};
-        // **No staging copy**: the source is the tile's first texel inside the
+        dst.origin = {static_cast<uint32_t>(rtx0), static_cast<uint32_t>(y0), 0};
+
+        WGPUTexelCopyBufferLayout runLayout = {};
+        // **No staging copy**: the source is the run's first texel inside the
         // canvas-sized half buffer, and `bytesPerRow` is the canvas stride, so
         // wgpu walks the rows out of the middle of the picture. `offset` is
         // what makes that possible and is the whole reason this needs no
         // repacking.
-        tileLayout.offset = (static_cast<uint64_t>(y0) * static_cast<uint64_t>(key.width) +
-                             static_cast<uint64_t>(tx0)) *
-                            4u * sizeof(uint16_t);
-        tileLayout.bytesPerRow = static_cast<uint32_t>(key.width) * 4u * sizeof(uint16_t);
-        tileLayout.rowsPerImage = static_cast<uint32_t>(y1 - y0);
+        runLayout.offset = (static_cast<uint64_t>(y0) * static_cast<uint64_t>(key.width) +
+                            static_cast<uint64_t>(rtx0)) *
+                           4u * sizeof(uint16_t);
+        runLayout.bytesPerRow = static_cast<uint32_t>(key.width) * 4u * sizeof(uint16_t);
+        runLayout.rowsPerImage = static_cast<uint32_t>(y1 - y0);
 
-        const WGPUExtent3D tileExtent = {static_cast<uint32_t>(tx1 - tx0),
-                                         static_cast<uint32_t>(y1 - y0), 1};
+        const WGPUExtent3D runExtent = {static_cast<uint32_t>(rtx1 - rtx0),
+                                        static_cast<uint32_t>(y1 - y0), 1};
         wgpuQueueWriteTexture(gpu.queue, &dst, halves_.data(),
-                              halves_.size() * sizeof(uint16_t), &tileLayout, &tileExtent);
-        lastUploadedTexels_ += static_cast<uint64_t>(tx1 - tx0) *
+                              halves_.size() * sizeof(uint16_t), &runLayout, &runExtent);
+        lastUploadedTexels_ += static_cast<uint64_t>(rtx1 - rtx0) *
                                static_cast<uint64_t>(y1 - y0);
+        k = runEnd;
       }
       i = j;
     }

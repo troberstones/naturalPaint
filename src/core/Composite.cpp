@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "core/Mask.hpp"
@@ -30,6 +31,17 @@ float layerCoverage(const Layer& layer) noexcept {
   if (!(o > 0.0f)) return 0.0f;  // also catches NaN
   return o < 1.0f ? o : 1.0f;
 }
+
+namespace {
+// Test-only kill switch for the opaque-floor early exit below. Defaults to
+// on; app/selftest/OpaqueFloor.cpp is the only caller that ever turns it
+// off, to obtain the pre-optimization walk for a bit-identity comparison
+// against the same document composited with the optimization live. Nothing
+// in the running application ever calls the setter.
+bool g_opaqueFloorEnabledForTesting = true;
+}  // namespace
+
+void setOpaqueFloorEnabledForTesting(bool enabled) { g_opaqueFloorEnabledForTesting = enabled; }
 
 namespace {
 // Resolves a `Layer::parent` string to the index of the Group layer it names,
@@ -344,6 +356,133 @@ std::string unimplementedBlendWarning(size_t layerIndex, const Layer& layer,
 
 namespace {
 
+// ==========================================================================
+// The opaque-floor early exit
+// ==========================================================================
+//
+// **The claim.** Walking bottom to top, if some layer j's own final
+// premultiplied source texel -- exactly the `src` `blendInto()` would be
+// handed for it, after grading, opacity, mask and (for a clip base) its
+// group's fold -- has alpha EXACTLY 1.0 at every texel of a tile, AND its
+// own blend mode is `Normal`, then for every texel of that tile the walk's
+// result is completely independent of layers 0..j-1: `blendPixel(Normal,
+// src, dst) == src` bit-for-bit whenever `src[3] == 1.0f`, from the
+// premultiplied `over` formula `co = cs + cb*(1-as)` with `as == 1` making
+// the `cb` term `cb * 0.0f`, which is exactly `0.0f` for every finite `cb`
+// (never approximately). So substituting `src_j` for the whole bottom-up
+// fold of layers `0..j` changes nothing downstream: every layer above `j`
+// only ever consumes the accumulator as an opaque `dst` argument, whatever
+// blend mode or kind it is.
+//
+// This is why the mechanism below never has to touch layers ABOVE the
+// floor at all: skipping layers `0..j-1` for a tile leaves the accumulator
+// at transparent black going into layer j's own ordinary contribute()/
+// blendInto() call, and `blendPixel(Normal, src_j, {0,0,0,0}) == src_j`
+// exactly too (the same formula, `cb == 0`) -- so "skip everything below
+// j" and "seed the accumulator with src_j" are the same bits, and the
+// walk's own zero-initialized-by-the-caller accumulator already IS that
+// seed. No special seeding code is needed; only a skip.
+//
+// **Why `Normal` only.** For every other mode here, `co` retains a `B(Cs,
+// Cb)` term that depends on the backdrop's straight colour even at `as ==
+// 1` (core/Blend.hpp's general separable-blend formula; only `over`'s
+// `B(Cs,Cb) = Cs` makes that term collapse to something backdrop-
+// independent). A fully-opaque `Multiply` layer, for instance, still reads
+// and darkens whatever is beneath it -- it does not hide it. See this
+// file's own research notes (not reproduced here) for the full derivation;
+// `blendModeInfo(*resolved).compositesPixels ? *resolved : Normal` (the
+// walk's own fallback rule, factored out below as
+// `resolvedPixelBlendMode()`) is the single source of truth for "which mode
+// actually reaches `blendPixel()`", reused rather than re-derived so this
+// section cannot silently disagree with the real dispatch.
+//
+// **Why a clip base needs no separate check.** `clipGroupClose()` above
+// assigns the closed group's alpha `baseAlpha` **unconditionally** -- not
+// `ao` from any member's own blend, not a running fold -- so a clip base's
+// contributed alpha is exactly its own effective alpha, regardless of what
+// its members are or do. Qualifying as a floor is therefore the identical
+// question for a clip base as for an ordinary layer of the same kind: only
+// the *colour* a base contributes depends on its members, never whether it
+// is opaque. That is why the check below runs unmodified whether or not
+// `clips.members[i]` is empty.
+//
+// **Why `Mix` gets no O(1) shortcut.** A mixed pair's alpha
+// (`mixedPairTexel()`'s `[3]`) is a per-texel weighted combination of BOTH
+// layers' own coverage, not a property either layer's own tile stores in
+// one place -- so there is nothing to cache in a `TileStoreOf` the way
+// there is for an ordinary layer's raw alpha/mass channel. `mixPairIsOpaqueEverywhere()`
+// below computes it directly, texel by texel, exactly as the real walk's
+// mixed-pair branch would -- so a Mix pair that turns out to be the floor
+// costs what compositing it would already have cost, and nothing is cached
+// across calls for this case (Mix is PRD L5's opt-in, rare in practice).
+//
+// **Soundness of the per-tile cache this leans on.** `TileStoreOf<T>::
+// tileSatisfiesEverywhere()` (core/TileStore.hpp) is the mechanism; its own
+// header comment derives why eager invalidation at every write-capable call
+// (`getOrCreate`/`findForWrite`/`shareTileFrom`/`rekeyTiles`) is a complete
+// enumeration and therefore sound, mirroring core/DirtyTiles.hpp §2's own
+// completeness proof for the identical reason: those four are the whole
+// closed set of ways to obtain a writable tile from a `TileStoreOf`.
+//
+// **What is NOT skipped.** An Adjustment layer strictly below the floor
+// still runs its own full-canvas/dirty-set pass over the tile in question,
+// even though its result is provably about to be discarded the moment the
+// floor layer composites over it (the same erasure argument applies
+// transitively -- `blendPixel(Normal, src_j, ANYTHING)` is `src_j`
+// regardless of what "ANYTHING" is, so an adjustment layer's transformation
+// of the accumulator below the floor is wasted work, not a wrong answer).
+// This is a deliberate, stated scope limit rather than an oversight: fixing
+// it means threading the same per-tile skip through the Adjustment branch's
+// own tile enumeration, which this change does not do. It costs nothing in
+// correctness -- only in an optimization this change leaves on the table.
+
+// binary16's single bit pattern for exactly 1.0f (IEEE 754 half precision
+// has no other representation of it, unlike NaN). `core::MaskTile` already
+// relies on the identical fact for `kRevealWord`/`isFullyRevealed()`; this
+// is the same constant, independently named because it is being applied to
+// a different channel's meaning (alpha/mass, not mask reveal) and a
+// selftest section asserts it against `floatToHalf(1.0f)` on its own terms
+// rather than trusting either literal to agree with the other by
+// coincidence.
+constexpr uint16_t kHalfOne = 0x3C00;
+
+// Whether an RGB tile's alpha channel (offset 3 of every 4-channel texel,
+// core/TileStore.hpp's own documented layout) reads exactly 1.0 at every
+// one of its 16384 texels. Raw half-word comparison rather than
+// `readPixel()` -- this test does not need the three colour channels
+// `readPixel()` would also decode, and a raw `uint16_t` compare is exact
+// for the identical reason `MaskTile::isFullyRevealed()`'s is.
+bool tileAlphaIsOneEverywhere(const Tile& t) noexcept {
+  const uint16_t* words = t.data();
+  for (size_t i = 0; i < Tile::kTexelCount; i += static_cast<size_t>(Tile::kChannels)) {
+    if (words[i + 3] != kHalfOne) return false;
+  }
+  return true;
+}
+
+// The identical question for a Pigment tile's mass channel (offset 3 of
+// every 7-channel texel, core/Pigment.hpp's own documented layout) -- mass
+// IS a Pigment texel's alpha (this file's header §1), so "mass is 1.0
+// everywhere" is exactly the Pigment analogue of `tileAlphaIsOneEverywhere`.
+bool pigmentTileMassIsOneEverywhere(const PigmentTile& t) noexcept {
+  const uint16_t* words = t.data();
+  for (size_t i = 0; i < PigmentTile::kTexelCount;
+       i += static_cast<size_t>(PigmentTile::kChannels)) {
+    if (words[i + 3] != kHalfOne) return false;
+  }
+  return true;
+}
+
+// The walk's own "which mode does blendPixel() actually see" rule (was
+// inline at this branch's per-layer resolution below), factored out so the
+// floor search can ask the identical question rather than a hand-copied
+// approximation of it that could silently drift from the real dispatch.
+BlendMode resolvedPixelBlendMode(const Layer& layer) noexcept {
+  const std::optional<BlendMode> resolved = blendModeFromName(layer.blend);
+  return (resolved.has_value() && blendModeInfo(*resolved).compositesPixels) ? *resolved
+                                                                              : BlendMode::Normal;
+}
+
 // **The document walk, in one place, for both callers.** `only` restricts it
 // to a tile set (null means "every tile a store holds", the pre-incremental
 // behaviour); `region` says where the accumulator lives, which for a full
@@ -384,6 +523,130 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
   // that mentions clipping is then not taken -- which is what makes step 1's
   // byte-identity boundary survive this step.
   const ClipRuns clips = clipRuns(doc);
+
+  // --- The opaque-floor early exit ---------------------------------------
+  //
+  // See this file's anonymous namespace above (`tileAlphaIsOneEverywhere()`
+  // and neighbours) for the full derivation. `floorFor(coord)` answers,
+  // lazily and memoized for this one walk call, the topmost layer index `j`
+  // such that everything strictly below `j` is provably irrelevant to tile
+  // `coord` -- 0 when nothing qualifies, which is always correct (the
+  // ordinary walk already starts at layer 0).
+  //
+  // Memoized here, per call, only to avoid re-running the top-down search
+  // twice for one coordinate within one walk (e.g. an RGB and a Pigment
+  // layer both touching it) -- the expensive part, a tile's own texel scan,
+  // is what actually persists *across* calls, inside each layer's own
+  // `TileStoreOf::coverageCache_`.
+  std::unordered_map<TileCoord, size_t> floorMemo;
+
+  // Whether layer `li`'s own effective source alpha is exactly 1.0f at
+  // EVERY texel of tile `coord`. Applies unmodified to a clip base:
+  // `clipGroupClose()` assigns the closed group's alpha to exactly the
+  // base's own effective alpha regardless of its members (see this
+  // namespace's header comment), so a clip base is opaque here under
+  // precisely the condition an ordinary layer of the same kind is.
+  auto ownAlphaIsOneEverywhere = [&](size_t li, const TileCoord& coord) -> bool {
+    const Layer& l = doc.layers[li];
+    if (layerCoverage(doc, li) != 1.0f) return false;
+    if (l.mask.has_value()) {
+      const MaskTileStore& maskTiles = *l.mask;
+      const MaskTile* maskTile = maskTiles.find(coord);
+      // Absent means "reveals" (core/Mask.hpp), the opposite reading from an
+      // absent content tile -- handled here, before ever asking the generic
+      // cache, so `tileSatisfiesEverywhere()` never has to know that a mask
+      // store's "absent" and a content store's "absent" mean opposite
+      // things.
+      if (maskTile != nullptr) {
+        const bool reveals = maskTiles.tileSatisfiesEverywhere(
+            coord, [](const MaskTile& mt) { return mt.isFullyRevealed(); });
+        if (!reveals) return false;
+      }
+    }
+    if (l.kind == LayerKind::RGB && l.rgbTiles.has_value())
+      return l.rgbTiles->tileSatisfiesEverywhere(coord, tileAlphaIsOneEverywhere);
+    if (l.kind == LayerKind::Pigment && l.pigmentTiles.has_value())
+      return l.pigmentTiles->tileSatisfiesEverywhere(coord, pigmentTileMassIsOneEverywhere);
+    return false;
+  };
+
+  // The identical question for the upper half of a Mix pair at `upperIndex`
+  // -- always Normal-blended into the accumulator (this walk's mixed-pair
+  // branch below always calls `blendInto(..., BlendMode::Normal, pair)`),
+  // so only the alpha condition needs checking, and it has no O(1)
+  // shortcut: a pair's alpha is a per-texel combination of both layers' own
+  // coverage (`mixedPairTexel()`'s `[3]`), never a property either layer's
+  // raw tile stores in one channel. Computed directly, texel by texel,
+  // exactly mirroring the real mixed-pair branch -- not cached across
+  // calls; see this namespace's header comment on why that is an accepted
+  // cost for the rare, opt-in case.
+  auto mixPairIsOpaqueEverywhere = [&](size_t upperIndex, const TileCoord& coord) -> bool {
+    const Layer& upper = doc.layers[upperIndex];
+    const Layer& lower = doc.layers[upperIndex - 1];
+    const PigmentTileStore* upTiles =
+        upper.pigmentTiles.has_value() ? &*upper.pigmentTiles : nullptr;
+    const PigmentTileStore* lowTiles =
+        (lower.kind == LayerKind::Pigment && lower.pigmentTiles.has_value())
+            ? &*lower.pigmentTiles
+            : nullptr;
+    const PigmentTile* up = upTiles ? upTiles->find(coord) : nullptr;
+    const PigmentTile* low = lowTiles ? lowTiles->find(coord) : nullptr;
+    if (up == nullptr && low == nullptr) return false;  // the pair paints nothing here
+    const float upperCoverage = layerCoverage(doc, upperIndex);
+    const float lowerCoverage = layerCoverage(doc, upperIndex - 1);
+    const MaskTileStore* upperMaskTiles = upper.mask.has_value() ? &*upper.mask : nullptr;
+    const MaskTileStore* lowerMaskTiles = lower.mask.has_value() ? &*lower.mask : nullptr;
+    const MaskTile* upMask = upperMaskTiles ? upperMaskTiles->find(coord) : nullptr;
+    const MaskTile* lowMask = lowerMaskTiles ? lowerMaskTiles->find(coord) : nullptr;
+    const std::vector<Op> upperOps = layerPointOps(upper.ops);
+    const std::vector<Op> lowerOps = layerPointOps(lower.ops);
+    for (int32_t ty = 0; ty < kTileSize; ++ty) {
+      for (int32_t tx = 0; tx < kTileSize; ++tx) {
+        const PixelCoord local{tx, ty};
+        const PigmentTexel upTexel = up ? up->readTexel(local) : PigmentTexel{};
+        const PigmentTexel lowTexel = low ? low->readTexel(local) : PigmentTexel{};
+        const float covUp =
+            upperMaskTiles ? upperCoverage * maskCoverage(upMask, local) : upperCoverage;
+        const float covLow =
+            lowerMaskTiles ? lowerCoverage * maskCoverage(lowMask, local) : lowerCoverage;
+        const std::array<float, 4> pair =
+            mixedPairTexel(lowTexel, lowerOps, covLow, upTexel, upperOps, covUp);
+        if (pair[3] != 1.0f) return false;
+      }
+    }
+    return true;
+  };
+
+  auto floorFor = [&](const TileCoord& coord) -> size_t {
+    if (!g_opaqueFloorEnabledForTesting) return 0;
+    const auto memoIt = floorMemo.find(coord);
+    if (memoIt != floorMemo.end()) return memoIt->second;
+    size_t floor = 0;
+    for (size_t i = doc.layers.size(); i-- > 0;) {
+      // Not a source the walk visits directly -- the lower half of a mixed
+      // pair, or a clip member composited by its base -- so it can never be
+      // a floor on its own (§5's "clip members never independently
+      // qualify"/"the walk visits it directly").
+      if (pairing.consumedByAbove[i] || clips.clippedToBase[i]) continue;
+      const Layer& l = doc.layers[i];
+      if (l.kind == LayerKind::Adjustment) continue;  // has no alpha of its own
+      if (pairing.mixedWithBelow[i]) {
+        if (mixPairIsOpaqueEverywhere(i, coord)) {
+          floor = i;
+          break;
+        }
+        continue;
+      }
+      if (!layerHoldsPixels(l)) continue;
+      if (resolvedPixelBlendMode(l) != BlendMode::Normal) continue;
+      if (ownAlphaIsOneEverywhere(i, coord)) {
+        floor = i;
+        break;
+      }
+    }
+    floorMemo.emplace(coord, floor);
+    return floor;
+  };
 
   // **The blend-name warning, in one place**, because as of this step there are
   // two callers: the walk's own per-layer iteration, and a clipping base
@@ -537,17 +800,16 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     // the pairing on every call; this walk already has it, so the same
     // question is asked of the same data instead of once per layer.
     warnUnimplementedBlend(i);
-    const std::optional<BlendMode> resolved = blendModeFromName(layer.blend);
 
     // Resolved once per layer, never per texel: `blend` is a std::string and a
     // string comparison in the inner loop would be the one plausible way to
     // make this walk slow. A name this build cannot honour *here* -- unknown,
     // or a `mix` PRD L5 does not permit -- becomes `Normal`, which is
     // precisely the approximation the warning above describes, made in one
-    // place rather than at each texel.
-    const BlendMode mode = (resolved.has_value() && blendModeInfo(*resolved).compositesPixels)
-                               ? *resolved
-                               : BlendMode::Normal;
+    // place rather than at each texel. `resolvedPixelBlendMode()` is this
+    // exact rule, factored out so the opaque-floor search below asks the
+    // identical question rather than a copy that could drift from it.
+    const BlendMode mode = resolvedPixelBlendMode(layer);
 
     // Resolved once per layer for the same reason: an Op carrying a Curve
     // copies a std::vector, so doing this per texel would dominate the walk
@@ -721,6 +983,13 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
 
       for (const TileCoord& coord : coords) {
         if (!visits(coord)) continue;
+        // The opaque-floor early exit: a higher-index layer already proven
+        // to hide this tile completely, so this pair's own contribution
+        // here can never reach the accumulator. Layer `i` here is the
+        // pair's own (upper) index -- see `floorFor()`'s own comment on why
+        // `i == floorFor(coord)` (the pair itself IS the floor) still runs
+        // this branch normally.
+        if (i < floorFor(coord)) continue;
         const PigmentTile* up = upTiles ? upTiles->find(coord) : nullptr;
         const PigmentTile* low = lowTiles ? lowTiles->find(coord) : nullptr;
         const MaskTile* upMask = maskTiles ? maskTiles->find(coord) : nullptr;
@@ -794,6 +1063,12 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     if (hasRgb) {
       for (const auto& [coord, tile] : *layer.rgbTiles) {
         if (!visits(coord)) continue;
+        // The opaque-floor early exit: skip this tile's contribution for
+        // every layer strictly below the tile's own floor. Layer `i` (the
+        // floor itself, when this IS it) still runs this loop body
+        // normally -- see this file's opaque-floor section for why that is
+        // exactly the seed a truncated walk needs, for free.
+        if (i < floorFor(coord)) continue;
         const PixelCoord origin = tileOrigin(coord);
         const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
         // **The base's tiles are the clipping run's whole extent** (§17):
@@ -823,6 +1098,7 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     } else {
       for (const auto& [coord, tile] : *layer.pigmentTiles) {
         if (!visits(coord)) continue;
+        if (i < floorFor(coord)) continue;  // opaque-floor early exit, see the RGB branch above
         const PixelCoord origin = tileOrigin(coord);
         const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
         if (!members.empty()) bindMemberTiles(coord);

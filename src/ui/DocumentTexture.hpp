@@ -143,17 +143,29 @@
 // their own home and each is argued where it lives; what belongs here is the
 // upload and the policy.
 //
-// **The upload is one `wgpuQueueWriteTexture` per dirty tile, sub-rectangle,
-// with no staging copy.** `WGPUTexelCopyBufferLayout` carries an `offset`, so
-// the source can be the tile's first texel *inside the canvas-sized half
-// buffer this object already holds*, with `bytesPerRow` the canvas stride --
-// no repacking, no scratch. The 256-byte row alignment that
+// **The upload is one `wgpuQueueWriteTexture` per contiguous run of adjacent
+// dirty tiles, sub-rectangle, with no staging copy.** `WGPUTexelCopyBufferLayout`
+// carries an `offset`, so the source can be the run's first texel *inside the
+// canvas-sized half buffer this object already holds*, with `bytesPerRow` the
+// canvas stride -- no repacking, no scratch. The 256-byte row alignment that
 // app/Screenshot.hpp fights is not in play in this direction at all
 // (`wgpuQueueWriteTexture` re-stages rows itself and accepts any stride --
 // asserted by decision 3's own 61-texel-wide fixture, and re-asserted here at
 // a sub-rectangle). Worth recording anyway, because it is what would make the
 // packed form free if this ever needed one: a 128-texel tile row at
 // RGBA16Float is 128 x 8 = 1024 bytes = exactly 4 x 256.
+//
+// **A run, not a tile, is the unit -- one call per tile was the original
+// shape and it is a real cost, not a rounding error.** A real 5000x2559,
+// 50-layer document toggling a layer that covers 780 of 800 tiles profiled
+// at ~450ms live, almost entirely `wgpuQueueWriteTexture` driver-call
+// overhead once 780 separate calls are issued instead of the handful a
+// near-full-width layer's own rows collapse to when adjacent tiles share one
+// call. A band (tiles sharing a tile row, not necessarily adjacent) is still
+// the composite unit below, for the gap reason the next paragraph gives; a
+// run (a maximal stretch of *adjacent* tiles within a band) is the pack-and-
+// upload unit, and a run of one tile costs exactly what the old per-tile
+// loop cost -- this is a strict generalisation of it, not a second path.
 //
 // **The half buffer is kept**, which is the memory this decision costs: one
 // canvas of RGBA f16, 32 MiB at 2048x2048, mirroring the texture. It has to
@@ -176,6 +188,16 @@
 // dirty set already covers the canvas. It is always *safe* to take it -- a
 // full recomposite is what this module did before this step -- so the constant
 // is a performance choice and never a correctness one.
+//
+// That measurement was fit on a 1024x1024, 2-layer `--selftest` document --
+// 64 tiles at most -- where per-call upload overhead is too small to show up
+// against per-texel compute cost. It does not follow that the crossover holds
+// at 800 tiles; the 780-of-800-tile case above was measured on the *old*
+// per-tile upload loop, before this decision's run-batching, and run-batching
+// is why the constant did not also need to move: the thing that scaled badly
+// with tile *count* was the driver-call count, not the composite math the
+// crossover formula models, so fixing the call count left the formula's own
+// 107-109% figure intact rather than requiring a second, size-aware constant.
 //
 // --- 5. Two slots, re-pointed -- never three, and never released ---------
 //
@@ -306,6 +328,15 @@ class DocumentTexture {
   uint64_t cacheHits() const noexcept { return hits_; }
   double lastUploadMs() const noexcept { return lastUploadMs_; }
   double totalUploadMs() const noexcept { return totalUploadMs_; }
+
+  // A breakdown of `lastUploadMs()` into where it went -- composite math vs.
+  // packing vs. the `wgpuQueueWriteTexture` calls themselves (the remainder).
+  // Added to settle, by measurement rather than guesswork, which of those a
+  // slow incremental update on a large, high-layer-count document actually
+  // spends its time in; not asserted by `--selftest`, and not meant to
+  // outlive that question.
+  double lastCompositeMs() const noexcept { return lastCompositeMs_; }
+  double lastPackMs() const noexcept { return lastPackMs_; }
 
   // Key misses that recomposited the whole canvas, because the change was not
   // tile-local, because there was nothing to compare against, or because so
@@ -465,6 +496,8 @@ class DocumentTexture {
   size_t lastDirtyTiles_ = 0;
   uint64_t lastUploadedTexels_ = 0;
   uint64_t totalUploadedTexels_ = 0;
+  double lastCompositeMs_ = 0.0;
+  double lastPackMs_ = 0.0;
   FullRecompositeReason lastFullReason_ = FullRecompositeReason::None;
   double lastUploadMs_ = 0.0;
   double totalUploadMs_ = 0.0;

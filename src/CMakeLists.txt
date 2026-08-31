@@ -58,6 +58,7 @@ add_executable(naturalPaint
   app/selftest/ColorOps.cpp
   app/selftest/ColorSpace.cpp
   app/selftest/CompositeCost.cpp
+  app/selftest/OpaqueFloor.cpp
   app/selftest/PanelLayout.cpp
   app/selftest/DockLayout.cpp
   app/selftest/ControlsLayout.cpp

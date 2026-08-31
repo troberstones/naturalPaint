@@ -4319,4 +4319,26 @@ bool runResamplePerfTest();
 // app/selftest/ResourcePaths.cpp.
 bool runResourcePathsTest();
 
+// core/Composite.cpp's opaque-floor early exit: a layer whose own effective
+// premultiplied source alpha is exactly 1.0 everywhere in a tile, and whose
+// blend mode is `Normal` (an ordinary layer, a clip base via its folded
+// group, or a Mix pair, all of which reach `blendInto()` as Normal), makes
+// everything strictly below it in that tile provably irrelevant -- proven
+// by construction (`blendPixel(Normal, src, dst) == src` whenever
+// `src[3] == 1.0f`, for every `dst`) rather than by tolerance. Proves, all
+// by bit-identical comparison (`sameFloats`, never a tolerance): an RGB
+// floor, a Pigment floor, a clip-base floor (insensitive to its member's own
+// blend), and a Mix-pair floor each change nothing whether the optimization
+// is on or off; a fully-opaque Multiply layer, an Adjustment layer, opacity
+// < 1.0, a partially-revealing mask, and a locally-opaque clip MEMBER are
+// each correctly refused as a floor; a document-surgery sabotage proof shows
+// that a wrong floor decision for two of those refused cases really would
+// disagree with a full composite, rather than trusting the comparison has
+// teeth; a stale-cache proof paints over part of a previously-opaque tile
+// and shows the next composite picks it up; and a performance sanity
+// section prints (not asserts) the wall-clock difference on a synthetic
+// many-layer stack. Headless and GPU-free -- pure CPU compositing, no
+// PaintSim involvement. See app/selftest/OpaqueFloor.cpp.
+bool runOpaqueFloorTest();
+
 }  // namespace np
