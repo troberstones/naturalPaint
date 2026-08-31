@@ -33,15 +33,16 @@ std::vector<uint16_t> compositeDocumentStraightHalf(const Document& doc,
   return out;
 }
 
-namespace {
-
 // Straight-alpha f16, texel by texel, exactly as `compositeDocumentStraightHalf()`
 // does it -- the same `unpremultiply()` and the same `floatToHalf()` in the
 // same order, so a texel that went through the incremental path and one that
 // went through the full path are the same bits and not merely the same value.
 // The full path calls that function; this one is the region form of its body,
-// and there is no third spelling.
-void packStraightHalf(const float* premultiplied, size_t texels, uint16_t* out) {
+// and there is no third spelling. Declared in ui/DocumentTexture.hpp (rather
+// than kept file-local) so a second CPU-only caller -- app/ProfileToggle.cpp,
+// which mirrors this object's incremental update path without a GPU -- reuses
+// it instead of a second copy that could quietly drift from this one.
+void packStraightHalfRow(const float* premultiplied, size_t texels, uint16_t* out) {
   for (size_t t = 0; t < texels; ++t) {
     const std::array<float, 4> straight = unpremultiply(
         std::array<float, 4>{premultiplied[t * 4 + 0], premultiplied[t * 4 + 1],
@@ -49,8 +50,6 @@ void packStraightHalf(const float* premultiplied, size_t texels, uint16_t* out) 
     for (size_t c = 0; c < 4; ++c) out[t * 4 + c] = floatToHalf(straight[c]);
   }
 }
-
-}  // namespace
 
 WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& doc,
                                          std::vector<std::string>* warningsOut) {
@@ -230,7 +229,7 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
         if (tx1 <= tx0) continue;
 
         for (int32_t y = y0; y < y1; ++y) {
-          packStraightHalf(scratch_.data() + (static_cast<size_t>(y - y0) *
+          packStraightHalfRow(scratch_.data() + (static_cast<size_t>(y - y0) *
                                                   static_cast<size_t>(region.width) +
                                               static_cast<size_t>(tx0 - x0)) *
                                                  4u,
