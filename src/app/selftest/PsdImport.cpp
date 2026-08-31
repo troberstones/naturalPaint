@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -1547,6 +1548,35 @@ bool runPsdImportTest() {
           "I1: 'lddg' (Linear Dodge/Add) maps to core::BlendMode::Plus");
     check(r.ok && r.warnings.empty(),
           "I1: and, being an exact key-table entry, emits no 'no equivalent' warning");
+  }
+
+  std::printf(
+      "  -- J. The 8-bit sRGB decode table (perf) is bit-identical to srgbDecode() --\n");
+  // ==========================================================================
+  {
+    // A profiled real-file import found `srgbDecode()` (via `std::pow`)
+    // dominating a meaningful share of PSD import time, called once per RGB
+    // BYTE of every layer -- an 8-bit channel sample only ever takes one of
+    // 256 distinct values. io/PsdImport.cpp now precomputes those 256
+    // answers once into `srgb8DecodeTable()` and indexes it directly at the
+    // 8-bit decode call site, instead of calling `srgbDecode()` per pixel.
+    // `srgbDecode()` itself is untouched (still called directly for every
+    // other caller, and for the 16-bit PSD path). This is the correctness
+    // gate on the table itself: every one of the 256 possible byte values
+    // must produce EXACTLY (bit-for-bit, not merely "close") the same float
+    // `srgbDecode(byte / 255.0f)` would, since the whole point is that the
+    // table's answer must be indistinguishable from calling `srgbDecode()`
+    // directly -- a real precision regression here would silently shift
+    // every RGB pixel of every 8-bit PSD this build imports.
+    const std::array<float, 256>& table = srgb8DecodeTableForSelftest();
+    int mismatches = 0;
+    for (int i = 0; i < 256; ++i) {
+      const float direct = srgbDecode(static_cast<float>(i) / 255.0f);
+      if (std::memcmp(&table[static_cast<size_t>(i)], &direct, sizeof(float)) != 0) ++mismatches;
+    }
+    check(mismatches == 0,
+          "J1: all 256 8-bit table entries are bit-identical to srgbDecode(byte/255.0f), "
+          "not merely close");
   }
 
   // The section footer every other file in `app/selftest/` prints. Not

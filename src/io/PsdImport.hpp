@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -316,5 +317,14 @@ struct PsdImportResult {
 // project, and the only property that matters more than getting the pixels
 // right is not reading past the end of a buffer that happens to hold them.
 PsdImportResult importPsd(std::span<const uint8_t> bytes);
+
+// Selftest-only: the 256-entry sRGB-decode lookup table PsdImport.cpp builds
+// once and indexes at its 8-bit per-pixel decode call site (a profiled
+// import found `srgbDecode()`'s `std::pow` dominating a meaningful share of
+// import time). Exposed here only so app/selftest/PsdImport.cpp can assert
+// every entry stays bit-identical to `color::srgbDecode(byte / 255.0f)`; no
+// other caller should use this -- see this file's "Colour space" section for
+// why `srgbDecode()` itself must stay exact for its other callers.
+const std::array<float, 256>& srgb8DecodeTableForSelftest();
 
 }  // namespace np

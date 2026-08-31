@@ -1,6 +1,7 @@
 #include "io/PsdImport.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 
 #include "color/Space.hpp"
@@ -972,7 +973,32 @@ void fillMaskHiddenAt(uint32_t width, uint32_t height, int32_t left, int32_t top
   }
 }
 
+// A profiled import of a real 50-layer, 5000x2559 PSD found `srgbDecode()`
+// (via `std::pow`) dominating a meaningful share of import time, called once
+// per RGB byte of every layer. An 8-bit channel sample only ever takes one
+// of 256 distinct values, so this table precomputes `srgbDecode(i/255.0f)`
+// for every `i` in [0,255] and is used ONLY at the 8-bit PSD-channel-decode
+// call site below -- `srgbDecode()` itself is untouched and still called
+// directly for the 16-bit path (65536 distinct values -- a table isn't a
+// win there) and by every other caller in this codebase that may pass a
+// float that isn't exactly `byte/255.0f`. Do not repurpose this table for
+// those other callers; see io/PsdImport.hpp's "Colour space" section.
+const std::array<float, 256>& srgb8DecodeTable() {
+  static const std::array<float, 256> table = [] {
+    std::array<float, 256> t{};
+    for (int i = 0; i < 256; ++i)
+      t[static_cast<size_t>(i)] = srgbDecode(static_cast<float>(i) / 255.0f);
+    return t;
+  }();
+  return table;
+}
+
 }  // namespace
+
+// Declared in PsdImport.hpp for app/selftest/PsdImport.cpp only -- forwards
+// to the same table `importPsd()` below actually indexes, so the selftest
+// checks the real thing rather than a hand-duplicated copy of it.
+const std::array<float, 256>& srgb8DecodeTableForSelftest() { return srgb8DecodeTable(); }
 
 PsdImportResult importPsd(std::span<const uint8_t> bytes) {
   PsdImportResult result;
@@ -1312,19 +1338,28 @@ PsdImportResult importPsd(std::span<const uint8_t> bytes) {
       const int channelIndex = ch.id < 0 ? 3 : static_cast<int>(ch.id);  // R=0,G=1,B=2,A=3
       if (ch.id == -1) hasAlphaChannel = true;
 
-      for (size_t px = 0; px < pixelCount; ++px) {
-        uint32_t sample;
-        if (bytesPerSample == 2)
-          sample = (static_cast<uint32_t>(raw[px * 2]) << 8) | raw[px * 2 + 1];
-        else
-          sample = raw[px];
-        const float encoded01 = static_cast<float>(sample) / maxValue;
-        // RGB is sRGB-encoded and is linearised; alpha is linear opacity
-        // and passes through unchanged -- io/PsdImport.hpp's "Colour space"
-        // section, the identical rule io/ImageDecode.cpp already applies to
-        // every other 8-/16-bit format this codebase reads.
-        pixels[px * 4 + static_cast<size_t>(channelIndex)] =
-            channelIndex == 3 ? encoded01 : srgbDecode(encoded01);
+      // RGB is sRGB-encoded and is linearised; alpha is linear opacity and
+      // passes through unchanged -- io/PsdImport.hpp's "Colour space"
+      // section, the identical rule io/ImageDecode.cpp already applies to
+      // every other 8-/16-bit format this codebase reads. The 8-bit branch
+      // below is byte-value-identical to the general `srgbDecode(encoded01)`
+      // call in the 16-bit branch -- see `srgb8DecodeTable()` above -- just
+      // computed once per distinct byte value instead of once per pixel.
+      if (bytesPerSample == 1) {
+        const std::array<float, 256>& table = srgb8DecodeTable();
+        for (size_t px = 0; px < pixelCount; ++px) {
+          const uint8_t sample = raw[px];
+          pixels[px * 4 + static_cast<size_t>(channelIndex)] =
+              channelIndex == 3 ? static_cast<float>(sample) / maxValue : table[sample];
+        }
+      } else {
+        for (size_t px = 0; px < pixelCount; ++px) {
+          const uint32_t sample =
+              (static_cast<uint32_t>(raw[px * 2]) << 8) | raw[px * 2 + 1];
+          const float encoded01 = static_cast<float>(sample) / maxValue;
+          pixels[px * 4 + static_cast<size_t>(channelIndex)] =
+              channelIndex == 3 ? encoded01 : srgbDecode(encoded01);
+        }
       }
     }
     if (!hasAlphaChannel) {
