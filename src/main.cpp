@@ -2325,6 +2325,14 @@ int main(int argc, char** argv) {
     // proof, a stale-cache invalidation proof, and a printed (not asserted)
     // performance sanity check. Headless and GPU-free.
     const bool opaqueFloorOk = np::runOpaqueFloorTest();
+    // core/Composite.cpp's tile-parallel walk: the four tile loops now
+    // dispatch through core::parallelFor() instead of a plain range-for.
+    // Bit-identical serial-vs-parallel for a rich fixture (full and
+    // incremental composite), 25-repetition consistency, a sabotage proof
+    // of the exact shared-mutable-state hazard the fix rules out, and a
+    // printed (not asserted) performance comparison. Headless and
+    // GPU-free.
+    const bool compositeParallelOk = np::runCompositeParallelTest();
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2363,7 +2371,7 @@ int main(int argc, char** argv) {
                     touchGestureSessionOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
-                    opaqueFloorOk;
+                    opaqueFloorOk && compositeParallelOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

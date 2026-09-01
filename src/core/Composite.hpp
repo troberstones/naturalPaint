@@ -692,6 +692,16 @@ float layerCoverage(const Layer& layer) noexcept;
 // not thread-safe: `--selftest`'s sections run sequentially on one thread.
 void setOpaqueFloorEnabledForTesting(bool enabled);
 
+// **Test-only.** Overrides the grain `compositeWalk()`'s tile loops hand to
+// `core::parallelFor()`. The only intended caller is
+// app/selftest/CompositeParallel.cpp, which needs to force the walk down
+// both the serial fallback (a grain larger than any tile count the test
+// uses) and the genuinely-parallel path (a grain of 1) against the SAME
+// document, to prove the two produce bit-identical results rather than
+// merely trusting that they do. Nothing in the running application ever
+// calls this; real callers get the measured default.
+void setCompositeParallelGrainForTesting(size_t grain);
+
 // --- Groups (PLAN.md Phase 5's C7/C12 follow-on; PRD C7) -------------------
 //
 // **The one decision this build makes about groups, stated once and made

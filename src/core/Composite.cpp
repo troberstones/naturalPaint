@@ -6,6 +6,7 @@
 #include <unordered_set>
 
 #include "core/Mask.hpp"
+#include "core/Parallel.hpp"
 #include "core/Pigment.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
@@ -39,9 +40,29 @@ namespace {
 // against the same document composited with the optimization live. Nothing
 // in the running application ever calls the setter.
 bool g_opaqueFloorEnabledForTesting = true;
+
+// The grain `compositeWalk()`'s own tile loops pass to `core::parallelFor()`
+// (core/Parallel.hpp) -- overridable for app/selftest/CompositeParallel.cpp's
+// own bit-identity proof, which needs to force BOTH the serial fallback (a
+// huge grain) and the parallel path (a tiny one) against the SAME tile
+// count to compare them. `kDefaultCompositeParallelGrain` below is the
+// number every real caller gets.
+//
+// **Why this is not `core::kParallelForDefaultGrain` (8, ops/Blur.cpp's own
+// number).** That constant was measured against blur's per-tile cost -- one
+// convolution pass over 128*128*4 floats -- and this file's own header
+// already argues blur is a different shape of work: a composite tile's cost
+// is up to N layers' worth of grade/mask/blend arithmetic (`contribute()`,
+// `foldClipGroup()`, `mixedPairTexel()`), which app/selftest's own
+// [measured] parallel-composite section times directly rather than
+// borrowing blur's number on the assumption that "per-tile work" means one
+// thing across this codebase.
+size_t g_compositeParallelGrain = 4;
 }  // namespace
 
 void setOpaqueFloorEnabledForTesting(bool enabled) { g_opaqueFloorEnabledForTesting = enabled; }
+
+void setCompositeParallelGrainForTesting(size_t grain) { g_compositeParallelGrain = grain; }
 
 namespace {
 // Resolves a `Layer::parent` string to the index of the Group layer it names,
@@ -527,11 +548,15 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
   // --- The opaque-floor early exit ---------------------------------------
   //
   // See this file's anonymous namespace above (`tileAlphaIsOneEverywhere()`
-  // and neighbours) for the full derivation. `floorFor(coord)` answers,
-  // lazily and memoized for this one walk call, the topmost layer index `j`
-  // such that everything strictly below `j` is provably irrelevant to tile
-  // `coord` -- 0 when nothing qualifies, which is always correct (the
-  // ordinary walk already starts at layer 0).
+  // and neighbours) for the full derivation. `floorAt(coord)` answers the
+  // topmost layer index `j` such that everything strictly below `j` is
+  // provably irrelevant to tile `coord` -- 0 when nothing qualifies, which
+  // is always correct (the ordinary walk already starts at layer 0). Every
+  // answer is computed once, serially, by the pre-warm pass below
+  // (`floorForSerial()`) before any tile loop runs -- `floorAt()` is a
+  // read-only lookup into the result, safe to call from whichever thread
+  // ends up processing a given tile once the walk's own tile loops are
+  // parallelized (see this file's own section on that).
   //
   // Memoized here, per call, only to avoid re-running the top-down search
   // twice for one coordinate within one walk (e.g. an RGB and a Pigment
@@ -617,7 +642,19 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     return true;
   };
 
-  auto floorFor = [&](const TileCoord& coord) -> size_t {
+  // **Lazy, mutating, SERIAL ONLY.** Writes `floorMemo` on a miss, exactly as
+  // it always has -- and that write is the one thing that makes this unsafe
+  // to call from more than one thread at once (`floorMemo` is a bare
+  // `std::unordered_map`, the identical hazard `core/Parallel.hpp` documents
+  // for `TileStoreOf::getOrCreate`: two threads racing to insert would
+  // corrupt its bucket chains, not merely disagree about the answer). This
+  // function's only caller as of the parallel walk below is the serial
+  // pre-warm pass immediately following it; every tile-loop body downstream
+  // (some of them now parallel) reads through `floorAt()` instead, which
+  // performs no insertion and is therefore safe to call concurrently, the
+  // same "reads of an unmodified map are safe" argument core/Parallel.hpp
+  // already makes for `TileStore::find()`.
+  auto floorForSerial = [&](const TileCoord& coord) -> size_t {
     if (!g_opaqueFloorEnabledForTesting) return 0;
     const auto memoIt = floorMemo.find(coord);
     if (memoIt != floorMemo.end()) return memoIt->second;
@@ -646,6 +683,68 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     }
     floorMemo.emplace(coord, floor);
     return floor;
+  };
+
+  // --- Serial pre-warm: every tile any tile loop below could visit --------
+  //
+  // Enumerated with EXACTLY the skip conditions the walk itself applies
+  // (`consumedByAbove`/`clippedToBase`/Adjustment/no-pixels), filtered
+  // through `visits()`, so this set is neither a subset (which would leave
+  // some tile's floor lazily computed mid-parallel-loop -- unsafe) nor an
+  // unnecessarily large superset (the whole canvas, say, which would cost an
+  // incremental composite work proportional to the canvas rather than to its
+  // dirty tiles). A superset that includes a tile no loop ends up visiting is
+  // harmless -- `floorForSerial()` on a coordinate nothing ever reads back is
+  // just a wasted lookup, not a correctness question -- so the mixed-pair
+  // union below is deliberately computed the same way the real branch
+  // computes it rather than approximated.
+  {
+    std::unordered_set<TileCoord> tilesToWarm;
+    for (size_t i = 0; i < doc.layers.size(); ++i) {
+      if (pairing.consumedByAbove[i] || clips.clippedToBase[i]) continue;
+      const Layer& l = doc.layers[i];
+      if (l.kind == LayerKind::Adjustment) continue;
+      if (pairing.mixedWithBelow[i]) {
+        const Layer& lower = doc.layers[i - 1];
+        if (l.pigmentTiles.has_value())
+          for (const auto& [coord, tile] : *l.pigmentTiles) {
+            (void)tile;
+            if (visits(coord)) tilesToWarm.insert(coord);
+          }
+        if (lower.kind == LayerKind::Pigment && lower.pigmentTiles.has_value())
+          for (const auto& [coord, tile] : *lower.pigmentTiles) {
+            (void)tile;
+            if (visits(coord)) tilesToWarm.insert(coord);
+          }
+        continue;
+      }
+      if (!layerHoldsPixels(l)) continue;
+      if (l.kind == LayerKind::RGB) {
+        for (const auto& [coord, tile] : *l.rgbTiles) {
+          (void)tile;
+          if (visits(coord)) tilesToWarm.insert(coord);
+        }
+      } else {
+        for (const auto& [coord, tile] : *l.pigmentTiles) {
+          (void)tile;
+          if (visits(coord)) tilesToWarm.insert(coord);
+        }
+      }
+    }
+    floorMemo.reserve(tilesToWarm.size());
+    for (const TileCoord& coord : tilesToWarm) floorForSerial(coord);
+  }
+
+  // The read-only lookup every (possibly parallel) tile-loop body below
+  // actually calls. `floorMemo` is now complete for every coordinate any of
+  // those loops will query -- the pre-warm pass above guarantees it -- so a
+  // miss here can only mean "not warmed for some reason", and 0 (skip
+  // nothing) is exactly the safe, conservative answer for that case: it
+  // degrades to the pre-opaque-floor walk for that one tile rather than
+  // reading an uninitialized entry or racing an insertion.
+  auto floorAt = [&](const TileCoord& coord) -> size_t {
+    const auto it = floorMemo.find(coord);
+    return it == floorMemo.end() ? 0 : it->second;
   };
 
   // **The blend-name warning, in one place**, because as of this step there are
@@ -777,13 +876,30 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       // place restricting the walk saves an O(canvas) pass rather than a
       // sparse one. The canvas starts at (0,0), so its tile coordinates run
       // from 0.
+      //
+      // **Parallel over tiles, exactly like the other three loops in this
+      // walk.** `adjustTile()` touches nothing but its own tile's texels
+      // (`accum(docX, docY)`, disjoint across tiles) and this layer's own
+      // `const` `adjMask`/`ops`/`coverage` -- no clip group, no floor
+      // lookup, no shared mutable state of any kind, which is why this is
+      // the simplest of the four to parallelize.
+      std::vector<TileCoord> tiles;
       if (only != nullptr) {
-        for (const TileCoord& coord : *only) adjustTile(coord);
+        tiles.assign(only->begin(), only->end());
       } else {
+        // Reserved rather than left to grow: the tile grid's extent is
+        // known up front and this avoids `push_back()` reallocating
+        // partway through a loop that can run to thousands of tiles on a
+        // large canvas.
+        const int32_t tilesX = (doc.width + kTileSize - 1) / kTileSize;
+        const int32_t tilesY = (doc.height + kTileSize - 1) / kTileSize;
+        tiles.reserve(static_cast<size_t>(tilesX) * static_cast<size_t>(tilesY));
         for (int32_t tileY = 0; tileY * kTileSize < doc.height; ++tileY)
           for (int32_t tileX = 0; tileX * kTileSize < doc.width; ++tileX)
-            adjustTile(TileCoord{tileX, tileY});
+            tiles.push_back(TileCoord{tileX, tileY});
       }
+      parallelFor(tiles.size(), g_compositeParallelGrain,
+                  [&](size_t idx) { adjustTile(tiles[idx]); });
       continue;
     }
 
@@ -848,11 +964,6 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       const MaskTileStore* maskTiles = nullptr;
       const TileStore* rgbTiles = nullptr;
       const PigmentTileStore* pigmentTiles = nullptr;
-      // Rebound once per tile **of the base**, never per texel -- the same
-      // hoist every other store lookup in this walk gets.
-      const MaskTile* maskTile = nullptr;
-      const Tile* rgbTile = nullptr;
-      const PigmentTile* pigmentTile = nullptr;
     };
     std::vector<ClipMember> members;
     for (const size_t mi : clips.members[i]) {
@@ -891,13 +1002,36 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       members.push_back(std::move(cm));
     }
 
-    // Rebinds every member's per-tile pointers for one tile of the base.
-    auto bindMemberTiles = [&](const TileCoord& coord) {
-      for (ClipMember& m : members) {
-        m.maskTile = m.maskTiles ? m.maskTiles->find(coord) : nullptr;
-        m.rgbTile = m.rgbTiles ? m.rgbTiles->find(coord) : nullptr;
-        m.pigmentTile = m.pigmentTiles ? m.pigmentTiles->find(coord) : nullptr;
+    // **Per-tile-task-local binding, not a shared mutable field.** The
+    // previous shape of this walk rebound `maskTile`/`rgbTile`/`pigmentTile`
+    // fields directly on the shared `members` vector, once per tile, read
+    // by `foldClipGroup()` afterward -- correct only as long as tiles of
+    // this base are processed one at a time, in some order, by a single
+    // thread. Parallelizing this layer's own tile loop (below) makes that
+    // false: two tiles processed concurrently would both rebind the SAME
+    // shared fields, each clobbering the other's, so `foldClipGroup()`
+    // could read a tile pointer bound for a *different* tile than the one
+    // whose texel it is currently folding -- an ordering-dependent data
+    // race, not merely a slow frame. `BoundMember` fixes this by making the
+    // per-tile resolution produce a fresh, task-local vector every time
+    // (`bindMembersForTile()`), touching nothing shared; the small
+    // allocation this costs is paid once per tile of a clip base, exactly
+    // where the rebind used to happen, not once per texel.
+    struct BoundMember {
+      const ClipMember* member = nullptr;
+      const MaskTile* maskTile = nullptr;
+      const Tile* rgbTile = nullptr;
+      const PigmentTile* pigmentTile = nullptr;
+    };
+    auto bindMembersForTile = [&](const TileCoord& coord) {
+      std::vector<BoundMember> bound;
+      bound.reserve(members.size());
+      for (const ClipMember& m : members) {
+        bound.push_back(BoundMember{&m, m.maskTiles ? m.maskTiles->find(coord) : nullptr,
+                                    m.rgbTiles ? m.rgbTiles->find(coord) : nullptr,
+                                    m.pigmentTiles ? m.pigmentTiles->find(coord) : nullptr});
       }
+      return bound;
     };
 
     // The whole of §13, per texel. `base` is the base's own final premultiplied
@@ -905,22 +1039,25 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     // would have blended in had nothing been clipped to it -- and the returned
     // texel takes its place. Returns `base` **bit-identically** when no member
     // contributes here, which is what keeps the bracket's divide-and-multiply
-    // out of every texel that does not need it.
-    auto foldClipGroup = [&](const std::array<float, 4>& base,
-                             const PixelCoord& local) -> std::array<float, 4> {
+    // out of every texel that does not need it. `bound` is this tile's own
+    // task-local binding from `bindMembersForTile()` -- read-only here, never
+    // the shared `members` vector's own (now nonexistent) per-tile fields.
+    auto foldClipGroup = [&](const std::array<float, 4>& base, const PixelCoord& local,
+                             const std::vector<BoundMember>& bound) -> std::array<float, 4> {
       std::array<float, 4> g{};
       bool opened = false;
-      for (const ClipMember& m : members) {
-        const float cov = m.maskTiles ? m.coverage * maskCoverage(m.maskTile, local) : m.coverage;
+      for (const BoundMember& bm : bound) {
+        const ClipMember& m = *bm.member;
+        const float cov = m.maskTiles ? m.coverage * maskCoverage(bm.maskTile, local) : m.coverage;
         if (cov <= 0.0f) continue;  // a skip, not a multiply by zero -- §5
         std::array<float, 4> src{};
         if (!m.adjustment) {
           if (m.rgbTiles != nullptr) {
-            if (m.rgbTile == nullptr) continue;  // no tile here: contributes nothing
-            src = m.rgbTile->readPixel(local);
+            if (bm.rgbTile == nullptr) continue;  // no tile here: contributes nothing
+            src = bm.rgbTile->readPixel(local);
           } else {
-            if (m.pigmentTile == nullptr) continue;
-            src = projectPigmentTexel(m.pigmentTile->readTexel(local));
+            if (bm.pigmentTile == nullptr) continue;
+            src = projectPigmentTexel(bm.pigmentTile->readTexel(local));
           }
         }
         if (!opened) {
@@ -981,20 +1118,42 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
           coords.insert(coord);
         }
 
+      // Filtered to an index-addressable vector, serially, before any
+      // parallel work starts: `visits()`/`floorAt()` are per-tile skip
+      // conditions, evaluated once here rather than once per (possibly
+      // parallel) worker, so `parallelFor()`'s grain decision reflects the
+      // real amount of work and no worker ever has to re-derive "should I
+      // run at all". See this file's opaque-floor section for why `i ==
+      // floorAt(coord)` (the pair itself IS the floor) still belongs in the
+      // set below rather than being skipped too.
+      std::vector<TileCoord> toVisit;
+      toVisit.reserve(coords.size());
       for (const TileCoord& coord : coords) {
-        if (!visits(coord)) continue;
-        // The opaque-floor early exit: a higher-index layer already proven
-        // to hide this tile completely, so this pair's own contribution
-        // here can never reach the accumulator. Layer `i` here is the
-        // pair's own (upper) index -- see `floorFor()`'s own comment on why
-        // `i == floorFor(coord)` (the pair itself IS the floor) still runs
-        // this branch normally.
-        if (i < floorFor(coord)) continue;
+        if (visits(coord) && i >= floorAt(coord)) toVisit.push_back(coord);
+      }
+      // **Parallel over tiles, never over layers.** Each worker owns one
+      // tile end to end -- both halves' reads, the mix, the optional clip
+      // fold, and the write into `region.pixels` -- and different tiles
+      // never touch the same accumulator address (core/Tile.hpp's own tile
+      // partition of the canvas), so concurrent workers cannot race on the
+      // destination. What they must not race on is anything SHARED across
+      // tiles: `upTiles`/`lowTiles`/`maskTiles`/`lowerMaskTiles` are
+      // read-only `find()` calls into stores nothing here mutates (safe,
+      // core/Parallel.hpp's own argument for `TileStore::find()`);
+      // `bindMembersForTile()` allocates a fresh, worker-local `bound`
+      // rather than touching the shared `members` vector (see this file's
+      // own comment on `BoundMember` for why that used to be the hazard
+      // here); and `ops`/`lowerOps`/`coverage`/`lowerCoverage` are
+      // `const` values captured by the outer lambda, never written after
+      // this layer's own per-layer setup completes.
+      parallelFor(toVisit.size(), g_compositeParallelGrain, [&](size_t idx) {
+        const TileCoord coord = toVisit[idx];
         const PigmentTile* up = upTiles ? upTiles->find(coord) : nullptr;
         const PigmentTile* low = lowTiles ? lowTiles->find(coord) : nullptr;
         const MaskTile* upMask = maskTiles ? maskTiles->find(coord) : nullptr;
         const MaskTile* lowMask = lowerMaskTiles ? lowerMaskTiles->find(coord) : nullptr;
-        if (!members.empty()) bindMemberTiles(coord);
+        const std::vector<BoundMember> bound =
+            members.empty() ? std::vector<BoundMember>{} : bindMembersForTile(coord);
         const PixelCoord origin = tileOrigin(coord);
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
@@ -1020,11 +1179,11 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
             // **A mixed pair is a perfectly good clip base** (§15): the pair is
             // one unit, and one unit is what a base is. No special case is
             // needed -- the pair's output texel *is* the base's `S`.
-            if (!members.empty()) pair = foldClipGroup(pair, local);
+            if (!members.empty()) pair = foldClipGroup(pair, local, bound);
             blendInto(docX, docY, BlendMode::Normal, pair);
           }
         }
-      }
+      });
       continue;
     }
 
@@ -1039,8 +1198,13 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
     // coverage already multiplied by its mask sample at this texel -- one
     // scalar, because a mask and an opacity are the same quantity and compose
     // as a plain product (this file's header, §5).
+    // `bound` is this tile's own task-local clip-member binding
+    // (`bindMembersForTile()`) -- empty when `members.empty()`, in which
+    // case `foldClipGroup()` is never called at all (the `if
+    // (!members.empty())` below), so a document with no clipped layer pays
+    // nothing extra for this parameter existing.
     auto contribute = [&](int32_t docX, int32_t docY, std::array<float, 4> src, float effective,
-                          const PixelCoord& local) {
+                          const PixelCoord& local, const std::vector<BoundMember>& bound) {
       src = gradedPremultiplied(src, ops);
       // The one place opacity enters. At the default 1.0 this is a
       // multiplication by literal 1.0f -- exact for every finite float --
@@ -1056,26 +1220,38 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
       // per-layer constant, and the *whole* of what step 9 added to this hot
       // path: a document with no clipped layer never enters it, so the texel
       // blended below is the one this line blended before that step.
-      if (!members.empty()) src = foldClipGroup(src, local);
+      if (!members.empty()) src = foldClipGroup(src, local, bound);
       blendInto(docX, docY, mode, src);
     };
 
     if (hasRgb) {
+      // Filtered and collected into an index-addressable vector, serially,
+      // for the identical reason the mixed-pair branch above does it:
+      // `visits()`/`floorAt()` are evaluated once, up front, and the tile
+      // pointer is captured here so the (possibly parallel) body below
+      // never calls `TileStore::find()` on this layer's own store at all.
+      std::vector<std::pair<TileCoord, const Tile*>> toVisit;
       for (const auto& [coord, tile] : *layer.rgbTiles) {
-        if (!visits(coord)) continue;
-        // The opaque-floor early exit: skip this tile's contribution for
-        // every layer strictly below the tile's own floor. Layer `i` (the
-        // floor itself, when this IS it) still runs this loop body
-        // normally -- see this file's opaque-floor section for why that is
-        // exactly the seed a truncated walk needs, for free.
-        if (i < floorFor(coord)) continue;
+        if (visits(coord) && i >= floorAt(coord)) toVisit.emplace_back(coord, &tile);
+      }
+      // **Parallel over this layer's own tiles.** See the mixed-pair
+      // branch's own comment on what makes a worker body here race-free:
+      // disjoint destination addresses per tile, read-only store lookups,
+      // and a task-local `bound` rather than the old shared, rebound
+      // `members` fields. `maskTile` is looked up fresh per tile inside the
+      // worker (one hash lookup per tile, exactly the cost the pre-parallel
+      // walk already paid -- only which thread pays it changed).
+      parallelFor(toVisit.size(), g_compositeParallelGrain, [&](size_t idx) {
+        const TileCoord coord = toVisit[idx].first;
+        const Tile& tile = *toVisit[idx].second;
         const PixelCoord origin = tileOrigin(coord);
         const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
         // **The base's tiles are the clipping run's whole extent** (§17):
         // outside them the base's alpha is 0, so the group contributes exactly
         // nothing. A clipped layer's own tiles are never visited for their own
         // sake, which is why clipping can only make this walk cheaper.
-        if (!members.empty()) bindMemberTiles(coord);
+        const std::vector<BoundMember> bound =
+            members.empty() ? std::vector<BoundMember>{} : bindMembersForTile(coord);
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
           if (docY < 0 || docY >= doc.height) continue;  // clipped to the canvas
@@ -1091,17 +1267,22 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
             const float effective =
                 maskTiles ? coverage * maskCoverage(maskTile, local) : coverage;
             if (effective <= 0.0f) continue;
-            contribute(docX, docY, tile.readPixel(local), effective, local);
+            contribute(docX, docY, tile.readPixel(local), effective, local, bound);
           }
         }
-      }
+      });
     } else {
+      std::vector<std::pair<TileCoord, const PigmentTile*>> toVisit;
       for (const auto& [coord, tile] : *layer.pigmentTiles) {
-        if (!visits(coord)) continue;
-        if (i < floorFor(coord)) continue;  // opaque-floor early exit, see the RGB branch above
+        if (visits(coord) && i >= floorAt(coord)) toVisit.emplace_back(coord, &tile);
+      }
+      parallelFor(toVisit.size(), g_compositeParallelGrain, [&](size_t idx) {
+        const TileCoord coord = toVisit[idx].first;
+        const PigmentTile& tile = *toVisit[idx].second;
         const PixelCoord origin = tileOrigin(coord);
         const MaskTile* maskTile = maskTiles ? maskTiles->find(coord) : nullptr;
-        if (!members.empty()) bindMemberTiles(coord);
+        const std::vector<BoundMember> bound =
+            members.empty() ? std::vector<BoundMember>{} : bindMembersForTile(coord);
         for (int32_t ty = 0; ty < kTileSize; ++ty) {
           const int32_t docY = origin.y + ty;
           if (docY < 0 || docY >= doc.height) continue;
@@ -1116,10 +1297,11 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
             // into it: `projectPigmentTexel()` is handed the stored texel
             // unchanged. §5 says why that is the difference between a mask and
             // an eraser.
-            contribute(docX, docY, projectPigmentTexel(tile.readTexel(local)), effective, local);
+            contribute(docX, docY, projectPigmentTexel(tile.readTexel(local)), effective, local,
+                      bound);
           }
         }
-      }
+      });
     }
   }
 }

@@ -4341,4 +4341,24 @@ bool runResourcePathsTest();
 // PaintSim involvement. See app/selftest/OpaqueFloor.cpp.
 bool runOpaqueFloorTest();
 
+// core/Composite.cpp's tile-parallel walk: the RGB/Pigment/Mix-pair/
+// Adjustment tile loops now dispatch through core::parallelFor() instead of
+// a plain range-for, one worker per tile. Proves, by bit-identical
+// comparison forcing both the serial fallback and the genuinely parallel
+// path against the SAME document: a rich fixture (clip base+member, Mix
+// pair, Adjustment, opaque floor) composites identically both ways, for a
+// full composite and an incremental (tile-restricted) one; 25 repeated
+// parallel runs of the same document all agree with each other and the
+// serial reference; a sabotage section reproduces, in test-local code
+// only, the exact shared-mutable-state hazard the parallelization's own
+// `BoundMember`/`bindMembersForTile()` fix in core/Composite.cpp exists to
+// rule out, showing it is a real failure mode under `parallelFor`
+// scheduling rather than a hypothetical one; and a performance section
+// prints (not asserts) the wall-clock difference on the same 40-layer
+// synthetic app/selftest/OpaqueFloor.cpp's own perf section uses, so the
+// two numbers are directly comparable. Headless and GPU-free -- pure CPU
+// compositing, no PaintSim involvement. See
+// app/selftest/CompositeParallel.cpp.
+bool runCompositeParallelTest();
+
 }  // namespace np

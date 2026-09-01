@@ -422,8 +422,27 @@ bool runDocumentTextureTest(GpuContext& gpu) {
     check(agreed == kHits, "cache: an unchanged document agrees with its key every time");
     check(perHitNs < composite1024Ms * 1.0e6,
           "cache: a hit is orders of magnitude cheaper than a recomposite");
-    check(composite2048Ms > kPenToPhotonMs,
-          "cache: and a 2048x2048 recomposite alone overruns F3's whole pen-to-photon budget");
+    // **This used to be a hard assertion** ("a 2048x2048 recomposite alone
+    // overruns F3's whole pen-to-photon budget") -- a fixed claim about how
+    // slow the uncached path is, which is why the cache exists at all. It
+    // stopped being reliably true once core/Composite.cpp's opaque-floor
+    // early exit and tile-parallel walk landed: this fixture's own two-layer
+    // content is a poor case for the opaque floor (every-3rd-pixel writes
+    // never make a tile's alpha channel exactly 1.0 everywhere), so the
+    // improvement seen here is squarely the parallel walk's -- but it means
+    // a hardcoded ">kPenToPhotonMs" is now a claim about the machine's core
+    // count as much as about the document, and asserting it risks becoming
+    // exactly the stale-premise trap this comment is now warning the next
+    // reader about. The claim this section actually needs -- a cache hit is
+    // dramatically cheaper than recompositing, at ANY document size -- is
+    // still proven above, size-independently, by `perHitNs <
+    // composite1024Ms * 1.0e6`. This prints the now-measured number rather
+    // than asserting a direction for it.
+    std::printf("    [measured] 2048x2048 recomposite is now %.1f%% of PRD F3's %.0f ms budget "
+                "(used to reliably exceed 100%% before the compositor's opaque-floor + "
+                "tile-parallel work; no longer assumed, since a future speedup should not have "
+                "to re-litigate this comment to stay green)\n",
+                100.0 * composite2048Ms / kPenToPhotonMs, kPenToPhotonMs);
   }
 
   std::printf("  -- 7. the GPU round trip, at a stride the readback direction refuses --\n");
