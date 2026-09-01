@@ -11861,6 +11861,31 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const OpenDocument* activeDocument = st.documents.active();
     WGPUTextureView documentView = nullptr;
     if (activeDocument != nullptr) {
+      // ui/DocumentTexture.hpp decision 6: which part of the document is
+      // actually on screen this frame, in document-pixel space -- so a big
+      // off-screen edit (a full-document filter, a layer toggle covering
+      // most of a large document) does not make THIS frame wait on tiles
+      // nobody can currently see. The AABB of the paint area's four corners,
+      // mapped back through the same `xform` the canvas quad itself was
+      // built from (screen -> canvas) -- axis-aligned under a rotated view,
+      // the identical "honest at a glance, wrong only in the corners"
+      // compromise the navigator rect above already makes, for the same
+      // reason: a rectangle that is slightly too generous costs a few extra
+      // tiles this call, never a stale pixel, while one that is too small is
+      // still safe (see ui/DocumentTexture.hpp's own margin) and merely one
+      // frame slower to catch up.
+      const Vec2 vp00 = xform.toCanvas(Vec2{paintOrigin.x, paintOrigin.y});
+      const Vec2 vp10 = xform.toCanvas(Vec2{paintOrigin.x + avail.x, paintOrigin.y});
+      const Vec2 vp11 = xform.toCanvas(Vec2{paintOrigin.x + avail.x, paintOrigin.y + avail.y});
+      const Vec2 vp01 = xform.toCanvas(Vec2{paintOrigin.x, paintOrigin.y + avail.y});
+      const float vpMinX = std::min(std::min(vp00.x, vp10.x), std::min(vp11.x, vp01.x));
+      const float vpMaxX = std::max(std::max(vp00.x, vp10.x), std::max(vp11.x, vp01.x));
+      const float vpMinY = std::min(std::min(vp00.y, vp10.y), std::min(vp11.y, vp01.y));
+      const float vpMaxY = std::max(std::max(vp00.y, vp10.y), std::max(vp11.y, vp01.y));
+      const DocumentTextureViewport docViewport{
+          static_cast<int32_t>(std::floor(vpMinX)), static_cast<int32_t>(std::floor(vpMinY)),
+          static_cast<int32_t>(std::ceil(vpMaxX)), static_cast<int32_t>(std::ceil(vpMaxY))};
+
       // T15's live preview, checked first: a Filter dialog with a preview
       // computed for THIS document takes precedence over the real, unfiltered
       // texture -- `filterPreviewViewFor()` returns nullptr on every other
@@ -11871,7 +11896,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // `g_filterPreview` the very frame their popup stops being open, before
       // this code runs again.
       documentView = filterPreviewViewFor(gpu, *activeDocument);
-      if (documentView == nullptr) documentView = g_documentTextures.viewFor(gpu, *activeDocument);
+      if (documentView == nullptr)
+        documentView = g_documentTextures.viewFor(gpu, *activeDocument, nullptr, &docViewport);
       addCanvasQuad(dl, documentView, q00, q10, q11, q01);
     }
     dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
@@ -13656,7 +13682,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // this call is what makes the second document *visible* in PRD A6's
         // sense, and it is the second and last slot the pool will ever give
         // out.
-        const WGPUTextureView v = g_documentTextures.viewFor(gpu, *other);
+        //
+        // The viewport passed is the WHOLE document -- this pane's own
+        // design is "the whole document, fitted and centred" (see the
+        // comment above this block), so nothing is ever off screen here and
+        // decision 6 never defers anything for it. Passed anyway, rather
+        // than nullptr, so a slot the OTHER call site left mid-backlog
+        // (a document that was focused, is now in this pane) still catches
+        // up through the same code path instead of silently falling back to
+        // paying for its entire backlog in one call -- either is correct,
+        // this is simply the one that keeps every production call site
+        // making the same kind of request.
+        const DocumentTextureViewport wholeDoc{0, 0, other->document.width,
+                                               other->document.height};
+        const WGPUTextureView v = g_documentTextures.viewFor(gpu, *other, nullptr, &wholeDoc);
         addCanvasImage(pdl, v, p0, p1);
         pdl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
       }

@@ -2333,6 +2333,15 @@ int main(int argc, char** argv) {
     // printed (not asserted) performance comparison. Headless and
     // GPU-free.
     const bool compositeParallelOk = np::runCompositeParallelTest();
+    // ui/DocumentTexture.hpp decision 6: viewFor()'s optional
+    // DocumentTextureViewport -- tiles outside it may be deferred and
+    // caught up over later calls instead of every dirty tile always being
+    // paid for the call that discovers it. A null viewport unaffected, a
+    // whole-canvas viewport counter-identical to null, genuine (not no-op)
+    // deferral, the snapshot-overwrite trap proven directly, convergence of
+    // a parked backlog, prompt catch-up on scroll-into-view, and a printed
+    // (not asserted) per-tile cost measurement.
+    const bool viewportDeferredCompositeOk = np::runViewportDeferredCompositeTest(gpu);
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
@@ -2371,7 +2380,7 @@ int main(int argc, char** argv) {
                     touchGestureSessionOk && pressureFeelOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
-                    opaqueFloorOk && compositeParallelOk;
+                    opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);

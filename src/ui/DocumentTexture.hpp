@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
@@ -259,9 +260,101 @@
 // it easy where a single document made it rare. `retiredTextureBytes()` is
 // public so the figure is observable rather than argued about, and
 // `--selftest` measures it.
+//
+// --- 6. Viewport-priority: what a big backlog pays for THIS frame --------
+//
+// Decisions 3 and 4 answer "is a frame free" and "how much of the canvas
+// moved." Neither answers "does it matter that it moved" -- every dirty tile
+// is composited and uploaded the same call it is discovered in, whether or
+// not a single pixel of it is currently on screen. Opening a real
+// 5000x2559, 50-layer document at a working zoom shows perhaps a tenth of
+// its 800 tiles; toggling a layer that covers all of them still pays for
+// all of them before the frame that toggle asked for can present at all.
+//
+// So `viewFor()` takes an optional `DocumentTextureViewport` -- a rectangle
+// in document-pixel space -- and, when one is given, composites and uploads
+// tiles that intersect it **first and always**, this call, and defers the
+// rest rather than making the frame wait on them. `viewport == nullptr`
+// means "no policy": every legacy caller (every `--selftest` section, both
+// above and elsewhere, and app/ProfileToggle.cpp, which does not know this
+// parameter exists) pays for its entire backlog every call, exactly as this
+// function did before this decision existed -- byte for byte, not merely in
+// effect: the code path a null viewport takes is untouched by the split
+// below. Only `ui/MacPaintUI.cpp`'s two canvas-draw call sites pass one.
+//
+// **The trap this exists to name, not merely avoid.** `snapshot_` is
+// overwritten with `doc.document` at the end of `viewFor()` regardless of
+// what got composited -- decision 3's own code, unchanged by this one. Once
+// that happens, a tile this call deferred has a snapshot pointer that
+// matches the live document again, so decision 4's `documentDirtyTiles()`
+// can never rediscover it as dirty on its own -- the diff would report a
+// stale-but-untouched tile as clean, forever, which is a permanently wrong
+// pixel that nothing corrects. `pendingTiles_` is the fix: it is the
+// authoritative backlog, independent of the snapshot diff, and every call
+// folds it into that frame's dirty set *before* either branch below runs
+// (`viewFor()`'s own comment marks the line). A tile named in it is treated
+// as dirty this call whether or not the snapshot diff agrees, and it is
+// removed only once this object has actually composited and uploaded it --
+// never merely because the snapshot moved past it. `--selftest`'s
+// convergence section proves this the direct way: park the viewport away
+// from an edit for many calls in a row and confirm the deferred region does
+// NOT silently start reading as caught up.
+//
+// **A tile is "in viewport" by AABB overlap with `kViewportMarginPixels` of
+// slack**, not tile-index containment -- `tileIntersectsViewport()`, one
+// `kTileSize`-pixel pad on every side of the caller's rectangle. The pad is
+// what keeps a tile sitting one pixel outside a viewport that is about to
+// slide over it from being treated as background: without it, a scroll of a
+// few pixels could reveal a tile this object had chosen to defer only a
+// moment before, and the very first frame of that reveal would show it
+// stale. With the pad, any tile a scroll of less than one tile's width can
+// newly reveal was already "in viewport" the call before, so it was never
+// deferred to begin with. A genuinely fresh reveal (a scroll larger than
+// the pad, or a zoom) is still never worse than one frame late: the AABB is
+// recomputed from the CURRENT view every call, so a tile that newly
+// intersects it is processed **unconditionally**, this call, not subject to
+// the trickle budget below -- see `--selftest`'s scroll-into-view section.
+//
+// **The trickle budget is what makes a parked viewport still converge.** A
+// user who never moves the view would otherwise leave the deferred region
+// deferred forever, which is fine for the canvas itself (nothing on screen
+// is wrong) but wrong for the navigator thumbnail (decision-independent of
+// viewport, drawn from this same texture) and for anything else that reads
+// the whole document. So every call that defers anything also processes up
+// to `kViewportTrickleBudget` additional off-screen tiles, chosen in the
+// same ascending-(y,x) order the rest of this module already uses, so a
+// parked viewport's backlog counts down deterministically rather than
+// depending on scheduling. `--selftest`'s own measurement on the real
+// document's per-tile composite+pack+upload cost is what the constant is
+// set from -- see its definition below for the number and the budget it is
+// kept under.
+//
+// **What this decision does NOT change.** The tile-list compositing and
+// upload machinery (the band-then-run walk decision 4 built) is reused
+// as-is -- `compositeAndUploadTileList()` is the SAME function whether it is
+// called with every dirty tile or with a viewport-chosen subset, because it
+// was already generic over "some sorted, unique tile list," and the
+// alternative is a second copy that could quietly drift from the first. The
+// one-shot full-canvas fast path is also reused as-is, and is still taken
+// whenever the viewport already covers the whole backlog -- the common
+// "document fits on screen" case pays exactly what it paid before this
+// decision existed, not the band-and-run machinery's per-run overhead.
 namespace np {
 
 struct GpuContext;
+
+// A rectangle in document/canvas-pixel space -- `[x0, x1) x [y0, y1)` -- used
+// only to decide which tiles a call to `viewFor()` prioritises when there is
+// more dirty work than one call should pay for. See decision 6 above.
+// Comparing a tile's position against this is `tileIntersectsViewport()`
+// (ui/DocumentTexture.cpp), an AABB overlap test with `kTileSize` of slack on
+// every side, not containment.
+struct DocumentTextureViewport {
+  int32_t x0 = 0;
+  int32_t y0 = 0;
+  int32_t x1 = 0;
+  int32_t y1 = 0;
+};
 
 // What "the same picture" means for the cache. Compared by value; `id`
 // separates two documents that are both at revision 0.
@@ -303,8 +396,17 @@ class DocumentTexture {
  public:
   // The view to hand `ImDrawList::AddImageQuad`, or nullptr for a document
   // with no canvas. Recomposites and re-uploads only on a key change.
+  //
+  // `viewport`, decision 6: when non-null, tiles outside it may be deferred
+  // to a later call rather than composited this one -- see the header's
+  // decision 6 for the correctness argument and `pendingTiles()` below for
+  // how a caller observes the backlog it leaves behind. `nullptr` (the
+  // default, and every call this parameter did not exist for before this
+  // decision) takes the exact code path this function always has: the
+  // entire backlog, every call.
   WGPUTextureView viewFor(GpuContext& gpu, const OpenDocument& doc,
-                          std::vector<std::string>* warningsOut = nullptr);
+                          std::vector<std::string>* warningsOut = nullptr,
+                          const DocumentTextureViewport* viewport = nullptr);
 
   // Frees every texture this object ever created, including retired ones.
   //
@@ -356,6 +458,18 @@ class DocumentTexture {
   uint64_t lastUploadedTexels() const noexcept { return lastUploadedTexels_; }
   uint64_t totalUploadedTexels() const noexcept { return totalUploadedTexels_; }
   FullRecompositeReason lastFullRecompositeReason() const noexcept { return lastFullReason_; }
+
+  // Decision 6: the viewport-priority backlog. Zero for every caller that
+  // never passes a `DocumentTextureViewport` -- the field this counts is
+  // never written outside the split branch. Public so a caller (the layers
+  // panel, `--selftest`'s convergence section) can watch a backlog count
+  // down rather than merely trust that it does.
+  size_t pendingTiles() const noexcept { return pendingTiles_.size(); }
+  // Calls that deferred at least one tile -- i.e. left `pendingTiles()`
+  // non-zero on return. A subset of `incrementalUpdates()`: a deferred call
+  // is always a partial, tile-list upload, never the one-shot full-canvas
+  // path (which by construction never defers, see decision 6).
+  uint64_t deferredUpdates() const noexcept { return deferredUpdates_; }
 
   // The straight-alpha f16 canvas this object last uploaded from, exactly as
   // the texture holds it: `width * height * 4` halves, row-major, no padding.
@@ -488,11 +602,35 @@ class DocumentTexture {
   // allocate-and-zero every time.
   std::vector<float> premultScratch_;
 
+  // Decision 6: tiles known dirty that a viewport-restricted call chose not
+  // to composite this call. The authoritative backlog -- see the header's
+  // decision 6 on why this, and not the snapshot diff, is what a later call
+  // trusts. Folded into that call's dirty set and cleared at the top of every
+  // `viewFor()`, then rebuilt (non-empty only if that same call defers
+  // something new) before returning. Coordinate-keyed, like
+  // `TileStoreOf::coverageCache_` (core/TileStore.hpp) and for the same
+  // reason: identity is irrelevant, only "which tile" is.
+  std::unordered_set<TileCoord> pendingTiles_;
+
+  // Composites and uploads `tiles` -- which must be ascending by (y, x) and
+  // unique, `documentDirtyTiles()`/`canvasTiles()`'s own contract -- one tile
+  // band and then one contiguous run at a time. This is decision 4's
+  // incremental body, unchanged, extracted so decision 6's viewport split
+  // can hand it an arbitrary chosen subset instead of always the whole dirty
+  // set: one piece of band/run logic, not two that could drift apart.
+  // `dst` is the destination `WGPUTexelCopyTextureInfo`; only its `origin` is
+  // written here, once per run.
+  void compositeAndUploadTileList(GpuContext& gpu, const OpenDocument& doc,
+                                  const DocumentTextureKey& key, WGPUTexelCopyTextureInfo& dst,
+                                  const std::vector<TileCoord>& tiles,
+                                  std::vector<std::string>* warningsOut);
+
   uint64_t uploads_ = 0;
   uint64_t hits_ = 0;
   uint64_t fullRecomposites_ = 0;
   uint64_t incrementalUpdates_ = 0;
   uint64_t emptyUpdates_ = 0;
+  uint64_t deferredUpdates_ = 0;
   size_t lastDirtyTiles_ = 0;
   uint64_t lastUploadedTexels_ = 0;
   uint64_t totalUploadedTexels_ = 0;
@@ -502,6 +640,55 @@ class DocumentTexture {
   double lastUploadMs_ = 0.0;
   double totalUploadMs_ = 0.0;
 };
+
+// Decision 6: how many off-screen tiles one call to `viewFor()` will catch
+// up beyond whatever the viewport itself requires, whenever it defers
+// anything at all. `--selftest`'s own performance section
+// (app/selftest/ViewportDeferredComposite.cpp) measures this on the SAME
+// 40-layer/2048x2048 synthetic app/selftest/OpaqueFloor.cpp's and
+// app/selftest/CompositeParallel.cpp's own perf sections use, deliberately a
+// pessimistic case (every layer semi-transparent, none of them an opaque
+// floor, so nothing short-circuits) rather than the real document's own,
+// much cheaper, opaque-floor-assisted number.
+//
+// **Dividing one call's total time by its tile count is not a per-tile
+// cost** -- core/DirtyTiles.hpp's own cost model (its
+// `preferFullRecomposite()` comment) is `S + n*t`: a per-CALL setup `S`
+// (the pairing pass, the clip pass, one `layerPointOps()` per layer -- all
+// O(layers), none of it per tile) plus a per-TILE marginal `t`. An
+// uncalibrated first pass at this measurement conflated the two and swung
+// from 0.72 to 1.79 "ms/tile" purely by changing the trickle budget being
+// measured, which is not a number a constant should be sized from --
+// smaller budgets look artificially expensive per tile because `S` is a
+// larger fraction of a smaller total. The section now fits both constants
+// from two genuinely different tile counts on the identical fixture:
+// measured `S ~= 3.34 ms`, `t ~= 1.36 ms/tile`.
+//
+// `S` is a floor no choice of this constant changes -- even a budget of 1
+// pays it. What the choice DOES trade off: a bigger budget means each
+// deferred call risks more added latency on the frame it lands in (PRD F3
+// is a PER-FRAME budget), but converges a large backlog in fewer total
+// calls -- `S` paid once per call, so fewer calls means less of it paid
+// overall. Since F3 constrains one frame, not total convergence time, the
+// per-call risk is what this is sized against: at 4, `S + budget*t ~=
+// 8.78 ms`, ~44% of PRD F3's 20 ms budget, in the single worst case the
+// section measures (a corner viewport with literally nothing else on
+// screen, so every millisecond of that call is backlog catch-up and none
+// of it is work the frame needed anyway) -- a real cost, but on a
+// deliberately pessimistic document a typical viewport call never actually
+// sees in isolation (a real viewport is never a single pixel; whatever
+// on-screen tiles it already covers are work the frame needed regardless of
+// this decision, not an addition to it). Not zero -- zero would mean a
+// parked viewport, and therefore the navigator thumbnail, never catches up
+// at all.
+inline constexpr size_t kViewportTrickleBudget = 4;
+
+// Decision 6: the slack added on every side of a caller's
+// `DocumentTextureViewport` before testing a tile against it. One tile, so a
+// scroll smaller than a tile's own width can never newly reveal a tile that
+// was deferred a moment before -- see the header's decision 6 for the full
+// argument.
+inline constexpr int32_t kViewportMarginPixels = kTileSize;
 
 // PRD A6's "at most two", as a number one place can change it.
 inline constexpr size_t kVisibleDocumentCap = 2;
@@ -517,13 +704,15 @@ inline constexpr size_t kVisibleDocumentCap = 2;
 class DocumentTexturePool {
  public:
   // The view for `doc`, bringing its slot up to date. Identical in meaning to
-  // `DocumentTexture::viewFor()` -- this only decides *which* instance answers.
+  // `DocumentTexture::viewFor()` -- this only decides *which* instance
+  // answers -- and `viewport` is forwarded to it unchanged (decision 6).
   //
   // The slot chosen for a document that has none is the least recently asked
   // for, which is least-recently-visible given that a visible document is
   // asked for every frame and a hidden one never is.
   WGPUTextureView viewFor(GpuContext& gpu, const OpenDocument& doc,
-                          std::vector<std::string>* warningsOut = nullptr);
+                          std::vector<std::string>* warningsOut = nullptr,
+                          const DocumentTextureViewport* viewport = nullptr);
 
   // Whether `id`'s pixels are resident. False for every hidden document, which
   // is PRD A6 as a predicate.

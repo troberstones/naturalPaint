@@ -4361,4 +4361,29 @@ bool runOpaqueFloorTest();
 // app/selftest/CompositeParallel.cpp.
 bool runCompositeParallelTest();
 
+// ui/DocumentTexture.hpp decision 6: `DocumentTexture::viewFor()`'s optional
+// `DocumentTextureViewport` -- tiles intersecting it are composited and
+// uploaded THIS call, tiles outside it may be deferred (tracked in
+// `pendingTiles_`) and caught up over later calls via a trickle budget,
+// instead of every dirty tile always being paid for in the call that
+// discovers it dirty. Proves: a null viewport (every caller before this
+// decision existed) is byte-for-byte unaffected; a viewport that already
+// covers the whole canvas takes the identical fast paths decision 3/4 always
+// took (same upload counters as a null viewport, tile for tile); a
+// restrictive viewport composites the on-screen region correctly THIS call
+// while leaving the off-screen region genuinely stale (not merely absent
+// from the diff) until later calls catch it up; repeated calls against an
+// unedited document converge `pendingTiles()` to zero and leave
+// `uploadedHalves()` bit-identical to a full composite, proving the
+// snapshot-overwrite trap the header names (`snapshot_ = doc.document` runs
+// every call regardless of what was deferred) does not silently lose a
+// deferred tile; a tile that newly enters the viewport is caught up
+// unconditionally the very next call, never waiting on the trickle budget
+// (the "prompt scroll into view" property); and a performance section prints
+// (not asserts) this module's own per-tile composite+pack+upload cost on a
+// large synthetic, which is what `kViewportTrickleBudget`
+// (ui/DocumentTexture.hpp) is set from. See app/selftest/
+// ViewportDeferredComposite.cpp.
+bool runViewportDeferredCompositeTest(GpuContext& gpu);
+
 }  // namespace np
