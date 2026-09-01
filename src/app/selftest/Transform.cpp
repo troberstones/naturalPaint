@@ -143,6 +143,50 @@ bool runTransformTest() {
     Mat3 dummy;
     check(!mat3Invert(transformScale(1.0f, 0.0f), &dummy),
           "transform: a zero scale on one axis is REFUSED as non-invertible, not divided by");
+
+    // --- Large translations are not degeneracy -----------------------------
+    //
+    // A rigid motion is invertible no matter where it puts the picture: for an
+    // affine matrix the determinant is the 2x2 area scale and does not depend
+    // on the translation at all. Sweeping the offset across the canvas sizes
+    // this application actually opens is the point -- a singularity test that
+    // measures the whole matrix's largest entry instead of the part that can
+    // actually go singular starts refusing well-conditioned rigid motions once
+    // the translation is merely large, and every caller reads that refusal as
+    // "degenerate": the gizmo stops hit-testing its own box, the drag handles
+    // stop responding, and ops/Transform.cpp's resampler declines to resample.
+    for (const float offset : {1.0f, 100.0f, 999.0f, 1001.0f, 4096.0f, 65536.0f}) {
+      const Mat3 rigid =
+          mat3Multiply(transformTranslate(offset, offset),
+                       transformRotateDegreesAbout(146.47f, Point2{offset, offset}));
+      Mat3 rigidInv;
+      char label[160];
+      std::snprintf(label, sizeof(label),
+                    "transform: a rigid motion offset by %.0f px is invertible", offset);
+      const bool inverted = mat3Invert(rigid, &rigidInv);
+      check(inverted, label);
+      if (inverted) {
+        const Point2 back = mat3MapPoint(rigidInv, mat3MapPoint(rigid, Point2{12.0f, -30.0f}));
+        std::snprintf(label, sizeof(label),
+                      "transform: ...and round-trips a point at offset %.0f px", offset);
+        check(near(back.x, 12.0, 1e-2 + 1e-4 * offset) &&
+                  near(back.y, -30.0, 1e-2 + 1e-4 * offset), label);
+      }
+    }
+
+    // A translation big enough to dominate the matrix is still not degenerate,
+    // even with no rotation at all -- this is the plain Move case.
+    Mat3 farMove;
+    check(mat3Invert(transformTranslate(50000.0f, -50000.0f), &farMove),
+          "transform: a pure 50000 px translation is invertible");
+
+    // ...but a genuinely singular linear part stays refused however far it is
+    // translated, so the fix above cannot be mistaken for dropping the test.
+    Mat3 farDegenerate;
+    check(!mat3Invert(mat3Multiply(transformTranslate(50000.0f, 50000.0f),
+                                   transformScale(1.0f, 0.0f)),
+                      &farDegenerate),
+          "transform: a collapsed axis is STILL refused when translated far from the origin");
   }
 
   // --- 2. PRD D15: flips and quarter turns are EXACT ----------------------

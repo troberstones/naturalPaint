@@ -250,34 +250,51 @@ bool mat3Invert(const Mat3& in, Mat3* out) noexcept {
     if (!std::isfinite(m[i])) return false;
   }
 
-  const float c00 = m[4] * m[8] - m[5] * m[7];
-  const float c01 = m[5] * m[6] - m[3] * m[8];
-  const float c02 = m[3] * m[7] - m[4] * m[6];
-  const float det = m[0] * c00 + m[1] * c01 + m[2] * c02;
+  // The adjugate (the transposed cofactor matrix). The inverse is exactly this
+  // divided by the determinant, which is why it is worth building BEFORE the
+  // singularity test rather than after: it lets that test ask about the
+  // inverse this call would actually return instead of about the input's size.
+  Mat3 adj;
+  adj.m[0] = m[4] * m[8] - m[5] * m[7];
+  adj.m[1] = m[2] * m[7] - m[1] * m[8];
+  adj.m[2] = m[1] * m[5] - m[2] * m[4];
+  adj.m[3] = m[5] * m[6] - m[3] * m[8];
+  adj.m[4] = m[0] * m[8] - m[2] * m[6];
+  adj.m[5] = m[2] * m[3] - m[0] * m[5];
+  adj.m[6] = m[3] * m[7] - m[4] * m[6];
+  adj.m[7] = m[1] * m[6] - m[0] * m[7];
+  adj.m[8] = m[0] * m[4] - m[1] * m[3];
 
-  // Scale-relative singularity test. An absolute epsilon would be wrong in
-  // both directions here: this file's matrices carry translations of canvas
-  // size (thousands), so their determinants can be large, while a transform
-  // built from a normalised quad can legitimately have a determinant near 1e-3
-  // and still be perfectly invertible. Comparing against the cube of the
-  // largest entry makes the test dimensionless, which is what "is this matrix
-  // degenerate" actually asks.
-  float norm = 0.0f;
-  for (int i = 0; i < 9; ++i) norm = std::max(norm, std::fabs(m[i]));
-  if (norm <= 0.0f) return false;
-  if (!std::isfinite(det) || std::fabs(det) <= 1e-9f * norm * norm * norm) return false;
+  const float det = m[0] * adj.m[0] + m[1] * adj.m[3] + m[2] * adj.m[6];
+
+  float adjNorm = 0.0f;
+  for (int i = 0; i < 9; ++i) adjNorm = std::max(adjNorm, std::fabs(adj.m[i]));
+  if (!std::isfinite(adjNorm) || adjNorm <= 0.0f) return false;
+
+  // Singularity test, stated as a bound on the ANSWER: every entry of the
+  // returned matrix is a cofactor over `det`, so this refuses exactly when
+  // some entry would exceed 1e9 -- an inverse too large to be worth anything
+  // to a caller. That is what "degenerate" means for an operation whose whole
+  // purpose is to produce a usable inverse.
+  //
+  // The previous formulation compared `det` against 1e-9 * (largest entry)^3,
+  // reasoning that cubing made the test dimensionless. It does for a pure
+  // linear map, but not for the affine matrices this file actually carries:
+  // there the largest entry is the TRANSLATION, and an affine determinant is
+  // the 2x2 area scale, which does not depend on the translation at all. So
+  // the threshold grew as the picture moved away from the origin while the
+  // determinant stood still, and every rigid motion whose largest entry
+  // reached 1000 -- a plain drag on any canvas wider than 1000 px, or a
+  // rotation about a pivot far enough out -- was declared singular. Callers
+  // read that as degeneracy: TransformSession's box stopped hit-testing,
+  // its drag handles returned the base matrix unchanged (leaving rotate, the
+  // one handle needing no inverse, as the only live affordance), and
+  // resampleLayerTiles() declined to resample at all.
+  if (!std::isfinite(det) || std::fabs(det) <= 1e-9f * adjNorm) return false;
 
   const float inv = 1.0f / det;
   Mat3 r;
-  r.m[0] = c00 * inv;
-  r.m[1] = (m[2] * m[7] - m[1] * m[8]) * inv;
-  r.m[2] = (m[1] * m[5] - m[2] * m[4]) * inv;
-  r.m[3] = c01 * inv;
-  r.m[4] = (m[0] * m[8] - m[2] * m[6]) * inv;
-  r.m[5] = (m[2] * m[3] - m[0] * m[5]) * inv;
-  r.m[6] = c02 * inv;
-  r.m[7] = (m[1] * m[6] - m[0] * m[7]) * inv;
-  r.m[8] = (m[0] * m[4] - m[1] * m[3]) * inv;
+  for (int i = 0; i < 9; ++i) r.m[i] = adj.m[i] * inv;
   *out = r;
   return true;
 }
