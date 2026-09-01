@@ -1,8 +1,13 @@
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <map>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "app/DocumentLifecycle.hpp"
@@ -219,11 +224,22 @@ std::string defaultJournalRootPath();
 // phase 1.1's measured 12.1 ms p50 frame, so a write *is* a visible hitch --
 // but PRD O10's deferral means it can never land inside a stroke, only
 // between strokes, which is where a hitch costs the least. And the deep copy
-// number says the eventual fix is cheap: moving the write to a background
-// thread would leave ~0.003 s on the calling thread instead of ~0.082 s, a
-// 27x reduction, **without** needing Phase 5 step 6's copy-on-write tiles
-// first. I expected the snapshot copy to be most of the cost; it is under
-// 4 % of it. That is a deferral with a known payoff, recorded on `tick()`.
+// number says the fix is cheap: moving the write to a background thread
+// leaves ~0.003 s on the calling thread instead of ~0.082 s, a 27x
+// reduction, **without** needing Phase 5 step 6's copy-on-write tiles first.
+// I expected the snapshot copy to be most of the cost; it is under 4 % of it.
+//
+// **That fix has since been taken** -- see `JournalOptions::asynchronous` and
+// `waitForIdle()` -- and the number that forced it was not the 0.082 s
+// fixture above. Instrumented on a real 5000x2559 50-layer document, one
+// journal write measured **0.99-1.21 s**, twelve times what this arithmetic
+// reasoned about, and a structural edit is due *immediately* rather than on
+// the interval -- so six ganged eye-icon toggles froze the window for ~6 s
+// with the frame counter stopped, not merely dropping frames. The interval
+// arithmetic below is unchanged and still correct for what it governs (the
+// *content*-edit timer); what it never governed was the structural path,
+// which has no interval to be a percentage of. On that path the only bound
+// available is "not on this thread".
 //
 // `--selftest` prints the write cost every run and fails if it exceeds 3 % of
 // this interval (a 22x margin over what is measured here), so a regression
@@ -276,6 +292,27 @@ struct JournalOptions {
   // Empty means `defaultJournalRootPath()`.
   std::string rootDirectory;
   double intervalSeconds = kJournalIntervalSeconds;
+
+  // Write on a background thread instead of on the caller's (PRD O10).
+  //
+  // **Defaults to false, and the application opts in** -- the opposite of
+  // what "the good path should be the default" would suggest, for one
+  // reason: `--selftest` drives a whole day of journal timing in a few
+  // milliseconds of wall clock, and every assertion it makes about *what is
+  // on disk after this tick* would become an assertion about a race if the
+  // write moved off the thread underneath it. Keeping the default
+  // synchronous keeps every one of those sections meaning exactly what it
+  // meant before this change, and `main()` -- the only caller whose thread is
+  // a paint loop -- passes `true`.
+  //
+  // The cost of that choice is stated rather than hidden: the configuration
+  // users run is then *not* the configuration most of the suite exercises,
+  // which is precisely the "an unexercised path is not a seam" trap PLAN.md
+  // 1.5 records. So the async path has its own dedicated sections
+  // (coalescing, the snapshot's independence, shutdown, error propagation),
+  // and `waitForIdle()` exists so they can assert on disk state without
+  // sleeping.
+  bool asynchronous = false;
 };
 
 struct JournalTickInput {
@@ -294,6 +331,12 @@ struct JournalTickInput {
 };
 
 struct JournalTickResult {
+  // Documents this tick took responsibility for. **In the asynchronous
+  // configuration that means handed to the writer, not yet on disk** -- the
+  // count is of decisions, which is what every caller of it actually wants
+  // (whether this tick did anything). What landed is `asyncWritesPerformed()`,
+  // and it is deliberately a different number: coalescing exists to make it
+  // smaller than this one.
   size_t documentsWritten = 0;
   // Entries removed because their document is clean and bound to a file, so
   // the journal has no remaining job (ADR-0008).
@@ -310,6 +353,14 @@ struct JournalTickResult {
   // Non-fatal. A journal that cannot write must never take the application
   // down with it, so every failure is reported here and the tick continues
   // with the next document.
+  //
+  // **In the asynchronous configuration these arrive late, by one or more
+  // ticks.** The writer thread has no `JournalTickResult` to push into -- the
+  // one it would want belongs to a frame that has already ended -- so it
+  // parks its failures in a mutex-guarded queue and the *next* `tick()`
+  // drains them into this vector. `main()`'s existing loop over `errors`
+  // therefore keeps working unchanged and still prints every failure; the
+  // only thing that moved is which frame prints it.
   std::vector<std::string> errors;
 };
 
@@ -377,21 +428,52 @@ class JournalSession {
   // alongside Phase 5 step 6's copy-on-write tiles, where the write barrier
   // that marks a tile dirty is the same barrier that copies it.
   //
-  // **The write is synchronous on the calling thread.** PRD O10 says a
-  // journal write never blocks the paint loop; what is delivered here is its
-  // explicit clause -- a write that would collide with an active stroke is
-  // deferred to the end of it -- and not the stronger reading, because the
-  // 0.085 s a write costs is paid by whoever calls `tick()`. `main()` calls
-  // it at the very end of the frame, after latency has judged that frame, so
-  // the hitch lands between strokes and is never attributed to the pen. The
-  // measured fix is a background thread taking a snapshot: 0.003 s on the
-  // calling thread instead of 0.085 s (see kJournalIntervalSeconds), which
-  // does **not** need Phase 5 step 6's copy-on-write tiles to be worth doing.
-  // Deferred here only because a second thread writing documents needs a
-  // rule about what may mutate a document while it is being written, and the
-  // canvas bridge that would create such mutations does not exist yet --
-  // building the synchronisation for a race that cannot occur would be
-  // guessing at its shape. Unblocked by the canvas-to-tiles bridge.
+  // **Where the write happens, and why PRD O10 is now literally true.**
+  //
+  // With `JournalOptions::asynchronous`, `tick()` does not write. It takes a
+  // snapshot on the calling thread and hands it to one writer thread, so what
+  // the paint loop pays is a `core::Document` copy -- measured at 0.003 s for
+  // the 32.0 MiB fixture and ~0.000011 s per history entry for the same
+  // document under Phase 5 step 6's copy-on-write tiles -- instead of the
+  // whole `saveNpaint()`. PRD O10 says "a journal write never blocks the
+  // paint loop"; before this change only its explicit stroke clause was
+  // honoured, and a *structural* edit (which `recordLayerEdit()` makes every
+  // visibility toggle) blocked outright for as long as the write took. On a
+  // real 5000x2559 50-layer document that was ~1.0 s per toggle.
+  //
+  // Three properties make the hand-off sound rather than merely fast, and
+  // each is asserted by `--selftest` rather than argued:
+  //
+  //  * **The snapshot is a copy, not a view.** core/TileStore.hpp's thread
+  //    safety section supplies the exact rule -- "take a copy on the owning
+  //    thread, hand the copy over" -- and the reason the copy is affordable:
+  //    a `TileStore` slot is a `shared_ptr` with an atomic refcount, so the
+  //    copy shares tiles and the main thread's next write to one sees
+  //    `use_count() > 1` and unshares it. The writer thread only ever reads.
+  //    What is deliberately **not** copied is `OpenDocument` itself, because
+  //    it holds a `History` whose entries each hold a whole `Document`;
+  //    copying the record would drag the entire undo stack onto the queue for
+  //    a writer that reads none of it. `WriteJob` below holds exactly the
+  //    fields `writeEntry()` reads and nothing else.
+  //  * **One writer, serial.** Two writes of the same document would race on
+  //    the same temp file and the same rename. A single thread draining one
+  //    queue makes that unreachable instead of guarded.
+  //  * **Coalescing.** A snapshot queued for a document that already has one
+  //    queued *replaces* it. Six ganged eye-icon toggles are the case this
+  //    exists for: without it they would be six full document saves of which
+  //    five are already stale by the time they run.
+  //
+  // And the one piece of bookkeeping that must NOT move to the writer: the
+  // entry's state (`everWritten`, the two revisions, the interval clock) is
+  // updated **at enqueue time, on this thread**. `journalWriteDue()` reads
+  // exactly that state, so leaving it to the writer would have every
+  // subsequent frame see the same structural revision still unjournalled and
+  // enqueue again -- an unbounded queue and a busy loop, not a delay. Slot
+  // allocation stays here for the plainer reason that it mutates `entries_`.
+  // The optimism is deliberate: a write that later fails is reported through
+  // the next tick's `errors`, and the document is not retried until it
+  // changes again, which preserves the same anti-retry-storm property the
+  // synchronous path's failure branch was written for.
   //
   // A clean document bound to a file has its entry removed: its content is in
   // the user's own file and the journal has no remaining job (ADR-0008). Note
@@ -404,10 +486,35 @@ class JournalSession {
   JournalTickResult tick(const DocumentSession& documents, const JournalTickInput& in);
 
   // Journals one document now, ignoring the timer and the stroke. What the
-  // tick calls; public because `--selftest` times exactly one write, and
-  // because a future "the user asked to be safe right now" command is this.
+  // synchronous tick calls; public because `--selftest` times exactly one
+  // write, and because a future "the user asked to be safe right now" command
+  // is this.
+  //
+  // **Always synchronous, in both configurations.** It is the "right now" of
+  // its own description; a version that returned before the bytes were on
+  // disk would be a different call with the same name.
   bool writeEntry(const OpenDocument& doc, std::string* errorOut,
                   double* secondsOut = nullptr);
+
+  // --- The asynchronous writer, from the outside ---------------------------
+
+  // Blocks until the queue is empty and no write is in flight.
+  //
+  // Exists for two callers and no others: `--selftest`, which asserts on what
+  // is on disk and must not do so by sleeping, and shutdown, which must not
+  // let a write outlive the directory it is writing into. A no-op in the
+  // synchronous configuration, where there is never anything in flight.
+  void waitForIdle();
+
+  // How many writes the background thread has actually performed since
+  // `begin()`. The number coalescing is measured in: N structural edits that
+  // produce fewer than N of these is the whole point of the queue.
+  size_t asyncWritesPerformed() const noexcept;
+
+  // True while the writer thread is inside one write. `--selftest` uses it to
+  // establish, rather than assume, that a write really is in flight before it
+  // tests what happens during one.
+  bool asyncWriteInFlight() const noexcept;
 
   // Removes one document's entry files. Used when a document is saved or
   // closed; a no-op for a document that has no entry.
@@ -423,6 +530,13 @@ class JournalSession {
   // shut down normally -- an exception, an early return, a `std::exit()` from
   // a fatal error handler -- and those are exactly the sessions whose work
   // should still be offered.
+  //
+  // **The writer thread is stopped and joined before anything is removed.**
+  // `fs::remove_all()` racing a write into the same directory is not a
+  // tidiness problem: it is a thread writing through a path whose parent is
+  // being deleted underneath it, and on the other side of the race a
+  // `JournalSession` whose members the thread is still reading. The join is
+  // the whole fix and it is first, not last.
   bool finishClean(std::string* errorOut);
 
  private:
@@ -431,14 +545,79 @@ class JournalSession {
     JournalEntryState state;
   };
 
+  // One document, frozen at the moment `tick()` decided it was due, holding
+  // **exactly** what `writeEntry()` reads and nothing else.
+  //
+  // Not an `OpenDocument`: that record holds `History history`, whose entries
+  // each hold a whole `core::Document`, so copying one would put the entire
+  // undo stack on a queue for a writer that never looks at it. The two
+  // derived strings are precomputed here rather than on the writer for the
+  // duller reason that `documentDisplayName()` and `unsavedWorkSummary()`
+  // take an `OpenDocument`, which by then no longer exists.
+  struct WriteJob {
+    Document document;
+    NpaintCarry carry;
+    DocumentId id = 0;
+    uint32_t slot = 0;
+    std::string path;
+    std::string title;
+    std::string displayName;
+    std::string unsavedSummary;
+    uint64_t revision = 0;
+    uint64_t savedRevision = 0;
+    uint64_t structuralRevision = 0;
+    TileResidencyMode residencyMode = TileResidencyMode::Eager;
+    std::vector<std::string> unsavedEdits;
+    size_t unsavedEditsDropped = 0;
+  };
+
   std::string modelPathForSlot(uint32_t slot) const;
   std::string sidecarPathForSlot(uint32_t slot) const;
+
+  // The snapshot, taken on the caller's thread. `slot` is passed in because
+  // allocating it mutates `entries_`, which only the owning thread may touch.
+  WriteJob snapshotOf(const OpenDocument& doc, uint32_t slot) const;
+  // The bytes, from a snapshot. Both `writeEntry()` and the writer thread go
+  // through this and there is no second copy of the write.
+  bool writeJob(const WriteJob& job, std::string* errorOut, double* secondsOut);
+
+  void startWriter();
+  // Sets the stop flag, wakes the writer, joins it, and abandons whatever is
+  // still queued. Idempotent, and safe to call on a session that never
+  // started one.
+  void stopWriter();
+  void writerLoop();
+  void enqueue(WriteJob&& job);
 
   std::string directory_;
   int lockFd_ = -1;
   double intervalSeconds_ = kJournalIntervalSeconds;
+  bool asynchronous_ = false;
   uint32_t nextSlot_ = 1;
   std::map<DocumentId, Entry> entries_;
+
+  // --- Shared with the writer thread ---------------------------------------
+  //
+  // Everything above this line belongs to the owning thread alone. Everything
+  // below is guarded by `queueMutex_`, with the two counters atomic so
+  // `--selftest` can observe them without taking the lock the writer needs.
+  mutable std::mutex queueMutex_;
+  std::condition_variable queueSignal_;
+  std::deque<WriteJob> queue_;
+  bool writerStop_ = false;
+  // The id of the job the writer currently holds, or 0. `dropEntry()` needs
+  // it: removing a document's files while its own write is in flight would
+  // put them straight back.
+  DocumentId inFlightId_ = 0;
+  std::thread writer_;
+  std::atomic<size_t> writesPerformed_{0};
+  std::atomic<bool> writeInFlight_{false};
+
+  // Failures the writer had nowhere to report, drained by the next `tick()`.
+  // A second mutex rather than `queueMutex_` so a failing write never
+  // contends with the enqueue path it is trying not to block.
+  mutable std::mutex errorMutex_;
+  std::vector<std::string> pendingErrors_;
 };
 
 // --- Discovery and recovery ------------------------------------------------

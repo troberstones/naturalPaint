@@ -299,6 +299,12 @@ std::string defaultJournalRootPath() {
 // --- JournalSession --------------------------------------------------------
 
 JournalSession::~JournalSession() {
+  // **First**, and before anything else in this object goes away. The writer
+  // thread reads `directory_`, `queue_` and the two mutexes; a destructor
+  // that let it outlive the object would not be a leak, it would be a thread
+  // dereferencing freed members. Nothing about "the work must survive" below
+  // is reachable until this returns.
+  stopWriter();
   // Releases the lock and leaves the directory. See finishClean()'s comment
   // in the header: reaching here without it means the session did not end
   // normally, which is exactly when the work must survive.
@@ -397,8 +403,19 @@ bool JournalSession::begin(const JournalOptions& options, std::string* errorOut)
   directory_ = dir;
   lockFd_ = fd;
   intervalSeconds_ = options.intervalSeconds;
+  asynchronous_ = options.asynchronous;
   nextSlot_ = 1;
   entries_.clear();
+  {
+    std::lock_guard<std::mutex> lock(errorMutex_);
+    pendingErrors_.clear();
+  }
+  writesPerformed_.store(0);
+  // Started here rather than lazily on the first enqueue: a thread that comes
+  // into existence at an unpredictable moment during a paint loop is harder
+  // to reason about than one that exists for exactly as long as the session
+  // does, and an idle `condition_variable` wait costs nothing.
+  if (asynchronous_) startWriter();
   return true;
 }
 
@@ -413,6 +430,33 @@ JournalDue journalWriteDue(const OpenDocument& doc, const JournalEntryState& sta
   return JournalDue::No;
 }
 
+JournalSession::WriteJob JournalSession::snapshotOf(const OpenDocument& doc,
+                                                   uint32_t slot) const {
+  WriteJob job;
+  // The copy core/TileStore.hpp's thread-safety section blesses by name:
+  // a map of `shared_ptr` slots with atomic refcounts, so this shares the
+  // tiles rather than duplicating them and the owning thread's next write to
+  // any of them unshares that one tile. `OpenDocument::history` is
+  // deliberately absent -- see WriteJob in the header.
+  job.document = doc.document;
+  job.carry = doc.carry;
+  job.id = doc.id;
+  job.slot = slot;
+  job.path = doc.path;
+  job.title = doc.title;
+  // Both of these need the `OpenDocument` the writer will not have, so they
+  // are resolved here, at the moment they are true.
+  job.displayName = documentDisplayName(doc);
+  job.unsavedSummary = doc.unsavedWorkSummary();
+  job.revision = doc.revision;
+  job.savedRevision = doc.savedRevision;
+  job.structuralRevision = doc.structuralRevision;
+  job.residencyMode = doc.residencyMode;
+  job.unsavedEdits = doc.unsavedEdits;
+  job.unsavedEditsDropped = doc.unsavedEditsDropped;
+  return job;
+}
+
 bool JournalSession::writeEntry(const OpenDocument& doc, std::string* errorOut,
                                 double* secondsOut) {
   if (errorOut) errorOut->clear();
@@ -422,22 +466,48 @@ bool JournalSession::writeEntry(const OpenDocument& doc, std::string* errorOut,
     return false;
   }
 
-  const auto started = std::chrono::steady_clock::now();
-
   Entry& entry = entries_[doc.id];
   if (entry.slot == 0) entry.slot = nextSlot_++;
-  const std::string modelPath = modelPathForSlot(entry.slot);
-  const std::string sidecarPath = sidecarPathForSlot(entry.slot);
+  if (!writeJob(snapshotOf(doc, entry.slot), errorOut, secondsOut)) return false;
+
+  entry.state.everWritten = true;
+  entry.state.revision = doc.revision;
+  entry.state.structuralRevision = doc.structuralRevision;
+  entry.state.overdue = false;
+  // `lastWriteSeconds` is deliberately not touched here: it is measured on
+  // the caller's clock, which only tick() has.
+  return true;
+}
+
+// The bytes, from a snapshot. Reads nothing but its `job` argument and
+// `directory_`, which is what makes it callable from the writer thread:
+// `directory_` changes only in begin() (unreachable while a session is
+// active) and in finishClean() (which joins the writer first).
+bool JournalSession::writeJob(const WriteJob& job, std::string* errorOut, double* secondsOut) {
+  if (errorOut) errorOut->clear();
+  if (secondsOut) *secondsOut = 0.0;
+
+  const auto started = std::chrono::steady_clock::now();
+
+  const std::string modelPath = modelPathForSlot(job.slot);
+  const std::string sidecarPath = sidecarPathForSlot(job.slot);
   // The temp keeps the `.npaint` extension: io/NpaintFile selects the
   // OpenImageIO plugin from the path, so `doc-0001.npaint.tmp` would be
   // handed to a plugin lookup that has never heard of `.tmp`.
-  const std::string modelTemp = directory_ + "/" + slotName(entry.slot, ".tmp.npaint");
+  const std::string modelTemp = directory_ + "/" + slotName(job.slot, ".tmp.npaint");
 
   // PRD O7: the same writer native save uses. The document's carry goes with
   // it, so PRD I10's unknown attributes and foreign parts are in the journal
   // too -- a recovered document that had dropped them would be a different
   // document.
-  const NpaintSaveResult save = saveNpaint(doc.document, modelTemp, {}, &doc.carry);
+  //
+  // Safe to run on the writer thread, checked rather than assumed:
+  // io/NpaintFile.cpp holds no namespace-scope mutable state at all,
+  // `oiioWriteMultiPartExr()` builds a fresh `ImageOutput` per call and
+  // touches no shared OpenImageIO object (the process-wide `ImageCache` is
+  // not on this path), and OpenImageIO's global error string is
+  // `thread_local` (`static thread_local ErrorHolder` in its strutil.cpp).
+  const NpaintSaveResult save = saveNpaint(job.document, modelTemp, {}, &job.carry);
   std::error_code ec;
   if (!save.ok) {
     if (errorOut) *errorOut = "journal: " + save.error;
@@ -476,24 +546,34 @@ bool JournalSession::writeEntry(const OpenDocument& doc, std::string* errorOut,
   // future caller will ever open a residency on a recovery file -- which is
   // exactly the thing a recovery path for a large document would want to do.
   // The call is a no-op when no cache exists, so being right costs nothing.
+  //
+  // **Made from the writer thread, established rather than assumed.**
+  // OpenImageIO's `ImageCacheImpl::invalidate()` reaches its file map and its
+  // tile cache through `unordered_map_concurrent` (sharded, internally
+  // locked), takes `m_input_mutex` around the file's own invalidation, takes
+  // `m_fingerprints_mutex` around the fingerprint erase, and purges the
+  // per-thread microcaches under `m_perthread_info_mutex`; the public header
+  // documents the call as one that "even other threads" may make while a
+  // spec pointer is held. So it is left here rather than hopped back to the
+  // owning thread, which would have meant deferring it by a tick for no gain.
   tileCacheInvalidate(modelPath);
 
   std::string sidecar = kEntryHeader;
-  sidecar += "\nid " + std::to_string(doc.id);
-  sidecar += "\nslot " + std::to_string(entry.slot);
-  sidecar += "\nmodel " + escapeValue(slotName(entry.slot, kNpaintExtension));
+  sidecar += "\nid " + std::to_string(job.id);
+  sidecar += "\nslot " + std::to_string(job.slot);
+  sidecar += "\nmodel " + escapeValue(slotName(job.slot, kNpaintExtension));
   sidecar += "\nmodelBytes " + std::to_string(modelBytes);
   sidecar += "\nmodelHash " + std::to_string(modelHash);
-  sidecar += "\npath " + escapeValue(doc.path);
-  sidecar += "\ntitle " + escapeValue(doc.title);
-  sidecar += "\ndisplayName " + escapeValue(documentDisplayName(doc));
-  sidecar += "\nrevision " + std::to_string(doc.revision);
-  sidecar += "\nsavedRevision " + std::to_string(doc.savedRevision);
-  sidecar += "\nstructuralRevision " + std::to_string(doc.structuralRevision);
-  sidecar += "\nresidency " + std::string(tileResidencyModeName(doc.residencyMode));
-  sidecar += "\neditsDropped " + std::to_string(doc.unsavedEditsDropped);
-  for (const std::string& label : doc.unsavedEdits) sidecar += "\nedit " + escapeValue(label);
-  sidecar += "\nunsavedSummary " + escapeValue(doc.unsavedWorkSummary());
+  sidecar += "\npath " + escapeValue(job.path);
+  sidecar += "\ntitle " + escapeValue(job.title);
+  sidecar += "\ndisplayName " + escapeValue(job.displayName);
+  sidecar += "\nrevision " + std::to_string(job.revision);
+  sidecar += "\nsavedRevision " + std::to_string(job.savedRevision);
+  sidecar += "\nstructuralRevision " + std::to_string(job.structuralRevision);
+  sidecar += "\nresidency " + std::string(tileResidencyModeName(job.residencyMode));
+  sidecar += "\neditsDropped " + std::to_string(job.unsavedEditsDropped);
+  for (const std::string& label : job.unsavedEdits) sidecar += "\nedit " + escapeValue(label);
+  sidecar += "\nunsavedSummary " + escapeValue(job.unsavedSummary);
   const std::time_t now = std::time(nullptr);
   sidecar += "\nwrittenAtEpoch " + std::to_string(static_cast<long long>(now));
   sidecar += "\nwrittenAtLocal " + formatLocalTime(now);
@@ -512,22 +592,135 @@ bool JournalSession::writeEntry(const OpenDocument& doc, std::string* errorOut,
   }
   syncDirectory(directory_);
 
-  entry.state.everWritten = true;
-  entry.state.revision = doc.revision;
-  entry.state.structuralRevision = doc.structuralRevision;
-  entry.state.overdue = false;
   const auto finished = std::chrono::steady_clock::now();
-  const double seconds = std::chrono::duration<double>(finished - started).count();
-  // `lastWriteSeconds` is deliberately not touched here: it is measured on
-  // the caller's clock, which only tick() has.
-  if (secondsOut) *secondsOut = seconds;
+  if (secondsOut) *secondsOut = std::chrono::duration<double>(finished - started).count();
   return true;
 }
+
+// --- The writer thread -----------------------------------------------------
+
+void JournalSession::startWriter() {
+  std::lock_guard<std::mutex> lock(queueMutex_);
+  if (writer_.joinable()) return;
+  writerStop_ = false;
+  queue_.clear();
+  inFlightId_ = 0;
+  writer_ = std::thread([this] { writerLoop(); });
+}
+
+void JournalSession::stopWriter() {
+  {
+    std::lock_guard<std::mutex> lock(queueMutex_);
+    if (!writer_.joinable()) return;
+    writerStop_ = true;
+    // Whatever is still queued is abandoned rather than drained. Both callers
+    // are shutdown: the destructor, where the process is on its way out, and
+    // finishClean(), which is about to delete the directory those writes
+    // would land in. Draining would be work whose only product is deleted a
+    // millisecond later. The write already *in flight* is not abandoned --
+    // the join below waits for it, which is the entire point.
+    queue_.clear();
+  }
+  queueSignal_.notify_all();
+  writer_.join();
+}
+
+void JournalSession::writerLoop() {
+  for (;;) {
+    WriteJob job;
+    {
+      std::unique_lock<std::mutex> lock(queueMutex_);
+      queueSignal_.wait(lock, [this] { return writerStop_ || !queue_.empty(); });
+      if (writerStop_) return;
+      job = std::move(queue_.front());
+      queue_.pop_front();
+      // Published *before* the lock is dropped, so a dropEntry() that takes
+      // the lock next either sees this job in the queue (and cancels it) or
+      // sees it in flight (and waits for it). There is no gap where it sees
+      // neither and deletes files this write is about to recreate.
+      inFlightId_ = job.id;
+      writeInFlight_.store(true);
+    }
+
+    std::string error;
+    const bool ok = writeJob(job, &error, nullptr);
+    if (!ok) {
+      std::lock_guard<std::mutex> lock(errorMutex_);
+      // Bounded, for the same reason the synchronous path refuses to retry
+      // every frame: a directory that has filled up must not turn a failing
+      // journal into an unbounded string of failure messages nobody reads.
+      if (pendingErrors_.size() < 32) pendingErrors_.push_back(error);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(queueMutex_);
+      inFlightId_ = 0;
+      writeInFlight_.store(false);
+      writesPerformed_.fetch_add(1);
+    }
+    // Woken so waitForIdle() and a dropEntry() waiting on this id can retest.
+    queueSignal_.notify_all();
+  }
+}
+
+void JournalSession::enqueue(WriteJob&& job) {
+  {
+    std::lock_guard<std::mutex> lock(queueMutex_);
+    // **Coalescing**, the reason this is a queue and not a hand-off. A
+    // snapshot still waiting for a document that has since been snapshotted
+    // again is stale by definition -- the newer one describes the same file
+    // at a later moment -- so it is replaced in place rather than appended.
+    // Its queue position is kept so ordering between *different* documents
+    // stays the order the edits happened in. Six ganged eye-icon toggles are
+    // the case that made this a requirement rather than an optimisation:
+    // without it they are six full document saves of which five are
+    // superseded before they run.
+    bool replaced = false;
+    for (WriteJob& queued : queue_) {
+      if (queued.id != job.id) continue;
+      queued = std::move(job);
+      replaced = true;
+      break;
+    }
+    if (!replaced) queue_.push_back(std::move(job));
+  }
+  // `notify_all`, not `notify_one`: three parties wait on this one variable
+  // (the writer, `waitForIdle()` and `dropEntry()`), and a `notify_one` that
+  // woke a waiter whose predicate is still false would consume the wakeup the
+  // writer needed. Both of those waiters run on the owning thread -- the same
+  // thread that is inside this function -- so it is unreachable today, and it
+  // costs nothing to not depend on that.
+  queueSignal_.notify_all();
+}
+
+void JournalSession::waitForIdle() {
+  std::unique_lock<std::mutex> lock(queueMutex_);
+  if (!writer_.joinable()) return;
+  queueSignal_.wait(lock, [this] { return queue_.empty() && inFlightId_ == 0; });
+}
+
+size_t JournalSession::asyncWritesPerformed() const noexcept {
+  return writesPerformed_.load();
+}
+
+bool JournalSession::asyncWriteInFlight() const noexcept { return writeInFlight_.load(); }
 
 bool JournalSession::dropEntry(DocumentId id, std::string* errorOut) {
   if (errorOut) errorOut->clear();
   const auto it = entries_.find(id);
   if (it == entries_.end()) return true;
+  // Cancel a queued snapshot for this document, and wait out one that is
+  // already being written. Without this, removing the files of a document
+  // that was saved or closed within the window of its own journal write
+  // would be undone by that write finishing a moment later, leaving a
+  // recovery offer for work that is safely in the user's own file -- the one
+  // thing ADR-0008 drops entries to prevent.
+  if (writer_.joinable()) {
+    std::unique_lock<std::mutex> lock(queueMutex_);
+    for (auto q = queue_.begin(); q != queue_.end();)
+      q = q->id == id ? queue_.erase(q) : q + 1;
+    queueSignal_.wait(lock, [this, id] { return writerStop_ || inFlightId_ != id; });
+  }
   std::error_code ec;
   fs::remove(modelPathForSlot(it->second.slot), ec);
   fs::remove(sidecarPathForSlot(it->second.slot), ec);
@@ -539,6 +732,18 @@ JournalTickResult JournalSession::tick(const DocumentSession& documents,
                                        const JournalTickInput& in) {
   JournalTickResult result;
   if (!active()) return result;
+
+  // The writer thread's failures, collected since the last tick. Drained
+  // first so they are reported even on a tick that goes on to do nothing at
+  // all, and drained into the same vector main() already prints -- the whole
+  // point of routing them here rather than inventing a second channel.
+  {
+    std::lock_guard<std::mutex> lock(errorMutex_);
+    if (!pendingErrors_.empty()) {
+      result.errors.insert(result.errors.end(), pendingErrors_.begin(), pendingErrors_.end());
+      pendingErrors_.clear();
+    }
+  }
 
   // Entries whose document is no longer open at all: the session closed it.
   // Removed here rather than by close(), so that a document closed by any
@@ -584,6 +789,45 @@ JournalTickResult JournalSession::tick(const DocumentSession& documents,
       continue;
     }
 
+    if (asynchronous_) {
+      // Everything on this branch happens on the calling thread except the
+      // write itself: allocate the slot (it mutates `entries_`), take the
+      // snapshot, hand it over, and update the entry state **now**.
+      //
+      // The state update is not an optimisation and not optimism about the
+      // write -- it is what stops the queue growing without bound.
+      // `journalWriteDue()` is a pure function of the document and this
+      // state, so a state left at "never journalled at this structural
+      // revision" would return Structural again on the very next frame, and
+      // on every frame after that, enqueueing a fresh full-document snapshot
+      // each time. The coalescing above would keep the *queue* to one entry
+      // per document, but the snapshotting itself would run every frame
+      // forever. So the entry is marked exactly as a successful synchronous
+      // write would have marked it, and a failure is surfaced through the
+      // next tick's `errors` instead of by re-arming the write.
+      Entry& entry = entries_[doc->id];
+      if (entry.slot == 0) entry.slot = nextSlot_++;
+      const auto snapshotStart = std::chrono::steady_clock::now();
+      enqueue(snapshotOf(*doc, entry.slot));
+      const auto snapshotEnd = std::chrono::steady_clock::now();
+
+      entry.state.everWritten = true;
+      entry.state.revision = doc->revision;
+      entry.state.structuralRevision = doc->structuralRevision;
+      entry.state.overdue = false;
+      entry.state.lastWriteSeconds = in.nowSeconds;
+
+      ++result.documentsWritten;
+      if (doc == activeDoc) result.activeDocumentWritten = true;
+      // What this tick actually cost the caller, which is now the snapshot
+      // and not the write. Reported under the same name deliberately: the
+      // field's contract is "wall seconds spent by this tick", and a caller
+      // that budgets against it wants the number that is really on its
+      // thread.
+      result.writeSeconds += std::chrono::duration<double>(snapshotEnd - snapshotStart).count();
+      continue;
+    }
+
     std::string error;
     double seconds = 0.0;
     if (writeEntry(*doc, &error, &seconds)) {
@@ -611,6 +855,13 @@ JournalTickResult JournalSession::tick(const DocumentSession& documents,
 bool JournalSession::finishClean(std::string* errorOut) {
   if (errorOut) errorOut->clear();
   if (!active()) return true;
+  // **First, and well before remove_all().** The writer is at this moment
+  // possibly inside saveNpaint(), writing a temp file into the directory a
+  // few statements below is about to delete. Removing the tree out from under
+  // it would leave the write failing on a path whose parent has gone, and --
+  // worse -- would leave a thread reading this object's members while the
+  // caller believes the session is over.
+  stopWriter();
   ::flock(lockFd_, LOCK_UN);
   ::close(lockFd_);
   lockFd_ = -1;

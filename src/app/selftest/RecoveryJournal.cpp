@@ -528,6 +528,303 @@ bool runRecoveryJournalTest() {
     fs::remove_all(crashedDirectory, ec);
   }
 
+  // ========================================================================
+  // The asynchronous writer -- PRD O10's sentence, made literally true.
+  // ========================================================================
+  //
+  // Everything above this line runs the journal in its **synchronous**
+  // configuration, which is `JournalOptions`' default and is why none of it
+  // changed when the writer thread landed: a section that asserts what is on
+  // disk after this tick must not have to reason about a race to do it.
+  //
+  // The cost of that choice is that the configuration users actually run is
+  // the one the rest of the suite does not exercise, which is exactly
+  // PLAN.md 1.5's "an unexercised path is not a seam". So the async path is
+  // exercised here, deliberately and on its own terms: the write landing at
+  // all, the coalescing that is the entire reason there is a queue, the
+  // snapshot being a copy rather than a view of a document the main thread
+  // keeps editing, shutdown not racing `remove_all()` against a live write,
+  // and a failure that has no `JournalTickResult` to go into still reaching
+  // the one main() prints.
+  //
+  // **No test below sleeps for a fixed time.** Two primitives replace that:
+  // `waitForIdle()`, which blocks until the queue is drained, and
+  // `asyncWriteInFlight()`, which lets a test *establish* that a write is
+  // genuinely running before testing what happens during one, instead of
+  // assuming it from a timer. Where a margin is still relied on it is stated
+  // and it is three orders of magnitude (a 32.0 MiB write measured at
+  // ~0.085 s below, against enqueues measured in microseconds).
+
+  // One `key value` line out of a sidecar. A fourth reader of that format in
+  // this file, and deliberately not the module's: see the FNV note above --
+  // a test that parses with the code it is checking proves only that the
+  // code agrees with itself.
+  auto sidecarValue = [](const std::string& path, const std::string& key) {
+    std::ifstream in(path, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      const size_t space = line.find(' ');
+      if (space == std::string::npos) continue;
+      if (line.substr(0, space) == key) return line.substr(space + 1);
+    }
+    return std::string();
+  };
+
+  // Blocks until the writer has actually claimed a job, and reports whether
+  // it saw one. Returns false rather than looping forever if the write
+  // finished first -- that would mean the test's own premise (that there is
+  // a window during which a write is running) did not hold, which is a
+  // failure to report, not a hang.
+  auto waitForInFlight = [](JournalSession& s) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (s.asyncWriteInFlight()) return true;
+      if (s.asyncWritesPerformed() > 0) return false;
+      std::this_thread::yield();
+    }
+    return false;
+  };
+
+  // The same 2048x2048 / 256-tile / 32.0 MiB fixture the interval arithmetic
+  // is measured against below, used here for the opposite reason: a write
+  // that takes ~0.085 s is a window wide enough to enqueue into, by a factor
+  // of about a thousand over what an enqueue costs.
+  auto makeBigDocument = [&]() {
+    Document big = Document::createBlank(2048, 2048, WorkingSpace{});
+    for (int32_t ty = 0; ty < 16; ++ty)
+      for (int32_t tx = 0; tx < 16; ++tx)
+        writeStraight(big, 0, tx * 128 + 1, ty * 128 + 1, 0.5f, 0.25f, 0.125f, 1.0f);
+    return big;
+  };
+
+  auto beginAsync = [](JournalSession& s, std::string* errorOut) {
+    JournalOptions options;
+    options.asynchronous = true;
+    return s.begin(options, errorOut);
+  };
+
+  // --- An asynchronous write lands, and does not re-arm itself ------------
+  {
+    OpenDocument doc;
+    doc.id = allocateDocumentId();
+    doc.document = makeFixtureDocument();
+    doc.carry = makeFixtureCarry();
+    doc.path = "/tmp/np-not-written-to/async.npaint";
+    doc.recordEdit("place image as layer");
+
+    DocumentSession documents;
+    OpenDocument* live = documents.add(std::move(doc));
+
+    JournalSession session;
+    std::string beginError;
+    check(beginAsync(session, &beginError), "an asynchronous session begins");
+    const std::string dir = session.directory();
+
+    const JournalTickResult handed = session.tick(documents, {0.0, false});
+    check(handed.documentsWritten == 1 && handed.errors.empty(),
+          "one tick hands the structural edit to the writer thread");
+    session.waitForIdle();
+    check(session.asyncWritesPerformed() == 1,
+          "...and waitForIdle() returns with exactly one write performed");
+    check(fs::exists(dir + "/doc-0001.npaint", ec) &&
+              fs::exists(dir + "/doc-0001.journal", ec),
+          "...leaving the model and its sidecar on disk, written off the calling thread");
+    check(!fs::exists(dir + "/doc-0001.tmp.npaint", ec),
+          "...with the write-to-temp-then-rename temporary gone from the writer's path too");
+    check(sidecarValue(dir + "/doc-0001.journal", "revision") ==
+                  std::to_string(live->revision) &&
+              sidecarValue(dir + "/doc-0001.journal", "structuralRevision") ==
+                  std::to_string(live->structuralRevision),
+          "...and the sidecar's revision and structuralRevision are the snapshot's");
+    check(sidecarValue(dir + "/doc-0001.journal", "displayName") == "async.npaint",
+          "...including the two fields only an OpenDocument could answer, precomputed "
+          "by the calling thread");
+
+    // The failure mode point 5 of the design exists to prevent, asserted
+    // directly: if the entry's state were left for the writer to update,
+    // journalWriteDue() would still say Structural on the very next tick and
+    // every tick after it, snapshotting a whole document each time.
+    size_t enqueuedAgain = 0;
+    for (int i = 0; i < 8; ++i)
+      enqueuedAgain += session.tick(documents, {1.0 + i, false}).documentsWritten;
+    session.waitForIdle();
+    check(enqueuedAgain == 0 && session.asyncWritesPerformed() == 1,
+          "eight further ticks with no new edit enqueue NOTHING -- the entry state is "
+          "updated at enqueue time, so nothing re-arms the write every frame");
+
+    std::string finishError;
+    check(session.finishClean(&finishError) && !fs::exists(dir, ec),
+          "an asynchronous session still finishes clean");
+  }
+
+  // --- Coalescing: six ganged toggles are not six document saves ----------
+  //
+  // The case this whole change exists for. `recordLayerEdit()` makes an
+  // eye-icon visibility toggle a *structural* edit, which is due immediately
+  // rather than on the interval, so six rapid clicks used to be six full
+  // `saveNpaint()` calls of the whole document -- measured at ~1.0 s each on
+  // a real 5000x2559 50-layer file, i.e. about six seconds of frozen window.
+  {
+    OpenDocument doc;
+    doc.id = allocateDocumentId();
+    doc.document = makeBigDocument();
+    doc.recordEdit("fill");
+
+    DocumentSession documents;
+    OpenDocument* live = documents.add(std::move(doc));
+
+    JournalSession session;
+    std::string beginError;
+    check(beginAsync(session, &beginError), "an asynchronous session begins for the gang");
+    const std::string dir = session.directory();
+
+    session.tick(documents, {0.0, false});
+    check(waitForInFlight(session),
+          "the first write is established to be in flight, so what follows really does "
+          "queue behind it rather than racing it");
+
+    for (int i = 0; i < 6; ++i) {
+      writeStraight(live->document, 0, 5, 5, 0.1f * static_cast<float>(i + 1), 0.0f, 0.0f,
+                    1.0f);
+      live->recordEdit("toggle layer visibility");
+      session.tick(documents, {0.001 * (i + 1), false});
+    }
+    session.waitForIdle();
+    check(session.asyncWritesPerformed() <= 2,
+          "six ganged structural edits produce at most TWO writes, not six -- a snapshot "
+          "still queued is REPLACED, not appended");
+    const NpaintLoadResult landed = loadNpaint(dir + "/doc-0001.npaint");
+    check(landed.ok && std::fabs(readStraightRed(landed.document, 0, 5, 5) - 0.6f) < 1.0e-2f,
+          "...and the file that lands holds the FINAL state of the gang, not an "
+          "intermediate one that was already stale when it was queued");
+
+    std::string finishError;
+    session.finishClean(&finishError);
+  }
+
+  // --- The snapshot is a snapshot, not a view -----------------------------
+  //
+  // Two documents, because the point has to be made without a data race even
+  // when the code under test is wrong: the big document holds the writer busy
+  // while the *second* document's already-queued snapshot sits untouched, and
+  // the main thread edits that second document in the meantime. If the queue
+  // held a reference to the live document instead of a copy of it, the write
+  // would pick up the later edit.
+  {
+    OpenDocument big;
+    big.id = allocateDocumentId();
+    big.document = makeBigDocument();
+    big.recordEdit("fill");
+
+    OpenDocument subject;
+    subject.id = allocateDocumentId();
+    subject.document = makeFixtureDocument();
+    subject.path = "/tmp/np-not-written-to/subject.npaint";
+    writeStraight(subject.document, 0, 7, 7, 0.25f, 0.0f, 0.0f, 1.0f);
+    subject.recordEdit("place image as layer");
+
+    DocumentSession documents;
+    documents.add(std::move(big));
+    OpenDocument* live = documents.add(std::move(subject));
+
+    JournalSession session;
+    std::string beginError;
+    check(beginAsync(session, &beginError), "an asynchronous session begins for the snapshot");
+    const std::string dir = session.directory();
+
+    // One tick enqueues both, in session order: the big document takes slot
+    // 1 and is picked up first, the subject takes slot 2 and waits.
+    check(session.tick(documents, {0.0, false}).documentsWritten == 2,
+          "one tick hands two dirty documents over, in session order");
+    check(waitForInFlight(session),
+          "the big document's write is in flight, so the subject's snapshot is still "
+          "sitting in the queue untouched");
+
+    writeStraight(live->document, 0, 7, 7, 0.875f, 0.0f, 0.0f, 1.0f);
+    live->recordEdit("paint stroke", EditKind::Content);
+    session.waitForIdle();
+
+    const NpaintLoadResult landed = loadNpaint(dir + "/doc-0002.npaint");
+    check(landed.ok &&
+              std::fabs(readStraightRed(landed.document, 0, 7, 7) - 0.25f) < 1.0e-2f,
+          "the writer wrote the document as it was AT ENQUEUE TIME (0.25), not as the "
+          "main thread has since made it (0.875) -- the queue holds a copy, not a view");
+
+    std::string finishError;
+    session.finishClean(&finishError);
+  }
+
+  // --- A failure the writer had nowhere to report -------------------------
+  {
+    OpenDocument doc;
+    doc.id = allocateDocumentId();
+    doc.document = makeFixtureDocument();
+    doc.recordEdit("place image as layer");
+
+    DocumentSession documents;
+    documents.add(std::move(doc));
+
+    JournalSession session;
+    std::string beginError;
+    check(beginAsync(session, &beginError), "an asynchronous session begins for the failure");
+    const std::string dir = session.directory();
+
+    // Take write permission off the scratch directory, so `saveNpaint()`
+    // cannot create its file. A permission failure rather than a full disk
+    // because it is the one write failure a test can produce on demand and
+    // undo again on the next line but one.
+    fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec,
+                    fs::perm_options::replace, ec);
+    const JournalTickResult handed = session.tick(documents, {0.0, false});
+    check(handed.errors.empty(),
+          "the tick that enqueues a doomed write reports nothing -- it cannot yet know");
+    session.waitForIdle();
+    const JournalTickResult later = session.tick(documents, {1.0, false});
+    check(later.errors.size() == 1 && contains(later.errors[0], "journal"),
+          "...and the writer thread's failure surfaces through a LATER tick's errors, on "
+          "the channel main() already prints");
+    check(later.documentsWritten == 0,
+          "...without the failure turning every subsequent frame into another attempt");
+
+    fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
+    std::string finishError;
+    session.finishClean(&finishError);
+  }
+
+  // --- Shutdown with a write in flight ------------------------------------
+  //
+  // `finishClean()` ends with `fs::remove_all(directory_)`. A writer still
+  // inside `saveNpaint()` at that moment is writing through a path whose
+  // parent is being deleted, and -- worse -- is reading members of an object
+  // its owner believes it is finished with. The join has to come first, and
+  // this is the assertion that it does.
+  {
+    OpenDocument doc;
+    doc.id = allocateDocumentId();
+    doc.document = makeBigDocument();
+    doc.recordEdit("fill");
+
+    DocumentSession documents;
+    documents.add(std::move(doc));
+
+    JournalSession session;
+    std::string beginError;
+    check(beginAsync(session, &beginError), "an asynchronous session begins for shutdown");
+    const std::string dir = session.directory();
+
+    session.tick(documents, {0.0, false});
+    check(waitForInFlight(session), "a write is established to be in flight when shutdown begins");
+
+    std::string finishError;
+    const bool finished = session.finishClean(&finishError);
+    check(!session.asyncWriteInFlight(),
+          "finishClean() joined the writer BEFORE remove_all() -- no write is still "
+          "running when it returns");
+    check(finished && !fs::exists(dir, ec),
+          "...and the scratch directory is removed cleanly, with nothing racing it");
+  }
+
   // --- What the interval costs, measured ----------------------------------
   {
     // io/TileResidency's own "realistic document": 2048x2048, every one of

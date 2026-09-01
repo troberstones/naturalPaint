@@ -2517,7 +2517,18 @@ int main(int argc, char** argv) {
   st.recoveryOfferPending = !st.recovery.empty();
   {
     std::string journalError;
-    const bool journalling = st.journal.begin({}, &journalError);
+    // `asynchronous = true`: this is the paint loop, and it is the caller PRD
+    // O10's "a journal write never blocks the paint loop" is about. The option
+    // defaults to false so `--selftest` keeps asserting on disk state without
+    // racing itself; see JournalOptions::asynchronous. Measured motivation: on
+    // a 5000x2559 50-layer document a structural edit -- which is what an
+    // eye-icon visibility toggle is, via recordLayerEdit() -- froze this loop
+    // for 0.99-1.21 s, and six ganged toggles for ~6 s with the frame counter
+    // stopped. `--frame-trace`'s `journal_ms` is what measured that and is
+    // what should now read ~0 on the frame an edit lands.
+    np::JournalOptions journalOptions;
+    journalOptions.asynchronous = true;
+    const bool journalling = st.journal.begin(journalOptions, &journalError);
     if (journalling)
       std::fprintf(stderr, "[journal] recovery scratch: %s (every %.0f s)\n",
                    st.journal.directory().c_str(), np::kJournalIntervalSeconds);
@@ -2800,6 +2811,7 @@ int main(int argc, char** argv) {
     const uint64_t frameStartNs = SDL_GetTicksNS();
     st.lastInputEventNs = 0;
     bool clickedThisFrame = false;
+    bool releasedThisFrame = false;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       ImGui_ImplSDL3_ProcessEvent(&e);
@@ -2813,6 +2825,7 @@ int main(int argc, char** argv) {
         clickMarkerPos = ImVec2(e.button.x, e.button.y);
         clickMarkerUntilNs = frameStartNs + 2'000'000'000ull;  // 2s, plenty over any real frame
       }
+      if (frameTrace && e.type == SDL_EVENT_MOUSE_BUTTON_UP) releasedThisFrame = true;
 
       // `requestQuit`, not `quit` — a user asking to leave is a request that
       // has to be answered against the open documents first (app/QuitSequence).
@@ -3450,47 +3463,8 @@ int main(int argc, char** argv) {
 
     wgpuSurfacePresent(gpu.surface);
 
-    if (frameTrace) {
-      const uint64_t presentNs = SDL_GetTicksNS();
-      // Which pool slot (if any) holds the active document, so the trace can
-      // report *why* this frame's composite was full or narrow -- not just
-      // how long it took. `--frame-trace`'s whole point is telling "the
-      // toggled layer's own footprint legitimately covers the canvas" apart
-      // from "the narrowing logic missed a case it should have caught".
-      const char* fullReasonName = "n/a";
-      size_t dirtyTiles = 0;
-      uint64_t uploadedTexels = 0;
-      double compositeMs = 0.0, packMs = 0.0, lastUploadMs = 0.0;
-      if (const np::OpenDocument* od = st.documents.active()) {
-        const np::DocumentTexturePool& pool = np::canvasDocumentTexture();
-        for (size_t s = 0; s < np::kVisibleDocumentCap; ++s) {
-          if (pool.slotDocument(s) == od->id) {
-            fullReasonName = np::fullRecompositeReasonName(pool.slot(s).lastFullRecompositeReason());
-            dirtyTiles = pool.slot(s).lastDirtyTiles();
-            uploadedTexels = pool.slot(s).lastUploadedTexels();
-            compositeMs = pool.slot(s).lastCompositeMs();
-            packMs = pool.slot(s).lastPackMs();
-            lastUploadMs = pool.slot(s).lastUploadMs();
-            break;
-          }
-        }
-      }
-      std::fprintf(stderr,
-                    "[frame-trace] frame=%llu%s rev=%llu->%llu poll_to_newframe_ms=%.2f "
-                    "drawui_ms=%.2f render_ms=%.2f present_ms=%.2f total_ms=%.2f "
-                    "reason=%s dirty_tiles=%zu uploaded_texels=%llu upload_total_ms=%.2f "
-                    "composite_ms=%.2f pack_ms=%.2f upload_calls_ms=%.2f\n",
-                    static_cast<unsigned long long>(frameIndex - 1), clickedThisFrame ? " CLICK" : "",
-                    static_cast<unsigned long long>(revisionBeforeUI),
-                    static_cast<unsigned long long>(revisionAfterUI),
-                    static_cast<double>(newFrameNs - frameStartNs) / 1e6,
-                    static_cast<double>(drawUiNs - newFrameNs) / 1e6,
-                    static_cast<double>(renderNs - drawUiNs) / 1e6,
-                    static_cast<double>(presentNs - renderNs) / 1e6,
-                    static_cast<double>(presentNs - frameStartNs) / 1e6, fullReasonName, dirtyTiles,
-                    static_cast<unsigned long long>(uploadedTexels), lastUploadMs, compositeMs, packMs,
-                    lastUploadMs - compositeMs - packMs);
-    }
+    const uint64_t presentNs = frameTrace ? SDL_GetTicksNS() : 0;
+
     // st.paintingThisFrame (not st.sim.brushActive): post-1.3 brushActive
     // means "oil has a fresh dab-sourced segment," true on only a fraction
     // of painting frames — the wrong thing to correlate pen-to-photon
@@ -3514,13 +3488,84 @@ int main(int argc, char** argv) {
     // a stroke in progress is held back to the first frame after it ends.
     // Almost every call returns having done nothing but compare two integers
     // per open document.
+    //
+    // **`--frame-trace` times this call, and the trace line is printed after
+    // it rather than before.** This is the one part of the loop body that can
+    // block for a long time with none of the phase timers above seeing it:
+    // every one of them ends at `presentNs`, and this runs after. A layer edit
+    // is `EditKind::Structural` (app/DocumentLifecycle.cpp `recordLayerEdit()`,
+    // "Structural, always"), so `journalWriteDue()` returns `Structural` -- a
+    // full `saveNpaint()` of the whole document, synchronously, on this
+    // thread, on the very frame the edit lands. On a document far larger than
+    // the fixture the 60 s interval was calibrated against, a trace that
+    // stopped at `presentNs` would report a healthy 8 ms frame while the
+    // window sat visibly frozen. `journal_ms`/`journal_docs`/`loop_total_ms`
+    // are what make that difference observable instead of a matter of opinion.
+    size_t journalDocsWritten = 0;
+    double journalWriteSeconds = 0.0;
+    const uint64_t journalStartNs = frameTrace ? SDL_GetTicksNS() : 0;
     {
       const double nowSeconds =
           std::chrono::duration<double>(now.time_since_epoch()).count();
       const np::JournalTickResult journalled =
           st.journal.tick(st.documents, {nowSeconds, st.strokeActive});
+      journalDocsWritten = journalled.documentsWritten;
+      journalWriteSeconds = journalled.writeSeconds;
       for (const std::string& e : journalled.errors)
         std::fprintf(stderr, "[journal] %s\n", e.c_str());
+    }
+    const uint64_t journalEndNs = frameTrace ? SDL_GetTicksNS() : 0;
+
+    if (frameTrace) {
+      // Which pool slot (if any) holds the active document, so the trace can
+      // report *why* this frame's composite was full or narrow -- not just
+      // how long it took. `--frame-trace`'s whole point is telling "the
+      // toggled layer's own footprint legitimately covers the canvas" apart
+      // from "the narrowing logic missed a case it should have caught".
+      const char* fullReasonName = "n/a";
+      size_t dirtyTiles = 0;
+      uint64_t uploadedTexels = 0;
+      double compositeMs = 0.0, packMs = 0.0, lastUploadMs = 0.0;
+      size_t pendingTiles = 0;
+      uint64_t deferredUpdates = 0;
+      if (const np::OpenDocument* od = st.documents.active()) {
+        const np::DocumentTexturePool& pool = np::canvasDocumentTexture();
+        for (size_t s = 0; s < np::kVisibleDocumentCap; ++s) {
+          if (pool.slotDocument(s) == od->id) {
+            fullReasonName = np::fullRecompositeReasonName(pool.slot(s).lastFullRecompositeReason());
+            dirtyTiles = pool.slot(s).lastDirtyTiles();
+            uploadedTexels = pool.slot(s).lastUploadedTexels();
+            compositeMs = pool.slot(s).lastCompositeMs();
+            packMs = pool.slot(s).lastPackMs();
+            lastUploadMs = pool.slot(s).lastUploadMs();
+            pendingTiles = pool.slot(s).pendingTiles();
+            deferredUpdates = pool.slot(s).deferredUpdates();
+            break;
+          }
+        }
+      }
+      std::fprintf(stderr,
+                    "[frame-trace] frame=%llu%s%s rev=%llu->%llu poll_to_newframe_ms=%.2f "
+                    "drawui_ms=%.2f render_ms=%.2f present_ms=%.2f total_ms=%.2f "
+                    "journal_ms=%.2f journal_write_ms=%.2f journal_docs=%zu loop_total_ms=%.2f "
+                    "reason=%s dirty_tiles=%zu uploaded_texels=%llu upload_total_ms=%.2f "
+                    "composite_ms=%.2f pack_ms=%.2f upload_calls_ms=%.2f pending_tiles=%zu "
+                    "deferred_updates=%llu\n",
+                    static_cast<unsigned long long>(frameIndex - 1), clickedThisFrame ? " CLICK" : "",
+                    releasedThisFrame ? " UP" : "",
+                    static_cast<unsigned long long>(revisionBeforeUI),
+                    static_cast<unsigned long long>(revisionAfterUI),
+                    static_cast<double>(newFrameNs - frameStartNs) / 1e6,
+                    static_cast<double>(drawUiNs - newFrameNs) / 1e6,
+                    static_cast<double>(renderNs - drawUiNs) / 1e6,
+                    static_cast<double>(presentNs - renderNs) / 1e6,
+                    static_cast<double>(presentNs - frameStartNs) / 1e6,
+                    static_cast<double>(journalEndNs - journalStartNs) / 1e6,
+                    journalWriteSeconds * 1000.0, journalDocsWritten,
+                    static_cast<double>(journalEndNs - frameStartNs) / 1e6, fullReasonName, dirtyTiles,
+                    static_cast<unsigned long long>(uploadedTexels), lastUploadMs, compositeMs, packMs,
+                    lastUploadMs - compositeMs - packMs, pendingTiles,
+                    static_cast<unsigned long long>(deferredUpdates));
     }
 
     wgpuTextureViewRelease(backbuffer);
