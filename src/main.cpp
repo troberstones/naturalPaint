@@ -2932,7 +2932,7 @@ int main(int argc, char** argv) {
                 const np::Mat3 initialPending = np::computeDropFitTransform(
                     np::regionFromBounds(np::layerContentBounds(droppedLayer)),
                     np::documentCanvasRegion(od->document));
-                st.transform.beginLayer(od->document, *dropped.transformableLayer,
+                st.transform.beginLayer(*od, *dropped.transformableLayer,
                                         initialPending);
                 // T14: the SAME live-pixel-preview upload drawUI()'s own
                 // Free Transform handler makes -- this is the session's

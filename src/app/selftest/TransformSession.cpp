@@ -150,7 +150,7 @@ bool runTransformSessionTest() {
   {
     TransformSession ts;
     OpenDocument fixture = makeDoc(40, 20);
-    check(ts.beginLayer(fixture.document, 0).ok, "multi-frame drag: begin succeeds on a fresh layer");
+    check(ts.beginLayer(fixture, 0).ok, "multi-frame drag: begin succeeds on a fresh layer");
 
     const Point2 start{40.0f, 20.0f};  // the BottomRight handle's own position
     ts.beginDrag(TransformHandle::BottomRight, start);
@@ -199,7 +199,7 @@ bool runTransformSessionTest() {
   {
     TransformSession ts;
     OpenDocument fixture = makeDoc(40, 20);
-    check(ts.beginLayer(fixture.document, 0).ok, "accumulation: begin succeeds");
+    check(ts.beginLayer(fixture, 0).ok, "accumulation: begin succeeds");
 
     // Drag 1: rotate the box roughly -90 degrees about its own centre (20,10).
     // The exact angle does not matter -- what matters is that it is a real
@@ -265,7 +265,7 @@ bool runTransformSessionTest() {
   {
     TransformSession ts;
     OpenDocument driven = makeDoc(64, 48);
-    check(ts.beginLayer(driven.document, 0).ok, "single-resample: begin succeeds");
+    check(ts.beginLayer(driven, 0).ok, "single-resample: begin succeeds");
 
     // Several frames of a real drag -- not a single call -- so a per-frame
     // resample (were one accidentally wired in) would have multiple chances
@@ -299,7 +299,7 @@ bool runTransformSessionTest() {
   {
     TransformSession ts;
     OpenDocument fixture = makeDoc(50, 30);
-    check(ts.beginLayer(fixture.document, 0).ok, "exact path: begin succeeds");
+    check(ts.beginLayer(fixture, 0).ok, "exact path: begin succeeds");
 
     // An integer-pixel Move: this is PRD D15's no-resample path, reached
     // through the session exactly as it is reached anywhere else --
@@ -339,7 +339,7 @@ bool runTransformSessionTest() {
     OpenDocument fixture = makeDoc(20, 20);
     const uint64_t revBefore = fixture.revision;
     const size_t cursorBefore = fixture.history.cursor();
-    check(ts.beginLayer(fixture.document, 0).ok, "cancel: begin succeeds");
+    check(ts.beginLayer(fixture, 0).ok, "cancel: begin succeeds");
     ts.beginDrag(TransformHandle::BottomRight, Point2{20.0f, 20.0f});
     ts.updateDrag(Point2{60.0f, 60.0f}, false, false);
     ts.endDrag();
@@ -357,7 +357,7 @@ bool runTransformSessionTest() {
     OpenDocument fixture = makeDoc(20, 20);
     const uint64_t revBefore = fixture.revision;
     const size_t cursorBefore = fixture.history.cursor();
-    ts.beginLayer(fixture.document, 0);
+    ts.beginLayer(fixture, 0);
     ts.beginDrag(TransformHandle::Move, Point2{0.0f, 0.0f});
     ts.updateDrag(Point2{3.0f, 3.0f}, false, false);
     ts.endDrag();
@@ -376,7 +376,7 @@ bool runTransformSessionTest() {
     OpenDocument fixture = makeDoc(20, 20);
     const uint64_t revBefore = fixture.revision;
     const size_t cursorBefore = fixture.history.cursor();
-    ts.beginLayer(fixture.document, 0);
+    ts.beginLayer(fixture, 0);
     // No drag at all: pending() is still the identity beginLayer() set it to.
     const TransformCommitResult r = ts.commit(fixture);
     check(r.ok && r.exact == ExactRemap::Identity,
@@ -391,12 +391,12 @@ bool runTransformSessionTest() {
     OpenDocument fixture = makeDoc(20, 20);
     TransformSession ts;
 
-    TransformBeginResult outOfRange = ts.beginLayer(fixture.document, 5);
+    TransformBeginResult outOfRange = ts.beginLayer(fixture, 5);
     check(!outOfRange.ok && outOfRange.error.find("out of range") != std::string::npos,
           "beginLayer refuses an out-of-range index, by name");
 
     fixture.document.layers[0].locked = true;
-    TransformBeginResult locked = ts.beginLayer(fixture.document, 0);
+    TransformBeginResult locked = ts.beginLayer(fixture, 0);
     check(!locked.ok && locked.error.find("locked") != std::string::npos,
           "beginLayer refuses a locked layer, by name");
     fixture.document.layers[0].locked = false;
@@ -404,7 +404,7 @@ bool runTransformSessionTest() {
     Layer adjustment;
     adjustment.kind = LayerKind::Adjustment;
     fixture.document.layers.push_back(adjustment);
-    TransformBeginResult noPixels = ts.beginLayer(fixture.document, 1);
+    TransformBeginResult noPixels = ts.beginLayer(fixture, 1);
     check(!noPixels.ok && noPixels.error.find("Adjustment") != std::string::npos,
           "beginLayer refuses a layer kind that holds no pixels, naming the kind");
 
@@ -412,14 +412,14 @@ bool runTransformSessionTest() {
     emptyRgb.kind = LayerKind::RGB;
     emptyRgb.rgbTiles.emplace();  // engaged, but genuinely empty
     fixture.document.layers.push_back(emptyRgb);
-    TransformBeginResult empty = ts.beginLayer(fixture.document, 2);
+    TransformBeginResult empty = ts.beginLayer(fixture, 2);
     check(!empty.ok && empty.error.find("no content") != std::string::npos,
           "beginLayer refuses an engaged-but-empty layer, distinctly from 'no pixel storage'");
 
     // Selection-pixels: an empty selection, and a Pigment layer refused BY
     // NAME while the SAME layer is transformable as a whole (section 4).
     Selection nothing = selectRectangle(0.0f, 0.0f, 0.0f, 0.0f);
-    TransformBeginResult emptySel = ts.beginSelectionPixels(fixture.document, nothing, 0);
+    TransformBeginResult emptySel = ts.beginSelectionPixels(fixture, nothing, 0);
     check(!emptySel.ok && emptySel.error.find("no pixels") != std::string::npos,
           "beginSelectionPixels refuses a selection that covers nothing");
 
@@ -431,11 +431,11 @@ bool runTransformSessionTest() {
     fixture.document.layers.push_back(pigment);
     const size_t pigmentIdx = fixture.document.layers.size() - 1;
     Selection overPigment = selectRectangle(0.0f, 0.0f, 20.0f, 20.0f);
-    TransformBeginResult pigSel = ts.beginSelectionPixels(fixture.document, overPigment, pigmentIdx);
+    TransformBeginResult pigSel = ts.beginSelectionPixels(fixture, overPigment, pigmentIdx);
     check(!pigSel.ok && pigSel.error.find("Pigment") != std::string::npos &&
               pigSel.error.find("Kubelka-Munk") != std::string::npos,
           "beginSelectionPixels refuses a Pigment layer BY NAME, with the reason (section 4)");
-    TransformBeginResult pigWhole = ts.beginLayer(fixture.document, pigmentIdx);
+    TransformBeginResult pigWhole = ts.beginLayer(fixture, pigmentIdx);
     check(pigWhole.ok,
           "and beginLayer accepts that SAME Pigment layer for a whole-layer transform -- the "
           "engine's own mass-weighted path, inherited rather than refused");
@@ -464,7 +464,7 @@ bool runTransformSessionTest() {
     od.selection = redBlock;
 
     TransformSession ts;
-    check(ts.beginSelectionPixels(od.document, redBlock, 0).ok,
+    check(ts.beginSelectionPixels(od, redBlock, 0).ok,
           "selection-pixels: begin succeeds over the red block");
 
     // Integer-pixel Move by (20, 0): red block's new home is [20,40)x[0,30)
@@ -556,7 +556,7 @@ bool runTransformSessionTest() {
           "20x20, not left off-centre)");
 
     TransformSession ts;
-    check(ts.beginLayer(oversized.document, 0, fit).ok,
+    check(ts.beginLayer(oversized, 0, fit).ok,
           "beginLayer() accepts a seeded initial pending matrix");
     check(ts.pending().m == fit.m,
           "...and pending() starts at exactly the seeded matrix, not identity -- the whole "
@@ -576,7 +576,7 @@ bool runTransformSessionTest() {
           "upscale, nothing seeded for content that already fit");
 
     TransformSession ts2;
-    check(ts2.beginLayer(fits.document, 0, identitySeed).ok,
+    check(ts2.beginLayer(fits, 0, identitySeed).ok,
           "beginLayer() accepts the identity seed the same way");
     check(ts2.pending().m == mat3Identity().m,
           "...and pending() stays identity -- a same-size-or-smaller drop is unaffected, "
@@ -653,6 +653,79 @@ bool runTransformSessionTest() {
       check(std::fabs(p.x - 4.0f) < 1e-4f && std::fabs(p.y - 9.0f) < 1e-4f,
             "rotate+scale about (1,1) then translate (3,4): (3,1) -> (4,9)");
     }
+  }
+
+  // --- 14. A session belongs to ONE document --------------------------------
+  //
+  // Before `documentId_` existed this was not a hypothetical. `commit()`
+  // applied `layerIndex_` and `pending_` to whatever `OpenDocument&` it was
+  // handed, and its production caller hands it `st.documents.active()` -- so
+  // beginning a transform in one document, switching tabs and pressing Return
+  // resampled a layer of a document the user was not transforming. The two
+  // assertions below were both written against the old code first and both
+  // failed: the commit was NOT refused, and the other document's revision
+  // moved. That is what this section exists to keep true.
+  {
+    OpenDocument a = makeDoc(40, 20);
+    OpenDocument b = makeDoc(40, 20);
+    check(a.id != b.id, "cross-document: the two fixtures really are different documents");
+
+    TransformSession ts;
+    check(ts.beginLayer(a, 0).ok, "cross-document: a transform begins on document A");
+    check(ts.documentId() == a.id, "cross-document: the session records which document that was");
+    ts.beginDrag(TransformHandle::Move, Point2{0.0f, 0.0f});
+    ts.updateDrag(Point2{10.0f, 0.0f}, false, false);
+    ts.endDrag();
+
+    // Committing into the OTHER document is refused, by name, without
+    // touching it -- and without discarding the session, so the user can
+    // switch back and still commit the work they were doing.
+    const uint64_t bRevBefore = b.revision;
+    const TransformCommitResult wrong = ts.commit(b);
+    check(!wrong.ok, "cross-document: commit into a DIFFERENT document is REFUSED");
+    check(wrong.error.find("different document") != std::string::npos,
+          "cross-document: ...and the refusal says why, rather than failing silently");
+    check(b.revision == bRevBefore,
+          "cross-document: ...and that document is left completely untouched");
+    check(ts.active(), "cross-document: a refused commit keeps the session live on its own document");
+
+    // The originating document still commits normally: the guard rejects the
+    // wrong document, it does not break the right one.
+    const uint64_t aRevBefore = a.revision;
+    const TransformCommitResult right = ts.commit(a);
+    check(right.ok, "cross-document: commit into the ORIGINATING document still succeeds");
+    check(a.revision != aRevBefore, "cross-document: ...and that document really was edited");
+    check(!ts.active(), "cross-document: ...and the session is spent afterwards");
+  }
+
+  // --- 15. A selection-pixels session records its document too --------------
+  {
+    OpenDocument a = makeDoc(40, 20);
+    OpenDocument b = makeDoc(40, 20);
+    Selection sel = selectRectangle(0.0f, 0.0f, 20.0f, 10.0f);
+    a.selection = sel;
+
+    TransformSession ts;
+    check(ts.beginSelectionPixels(a, sel, 0).ok, "cross-document: a selection transform begins on A");
+    check(ts.documentId() == a.id,
+          "cross-document: beginSelectionPixels() records the document as well");
+    ts.beginDrag(TransformHandle::Move, Point2{0.0f, 0.0f});
+    ts.updateDrag(Point2{5.0f, 0.0f}, false, false);
+    ts.endDrag();
+
+    const uint64_t bRevBefore = b.revision;
+    check(!ts.commit(b).ok, "cross-document: a selection transform also refuses another document");
+    check(b.revision == bRevBefore, "cross-document: ...leaving it untouched too");
+  }
+
+  // --- 16. cancel() forgets the document, so nothing is left bound ----------
+  {
+    OpenDocument a = makeDoc(40, 20);
+    TransformSession ts;
+    check(ts.beginLayer(a, 0).ok, "cross-document: begin before cancel");
+    ts.cancel();
+    check(ts.documentId() == 0,
+          "cross-document: cancel() clears the bound document, not just the active flag");
   }
 
   return ok;

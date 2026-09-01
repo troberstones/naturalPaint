@@ -285,8 +285,9 @@ void TransformSession::endDrag() noexcept { drag_.active = false; }
 
 void TransformSession::cancel() noexcept { *this = TransformSession{}; }
 
-TransformBeginResult TransformSession::beginLayer(const Document& doc, size_t layerIndex,
+TransformBeginResult TransformSession::beginLayer(const OpenDocument& od, size_t layerIndex,
                                                   const Mat3& initialPending) {
+  const Document& doc = od.document;
   TransformBeginResult r;
   if (layerIndex >= doc.layers.size()) {
     r.error = "transform refused: index " + std::to_string(layerIndex) +
@@ -314,6 +315,9 @@ TransformBeginResult TransformSession::beginLayer(const Document& doc, size_t la
 
   *this = TransformSession{};
   sourceBounds_ = regionFromBounds(bounds);
+  // Set together with `layerIndex_`, and never apart from it: the pair is what
+  // identifies the pixels this session owns. See the header's beginLayer().
+  documentId_ = od.id;
   layerIndex_ = layerIndex;
   target_ = TransformTarget::Layer;
   pending_ = initialPending;
@@ -322,9 +326,10 @@ TransformBeginResult TransformSession::beginLayer(const Document& doc, size_t la
   return r;
 }
 
-TransformBeginResult TransformSession::beginSelectionPixels(const Document& doc,
+TransformBeginResult TransformSession::beginSelectionPixels(const OpenDocument& od,
                                                              const Selection& selection,
                                                              size_t layerIndex) {
+  const Document& doc = od.document;
   TransformBeginResult r;
   if (layerIndex >= doc.layers.size()) {
     r.error = "transform refused: index " + std::to_string(layerIndex) +
@@ -370,6 +375,7 @@ TransformBeginResult TransformSession::beginSelectionPixels(const Document& doc,
   *this = TransformSession{};
   sourceBounds_ = region;
   selectionSnapshot_ = selection;
+  documentId_ = od.id;
   layerIndex_ = layerIndex;
   target_ = TransformTarget::SelectionPixels;
   active_ = true;
@@ -382,6 +388,18 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   TransformCommitResult out;
   if (!active_) {
     out.error = "transform commit refused: no transform is active.";
+    return out;
+  }
+
+  // The document this session began on, and no other. `layerIndex_` is an
+  // index into THAT document's layer list and means nothing in another one --
+  // applying it anyway resampled a layer the user was not transforming, in a
+  // document they had merely switched to. Refused rather than clamped or
+  // silently dropped: `od` is untouched and `active_` stays true, so switching
+  // back and pressing Return again still does what the user meant.
+  if (od.id != documentId_) {
+    out.error = "transform commit refused: this transform belongs to a different document. "
+                "Switch back to it to commit or cancel.";
     return out;
   }
 

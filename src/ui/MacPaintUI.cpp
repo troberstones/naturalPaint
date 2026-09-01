@@ -8829,8 +8829,8 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
         status = "Numeric Transform needs an open document with a layer.";
       } else {
         const TransformBeginResult began =
-            od->selection ? st.transform.beginSelectionPixels(od->document, *od->selection, *li)
-                          : st.transform.beginLayer(od->document, *li);
+            od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
+                          : st.transform.beginLayer(*od, *li);
         if (!began.ok) {
           status = began.error;
         } else {
@@ -11997,8 +11997,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // just drawn a marquee will expect -- the alternative (always the
         // whole layer) would silently ignore a selection they made on purpose.
         const TransformBeginResult began =
-            od->selection ? st.transform.beginSelectionPixels(od->document, *od->selection, *li)
-                          : st.transform.beginLayer(od->document, *li);
+            od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
+                          : st.transform.beginLayer(*od, *li);
         // Refusals are shown, never swallowed: `beginLayer`/
         // `beginSelectionPixels` refuse a locked layer, an empty one and a
         // Pigment selection-transform BY NAME (app/TransformSession.hpp), and
@@ -12018,7 +12018,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // Everything below reads this rather than `st.transform.active()` so the
     // gizmo's own `commit()`/`cancel()` further down cannot change the answer
     // half way through one frame's input handling.
-    const bool transformActive = st.transform.active();
+    //
+    // **`documentId()` is part of the answer, not a refinement of it.** A
+    // transform session outlives a document switch -- nothing cancels it, and
+    // there is no reason it should, since switching back ought to find the
+    // gizmo where it was left. But it belongs to ONE document, and this canvas
+    // block draws whichever document is active now. Without this comparison a
+    // session begun in document A drew its box and its uploaded pixel preview
+    // over document B, claimed B's mouse for handles that describe A's layer,
+    // and offered a Return that `commit()` (which now refuses it) would have
+    // applied to B. Treated as "not active here" rather than cancelled, so the
+    // work survives switching away and back.
+    const OpenDocument* transformDoc = st.documents.active();
+    const bool transformActive = st.transform.active() && transformDoc != nullptr &&
+                                 st.transform.documentId() == transformDoc->id;
     if (transformActive) {
       // Handle sizes are fixed on SCREEN and converted to document space by
       // the view's own zoom, so a handle stays the same size under the finger
@@ -13354,7 +13367,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // before the tools so a move-drag cannot also paint, and the drawing has
     // to come after them so nothing paints over the affordance the user is
     // aiming at.
-    if (st.transform.active()) {
+    // `transformActive`, not `st.transform.active()`: it already carries the
+    // "and this is the document that session belongs to" half of the question
+    // (see its own comment where the input was claimed). Reusing it is also
+    // what keeps the drawn box and the claimed input from ever disagreeing
+    // about whether the gizmo is live on this canvas.
+    if (transformActive) {
       const float zoomNow = std::max(st.view.zoom, 0.01f);
       const TransformHandlePositions h =
           st.transform.handlePositions(kTransformRotateReachPx / zoomNow);

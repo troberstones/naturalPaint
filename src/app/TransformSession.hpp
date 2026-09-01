@@ -448,7 +448,19 @@ class TransformSession {
   // the numeric Transform dialog, that legitimately needs to replace the
   // whole matrix outside a drag; every other caller should still prefer
   // `initialPending` at `begin*()` or a drag, not this.)
-  TransformBeginResult beginLayer(const Document& doc, size_t layerIndex,
+  //
+  // **Takes the `OpenDocument`, not its `Document`, so the session records
+  // WHICH document it belongs to.** A `Document` does not know its own id, and
+  // a session that does not either was a real defect, not a theoretical one:
+  // `commit()` applies `layerIndex_` and `pending_` to whatever document it is
+  // handed, and its one production caller passes `st.documents.active()`. So
+  // beginning a transform in document A, switching tabs to B and pressing
+  // Return resampled B's layer at A's index -- silent corruption of a document
+  // the user was not even transforming. Passing the id as a separate parameter
+  // would have left it possible to pass the wrong one; taking the whole
+  // `OpenDocument` makes that unrepresentable. `commit()` already took an
+  // `OpenDocument&`, so this costs no coupling that was not already here.
+  TransformBeginResult beginLayer(const OpenDocument& od, size_t layerIndex,
                                   const Mat3& initialPending = mat3Identity());
 
   // Begins a transform of the pixels `selection` covers on
@@ -459,8 +471,15 @@ class TransformSession {
   // for `commit()`, so a change to `doc`'s live selection after `begin`
   // (which nothing in a headless session should cause mid-drag) does not
   // retarget an in-progress transform.
-  TransformBeginResult beginSelectionPixels(const Document& doc, const Selection& selection,
+  // Takes the `OpenDocument` for the same reason `beginLayer()` above does.
+  TransformBeginResult beginSelectionPixels(const OpenDocument& od, const Selection& selection,
                                             size_t layerIndex);
+
+  // Which document this session belongs to, or 0 when no session is active.
+  // A caller drawing the gizmo, claiming the mouse for it, or committing it
+  // must compare this against the document it is about to act on -- see
+  // `beginLayer()` above for what happens when nobody does.
+  DocumentId documentId() const noexcept { return documentId_; }
 
   TransformHandlePositions handlePositions(
       float rotateReach = kDefaultRotateHandleReach) const noexcept;
@@ -485,6 +504,12 @@ class TransformSession {
   // undo funnel (this header's section 7). On success, `active()` becomes
   // false. On refusal, `od` is untouched and `active()` stays true, so the
   // caller can let the user adjust the transform and try again.
+  //
+  // **Refuses an `od` that is not the document this session began on**, by
+  // name and without touching it. That refusal is the last line of defence
+  // rather than the only one -- a UI should not be offering the commit at all
+  // (see `documentId()`) -- but it is the one that makes the corruption
+  // structurally impossible instead of merely unlikely.
   TransformCommitResult commit(OpenDocument& od,
                                const DocumentTransformParams& params = DocumentTransformParams{});
 
@@ -495,6 +520,11 @@ class TransformSession {
  private:
   bool active_ = false;
   TransformTarget target_ = TransformTarget::Layer;
+  // The document `layerIndex_` indexes into. Without it, `layerIndex_` is an
+  // index into no document in particular -- which is exactly how it came to be
+  // applied to the wrong one. 0 when inactive; `cancel()` restores that by
+  // resetting the whole object.
+  DocumentId documentId_ = 0;
   size_t layerIndex_ = 0;
   DocumentRegion sourceBounds_;
   Mat3 pending_ = mat3Identity();
