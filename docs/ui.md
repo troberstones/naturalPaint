@@ -575,12 +575,23 @@ The palette also needs two tools the wireframe did not draw: the **eraser** (PRD
 
 ### 4a. What the palette actually does today
 
-Of the 27 `Tool` values (`app/AppState.hpp`) — reachable either directly, as the icon a
+Of the 28 `Tool` values (`app/AppState.hpp`) — reachable either directly, as the icon a
 palette cell shows, or through a flyout for every group with more than one member (§2b) —
-**seven have real behaviour**: Brush, Water, Dry Brush, Eyedropper, Rectangle Marquee,
-Hand, Zoom. The other twenty — every tool named in the table above whose phase has not
-arrived yet, plus Move, Lasso, Polygon Lasso, Magic Wand, Frame, Clone Stamp, Paint Bucket,
-Pencil, Smudge — exist **for their name, icon and keyboard-shortcut slot only**.
+**14 have real behaviour and 14 exist for their name, icon and keyboard-shortcut slot
+only.** As of `3b067ac` (2026-09-02) the built half is Brush, Water, Dry Brush, Eyedropper,
+Rectangle Marquee, Elliptical Marquee, Hand, Zoom, Lasso, Polygon Lasso, Magic Wand,
+Eraser, Paint Bucket and Gradient; the unbuilt half is Move, Crop, Measure, Frame, Clone
+Stamp, Pencil, Smudge, Dodge, Burn, Pen, Curve, Text, Shape and Slice.
+`docs/spec-vs-implementation.md` §2 says what each of the fourteen is blocked on.
+
+**Do not trust that list; trust the table.** This paragraph has been stale twice — it said
+"seven" and named a set that already included three built tools — because a prose count has
+to be re-edited by hand every time a tool ships. The authority is the `implemented` column
+of `kToolMeta` (`ui/AtelierChrome.cpp`), and it is not merely a convention: `--selftest`
+asserts `toolImplemented(t) == toolHasCanvasHandler(t)` for **every** `Tool`, where
+`toolHasCanvasHandler()` reads the canvas's own gate expressions rather than a second list.
+A tool cannot be marked built without a handler, or acquire a handler while still marked
+unbuilt. This sentence can rot; that assertion cannot.
 `ui/MacPaintUI.cpp`'s `toolButton()` draws every one of them visibly disabled, whether it
 is the member currently showing on a group's own cell or one listed inside that group's
 flyout: dimmed icon, no hover highlight, not clickable, and a tooltip that says "Not built

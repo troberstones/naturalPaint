@@ -70,7 +70,7 @@ falsifies them silently. Re-verify before building against any of them.
 The defining trait: enabled, looks live, produces no visible change, no history
 entry and no message.
 
-### A1 — Eyedropper does nothing. PRD **Q10**, P0. *(in flight: `track7/eyedropper`)*
+### A1 — Eyedropper does nothing. PRD **Q10**, P0. · CLOSED 2026-09-02
 
 `kToolMeta` (`src/ui/AtelierChrome.cpp:152`) marks it `implemented = true`, so the
 palette cell is clickable and its tooltip does not say "Not built yet."
@@ -101,12 +101,25 @@ is stale, since the pen reaches layers via `StrokeSession` now.
 
 Fixing **A1** properly requires solving this. They are one problem.
 
-### A3 — Zoom tool does nothing. PRD **Q1**, P0 (scrubby zoom)
+### A3 — Zoom tool does nothing. PRD **Q1**, P0 (scrubby zoom) · CLOSED 2026-09-02
 
 Identical shape to A1. `AtelierChrome.cpp:154` marks it implemented;
 `ToolCursor.cpp:64` gives it `ToolCursor::Zoom`. Zoom works **only** by scroll
 wheel (`MacPaintUI.cpp:6061`) and menu/keyboard — both tool-independent. Select
 the tool, click the canvas, nothing.
+
+**A1 and A3 are both CLOSED, and by the same thing.** The eyedropper picks from
+the canvas and scrubby zoom landed; `toolSamplesCanvas()` and `toolZoomsView()`
+are two of `toolHasCanvasHandler()`'s six gates. Neither closure rests on
+someone having looked: **F1**'s assertion —
+`toolImplemented(t) == toolHasCanvasHandler(t)` for every `Tool` — makes a tool
+marked implemented with no handler a red suite, and the suite is green at
+`3b067ac`. That is exactly the property F1 was written to demand, applied back
+to the two entries F1 named as its consequences.
+
+The `AtelierChrome.cpp:152` / `:154` line numbers above are stale; the table
+has moved. They are left as written rather than silently re-pointed, because a
+closed entry is a record of what was true when it was filed.
 
 ### A4 — `Goodies` menu bypasses the disabled-tool guard entirely
 
@@ -574,7 +587,7 @@ by `PaintSim.cpp:157-159`).
 These are the reason several items above survived so long, and they are worth
 fixing before the things they failed to catch.
 
-### F1 — `toolImplemented()` is a hand-maintained boolean tied to nothing
+### F1 — `toolImplemented()` is a hand-maintained boolean tied to nothing · CLOSED 2026-09-02
 
 Nothing checks that a tool marked `implemented = true` has a canvas handler. This
 is the direct cause of **A1** and **A3**, and it is worse than a missing check:
@@ -586,7 +599,35 @@ the refuse-cursor from anything claiming to be implemented.
 none. The doc is stale in both directions — it says seven, the table says
 fourteen, the true count is twelve.
 
-*(A check for this is in flight with `track7/eyedropper`.)*
+**CLOSED — the check landed, and it is stronger than "a check".**
+`toolHasCanvasHandler()` (`ui/AtelierChrome.cpp:205`) answers the same question
+from the code rather than from a table: six gate predicates OR'd together, each
+of them *the expression the corresponding block in the canvas is actually
+written with*, not a restatement of "which tools work". `--selftest` then
+asserts **`toolImplemented(t) == toolHasCanvasHandler(t)` for every `Tool`**.
+
+Three things follow, and they are the reason this is closed rather than
+mitigated:
+
+* The boolean can no longer be wrong in either direction. Marking a tool
+  implemented without a handler reddens; adding a handler without marking it
+  reddens too, so a tool cannot ship reachable-but-greyed either.
+* `toolBeginsStroke()` derives its answer by **probing `strokeRouteFor()`**
+  rather than restating it, so a new brush-family tool flips its own gate the
+  moment its route row exists. There is no second list to keep in step.
+* The escape hatch is `toolNoHandlerException()`, which is **empty**. It held
+  exactly one row — `Tool::Zoom`, implemented with no handler — with the
+  instruction to delete it the day scrubby zoom landed. Scrubby zoom landed,
+  `toolZoomsView()` became the sixth gate, and the row is gone. The mechanism
+  was kept rather than deleted so that a future exception has to be argued for
+  in prose before it can ship.
+
+**One number in this entry was wrong when written and is worth correcting
+rather than leaving.** It says "it says seven, the table says fourteen, the
+true count is twelve". As of `3b067ac` the table and the truth agree, because
+the assertion forces them to: **14 of 28 tools implemented, 14 name/icon/slot
+only.** `docs/spec-vs-implementation.md` §2 lists the fourteen and what each is
+blocked on.
 
 ### F2 — The golden harness has never covered the menu bar
 

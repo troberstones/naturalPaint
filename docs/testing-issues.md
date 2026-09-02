@@ -98,6 +98,30 @@ What that call site is **not**:
 a stop editor and the other four kinds are a feature, while "does nothing on
 the surface I was looking at" is a routing bug.
 
+**Reconciled 2026-09-02 — still open, and one false close recorded.** Re-read
+against the source rather than against this entry:
+
+* `geom.kind = GradientKind::Linear` is **still hard-coded**, now at
+  `ui/MacPaintUI.cpp:13174`. `GradientKind` itself carries `Linear`, `Radial`
+  and an angle sweep (`ops/Gradient.hpp:213`), so the four missing kinds are a
+  UI gap, not an engine gap — the engine can already draw them.
+* The stops are still built at the call site from the foreground alone, and
+  the comment there is worth keeping in view: the ramp is
+  **foreground-to-transparent**, not foreground-to-background, because
+  `docs/ui.md` deliberately has no background half to the swatch. So "add a
+  background stop" is blocked on PRD D25/D26, not on this entry.
+* **What did change**: the call site now issues
+  `od->recordEdit("gradient", EditKind::Content)`, so a gradient is undoable
+  and appears in the history panel. That rules out the reporter's literal
+  reading ("does nothing") for good.
+
+**A trap that cost a false close, recorded so it does not cost a second one.**
+`ui/MacPaintUI.cpp:8596` contains `drawGradientMapDialog()`, which has a full
+stop editor — add, delete, reposition, colour-pick, with a live preview. It is
+**not** this tool. It is the Gradient **Map** adjustment, a different feature
+sharing `ops/Gradient`'s vocabulary. Grepping for `GradientStops` finds it and
+makes the gradient tool look finished. It is not.
+
 ---
 
 ## T4 — GRADE nodes have no place in the layer stack · open
@@ -196,6 +220,28 @@ property nobody checked.
 **Work.** Give the windowed process a measured budget of its own, the way
 `--selftest` has one for the headless path, so this cannot drift again
 unnoticed.
+
+**Reconciled 2026-09-02 — the work above is still not done, and one figure in
+this entry needs restating so it is not misread.** `--selftest` prints
+`[measured] resident 357.0 MB of a 512 MB budget`
+(`app/selftest/AtelierChrome.cpp:321`, PRD L7). That number is easy to mistake
+for an answer to this entry and is not one:
+
+* It is the **headless selftest process**, the same process this entry already
+  showed has no window, no GPU adapter and no ImGui. The 482 MB of GPU
+  allocation that *is* the reported symptom cannot appear in it.
+* The 512 MB is the **status bar's** design budget — what PRD L7 puts in front
+  of the user — not a ceiling anything fails against. `mem.bytes > 0` is the
+  only assertion on the numerator; the printed megabytes are asserted by
+  nothing.
+* It drifts between runs of the same binary (357.0 MB here, 349.5 MB in an
+  earlier run) — this suite's documented RSS noise class.
+
+So the gap this entry names is unchanged: **there is still no measured budget
+covering the windowed process**, and the 577 MB `footprint` figure has not been
+re-measured since 2026-08-26, which now predates
+`docs/architecture-review.md`'s P0-1/P0-2. A re-measure is cheap and should
+come before any work, since it may well have moved.
 
 **Where the 482 MB comes from is OPEN, and the obvious answer is wrong.** This
 entry originally ended "see T7, which is where it comes from". It is not.
@@ -668,7 +714,7 @@ second copy of that arithmetic — only the drawing overload differs.
 
 ---
 
-## T14 — A transform shows a box, not the pixels · PARTLY CLOSED (RGB yes, Pigment no, and the begin cost is over budget)
+## T14 — A transform shows a box, not the pixels · PARTLY CLOSED (RGB yes, Pigment no; stack order closed 2026-09-02; the begin cost is still over budget)
 
 **Reported.** Show the transform results live instead of deferred until done.
 
@@ -722,16 +768,37 @@ move, coverage-weighted edges included.
   rather than document pixels — which needs a resample step sized to the
   current zoom and re-triggered when the zoom changes mid-drag. Not one line,
   and not done.
-* **The original stays visible underneath.** Nothing was written to the
-  document, so the composite still shows the untransformed layer in place while
-  the preview shows where it is going. Hiding it means a full recomposite
-  without that layer every frame — `ui/DocumentTexture.hpp` measures that class
-  at 22 ms (1024²) and 89 ms (2048²), both past F3 on their own. **Both are now
-  stale in the app's favour**: after `docs/architecture-review.md` P0-1/P0-2 the
-  same recomposites measure 7.0 ms and 28.3 ms, so 1024² now fits inside F3 and
-  this decision is worth revisiting at that size. 2048² still does not.
-  Accepted for now, and
-  the golden `transform` reference was re-blessed showing exactly this.
+* ~~**The original stays visible underneath.**~~ **CLOSED 2026-09-02 by
+  `f597459`** — and closed better than this bullet asked for. The bullet framed
+  the choice as "accept the ghost, or pay a full recomposite every frame". Both
+  horns turned out to be avoidable:
+
+  * The moving layer *is* now hidden from the composite, via
+    `ui/TransformCompositeSplit`'s `documentWithLayerHidden()`.
+  * It is not a per-frame cost. The hidden-layer composite is a second
+    `DocumentTexture` view distinguished by a new `DocumentTextureKey::variant`
+    field, so it is cached across frames like any other; and
+    `documentDirtyTiles()` already handles a `visible` flip by narrowing to that
+    layer's own tiles, so switching to the variant is **incremental, not a full
+    recomposite**. The 7.0 / 28.3 ms figures above are the cost this bullet
+    feared and are simply not paid.
+  * The user's actual complaint went further than the bullet did — they asked
+    for the moving pixels to appear **in the right stack order**, with layers
+    above still drawing over them. That needed a three-way split, not a
+    two-way: below-half, moving preview, above-half, drawn in that order.
+    `transformSplitIsExact()` is the predicate for when the split is
+    arithmetically exact — it holds only while every layer above composites as
+    a plain Porter-Duff `over`, and it refuses `LayerKind::Adjustment`,
+    `LayerKind::Group`, a non-default blend, a clipped layer and a group
+    member. When it refuses, the code falls back to the two-way arrangement,
+    which is still strictly better than the ghost this bullet described.
+
+  `--selftest` pins the arithmetic with a **bit-identity** assertion —
+  `over(above, over(moving, below))` is bit-identical to compositing the whole
+  document — plus a permanent assertion that stacking on the *fallback* half
+  instead double-counts, which is the exact error the first implementation of
+  this made. The golden `transform` reference was re-blessed, and a second
+  golden view `transform_stack` was added specifically to hold the stack order.
 
 ---
 
@@ -970,7 +1037,7 @@ tool overriding the pointer over its own canvas is conventional.
 
 ---
 
-## T18 — A layered PSD opens with orange halos and stray sparks · open
+## T18 — A layered PSD opens with orange halos and stray sparks · open (every named cause fixed; awaiting one visual re-check)
 
 **Reported.** Three Photoshop-authored `.psd` files were supplied to test
 `io/PsdImport` against something other than its own writer. Two open
@@ -1013,3 +1080,32 @@ receiving fields, the assertions to write and the sabotage for each. Masks and
 `lddg` together first; they are the whole visible defect. The three files are
 the user's artwork, are gitignored by name, and nothing in `--selftest` may
 depend on them.
+
+**Reconciled 2026-09-02 — every named cause is fixed in the decoder; the
+symptom itself has not been re-checked, and that is why this stays open.**
+Verified in `src/io/PsdImport.cpp`:
+
+| Cause named above | Now |
+|---|---|
+| raster masks (channel −2) dropped | decoded |
+| `lddg` missing from the blend table | `{"lddg", BlendMode::Plus}` at `:258` |
+| `colr` unmapped | `{"colr", BlendMode::Color}` at `:312` — this entry said the codebase had no equivalent among "seven modes"; it now has 27, and `Color` is one of them |
+| `lsct` groups imported as junk empty layers | handled at `:774` |
+| `lspf` transparency-lock dropped | handled at `:737` |
+
+`docs/psd-import-gaps.md`'s §§1–4 are therefore all closed. **§5 (`lyid`,
+`lclr`) is the one gap left**, and `grep '"lyid"\|"lclr"' src/io/PsdImport.cpp`
+finds neither — it is layer ids and panel colour labels, with no bearing on
+what the canvas looks like.
+
+**Why this entry is not marked CLOSED.** The report was a *visual* one — orange
+halos and stray sparks on
+`Peter_confronts_a_small_monster_with_fire.psd`. Nobody has reopened that file
+since the fixes landed and confirmed the halos are gone. The causal chain is
+strong (`Layer 30` is a full-canvas Linear Dodge glow at 20% opacity whose mask
+means 1.7% of it should show, and both the mask and the Linear Dodge mapping
+were exactly what was missing), but a chain of reasoning is not the observation,
+and this project has been caught before treating the two as interchangeable.
+**Closing this entry costs one file open.** The file is the user's artwork,
+gitignored by name, and nothing in `--selftest` may depend on it — so this is a
+check a human does, not one the suite can inherit.
