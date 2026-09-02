@@ -148,6 +148,7 @@ add_executable(naturalPaint
   app/selftest/PresentTransfer.cpp
   app/selftest/PressureFeel.cpp
   app/selftest/Probe.cpp
+  app/selftest/PackBits.cpp
   app/selftest/PsdImport.cpp
   app/selftest/QuitGuard.cpp
   app/selftest/RecoveryJournal.cpp

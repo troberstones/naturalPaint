@@ -1000,6 +1000,7 @@ bool runTransformSessionTest();
 // untested here, matching this suite's own precedent for the same shape of
 // class (app/selftest/DabPreview.cpp never touches DabPreviewTexture's
 // wgpuQueueWriteTexture() call either).
+bool runPackBitsTest();
 bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 

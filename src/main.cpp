@@ -1788,6 +1788,11 @@ int main(int argc, char** argv) {
     // moving pixels, layers above -- and the predicate that says when taking
     // the composite apart that way is exact. Headless and GPU-free.
     const bool transformCompositeSplitOk = np::runTransformCompositeSplitTest();
+    // io/PackBits' refusal contract on hand-built malformed streams. Both its
+    // importers (io/AbrBrushes, io/PsdImport) exercise it only through
+    // well-formed files, which is the one input that cannot tell a checked
+    // decoder from an unchecked one. Headless and GPU-free.
+    const bool packBitsOk = np::runPackBitsTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -2525,7 +2530,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
                     documentTransformOk && transformSessionOk && transformPreviewTextureOk &&
-                    transformCompositeSplitOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
+                    transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
