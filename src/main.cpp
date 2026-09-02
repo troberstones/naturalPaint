@@ -1084,6 +1084,7 @@ int main(int argc, char** argv) {
   bool marqueeDemo = false;
   bool gradientDemo = false;
   bool gradientDemoDrag = false;
+  np::GradientKind gradientDemoKind = np::GradientKind::Linear;
   bool flyoutDemo = false;
   bool panelStackDemo = false;
   bool uiLayerDemoClip = true;
@@ -1327,9 +1328,25 @@ int main(int argc, char** argv) {
       // shape as `--ui-layer-demo noclip`: an optional word after the flag
       // rather than a second flag, because it is a variant of this fixture
       // and not an independent one.
+      // Two optional words, either or both, in that order:
+      // `--gradient-demo [drag] [linear|radial|angular]`.
+      //
+      // The kind is parsed independently of `drag` because the two cover
+      // different chrome. WITHOUT a drag it selects the tool so the options
+      // bar can be photographed -- and on `angular` that bar draws its SPREAD
+      // combo DISABLED, which is a state no other view reaches. WITH a drag
+      // it also aims the preview and the canvas mark, and each kind draws its
+      // own: Radial a rim circle, Angular a clockwise arc. One photograph
+      // cannot stand in for the others.
       if (i + 1 < argc && std::string_view(argv[i + 1]) == "drag") {
         gradientDemoDrag = true;
         ++i;
+      }
+      if (i + 1 < argc) {
+        const std::string_view k(argv[i + 1]);
+        if (k == "linear") { gradientDemoKind = np::GradientKind::Linear; ++i; }
+        else if (k == "radial") { gradientDemoKind = np::GradientKind::Radial; ++i; }
+        else if (k == "angular") { gradientDemoKind = np::GradientKind::Angular; ++i; }
       }
     } else if (a == "--flyout-demo") {
       // sidequest/lucide-toolbox, the nested-flyout revision: holds the
@@ -2885,7 +2902,9 @@ int main(int argc, char** argv) {
   }
   if (gradientDemo) {
     st.brush.tool = np::Tool::Gradient;
-    std::printf("[gradient-demo] Tool::Gradient selected -- the options bar shows its ramp\n");
+    std::printf("[gradient-demo] Tool::Gradient selected, kind=%s -- the options bar shows its ramp\n",
+                np::gradientKindLabel(gradientDemoKind));
+    st.gradient.kind = gradientDemoKind;
     if (gradientDemoDrag) {
       // A drag across the middle of the 1024-px demo canvas, deliberately
       // diagonal and deliberately not axis-aligned: a horizontal ramp would
@@ -2897,7 +2916,8 @@ int main(int argc, char** argv) {
       st.gradientDrag.x1 = 620.0f;
       st.gradientDrag.y1 = 480.0f;
       st.gradientDragDemo = true;
-      std::printf("[gradient-demo] drag held open: 220,240 -> 620,480 (preview + rubber band)\n");
+      std::printf("[gradient-demo] drag held open: 220,240 -> 620,480, kind=%s (preview + rubber band)\n",
+                  np::gradientKindLabel(gradientDemoKind));
     }
   }
   if (flyoutDemo)

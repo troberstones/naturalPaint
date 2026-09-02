@@ -165,18 +165,53 @@ entry that still carries open work is how work gets lost:
   blocked on PRD D25/D26 for the reasons above, and now built by one shared
   `gradientToolStops()` that the options-bar swatch and the commit both read,
   so a future editor changes one function rather than three call sites;
-* `GradientKind` is still hard-coded to `Linear`, now in
-  `gradientToolGeometry()` with a note on what wiring Radial and angular
-  costs;
+* ~~`GradientKind` is still hard-coded to `Linear`~~ — **no longer true as of
+  later the same day; see the note below**, left struck through rather than
+  deleted because a closed entry whose text quietly changes is how a reader
+  loses track of what was true when;
 * **spread is no longer missing**: Clamp / Repeat / Reflect is a combo in the
   options bar, and `--selftest` proves the setting reaches the pixels rather
   than moving a field nothing reads.
 
-Coverage added with the fix: 24 assertions in `app/selftest/GradientTool.cpp`
-(18 sabotage-proven, including that the canvas texels are bit-for-bit the
-options-bar swatch's own samples), and two golden views — `gradient` for the
-swatch, `gradient_drag` for a held drag. **`gradient_drag` is the artifact
-that fails when this regresses**; nothing headless can cover it.
+**Amended later on 2026-09-02 — the kinds landed too.** Radial and Angular are
+now a KIND combo beside SPREAD; `gradientToolGeometry()` carries
+`GradientToolState::kind` instead of hard-coding `Linear`. So of the three
+gaps above, only the stop editor survives, and it is recorded in
+`docs/spec-vs-implementation.md` § 2 rather than here.
+
+Two things came with the kinds that are worth naming, because neither is
+"wire an enum through":
+
+* **SPREAD is drawn disabled on Angular**, with the reason in a tooltip. A
+  sweep wraps into [0, 1) and every spread mode is the identity on that
+  range, so a live control there would sit over something that provably moves
+  no texel — `docs/ui.md` §4a's "no dead button looks live", applied to a
+  control rather than to a palette cell. The predicate is
+  `gradientKindUsesSpread()`, and `--selftest` proves it agrees with the op by
+  rendering the same sweep under all three modes rather than by restating the
+  rule.
+* **The rubber band is no longer one shape for three geometries.** A Radial
+  drag is a radius, so it draws its rim circle; an Angular drag is a
+  zero-angle ray, so it draws a clockwise arc and arrowhead. A bare line means
+  "from here to there", which is true only of Linear — and one preview
+  standing in for gestures that differ is the exact mistake this entry's own
+  fix was about.
+
+Coverage: 39 assertions in `app/selftest/GradientTool.cpp`, sabotage-proven,
+including that the canvas texels are bit-for-bit the options-bar swatch's own
+samples, that a radial is rotationally symmetric about its centre, and that
+the angular sweep runs clockwise on screen. Five golden views — `gradient` and
+`gradient_spread_off` for the options bar, `gradient_drag` / `gradient_radial`
+/ `gradient_angular` for the three geometries under one identical held drag.
+**Those canvas views are the artifacts that fail when this regresses**;
+nothing headless can cover them.
+
+One assertion in that file was found to be inert while its own sabotage was
+being run: the radial's "clear at the rim" probe sat outside the rendered
+region and was passing on transparent black for free. It stayed green under a
+sabotage that rendered the radial inside out, which is how it was caught. An
+assertion whose probe is outside the data is not a weak assertion; it is no
+assertion — and only the sabotage step distinguishes the two.
 
 ---
 

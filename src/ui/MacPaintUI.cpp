@@ -14256,6 +14256,63 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       dl->AddCircle(ImVec2(a.x, a.y), 4.0f, atelierToken(kAccent), 0, 1.5f);
       dl->AddCircleFilled(ImVec2(b.x, b.y), 4.0f, IM_COL32(0, 0, 0, 160));
       dl->AddCircleFilled(ImVec2(b.x, b.y), 3.0f, atelierToken(kAccent));
+
+      // **What the two handles mean is not the same for all three kinds, so
+      // neither is the band.** A bare line says "from here to there", which is
+      // true for Linear and misleading for the other two: a Radial drag is a
+      // RADIUS and an Angular drag is a zero-angle RAY whose length means
+      // nothing at all. Drawing one shape for three geometries would be the
+      // marquee/lasso mistake again -- one preview standing in for gestures
+      // that differ -- so each kind gets the mark that states its own rule.
+      const float rimR = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+      if (st.gradient.kind == GradientKind::Radial && rimR > 1.0f) {
+        // The t=1 circle. Screen-space radius is the screen-space handle
+        // distance because `xform` is uniform zoom plus rotation plus mirror
+        // -- all conformal, so a circle stays a circle and there is no ellipse
+        // to construct. A non-uniform scale would break that, and this build
+        // has none (ui/ViewTransform).
+        //
+        // The segment count is given explicitly rather than left at 0.
+        // ImGui's auto-tessellation is bounded by `CircleTessellationMaxError`
+        // in LOGICAL pixels, and on a 2x display that error is doubled on the
+        // way to the framebuffer -- a large rim came out visibly faceted,
+        // straight-edged enough to read as a polygon someone drew on purpose.
+        // Scaled with the radius and capped, so a rim larger than the window
+        // does not cost a thousand segments for arcs nobody can see.
+        const int rimSegs = std::clamp(static_cast<int>(rimR * 0.5f), 32, 256);
+        dl->AddCircle(ImVec2(a.x, a.y), rimR, IM_COL32(0, 0, 0, 160), rimSegs, 3.0f);
+        dl->AddCircle(ImVec2(a.x, a.y), rimR, atelierToken(kAccent), rimSegs, 1.5f);
+      } else if (st.gradient.kind == GradientKind::Angular && rimR > 1.0f) {
+        // A short arc leaving the ray, showing which way the sweep goes.
+        //
+        // Worth the twelve lines: the direction is CLOCKWISE ON SCREEN, and
+        // `ops/Gradient.hpp` is explicit that this is a consequence of
+        // document space being y-down rather than a preference -- which is
+        // precisely the kind of fact that is invisible until the first
+        // gradient comes out mirrored. Drawn at a fixed screen radius, not a
+        // fraction of the drag: the drag's length means nothing to this kind,
+        // so scaling the hint by it would imply otherwise.
+        const float a0 = std::atan2(b.y - a.y, b.x - a.x);
+        constexpr float kHintR = 26.0f;
+        constexpr float kHintSweep = 1.0f;  // radians, ~57 degrees
+        if (rimR > kHintR * 1.25f) {
+          dl->PathArcTo(ImVec2(a.x, a.y), kHintR, a0, a0 + kHintSweep, 24);
+          dl->PathStroke(IM_COL32(0, 0, 0, 160), 0, 3.5f);
+          dl->PathArcTo(ImVec2(a.x, a.y), kHintR, a0, a0 + kHintSweep, 24);
+          dl->PathStroke(atelierToken(kAccent), 0, 1.5f);
+          // The arrowhead, so the arc reads as a direction rather than as a
+          // decorative tick. Two short strokes back from the arc's far end.
+          const float ae = a0 + kHintSweep;
+          const ImVec2 tip(a.x + std::cos(ae) * kHintR, a.y + std::sin(ae) * kHintR);
+          const float back = ae - 0.30f;
+          const ImVec2 inner(a.x + std::cos(back) * (kHintR - 5.0f),
+                             a.y + std::sin(back) * (kHintR - 5.0f));
+          const ImVec2 outer(a.x + std::cos(back) * (kHintR + 5.0f),
+                             a.y + std::sin(back) * (kHintR + 5.0f));
+          dl->AddLine(tip, inner, atelierToken(kAccent), 1.5f);
+          dl->AddLine(tip, outer, atelierToken(kAccent), 1.5f);
+        }
+      }
     } else if (st.marqueeDragging || st.polygonLassoActive) {
       // The lasso path as it is being drawn.
       //

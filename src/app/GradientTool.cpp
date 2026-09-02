@@ -30,6 +30,38 @@ static_assert(kGradientSpreadCount == 3,
               "kGradientSpreads must carry every GradientSpread; see the enum in "
               "ops/Gradient.hpp and app/selftest/GradientTool.cpp's coverage assertion");
 
+const GradientKindRow kGradientKinds[kGradientKindCount] = {
+    {GradientKind::Linear, "Linear",
+     "The ramp runs along the drag and is constant across it -- every line perpendicular to "
+     "the drag is one colour. The drag's start is the first stop, its end the last."},
+    {GradientKind::Radial, "Radial",
+     "The drag is a RADIUS, not a span: it starts at the centre and ends on the t=1 circle. "
+     "Circular, never elliptical -- squashing one is a transform of the input point and "
+     "belongs to the transform tools, not to a fourth kind here."},
+    {GradientKind::Angular, "Angular",
+     "The ramp sweeps once around the drag's start point, beginning along the drag and going "
+     "CLOCKWISE on screen. The drag's length sets nothing -- only where the sweep begins. "
+     "SPREAD does not apply: a sweep has no outside."},
+};
+
+static_assert(kGradientKindCount == 3,
+              "kGradientKinds must carry every GradientKind; see the enum in "
+              "ops/Gradient.hpp and app/selftest/GradientTool.cpp's coverage assertion");
+
+const char* gradientKindLabel(GradientKind kind) {
+  for (size_t i = 0; i < kGradientKindCount; ++i)
+    if (kGradientKinds[i].kind == kind) return kGradientKinds[i].label;
+  return "Linear";
+}
+
+bool gradientKindUsesSpread(GradientKind kind) {
+  // Spelled as the positive list rather than `kind != Angular`, so a fourth
+  // kind arriving in `ops/Gradient` has to be classified here on purpose. The
+  // negative form would silently claim any new kind honours spread, which is
+  // the answer that draws a live control over nothing.
+  return kind == GradientKind::Linear || kind == GradientKind::Radial;
+}
+
 const char* gradientSpreadLabel(GradientSpread spread) {
   for (size_t i = 0; i < kGradientSpreadCount; ++i)
     if (kGradientSpreads[i].spread == spread) return kGradientSpreads[i].label;
@@ -55,17 +87,17 @@ GradientStops gradientToolStops(const std::array<float, 4>& foregroundLinear) {
 GradientGeometry gradientToolGeometry(const GradientToolState& tool, float x0, float y0,
                                       float x1, float y1) {
   GradientGeometry geom;
-  // Hard-coded, and honestly so: the palette offers one gradient tool and the
-  // options bar offers no kind picker, so Linear is not a default here -- it
-  // is the only shape this tool can currently aim. `ops/Gradient` implements
-  // Radial and angular already; wiring them is a combo beside SPREAD and a
-  // second field on `GradientToolState`, and belongs with whatever change
-  // adds that combo rather than as an unreachable parameter added early.
-  geom.kind = GradientKind::Linear;
+  geom.kind = tool.kind;
   geom.x0 = x0;
   geom.y0 = y0;
   geom.x1 = x1;
   geom.y1 = y1;
+  // The spread is copied through unconditionally, INCLUDING for `Angular`,
+  // which ignores it. Sanitising it to `Pad` here would be a second opinion
+  // about a rule `gradientParameterAt()` already implements, and would also
+  // silently forget the user's choice the moment they switched to Angular and
+  // back -- the options bar disables the control for that kind rather than
+  // rewriting the state behind it.
   geom.spread = tool.spread;
   return geom;
 }

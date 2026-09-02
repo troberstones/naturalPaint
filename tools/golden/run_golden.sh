@@ -292,6 +292,38 @@ measure_n="${2:-10}"
 #     between them. A ramp is a picture, and a picture is what a photograph
 #     tests.
 #
+#   gradient_spread_off / gradient_radial / gradient_angular  -- the two kinds
+#     added on 2026-09-02, and the one chrome state they brought with them.
+#
+#     `ops/Gradient` had implemented Linear, Radial and Angular since it was
+#     written; the tool reached only Linear. Wiring the other two is a KIND
+#     combo and one field, and `--selftest` can prove all of that headlessly:
+#     that the kind reaches `renderGradient()`, that a radial is rotationally
+#     symmetric about its centre, that the angular sweep runs clockwise on
+#     screen. What it cannot reach is the three things a photograph is for:
+#
+#       * `gradient_spread_off` -- the options bar with Angular selected,
+#         where the SPREAD combo is drawn DISABLED. A sweep wraps into [0, 1)
+#         and every spread mode is the identity there, so a live control would
+#         sit over something that provably changes no texel. That the control
+#         is greyed rather than merely inert is a fact about pixels only.
+#       * `gradient_radial` -- the rim circle on the rubber band. A Radial
+#         drag is a RADIUS, not a span, and a bare line says otherwise.
+#       * `gradient_angular` -- the clockwise arc and its arrowhead. The sweep
+#         direction is a consequence of document space being y-down, and is
+#         exactly the sort of fact that is invisible until someone "fixes" it
+#         to match the maths textbook.
+#
+#     The three canvas views share `gradient_drag`'s crop deliberately, so the
+#     references for Linear, Radial and Angular are directly diffable against
+#     one another: same drag, same frame, three geometries.
+#
+#     All measured at exact (0, 0) over 8 launches each, like the two views
+#     before them. `gradient`'s own crop widened from 820 to 1090 px in the
+#     same change -- the KIND combo pushed SPREAD off the right edge of the
+#     old one, which the harness caught as a FAIL rather than as a silently
+#     truncated view.
+#
 #   gradient_drag  -- the same tool with a drag HELD OPEN
 #     (--gradient-demo drag): the live ramp preview composited into the
 #     document, and the rubber-band line over it -- hollow ring at the
@@ -324,8 +356,8 @@ measure_n="${2:-10}"
 #     here; `tools` and `canvas` are exact for the same reason, and
 #     `toolbar`'s own 4-pixel bimodality is documented above as a specific
 #     finding rather than a property of text in general.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag")
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -531,11 +563,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #    of secondary effect, not a mistake in this revision's own arithmetic, is
 #    the more likely explanation than a bug in a shift that six other views
 #    confirm cleanly.
-view_crop_x=(0    1916 920  0   0   0    900 1000 1830 1900 1900 40  480)
-view_crop_y=(5    927  965  148 664 0    628 1000 158  166  1462 76  560)
-view_crop_w=(1400 640  384  100 400 2560 700 900  100  660  660  820 1100)
-view_crop_h=(166  190  192  402 350 77   500 400  500  64   64   76  800)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0   0   0    900 1000 1830 1900 1900 40   480  40   480  480)
+view_crop_y=(5    927  965  148 664 0    628 1000 158  166  1462 76   560  76   560  560)
+view_crop_w=(1400 640  384  100 400 2560 700 900  100  660  660  1090 1100 1090 1100 1100)
+view_crop_h=(166  190  192  402 350 77   500 400  500  64   64   76   800  76   800  800)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -568,7 +600,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90)
 # than a second number invented for it. `canvas` and `tools` stay exact
 # because they genuinely contain no text, and `tools` was re-measured at
 # exactly 0 after the palette grew to 28 cells.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -584,7 +616,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

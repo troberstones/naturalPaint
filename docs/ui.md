@@ -624,7 +624,7 @@ sliders be live controls over something this tool provably never reads**:
 | --- | --- | --- |
 | Eyedropper | SAMPLE (the `kProbeSampleSizes` ladder), SOURCE (Current Layer / Current & Below / All Layers), and a sentence saying what the last pick did | It samples; it has no tip. |
 | Measure | W, H, L, A — the ruler's readout in monospace | No tip at all, so SIZE would control nothing. |
-| Gradient | RAMP (the live ramp drawn over a transparency checkerboard) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
+| Gradient | RAMP (the live ramp drawn over a transparency checkerboard), KIND (Linear / Radial / Angular) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
 
 The gradient's RAMP cell is the only place in this build whose content is a colour ramp
 rather than a number or a glyph, and it is drawn from the same `gradientToolStops()` the
@@ -634,11 +634,27 @@ checkerboard for the layer panel's alpha-lock chip's reason: the default ramp fa
 transparent, and over a flat band fill a fade-to-transparent and a fade-to-band-colour are
 the same picture.
 
-Both halves of the gradient are under golden coverage — `gradient` for the swatch,
-`gradient_drag` for a held drag showing the live preview and the rubber-band line. The
-second view exists because the defect that made this tool useless for its whole history
-(T3) was invisible to `--selftest` by construction: it lived in a canvas block, in a
-mutable flag two unrelated gestures shared.
+**SPREAD goes dead on Angular**, greyed with the reason in a tooltip rather than hidden.
+A sweep wraps into [0, 1) and every spread mode is the identity on that range, so a live
+control would sit over something that provably changes no texel — §4a's "no dead button
+looks live", applied to a control instead of to a palette cell. Disabled rather than
+removed, because a control that vanishes makes the band reflow and leaves the user hunting
+for a setting they used a moment ago; the choice is remembered and applies again on the
+other two kinds.
+
+**The rubber band is not one shape for three kinds.** What the two handles mean differs —
+start-and-end, centre-and-rim, centre-and-zero-angle — so a Radial drag draws its rim
+circle and an Angular drag draws a clockwise arc with an arrowhead. A bare line says "from
+here to there", which is true only of Linear, and one preview standing in for gestures
+that differ is precisely the mistake that had a gradient drag drawing a stale lasso
+outline.
+
+Five golden views cover what `--selftest` cannot reach: `gradient` and
+`gradient_spread_off` for the options bar (the second showing the disabled SPREAD), and
+`gradient_drag` / `gradient_radial` / `gradient_angular` for the three geometries under one
+identical held drag. The canvas views exist because the defect that made this tool useless
+for its whole history (T3) was invisible to `--selftest` by construction: it lived in a
+canvas block, in a mutable flag two unrelated gestures shared.
 
 ### Paths compose better than expected
 

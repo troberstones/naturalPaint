@@ -95,7 +95,6 @@ lost them.
 
 | Tool | Missing | Blocked on | Evidence |
 |---|---|---|---|
-| Gradient | **Radial and angular kinds.** `GradientKind` (`ops/Gradient.hpp:213`) carries `Linear`, `Radial` and an angle sweep, and `renderGradient()` implements all three. `gradientToolGeometry()` (`app/GradientTool.cpp`) hard-codes `Linear` because the options bar has no kind picker. | nothing — a combo beside SPREAD and a second field on `GradientToolState` | the function's own comment names the exact change |
 | Gradient | **A stop editor.** The ramp is foreground-to-transparent, built by `gradientToolStops()`. | **PRD D25/D26** — `docs/ui.md` deliberately has no background half to the swatch, so "foreground to background" would name a colour that does not exist | `app/GradientTool.hpp` § 5 |
 
 Both are cheaper than they were before 2026-09-02: the swatch, the live
@@ -104,10 +103,17 @@ preview and the commit now read **one** `gradientToolStops()` and **one**
 picker changes one function body rather than three call sites that have to be
 kept agreeing.
 
-**What is no longer missing:** spread. Clamp / Repeat / Reflect is a live combo
-in the options bar, and `--selftest` proves the setting reaches the pixels
-rather than moving a field nothing reads — the reachability defect this file's
-§ 2 is otherwise about.
+**What is no longer missing:** spread, and — since later the same day — the
+kinds. Clamp / Repeat / Reflect and Linear / Radial / Angular are both live
+combos in the options bar, and `--selftest` proves each setting reaches the
+pixels rather than moving a field nothing reads, which is the reachability
+defect this file's § 2 is otherwise about.
+
+**The kinds row was in this table for about four hours**, which is the
+shortest life any entry here has had and is worth recording as the good case:
+the row named the blocker as "nothing", named the exact change, and pointed at
+the function whose own comment described it. A row that specific is a brief,
+and it got built off this table rather than off a re-survey.
 
 ### What the tool wave established about the palette's own machinery
 

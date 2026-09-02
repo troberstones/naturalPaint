@@ -913,6 +913,43 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
         "start to its end.");
 
     bandSeparator();
+    capsLabel("KIND");
+    ImGui::SameLine();
+    int kindIndex = 0;
+    for (size_t i = 0; i < kGradientKindCount; ++i)
+      if (kGradientKinds[i].kind == st.gradient.kind) kindIndex = static_cast<int>(i);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Angular").x + ImGui::GetFrameHeight() + 16.0f);
+    pushAtelierMono();
+    if (ImGui::BeginCombo("##gradientKind", kGradientKinds[kindIndex].label)) {
+      for (size_t i = 0; i < kGradientKindCount; ++i) {
+        if (ImGui::Selectable(kGradientKinds[i].label, static_cast<int>(i) == kindIndex))
+          st.gradient.kind = kGradientKinds[i].kind;
+        // What the two handles MEAN changes per kind -- start-and-end,
+        // centre-and-rim, centre-and-zero-angle -- and that is not guessable
+        // from one word. A user who drags a Radial expecting a span and gets
+        // a radius has been misled by the label, not by the tool.
+        ImGui::SetItemTooltip("%s", kGradientKinds[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // **SPREAD goes dead for Angular, visibly and with the reason.** A sweep
+    // wraps into [0, 1) by construction, and on that range all three spread
+    // modes are the identity -- so the control would be live over something
+    // that provably changes no texel, which is the same defect as a palette
+    // cell for a tool that does not exist. `docs/ui.md` §4a settles it: no
+    // dead button looks live. `--selftest` proves the inertness by rendering
+    // the same sweep under all three modes.
+    //
+    // Disabled rather than hidden: a control that vanishes makes the band
+    // reflow and leaves the user hunting for a setting they used a moment
+    // ago. Greyed with a tooltip says where it went and why.
+    //
+    // The predicate is `gradientKindUsesSpread()`, not `kind == Angular`
+    // spelled again here (`app/GradientTool.hpp` § 4).
+    const bool spreadLive = gradientKindUsesSpread(st.gradient.kind);
     capsLabel("SPREAD");
     ImGui::SameLine();
     int spreadIndex = 0;
@@ -923,6 +960,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // cannot silently start clipping.
     ImGui::SetNextItemWidth(ImGui::CalcTextSize("Reflect").x + ImGui::GetFrameHeight() + 16.0f);
     pushAtelierMono();
+    ImGui::BeginDisabled(!spreadLive);
     if (ImGui::BeginCombo("##gradientSpread", kGradientSpreads[spreadIndex].label)) {
       for (size_t i = 0; i < kGradientSpreadCount; ++i) {
         if (ImGui::Selectable(kGradientSpreads[i].label, static_cast<int>(i) == spreadIndex))
@@ -934,6 +972,16 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       }
       ImGui::EndCombo();
     }
+    ImGui::EndDisabled();
+    // Outside the BeginDisabled pair on purpose: a disabled item does not
+    // report hover, so a tooltip set inside it is exactly the tooltip nobody
+    // can ever read -- which would leave the greyed control saying nothing at
+    // all, the failure this whole branch exists to avoid.
+    if (!spreadLive)
+      ImGui::SetItemTooltip(
+          "%s sweeps once around and wraps, so there is no outside for a spread mode to fill. "
+          "Your choice is remembered and applies again on Linear and Radial.",
+          gradientKindLabel(st.gradient.kind));
     popAtelierMono();
     return;
   }

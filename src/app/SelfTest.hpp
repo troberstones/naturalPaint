@@ -1022,8 +1022,17 @@ bool runMoveToolTest();
 // against the swatch's own `gradientSampleStraight()` call. Also that the
 // spread table covers `GradientSpread` exactly once per value (the kToolMeta
 // lesson: a count check passes on any permutation) and that the SPREAD combo
-// reaches the pixels rather than moving a field nothing reads. Headless and
-// GPU-free.
+// reaches the pixels rather than moving a field nothing reads.
+//
+// Also the three KINDS, added the same day: that each reaches the pixels as a
+// different picture, that a Radial is rotationally symmetric about its centre
+// and its parameter is the distance ratio (not merely something monotone in
+// it), and that the Angular sweep runs CLOCKWISE ON SCREEN -- a consequence of
+// document space being y-down, and the fact a well-meaning negation "to match
+// the maths textbook" would silently invert. Plus that SPREAD is genuinely
+// inert for Angular, proven by rendering the same sweep under all three modes,
+// which is what licenses the options bar to draw that control disabled.
+// Headless and GPU-free.
 bool runGradientToolTest();
 
 // ui/TransformPreviewTexture (docs/testing-issues.md T14): the CPU half of a
