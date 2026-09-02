@@ -2231,21 +2231,46 @@ void drawLayersSection(AppState& st) {
   // count, monospace and right-aligned like every numeric in this chrome
   // (docs/ui.md section 1), reading `3/8` when the filter is hiding five rows
   // so that neither number can be mistaken for the other.
+  //
+  // **The document name used to lead this band and no longer does**
+  // (`docs/testing-issues.md` T26, reported as "what is the first UI item, it
+  // seems to show the document name -- remove it"). It was redundant three
+  // ways over: the tab strip above the canvas names every open document and
+  // marks the active one, the title band names it again, and this panel is
+  // unambiguously about whatever document is active. A third copy in the
+  // panel's first row bought nothing and cost the row its only real job.
+  //
+  // **The count stays, and that is not the same question.** It is the slot the
+  // design actually specifies here, and it is the ONLY place the filter's
+  // effect is visible -- with five rows hidden, `3/8` is what distinguishes
+  // "this document has three layers" from "this box is hiding five of them".
+  // Removing it would delete feedback rather than a duplicate.
   {
     const float h = ImGui::GetTextLineHeight() + 4.0f;
     const ImVec2 at = ImGui::GetCursorScreenPos();
-    const std::string name = documentDisplayName(*od);
-    drawClippedText(dl, ImVec2(at.x, at.y + 2.0f), panelW - 60.0f, mutedCol, name.c_str());
     pushAtelierMono();
     const std::string countText = layerPanelCountLabel(visibleRows.size(), count);
     const ImVec2 sz = ImGui::CalcTextSize(countText.c_str());
     dl->AddText(ImVec2(at.x + panelW - sz.x, at.y + 2.0f), mutedCol, countText.c_str());
     popAtelierMono();
     ImGui::Dummy(ImVec2(panelW, h));
+    // **This tooltip used to end with a claim that has been false since the RGB
+    // stroke routes landed**: "a stroke reaches no layer and nothing painted
+    // appears here." `strokeRouteWritesLayer()` (app/StrokeSession.hpp) now
+    // answers true for eight of the nine routes -- CpuDeposit, RgbDeposit,
+    // RgbErase, PigmentErase, PencilDeposit, TonalBrush, CloneStamp and
+    // Smudge. Only `PaintSim`, the solver route a Pigment layer takes, still
+    // paints somewhere this panel cannot show.
+    //
+    // Left as a narrower, true statement rather than deleted, because the
+    // surprise it was written to prevent is real and still happens -- it is
+    // just no longer the general case. The predicate is named here rather than
+    // the route list being retyped, so the next route to arrive updates this
+    // sentence's meaning without anyone having to remember to edit it.
     ImGui::SetItemTooltip("%d x %d, %zu layer(s).\n"
-                        "Painting is still separate: sim::PaintSim owns one dense\n"
-                        "texture with no layer awareness, so a stroke reaches no\n"
-                        "layer and nothing painted appears here.",
+                        "A stroke on a Pigment layer paints sim::PaintSim's own canvas,\n"
+                        "which has no layer awareness -- so that one route alone leaves\n"
+                        "nothing here. Every other route writes the layer.",
                         doc.width, doc.height, doc.layers.size());
     // docs/ui.md section 1's 2px rule, closing the header against the controls.
     dl->AddLine(ImVec2(at.x, at.y + h), ImVec2(at.x + panelW, at.y + h), ruleCol,

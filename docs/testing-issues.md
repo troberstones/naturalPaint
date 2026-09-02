@@ -1303,7 +1303,7 @@ unlikely to be the whole answer.
 
 ---
 
-## T26 — The layers panel opens with a document-name row · open
+## T26 — The layers panel opens with a document-name row · closed 2026-09-02
 
 **Reported.** "with the layers panel, what is the first UI item, it seems to
 show the document name. remove it."
@@ -1311,6 +1311,44 @@ show the document name. remove it."
 Half question, half instruction. The question deserves an answer before the
 removal: if that row is load-bearing for anything, that should be said out loud
 rather than discovered by deleting it.
+
+**Answered, then done.** The row is the LAYERS *header band*
+(`ui/MacPaintUI.cpp`, the `--- The header band ---` block): the document name
+on the left, and on the right the layer count in monospace. It is the design's
+tab strip with the tabs removed — that section's own doc comment argues at
+length why there are no tabs — so what survived was the strip's right-hand
+slot plus a name nobody asked for.
+
+**The name is gone. The count stays, and they are not the same question.** The
+name was redundant three ways over: the tab strip above the canvas names every
+open document and marks the active one, the title band names it again, and this
+panel is unambiguously about whatever document is active. The count is the only
+place the name filter's effect is visible — with five rows hidden it reads
+`3/8`, which is what separates "this document has three layers" from "this box
+is hiding five of them". Removing it would delete feedback rather than a
+duplicate.
+
+**A stale claim found next to it, and fixed.** That band's tooltip ended with
+"a stroke reaches no layer and nothing painted appears here." That was true
+when written and has been false since the RGB stroke routes landed:
+`strokeRouteWritesLayer()` now answers true for **eight of the nine** routes,
+and only `PaintSim` — the solver route a Pigment layer takes — still paints
+somewhere this panel cannot show. Rewritten as the narrower true statement
+rather than deleted, because the surprise it exists to prevent is real; it is
+just no longer the general case.
+
+**A coverage gap, recorded not closed.** Golden passed 16/16 across this
+change, which means the LAYERS header band sits outside every crop — the
+`layers` view starts at y=927, below it. Same shape as the finding that every
+crop starts at y=77 and so the title band has never been covered. Not worth a
+17th view for a row that now holds one number, but worth knowing before someone
+reads a green harness as coverage of this panel's top.
+
+**Left undone, deliberately.** The row now holds a single right-aligned number
+and reads sparse. Folding the count up into the `LAYERS` collapsing header
+would remove the row outright — which may be what the reporter meant — but that
+header is shared machinery for all fifteen panels, and changing it for one of
+them is a different job from this one.
 
 ---
 
