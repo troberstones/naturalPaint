@@ -1008,6 +1008,24 @@ bool runTransformSessionTest();
 // layer with no selection does not. Headless and GPU-free.
 bool runMoveToolTest();
 
+// app/GradientTool (`Tool::Gradient`, the palette's `G` cell): the gradient
+// tool's own three answers on top of ops/Gradient -- which ramp
+// (foreground-to-transparent, faded by the OPACITY stops so it cannot darken
+// toward a transparent black that was never a stop), aimed how (the drag's
+// two handles plus the spread mode, built in one place so the live preview
+// and the commit cannot carry different ones), and whether a drag is a
+// gradient at all (one shared degeneracy test, so a preview can never show a
+// ramp the commit then refuses). Proves the property those three exist to
+// protect and that no test of ops/Gradient alone could state: **what the
+// options bar swatch draws is bit-for-bit what the canvas receives**, checked
+// by running the real renderer onto an empty layer and comparing every texel
+// against the swatch's own `gradientSampleStraight()` call. Also that the
+// spread table covers `GradientSpread` exactly once per value (the kToolMeta
+// lesson: a count check passes on any permutation) and that the SPREAD combo
+// reaches the pixels rather than moving a field nothing reads. Headless and
+// GPU-free.
+bool runGradientToolTest();
+
 // ui/TransformPreviewTexture (docs/testing-issues.md T14): the CPU half of a
 // Free Transform's live pixel preview -- crop `sourceBounds` out of a layer,
 // through a selection's coverage weighting or the whole layer for a null

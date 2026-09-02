@@ -5310,6 +5310,10 @@ std::array<float, 4> foregroundLinearRgba(const BrushState& brush) {
   return {srgbDecode(fg[0]), srgbDecode(fg[1]), srgbDecode(fg[2]), 1.0f};
 }
 
+GradientStops currentGradientStops(const BrushState& brush) {
+  return gradientToolStops(foregroundLinearRgba(brush));
+}
+
 EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
   EyedropperPick out;
 
@@ -7184,7 +7188,20 @@ enum class FilterPreviewOwner {
   AdjustPhotoFilter,
   AdjustPosterize,
   AdjustThreshold,
-  AdjustGradientMap
+  AdjustGradientMap,
+  // Not a dialog. The gradient tool's live drag preview shares this
+  // machinery with the seventeen modals above because it needs exactly what
+  // they need -- one hypothetical `Document` composited in place of the real
+  // one -- and because sharing it is what guarantees only ONE such preview
+  // can be live at a time. A parallel mechanism for the canvas would let a
+  // gradient drag and an open Levels dialog both claim the composite, and
+  // the canvas would have to pick between them.
+  //
+  // It differs from all seventeen in what CLEARS it: a dialog clears on the
+  // frame its popup stops being open, and this clears on the frame the tool
+  // is not the gradient or the pointer is not down (see the owner-guarded
+  // call beside the canvas input block).
+  GradientTool
 };
 
 struct FilterPreviewState {
@@ -13236,6 +13253,26 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
     // === END Tool::Measure handler =========================================
 
+    // --- the gradient tool's live preview, cleared -------------------------
+    //
+    // The gradient preview's own "my popup is not open" line.
+    //
+    // Every `drawXDialog()` below clears its preview on every frame its modal
+    // is not open, and this is the canvas's version of that: the preview is
+    // set only inside the gradient drag a few lines down, so every OTHER
+    // frame -- a different tool selected, the pointer up, a document switch,
+    // a transform started mid-air -- has to be a frame that clears it. Doing
+    // this only where the drag ends would leave the ramp on screen after any
+    // path out of a drag that is not a clean mouse-release, and there are
+    // several (the tool changing under a keyboard shortcut while the button
+    // is held is the easy one to reach).
+    //
+    // Owner-guarded, so it cannot blank a Levels or Curves preview: that is
+    // `clearFilterPreview()`'s whole argument, and this call is exactly the
+    // every-frame unconditional caller the guard was written for.
+    if (!(st.brush.tool == Tool::Gradient && st.gradientDrag.active))
+      clearFilterPreview(FilterPreviewOwner::GradientTool);
+
     // --- the pixel-writing tools: paint bucket and gradient ----------------
     //
     // PRD D25/D26 and D24. Unlike the five selection tools above, these are
@@ -13356,22 +13393,95 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           if (!usable) {
             g_strokeRefusal = pixelOpRefusalMessage(refusal, target, "gradient");
           } else {
-            st.marqueeDragging = true;
-            st.marqueeX0 = tx;
-            st.marqueeY0 = ty;
+            st.gradientDrag.active = true;
+            st.gradientDrag.x0 = tx;
+            st.gradientDrag.y0 = ty;
+            // The far handle starts ON the near one, so the first frame of
+            // the drag is degenerate and `gradientDragIsUsable()` refuses a
+            // preview for it -- rather than leaving last drag's endpoint here
+            // and previewing a ramp aimed somewhere the pointer has not been.
+            st.gradientDrag.x1 = tx;
+            st.gradientDrag.y1 = ty;
           }
         }
-        if (st.marqueeDragging) {
-          st.marqueeX1 = tx;
-          st.marqueeY1 = ty;
+        if (st.gradientDrag.active) {
+          // Only recomputed on the frames the far handle actually moved. A
+          // preview costs a `TileStore` copy plus a full-region
+          // `renderGradient()`, and a held-still pointer during a drag is the
+          // common case, not the rare one -- this is `FilterPreviewState`'s
+          // own `generation` argument applied one level earlier, at the
+          // render rather than at the upload.
+          //
+          // `--gradient-demo drag` pins the far handle (app/AppState.hpp) --
+          // it is the one thing a screenshot run cannot supply, because a
+          // held drag's endpoint is the live mouse and a screenshot run's
+          // mouse is wherever the human left it.
+          const bool aimMoved = st.gradientDragDemo ||
+                                (tx != st.gradientDrag.x1 || ty != st.gradientDrag.y1);
+          if (!st.gradientDragDemo) {
+            st.gradientDrag.x1 = tx;
+            st.gradientDrag.y1 = ty;
+          }
+
+          // === the live preview ==========================================
+          //
+          // **Rendered by `renderGradient()` into a copy of the layer, not by
+          // a second approximate drawing of the ramp on the overlay.** An
+          // overlay quad would be quick and would be a different picture: it
+          // would miss the selection, miss every blend mode and every layer
+          // above, and -- because it would be its own code -- would be free to
+          // disagree with the commit in exactly the ways a preview must not.
+          // This path is the pixels, composited where they will land.
+          //
+          // The copy is `TileStoreOf`'s refcount bump (see
+          // `filterPreviewViewFor()`), so what is actually paid per frame is
+          // the gradient's own writes into the tiles it touches.
+          //
+          // One frame of lag, and it is structural: the canvas quad is drawn
+          // near the top of this function and this input block runs near the
+          // bottom, so what is set here is composited next frame. Every
+          // Filter dialog's preview has the same shape and nobody has ever
+          // been able to see it; the rubber-band line below is drawn from
+          // this same frame's pointer, so the line leads the ramp by one
+          // frame during a fast drag rather than the ramp leading the line.
+          if (aimMoved) {
+            const std::optional<size_t> previewLayer = activeLayerIndex(*od);
+            if (gradientDragIsUsable(st.gradientDrag.x0, st.gradientDrag.y0, st.gradientDrag.x1,
+                                     st.gradientDrag.y1) &&
+                previewLayer.has_value()) {
+              TileStore scratch = *target->rgbTiles;
+              const GradientRegion previewRegion{0, 0, od->document.width,
+                                                 od->document.height};
+              const Selection* previewSel =
+                  od->selection.has_value() ? &*od->selection : nullptr;
+              renderGradient(scratch,
+                             previewRegion,
+                             gradientToolGeometry(st.gradient, st.gradientDrag.x0,
+                                                  st.gradientDrag.y0, st.gradientDrag.x1,
+                                                  st.gradientDrag.y1),
+                             currentGradientStops(st.brush),
+                             previewSel);
+              setFilterPreview(FilterPreviewOwner::GradientTool, od->id, *previewLayer,
+                               std::move(scratch));
+            } else {
+              // A drag that has shrunk back to nothing stops previewing,
+              // because pen-up would now commit nothing. The preview and the
+              // commit refuse on the one shared predicate
+              // (`app/GradientTool.hpp` § 7) precisely so this cannot become a
+              // ramp on screen that vanishes when the hand lifts.
+              clearFilterPreview(FilterPreviewOwner::GradientTool);
+            }
+          }
+
           if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-            st.marqueeDragging = false;
-            const float dx = st.marqueeX1 - st.marqueeX0;
-            const float dy = st.marqueeY1 - st.marqueeY0;
-            // A click with no drag has no direction, and a zero-length
-            // gradient is not a fill -- it is an undefined ramp. Ignored
-            // rather than guessed at.
-            //
+            st.gradientDrag.active = false;
+            // The preview goes the instant the hand lifts, whether or not the
+            // commit below writes anything. Leaving it up for the frame the
+            // real pixels land would be harmless; leaving it up when the
+            // commit REFUSES would leave a ramp on screen that is in no
+            // document and would survive until the next tool change.
+            clearFilterPreview(FilterPreviewOwner::GradientTool);
+
             // `usable` is re-tested rather than trusted from pen-down: the
             // drag spans frames, and `*target->rgbTiles` is dereferenced two
             // lines down. Nothing in this build can lock or retype a layer
@@ -13379,33 +13489,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // §5 makes about its own latched target -- so this is the guard
             // being kept where it is relied on rather than where it happens to
             // have been established.
-            if (usable && dx * dx + dy * dy >= 1.0f) {
-              GradientGeometry geom;
-              geom.kind = GradientKind::Linear;
-              geom.x0 = st.marqueeX0;
-              geom.y0 = st.marqueeY0;
-              geom.x1 = st.marqueeX1;
-              geom.y1 = st.marqueeY1;
-
-              // **Foreground to transparent**, which is the only default this
-              // build can honestly offer: docs/ui.md deliberately has no BG
-              // half to the swatch (nothing fills with a background colour
-              // until PRD D25/D26), so "foreground to background" would name a
-              // colour that does not exist. The colour stops hold one colour
-              // at both ends and the OPACITY stops do the fading -- which is
-              // exactly why ops/Gradient keeps the two lists independent, and
-              // is what stops the ramp darkening toward a transparent black
-              // that was never a stop.
-              GradientStops stops;
-              stops.colorStops.push_back(ColorStop{0.0f, {fg[0], fg[1], fg[2]}, 0.5f});
-              stops.colorStops.push_back(ColorStop{1.0f, {fg[0], fg[1], fg[2]}, 0.5f});
-              stops.opacityStops.push_back(OpacityStop{0.0f, 1.0f, 0.5f});
-              stops.opacityStops.push_back(OpacityStop{1.0f, 0.0f, 0.5f});
-
+            //
+            // The ramp, the aim and the "is this a gradient at all" test all
+            // come from `app/GradientTool`, and the preview twenty lines above
+            // calls the identical three functions with the identical
+            // arguments. That is the whole reason those functions exist
+            // (`app/GradientTool.hpp` § 1): what the user watched during the
+            // drag and what lands here are not two computations that agree,
+            // they are one computation run twice.
+            if (usable && gradientDragIsUsable(st.gradientDrag.x0, st.gradientDrag.y0,
+                                               st.gradientDrag.x1, st.gradientDrag.y1)) {
               const GradientRegion region{0, 0, od->document.width, od->document.height};
               const Selection* sel =
                   od->selection.has_value() ? &*od->selection : nullptr;
-              if (renderGradient(*target->rgbTiles, region, geom, stops, sel) > 0) {
+              if (renderGradient(*target->rgbTiles, region,
+                                 gradientToolGeometry(st.gradient, st.gradientDrag.x0,
+                                                      st.gradientDrag.y0, st.gradientDrag.x1,
+                                                      st.gradientDrag.y1),
+                                 currentGradientStops(st.brush), sel) > 0) {
                 od->recordEdit("gradient", EditKind::Content);
               }
             }
@@ -14116,6 +14217,45 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         drawMarchingAnts(dl, xform, st.marqueeBoxX0, st.marqueeBoxY0, st.marqueeBoxX1,
                          st.marqueeBoxY1);
       }
+    } else if (st.gradientDrag.active) {
+      // The gradient's own rubber band: a LINE from where the pen went down
+      // to where it is now, which is literally the geometry being aimed
+      // (`app/GradientTool.hpp` § 6 -- pen-down is t=0, the pointer is t=1).
+      //
+      // **This arm also closes a bug that was here before the gradient had
+      // any band at all.** A gradient drag sets `marqueeDragging` -- it is the
+      // third setter of that flag, after the two marquee tools and the lasso
+      // -- so with no arm of its own it fell into the branch below and drew
+      // `st.lassoPoints`: the stale outline of whatever lasso the user drew
+      // last, hanging in the air during a gradient drag, pinned to nothing.
+      // Exactly the failure this file's next comment describes the lasso
+      // itself having suffered, one tool later. A flag shared by three
+      // gestures needs three arms, and "everything that is not a marquee is a
+      // lasso" stops being true the moment a third tool sets it.
+      //
+      // Drawn like the Measure ruler rather than as marching ants, for the
+      // ruler's own stated reason: ants mean "this region is selected"
+      // everywhere else in this build, and this line selects nothing. It is a
+      // direction.
+      const Vec2 a = xform.toScreen(Vec2{st.gradientDrag.x0, st.gradientDrag.y0});
+      const Vec2 b = xform.toScreen(Vec2{st.gradientDrag.x1, st.gradientDrag.y1});
+      // A dark casing under the accent core. The line is drawn over the
+      // user's own picture at whatever colour that happens to be, and the
+      // ruler gets away with a bare accent stroke because it is used against
+      // a canvas the user is measuring rather than one they are actively
+      // filling -- while this band sits on top of the very gradient it is
+      // aiming, whose bright end can match the accent closely enough to
+      // erase it.
+      dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 160),
+                  kRuleThickness + 2.0f);
+      dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), atelierToken(kAccent), kRuleThickness);
+      // The two ends are not the same thing and are not drawn the same: a
+      // hollow ring at t=0 and a filled disc at t=1, so a drag whose
+      // direction matters can be read at a glance without moving the pointer.
+      dl->AddCircle(ImVec2(a.x, a.y), 4.0f, IM_COL32(0, 0, 0, 160), 0, 3.0f);
+      dl->AddCircle(ImVec2(a.x, a.y), 4.0f, atelierToken(kAccent), 0, 1.5f);
+      dl->AddCircleFilled(ImVec2(b.x, b.y), 4.0f, IM_COL32(0, 0, 0, 160));
+      dl->AddCircleFilled(ImVec2(b.x, b.y), 3.0f, atelierToken(kAccent));
     } else if (st.marqueeDragging || st.polygonLassoActive) {
       // The lasso path as it is being drawn.
       //

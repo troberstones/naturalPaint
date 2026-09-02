@@ -275,8 +275,57 @@ measure_n="${2:-10}"
 #     each shipped a defect in chrome that had no view -- headerless panels,
 #     then a clipped glyph on the flyout rail -- and in both cases the fix
 #     began by adding the view that would have caught it.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo")
+#   gradient  -- the options bar with Tool::Gradient selected
+#     (--gradient-demo): the accent block, the tool name, the RAMP swatch
+#     drawn over its transparency checkerboard, and the SPREAD combo reading
+#     `Clamp`.
+#
+#     **This is the only view whose subject is a colour ramp**, and it exists
+#     because `--selftest` provably cannot cover what it covers. The suite
+#     proves the ramp's numbers, and proves that the pixels the canvas
+#     receives are those same numbers -- but every one of the following ships
+#     a green suite and a visibly broken toolbar: the swatch drawn under its
+#     checkerboard instead of over it; the `Dummy` that reserves its space
+#     sized wrong, so the SPREAD combo lands on top of it; the ramp drawn
+#     without `srgbEncode`, which is a swatch far darker than the paint it
+#     promises; the ramp drawn backwards; the columns drawn with a gap
+#     between them. A ramp is a picture, and a picture is what a photograph
+#     tests.
+#
+#   gradient_drag  -- the same tool with a drag HELD OPEN
+#     (--gradient-demo drag): the live ramp preview composited into the
+#     document, and the rubber-band line over it -- hollow ring at the
+#     pen-down end, filled disc at the pointer.
+#
+#     **This view exists because it is the one that would have caught the
+#     defect that made the tool useless.** The gradient borrowed
+#     `AppState::marqueeDragging`, and the selection-tool switch's `else` arm
+#     clears that flag on every frame a non-selection tool is active -- so a
+#     gradient drag was wiped one frame after pen-down and the pen-up commit
+#     never ran. `--selftest` was green throughout and stayed green: the
+#     defect is entirely inside a canvas block, in a flag two unrelated
+#     gestures shared. It was found by instrumenting the running app, and the
+#     fix (app/GradientTool.hpp § 3a) gave the gesture its own state. A
+#     photograph of a held drag is the only artifact in this repo that fails
+#     when that regresses.
+#
+#     Deliberately diagonal and deliberately not 45 degrees: a horizontal
+#     drag renders identically under a geometry that has dropped y0/y1, and a
+#     45-degree one renders identically under one that has swapped x for y.
+#     Blessed at (0, 0) on the same 8-launch measurement as `gradient`.
+#     Blessed at **(0, 0)** -- exact byte equality -- and that number was
+#     measured rather than reasoned about. The obvious guess was wrong: the
+#     crop holds four pieces of antialiased text, so it was first given
+#     `toolbar`/`flyout`'s (48, 16) text budget by analogy. Eight separately
+#     launched captures diffed against the first then returned 0 mismatched
+#     px and max channel diff 0, every time -- so the analogy was costing
+#     sensitivity for nothing, and the view now catches any regression that
+#     moves a single channel of a single pixel. Text does not imply noise
+#     here; `tools` and `canvas` are exact for the same reason, and
+#     `toolbar`'s own 4-pixel bimodality is documented above as a specific
+#     finding rather than a property of text in general.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -482,11 +531,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #    of secondary effect, not a mistake in this revision's own arithmetic, is
 #    the more likely explanation than a bug in a shift that six other views
 #    confirm cleanly.
-view_crop_x=(0    1916 920  0   0   0    900 1000 1830 1900 1900)
-view_crop_y=(5    927  965  148 664 0    628 1000 158  166  1462)
-view_crop_w=(1400 640  384  100 400 2560 700 900  100  660  660)
-view_crop_h=(166  190  192  402 350 77   500 400  500  64   64)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0   0   0    900 1000 1830 1900 1900 40  480)
+view_crop_y=(5    927  965  148 664 0    628 1000 158  166  1462 76  560)
+view_crop_w=(1400 640  384  100 400 2560 700 900  100  660  660  820 1100)
+view_crop_h=(166  190  192  402 350 77   500 400  500  64   64   76  800)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -519,7 +568,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90)
 # than a second number invented for it. `canvas` and `tools` stay exact
 # because they genuinely contain no text, and `tools` was re-measured at
 # exactly 0 after the palette grew to 28 cells.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -535,7 +584,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

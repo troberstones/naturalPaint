@@ -15,6 +15,7 @@
 #include "app/PanelLayout.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
+#include "app/GradientTool.hpp"
 #include "app/Journal.hpp"
 #include "app/MeasureLine.hpp"
 #include "app/QuitSequence.hpp"
@@ -513,6 +514,39 @@ struct AppState {
     ProbeSource source = ProbeSource::CurrentLayer;
   };
   EyedropperState eyedropper;
+
+  // The gradient tool's settings (`app/GradientTool.hpp` § 3).
+  //
+  // Beside the eyedropper's for the same reason and with the same caveat: it
+  // is per-tool state that no `OpenDocument` may carry (a spread mode is a
+  // property of the hand, not of the picture), and it does not persist across
+  // a restart because this build still has no preferences file to put it in.
+  GradientToolState gradient;
+
+  // `--gradient-demo drag`: a gradient drag HELD OPEN, the way
+  // `openToolFlyoutDemo` holds a flyout open and `panelStackDemo` holds a
+  // tab stack made.
+  //
+  // The live drag preview and the rubber-band line are the two halves of this
+  // tool that only exist WHILE the pointer is down, and `--screenshot` has no
+  // pointer -- so without this flag they are unphotographable, and a feature
+  // that can only be verified by a human is one that silently rots
+  // (app/Screenshot.hpp's own argument for photographing the swapchain at
+  // all). `--selftest` proves the preview is the same pixels as the commit;
+  // only a photograph can show that it is on screen.
+  //
+  // When set, `marqueeDragging` is already true and all four of
+  // `marqueeX0..Y1` are already the drag, so the canvas block must NOT
+  // overwrite the far handle from the live mouse -- whose position in a
+  // screenshot run is wherever the human left it, which would make the view
+  // non-deterministic by construction. That one skip is the whole mechanism.
+  // The gradient tool's live gesture (`app/GradientTool.hpp` § 3a), which
+  // deliberately does NOT reuse `marqueeDragging` / `marqueeX0..Y1` -- that
+  // sharing is what made the tool do nothing at all, and that header records
+  // exactly how.
+  GradientDrag gradientDrag;
+
+  bool gradientDragDemo = false;
 
   // What the last eyedropper click did, in one sentence, or empty when there
   // has not been one. Shown in the options bar.

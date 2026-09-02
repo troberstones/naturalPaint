@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app/AppState.hpp"
+#include "app/GradientTool.hpp"
 #include "core/LayerSetOps.hpp"
 #include "gfx/Context.hpp"
 #include "sim/PaintSim.hpp"
@@ -257,6 +258,21 @@ std::array<float, 4> foregroundLinearRgba(int pigmentIndex);
 // is the one every call site in the running application wants. Collapsing them
 // into one would have made the palette test un-writable without a BrushState.
 std::array<float, 4> foregroundLinearRgba(const BrushState& brush);
+
+// ------------------------------------------------------- the gradient tool
+//
+// The gradient tool's live ramp: `gradientToolStops()` fed the foreground
+// this `BrushState` currently selects.
+//
+// **This one line is what makes `app/GradientTool.hpp` § 1's "one function"
+// true across the app/ui boundary.** The stop list is built in `app/`, which
+// cannot ask what the foreground colour is; the foreground lives in `ui/`,
+// which is where all three of the tool's readers live. Without this adapter
+// each of those readers would pair the two itself -- three call sites, three
+// chances to pass the wrong colour, and a swatch that shows one ramp while
+// the canvas takes another. With it there is one expression, called three
+// times.
+GradientStops currentGradientStops(const BrushState& brush);
 
 // ------------------------------------------------------- the eyedropper
 //

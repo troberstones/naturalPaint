@@ -1082,6 +1082,8 @@ int main(int argc, char** argv) {
   bool compsDemoDrop = false;
   bool uiLayerDemo = false;
   bool marqueeDemo = false;
+  bool gradientDemo = false;
+  bool gradientDemoDrag = false;
   bool flyoutDemo = false;
   bool panelStackDemo = false;
   bool uiLayerDemoClip = true;
@@ -1303,6 +1305,32 @@ int main(int argc, char** argv) {
       // silently rots -- the same argument app/Screenshot.hpp makes for
       // photographing the swapchain at all.
       marqueeDemo = true;
+    } else if (a == "--gradient-demo") {
+      // Selects `Tool::Gradient`, which is the only way to get the options
+      // bar's gradient swatch on screen -- it is a per-tool block, so it draws
+      // for exactly one tool and for no other, and `--screenshot` has no way
+      // to click a palette cell. The same gap `--marquee-demo` covers for a
+      // selection and `--flyout-demo` covers for a press-and-hold.
+      //
+      // A swatch is worth photographing for a reason the other views do not
+      // share: it is the only place in this build whose CORRECTNESS is a
+      // colour ramp. `--selftest` proves the ramp's numbers and proves the
+      // canvas receives them, and neither can prove that the widget drawing
+      // them is on screen, the right way up, over its checkerboard rather
+      // than under it, and not clipped to nothing by a `Dummy` of the wrong
+      // size -- every one of which is a way this feature ships looking broken
+      // with a green suite.
+      gradientDemo = true;
+      // `drag` additionally holds a gradient drag open, so the live preview
+      // and the rubber-band line -- the two halves of this tool that exist
+      // only while the pointer is down -- can be photographed too. Same
+      // shape as `--ui-layer-demo noclip`: an optional word after the flag
+      // rather than a second flag, because it is a variant of this fixture
+      // and not an independent one.
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "drag") {
+        gradientDemoDrag = true;
+        ++i;
+      }
     } else if (a == "--flyout-demo") {
       // sidequest/lucide-toolbox, the nested-flyout revision: holds the
       // Brush group's flyout open (four members, Brush/Pencil implemented-
@@ -1789,6 +1817,11 @@ int main(int argc, char** argv) {
     // move), the refusals, the arrow-key nudge, and the bit-identity of an
     // integer translate there and back. Headless and GPU-free.
     const bool moveToolOk = np::runMoveToolTest();
+    // app/GradientTool: Tool::Gradient -- the ramp, the aim, the shared
+    // degeneracy test, and that the options bar swatch and the committed
+    // pixels are one computation rather than two that agree. Headless and
+    // GPU-free.
+    const bool gradientToolOk = np::runGradientToolTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -2576,6 +2609,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
                     documentTransformOk && transformSessionOk && moveToolOk &&
+                    gradientToolOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
@@ -2847,6 +2881,23 @@ int main(int argc, char** argv) {
       ++od->selectionRevision;
       st.brush.tool = np::Tool::Marquee;
       std::printf("[marquee-demo] selection installed: 180,150 -> 700,560\n");
+    }
+  }
+  if (gradientDemo) {
+    st.brush.tool = np::Tool::Gradient;
+    std::printf("[gradient-demo] Tool::Gradient selected -- the options bar shows its ramp\n");
+    if (gradientDemoDrag) {
+      // A drag across the middle of the 1024-px demo canvas, deliberately
+      // diagonal and deliberately not axis-aligned: a horizontal ramp would
+      // be produced identically by a geometry that had dropped `y0`/`y1`, and
+      // a symmetric one would look the same drawn backwards.
+      st.gradientDrag.active = true;
+      st.gradientDrag.x0 = 220.0f;
+      st.gradientDrag.y0 = 240.0f;
+      st.gradientDrag.x1 = 620.0f;
+      st.gradientDrag.y1 = 480.0f;
+      st.gradientDragDemo = true;
+      std::printf("[gradient-demo] drag held open: 220,240 -> 620,480 (preview + rubber band)\n");
     }
   }
   if (flyoutDemo)

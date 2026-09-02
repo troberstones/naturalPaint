@@ -191,6 +191,7 @@ add_executable(naturalPaint
   app/selftest/TransformCompositeSplit.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
+  app/selftest/GradientTool.cpp
   app/selftest/MoveTool.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
@@ -199,6 +200,7 @@ add_executable(naturalPaint
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/MeasureLine.cpp
+  app/GradientTool.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp

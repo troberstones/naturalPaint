@@ -9,13 +9,16 @@
 
 #include "app/CloseDecision.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "app/GradientTool.hpp"
 #include "app/Memory.hpp"
 #include "app/MoveTool.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/ZoomAndSize.hpp"
+#include "color/Space.hpp"
 #include "core/TileStore.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/MacPaintUI.hpp"
 
 #include "imgui.h"
 
@@ -814,6 +817,123 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     capsLabel("A");
     ImGui::SameLine();
     ImGui::Text("%.1f deg", static_cast<double>(r.angleDeg));
+    popAtelierMono();
+    return;
+  }
+
+  // --- the gradient tool's ramp and its spread mode -----------------------
+  //
+  // **A swatch, not a colour well.** The foreground well in the COLOR panel
+  // already answers "what colour", and a second copy of it here would answer
+  // the question the user is not asking. What a gradient tool has to show is
+  // the *ramp* -- the colour AND the fade together, because the fade is half
+  // of what this tool lays down and is the half a solid swatch cannot state.
+  //
+  // Drawn over a checkerboard, for the reason the layer panel's alpha-lock
+  // chip is one (`ui/MacPaintUI.cpp`): a checkerboard is the transparency
+  // mark every image editor already uses, so the transparent end of the ramp
+  // reads as transparent rather than as "whatever colour the options bar
+  // happens to be". Over a flat band fill, a foreground-to-transparent ramp
+  // and a foreground-to-band-colour ramp are the same picture, and this is a
+  // tool whose whole default is the difference between them.
+  //
+  // The third early return in this band, and the strongest case of the three:
+  // Measure has no tip, and the gradient does not even have a stroke -- SIZE,
+  // HARD, LOAD and WET are read by no code path this tool can reach.
+  if (st.brush.tool == Tool::Gradient) {
+    bandSeparator();
+    capsLabel("RAMP");
+    ImGui::SameLine();
+
+    const float rampH = ImGui::GetFrameHeight() - 4.0f;
+    const float rampW = 160.0f;
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    const ImVec2 r0(o.x, o.y + 2.0f);
+    const ImVec2 r1(o.x + rampW, o.y + 2.0f + rampH);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // The checkerboard. Two neutrals rather than the theme's own tokens: this
+    // is a transparency mark, not a surface, and it has to read as "nothing
+    // here" against BOTH themes and against whatever colour the ramp lays
+    // over it. Clipped to the swatch so the squares cannot spill into the
+    // band when `rampW` is not a multiple of the cell.
+    constexpr float kCell = 5.0f;
+    constexpr ImU32 kCheckA = IM_COL32(0x9a, 0x9a, 0x9a, 0xff);
+    constexpr ImU32 kCheckB = IM_COL32(0x6e, 0x6e, 0x6e, 0xff);
+    dl->PushClipRect(r0, r1, true);
+    dl->AddRectFilled(r0, r1, kCheckA);
+    for (int row = 0; row * kCell < rampH; ++row) {
+      for (int col = 0; col * kCell < rampW; ++col) {
+        if (((row + col) & 1) == 0) continue;
+        const ImVec2 c0(r0.x + col * kCell, r0.y + row * kCell);
+        dl->AddRectFilled(c0, ImVec2(c0.x + kCell, c0.y + kCell), kCheckB);
+      }
+    }
+
+    // The ramp itself, sampled from THE stop list -- the same one
+    // `renderGradient()` is handed at pen-up (`app/GradientTool.hpp` § 1), so
+    // this cannot become a picture of a gradient the tool no longer draws.
+    //
+    // One column per device pixel, which is what makes the fade smooth rather
+    // than banded, and cheap: `gradientSampleStraight()` is a walk of four
+    // stops and this runs only on the frames the gradient tool is selected.
+    //
+    // **`srgbEncode` on the way out, and only on the colour.** The stops are
+    // scene-linear (`color/Space.hpp`), the options bar is display-referred,
+    // and omitting the encode is the failure `foregroundLinearRgba()`'s own
+    // header describes from the other direction -- the swatch would come out
+    // far darker than the paint it is promising. Alpha is a coverage fraction
+    // and is not a colour, so it is passed through untouched; encoding it
+    // would make the fade reach halfway across the swatch instead of a third.
+    const GradientStops stops = currentGradientStops(st.brush);
+    const int columns = static_cast<int>(rampW);
+    for (int i = 0; i < columns; ++i) {
+      // Sampled at the column's CENTRE. Sampling at its left edge puts the
+      // t=1 end one column short of the swatch's right edge, which is
+      // invisible on a fade and obvious on a ramp with a hard last stop.
+      const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(columns);
+      const std::array<float, 4> c = gradientSampleStraight(stops, t);
+      const ImU32 col = IM_COL32(static_cast<int>(srgbEncode(c[0]) * 255.0f + 0.5f),
+                                 static_cast<int>(srgbEncode(c[1]) * 255.0f + 0.5f),
+                                 static_cast<int>(srgbEncode(c[2]) * 255.0f + 0.5f),
+                                 static_cast<int>(c[3] * 255.0f + 0.5f));
+      dl->AddRectFilled(ImVec2(r0.x + static_cast<float>(i), r0.y),
+                        ImVec2(r0.x + static_cast<float>(i) + 1.0f, r1.y), col);
+    }
+    dl->PopClipRect();
+    dl->AddRect(r0, r1, atelierToken(kDivider));
+
+    // `Dummy` rather than nothing: the drawing above is on the draw list and
+    // ImGui knows nothing about it, so without a laid-out item of the same
+    // size the SPREAD combo would be positioned on top of the swatch.
+    ImGui::Dummy(ImVec2(rampW, ImGui::GetFrameHeight()));
+    ImGui::SetItemTooltip(
+        "Foreground to transparent -- the one ramp this build offers, because there is no "
+        "background colour for a second one to end at. Drag on the canvas from the ramp's "
+        "start to its end.");
+
+    bandSeparator();
+    capsLabel("SPREAD");
+    ImGui::SameLine();
+    int spreadIndex = 0;
+    for (size_t i = 0; i < kGradientSpreadCount; ++i)
+      if (kGradientSpreads[i].spread == st.gradient.spread) spreadIndex = static_cast<int>(i);
+    // Width measured from the longest label rather than guessed, the same way
+    // the eyedropper's two combos are, so a label added to `kGradientSpreads`
+    // cannot silently start clipping.
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Reflect").x + ImGui::GetFrameHeight() + 16.0f);
+    pushAtelierMono();
+    if (ImGui::BeginCombo("##gradientSpread", kGradientSpreads[spreadIndex].label)) {
+      for (size_t i = 0; i < kGradientSpreadCount; ++i) {
+        if (ImGui::Selectable(kGradientSpreads[i].label, static_cast<int>(i) == spreadIndex))
+          st.gradient.spread = kGradientSpreads[i].spread;
+        // What each mode does OUTSIDE the drag is the whole content of this
+        // control and is unguessable from three one-word labels -- the same
+        // argument the eyedropper's SOURCE rows make for carrying theirs.
+        ImGui::SetItemTooltip("%s", kGradientSpreads[i].tip);
+      }
+      ImGui::EndCombo();
+    }
     popAtelierMono();
     return;
   }
