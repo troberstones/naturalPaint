@@ -616,7 +616,7 @@ filing them somewhere unrelated to painting.
 
 Section 2 gives the options bar the job of showing "the active tool and its options".
 Most tools take the default — the brush's SIZE / HARD / LOAD / WET — because they all
-put down a tip. Three take an early return instead and draw their own row, and the test
+put down a tip. Five take an early return instead and draw their own row, and the test
 for whether a tool belongs here is not "does it have settings" but **would the four brush
 sliders be live controls over something this tool provably never reads**:
 
@@ -625,6 +625,8 @@ sliders be live controls over something this tool provably never reads**:
 | Eyedropper | SAMPLE (the `kProbeSampleSizes` ladder), SOURCE (Current Layer / Current & Below / All Layers), and a sentence saying what the last pick did | It samples; it has no tip. |
 | Measure | W, H, L, A — the ruler's readout in monospace | No tip at all, so SIZE would control nothing. |
 | Gradient | RAMP (the live ramp drawn over a transparency checkerboard), KIND (Linear / Radial / Angular) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
+| Magic Wand | TOLERANCE (0..255), REACH (Contiguous / All Similar), ANTI-ALIAS | It selects; nothing it does deposits a texel. |
+| Paint Bucket | The same three, over its **own** parameter block | It fills a region found by a predicate, not a shape walked by a tip. |
 
 The gradient's RAMP cell is the only place in this build whose content is a colour ramp
 rather than a number or a glyph, and it is drawn from the same `gradientToolStops()` the
@@ -642,6 +644,27 @@ removed, because a control that vanishes makes the band reflow and leaves the us
 for a setting they used a moment ago; the choice is remembered and applies again on the
 other two kinds.
 
+**The wand and the bucket draw one row and read two blocks.** They share
+`floodFillSelection()` and they share the drawing code, but each holds its own
+`FloodFillParams`, because the band is per-tool by construction: every other row here
+belongs to the tool named at its left end, and one shared block under two tool names would
+mean nudging TOLERANCE with the wand selected silently changed the bucket's next click.
+That is a control moving something the user cannot see, which is the defect class this
+document keeps naming. The cost is the "wand to see the region, bucket to fill it"
+workflow, where two tolerances give two regions; both blocks start at the same defaults,
+so the two tools disagree only after the user has deliberately made them.
+
+TOLERANCE is drawn in Photoshop's 0..255 and stored in the engine's 0..1 — a conversion,
+not a second field, so there is nothing to fall out of step. REACH's engine word is
+`Global`; the band says **All Similar**, which is PRD D25's own phrase and the one a
+painter reads without knowing that "global" is about traversal rather than about colour.
+
+**Option no longer forces All Similar.** It used to be the only way to reach half of D25,
+and with REACH visible it would be a second source of truth that made the band wrong
+whenever the key was down. On the wand it was also double-booked — Option is Subtract for
+every selection tool — so "subtract a contiguous region" was a gesture this build could not
+express at all. Un-overloading it added a capability rather than removing one.
+
 **The rubber band is not one shape for three kinds.** What the two handles mean differs —
 start-and-end, centre-and-rim, centre-and-zero-angle — so a Radial drag draws its rim
 circle and an Angular drag draws a clockwise arc with an arrowhead. A bare line says "from
@@ -655,6 +678,13 @@ Five golden views cover what `--selftest` cannot reach: `gradient` and
 identical held drag. The canvas views exist because the defect that made this tool useless
 for its whole history (T3) was invisible to `--selftest` by construction: it lived in a
 canvas block, in a mutable flag two unrelated gestures shared.
+
+`wand_options` and `bucket_options` cover the flood-fill row the same way, and the pair is
+the point: one block of drawing code read by two tools looks identical to two blocks until
+the values differ, so the bucket view sits at the opposite state of every control. The
+first capture taken for these found a real defect of the class they exist for — the REACH
+combo's width was measured with the band's proportional face and drawn in the mono one, so
+"Contiguous" was clipped under its own arrow. Headless, that combo was perfect.
 
 ### Paths compose better than expected
 

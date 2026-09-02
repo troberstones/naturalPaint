@@ -1234,14 +1234,37 @@ the reporter before it is worth anything.**
 
 ---
 
-## T20 — Space should be a spring-loaded Hand · open
+## T20 — Space should be a spring-loaded Hand · closed 2026-09-02
 
 **Reported.** "space bar should switch to the hand tool while held down and go
 back to the previous tool when released."
 
+**Closed by `21f3374`,** which had to build the thing the request presumes:
+nothing in the build recorded which tool the user was in. Four sites assigned
+`st.brush.tool` directly, each overwriting without reading. `app/ToolSwitch` is
+now the only writer.
+
+The borrow is deliberately **not** `setActiveTool(Hand)` followed by
+`setActiveTool(previous)` — that pair records "previous = Hand" and erases the
+fact the feature exists to keep. `beginSpringHand()`/`endSpringHand()` install
+the Hand without touching the ledger.
+
+Three guards, each naming a gesture Space already belongs to: text input (Space
+is a space, and the layer-rename box is one panel over), any mouse button down
+(a marquee drag reads Space as its *move* modifier, and swapping the tool
+mid-gesture would abandon the rectangle), and the polygon lasso (the one canvas
+gesture that spans frames with the button up). The release asks `!IsKeyDown`
+rather than `IsKeyReleased`, so Cmd-Tabbing away with Space held cannot strand
+the user in the Hand.
+
+One non-obvious consequence: the Measure handler's clear arm needed
+`!springHandHeld()`. Its gate reads `toolMeasuresCanvas(st.brush.tool)`, which
+IS false during the borrow, so without it panning to look at the far end of a
+measurement would have deleted the measurement.
+
 ---
 
-## T21 — The tool settings do not follow the active tool · open
+## T21 — The tool settings do not follow the active tool · closed 2026-09-02 for the wand and the bucket
 
 **Reported.** "the tool settings need to be updated to reflect the setting for
 the active tool, such as magic wand should have options for tolerance,
@@ -1251,9 +1274,34 @@ Note that this is a general complaint with one example, not a request for two
 magic-wand controls: the options bar is expected to be *per tool*, and the wand
 is the case that made it obvious.
 
+**Closed by `a1294ff` for those two tools; the general complaint stays open**
+as the `docs/ui.md` §4b inventory of which tools bring their own options bar.
+
+Each tool holds its OWN `FloodFillParams`. One shared block drawn under two
+tool names would be a hidden coupling — nudge TOLERANCE with the wand selected
+and the bucket's next click changes too, with nothing on screen saying so.
+`floodToolParamsFor()` is the single mapping from tool to block, so the row the
+user edits and the click that consumes it cannot look at different structs.
+
+TOLERANCE is shown in Photoshop's 0..255 and stored in the engine's 0..1, as a
+conversion rather than a second field. REACH's engine word is `Global`; the
+band says "All Similar", PRD D25's own phrase.
+
+**Option no longer forces Global on either tool.** With REACH visible, the
+modifier was a second source of truth that made the band wrong whenever the key
+was down — and on the wand it was double-booked, since Option is Subtract for
+every selection tool, which meant "subtract a contiguous region" was a gesture
+this build could not express. The shortcut became a visible control and the
+modifier went back to meaning one thing.
+
+The first capture taken for the `wand_options` golden view found a defect of
+exactly the class the view exists for: the REACH combo's width was measured
+with the band's proportional face and drawn in the mono one, so "Contiguous"
+was clipped under its own arrow. Headless, that combo was perfect.
+
 ---
 
-## T22 — A single click lays no dab · open
+## T22 — A single click lays no dab · closed 2026-09-02
 
 **Reported.** "the brush engine right now won't start stamping until the brush
 moves after being clicked, but we need to support single click dabs, so adjust
@@ -1263,9 +1311,20 @@ The desired behaviour is stated exactly: **click deposits one dab; a drag
 behaves as it does today.** This plausibly applies to every route that begins a
 stroke, not only the brush — there are nine as of `540adf8`.
 
+**Closed by `87e1eaf`,** and the nine routes were the reason it was one fix
+rather than nine: `brush/StrokePath` is the sole dab emitter for all of them.
+`leftover_` starts at 0, so a moving stroke's first dab lands one full spacing
+along the path and the origin is never stamped; a click, having no path at all,
+emitted nothing.
+
+`flush()` now emits the pending point when the accumulated chord distance never
+exceeded 1e-3 px. Distance, not "was there one point" — a click that jitters by
+a texel under the pen is still a click, and a two-point path that has genuinely
+moved must still go down the spacing walk.
+
 ---
 
-## T23 — The clone stamp shows no source · open
+## T23 — The clone stamp shows no source · closed 2026-09-02
 
 **Reported.** "clone needs to show an indicator of where it is cloning from,
 Opt click should set that anchor with an indicator of where it was put and
@@ -1276,9 +1335,21 @@ Three separate pieces of feedback are being asked for: the anchor at the moment
 it is set, a persistent marker for where the source is, and a *live* marker
 that tracks the sampled point during a stroke.
 
+**Closed by `71c14f4`.** All three pieces: the anchor crosshair where Option
+put it, the persistent marker, and the live ring at `pointer + offset` with a
+leader line between them.
+
+The state underneath was already asserted headlessly and was already right;
+what was missing was every pixel of it. So the coverage is two golden views
+sharing one crop, and the negative is not decoration: `clone_anchor` runs the
+same fixture with the offset **not** latched, because before the first pen-down
+the source IS the anchor. A build that dropped that gate would draw the ring
+concentric with the brush cursor — where it is least likely to be noticed — and
+`clone_source` would still pass.
+
 ---
 
-## T24 — The measure angle should reach the transform panel · open
+## T24 — The measure angle should reach the transform panel · closed 2026-09-02
 
 **Reported.** "The measure tool's angle should be remembered so that when the
 transform panel is open, and the measure was the last tool the angle from the
@@ -1287,6 +1358,22 @@ angle should be zero."
 
 The conditional is the whole feature and is easy to drop: the handoff happens
 **only when Measure was the last tool**, and the field is zero otherwise.
+
+**Closed by `21f3374`,** alongside T20 — both needed the same missing record of
+which tool the user was in.
+
+Two corrections to the framing above, both found while building it. The angle
+goes in the **Numeric Transform modal** (`Image > Transform…`), which is where
+this build's rotate field actually lives; there is no transform *panel*. And
+the predicate is the tool the user is **in**, not the previous one: the ruler
+is destroyed the frame the tool changes, so keying the handoff off `previous`
+would be a branch no running state can reach.
+
+The zero is the half that matters and the half that is easy to drop — a ruler
+measured on another document, a dismissed ruler, and every non-Measure tool all
+seed exactly 0.0. The seeded angle is also pushed through `setPending()`:
+otherwise Apply-without-touching-anything would commit the identity while the
+field read 37.4.
 
 ---
 
