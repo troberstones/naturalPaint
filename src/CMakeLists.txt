@@ -164,6 +164,7 @@ add_executable(naturalPaint
   app/selftest/TouchGesture.cpp
   app/selftest/TouchGestureSession.cpp
   app/selftest/Transform.cpp
+  app/selftest/TransformCompositeSplit.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
   app/selftest/UserBrushLibrary.cpp
@@ -265,6 +266,7 @@ add_executable(naturalPaint
   ui/MenuModel.cpp
   ui/NewDocumentDialog.cpp
   ui/ToolCursor.cpp
+  ui/TransformCompositeSplit.cpp
   ui/TransformPreviewTexture.cpp
 )
 

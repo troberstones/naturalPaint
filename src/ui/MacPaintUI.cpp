@@ -67,6 +67,7 @@
 #include "ui/MacTrackpadTouch.hpp"
 #include "ui/MenuModel.hpp"
 #include "ui/ToolCursor.hpp"
+#include "ui/TransformCompositeSplit.hpp"
 #include "ui/TransformPreviewTexture.hpp"
 
 namespace np {
@@ -11859,6 +11860,160 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // panel already marks exactly those layers `(!)` on their own rows, which
     // is the same fact in the place a user can act on it.
     const OpenDocument* activeDocument = st.documents.active();
+
+    // --- Free Transform (Cmd+T / Edit > Free Transform) ---------------------
+    //
+    // Serviced here, ahead of everything that reads the session, because two
+    // separate things downstream ask "is a transform live on this canvas?"
+    // and both must get the answer that includes THIS frame's request: the
+    // composite decision immediately below (which layers to hide, see
+    // ui/TransformCompositeSplit) and the input claim further down. Sitting
+    // ahead of every tool block is the half that was always load-bearing --
+    // the gizmo claims the mouse first, so a drag meant to move the box
+    // cannot also lay down a stroke. That failure would be silent in the
+    // worst way: the picture moves AND gains a brush mark, and only one of
+    // the two is undoable as the user expects.
+    //
+    // It was serviced ~230 lines further down until the composite split
+    // needed the answer earlier. Everything it touches is `st` and `gpu`; the
+    // `xform` this comment used to claim it needed is not read by any line of
+    // it.
+    if (st.requestFreeTransform) {
+      st.requestFreeTransform = false;
+      OpenDocument* od = st.documents.active();
+      const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
+      if (od == nullptr || !li) {
+        g_docStatus = "Free Transform needs an open document with a layer.";
+      } else {
+        // A selection transforms the pixels under it; no selection transforms
+        // the whole layer. Photoshop's own rule, and the one a user who has
+        // just drawn a marquee will expect -- the alternative (always the
+        // whole layer) would silently ignore a selection they made on purpose.
+        const TransformBeginResult began =
+            od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
+                          : st.transform.beginLayer(*od, *li);
+        // Refusals are shown, never swallowed: `beginLayer`/
+        // `beginSelectionPixels` refuse a locked layer, an empty one and a
+        // Pigment selection-transform BY NAME (app/TransformSession.hpp), and
+        // a menu item that appeared enabled and then did nothing at all is
+        // the defect docs/reachability-audit.md is named after.
+        if (!began.ok) g_docStatus = began.error;
+        // T14: the live pixel preview's ONE upload for this whole session --
+        // never from the drag loop below, which only ever moves WHERE this
+        // already-uploaded texture is drawn (`pending()` changing the quad's
+        // four corners), never what it holds. A no-op on `!began.ok` (the
+        // session stayed inactive), which `beginTransformPreview()` checks
+        // itself rather than this call site re-deriving it.
+        beginTransformPreview(st, gpu);
+      }
+    }
+
+    // --- Free Transform: the three-way canvas -------------------------------
+    //
+    // ui/TransformCompositeSplit's own header carries the argument; what is
+    // decided here is only which of three arrangements this frame draws:
+    //
+    //   `split`    layers below -> the preview quad -> layers above. The
+    //              transformed layer's pixels appear once, at their new
+    //              position, with the layers that belong in front of them in
+    //              front of them.
+    //   `hide`     layers below AND above in one texture, preview quad over
+    //              the top. Taken when the split would not be exact (a blend
+    //              or an adjustment above reads the backdrop) or when there
+    //              is simply nothing above to draw, which is the common case
+    //              of transforming the top layer and costs one texture, not
+    //              two.
+    //   neither    no live transform: exactly the code path this block had
+    //              before any of this existed.
+    //
+    // Both live arrangements hide the transformed layer in the composite, so
+    // the canvas stops showing the picture twice -- the original standing
+    // still underneath the moving copy -- which is the defect being fixed.
+    // The document is NOT modified to achieve it; see the header.
+    const size_t transformLayer = st.transform.layerIndex();
+    const bool transformOnThisDoc = st.transform.active() && activeDocument != nullptr &&
+                                    st.transform.documentId() == activeDocument->id &&
+                                    transformLayer < activeDocument->document.layers.size();
+    const bool transformSplitDraws =
+        transformOnThisDoc && anyVisibleLayerAbove(activeDocument->document, transformLayer) &&
+        transformSplitIsExact(activeDocument->document, transformLayer);
+
+    // The two hidden-layer views, rebuilt only when the document, its
+    // revision or the transformed layer actually changes -- NOT every frame.
+    // A `Document` copy shares its tile storage (copy-on-write slots) but
+    // still copies each layer's tile MAP, which on a large document is real
+    // work to repeat 60 times a second for a picture that has not changed.
+    // A drag changes only where the quad lands, so this cache is hit for
+    // every frame of one.
+    struct TransformSplitViews {
+      DocumentId id = 0;
+      uint64_t revision = 0;
+      size_t layerIndex = static_cast<size_t>(-1);
+      bool split = false;
+      bool valid = false;
+      OpenDocument below;  // layers strictly below (split), or all but one (hide)
+      OpenDocument above;  // layers strictly above; unused when `split` is false
+    };
+    static TransformSplitViews views;
+    if (!transformOnThisDoc) {
+      // Give the copies back the moment the session ends. Two canvas-sized
+      // documents' worth of tile maps is not something to hold for a session
+      // because one transform happened in it.
+      if (views.valid) views = TransformSplitViews{};
+    } else if (!views.valid || views.id != activeDocument->id ||
+               views.revision != activeDocument->revision ||
+               views.layerIndex != transformLayer || views.split != transformSplitDraws) {
+      views = TransformSplitViews{};
+      views.id = activeDocument->id;
+      views.revision = activeDocument->revision;
+      views.layerIndex = transformLayer;
+      views.split = transformSplitDraws;
+      views.below.id = activeDocument->id;
+      views.below.revision = activeDocument->revision;
+      views.below.document =
+          transformSplitDraws
+              ? documentWithLayersAtOrAboveHidden(activeDocument->document, transformLayer)
+              : documentWithLayerHidden(activeDocument->document, transformLayer);
+      if (transformSplitDraws) {
+        views.above.id = activeDocument->id;
+        views.above.revision = activeDocument->revision;
+        views.above.document =
+            documentWithLayersAtOrBelowHidden(activeDocument->document, transformLayer);
+      }
+      views.valid = true;
+    }
+
+    // Dedicated textures rather than `g_documentTextures`: the pool holds
+    // exactly `kVisibleDocumentCap` slots chosen BY DOCUMENT ID, and both
+    // halves here share the active document's id. Routing them through it
+    // would make the split pane and the navigator fight the transform for the
+    // same slot every frame.
+    //
+    // **What is and is not given back.** Created lazily, so a session that
+    // never opens Free Transform allocates neither. The `views` cache above
+    // IS released when the session ends -- that is the large CPU part, two
+    // documents' worth of tile maps. These two GPU textures are NOT: like
+    // every other texture in this codebase they live for the process
+    // (ui/DocumentTexture.hpp decision 5 and `release()`'s own comment on why
+    // handing a view back while ImGui may still hold a bind group for it is
+    // not safe). So a session that uses Free Transform once carries two
+    // canvas-sized RGBA16F textures for the rest of its life -- 2 x 32 MiB on
+    // a 2048x2048 document, on top of PRD A6's own figure. That is a real
+    // cost and it is stated here rather than discovered later.
+    static DocumentTexture transformBelowTexture;
+    static DocumentTexture transformAboveTexture;
+    // Distinct, and carrying the layer index: two transforms on two different
+    // layers of an unedited document are the same {id, revision} and would
+    // otherwise hit each other's cached composite.
+    const uint64_t belowVariant = 1u + static_cast<uint64_t>(transformLayer) * 2u;
+    const uint64_t aboveVariant = 2u + static_cast<uint64_t>(transformLayer) * 2u;
+
+    // Declared out here rather than inside the block that computes it: the
+    // above-half of a split transform is drawn much later, from the gizmo
+    // block, and must make the same viewport-priority request this frame's
+    // main composite did rather than silently asking for the whole backlog.
+    DocumentTextureViewport docViewport{};
+
     WGPUTextureView documentView = nullptr;
     if (activeDocument != nullptr) {
       // ui/DocumentTexture.hpp decision 6: which part of the document is
@@ -11882,7 +12037,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const float vpMaxX = std::max(std::max(vp00.x, vp10.x), std::max(vp11.x, vp01.x));
       const float vpMinY = std::min(std::min(vp00.y, vp10.y), std::min(vp11.y, vp01.y));
       const float vpMaxY = std::max(std::max(vp00.y, vp10.y), std::max(vp11.y, vp01.y));
-      const DocumentTextureViewport docViewport{
+      docViewport = DocumentTextureViewport{
           static_cast<int32_t>(std::floor(vpMinX)), static_cast<int32_t>(std::floor(vpMinY)),
           static_cast<int32_t>(std::ceil(vpMaxX)), static_cast<int32_t>(std::ceil(vpMaxY))};
 
@@ -11896,6 +12051,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // `g_filterPreview` the very frame their popup stops being open, before
       // this code runs again.
       documentView = filterPreviewViewFor(gpu, *activeDocument);
+      if (documentView == nullptr && transformOnThisDoc && views.valid) {
+        // The transformed layer is hidden in this composite. Its pixels are
+        // drawn by the gizmo block's quad instead, at the position the drag
+        // has taken them to.
+        documentView =
+            transformBelowTexture.viewFor(gpu, views.below, nullptr, &docViewport, belowVariant);
+      }
       if (documentView == nullptr)
         documentView = g_documentTextures.viewFor(gpu, *activeDocument, nullptr, &docViewport);
       addCanvasQuad(dl, documentView, q00, q10, q11, q01);
@@ -11975,45 +12137,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     const float tx = canvasMouse.x;
     const float ty = canvasMouse.y;
 
-    // --- Free Transform (Cmd+T / Edit > Free Transform) ---------------------
-    //
-    // Serviced here, at the top of the canvas block, because two things this
-    // needs both exist only here: a live document, and `xform` -- the one
-    // screen<->document mapping in the file. Sitting AHEAD of every tool
-    // block below is the other half, and the important one: the gizmo claims
-    // the mouse first, so a drag meant to move the box cannot also lay down a
-    // stroke. That failure would be silent in the worst way -- the picture
-    // moves AND gains a brush mark, and only one of the two is undoable as
-    // the user expects.
-    if (st.requestFreeTransform) {
-      st.requestFreeTransform = false;
-      OpenDocument* od = st.documents.active();
-      const std::optional<size_t> li = od != nullptr ? activeLayerIndex(*od) : std::nullopt;
-      if (od == nullptr || !li) {
-        g_docStatus = "Free Transform needs an open document with a layer.";
-      } else {
-        // A selection transforms the pixels under it; no selection transforms
-        // the whole layer. Photoshop's own rule, and the one a user who has
-        // just drawn a marquee will expect -- the alternative (always the
-        // whole layer) would silently ignore a selection they made on purpose.
-        const TransformBeginResult began =
-            od->selection ? st.transform.beginSelectionPixels(*od, *od->selection, *li)
-                          : st.transform.beginLayer(*od, *li);
-        // Refusals are shown, never swallowed: `beginLayer`/
-        // `beginSelectionPixels` refuse a locked layer, an empty one and a
-        // Pigment selection-transform BY NAME (app/TransformSession.hpp), and
-        // a menu item that appeared enabled and then did nothing at all is
-        // the defect docs/reachability-audit.md is named after.
-        if (!began.ok) g_docStatus = began.error;
-        // T14: the live pixel preview's ONE upload for this whole session --
-        // never from the drag loop below, which only ever moves WHERE this
-        // already-uploaded texture is drawn (`pending()` changing the quad's
-        // four corners), never what it holds. A no-op on `!began.ok` (the
-        // session stayed inactive), which `beginTransformPreview()` checks
-        // itself rather than this call site re-deriving it.
-        beginTransformPreview(st, gpu);
-      }
-    }
 
     // Everything below reads this rather than `st.transform.active()` so the
     // gizmo's own `commit()`/`cancel()` further down cannot change the answer
@@ -12029,9 +12152,13 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // and offered a Return that `commit()` (which now refuses it) would have
     // applied to B. Treated as "not active here" rather than cancelled, so the
     // work survives switching away and back.
-    const OpenDocument* transformDoc = st.documents.active();
-    const bool transformActive = st.transform.active() && transformDoc != nullptr &&
-                                 st.transform.documentId() == transformDoc->id;
+    // `transformOnThisDoc`, computed once at the top of this block where the
+    // composite decision needed it. Reused rather than re-derived so the gate
+    // on the input and the gizmo cannot drift from the gate that decided
+    // which composite the canvas is showing -- if those two ever disagreed,
+    // the transformed layer would be hidden with no preview drawn over it, or
+    // drawn twice.
+    const bool transformActive = transformOnThisDoc;
     if (transformActive) {
       // Handle sizes are fixed on SCREEN and converted to document space by
       // the view's own zoom, so a handle stays the same size under the finger
@@ -13423,6 +13550,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // claim that the drag view is pixel-identical to Photoshop's.
       if (g_transformPreview.view() != nullptr)
         addCanvasQuad(dl, g_transformPreview.view(), tl, tr, br, bl);
+
+      // --- the layers ABOVE the transformed one, back in front -------------
+      //
+      // Drawn last of the three, over the moving pixels, which is the whole
+      // point of the split: a layer that sits above the one being dragged
+      // belongs in front of it while it is dragged, not behind it. Only taken
+      // when `transformSplitDraws` said the arrangement is exact and that
+      // there is something above to draw -- otherwise the layers above are
+      // already in the composite underneath and this would draw them twice.
+      // Same canvas corners as the document quad, because this half occupies
+      // the same canvas; only its content differs.
+      if (transformSplitDraws && views.valid) {
+        const WGPUTextureView aboveView =
+            transformAboveTexture.viewFor(gpu, views.above, nullptr, &docViewport, aboveVariant);
+        if (aboveView != nullptr) addCanvasQuad(dl, aboveView, q00, q10, q11, q01);
+      }
 
       // Four segments rather than `AddRect`: once the pending matrix carries a
       // rotation the box is no longer axis-aligned, and `AddRect` would draw

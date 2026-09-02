@@ -76,8 +76,10 @@ bool tileIntersectsViewport(TileCoord tile, const DocumentTextureViewport& viewp
 
 WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& doc,
                                          std::vector<std::string>* warningsOut,
-                                         const DocumentTextureViewport* viewport) {
-  const DocumentTextureKey key = documentTextureKey(doc);
+                                         const DocumentTextureViewport* viewport,
+                                         uint64_t variant) {
+  DocumentTextureKey key = documentTextureKey(doc);
+  key.variant = variant;
   if (key.width <= 0 || key.height <= 0) return nullptr;
 
   // Decision 6's `&& pendingTiles_.empty()` is load-bearing, not a hardening

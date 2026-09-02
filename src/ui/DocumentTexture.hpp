@@ -363,10 +363,22 @@ struct DocumentTextureKey {
   uint64_t revision = 0;
   int32_t width = 0;
   int32_t height = 0;
+  // Which COMPOSITE of that document this is. Zero for every caller that
+  // wants the document as it stands, which is all of them but one: a live
+  // Free Transform asks the same document, at the same revision, for two
+  // different pictures (ui/TransformCompositeSplit -- the layers below the
+  // one being transformed, and the layers above it). Without this field they
+  // key identically and the cache hands back whichever was composited first.
+  //
+  // It is part of the KEY rather than a flag beside it so that the staleness
+  // is structurally impossible rather than merely avoided: `viewFor()`'s
+  // fast path is a key comparison, and a variant that is not in the key is a
+  // variant the fast path cannot see.
+  uint64_t variant = 0;
 
   bool operator==(const DocumentTextureKey& other) const noexcept {
     return id == other.id && revision == other.revision && width == other.width &&
-           height == other.height;
+           height == other.height && variant == other.variant;
   }
   bool operator!=(const DocumentTextureKey& other) const noexcept { return !(*this == other); }
 };
@@ -404,9 +416,18 @@ class DocumentTexture {
   // default, and every call this parameter did not exist for before this
   // decision) takes the exact code path this function always has: the
   // entire backlog, every call.
+  //
+  // `variant` distinguishes two composites of the SAME document at the same
+  // revision -- see `DocumentTextureKey::variant`. Zero, the default, is the
+  // behaviour every caller had before the field existed. A variant change is
+  // a key miss like any other and lands in the incremental branch, where
+  // `documentDirtyTiles()` narrows it to the tiles of the layers whose
+  // `visible` actually differs, so switching variants costs those tiles and
+  // not a full recomposite.
   WGPUTextureView viewFor(GpuContext& gpu, const OpenDocument& doc,
                           std::vector<std::string>* warningsOut = nullptr,
-                          const DocumentTextureViewport* viewport = nullptr);
+                          const DocumentTextureViewport* viewport = nullptr,
+                          uint64_t variant = 0);
 
   // Frees every texture this object ever created, including retired ones.
   //

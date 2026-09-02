@@ -1672,6 +1672,10 @@ int main(int argc, char** argv) {
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
     // suite's own precedent for DabPreviewTexture/StrokePreviewTexture).
     const bool transformPreviewTextureOk = np::runTransformPreviewTextureTest();
+    // The three-way canvas a live Free Transform draws -- layers below, the
+    // moving pixels, layers above -- and the predicate that says when taking
+    // the composite apart that way is exact. Headless and GPU-free.
+    const bool transformCompositeSplitOk = np::runTransformCompositeSplitTest();
     // PLAN.md "Phase 7 -- Select and paste" (PRD M1, M3, M4, M5, M8): the
     // internal clipboard's copy/cut/paste, its copy-on-write sharing, and the
     // two different coverage-weighting rules RGB and Pigment tiles take. Also
@@ -2355,7 +2359,8 @@ int main(int argc, char** argv) {
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk && documentTransformOk &&
-                    transformSessionOk && transformPreviewTextureOk && blurOk &&
+                    transformSessionOk && transformPreviewTextureOk &&
+                    transformCompositeSplitOk && blurOk &&
                     blurSimdOk &&
                     filtersOk && filtersExtOk &&
                     curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&

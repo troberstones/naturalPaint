@@ -1000,6 +1000,7 @@ bool runTransformSessionTest();
 // untested here, matching this suite's own precedent for the same shape of
 // class (app/selftest/DabPreview.cpp never touches DabPreviewTexture's
 // wgpuQueueWriteTexture() call either).
+bool runTransformCompositeSplitTest();
 bool runTransformPreviewTextureTest();
 
 // core/Clipboard (PLAN.md "Phase 7 -- Select and paste"; PRD M1, M3, M4, M5,
