@@ -24,6 +24,21 @@ Gradient **Map** adjustment, a different feature that happens to share the
 shape that defeats a documentation-only reading, which is why this file records
 file and line for each absence rather than a citation to a plan.
 
+**And checking against the source was still not enough. Amended 2026-09-02.**
+T3 is now closed, and the reason it was open had nothing to do with either the
+hard-coded kind or the missing stop editor — both of which were correctly
+found by reading, and both of which were real. The tool drew nothing because
+its drag state lived in a flag that *another tool's code* cleared every frame,
+seventy lines earlier in the same function. Three separate readings of the
+gradient's own block could not see it, because nothing in the gradient's own
+block is wrong. It took instrumenting the running app.
+
+The lesson this file should carry forward: **reading the source proves what
+the code says, not what it does.** For anything whose failure mode is "the
+gesture never happens", an absence-claim derived from reading is a hypothesis,
+and the cheapest way to test it is one `fprintf` in the running build — not a
+fourth read.
+
 The dating matters too. **An absence-claim rots the moment someone builds the
 thing**, and this project has been bitten by that before — `docs/reachability-audit.md`
 carries entries whose "there is no code for this" was true when written and is
@@ -68,6 +83,31 @@ The remaining seven are not seven instances of one gap:
 | Pen, Curve | **PLAN Phase 13 (Paths)** | no path model exists: no bezier storage, no stroke-or-fill-from-path |
 | Text | **PLAN Phase 14** | no font rasteriser, and `LayerKind::Text` is inert |
 | Frame, Slice | **no receiving model** | both name a document-level *region* concept that does not exist; the gesture without it draws a rectangle and forgets it |
+
+### Built tools with specced halves still missing
+
+A tool being marked built means it has a canvas handler that does its job, not
+that every option its engine can already reach has a control. Those gaps
+belong here rather than in `docs/testing-issues.md`, because nothing about
+them is *wrong* — they are designed capability with no UI, which is exactly
+this file's subject. Recorded 2026-09-02, when closing T3 would otherwise have
+lost them.
+
+| Tool | Missing | Blocked on | Evidence |
+|---|---|---|---|
+| Gradient | **Radial and angular kinds.** `GradientKind` (`ops/Gradient.hpp:213`) carries `Linear`, `Radial` and an angle sweep, and `renderGradient()` implements all three. `gradientToolGeometry()` (`app/GradientTool.cpp`) hard-codes `Linear` because the options bar has no kind picker. | nothing — a combo beside SPREAD and a second field on `GradientToolState` | the function's own comment names the exact change |
+| Gradient | **A stop editor.** The ramp is foreground-to-transparent, built by `gradientToolStops()`. | **PRD D25/D26** — `docs/ui.md` deliberately has no background half to the swatch, so "foreground to background" would name a colour that does not exist | `app/GradientTool.hpp` § 5 |
+
+Both are cheaper than they were before 2026-09-02: the swatch, the live
+preview and the commit now read **one** `gradientToolStops()` and **one**
+`gradientToolGeometry()` (`app/GradientTool.hpp` § 1), so an editor or a kind
+picker changes one function body rather than three call sites that have to be
+kept agreeing.
+
+**What is no longer missing:** spread. Clamp / Repeat / Reflect is a live combo
+in the options bar, and `--selftest` proves the setting reaches the pixels
+rather than moving a field nothing reads — the reachability defect this file's
+§ 2 is otherwise about.
 
 ### What the tool wave established about the palette's own machinery
 

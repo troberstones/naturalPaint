@@ -75,7 +75,7 @@ tracked with **T10**, not here.
 
 ---
 
-## T3 — Gradient tool has no hooked-up functionality · open
+## T3 — Gradient tool has no hooked-up functionality · closed 2026-09-02
 
 **Reported.** The gradient tool does nothing.
 
@@ -121,6 +121,62 @@ stop editor — add, delete, reposition, colour-pick, with a live preview. It is
 **not** this tool. It is the Gradient **Map** adjustment, a different feature
 sharing `ops/Gradient`'s vocabulary. Grepping for `GradientStops` finds it and
 makes the gradient tool look finished. It is not.
+
+**Closed 2026-09-02. The reporter was right and both reconciliations above
+were wrong: the tool really did nothing, and the reason was not any of the
+three gaps either of them named.**
+
+The gradient stored its drag in `AppState::marqueeDragging` and
+`marqueeX0..Y1`. The selection-tool switch at `ui/MacPaintUI.cpp:13104` ends
+in an `else` arm that clears `marqueeDragging` on every frame a **non**-
+selection tool is active — a correct and necessary arm, whose job is to cancel
+a selection drag abandoned by a tool change. The gradient is not a selection
+tool, so it took that arm every frame: the drag was set on the frame of
+pen-down and wiped at the top of the next frame, and `IsMouseReleased` was
+therefore never seen inside the drag block. **The pen-up commit could not run
+at any point in this build's history.** The `renderGradient()` call both
+reconciliations found by reading really was there, really was correct, and was
+unreachable.
+
+Why two careful reads missed it: nothing in the gradient's own block is wrong.
+The defect is a write performed by *another tool's* code, to a flag the
+gradient happened to borrow, seventy lines earlier in the same function. It is
+invisible to a reader who starts at the gradient and reads outward, and
+invisible to `--selftest`, which cannot reach a canvas block at all. It was
+found by **instrumenting the running app** — one `fprintf` of the gate's
+inputs, which reported `dragging=0` on every frame of a drag that had been
+forced open — after the code had been read three times without it.
+
+Fixed by giving the gesture its own state (`GradientDrag`,
+`app/GradientTool.hpp` § 3a) rather than by guarding the `else`: sharing a
+mutable flag between two unrelated gestures had also produced a **second**,
+independent defect at the other end of the same frame, where the rubber-band
+draw's `else if (marqueeDragging || polygonLassoActive)` arm treated any
+non-marquee drag as a lasso and drew the stale outline of whatever lasso had
+been drawn last. One cause, two bugs, one fix.
+
+The three gaps the reconciliations named are all still true, and are now
+narrower. **Two of them survive this closure and have moved to
+`docs/spec-vs-implementation.md` § 2** ("Built tools with specced halves still
+missing"), which is where designed-but-unbuilt capability belongs — closing an
+entry that still carries open work is how work gets lost:
+
+* the stops are still foreground-to-transparent with no stop editor — still
+  blocked on PRD D25/D26 for the reasons above, and now built by one shared
+  `gradientToolStops()` that the options-bar swatch and the commit both read,
+  so a future editor changes one function rather than three call sites;
+* `GradientKind` is still hard-coded to `Linear`, now in
+  `gradientToolGeometry()` with a note on what wiring Radial and angular
+  costs;
+* **spread is no longer missing**: Clamp / Repeat / Reflect is a combo in the
+  options bar, and `--selftest` proves the setting reaches the pixels rather
+  than moving a field nothing reads.
+
+Coverage added with the fix: 24 assertions in `app/selftest/GradientTool.cpp`
+(18 sabotage-proven, including that the canvas texels are bit-for-bit the
+options-bar swatch's own samples), and two golden views — `gradient` for the
+swatch, `gradient_drag` for a held drag. **`gradient_drag` is the artifact
+that fails when this regresses**; nothing headless can cover it.
 
 ---
 
@@ -171,6 +227,11 @@ reporter actually ran into: with no document open, the canvas is still there
 and still paintable, while every document-scoped feature silently has nothing
 to act on. **T1, T2 and T3 are all plausibly the same defect wearing three
 different hats.**
+
+*(Amended 2026-09-02: T3 was not, in the end, this defect at all — it was a
+shared mutable flag erased by another tool's code, and it is now closed. The
+grouping above was a reasonable guess from three similar symptoms and it was
+wrong about one of the three. T1 and T2 stand.)*
 
 **Work.** Two separable pieces:
 
@@ -1109,3 +1170,141 @@ and this project has been caught before treating the two as interchangeable.
 **Closing this entry costs one file open.** The file is the user's artwork,
 gitignored by name, and nothing in `--selftest` may depend on it — so this is a
 check a human does, not one the suite can inherit.
+
+---
+
+# Batch reported 2026-09-02 — T19–T27
+
+**None of these has had step 2.** They are recorded in the reporter's own
+words, with the "Verified" half deliberately empty, because this document's own
+header says a symptom and the cause guessed beside it disagreed for four of the
+first nine entries. Anything below that reads like a cause is the *reporter's*
+reading, not a checked one. **Do not brief work off these until each has been
+verified against the tree.**
+
+Two items in the batch are **re-reports of open entries** rather than new ones,
+and are noted under T3 and T5 rather than renumbered here.
+
+---
+
+## T19 — The smudge needs more work · open, unspecified
+
+**Reported.** "that smudge needs more work."
+
+No detail was given, and none is invented here. `brush/Smudge` shipped in
+`540adf8`; its header records what it deliberately does not do (no Pigment
+smudge, alpha-locked RGB refuses), and any of those may be what this means, or
+it may be the feel of the result. **This entry needs one round of detail from
+the reporter before it is worth anything.**
+
+---
+
+## T20 — Space should be a spring-loaded Hand · open
+
+**Reported.** "space bar should switch to the hand tool while held down and go
+back to the previous tool when released."
+
+---
+
+## T21 — The tool settings do not follow the active tool · open
+
+**Reported.** "the tool settings need to be updated to reflect the setting for
+the active tool, such as magic wand should have options for tolerance,
+contiguous/noncontiguous toggle."
+
+Note that this is a general complaint with one example, not a request for two
+magic-wand controls: the options bar is expected to be *per tool*, and the wand
+is the case that made it obvious.
+
+---
+
+## T22 — A single click lays no dab · open
+
+**Reported.** "the brush engine right now won't start stamping until the brush
+moves after being clicked, but we need to support single click dabs, so adjust
+that, single click draws dab, moving stroke will do what it currently does."
+
+The desired behaviour is stated exactly: **click deposits one dab; a drag
+behaves as it does today.** This plausibly applies to every route that begins a
+stroke, not only the brush — there are nine as of `540adf8`.
+
+---
+
+## T23 — The clone stamp shows no source · open
+
+**Reported.** "clone needs to show an indicator of where it is cloning from,
+Opt click should set that anchor with an indicator of where it was put and
+drawing with the clone tool should move that indicator to show what is
+currently being cloned."
+
+Three separate pieces of feedback are being asked for: the anchor at the moment
+it is set, a persistent marker for where the source is, and a *live* marker
+that tracks the sampled point during a stroke.
+
+---
+
+## T24 — The measure angle should reach the transform panel · open
+
+**Reported.** "The measure tool's angle should be remembered so that when the
+transform panel is open, and the measure was the last tool the angle from the
+measure is put into the transform angle field, if it wasn't the last tool the
+angle should be zero."
+
+The conditional is the whole feature and is easy to drop: the handoff happens
+**only when Measure was the last tool**, and the field is zero otherwise.
+
+---
+
+## T25 — The colour picker clamps a canvas that does not · open, a question
+
+**Reported.** "The canvas supports fp16 data, but the color picker only shows
+values clamped to 1, what can we do about it?"
+
+Asked as a question rather than a defect report, and it should stay one until
+someone has established what the options are. It touches
+`app/AppState.hpp`'s `BrushState::rgb` encoding contract (sRGB, display-
+referred) and everything downstream that decodes it, so "unclamp the widget" is
+unlikely to be the whole answer.
+
+---
+
+## T26 — The layers panel opens with a document-name row · open
+
+**Reported.** "with the layers panel, what is the first UI item, it seems to
+show the document name. remove it."
+
+Half question, half instruction. The question deserves an answer before the
+removal: if that row is load-bearing for anything, that should be said out loud
+rather than discovered by deleting it.
+
+---
+
+## T27 — Throttle the UI · open
+
+**Reported.** "lets throttle the UI unless drawing to 60fps, and when nothing
+is happening, throttle it further."
+
+Two tiers are asked for: a 60 fps ceiling when idle-but-interactive, and a
+lower one when nothing is happening at all — with drawing exempt from both.
+
+---
+
+## Re-reported 2026-09-02, against entries already open
+
+* **T3 (gradient)** — reported again as "the gradient tool does nothing."
+  **Resolved 2026-09-02; see T3.** The re-report was right and the
+  reconciliation it contradicted was wrong. The note that closed this bullet
+  is worth keeping as written, because it was the thing that led to the fix:
+  *"the discrepancy is the useful part of this re-report — it says either the
+  reporter is hitting the routing case with no feedback, or the tool is
+  failing somewhere the reconciliation did not look."* It was the second one.
+  A user report that contradicts a careful read of the source is evidence
+  about the read, not only about the user; the read had covered every line of
+  the gradient's own block and none of the line in another tool's block that
+  erased its state.
+
+* **T5 (a canvas belonging to nothing)** — reported again as "when all
+  documents close, there should be no active canvas." That is T5 exactly, now
+  stated as the desired behaviour rather than as a symptom, which is a useful
+  sharpening: the ask is not "explain the canvas" but "close it with the last
+  document."

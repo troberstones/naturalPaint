@@ -612,6 +612,34 @@ The palette places them in the paint group beside Brush, where a painter reachin
 "the wet one" or "the dry one" would look, rather than leaving them off the palette or
 filing them somewhere unrelated to painting.
 
+### 4b. Which tools bring their own options bar
+
+Section 2 gives the options bar the job of showing "the active tool and its options".
+Most tools take the default — the brush's SIZE / HARD / LOAD / WET — because they all
+put down a tip. Three take an early return instead and draw their own row, and the test
+for whether a tool belongs here is not "does it have settings" but **would the four brush
+sliders be live controls over something this tool provably never reads**:
+
+| Tool | Its row | Why not the brush sliders |
+| --- | --- | --- |
+| Eyedropper | SAMPLE (the `kProbeSampleSizes` ladder), SOURCE (Current Layer / Current & Below / All Layers), and a sentence saying what the last pick did | It samples; it has no tip. |
+| Measure | W, H, L, A — the ruler's readout in monospace | No tip at all, so SIZE would control nothing. |
+| Gradient | RAMP (the live ramp drawn over a transparency checkerboard) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
+
+The gradient's RAMP cell is the only place in this build whose content is a colour ramp
+rather than a number or a glyph, and it is drawn from the same `gradientToolStops()` the
+canvas is handed at pen-up — one function, three readers (`app/GradientTool.hpp` § 1), so
+the swatch cannot become a picture of a gradient the tool no longer draws. It sits over a
+checkerboard for the layer panel's alpha-lock chip's reason: the default ramp fades to
+transparent, and over a flat band fill a fade-to-transparent and a fade-to-band-colour are
+the same picture.
+
+Both halves of the gradient are under golden coverage — `gradient` for the swatch,
+`gradient_drag` for a held drag showing the live preview and the rubber-band line. The
+second view exists because the defect that made this tool useless for its whole history
+(T3) was invisible to `--selftest` by construction: it lived in a canvas block, in a
+mutable flag two unrelated gestures shared.
+
 ### Paths compose better than expected
 
 A Bézier path is another curve feeding the dab emitter built in phase 1. **Stroke path
