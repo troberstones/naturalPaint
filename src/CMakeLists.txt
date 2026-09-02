@@ -23,6 +23,7 @@ add_executable(naturalPaint
   app/SelectionDrag.cpp
   app/LayerEditor.cpp
   app/TransformSession.cpp
+  app/MoveTool.cpp
   app/LayerPanel.cpp
   app/Latency.cpp
   app/Memory.cpp
@@ -67,6 +68,7 @@ add_executable(naturalPaint
   app/selftest/Clipboard.cpp
   app/selftest/ClipboardImage.cpp
   app/selftest/ClippingMask.cpp
+  app/selftest/CloneStamp.cpp
   app/selftest/CloseDecision.cpp
   app/selftest/ColorOps.cpp
   app/selftest/ColorSpace.cpp
@@ -128,6 +130,7 @@ add_executable(naturalPaint
   app/selftest/LayerPanel2a.cpp
   app/selftest/LayerStack.cpp
   app/selftest/LutBake.cpp
+  app/selftest/Measure.cpp
   app/selftest/MenuBasics.cpp
   app/selftest/MenuModel.cpp
   app/selftest/MonoOps.cpp
@@ -147,6 +150,7 @@ add_executable(naturalPaint
   app/selftest/PointOps.cpp
   app/selftest/PresentTransfer.cpp
   app/selftest/PressureFeel.cpp
+  app/selftest/PencilDeposit.cpp
   app/selftest/Probe.cpp
   app/selftest/PackBits.cpp
   app/selftest/PsdImport.cpp
@@ -156,6 +160,7 @@ add_executable(naturalPaint
   app/selftest/ResourcePaths.cpp
   app/selftest/RgbDeposit.cpp
   app/selftest/RgbErase.cpp
+  app/selftest/Smudge.cpp
   app/selftest/SaveReadback.cpp
   app/selftest/Scatter.cpp
   app/selftest/ScatterCount.cpp
@@ -177,6 +182,7 @@ add_executable(naturalPaint
   app/selftest/TileStore.cpp
   app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
+  app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp
   app/selftest/TouchGesture.cpp
   app/selftest/TouchGestureSession.cpp
@@ -185,12 +191,14 @@ add_executable(naturalPaint
   app/selftest/TransformCompositeSplit.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
+  app/selftest/MoveTool.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp
   app/selftest/ZoomAndSize.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
+  app/MeasureLine.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp
@@ -207,15 +215,19 @@ add_executable(naturalPaint
   brush/BrushModel.cpp
   brush/BrushModelIo.cpp
   brush/BrushModelDiff.cpp
+  brush/CloneStamp.cpp
   brush/CoverageBlend.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
   brush/Grain.cpp
   brush/Library.cpp
+  brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
+  brush/Smudge.cpp
   brush/StrokePath.cpp
+  brush/TonalBrush.cpp
   brush/ToolOptionsBlend.cpp
   brush/Variance.cpp
   color/LutBake.cpp

@@ -338,6 +338,27 @@ bool runProbeTest();
 // deleted the day it does.
 bool runEyedropperTest();
 
+// app/MeasureLine (docs/ui.md section 2's ruler cell): the Measure tool -- the
+// only cell in the palette whose gesture writes no texel at all. Six things:
+// that a 3-4-5 drag reports a length of exactly 5 document texels and that the
+// length is of the DIFFERENCE of the endpoints rather than of either one; that
+// the reported angle obeys this build's one angle convention, pinned the way
+// `app/selftest/AngleConvention.cpp` pins it -- the heading is fed into a
+// `BrushTip` and `dabCoverage()` is asked whether the footprint actually
+// reaches a point along the measured line, rather than this file's own `atan2`
+// being restated back at itself -- so a mirrored, negated or 90-degree-off
+// sense is caught geometrically; that an axis-aligned drag lands on the
+// cardinal degree the same convention implies, screen-clockwise from due east
+// with +y down; that a zero-length click reports 0 and 0 and nothing
+// non-finite, which is the case the obvious `acos(dx / length)` implementation
+// divides by zero on; that the three-call gesture is a gesture -- the far end
+// stops following the pointer once the drag has ended; that a ruler taken on
+// one document does not read as a measurement of another; and that Measure got
+// its canvas handler through a SEVENTH gate of its own rather than by widening
+// the eyedropper's `toolSamplesCanvas()`, which would have handed ruler drags
+// to `applyEyedropperPick()`. Headless and GPU-free.
+bool runMeasureTest();
+
 // Headless check on the unified view transform (PLAN.md Phase 2 step 11,
 // "View controls" -- PRD Q1-Q4; docs/shortcuts.md section 3's own mandate
 // that mirror and rotation compose into one matrix and pen input maps back
@@ -970,6 +991,22 @@ bool runDocumentTransformTest();
 // exactRemapKind() keeps a pure translate or a snapped quarter turn lossless.
 // Headless and GPU-free -- nothing here touches ui/.
 bool runTransformSessionTest();
+
+// app/MoveTool (`Tool::Move`, the palette's `V` cell): the four decisions the
+// Move tool adds on top of app/TransformSession -- which target a pen-down
+// acts on (a selection scopes the move, no selection moves the whole layer),
+// that every refusal is prose rather than a dead drag, the arrow-key nudge,
+// and `toolMovesPixels()`, the seventh gate in `toolHasCanvasHandler()`.
+// Proves the property those decisions exist to protect: a move of (dx, dy)
+// then (-dx, -dy) returns the layer BIT-IDENTICAL, and twelve nudges out and
+// back do too -- an integer translate must stay on PRD D15's zero-kernel path
+// or dragging a layer around costs picture quality. Also that a selection
+// move leaves every texel outside the selection untouched, that a cancelled
+// move and a zero-distance move each write nothing at all (no pixels, no
+// revision bump, no history entry), and that a locked layer, an empty layer
+// and a Pigment-plus-selection target each refuse by name while a Pigment
+// layer with no selection does not. Headless and GPU-free.
+bool runMoveToolTest();
 
 // ui/TransformPreviewTexture (docs/testing-issues.md T14): the CPU half of a
 // Free Transform's live pixel preview -- crop `sourceBounds` out of a layer,
@@ -3228,6 +3265,78 @@ bool runPigmentDepositTest();
 // claim is made twice rather than merely compiled twice. Headless and GPU-free;
 // writes no files.
 bool runRgbDepositTest();
+// **The pencil on a plain RGB layer** (brush/PencilDeposit), and the routing
+// that made it exist at all (app/StrokeSession §1's Pencil rows).
+//
+// **This section exists because the tool did nothing**, the same way the
+// eraser's below did: `Tool::Pencil` sat in `strokeRouteFor()`'s not-built list
+// beside the other name/icon/slot cells, so a drag with it reached no layer,
+// wrote no texel and produced no message.
+//
+// **The design question it had to answer first, and the assertion that
+// answers it.** "A pencil is aliased" is not, on its own, a difference from
+// `brush/RgbDeposit` in this codebase -- `singleTipCoverage()` at
+// `hardness == 1` already returns only 1 or 0, so a hard brush's *dab* is
+// already two-valued. The real difference is one step out: a hard dab is not a
+// hard *mark*, because `RgbDeposit` accumulates `flow * coverage` per dab and a
+// texel on a stroke's rim is covered by fewer dabs than one on its spine, so at
+// any `flow < 1` the mark has graded shoulders however hard the tip. So the
+// pencil is defined by two rules and not one -- coverage thresholded at the
+// falloff's half-height contour, AND flow not read at all, so one dab takes a
+// covered texel straight to the ceiling.
+//
+// What this section proves:
+//
+//  - **The threshold as a pure function**: exactly 0 or exactly 1 over the
+//    whole range including outside [0,1], monotone (a rule dropping a middle
+//    band would pass a two-values test), inclusive at the named constant and
+//    out one ulp below it, and a NaN coverage refusing rather than drawing at
+//    full opacity.
+//  - **The aliased DAB**: at radius 4 with the shipped default hardness the
+//    pencil's dab has **no partially covered texel at all** while the soft
+//    brush's does, and the set of texels written is **exactly** those whose
+//    `dabCoverage()` reached the threshold -- derived from the shared shape
+//    function, so an ellipse, a sampled bitmap tip or a Dual Brush is covered
+//    by the same line.
+//  - **The aliased MARK, which is the load-bearing one.** Both engines at
+//    `hardness = 1` (so the dab difference above is switched off) and
+//    `flow = 0.25`: the pencil's 40-dab stroke holds **exactly one** distinct
+//    non-zero alpha, the opacity; the hard brush's holds many and has not even
+//    reached its own ceiling. **An implementation of "the pencil is RgbDeposit
+//    with hardness pinned to 1" passes every other assertion here and fails
+//    this one.**
+//  - **One dab is the whole mark**: a single dab at `flow = 0.1` lands the full
+//    ceiling, and fifty more over the same spot write not one texel and report
+//    not one tile -- so a scrubbed pencil stops dirtying tiles. The accumulator
+//    is still what holds the value there (without it dab two would take
+//    `opacity` to `2p - p^2` and OPACITY would be a flow slider by another
+//    name), measured allocated mid-stroke and freed at pen-up.
+//  - **Dab order cannot matter**, unlike on all three sibling routes: the same
+//    dabs stamped backwards leave **bit-identical** tiles, which no route with
+//    a per-dab rate can do.
+//  - **The selection bounds it** (PRD E1, P0): twelve overlapping dabs across
+//    the boundary leave the outside bit-identical, so it is a cap and not a
+//    rate. **And the one deliberate exception**: a feathered selection column
+//    comes out at `opacity * coverage`, NOT thresholded, because the threshold
+//    is about the mark's own shape and a selection is a mask on where it may
+//    land. Both nulls are driven through this module's own hoisted loop.
+//  - **The routing table's Pencil rows, including the two that are
+//    decisions**: a Pigment layer refuses the pencil while accepting the brush
+//    (the tempting `CpuDeposit` row would draw soft-edged marks and be a pencil
+//    in name only), and no layer at all is `None` for the pencil and `PaintSim`
+//    for the brush. An alpha-locked layer still takes it though it refuses the
+//    eraser; locked, Adjustment and storeless all refuse.
+//  - **End to end through `StrokeSession`**: one history entry labelled
+//    "pencil stroke", the content revision moved and not the structural one,
+//    the real dab stream's mark still two-valued, and the Pigment refusal said
+//    out loud with no entry recorded.
+//  - **Alpha lock**: the alpha bit-identical and the colour at the texel's own
+//    existing alpha -- brush/RgbDeposit §4.5's composite, reached through no
+//    code of this module's own, which is what §4's deliberate reuse buys.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runPencilDepositTest();
 // **The eraser on a plain RGB layer** (brush/RgbErase), and the routing that
 // made it exist at all (app/StrokeSession section 1; PRD F9 and F10, both
 // **P0**; ADR-0007; PRD E1 (P0) for the selection bound).
@@ -3310,6 +3419,150 @@ bool runRgbDepositTest();
 // claim is made twice rather than merely compiled twice. Headless and GPU-free;
 // writes no files.
 bool runRgbEraseTest();
+// **Dodge and Burn on a plain RGB layer** (brush/TonalBrush), and the routing
+// that made them exist at all (app/StrokeSession §1's Dodge/Burn rows).
+//
+// **This section exists because the two tools did nothing.** Not "did the wrong
+// thing" and not "were approximate": `Tool::Dodge` and `Tool::Burn` sat in
+// `strokeRouteFor()`'s not-built list beside the remaining unimplemented palette
+// cells, so a drag with either reached no layer, wrote no texel, produced no
+// message and recorded nothing. They drew a cursor ring.
+//
+// What this section proves:
+//
+//  - **The alpha is COPIED, not computed.** A tonal op adjusts colour and must
+//    not create or destroy coverage. 17 starting alphas from 0.000 to 1.000 are
+//    driven through one full-strength dodge and every one comes out
+//    **bit-identical**, with the colour asserted to have moved in the same
+//    breath so a tool that did nothing cannot satisfy the claim. The fully
+//    transparent texel is untouched -- a curve applied to all four channels
+//    would give it coverage.
+//  - **The un-premultiply DESIGN-imaging.md §2 requires of every per-channel
+//    colour op.** One straight colour stored at alpha 1.0 and at alpha 0.5
+//    burns to **one** colour at **zero tolerance** (halving a normal binary16
+//    only decrements its exponent), and the half-covered texel is still exactly
+//    half covered. Running the curve on the premultiplied channels would shift
+//    the soft edge of a stroke as though it were four stops darker, which is a
+//    rim on exactly the edge this tool is used to remove.
+//  - **The working space is a decision, asserted by its consequences.** The
+//    texels are linear light and the classic dodge/burn is display-referred;
+//    the curve is `srgbDecode . d^gamma . srgbEncode`. Black and white are exact
+//    fixed points in both directions; the same stroke is a **2.14x** linear
+//    multiply at display 0.5 and a **4.21x** one at display 0.25 (a linear
+//    multiply would give one ratio everywhere and push highlights past 1.0);
+//    and a texel at linear 4.0, past display white, comes out **bit-identical
+//    and is not even written**, where `d^g` would have darkened it invisibly.
+//  - **A stroke that crosses itself applies its shift ONCE.** A two-dab
+//    overlapping stroke and a one-dab stroke leave **bit-identical** texels
+//    across the whole dab, and the second dab writes nothing and reports no
+//    tile. 50 overlapping dabs accumulate exactly the strength at **zero
+//    tolerance** and land on the closed form `d0^(kFullGamma^-strength)` within
+//    one binary16 rounding per writing dab -- **with the rejected per-dab model
+//    computed on the identical inputs beside it, driving the midtone to 0.998**,
+//    and asserted to be wrong so the good assertion cannot pass against it.
+//  - **The ceiling is per stroke**, asserted from the other side: a second pass
+//    composes a second ceiling, because an accumulator that survived pen-up
+//    would be a tool that stopped working after one drag.
+//  - **Strength 0 is an exact identity** (nothing written, no tile reported),
+//    and **Dodge and Burn at equal strength are exact inverses** -- their
+//    ceiling gammas multiply to 1, and burning a dodged texel back restores it
+//    within the roundings it took to get there.
+//  - **The selection bounds the shift, both ways** (PRD E1): it scales what one
+//    dab applies *and* caps what any number of dabs can apply, with the texels
+//    outside the ants **bit-identical**. The null-Selection branch and the
+//    engaged-but-absent-tile case are both driven through this module's own
+//    hoisted loop, which core/SelectionMask.hpp requires.
+//  - **Shifting nothing costs nothing**: a stroke of dozens of dabs across blank
+//    canvas allocates **not one tile**, reports none, records no entry and moves
+//    no revision; pure black and pure white are fixed points and are not
+//    written; and a *malformed* texel (colour at alpha 0) is **left alone**,
+//    which is the deliberate inverse of brush/RgbErase §4.
+//  - **The routing table's Dodge and Burn rows**, including the three that are
+//    decisions: a Pigment layer refuses both (a `Latent` premultiplied by mass
+//    is not a display-referred colour, and the two meaningful operations already
+//    have their own tools); no layer at all is `None` and not `PaintSim`; and an
+//    **alpha-locked** layer *takes* the stroke while still refusing the eraser,
+//    because this route copies alpha rather than moving it.
+//  - **One route, two history labels** -- "dodge" and "burn", because a
+//    lightening pass and the darkening pass made to correct it are opposite
+//    edits in PRD O2's panel.
+//  - **End to end through `StrokeSession`**: the closed form of the OPACITY
+//    slider, exactly one history entry with the tool's own label, no structural
+//    revision, the other layer bit-identical, and both refusals named and
+//    *different* from one another.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runTonalBrushTest();
+// **The smudge tool** (brush/Smudge) and the routing that made it exist at all
+// (app/StrokeSession section 1; PRD E1 (P0) for the selection bound; ADR-0003
+// for the speed independence the finger's per-DAB decay inherits).
+//
+// **This section exists because the tool did nothing.** `Tool::Smudge` sat in
+// `strokeRouteFor()`'s not-built list beside the rest of the name/icon/slot-only
+// palette cells, so a drag with it reached no layer, wrote no texel, produced no
+// message and recorded nothing. It drew a cursor ring and took a keystroke.
+//
+// It is also the first route in this codebase whose **dabs are not independent
+// of each other**: it carries a colour from dab to dab, which is where the
+// design problem is and what most of this section is about.
+//
+// What this section proves:
+//
+//  - **The DIRECTIONAL claim, which is the load-bearing one.** A drag from a
+//    filled block into empty canvas leaves colour **beyond the original
+//    boundary** -- thirteen texels past it, further than one tip radius, so no
+//    single dab straddling the edge explains it -- and the amount **falls off**
+//    along the drag, monotone across the whole tail and at least 4x weaker at
+//    the far end. Then the same drag **run backwards** leaves that entire region
+//    bit-identically empty, which is what makes the first two non-vacuous: a
+//    blur, or a tool that spread colour symmetrically, would pass them both.
+//  - **Both endpoints of STRENGTH, exactly.** 0 is a whole-stroke no-op: not one
+//    texel written, not one tile reported, the layer byte-identical, no revision
+//    bump and no undo step -- **with the rejected model (strength left out of
+//    the write weight, which is a blur) computed on the identical inputs beside
+//    it and asserted to write**, so the good assertion cannot pass against the
+//    bad implementation. 1 carries the colour picked up at pen-down to the far
+//    end of the stroke at **zero tolerance**, 133 texels past the boundary it
+//    came from.
+//  - **The first dab LOADS the finger rather than blending into it.** Blending
+//    from a transparent start would make the strength-1 stroke -- the setting a
+//    user picks for the strongest effect -- retain nothing forever and do
+//    nothing at all.
+//  - **The pick-up is the coverage-weighted mean of the stored premultiplied
+//    texel, and an ABSENT tile contributes transparent black rather than being
+//    skipped** -- the deliberate inverse of brush/RgbErase's rule, and the
+//    reason a smear thins instead of cloning. Half a footprint of paint picks up
+//    half the paint, on all four channels; a uniform footprint picks up its
+//    colour at zero tolerance; and a flow-0 dab loads the finger while
+//    allocating nothing, because reading is not writing.
+//  - **Alpha participates.** One lerp factor across all four premultiplied
+//    channels, so the tool moves coverage as well as colour -- without that it
+//    could do literally nothing on the transparent side of an edge, which is
+//    where the tool is actually pointed.
+//  - **The selection bounds the write** (PRD E1), asserted through the module
+//    and again end to end through `StrokeSession`, with every texel beyond the
+//    ants **bit-identical** after a stroke whose dabs ran 80 texels past them.
+//    The engaged-but-absent-tile case is driven through this module's own
+//    hoisted loop, which core/SelectionMask.hpp requires.
+//  - **Smudging nothing with nothing costs nothing**: dozens of dabs across
+//    blank canvas allocate not one 224 KiB tile, report none, move no revision
+//    and record no entry -- while a *loaded* finger over blank canvas does
+//    allocate and write, which is why brush/RgbErase's unconditional skip could
+//    not simply be copied.
+//  - **The routing table's Smudge rows**, including the four that are refusals
+//    with reasons: a Pigment layer refuses by name while still taking the brush
+//    and the eraser, an alpha-locked layer refuses while still taking the brush,
+//    no target at all is `None` and not `PaintSim`, and Adjustment/storeless
+//    refuse through the shared body. Plus the route name, the "smudge" history
+//    label, and `toolBeginsStroke()`/`toolImplemented()`/
+//    `toolHasCanvasHandler()` agreeing through that gate alone.
+//  - **One stroke is ONE undo step, labelled "smudge"**, moving the content
+//    revision and not the structural one.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runSmudgeTest();
 // **The active selection on a Pigment layer** (brush/Deposit §4; PRD E1, **P0**)
 // and **the eraser that gate unblocked** (brush/PigmentErase; PRD F9/F10, both
 // **P0**; ADR-0007's Pigment row).
@@ -3379,6 +3632,68 @@ bool runRgbEraseTest();
 // claim is made twice rather than merely compiled twice. Headless and GPU-free;
 // writes no files.
 bool runPigmentSelectionTest();
+// **The clone stamp on a plain RGB layer** (brush/CloneStamp), the routing that
+// made it exist at all (app/StrokeSession §1b), and the Option+click gesture
+// that gives it a source (`AppState::CloneSourceState`, `setCloneAnchor()`,
+// `latchCloneOffset()`).
+//
+// **This section exists because the tool did nothing.** `Tool::CloneStamp` sat
+// in `strokeRouteFor()`'s not-built list beside the other name/icon/slot-only
+// palette cells, so a drag with it reached no layer, wrote no texel and said
+// nothing.
+//
+// What this section proves:
+//
+//  - **A clone reproduces the source texels EXACTLY**, at zero tolerance and on
+//    all four premultiplied channels, over a destination that already held
+//    different paint. At full flow and full opacity over an opaque source the
+//    keep factor `1 - src[3] * a` is exactly zero, so "clone" means a copy
+//    rather than a close approximation -- and the source region is asserted
+//    bit-identical afterwards, since a clone that moved its own source would be
+//    a smear with a different name.
+//  - **The result is INDEPENDENT of tile and texel iteration order**, which is
+//    the module's whole reason to exist. The same one-texel shift is run in
+//    both directions over a per-column pattern: a loop reading the live store
+//    gets the rightward shift right and turns the leftward one into a single
+//    column smeared across the entire dab, so asserting the SAME shifted copy
+//    in both directions is a claim no live-reading implementation can satisfy.
+//    Repeated across a tile boundary, where the (y, x)-ascending tile loop
+//    makes the same split one granularity up.
+//  - **The keep factor is `1 - src[3] * a` and not `1 - a`**: cloning from a
+//    *transparent* source leaves the destination bit-identical instead of
+//    cutting a hole in it, which is what a clone stamp reading blank canvas
+//    would otherwise do to the paint under the tip -- invisibly, and only over
+//    the parts of the source that happen to be empty.
+//  - **An unset source writes NOTHING and says so.** `StrokeSession::begin()`
+//    refuses before latching anything, the refusal names the Option+click that
+//    fixes it, and the layer, the revision and the history are all untouched --
+//    because the silent version of this bug is invisible: with no anchor the
+//    offset is (0,0), every texel's source is itself, and a full-opacity copy
+//    of a texel onto itself is a perfect no-op.
+//  - **The gesture's own arithmetic**: `offset == anchor - penDown` so the
+//    first dab lands exactly on the anchor; the offset survives pen-up
+//    (aligned); and a second Option+click discards it so the next stroke
+//    re-derives from the new source.
+//  - **The selection bounds the clone, both ways** (PRD E1, P0): texels outside
+//    the ants are bit-identical, and a partially covered texel cannot be
+//    scrubbed past its coverage however many dabs cross it.
+//  - **The per-stroke ceiling**: opacity is a ceiling and not a per-dab
+//    multiplier, so a scrubbed clone stops at `opacity` and every dab after
+//    that writes nothing at all.
+//  - **Cloning nothing costs nothing**: a stroke of dozens of dabs whose source
+//    is blank canvas allocates not one tile, reports none, records no entry and
+//    moves no revision.
+//  - **The routing table's CloneStamp rows**, including the four that are
+//    decisions: a Pigment layer refuses by name, no layer at all is None (and
+//    not PaintSim), a locked layer refuses, and an ALPHA-LOCKED one does not --
+//    the row where this tool and the eraser deliberately disagree.
+//  - **One stroke is ONE undo step, labelled "clone stamp"**, and the source
+//    snapshot's lifetime measured on both sides of pen-up.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runCloneStampTest();
+
 // PLAN.md Phase 5 step 11 ("Multi-select, align and distribute, colour labels,
 // linking, panel filtering"; PRD C12 (P0), C13 (P1), C15 (P2)).
 //

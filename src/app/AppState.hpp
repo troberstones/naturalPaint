@@ -16,6 +16,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
 #include "app/Journal.hpp"
+#include "app/MeasureLine.hpp"
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/StrokeBake.hpp"
@@ -49,7 +50,15 @@ namespace np {
 // list** -- PRD F9/F10 are P0, and it now routes to StrokeRoute::RgbErase on a
 // writable RGB layer, to StrokeRoute::PigmentErase on a writable Pigment one,
 // and refuses by name on every other kind (ADR-0007, and
-// app/StrokeSession.hpp §1's Eraser rows). Each earns real
+// app/StrokeSession.hpp §1's Eraser rows). **`Dodge` and `Burn` have left it
+// too** -- both route to StrokeRoute::TonalBrush on a writable RGB layer, one
+// engine with a direction latched at pen-down (brush/TonalBrush, and
+// app/StrokeSession.hpp §1's Dodge/Burn rows), and both refuse by name on a
+// Pigment layer, where a tonal shift has no meaning to have. Each earns real
+// app/StrokeSession.hpp §1's Eraser rows). **`CloneStamp` has left it too**,
+// and routes to StrokeRoute::CloneStamp on a writable RGB layer -- with its
+// source anchor living on this struct rather than on the session, for the
+// reason `CloneSourceState` below spells out. Each earns real
 // behaviour on its own PRD id and phase, per docs/ui.md section 4's table --
 // which is also where MEASURE and SLICE's earlier "Dropped" disposition is
 // reversed: the palette keeps them for now, and per the user's own words,
@@ -86,6 +95,11 @@ enum class Tool {
   PolygonLasso,
   MagicWand,
   Crop,
+  // Built: app/MeasureLine. It stays in the enum's original run because the
+  // order is load-bearing (ui/AtelierChrome's kToolMeta is one row per value
+  // in this order, with a static_assert on the count), so a tool shipping
+  // moves its comment, never its slot -- the same rule Eraser, Lasso,
+  // PolygonLasso, MagicWand, PaintBucket and Gradient already follow below.
   Measure,
   Frame,
   CloneStamp,
@@ -511,6 +525,53 @@ struct AppState {
   // obvious one says so in the band, in the same voice.
   std::string lastPickReport;
 
+  // --- the Clone Stamp's source (brush/CloneStamp) ------------------------
+  //
+  // **Where this lives was the tool's first design question, and `AppState` is
+  // the answer rather than `StrokeSession`.** Both were candidates; the
+  // deciding fact is a lifetime. An anchor is set by an Option+click that is
+  // not a stroke at all, and the offset derived from it has to survive *many*
+  // strokes -- a painter sets a source once and then works with a dozen short
+  // dabs. `StrokeSession` resets every member it owns at `begin()` (that
+  // header's own list: the path, the three accumulators, the seed, the
+  // smoothed pressure) precisely so that no stroke can inherit the last one's
+  // state, so an anchor put there would be destroyed by the very gesture that
+  // needs it. The one thing a stroke may not do is outlive itself.
+  //
+  // It is session state in exactly the sense `eyedropper` above and
+  // `brush.tool` itself are: it survives a tool switch, a document switch and
+  // a selection change, and it is **not persisted to disk** -- `eyedropper`'s
+  // own paragraph carries that argument (a preferences format freezes keys
+  // forever) and nothing here is different.
+  //
+  // **The offset is derived once and then kept -- this build clones
+  // *aligned*.** Photoshop has an Aligned checkbox; unticked, every new stroke
+  // restarts the copy at the anchor, which is what a repeating stamp wants.
+  // That is a control in the options bar this build has not drawn, and shipping
+  // the toggle without the control would leave the tool doing whichever of the
+  // two the default happened to be, with nothing in the chrome saying which.
+  // Aligned is Photoshop's own default and the behaviour a retoucher expects,
+  // so it is the one built.
+  struct CloneSourceState {
+    // Whether an Option+click has ever set a source. False is what makes a
+    // clone stroke refuse OUT LOUD (`StrokeSession::begin()`) instead of
+    // reading from offset (0,0) and stamping the layer onto itself -- a
+    // gesture that appears to work, since a full-opacity copy of a texel onto
+    // itself is a perfect no-op, and which is the reason this is a flag rather
+    // than a sentinel offset value.
+    bool haveAnchor = false;
+    // Where it landed, in document texels.
+    Vec2 anchor{};
+    // Whether the first stroke since that click has fixed the offset.
+    bool haveOffset = false;
+    // `source = pointer + offset`, i.e. `anchor - firstPenDown`. Rounded to
+    // whole texels by `brush/CloneStamp::begin()` (its §3), not here -- this
+    // is the exact vector the two pointer positions produced, so a later
+    // reader sees what was measured rather than what was snapped.
+    Vec2 offset{};
+  };
+  CloneSourceState clone;
+
   // Photoshop-style tool-group memory (docs/ui.md section 2, "nest similar
   // tools into a flyout"): which member of each palette group slot the
   // user most recently picked, so a flyout cell shows the tool a painter
@@ -660,6 +721,19 @@ struct AppState {
   // selection tool it is not bounded by one mouse-down/up pair and needs a
   // flag of its own to say "a path is open".
   bool polygonLassoActive = false;
+
+  // --- the measure tool's ruler -------------------------------------------
+  //
+  // Beside the marquee's rubber band because it is the same kind of thing: an
+  // on-canvas gesture in document texel space that no `OpenDocument` may be
+  // allowed to carry. It differs from the marquee in one way that matters and
+  // `app/MeasureLine.hpp` §1 argues it -- **it outlives its own gesture**, on
+  // purpose, because the user drags the line and only THEN reads the numbers
+  // off the options bar. It carries the id of the document it was measured on
+  // for the same reason `selectionBoundary` below is keyed on one: a length in
+  // one document's texels is meaningless in another's, and a stale plausible
+  // integer is worse than a stale visible rectangle.
+  MeasureLine measure;
 
   // The active document's selection BOUNDARY, for PRD E6's marching ants.
   // Recomputed only when the selection changes -- extraction walks every texel

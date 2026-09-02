@@ -8,11 +8,15 @@
 #include "app/AppState.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "brush/BrushModel.hpp"
+#include "brush/CloneStamp.hpp"
 #include "brush/Deposit.hpp"
+#include "brush/PencilDeposit.hpp"
 #include "brush/PigmentErase.hpp"
 #include "brush/RgbDeposit.hpp"
 #include "brush/RgbErase.hpp"
+#include "brush/Smudge.hpp"
 #include "brush/StrokePath.hpp"
+#include "brush/TonalBrush.hpp"
 #include "brush/Variance.hpp"
 #include "paint/Palette.hpp"
 #include "core/Layer.hpp"
@@ -48,18 +52,63 @@
 //                                                               refusal by name
 //   Eraser      **no target at all**             None        <- and NOT
 //                                                               PaintSim
+//   Pencil      RGB, with tiles, writable        PencilDeposit <- new; this
+//                                                                row used to
+//                                                                be a
+//                                                                not-built
+//                                                                refusal
+//   Pencil      Pigment, with tiles, writable    None        <- and NOT
+//                                                               CpuDeposit
+//   Pencil      **no target at all**             None        <- and NOT
+//   Dodge       RGB, with tiles, writable        TonalBrush  <- new; the two
+//   Burn        RGB, with tiles, writable        TonalBrush     tonal rows are
+//                                                               ONE route with
+//                                                               a latched sign
+//   Dodge/Burn  RGB, with tiles, ALPHA-locked    TonalBrush  <- and NOT a
+//                                                               refusal, unlike
+//                                                               the eraser
+//   Dodge/Burn  Pigment, with tiles, writable    None        <- a decision,
+//                                                               argued below
+//   Dodge/Burn  **no target at all**             None        <- and NOT
+//                                                               PaintSim
+//   CloneStamp  RGB, with tiles, writable        CloneStamp  <- new; §1b
+//   CloneStamp  Pigment, with tiles, writable    None        <- a refusal by
+//                                                               name, §1b
+//   CloneStamp  **no target at all**             None        <- and NOT
+//                                                               PaintSim, §1b
+//   Smudge      RGB, with tiles, writable        Smudge      <- new; the rows
+//                                                               below it are
+//                                                               this tool's
+//                                                               four refusals
+//   Smudge      Pigment, with tiles, writable    None        <- a refusal by
+//                                                               name, and it
+//                                                               names its
+//                                                               condition
+//   Smudge      RGB, **alpha-locked**            None
+//   Smudge      **any layer, locked**            None
+//   Smudge      Adjustment / Media / Text / ...  None
+//   Smudge      **no target at all**             None        <- and NOT
+//                                                               PaintSim, for
+//                                                               the eraser's
+//                                                               reason, worse
 //   Brush       **any layer, locked**            None
 //   DryBrush    **any layer, locked**            None
 //   Eraser      **any layer, locked**            None
+//   Pencil      **any layer, locked**            None
 //   Brush       Adjustment / Media / Text / ...  None
 //   DryBrush    Adjustment / Media / Text / ...  None
 //   Eraser      Adjustment / Media / Text / ...  None
+//   Pencil      Adjustment / Media / Text / ...  None
+//   Dodge/Burn  **any layer, locked**            None
+//   Dodge/Burn  Adjustment / Media / Text / ...  None
+//   CloneStamp  Adjustment / Media / Text / ...  None
+//   CloneStamp  **any layer, locked**            None
 //   Brush       **no target at all**             PaintSim
 //   DryBrush    **no target at all**             PaintSim
 //   Water       anything                         PaintSim     (unchanged)
 //   Eyedropper / Hand / Zoom                     None         (unchanged)
 //
-// Seven rows are decisions rather than bookkeeping.
+// Fourteen rows are decisions rather than bookkeeping.
 //
 // **`Water` never routes to a layer, on any layer kind.** The water tool
 // deposits water and no pigment (`app/AppState`'s own comment on the
@@ -161,6 +210,194 @@
 //     and erasing a parametric kind paints its mask, since there are no pixels
 //     to remove. They already refuse for having no writable store; naming them
 //     here is what keeps that from reading like an accident.
+//
+// **The Pencil rows, and the two of them that are decisions.** Until this step
+// `Tool::Pencil` sat in the not-built list below with the nineteen other
+// name/icon/slot cells, so a drag with it reached no layer and said nothing.
+// `brush/PencilDeposit` is the tool and its §0 is the whole argument for what
+// separates it from a hard brush -- in one line: a hard *dab* is not a hard
+// *mark*, because `flow < 1` plus overlapping dabs grades a stroke's rim
+// whatever the tip's hardness, so the pencil thresholds its coverage AND
+// ignores flow, and the second half is the one a slider could not have given.
+//
+//   * **A Pigment layer refuses, and this is the row that is a real decision
+//     rather than a missing feature.** The tempting row is `CpuDeposit` -- it
+//     never blocks the user, and the pencil would draw. It would draw a
+//     *soft-edged* mark: `brush/Deposit` mixes latents weighted by the mass a
+//     dab lays, has no per-stroke ceiling at all (which is why the OPACITY
+//     slider is drawn disabled on that route), and therefore has nothing for
+//     "one dab is the whole mark" to be a rule about. The tool would work,
+//     produce marks, and not be a pencil -- which is the invisible
+//     wrong-behaviour failure the locked row and the Eraser's `nullptr` row
+//     were both written to prevent, in its third variant. The honest Pigment
+//     row is a binary-mass engine beside `brush/PencilDeposit`, and unlike the
+//     Pigment *erase* it is not blocked on plumbing: it is blocked on a
+//     question nobody has answered, namely what graphite is in a Kubelka-Munk
+//     medium (`paint/Palette` has no entry for it, and mass at `kMaxMass` in
+//     whatever hue happens to be loaded is not it). Refusing by name is what
+//     keeps that from rotting into a silent fallback.
+//
+//   * **`nullptr` is `None`, exactly as it is for the eraser and for the same
+//     shape of reason.** `sim::PaintSim` is a fluid solver whose whole output
+//     is diffusion, wet edges and granulation -- every one of them a way of
+//     making a mark's boundary soft. A pencil sent there would produce the
+//     softest-edged mark in the build, on the solver canvas rather than on a
+//     layer, which is the tool doing the opposite of its defining property.
+//
+//   * **An alpha-locked RGB layer still takes it**, unlike the eraser. A
+//     pencil is a deposit; `brush/RgbDeposit` §4.5's colour-only composite is
+//     what it reuses (brush/PencilDeposit §4), so drawing inside existing
+//     alpha is the feature rather than the refusal. A *locked* layer still
+//     refuses, from the shared body, before the kind is looked at.
+// **The Dodge and Burn rows, and the four of them that are decisions.** Both
+// tools were name/icon/slot-only cells until this step -- they drew a cursor,
+// took a keystroke, and no gesture either made reached any layer. They are
+// **one route**, `StrokeRoute::TonalBrush`, because they are one operation
+// whose only free variable is a sign; `brush/TonalBrush` §0 carries that
+// argument and explains why it is the opposite call to the one the two erase
+// routes made.
+//   * **A Pigment layer REFUSES, and this row is a decision rather than a
+//     gap.** A tonal shift is defined on a display-referred colour
+//     (`brush/TonalBrush` §2), and a Pigment texel does not hold one: it holds
+//     a Mixbox `Latent` premultiplied by mass, and CONTEXT.md's glossary is
+//     explicit that "nothing outside the pigment module may assume a basis has
+//     three weights plus a residual". Raising a latent to a power is not a
+//     Kubelka-Munk mix of anything -- the result is not the latent of any
+//     pigment -- so a "dodge" there would be an arbitrary rewrite of a physical
+//     quantity that then propagates through every later mix. The two operations
+//     that ARE meaningful on pigment already exist under their own names:
+//     less mass is `brush/PigmentErase`, and a lighter paint is a different
+//     `Latent`, which is the colour picker. Refusing by name leaves the UI free
+//     to say which one the user wants; guessing would put an un-invertible edit
+//     into the one storage in this build whose values mean something physical.
+//   * **An ALPHA-LOCKED RGB layer takes the stroke**, and this is where the
+//     tonal rows deliberately part company with the eraser's. `alphaLocked`
+//     freezes one quantity -- the layer's alpha -- and `brush/TonalBrush` §1's
+//     whole invariant is that the alpha channel is *copied*, not recomputed. So
+//     the lock is satisfied by construction rather than by a check, exactly as
+//     it is for `RgbDeposit`, and refusing here would make the flag block an
+//     edit it has no quarrel with. The erase row refuses because removing alpha
+//     is precisely what that route is for.
+//   * **`nullptr` is `None`, not `PaintSim`**, for the eraser's reason with a
+//     different verb: `sim::PaintSim` has no dodge step, so a tonal stroke sent
+//     there would run the *paint* path with the brush's loaded pigment and
+//     deposit colour where the user asked for a tonal shift. That is not a
+//     missing feature, it is the tool doing something else entirely, and it is
+//     the invisible wrong-target failure the locked row exists to prevent.
+//   * **Locked, Adjustment, Media, Text, Flats and Strokes refuse**, and they
+//     refuse through the shared body rather than by name -- a tonal op needs a
+//     writable RGB store and none of them has one. ADR-0007's per-kind table is
+//     about erasing and says nothing about tone; when a Media layer grows a
+//     readback, this row is one of the ones that has to be answered again.
+//
+// ==========================================================================
+// 1b. The CloneStamp rows, and the four of them that are decisions
+// ==========================================================================
+//
+// `brush/CloneStamp` is the engine and its header carries the arithmetic and
+// the source-snapshot hazard. What belongs here is the table, and four of its
+// rows are decisions rather than bookkeeping.
+//
+//   * **A writable RGB layer is the one destination.** The clone reads and
+//     writes premultiplied linear RGBA in one store, which is exactly what
+//     `core::TileStore` holds.
+//
+//   * **A Pigment layer refuses, BY NAME.** This is not "not built yet
+//     because nobody got to it". A clone at partial coverage is a *mixture* of
+//     the source texel and the destination texel, and on a Pigment layer that
+//     mixture is a Kubelka-Munk one -- two latents combined in proportion to
+//     their masses, which is what `depositTexel()` owns and what a
+//     four-channel lerp is not. The soft edge of a cloned dab, which is most
+//     of the dab, would therefore be a *different operation* there rather than
+//     the same one on different storage. That is a second module (a
+//     `brush/PigmentClone`, the way `brush/PigmentErase` is a second module
+//     and not a flag on `brush/RgbErase`), and until it exists the honest
+//     answer is a refusal the UI can print. **Not** a silent no-op, and **not**
+//     a straight copy of the seven channels -- the latter looks right at full
+//     opacity and is wrong everywhere the tip falls off, which is the worst of
+//     the three options because it is the one nobody would report.
+//
+//   * **`nullptr` is `None`, and this is the eraser's row read one step
+//     further.** A brush with no target paints the solver canvas
+//     legitimately. A clone stamp with no target has no *source*: what it
+//     copies is a document's own texels, and `sim::PaintSim`'s dense canvas
+//     texture is not one -- no tile store to sample, no alpha. Sent there the
+//     tool would run the paint path with a brush tip and lay down the
+//     FOREGROUND COLOUR, which is not a degraded clone; it is a different tool
+//     wearing this one's name.
+//
+//   * **A locked layer refuses, and alpha lock does NOT** -- and the two rows
+//     disagreeing is the point. `locked` is checked before the kind, as for
+//     every other tool, so the message names the one thing a user can fix.
+//     `alphaLocked` freezes the layer's alpha and permits colour to change,
+//     which is the whole feature it exists for, so a route that *adds* colour
+//     belongs on the permitted side: the clone is such a route, and
+//     `brush/CloneStamp` §1 carries the colour-only composite that honours the
+//     lock without ever un-premultiplying the source. Folding this into the
+//     eraser's alpha-lock refusal would block a legitimate edit; folding the
+//     eraser into this row would make `alphaLocked` decorative.
+//
+// **The unset source is a refusal in `begin()`, not a row in this table.**
+// `strokeRouteFor()` is pure in `(tool, target)`, and the anchor is neither --
+// it is session state on `AppState` (`CloneSourceState`, whose own comment
+// argues why it cannot live on this class). Threading it in would make a pure
+// routing question depend on a gesture, and would give `toolBeginsStroke()` --
+// which probes this table with two synthetic layers and no `AppState` at all
+// -- the wrong answer for the palette, greying the cell out until the user
+// managed to Option+click a tool they could not select. So the table says "an
+// RGB layer can take a clone", and `begin()` says "but this one has no source
+// yet", in the same `errorOut` sentence every other refusal uses and in the
+// same band. `cloneSourceRefusal()` below is that sentence.
+// **The Smudge rows, and why five of the six are refusals.** `brush/Smudge` is
+// the engine; `Tool::Smudge` sat in the not-built list below beside the rest of
+// the name/icon/slot-only cells, so a drag with it reached nothing at all. It
+// is the first route whose dabs are not independent -- it carries a colour from
+// dab to dab (that header's §1) -- but the routing question it asks is the
+// familiar one, and the answers differ from the eraser's in exactly two places.
+//
+//   * **An RGB layer is the only destination.** Smudge reads and writes the
+//     same premultiplied quadruple `brush/RgbDeposit` and `brush/RgbErase` do,
+//     and the whole of `brush/Smudge` §2 is arithmetic on that storage.
+//
+//   * **A Pigment layer refuses BY NAME, on a stated condition**, exactly as
+//     the Pigment *erase* row did before `brush/PigmentErase` paid it off --
+//     and it is a refusal rather than a silent fallthrough for the same reason
+//     that one was: the layer kind `Document::createBlank()` makes is Pigment,
+//     so this is the row a user is most likely to meet first, and it must say
+//     why. The condition is not plumbing. A Pigment texel is a Kubelka-Munk
+//     latent plus a mass (`core/Pigment.hpp`), and `brush/Smudge` §2's pick-up
+//     is a coverage-weighted **arithmetic mean**. The mean of two latents is
+//     not what mixing two paints means in this build: `depositTexel()` mixes
+//     them with a *mass*-weighted lerp whose exactness at `m == 0` is what
+//     makes `brush/Deposit` §1's idempotence-in-hue invariant assertable at
+//     zero tolerance. A linear average would be a second, unproven mixing rule
+//     sitting next to the one this application exists for, and it would be
+//     wrong in the way that is hardest to see -- plausible colours, drifting
+//     hue. The row opens when someone decides what the mass-weighted mean of a
+//     footprint of latents is and asserts it, not before.
+//
+//   * **An alpha-locked RGB layer refuses**, the same way the eraser's row
+//     does and for a sharper version of the same reason. `alphaLocked` freezes
+//     the layer's alpha (core/Layer.hpp), and smudge moves alpha inseparably
+//     from colour: `brush/Smudge` §5 derives why the write has to be one lerp
+//     factor across all four premultiplied channels, and there is no way to
+//     hold `dst.a` still inside that without un-premultiplying the finger --
+//     a division by the finger's own alpha, which is exactly 0 whenever the
+//     finger is empty. `brush/RgbDeposit` §4.5 could give the brush a
+//     locked-alpha composite because its source colour is *straight* to begin
+//     with; this route's is not. Refusing keeps the flag honest rather than
+//     decorative, which is the standard the erase row already set.
+//
+//   * **`nullptr` is `None`, and this is the eraser's row with the argument
+//     one notch stronger.** `sim::PaintSim` has no smudge step, so a smudge
+//     sent there would run the *paint* path -- and unlike the eraser, which
+//     would at least have added paint with no colour of its own, this one would
+//     deposit the loaded foreground pigment. A tool whose entire promise is
+//     "moves what is already there, introduces nothing new" would introduce a
+//     colour the picture did not contain. Nothing to smudge, so nowhere to go.
+//
+//   * **Locked, and the storeless kinds**, refuse through the shared body
+//     below with no case of their own -- which is the point of the shared body.
 //
 // ==========================================================================
 // 2. One stroke is ONE undo step
@@ -265,7 +502,7 @@
 //
 // `begin()` takes a layer **index**, because that is what a UI has, and every
 // frame re-validates it: the layer count must be what it was at pen-down, and
-// the layer at that index must still route to **the same one** of §1's three
+// the layer at that index must still route to **the same one** of §1's five
 // layer-writing routes it did then, **for the same tool**. A stroke whose target
 // has gone away drops its remaining dabs rather than writing anywhere, which
 // `--selftest` exercises by deleting the target layer mid-stroke.
@@ -310,11 +547,33 @@ enum class StrokeRoute {
                  // ADR-0007's Pigment row. The two erase rows are two routes
                  // and not one with a flag, because the storage conventions
                  // differ in what an emptied texel may hold (§1)
+  PencilDeposit,  // brush/PencilDeposit, into the target layer's rgb tiles --
+                  // the ALIASED mark. A separate route from RgbDeposit and not
+                  // a flag on it because the two differ in what a *stroke*
+                  // means, not only in a coverage: this one reads no flow at
+                  // all, so one dab is the whole mark and the number of dabs
+                  // that overlap a texel cannot change its value
+                  // (brush/PencilDeposit §§0, 2)
+  TonalBrush,    // brush/TonalBrush, moving the TONE of the target layer's rgb
+                 // tiles without moving their alpha -- Dodge and Burn, which
+                 // are ONE route with a sign latched at pen-down and not two,
+                 // because the accumulator counts the same thing in the same
+                 // units for both (brush/TonalBrush §0)
+  CloneStamp,    // brush/CloneStamp, compositing texels read from a PRE-STROKE
+                 // SNAPSHOT of the same rgb tiles at a fixed offset -- §1b. A
+                 // route of its own and not a source mode on RgbDeposit,
+                 // because the "ink" is a different value at every texel and
+                 // is read out of the store being written (that header's §0)
+  Smudge,        // brush/Smudge, moving colour that is ALREADY in the target
+                 // layer's rgb tiles along the stroke -- the tip carries no ink
+                 // and the layer is both source and destination. The first
+                 // route in this table whose dabs are not independent of each
+                 // other (that header's §1)
   PaintSim,      // sim::PaintSim's dense canvas texture, and only when there is
                  // no document layer to have aimed at -- see §1's last paragraph
 };
 
-// The four routes that write a `Layer`, as one predicate, because four call
+// The five routes that write a `Layer`, as one predicate, because four call
 // sites ask the same question -- `begin()`'s refusal, `depositPending()`'s
 // per-frame re-validation, `ui/MacPaintUI`'s canvas branch, and the options
 // bar's route indicator, which accents a route that reaches the user's layer
@@ -330,9 +589,35 @@ enum class StrokeRoute {
 // answer for it as for a deposit. A predicate that meant "adds paint" would
 // leave the options bar greying a live erase as though it went to the solver,
 // which is the specific drift this predicate was extracted to stop.
+//
+// **`TonalBrush` is in here for the identical reason, one step further out.**
+// It neither adds paint nor removes it -- it changes the colour of paint that
+// is already there, leaving the alpha bit-identical -- and every one of the
+// four call sites still wants the same answer: it unshares a copy-on-write
+// tile, moves the revision, dirties tiles for the incremental composite and
+// owes exactly one history entry. That this predicate needed no new *concept*
+// to admit a third family is the evidence that "writes a layer" was the right
+// question to extract, rather than "deposits" or "deposits or erases".
+// **The clone route is in here too, and it was worth asking rather than
+// assuming.** It reads a layer as well as writing one, which none of the other
+// four do -- but every one of the four questions this predicate answers is
+// about the WRITE: does the session accept it, does the per-frame
+// re-validation guard it, does the canvas branch take it, does the options bar
+// accent it. A clone unshares a copy-on-write tile, moves the revision,
+// dirties tiles for the incremental composite and owes exactly one history
+// entry, same as a deposit.
+// **Smudge is in here too, and "writes" is if anything more literal for it.**
+// It neither adds nor removes paint on balance -- it moves it -- but every one
+// of the four call sites is asking about the mechanics, not the intent: it
+// unshares copy-on-write tiles, moves the revision, dirties tiles for the
+// incremental composite and owes exactly one history entry, and it can allocate
+// tiles a stroke passes over, which the erase deliberately cannot
+// (brush/Smudge §§5-6).
 inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
   return route == StrokeRoute::CpuDeposit || route == StrokeRoute::RgbDeposit ||
-         route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase;
+         route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase ||
+         route == StrokeRoute::PencilDeposit || route == StrokeRoute::TonalBrush ||
+         route == StrokeRoute::CloneStamp || route == StrokeRoute::Smudge;
 }
 
 // Reachability audit B2: `BrushState::wetness` (the WET slider, drawn in both
@@ -367,7 +652,14 @@ inline bool wetnessReachesSolver(StrokeRoute route) noexcept {
 // predicate at the UI site, because it is a separate claim** -- a fifth
 // layer-writing route added without a `grainCoverageAt()` call would make
 // `strokeRouteWritesLayer()` still correct and this still wrong, and there
-// would again be nothing to notice. `app/selftest/StrokeSession.cpp` asserts
+// would again be nothing to notice.
+//
+// **That fifth route arrived, and the separate claim is what got it
+// answered.** `StrokeRoute::PencilDeposit` calls `grainCoverageAt()` on the
+// same line of its per-texel loop the other four do -- and then thresholds the
+// result (brush/PencilDeposit §1), so paper tooth reaches a pencil as a
+// keep/drop speckle rather than as a grey. Delegating stays correct because
+// the answer to the question was yes, not because nobody asked it. `app/selftest/StrokeSession.cpp` asserts
 // the agreement route by route, so adding a route means answering the
 // question for grain rather than inheriting an answer.
 //
@@ -397,6 +689,52 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept;
 // name survives the session -- `ui/MacPaintUI`'s pen-up line prints the label
 // and the route together.
 const char* strokeEditLabel(Tool tool) noexcept;
+
+// --- the Clone Stamp's source gesture (§1b, AppState::CloneSourceState) -----
+//
+// Two free functions rather than methods on `CloneSourceState`, for the reason
+// `toolWritesRgbPixels()` below is a free function: `app/AppState.hpp` is a
+// data header that every band of the chrome includes, and the *rules* about a
+// gesture belong beside the routing table that refuses it -- which is here.
+// They are the whole of what `ui/MacPaintUI.cpp`'s canvas block has to call,
+// which is what keeps that edit to one small block in a function five other
+// tools also live in.
+
+// Option+click. Sets the anchor and **discards any offset already latched**,
+// which is the load-bearing half: a new source means the next stroke must
+// re-derive the vector from its own pen-down, and an offset that survived
+// would leave the click looking like it worked while the copy carried on from
+// the old source.
+void setCloneAnchor(AppState::CloneSourceState& clone, Vec2 anchor) noexcept;
+
+// Pen-down. Latches `offset = anchor - penDown` the first time it is called
+// after an Option+click, and is the identity on every call after that (this
+// build clones *aligned* -- `CloneSourceState`'s own comment). Returns whether
+// the stroke has a usable source, so the caller does not have to read two
+// flags to find out.
+//
+// **The latch is here and not in `StrokeSession::begin()`** because `begin()`
+// has no position: its signature has no x/y at all, which is the same fact
+// that forces `seed_` to be latched from the stroke's first DAB rather than at
+// pen-down. The offset cannot wait that long -- `brush/CloneStamp::begin()`
+// needs it to take the snapshot against -- so it is resolved one step earlier,
+// where the pointer position actually exists.
+bool latchCloneOffset(AppState::CloneSourceState& clone, Vec2 penDown) noexcept;
+
+// The sentence a clone stroke refuses with when no Option+click has happened
+// yet, or empty when it has. §1b's last paragraph is why this is a refusal in
+// `begin()` rather than a row in `strokeRouteFor()`.
+//
+// **A clean, visible refusal is the whole requirement here**, and the reason
+// is that the obvious failure mode is invisible: with no anchor the offset is
+// (0,0), every texel's source is itself, and a full-opacity composite of a
+// texel onto itself is a perfect no-op. The user would see a tool that draws
+// nothing, with the palette cell lit, the cursor correct and not one word
+// anywhere about why -- which is precisely the silent no-op
+// `ui/AtelierChrome`'s `toolHasCanvasHandler()` tripwire exists to prevent one
+// tier up. In the same voice and shape as the other refusals: what is wrong,
+// and what to do about it.
+std::string cloneSourceRefusal(const AppState::CloneSourceState& clone);
 
 // ==========================================================================
 // 6. The pixel-writing ops that are NOT strokes -- the bucket and the gradient
@@ -474,7 +812,7 @@ inline bool pixelOpWritesLayer(const Layer* target) noexcept {
 // 6b. Which tools the canvas actually listens to
 // ==========================================================================
 //
-// **These four predicates exist because a hand-maintained boolean shipped a
+// **These predicates exist because a hand-maintained boolean shipped a
 // lie for two whole phases.** `ui/AtelierChrome`'s `kToolMeta` carries an
 // `implemented` flag; `Tool::Eyedropper` had it set to `true` with **no canvas
 // handler anywhere**, and nothing in the build could tell. The palette made
@@ -489,8 +827,12 @@ inline bool pixelOpWritesLayer(const Layer* target) noexcept {
 // the literal gate the corresponding block in the canvas is written with**, so
 // a tool that stops being handled stops passing the predicate, and the
 // completeness check in `ui/AtelierChrome` (`toolHasCanvasHandler()`) reddens.
-// Two of the five gates already existed and are reused unchanged:
-// `strokeRouteFor()` and `toolWritesRgbPixels()` above.
+// Two of the gates already existed and are reused unchanged:
+// `strokeRouteFor()` and `toolWritesRgbPixels()` above. Six of the seven are
+// declared in this section; the seventh, `toolZoomsView()`, is declared with
+// the feature it gates (`app/ZoomAndSize.hpp` §3), which is equally valid --
+// what matters is that each one is the literal gate expression, not where it
+// is written.
 
 // Whether `tool` can begin a stroke on *anything*.
 //
@@ -508,11 +850,38 @@ bool toolBeginsStroke(Tool tool);
 // gated on rather than a copy of it.
 bool toolDrawsSelection(Tool tool) noexcept;
 
-// Whether `tool` reads colour off the canvas rather than writing it: the
-// eyedropper, and today nothing else. `Tool::Measure` shares its palette group
-// and its `ToolCursor::Sample` cursor but has no handler and is not
-// `toolImplemented()`, so it is correctly false here.
+// Whether `tool` reads **colour** off the canvas rather than writing it: the
+// eyedropper, and nothing else.
+//
+// **Deliberately still false for `Tool::Measure`, now that Measure is built.**
+// The two share a palette group and a `ToolCursor::Sample` cursor, and
+// `ui/ToolCursor.hpp`'s own enumerator comment groups them as "reading the
+// canvas rather than writing it" -- so widening this predicate by one name is
+// the one-line way to make `toolHasCanvasHandler(Tool::Measure)` go true, and
+// it is wrong twice over. It is wrong at the gate: this predicate is not a
+// description, it IS the expression `ui/MacPaintUI.cpp`'s eyedropper block is
+// written with, so a Measure that satisfied it would have its clicks handed to
+// `applyEyedropperPick()` and would silently reset the foreground colour on
+// every drag. And it is wrong at the contract: an eyedropper pick is ONE point
+// and produces a colour; a measurement is TWO points and produces a length and
+// a heading, so the shared word "sample" is the only thing they actually have
+// in common. `toolMeasuresCanvas()` below is the seventh gate instead.
 bool toolSamplesCanvas(Tool tool) noexcept;
+
+// Whether `tool` reads **geometry** off the canvas by dragging a line across
+// it: the measure tool, and nothing else (`app/MeasureLine.hpp` §0).
+//
+// The seventh gate, and the argument for adding one rather than widening a
+// neighbour is `toolSamplesCanvas()`'s comment directly above. The shape is
+// `toolZoomsView()`'s (`app/ZoomAndSize.hpp` §3): one predicate per canvas
+// block, declared beside the family it joins, absorbed into
+// `toolHasCanvasHandler()` by name.
+//
+// It is declared HERE rather than in `app/MeasureLine.hpp` for the same
+// reason `toolDrawsSelection()` is not in `core/SelectionShapes`: this file is
+// where the tool-to-canvas-block family lives, and `app/MeasureLine.hpp` is
+// deliberately `<cstdint>`-only geometry that does not know what a `Tool` is.
+bool toolMeasuresCanvas(Tool tool) noexcept;
 
 // Whether `tool` moves the view by dragging on the canvas: the hand, and today
 // nothing else.
@@ -739,7 +1108,7 @@ class StrokeSession {
   // or RGB layer whose store was never allocated, or a locked layer. `doc` must
   // outlive the stroke.
   //
-  // **Which of the three layer-writing routes runs is decided here, once**, by
+  // **Which of the five layer-writing routes runs is decided here, once**, by
   // `strokeRouteFor()` and not by a second reading of the layer -- so the
   // session cannot start on one kind and continue on another, and the
   // per-frame re-validation in §5 is a comparison against this answer rather
@@ -758,6 +1127,18 @@ class StrokeSession {
   // all -- an eraser that reached for a colour would be a brush painting the
   // background, which ADR-0007 exists to reject, and on a Pigment layer would
   // deposit white, which under Kubelka-Munk is opaque paint.
+  //
+  // For a **smudge** it latches the same `tip.opacity` as that route's
+  // **strength** (brush/Smudge.hpp §3), one more reading of the one slider:
+  // there it is how far the carried colour dominates the canvas, and the
+  // stroke's carried colour is only meaningful against the strength it was
+  // carried with, so the two are bound together at this one call for
+  // `RgbEraseStroke`'s stated reason. The ink is not read here either, and for
+  // a sharper version of the eraser's reason: a smudge that reached for
+  // `tip.linearRgb` would introduce a colour the picture did not contain, which
+  // is the one thing this tool promises not to do (that header's §7 on
+  // Photoshop's Finger Painting, which is exactly that feature and is
+  // deliberately not built).
   //
   // **The tool is latched too**, and that is not bookkeeping: §5's per-frame
   // re-validation asks `strokeRouteFor()` the same question again, and the
@@ -793,13 +1174,34 @@ class StrokeSession {
   // codebase does not resample pressure per dab, and this does not change
   // that). Defaults to a plain `DynamicInputs{}` -- a mouse at full pressure,
   // which is the neutral reading for every caller that does not care.
+  //
+  // `clone`, read only on the `StrokeRoute::CloneStamp` route: where the
+  // source is, and whether there is one at all (§1b). **Defaulted to `nullptr`
+  // so no existing caller changes**, and a null one on the clone route is not
+  // a silent fallback -- it refuses with `cloneSourceRefusal()`'s sentence,
+  // exactly as an unanchored state does, because "the UI forgot to pass it"
+  // and "the user has not set a source" have the same correct answer: do not
+  // paint, and say so. Borrowed for the duration of `begin()` only: the offset
+  // is copied into `brush/CloneStamp`'s own stroke object, so nothing here
+  // holds a pointer into `AppState` past this call.
   bool begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
              std::string* errorOut, const BrushModel* model = nullptr,
-             const DynamicInputs& hardwareInputs = DynamicInputs{});
+             const DynamicInputs& hardwareInputs = DynamicInputs{},
+             const AppState::CloneSourceState* clone = nullptr);
 
-  // Which of §1's four layer-writing routes this stroke took. Meaningless before
+  // Which of §1's five layer-writing routes this stroke took. Meaningless before
   // `begin()` succeeds.
   StrokeRoute route() const noexcept { return route_; }
+
+  // The clone route's snapshot and offset, exposed for the same reason
+  // `dabCount()`/`texelsWritten()` are: they are internals with no other
+  // observation point, and two of this tool's claims are about them -- that
+  // the snapshot is taken and dropped at the right moments, and that the
+  // offset the engine actually samples with is the rounded one
+  // (brush/CloneStamp §3). Both are 0 on every other route.
+  size_t cloneSnapshotTiles() const noexcept { return clone_.snapshotTiles(); }
+  int32_t cloneOffsetX() const noexcept { return clone_.offsetX(); }
+  int32_t cloneOffsetY() const noexcept { return clone_.offsetY(); }
 
   bool active() const noexcept { return doc_ != nullptr; }
 
@@ -947,6 +1349,40 @@ class StrokeSession {
   // `accumulatorTiles()` is 0 -- which `--selftest` measures rather than
   // assumes.
   PigmentEraseStroke pigErase_;
+  // The pencil route's own accumulator, latched ink and latched ceiling
+  // (brush/PencilDeposit §2). A fourth member for the reason there are three
+  // already: the invariant "exactly one of these is live" is checkable with
+  // four objects and hidden by one object with a tag. It is `RgbStroke`'s
+  // storage and `RgbStroke`'s composite, and still not `rgb_` with a flag --
+  // the two disagree about what a stroke IS (a rate reaching a ceiling over
+  // many dabs, against one dab that is the whole mark), which is the
+  // difference `brush/PencilDeposit` §0 is entirely about.
+  PencilStroke pencil_;
+  // The tonal route's, likewise (brush/TonalBrush.hpp §3). A fourth member for
+  // the same reason as the third, plus one that is this route's alone: it
+  // latches a DIRECTION as well as a strength, so a shared accumulator would
+  // have to be told which sign it was counting in and the one combination
+  // §3 exists to make unspellable -- an accumulator from a Dodge read by a Burn
+  // -- would become spellable again.
+  TonalStroke tonal_;
+  // The clone route's own pre-stroke source snapshot, integer offset, latched
+  // ceiling and alpha accumulator (brush/CloneStamp §2). A fourth member for
+  // the same reason there are three above: exactly one of them is ever live,
+  // and the one thing this one holds that none of the others does -- a whole
+  // second `TileStore` sharing tiles with the layer -- is the one it is most
+  // important to be able to see is empty. `snapshotTiles()` is 0 for a stroke
+  // that took any other route, which `--selftest` measures rather than
+  // assumes.
+  CloneStampStroke clone_;
+  // The smudge route's carried colour and latched strength (brush/Smudge §1).
+  // A fourth member for the same reason there are three above -- exactly one of
+  // them is ever live, and each `begin()`'s `else` branch is what leaves the
+  // other three holding nothing after an interrupted drag. It is also the
+  // reason that header spends a whole section on where the state lives: unlike
+  // the three above it is 16 bytes and a bool rather than a tile store, so a
+  // file-static in `brush/Smudge.cpp` would have been small enough to look
+  // harmless and would have leaked one document's colour into another's stroke.
+  SmudgeStroke smudge_;
 
   StrokePath path_;
   std::vector<Vec2> pending_;

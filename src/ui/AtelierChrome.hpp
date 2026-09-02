@@ -114,8 +114,9 @@ bool toolImplemented(Tool t) noexcept;
 //
 // This is deliberately **not** a second hand-written table -- that would drift
 // the same way. It is the disjunction of `app/StrokeSession` §6b's four
-// predicates plus `toolWritesRgbPixels()` and `toolZoomsView()`, and each of
-// those six is *the
+// predicates plus `toolWritesRgbPixels()`, `toolZoomsView()` and
+// `app/MoveTool`'s `toolMovesPixels()`, and each of
+// those seven is *the
 // literal expression the corresponding canvas block is gated on*. Delete a
 // handler and its predicate stops being true; add a tool to a handler and its
 // predicate starts being true. `--selftest`'s `runEyedropperTest()` asserts

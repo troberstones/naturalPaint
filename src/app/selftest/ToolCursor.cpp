@@ -476,7 +476,7 @@ bool runToolCursorTest() {
     // shipping flips its cursor with no edit in ui/ToolCursor -- the intent it
     // will want is already written in `cursorForTool()`. Pinned on two of them
     // so a future implementation that forgot the cursor cannot go unnoticed.
-    check(!toolImplemented(Tool::Pencil) && cursorForTool(Tool::Pencil) == ToolCursor::Paint &&
+    check(!toolImplemented(Tool::Frame) && cursorForTool(Tool::Frame) == ToolCursor::MoveObject &&
               !toolImplemented(Tool::Text) && cursorForTool(Tool::Text) == ToolCursor::Text,
           "unbuilt: an unbuilt tool still has its intent recorded -- the day it ships, "
           "toolImplemented() flips and the right cursor appears with no edit here");
@@ -492,9 +492,19 @@ bool runToolCursorTest() {
     // Kept as its own assertion rather than folded into that one, because the
     // two say different things: the line above is a promise about tools that
     // have not shipped, and this is the evidence that the promise held once.
-    check(toolImplemented(Tool::Eraser) && cursorForTool(Tool::Eraser) == ToolCursor::Paint,
-          "unbuilt: the Eraser shipped carrying the intent it was written with while it "
-          "was still unbuilt -- the promise above, already collected once");
+    //
+    // **Collected a second time, by the Pencil.** This assertion's first
+    // example named the Eraser; the line above it named the *Pencil* as one of
+    // its two unshipped examples, and `brush/PencilDeposit` made that half
+    // false in exactly the same way -- so the Pencil moved down here beside
+    // the Eraser and Smudge took its place above. Two independent tools have
+    // now shipped without `ui/ToolCursor` needing an edit, which is a stronger
+    // statement than one, and it is why the promise is worth keeping rather
+    // than retiring.
+    check(toolImplemented(Tool::Eraser) && cursorForTool(Tool::Eraser) == ToolCursor::Paint &&
+              toolImplemented(Tool::Pencil) && cursorForTool(Tool::Pencil) == ToolCursor::Paint,
+          "unbuilt: the Eraser and the Pencil each shipped carrying the intent they were "
+          "written with while still unbuilt -- the promise above, collected twice");
   }
 
   std::printf("  -- G. §7's bitmap cursors: non-blank, hotspot bounds, and flag-off identity --\n");

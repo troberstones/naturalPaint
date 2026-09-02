@@ -577,16 +577,24 @@ The palette also needs two tools the wireframe did not draw: the **eraser** (PRD
 
 Of the 28 `Tool` values (`app/AppState.hpp`) — reachable either directly, as the icon a
 palette cell shows, or through a flyout for every group with more than one member (§2b) —
-**14 have real behaviour and 14 exist for their name, icon and keyboard-shortcut slot
-only.** As of `3b067ac` (2026-09-02) the built half is Brush, Water, Dry Brush, Eyedropper,
-Rectangle Marquee, Elliptical Marquee, Hand, Zoom, Lasso, Polygon Lasso, Magic Wand,
-Eraser, Paint Bucket and Gradient; the unbuilt half is Move, Crop, Measure, Frame, Clone
-Stamp, Pencil, Smudge, Dodge, Burn, Pen, Curve, Text, Shape and Slice.
-`docs/spec-vs-implementation.md` §2 says what each of the fourteen is blocked on.
+**21 have real behaviour and 7 exist for their name, icon and keyboard-shortcut slot
+only.** As of 2026-09-02 the unbuilt seven are **Crop, Frame, Pen, Curve, Text, Shape and
+Slice**, and they are not seven instances of the same gap:
+
+* **Pen and Curve** are blocked on PLAN Phase 13 — there is no path model in the build, no
+  bezier storage and no stroke-or-fill-from-path.
+* **Text** is blocked on PLAN Phase 14: no font rasteriser, and `LayerKind::Text` is inert.
+* **Frame and Slice** are blocked on a *receiving model* rather than on effort. Both name a
+  document-level region concept that does not exist, and building the gesture without it
+  produces a tool that draws a rectangle and forgets it.
+* **Crop and Shape** are blocked on nothing structural and are the natural next wave.
+
+`docs/spec-vs-implementation.md` §2 carries the same table with the file-and-line evidence.
 
 **Do not trust that list; trust the table.** This paragraph has been stale twice — it said
 "seven" and named a set that already included three built tools — because a prose count has
-to be re-edited by hand every time a tool ships. The authority is the `implemented` column
+to be re-edited by hand every time a tool ships, and seven shipped at once on 2026-09-02
+(Move, Measure, Pencil, Dodge, Burn, Clone Stamp, Smudge). The authority is the `implemented` column
 of `kToolMeta` (`ui/AtelierChrome.cpp`), and it is not merely a convention: `--selftest`
 asserts `toolImplemented(t) == toolHasCanvasHandler(t)` for **every** `Tool`, where
 `toolHasCanvasHandler()` reads the canvas's own gate expressions rather than a second list.

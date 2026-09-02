@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "app/AppState.hpp"
+#include "app/MoveTool.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "color/Space.hpp"
@@ -620,22 +621,61 @@ bool runEyedropperTest() {
           "mechanism rather than the debt");
     check(toolHasCanvasHandler(Tool::Zoom) && toolZoomsView(Tool::Zoom) &&
               !toolPansView(Tool::Zoom) && !toolBeginsStroke(Tool::Zoom) &&
-              !toolDrawsSelection(Tool::Zoom),
+              !toolDrawsSelection(Tool::Zoom) && !toolMovesPixels(Tool::Zoom),
           "tool table: Zoom is handled through its OWN gate, toolZoomsView(), and through no "
           "other -- the assertion that would catch scrubby zoom being wired by widening an "
-          "existing predicate (pan, say) rather than adding the sixth one");
+          "existing predicate (pan, say) rather than adding a gate of its own");
+    // The same claim for the seventh gate, and it is the same hazard: Move
+    // and Hand are the pair a reader is most likely to conflate (one moves
+    // the content, one moves the view), so "Move is NOT toolPansView()" is
+    // the clause worth spelling out. app/MoveTool.hpp section 5 argues why
+    // none of the other six could have taken Move instead.
+    check(toolHasCanvasHandler(Tool::Move) && toolMovesPixels(Tool::Move) &&
+              !toolPansView(Tool::Move) && !toolWritesRgbPixels(Tool::Move) &&
+              !toolBeginsStroke(Tool::Move) && !toolDrawsSelection(Tool::Move) &&
+              !toolZoomsView(Tool::Move) && !toolSamplesCanvas(Tool::Move),
+          "tool table: Move is handled through its OWN gate, toolMovesPixels(), and through "
+          "no other -- in particular NOT through toolPansView(), which moves the view rather "
+          "than the picture");
 
-    // The five predicates are the canvas's own gates, so a few spot answers
-    // pin them to the blocks they gate rather than to this file's opinion.
+    // The predicates are the canvas's own gates, so a few spot answers pin
+    // them to the blocks they gate rather than to this file's opinion.
+    // **The pencil moved to the other side of this line, it was not deleted
+    // from it.** It was named here as an example of a tool that begins no
+    // stroke, and `brush/PencilDeposit` plus `StrokeRoute::PencilDeposit`
+    // made that false -- the same way the Eraser's own appearance in
+    // app/selftest/ToolCursor.cpp went red when the eraser shipped. Keeping
+    // it named, on the true side, is what makes the probe-rather-than-restate
+    // claim testable: `toolBeginsStroke()` was not edited for the pencil, and
+    // it changed its answer anyway because `strokeRouteFor()` grew a row.
+    // **Dodge and Burn moved the same way, and naming BOTH is worth more than
+    // naming one**: they are a single route, so a wiring that reached only the
+    // tool the route was named under would look correct from every other angle.
     check(toolBeginsStroke(Tool::Brush) && toolBeginsStroke(Tool::Eraser) &&
-              !toolBeginsStroke(Tool::Eyedropper) && !toolBeginsStroke(Tool::Pencil),
+              toolBeginsStroke(Tool::Pencil) && toolBeginsStroke(Tool::Dodge) &&
+              toolBeginsStroke(Tool::Burn) && toolBeginsStroke(Tool::Smudge) &&
+              toolBeginsStroke(Tool::CloneStamp) && !toolBeginsStroke(Tool::Eyedropper) &&
+              !toolBeginsStroke(Tool::Move),
           "tool table: toolBeginsStroke() is strokeRouteFor()'s own answer, probed rather "
-          "than restated -- the eraser counts, the eyedropper and the pencil do not");
+          "than restated -- the eraser, the pencil, both tonal tools, the smudge and the "
+          "clone stamp count; the eyedropper and Move do not, and Move is the interesting "
+          "one because it writes pixels through a gate of its own rather than a route");
+    // **`!toolSamplesCanvas(Tool::Measure)` still stands, and its REASON
+    // changed.** It used to mean "Measure is not built"; Measure is built now
+    // (app/MeasureLine, `toolMeasuresCanvas()`, app/selftest/Measure.cpp) and
+    // this clause means something stronger than it did: the tool that shares
+    // the eyedropper's palette group and its `ToolCursor::Sample` was NOT
+    // wired by adding one name to the eyedropper's gate. That shortcut would
+    // hand ruler drags to `applyEyedropperPick()` and silently overwrite the
+    // foreground colour on every measurement -- so the clause is kept exactly
+    // where it was, with the sentence beside it corrected, rather than
+    // deleted as spent.
     check(toolDrawsSelection(Tool::Marquee) && toolDrawsSelection(Tool::MagicWand) &&
               !toolDrawsSelection(Tool::Crop) && toolPansView(Tool::Hand) &&
-              !toolSamplesCanvas(Tool::Measure),
-          "tool table: the selection, pan and sample gates name exactly the tools their "
-          "canvas blocks act on -- Measure shares the eyedropper's cursor but has no handler");
+              !toolSamplesCanvas(Tool::Measure) && toolMeasuresCanvas(Tool::Measure),
+          "tool table: the selection, pan, sample and measure gates name exactly the tools "
+          "their canvas blocks act on -- Measure has a handler of its OWN, and passes the "
+          "eyedropper's gate no more than it did when it had none");
   }
 
   std::printf("[selftest] eyedropper %s\n", ok ? "PASS" : "FAIL");

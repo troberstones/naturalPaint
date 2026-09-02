@@ -1627,6 +1627,12 @@ int main(int argc, char** argv) {
     // phases in which `Tool::Eyedropper` claimed to be built and was not.
     // Headless and GPU-free -- pure CPU, no PaintSim involvement.
     const bool eyedropperOk = np::runEyedropperTest();
+    // app/MeasureLine: the Measure tool, the one palette cell whose gesture
+    // writes nothing at all -- length and heading off a two-point drag, the
+    // angle convention pinned geometrically through dabCoverage() rather than
+    // restated, the zero-length click, and the seventh canvas gate that had to
+    // be added rather than folded into the eyedropper's. Headless and GPU-free.
+    const bool measureOk = np::runMeasureTest();
     // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
     // transform's round-trip identity, one hand-worked known-point check,
     // and the view-only proof that mirror/rotation/grayscale never mutate
@@ -1779,6 +1785,10 @@ int main(int argc, char** argv) {
     // and app/DocumentLifecycle's recordEdit() undo funnel. Headless and
     // GPU-free.
     const bool transformSessionOk = np::runTransformSessionTest();
+    // app/MoveTool: Tool::Move -- the target rule (a selection scopes the
+    // move), the refusals, the arrow-key nudge, and the bit-identity of an
+    // integer translate there and back. Headless and GPU-free.
+    const bool moveToolOk = np::runMoveToolTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -2283,6 +2293,34 @@ int main(int argc, char** argv) {
     // selection as a bound rather than a speed limit, and an erase that costs
     // nothing on blank canvas.
     const bool rgbEraseOk = np::runRgbEraseTest();
+    // brush/PencilDeposit -- the pencil, which until this step sat in the
+    // not-built routing list and did nothing at all. The section's own subject
+    // is the design question the tool had to answer: "aliased" alone is not a
+    // difference from a hardness-1 brush in this codebase, because a hard dab
+    // is already two-valued -- but a hard dab is not a hard MARK, since flow
+    // plus overlapping dabs grades a stroke's rim whatever the tip. So the
+    // pencil thresholds its coverage AND reads no flow, and the load-bearing
+    // assertion runs both engines at hardness 1 and counts the distinct alphas
+    // each stroke leaves: one for the pencil, many for the brush.
+    const bool pencilDepositOk = np::runPencilDepositTest();
+    // Dodge and Burn, which until this step did NOTHING: both sat in
+    // strokeRouteFor()'s not-built routing list, so a drag with either reached
+    // no layer and said nothing about why. One engine with a direction latched
+    // at pen-down; the alpha channel COPIED rather than computed; a
+    // display-referred tone curve on a linear-light document, with the domain
+    // decision asserted by its consequences; the per-stroke ceiling that makes a
+    // self-crossing stroke apply its shift once, with the rejected per-dab model
+    // measured beside it; and a Pigment layer refusing by name.
+    const bool tonalBrushOk = np::runTonalBrushTest();
+    // brush/Smudge -- the smudge tool, which until this step sat in the
+    // not-built routing list and did nothing at all. The first route whose dabs
+    // are not independent: it carries a colour from dab to dab, so the section's
+    // load-bearing assertion is DIRECTIONAL -- colour left beyond the boundary
+    // it was dragged from, falling off along the drag, and the same drag run
+    // backwards leaving that region bit-identically empty. Both endpoints of
+    // strength are exact: 0 is a byte-identical no-op with the rejected blur
+    // measured beside it, 1 carries one colour the whole length of the stroke.
+    const bool smudgeOk = np::runSmudgeTest();
     // PRD E1 (P0) on the layer kind that never had it, and ADR-0007's Pigment
     // eraser row that gate unblocked. brush/Deposit.hpp did not contain the word
     // "Selection", so a natural-media stroke on a Pigment layer painted straight
@@ -2294,6 +2332,14 @@ int main(int argc, char** argv) {
     // bit-identical, and an emptied texel proven well-formed by the rule a
     // straight-latent storage actually has rather than by the premultiplied one.
     const bool pigmentSelectionOk = np::runPigmentSelectionTest();
+    // brush/CloneStamp and app/StrokeSession §1b -- the clone stamp, which
+    // until this step sat in the not-built routing list and did nothing at
+    // all. The source is snapshotted at pen-down, so an overlapping source and
+    // destination give the SAME shifted copy in both directions rather than a
+    // result that depends on which way the tile and texel loops happen to run;
+    // an unset source refuses out loud rather than stamping the layer onto
+    // itself, which is a perfect no-op and therefore invisible.
+    const bool cloneStampOk = np::runCloneStampTest();
     // PRD D25/D26 -- the paint bucket's refusals. ops/FloodFill was never
     // wrong; the gate in front of it was inside the click condition, so a
     // bucket click on the layer kind a new layer defaults to disappeared with
@@ -2519,7 +2565,7 @@ int main(int argc, char** argv) {
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
-                    eyedropperOk &&
+                    eyedropperOk && measureOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -2529,7 +2575,8 @@ int main(int argc, char** argv) {
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
-                    documentTransformOk && transformSessionOk && transformPreviewTextureOk &&
+                    documentTransformOk && transformSessionOk && moveToolOk &&
+                    transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
@@ -2545,7 +2592,11 @@ int main(int argc, char** argv) {
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk && layerGroupOk &&
                     layerGroupPanelOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&
+                    pencilDepositOk &&
+                    exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && tonalBrushOk &&
+                    exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && smudgeOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
+                    pigmentSelectionOk && cloneStampOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&

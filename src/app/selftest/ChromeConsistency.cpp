@@ -216,6 +216,15 @@ bool runChromeConsistencyTest() {
     check(!grainReachesRoute(strokeRouteFor(Tool::Brush, nullptr)),
           "no layer at all: Brush falls through to the solver -- still disabled");
 
+    // The fifth layer-writing route, added with brush/Smudge: it computes a CPU
+    // coverage and passes it through `grainCoverageAt()` in BOTH of its passes
+    // (the pick-up and the write, brush/Smudge §2), so the panel must not grey
+    // the group out when the smudge is selected -- the exact stale-copy failure
+    // this predicate was extracted to stop, one tool later.
+    check(grainReachesRoute(strokeRouteFor(Tool::Smudge, rgbTarget)),
+          "Smudge onto an RGB layer: brush/Smudge calls grainCoverageAt() in both its "
+          "passes -- PAPER GRAIN honoured");
+
     // The original route, unchanged by any of this.
     applyLayerCommand(doc, LayerCommand::NewPigmentLayer, doc.activeLayer);
     setActiveLayer(doc, doc.document.layers.size() - 1);
@@ -240,7 +249,11 @@ bool runChromeConsistencyTest() {
     bool everDisagree = false;
     for (const StrokeRoute r : {StrokeRoute::None, StrokeRoute::PaintSim,
                                 StrokeRoute::CpuDeposit, StrokeRoute::RgbDeposit,
-                                StrokeRoute::RgbErase, StrokeRoute::PigmentErase})
+                                StrokeRoute::RgbErase, StrokeRoute::PigmentErase,
+                                StrokeRoute::PencilDeposit,
+                                StrokeRoute::TonalBrush,
+                                StrokeRoute::CloneStamp,
+                                StrokeRoute::Smudge})
       if (grainReachesRoute(r) == wetnessReachesSolver(r) && r != StrokeRoute::None)
         everDisagree = true;
     check(!everDisagree,

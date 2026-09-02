@@ -45,6 +45,7 @@
 #include "app/Journal.hpp"
 #include "app/LayerEditor.hpp"
 #include "app/LayerPanel.hpp"
+#include "app/MoveTool.hpp"  // Tool::Move
 #include "app/OpenAnyFile.hpp"
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
@@ -168,6 +169,30 @@ DocumentTexturePool g_documentTextures;
 // documents. It is not app state for the identical reason: transient,
 // ui/-owned, of no use to any caller of drawUI().
 TransformPreviewTexture g_transformPreview;
+
+// ===== Tool::Move -- BEGIN (app/MoveTool.hpp) ==============================
+// The Move tool's whole per-drag state. File-scope for `g_transformPreview`'s
+// own reason: the gesture is serviced in two places in this file that are a
+// few hundred lines apart, and it is transient ui/ state of no use to any
+// caller of drawUI(). Kept out of `AppState` deliberately -- nothing headless
+// needs it; the part that IS headless and testable lives in app/MoveTool.
+//
+// `g_moveCommitPending` is why the pen-up and the commit are two frames. The
+// canvas composite for a frame is built near the top of the canvas block,
+// with the moving layer hidden (ui/TransformCompositeSplit); committing from
+// the input code further down would write the pixels AFTER that texture was
+// built, so the layer would be missing from the picture for exactly one frame
+// while the preview quad that was standing in for it is retired in the same
+// breath. Deferring to the top of the next frame -- before the composite
+// decision -- means the frame that first shows the committed pixels is the
+// same frame that stops hiding the layer.
+bool g_moveDragging = false;
+bool g_moveCommitPending = false;
+float g_moveStartX = 0.0f;
+float g_moveStartY = 0.0f;
+float g_moveDx = 0.0f;
+float g_moveDy = 0.0f;
+// ===== Tool::Move -- END ===================================================
 
 // Which arrangement the canvas band is in and which document is in the
 // unfocused pane (PRD **A5**). ui/AtelierChrome.hpp owns the shape and the
@@ -4563,12 +4588,37 @@ void drawBrushPaintGroup(AppState& st) {
     // `mass_0 * (1 - strength)` needs nothing the deposit was missing.
     const bool erasing =
         route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase;
-    const bool honoured = erasing || route == StrokeRoute::RgbDeposit;
+    // **The tonal route reads the same slider as its STRENGTH too**
+    // (brush/TonalBrush.hpp §3), for the reason the erase routes do: it already
+    // means "the fraction of the maximum effect one stroke may reach" on three
+    // routes, and giving Dodge a private "exposure" number would leave OPACITY
+    // dimmed and inert whenever a tonal tool was selected -- the exact complaint
+    // this disabled-rather-than-hidden treatment exists to answer.
+    const bool toning = route == StrokeRoute::TonalBrush;
+    const bool smudging = route == StrokeRoute::Smudge;
+    // The clone reads it as its per-stroke ceiling too -- the same slider and
+    // the same meaning, "the fraction of the maximum effect one stroke may
+    // reach" (brush/CloneStamp §1's accumulator is brush/RgbDeposit §2's). Left
+    // out of `honoured`, this control would have been dimmed over a sentence
+    // saying it did nothing while it in fact set how opaque the copy came out.
+    const bool honoured = erasing || toning || smudging ||
+                          route == StrokeRoute::RgbDeposit ||
+                          route == StrokeRoute::CloneStamp;
+    // **And the smudge reads it as its STRENGTH** (brush/Smudge.hpp §3) -- one
+    // more reading of the same slider, so it is live on that route too. Its
+    // sentence is its own rather than the eraser's, because the number does
+    // something visibly different: at 0 the tool is a bit-exact no-op and at 1
+    // it carries the colour it picked up at pen-down for the whole stroke with
+    // no decay at all, which is not what "how much it takes" describes.
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
     if (erasing)
       ImGui::TextDisabled("Flow is how fast it bites; opacity is how much it takes.");
+    else if (toning)
+      ImGui::TextDisabled("Flow is how fast the tone moves; opacity is how far it goes.");
+    else if (smudging)
+      ImGui::TextDisabled("Opacity is how far the colour is carried; 0 does nothing.");
     else if (honoured)
       ImGui::TextDisabled("Flow is how fast paint builds; opacity is where it stops.");
     else
@@ -12019,6 +12069,72 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // ===== Tool::Move -- BEGIN: last frame's pen-up, and the nudge =========
+    //
+    // Serviced HERE, above the composite decision, for the reason
+    // `g_moveCommitPending`'s own declaration gives: a commit is only free of
+    // a one-frame hole in the picture if the pixels land before this frame
+    // decides which layers to hide. The drag itself is claimed several
+    // hundred lines below, with the other tools.
+    if (g_moveCommitPending) {
+      g_moveCommitPending = false;
+      g_moveDragging = false;
+      OpenDocument* od = st.documents.active();
+      if (od == nullptr || !st.transform.active() || st.transform.documentId() != od->id) {
+        // The document went away, or the user switched tabs between pen-up
+        // and here. Dropped rather than committed: `commit()` would refuse a
+        // foreign document anyway (app/TransformSession.hpp), and a session
+        // left live with no gizmo and no drag behind it is worse than none.
+        st.transform.cancel();
+        g_transformPreview.reset();
+      } else if (g_moveDx == 0.0f && g_moveDy == 0.0f) {
+        // A click with no drag is not an edit. `commit()` would treat the
+        // identity as a no-op and record nothing, so this is only saving the
+        // status line from announcing a move that did not happen.
+        st.transform.cancel();
+        g_transformPreview.reset();
+      } else {
+        const TransformCommitResult done = st.transform.commit(*od);
+        g_docStatus = done.ok ? (done.exact != ExactRemap::None
+                                     ? "Moved -- lossless, no resampling."
+                                     : "Moved.")
+                              : done.error;
+        // Only on success, matching the Free Transform block above: a refusal
+        // leaves `active()` true, and the session then simply becomes an
+        // ordinary Free Transform gizmo the user can adjust and commit with
+        // Return -- so the preview they are still looking at has to survive.
+        if (done.ok) g_transformPreview.reset();
+      }
+    }
+    // Arrow-key nudge (app/MoveTool.hpp section 4). Only while Move is the
+    // active tool and no transform session is live -- with a session up, the
+    // arrows would be fighting the gizmo for the same keys. Guarded on
+    // `WantTextInput` because these are bare keys and the layer-rename box one
+    // panel over needs them, which is app/Keymap's own rule for unmodified
+    // keys stated in the gizmo's Return/Escape comment below.
+    if (toolMovesPixels(st.brush.tool) && !st.transform.active() &&
+        !ImGui::GetIO().WantTextInput) {
+      // 10 px for Shift is the conventional big nudge; the step lives here
+      // rather than in app/MoveTool because it is a UI convention, not part
+      // of what a move means.
+      const float step = ImGui::GetIO().KeyShift ? 10.0f : 1.0f;
+      float nx = 0.0f;
+      float ny = 0.0f;
+      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) nx -= step;
+      if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) nx += step;
+      if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) ny -= step;
+      if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) ny += step;
+      if (nx != 0.0f || ny != 0.0f) {
+        if (OpenDocument* od = st.documents.active()) {
+          const TransformCommitResult done = nudgeMove(*od, nx, ny);
+          // Refused out loud, exactly as a drag's begin is -- a locked layer
+          // swallowing an arrow key is the same silent no-op.
+          if (!done.ok) g_docStatus = done.error;
+        }
+      }
+    }
+    // ===== Tool::Move -- END ===============================================
+
     // --- Free Transform: the three-way canvas -------------------------------
     //
     // ui/TransformCompositeSplit's own header carries the argument; what is
@@ -12979,6 +13095,62 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // ===== Tool::Move -- BEGIN: the drag (app/MoveTool.hpp) ===============
+    //
+    // A Move gesture IS a Free Transform restricted to a pure translation: the
+    // same `st.transform` session, the same "one matrix, one resample at
+    // commit" discipline, the same uploaded preview quad and the same
+    // ui/TransformCompositeSplit stack order. What differs is only the
+    // modality -- Free Transform waits for Return, Move commits on pen-up,
+    // which is what makes it a tool rather than a mode -- and that the drag
+    // never touches a scale or rotate handle, so the box's handles are not
+    // drawn (see the `!g_moveDragging` guard in the gizmo's draw block).
+    //
+    // Placed with the other tool blocks, after `panning`/`rotating`/
+    // `sizingHeld` exist, and gated on all three for the same reason every
+    // block here is: a space-drag, a rotate-drag or a size-scrub must not
+    // also pick the picture up.
+    if (toolMovesPixels(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      if (!g_moveDragging && !g_moveCommitPending && !st.transform.active() && hovered &&
+          ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (OpenDocument* od = st.documents.active()) {
+          const TransformBeginResult began = beginMove(st.transform, *od);
+          if (!began.ok) {
+            // app/MoveTool.hpp section 3: shown, never a dead drag. The drag
+            // is deliberately NOT started -- a gesture that moved a preview
+            // around for a second and then committed nothing is a worse lie
+            // than a pointer that does not pick the picture up at all.
+            g_docStatus = began.error;
+          } else {
+            g_moveDragging = true;
+            g_moveStartX = tx;
+            g_moveStartY = ty;
+            g_moveDx = 0.0f;
+            g_moveDy = 0.0f;
+            // The session's ONE upload, exactly as Cmd+T's begin does it.
+            beginTransformPreview(st, gpu);
+          }
+        }
+      } else if (g_moveDragging && !g_moveCommitPending) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          // Absolute, from this gesture's own start cursor -- never frame N's
+          // matrix times frame N+1's delta. app/MoveTool.hpp's
+          // `setMoveTranslation()` carries the argument.
+          g_moveDx = tx - g_moveStartX;
+          g_moveDy = ty - g_moveStartY;
+          setMoveTranslation(st.transform, g_moveDx, g_moveDy);
+        } else {
+          // Committed at the TOP of the NEXT frame, not here. This frame's
+          // composite was already built with this layer hidden, so writing
+          // the pixels now would blank it for one frame; `g_moveDragging`
+          // stays true until then so the preview keeps standing in for it.
+          g_moveCommitPending = true;
+        }
+      }
+    }
+    // ===== Tool::Move -- END ===============================================
+
     // --- the eyedropper (PRD Q10, P0) --------------------------------------
     //
     // **The tool that claimed to be implemented for two phases and had no
@@ -13025,6 +13197,44 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       if (sampling && (od == nullptr || (tx >= 0 && ty >= 0 && tx < texW && ty < texH)))
         applyEyedropperPick(st, PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)});
     }
+
+    // === BEGIN Tool::Measure handler (app/MeasureLine) =====================
+    //
+    // Gated on `toolMeasuresCanvas()`, the SEVENTH gate, and deliberately not
+    // on `toolSamplesCanvas()` above -- Measure shares the eyedropper's
+    // palette group and cursor, and folding it into that predicate would send
+    // ruler drags into `applyEyedropperPick()`. app/StrokeSession.hpp §6b.
+    //
+    // The gesture is three events and three calls, all of the arithmetic in
+    // app/MeasureLine so `--selftest` drives the identical sequence headlessly.
+    // Unclamped `tx`/`ty` on purpose: a measurement that runs off the edge of
+    // the picture is a legitimate thing to want (how far past the crop is
+    // this?), unlike a selection, which must not name texels the document
+    // does not have.
+    if (toolMeasuresCanvas(st.brush.tool)) {
+      const OpenDocument* od = st.documents.active();
+      const bool blocked =
+          panning || rotating || sizingHeld || transformActive || st.pendingGuide.has_value();
+      if (!blocked && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        beginMeasureLine(st.measure, od != nullptr ? od->id : 0u, tx, ty);
+      if (st.measure.dragging) {
+        // **`!IsMouseDown`, not `IsMouseReleased`.** A Space-pan or a
+        // size-drag started mid-measurement takes this block out of the
+        // `blocked` arm for as long as it lasts, and the one frame carrying
+        // the release event can land inside it -- after which `IsMouseReleased`
+        // is false forever and the ruler would go on following a pointer whose
+        // button is up. Asking whether the button is still down cannot miss an
+        // edge, because it is not an edge.
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) endMeasureLine(st.measure);
+        else if (!blocked) updateMeasureLine(st.measure, tx, ty);
+      }
+    } else if (st.measure.active) {
+      // Leaving the tool throws the ruler away (app/MeasureLine.hpp's
+      // `clearMeasureLine()`): a line drawn with Measure means nothing under
+      // the brush, and there would be no gesture left to dismiss it with.
+      clearMeasureLine(st.measure);
+    }
+    // === END Tool::Measure handler =========================================
 
     // --- the pixel-writing tools: paint bucket and gradient ----------------
     //
@@ -13229,9 +13439,101 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // have been one word and would have made the eraser deposit watercolour on
     // the canvas texture the moment no document was open.
     const bool eraseTool = st.brush.tool == Tool::Eraser && !transformActive;
-    const bool strokeTool = paintTool || eraseTool;
+    // **The pencil is a stroke tool and never a solver stroke either**, and it
+    // is a third flag for the identical reason the eraser is a second one. It
+    // joins `paintTool` at the branches that reach a layer and at the cursor
+    // ring, and is deliberately absent from the branch that constructs
+    // `PaintSim`: that simulation's whole output is diffusion, wet edges and
+    // granulation, so a pencil reaching it would draw the softest mark in the
+    // build with the one tool chosen for having no soft edge
+    // (brush/PencilDeposit §0, app/StrokeSession.hpp §1's Pencil rows).
+    const bool pencilTool = st.brush.tool == Tool::Pencil && !transformActive;
+    // **Dodge and Burn are stroke tools and never SOLVER strokes**, a third
+    // flag for the identical reason `eraseTool` is a second one: `sim::PaintSim`
+    // has no tonal step, so a Dodge reaching it would run the *paint* path with
+    // the loaded pigment and deposit colour where the user asked for a tonal
+    // shift (app/StrokeSession.hpp §1's Dodge/Burn rows). `!transformActive` is
+    // on this leaf predicate and not on `strokeTool`, for the reason the comment
+    // above spells out: gating only the derived bool REROUTES a stroke into the
+    // solver branch rather than stopping it.
+    const bool tonalTool =
+        (st.brush.tool == Tool::Dodge || st.brush.tool == Tool::Burn) && !transformActive;
+    // --- Clone Stamp: the source gesture, and nothing else -----------------
+    //
+    // **Deliberately three lines here plus one block below**, because this
+    // function is shared with five other tools and everything else the clone
+    // needs already exists: it is a stroke tool like any other from
+    // `strokeTool` onward, `StrokeSession::begin()` owns its refusal, and
+    // `app/StrokeSession`'s two free functions own the gesture's rules. The
+    // only thing that cannot live anywhere but here is that a pointer position
+    // exists here and nowhere else.
+    //
+    // `!cloneAnchoring` on `strokeTool` is the load-bearing half: an
+    // Option+click is a mouse-down like any other, so without it the same
+    // frame that set the source would also start a stroke *from* it -- one
+    // dab of a perfect self-copy, an undo entry for a click that was meant to
+    // change nothing, and a source the user cannot reset without painting.
+    const bool cloneTool = st.brush.tool == Tool::CloneStamp && !transformActive;
+    const bool cloneAnchoring = cloneTool && ImGui::GetIO().KeyAlt && !sizingHeld;
+    // **The smudge is a stroke tool and never a SOLVER stroke either**, and it
+    // is a third flag for the eraser's reason rather than a fourth line in
+    // `paintTool`: `sim::PaintSim` has no smudge step, so a smudge reaching it
+    // would run the *paint* path and deposit the loaded FOREGROUND pigment --
+    // a tool whose whole promise is "introduces nothing that was not already in
+    // the picture" introducing a colour that was not (app/StrokeSession.hpp
+    // §1's Smudge rows).
+    //
+    // **This line is the one the completeness check cannot see, and that is
+    // worth knowing.** `toolHasCanvasHandler()` derives its answer from
+    // `toolBeginsStroke()`, which PROBES `strokeRouteFor()` -- so a tool given a
+    // route but left out of this hand-written whitelist would be
+    // `toolImplemented()`, palette-clickable, cursor-live, and completely inert
+    // under the pen: the eyedropper's original defect exactly, arriving through
+    // the one predicate in the chain that is still a list of `Tool` values
+    // rather than the gate itself. The smudge route was written, flipped and
+    // green in `--selftest` before this line existed.
+    const bool smudgeTool = st.brush.tool == Tool::Smudge && !transformActive;
+    // **`strokeTool` is `toolBeginsStroke()` now, not the OR of the three flags
+    // above**, and that is the structural half of the paragraph just above. The
+    // three flags stay, because the branches below genuinely have to tell the
+    // tools apart -- only `paintTool` may construct the solver, and each of the
+    // three needs its own refusal sentences -- but the question "does the
+    // canvas listen to this tool at all" now reads the SAME predicate
+    // `ui/AtelierChrome`'s `toolHasCanvasHandler()` reads, rather than a
+    // hand-written list that agreed with it on the day it was typed.
+    // `toolBeginsStroke()` probes `strokeRouteFor()`, so the two cannot drift:
+    // a sixth stroke tool routed later is picked up here for free, and
+    // `app/selftest/Smudge.cpp` pins the accepted set to exactly the five that
+    // exist today so that adding one is a decision rather than an accident.
+    //
+    // It is exactly the OR it replaces today, tool for tool -- Brush, Water,
+    // DryBrush, Eraser, Smudge -- so this changes no behaviour; it changes what
+    // a future tool has to remember.
+    // **`toolBeginsStroke()`, not a list of leaf flags** -- and the
+    // `!cloneAnchoring` term is the one thing the derived predicate cannot know:
+    // an Option-click that sets the clone source must not also start a stroke,
+    // which is a property of the GESTURE rather than of the tool.
+    const bool strokeTool =
+        toolBeginsStroke(st.brush.tool) && !transformActive && !cloneAnchoring;
     const bool inside = tx >= 0 && ty >= 0 && tx < texW && ty < texH;
     const bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    if (cloneTool && hovered && inside && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      if (cloneAnchoring) {
+        // Clicked, not held: an anchor is a point, and a held Option-drag
+        // re-aiming the source on every frame would make the offset whatever
+        // the pointer happened to be over when the button came up.
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          setCloneAnchor(st.clone, Vec2{tx, ty});
+          g_strokeRefusal.clear();
+        }
+      } else if (down && !g_stroke.active()) {
+        // Pen-down, before `begin()` below reads the offset. Idempotent after
+        // the first stroke since the anchor (this build clones aligned), and a
+        // no-op with no anchor -- in which case `begin()` refuses out loud.
+        latchCloneOffset(st.clone, Vec2{tx, ty});
+      }
+    }
 
     st.sim.brushActive = 0;
     st.paintingThisFrame = false;
@@ -13286,7 +13588,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // "a missing decision rather than missing plumbing", and the decision it
       // was missing was `OpenDocument::activeLayer`.
       //
-      // **All three layer-writing routes come through here**, and this branch
+      // **All five layer-writing routes come through here**, and this branch
       // does not know which -- `StrokeSession::begin()` reads the route table
       // once and owns the difference from there. A Pigment target deposits
       // latent and mass through brush/Deposit; an RGB target deposits
@@ -13338,8 +13640,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // alongside as the hardware sample `begin()` latches for the
         // stroke's life, the same role `&st.brush.links` used to share this
         // call with.
+        // `&st.clone` is read only on the clone route (app/StrokeSession
+        // §1b); on every other one it is ignored, so this is one argument
+        // rather than a branch.
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
-                            &g_strokeRefusal, &st.brush.model, live)) {
+                            &g_strokeRefusal, &st.brush.model, live, &st.clone)) {
           st.paintingThisFrame = false;
         }
         st.lastX = tx;
@@ -13368,7 +13673,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     } else if (strokeTool && down && hovered && inside && !panning && !rotating && !sizingHeld &&
                !st.pendingGuide.has_value() && route == StrokeRoute::None &&
-               (strokeTarget != nullptr || eraseTool)) {
+               (strokeTarget != nullptr || eraseTool || pencilTool || tonalTool ||
+                smudgeTool || cloneTool)) {
       // The refusals worth saying out loud. The route table sends each of them
       // nowhere rather than falling through to the solver, because falling
       // through would put paint on the *canvas* when the user aimed at a layer
@@ -13391,29 +13697,91 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // is still its alone is the **no target at all** case, where the brush
       // would have gone to the solver and the eraser cannot: `sim::PaintSim` has
       // no alpha and no erase step (app/StrokeSession.hpp §1).
+      //
+      // **The pencil needs its own kind sentence and its own no-target one**,
+      // and for a reason neither of the other two has: it is the only tool
+      // here that refuses a layer kind the brush *accepts*. Handing it the
+      // brush's "Pick a Pigment or RGB layer" would send a user to the exact
+      // kind that just refused them. app/StrokeSession.hpp §1's Pencil rows
+      // are the argument; this is that argument's sentence.
+      // **Dodge and Burn need their own sentences too, and for one reason the
+      // eraser's rows do not have.** Their refusal on a Pigment layer is a
+      // DECISION rather than a missing store (app/StrokeSession.hpp §1's
+      // Dodge/Burn rows: a `Latent` premultiplied by mass is not a
+      // display-referred colour, and the two meaningful operations already have
+      // their own tools), so a user who reads "cannot be adjusted" there and
+      // waits for the feature to land would be waiting for something that is
+      // not coming. That row says which tool they actually want.
+      // Each tool that refuses a layer kind the BRUSH accepts needs its own
+      // sentence, or the shared "Pick a Pigment or RGB layer" sends the user to
+      // a kind that just refused them. The pencil, the tonal pair and the
+      // smudge are all in that position; the eraser is here for the older
+      // reason its own paragraph gives.
+      const char* tonalVerb = st.brush.tool == Tool::Burn ? "burned" : "dodged";
       g_strokeRefusal =
           strokeTarget == nullptr
-              ? std::string("no layer: the eraser has nothing to erase. Open a document, "
-                            "or add a layer in LAYERS.")
+              ? (pencilTool
+                     ? std::string("no layer: the pencil has nothing to draw on. Open a "
+                                   "document, or add a layer in LAYERS.")
+                 : tonalTool
+                     ? std::string("no layer: there is no tone to adjust. Open a "
+                                   "document, or add a layer in LAYERS.")
+                 : smudgeTool
+                     ? std::string("no layer: the smudge has nothing to move. Open a "
+                                   "document, or add a layer in LAYERS.")
+                 : cloneTool
+                     ? std::string("no layer: there is nothing to clone onto. Open a "
+                                   "document, or add a layer in LAYERS.")
+                     : std::string("no layer: the eraser has nothing to erase. Open a "
+                                   "document, or add a layer in LAYERS."))
           : strokeTarget->locked
               ? std::string("locked layer: \"") + strokeTarget->name + "\" cannot be " +
-                    (eraseTool ? "erased" : "painted") + ". Clear its Lock in LAYERS."
-          // Alpha lock, and only for the eraser -- painting is still allowed on
-          // an alpha-locked layer (that is the whole feature), so this refusal
-          // must not read like the general lock above or a user who is not
-          // erasing would see it and think painting is blocked too.
-          // app/StrokeSession.cpp's strokeRouteFor() is what actually refused
-          // this stroke, by the identical `alphaLocked` test; this is that
-          // refusal's sentence.
-          : (eraseTool && strokeTarget->kind == LayerKind::RGB && strokeTarget->alphaLocked)
-              ? std::string("alpha locked: \"") + strokeTarget->name +
-                    "\" cannot be erased. Erasing removes alpha, and this layer's alpha is "
-                    "locked -- painting still works. Clear Lock Transparent Pixels in LAYERS "
-                    "to erase."
+                    (eraseTool    ? "erased"
+                     : pencilTool ? "drawn on"
+                     : tonalTool  ? tonalVerb
+                     : smudgeTool ? "smudged"
+                     : cloneTool  ? "cloned onto"
+                                  : "painted") +
+                    ". Clear its Lock in LAYERS."
+          // The Pigment row, Dodge and Burn's alone: an answer, not a gap.
+          : (tonalTool && strokeTarget->kind == LayerKind::Pigment)
+              ? std::string("\"") + strokeTarget->name +
+                    "\" is Pigment: its texels hold pigment and mass, not tone. Use the "
+                    "eraser for less paint, or the colour picker for a lighter one -- or "
+                    "pick an RGB layer in LAYERS."
+          : tonalTool
+              ? std::string("\"") + strokeTarget->name + "\" is " +
+                    layerKindName(strokeTarget->kind) + " and cannot be " + tonalVerb +
+                    ". Pick an RGB layer in LAYERS."
+          // Alpha lock refuses the two routes that MOVE alpha -- erase and
+          // smudge. Pencil, clone and tonal all deliberately take a locked
+          // layer, so naming them here would block an edit the lock has no
+          // quarrel with. app/StrokeSession.cpp's identical test is what
+          // actually refused the stroke; this is that refusal's sentence.
+          : ((eraseTool || smudgeTool) && strokeTarget->kind == LayerKind::RGB &&
+             strokeTarget->alphaLocked)
+              ? std::string("alpha locked: \"") + strokeTarget->name + "\" cannot be " +
+                    (smudgeTool ? "smudged" : "erased") +
+                    ". That moves alpha, and this layer's alpha is locked -- painting still "
+                    "works. Clear Lock Transparent Pixels in LAYERS."
           : eraseTool
               ? std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +
                     " and cannot be erased. Pick a Pigment or RGB layer in LAYERS."
+          : pencilTool
+              ? std::string("\"") + strokeTarget->name + "\" is " +
+                    layerKindName(strokeTarget->kind) +
+                    " and cannot be drawn on with the pencil. The pencil draws a hard-edged "
+                    "alpha mark; only an RGB layer has alpha. Pick an RGB layer in LAYERS."
+          : smudgeTool
+              ? std::string("\"") + strokeTarget->name + "\" is " +
+                    layerKindName(strokeTarget->kind) +
+                    " and cannot be smudged. Smudging drags colour AND alpha together, which "
+                    "only an RGB layer holds. Pick an RGB layer in LAYERS."
+          : cloneTool
+              ? std::string("\"") + strokeTarget->name + "\" is " +
+                    layerKindName(strokeTarget->kind) +
+                    " and cannot be cloned onto. Pick an RGB layer in LAYERS."
               : std::string("\"") + strokeTarget->name + "\" is " +
                     layerKindName(strokeTarget->kind) +
                     " and cannot be painted. Pick a Pigment or RGB layer in LAYERS.";
@@ -13694,29 +14062,41 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // its bounding box -- a rectangle that is not where the pixels are
       // going. The handles come from the same `TransformHandlePositions` the
       // hit test used, so what is drawn and what is clickable cannot drift.
-      dl->AddLine(tl, tr, line, kRuleThickness);
-      dl->AddLine(tr, br, line, kRuleThickness);
-      dl->AddLine(br, bl, line, kRuleThickness);
-      dl->AddLine(bl, tl, line, kRuleThickness);
-      dl->AddLine(toScr(h.topCenter), toScr(h.rotate), line, kRuleThickness);
+      // ===== Tool::Move -- BEGIN: no box, no handles ======================
+      // A Move drag runs the same session, so everything above -- the hidden
+      // layer, the preview quad, the layers-above split -- is shared and must
+      // keep drawing. The affordances are not: Move offers no scale, no
+      // rotate and no click-a-handle-to-grab, so drawing nine handles the
+      // gesture cannot use would be advertising four operations that are not
+      // there. The box goes with them: without handles it is a marquee-
+      // coloured rectangle around the picture with no meaning of its own, and
+      // the moving pixels themselves are already the feedback.
+      if (!g_moveDragging) {
+        // ===== Tool::Move -- END ==========================================
+        dl->AddLine(tl, tr, line, kRuleThickness);
+        dl->AddLine(tr, br, line, kRuleThickness);
+        dl->AddLine(br, bl, line, kRuleThickness);
+        dl->AddLine(bl, tl, line, kRuleThickness);
+        dl->AddLine(toScr(h.topCenter), toScr(h.rotate), line, kRuleThickness);
 
-      const float r = kTransformHandleDrawPx * 0.5f;
-      auto square = [&](ImVec2 c) {
-        // Filled with paper and outlined, not filled with the accent: a solid
-        // accent square on a dark picture and on a light one are different
-        // amounts of visible, and the outline is what makes it read on both.
-        dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r),
-                          atelierToken(kCanvasPaper));
-        dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), line, 0.0f, 0, 1.0f);
-      };
-      for (const Point2 p : {h.topLeft, h.topCenter, h.topRight, h.middleLeft, h.middleRight,
-                             h.bottomLeft, h.bottomCenter, h.bottomRight})
-        square(toScr(p));
-      // A disc, not a ninth square. It does something the eight do not, and
-      // shape is how that reads at 7 px without a label.
-      const ImVec2 rot = toScr(h.rotate);
-      dl->AddCircleFilled(rot, r, atelierToken(kCanvasPaper));
-      dl->AddCircle(rot, r, line, 0, 1.0f);
+        const float r = kTransformHandleDrawPx * 0.5f;
+        auto square = [&](ImVec2 c) {
+          // Filled with paper and outlined, not filled with the accent: a solid
+          // accent square on a dark picture and on a light one are different
+          // amounts of visible, and the outline is what makes it read on both.
+          dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r),
+                            atelierToken(kCanvasPaper));
+          dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), line, 0.0f, 0, 1.0f);
+        };
+        for (const Point2 p : {h.topLeft, h.topCenter, h.topRight, h.middleLeft, h.middleRight,
+                               h.bottomLeft, h.bottomCenter, h.bottomRight})
+          square(toScr(p));
+        // A disc, not a ninth square. It does something the eight do not, and
+        // shape is how that reads at 7 px without a label.
+        const ImVec2 rot = toScr(h.rotate);
+        dl->AddCircleFilled(rot, r, atelierToken(kCanvasPaper));
+        dl->AddCircle(rot, r, line, 0, 1.0f);
+      }
     }
 
     if (st.marqueeDragging &&
@@ -13761,6 +14141,35 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       float lassoPhase = marchingAntPhase();
       drawAntPolyline(dl, xform, pts, /*closed=*/false, lassoPhase);
     }
+
+    // === BEGIN Tool::Measure ruler (app/MeasureLine) =======================
+    //
+    // Drawn from `xform`, like the marquee band and the transform wireframe
+    // above, so the line sits on the picture and follows every zoom, pan,
+    // rotation and mirror without knowing that any of them exist.
+    //
+    // Not marching ants: ants mean "this region is selected" everywhere else
+    // in this build, and a ruler selects nothing. A solid accent line with a
+    // tick at each end is the transform wireframe's own vocabulary, which
+    // already means "chrome over the picture, not part of it".
+    //
+    // `measureLineAppliesTo()` is what keeps a ruler dragged on one document
+    // from being drawn over another (app/MeasureLine.hpp §1).
+    if (toolMeasuresCanvas(st.brush.tool)) {
+      const OpenDocument* measureDoc = st.documents.active();
+      if (measureLineAppliesTo(st.measure, measureDoc != nullptr ? measureDoc->id : 0u)) {
+        const ImU32 rulerCol = atelierToken(kAccent);
+        const Vec2 a = xform.toScreen(Vec2{st.measure.x0, st.measure.y0});
+        const Vec2 b = xform.toScreen(Vec2{st.measure.x1, st.measure.y1});
+        dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), rulerCol, kRuleThickness);
+        // 3 px discs rather than the transform box's squares: the endpoints
+        // are not handles, nothing can be grabbed, and shape is the only
+        // thing carrying that distinction at this size.
+        dl->AddCircleFilled(ImVec2(a.x, a.y), 3.0f, rulerCol);
+        dl->AddCircleFilled(ImVec2(b.x, b.y), 3.0f, rulerCol);
+      }
+    }
+    // === END Tool::Measure ruler ===========================================
 
     if (st.showGuides) {
       constexpr ImU32 kGuideCol = IM_COL32(70, 190, 230, 200);

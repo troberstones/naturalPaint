@@ -10,6 +10,7 @@
 #include "app/CloseDecision.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/Memory.hpp"
+#include "app/MoveTool.hpp"
 #include "app/StrokeSession.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "core/TileStore.hpp"
@@ -156,14 +157,34 @@ constexpr ToolMeta kToolMeta[] = {
     {"Hand", "hand", 57815u, "H", true},
     {"Zoom", "zoom-in", 57782u, "Z", true},
     // --- the name/icon/slot-only cells (app/AppState.hpp) -------------
-    {"Move", "move", 57633u, "V", false},
+    // **Built**, as of app/MoveTool: a pen-down begins an app/TransformSession
+    // on the active layer (or on the selection's pixels), the drag accumulates
+    // a pure translation and pen-up commits it, and the arrow keys are the same
+    // gesture from the keyboard. Same reason the eraser's row below sits in
+    // this half of the table: the rows are in `Tool`'s declaration order and
+    // the static_assert rests on that, so the divider marks where the enum's
+    // not-built run began, not a second list to keep in step.
+    {"Move", "move", 57633u, "V", true},
     {"Lasso", "lasso", 57806u, "L", true},
     {"Polygon Lasso", "pentagon", 58667u, "Shift+L", true},
     {"Magic Wand", "wand-sparkles", 58199u, "W", true},
     {"Crop", "crop", 57515u, "C", false},
-    {"Measure", "ruler", 57675u, "", false},
+    // **Built**: app/MeasureLine, gated by `toolMeasuresCanvas()` -- the one
+    // tool in this palette whose gesture writes no texel at all. Same
+    // arrangement as the eraser row below: the rows are in `Tool` declaration
+    // order, so a built tool stays where the enum puts it and the divider
+    // above marks the enum's not-built run, not a second sorted half.
+    {"Measure", "ruler", 57675u, "", true},
     {"Frame", "frame", 58001u, "", false},
-    {"Clone Stamp", "stamp", 58299u, "S", false},
+    // **Built**, as of the clone route: brush/CloneStamp, and
+    // app/StrokeSession §1b for the table it routes through. It stays in this
+    // half of the table for the same reason the Eraser row just below does --
+    // the rows are in `Tool`'s declaration order and the static_assert rests on
+    // that, so the divider above marks where the enum's not-built run began,
+    // not a second list to keep in step. This tool needs the flag twice over:
+    // it makes the palette cell clickable at all, and its Option+click source
+    // gesture only exists while the cell is selected.
+    {"Clone Stamp", "stamp", 58299u, "S", true},
     // **Built**, as of the RGB erase route: PRD F9/F10 (P0), ADR-0007,
     // brush/RgbErase. It stays in this half of the table because the rows are in
     // `Tool`'s declaration order and the static_assert below rests on that --
@@ -174,10 +195,28 @@ constexpr ToolMeta kToolMeta[] = {
     {"Eraser", "eraser", 57999u, "E", true},
     {"Paint Bucket", "paint-bucket", 58086u, "Shift+G", true},
     {"Gradient", "blend", 58780u, "G", true},
-    {"Pencil", "pencil", 57849u, "", false},
-    {"Smudge", "droplets", 57525u, "N", false},
-    {"Dodge", "sun", 57720u, "O", false},
-    {"Burn", "moon", 57630u, "Shift+O", false},
+    // **Built**, as of the aliased-mark route: brush/PencilDeposit,
+    // `StrokeRoute::PencilDeposit`, app/StrokeSession §1's Pencil rows. Same
+    // note as the Eraser above about why it stays in this half of the table:
+    // the rows are in `Tool`'s declaration order and the static_assert below
+    // rests on that, so the divider marks where the enum's not-built run began
+    // rather than a second list to keep in step.
+    {"Pencil", "pencil", 57849u, "", true},
+    // **Built**, as of the tonal route: `strokeRouteFor()` sends both to
+    // `StrokeRoute::TonalBrush` on a writable RGB layer (brush/TonalBrush;
+    // app/StrokeSession.hpp §1's Dodge/Burn rows). Two rows for one engine and
+    // one route -- the palette is a list of tools a user picks, and the
+    // direction is what the pick means. Same placement argument as the Eraser
+    // row above: the rows are in `Tool`'s declaration order and the
+    // static_assert below rests on that.
+    {"Smudge", "droplets", 57525u, "N", true},
+    {"Dodge", "sun", 57720u, "O", true},
+    {"Burn", "moon", 57630u, "Shift+O", true},
+    // **Built**, as of the smudge route: brush/Smudge, StrokeRoute::Smudge.
+    // Same rule as the Eraser row above -- the flag flips in the commit that
+    // wires the drag, not in the one that writes the arithmetic, and until it
+    // flips the palette cell is disabled and the route is unreachable however
+    // complete the engine is.
     {"Pen", "pen-tool", 57649u, "P", false},
     {"Curve", "spline", 58251u, "Shift+P", false},
     {"Text", "type", 57752u, "T", false},
@@ -203,21 +242,41 @@ const char* toolName(Tool t) { return metaFor(t).name; }
 bool toolImplemented(Tool t) noexcept { return metaFor(t).implemented; }
 
 bool toolHasCanvasHandler(Tool t) noexcept {
-  // Five gates, each of them the expression the corresponding block in
+  // Seven gates, each of them the expression the corresponding block in
   // `ui/MacPaintUI.cpp`'s canvas is actually written with. Nothing here is a
   // restatement of "which tools work" -- see the header.
+  //
+  // **`toolMeasuresCanvas()` is a NEW term, not a name added to
+  // `toolSamplesCanvas()`.** `Tool::Measure` sits in the eyedropper's palette
+  // group and answers the same `ToolCursor::Sample`, so widening that
+  // predicate is the one-line way to make this function go true for it. It is
+  // also precisely the failure the Zoom assertion in
+  // `app/selftest/Eyedropper.cpp` exists to catch -- "wired by widening an
+  // existing predicate rather than adding the next one" -- and here the
+  // consequence is concrete rather than stylistic: `toolSamplesCanvas()` is
+  // the gate on the eyedropper's own canvas block, so a Measure that
+  // satisfied it would have every ruler drag handed to
+  // `applyEyedropperPick()`. See `app/StrokeSession.hpp` §6b.
   //
   // `toolBeginsStroke()` is not `noexcept` (it builds two probe Layers), and
   // this function is, so the call is guarded by short-circuit ordering alone
   // -- which is not enough on its own. It is the last term deliberately: the
-  // four cheap `noexcept` predicates are tested first, so for every tool that
+  // cheap `noexcept` predicates are tested first, so for every tool that
   // has any other kind of handler the allocating one is never reached. For the
   // rest, an allocation failure here would `std::terminate` rather than
   // propagate, which is the correct outcome for a chrome predicate that runs
   // every frame -- there is no sensible answer to "is this tool handled" under
   // bad_alloc, and returning `false` would silently un-implement every brush.
+  //
+  // `toolMovesPixels()` is the seventh, and app/MoveTool.hpp section 5 is the
+  // argument for it being its own gate rather than a term folded into
+  // `toolWritesRgbPixels()` (the bucket/gradient family, whose refusal ladder
+  // and cursor Move does not share) or `toolPansView()` (which moves the VIEW,
+  // not the content). Placed before the allocating `toolBeginsStroke()` for
+  // the ordering reason stated above: it is cheap and `noexcept`.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
-         toolPansView(t) || toolBeginsStroke(t) || toolZoomsView(t);
+         toolMeasuresCanvas(t) || toolPansView(t) || toolMovesPixels(t) ||
+         toolBeginsStroke(t) || toolZoomsView(t);
 }
 
 const char* toolNoHandlerException(Tool) noexcept {
@@ -693,6 +752,69 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       ImGui::PopStyleColor();
     }
 
+    return;
+  }
+
+  // --- the measure tool's readout (app/MeasureLine) -----------------------
+  //
+  // **A readout, not a control**, and it is the second tool after the
+  // eyedropper to take this band's early return rather than falling through
+  // to SIZE/HARD/LOAD/WET. The four brush sliders are meaningless here for a
+  // stronger reason than they are for the eyedropper: Measure has no tip at
+  // all, so a SIZE slider would be a live control over something the tool
+  // provably never reads.
+  //
+  // Photoshop puts these numbers in the Info panel. This build has no Info
+  // panel, and inventing one for four floats would be a dock slot and a
+  // layout decision for a tool that has nothing else to say -- while
+  // `docs/ui.md` section 2 already gives this band the job of showing "the
+  // active tool and its options". So they go here, where the eyedropper's
+  // "what your last gesture did" line already set the precedent.
+  //
+  // Monospace, because all four are live numerics that change every frame of
+  // a drag -- the same reason the SIZE slider's own value is mono, stated
+  // where that widget is drawn.
+  if (st.brush.tool == Tool::Measure) {
+    bandSeparator();
+    const OpenDocument* od = st.documents.active();
+    if (!measureLineAppliesTo(st.measure, od != nullptr ? od->id : 0u)) {
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
+      // The empty state says what to DO, not merely that there is nothing --
+      // this tool leaves no other trace in the chrome, so a blank band is
+      // indistinguishable from a broken one.
+      ImGui::TextUnformatted("Drag a line on the canvas to measure it.");
+      ImGui::PopStyleColor();
+      return;
+    }
+    const MeasureReadout r = measureReadout(st.measure);
+    pushAtelierMono();
+    // W and H before L and A, in the order Photoshop's Info panel lists them.
+    // `%+.1f` on the two components: their SIGN is the whole content of "which
+    // way did I drag", and an unsigned run and rise would make a measurement
+    // up-and-left indistinguishable from one down-and-right while the angle
+    // beside it says they differ.
+    //
+    // "px" is spelled once, on L, and W/H are bare: all three are document
+    // texels (app/MeasureLine.hpp §2) and repeating the unit three times in a
+    // band this dense buys nothing. `deg` rather than a degree glyph -- the
+    // options bar's mono face is loaded from the Latin block only.
+    capsLabel("W");
+    ImGui::SameLine();
+    ImGui::Text("%+.1f", static_cast<double>(r.dx));
+    ImGui::SameLine();
+    capsLabel("H");
+    ImGui::SameLine();
+    ImGui::Text("%+.1f", static_cast<double>(r.dy));
+    ImGui::SameLine();
+    capsLabel("L");
+    ImGui::SameLine();
+    ImGui::Text("%.2f px", static_cast<double>(r.lengthPx));
+    ImGui::SameLine();
+    capsLabel("A");
+    ImGui::SameLine();
+    ImGui::Text("%.1f deg", static_cast<double>(r.angleDeg));
+    popAtelierMono();
     return;
   }
 

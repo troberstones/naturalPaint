@@ -47,27 +47,47 @@ dispatched today without a design pass first.
 
 ## 2. The tool palette
 
-`docs/ui.md` §2 specifies 28 palette cells. As of `3b067ac`, **14 carry real
-behaviour and 14 are name/icon/slot only** — honestly greyed out, and pinned
-there by the `--selftest` assertion *"`toolImplemented()` is true for exactly
-the tools with a real canvas handler"* (`ui/AtelierChrome.cpp:205`,
-`toolHasCanvasHandler()`). That assertion is the reason this half of the
-palette cannot quietly claim to work.
+`docs/ui.md` §2 specifies 28 palette cells. **21 carry real behaviour and 7 are
+name/icon/slot only** — honestly greyed out, and pinned there by the
+`--selftest` assertion *"`toolImplemented()` is true for exactly the twenty-one
+tools with real behaviour"* plus the stronger structural one,
+`toolImplemented(t) == toolHasCanvasHandler(t)` for every `Tool`
+(`ui/AtelierChrome.cpp`). That pair is why this half of the palette cannot
+quietly claim to work: a tool cannot be marked built without a handler, and
+cannot acquire a handler while still marked unbuilt.
 
-The fourteen: `Move, Crop, Measure, Frame, CloneStamp, Pencil, Smudge, Dodge,
-Burn, Pen, Curve, Text, Shape, Slice`.
+**Seven shipped on 2026-09-02** — Move, Measure, Pencil, Dodge, Burn, Clone
+Stamp and Smudge — built as six parallel tracks off `3b067ac` and merged
+together.
 
-They do not cost the same, and the differences are structural:
+The remaining seven are not seven instances of one gap:
 
 | Tool | Blocked on | Notes |
 |---|---|---|
-| Pencil, Smudge, Dodge, Burn, CloneStamp | nothing | new `StrokeRoute` rows + a `brush/` engine; `brush/RgbErase` is the worked precedent |
-| Move | nothing | `app/TransformSession` + `ui/TransformCompositeSplit` already do the work; this is routing |
-| Measure | nothing | writes no pixels; needs a gate in `toolHasCanvasHandler()` and a readout |
-| Crop, Shape | nothing structural | document geometry and raster primitives respectively |
-| Pen, Curve | **PLAN Phase 13 (Paths)** | there is no path model in the build: no bezier storage, no stroke-or-fill-from-path |
+| Crop, Shape | nothing structural | document geometry and raster primitives; the natural next wave |
+| Pen, Curve | **PLAN Phase 13 (Paths)** | no path model exists: no bezier storage, no stroke-or-fill-from-path |
 | Text | **PLAN Phase 14** | no font rasteriser, and `LayerKind::Text` is inert |
-| Frame, Slice | **no receiving model** | both name a document-level *region* concept that does not exist; building the gesture without the model produces a tool that draws a rectangle and forgets it |
+| Frame, Slice | **no receiving model** | both name a document-level *region* concept that does not exist; the gesture without it draws a rectangle and forgets it |
+
+### What the tool wave established about the palette's own machinery
+
+Worth recording, because it changes what the next wave costs:
+
+* **`strokeRouteFor()` is the extension point for a brush-family tool**, and
+  `toolBeginsStroke()` derives its answer by *probing* it rather than restating
+  it — so a new route flips its own gate with no second list to keep in step.
+* **`ui/MacPaintUI.cpp`'s canvas gate was the exception, and is no longer.** It
+  read a hand-written `strokeTool = paintTool || eraseTool`, so a tool could
+  have a route, a flipped flag, a passing `toolHasCanvasHandler()` and a fully
+  green suite **and still be unusable** — the eyedropper's original reachability
+  defect surviving in the last predicate spelled as literal `Tool` values. It
+  now reads `toolBeginsStroke()` itself, and an assertion pins the set it
+  accepts so a tenth stroke tool is a decision rather than an accident.
+* **Adding a stroke route touches five shared registration points** — the
+  `StrokeRoute` enum, `strokeRouteFor()`, `strokeRouteWritesLayer()`,
+  `kToolMeta`, and `kImplementedTools[]` in the selftest. That is fine for one
+  tool and expensive for six at once; a future wave should either pick tracks
+  whose seams do not collide or widen those seams first.
 
 ## 3. PLAN phases with no code
 

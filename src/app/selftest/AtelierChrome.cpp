@@ -371,7 +371,20 @@ bool runAtelierChromeTest() {
     // that table getting its `implemented` flag wrong is something this check
     // can actually catch rather than agreeing with itself.
     //
-    // Fourteen now, from thirteen, from eleven, from seven. PRD E3's selection
+    // Sixteen now, from fourteen, from thirteen, from eleven, from seven. PRD
+    // E3's selection tools landed together because they all end in the same
+    // place; the paint bucket (PRD D25/D26) and the gradient (D24) then
+    // followed, and they too share an ending -- both write texels, so both take
+    // a locked-layer refusal and a history entry gated on a non-zero written
+    // count. The **eraser** (PRD F9/F10, both P0) is the fourteenth:
+    // `strokeRouteFor()` sends it to `StrokeRoute::RgbErase` on a writable RGB
+    // layer, so a drag with it now reaches a layer instead of nothing at all.
+    //
+    // **Move** (app/MoveTool) opens an app/TransformSession on the active layer
+    // -- or on the selection's pixels when there is a selection -- accumulates
+    // a pure translation and commits on pen-up, so it reaches a real write
+    // through `recordEdit()` by an entirely different route from any stroke.
+    // Sixteen now, from fourteen, from thirteen, from eleven, from seven. PRD E3's selection
     // tools landed together because they all end in the same place; the paint
     // bucket (PRD D25/D26) and the gradient (D24) then followed, and they too
     // share an ending -- both write texels, so both take a locked-layer refusal
@@ -387,13 +400,36 @@ bool runAtelierChromeTest() {
     // same rule read the other way round -- the flag flips in the commit that
     // wires the drag, not in the one that writes the arithmetic, and until it
     // flips the palette cell is disabled and the route is unreachable.
+    //
+    // **Measure reaches no
+    // texel at all**, the first row here that does not. It drags a ruler and
+    // reports a length and a heading
+    // (app/MeasureLine); the document is byte-identical afterwards. That makes
+    // it the clearest statement of what this table means by "implemented": the
+    // tool DOES something the user asked for, not that it writes something.
+    // It also could not use any of the gates that existed before it -- see
+    // app/selftest/Measure.cpp section 7 for why widening the eyedropper's was
+    // the wrong shortcut -- so `toolMeasuresCanvas()` is what makes
+    // `toolHasCanvasHandler()` agree with this row.
+    // **Dodge and Burn are the fifteenth and sixteenth**, and they are two rows
+    // for one engine and one route: `strokeRouteFor()` sends both to
+    // `StrokeRoute::TonalBrush` on a writable RGB layer (brush/TonalBrush), and
+    // the direction is latched from the tool at pen-down. Listing both here
+    // rather than "the tonal pair" is the point of this table -- it is a list of
+    // palette CELLS a user can click, and a route that only one of two cells
+    // could reach would be exactly the kind of half-wiring this check exists to
+    // catch.
     const Tool kImplementedTools[] = {Tool::Brush,       Tool::Water,
                                       Tool::DryBrush,    Tool::Eyedropper,
                                       Tool::Marquee,     Tool::EllipseMarquee,
                                       Tool::Lasso,       Tool::PolygonLasso,
-                                      Tool::MagicWand,   Tool::Eraser,
-                                      Tool::PaintBucket, Tool::Gradient,
-                                      Tool::Hand,        Tool::Zoom};
+                                      Tool::MagicWand,   Tool::Measure,
+                                      Tool::Eraser,      Tool::PaintBucket,
+                                      Tool::Gradient,    Tool::Pencil,
+                                      Tool::Dodge,       Tool::Burn,
+                                      Tool::CloneStamp,  Tool::Smudge,
+                                      Tool::Hand,        Tool::Zoom,
+                                      Tool::Move};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -403,7 +439,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the fourteen tools with real behaviour");
+          "toolImplemented() is true for exactly the twenty-one tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --
