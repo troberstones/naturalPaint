@@ -1057,6 +1057,20 @@ int main(int argc, char** argv) {
   // `--transform-demo 0 --pen-demo` can put a transform on a layer that
   // HAS content while the pen tries to paint. That combination is a golden
   // case: it pins the rule that a live gizmo suppresses every paint route.
+  //
+  // **The index is into the document as it stands when the request is
+  // raised, which is AFTER the other demo flags have built it.** In
+  // particular `--pen-demo` calls `preparePenDemo()`, which inserts a new,
+  // empty Pigment layer above the active one and selects it -- so with
+  // `--demo-document --pen-demo` the stack is Cyan block, that new empty
+  // layer, Magenta, Yellow, and every index above 0 has shifted by one.
+  // Aiming at the inserted layer gets `beginLayer()`'s "has no content --
+  // nothing to transform" refusal, hence NO gizmo and a pen that paints
+  // normally: all correct, and all easy to mistake for a broken gizmo. That
+  // exact mistake cost a debugging detour once; `--transform-demo 2
+  // --pen-demo` is how you reach Magenta with the pen demo present, and
+  // `--transform-demo 1` alone (no pen demo) is the `transform_stack`
+  // golden case.
   int transformDemoLayer = -1;
   bool demoDocument = false;
   bool pigmentStrokeDemo = false;
