@@ -14393,6 +14393,133 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
     // === END Tool::Measure ruler ===========================================
 
+    // === BEGIN Tool::CloneStamp source marker ==============================
+    //
+    // The report this answers, verbatim: "clone needs to show an indicator of
+    // where it is cloning from, Opt click should set that anchor with an
+    // indicator of where it was put and drawing with the clone tool should
+    // move that indicator to show what is currently being cloned."
+    //
+    // **Two marks, not one, because they are two different points.** Until a
+    // stroke has fixed the offset the source IS the anchor; from the first
+    // pen-down onward the source is `pointer + offset` and the anchor is only
+    // where the copy started. Drawing one shape for both would be the
+    // marquee/lasso mistake the gradient's own rubber band records a few
+    // hundred lines above: one preview standing in for gestures that differ.
+    //
+    // Everything read here is already correct and already session state
+    // (`AppState::CloneSourceState`); this block adds no state and changes no
+    // behaviour. `--selftest` cannot reach it -- it is a canvas draw block --
+    // so it is covered by `tools/golden/run_golden.sh`'s `clone_anchor` and
+    // `clone_source` views instead, and by nothing else.
+    //
+    // **Drawn only while the Clone Stamp is the selected tool**, the same rule
+    // `toolMeasuresCanvas()` gives the ruler directly above and the same rule
+    // every other tool-owned mark on this canvas follows. The alternative --
+    // always showing it, on the grounds that the source survives a tool switch
+    // and hiding live state is a lie -- was rejected because the thing being
+    // hidden is not lost and is one palette click from being back, while the
+    // cost of the other choice is a crosshair sitting permanently on someone's
+    // painting with no control anywhere in this build to dismiss it. A mark a
+    // user cannot turn off had better be about the tool in their hand.
+    //
+    // `transformActive` is folded in through `cloneTool` itself: a transform
+    // owns the canvas while it runs, and its wireframe is what the pointer is
+    // acting on.
+    if (cloneTool && st.clone.haveAnchor) {
+      // Halo-under-accent, the gradient rubber band's own vocabulary. A single
+      // accent stroke is invisible over paint the same hue, and the clone's
+      // whole subject is the picture underneath -- so the mark carries its own
+      // contrast rather than assuming the document will supply it.
+      const ImU32 haloCol = IM_COL32(0, 0, 0, 160);
+      const ImU32 markCol = atelierToken(kAccent);
+
+      // --- the anchor: a fixed-size crosshair ------------------------------
+      //
+      // Fixed in SCREEN px, not scaled by zoom, and that is the distinction
+      // being drawn rather than a shortcut. An anchor is a POINT -- it has no
+      // extent, so a mark that grew with the zoom would be claiming one. The
+      // gap in the middle is what keeps the texel it names visible; a solid
+      // cross would cover the one pixel the user clicked to choose.
+      const Vec2 anchorScr = xform.toScreen(st.clone.anchor);
+      const ImVec2 ac(anchorScr.x, anchorScr.y);
+      constexpr float kTickGap = 3.5f;
+      constexpr float kTickLen = 10.0f;
+      for (int pass = 0; pass < 2; ++pass) {
+        const ImU32 col = pass == 0 ? haloCol : markCol;
+        const float w = pass == 0 ? 3.0f : 1.5f;
+        dl->AddLine(ImVec2(ac.x - kTickLen, ac.y), ImVec2(ac.x - kTickGap, ac.y), col, w);
+        dl->AddLine(ImVec2(ac.x + kTickGap, ac.y), ImVec2(ac.x + kTickLen, ac.y), col, w);
+        dl->AddLine(ImVec2(ac.x, ac.y - kTickLen), ImVec2(ac.x, ac.y - kTickGap), col, w);
+        dl->AddLine(ImVec2(ac.x, ac.y + kTickGap), ImVec2(ac.x, ac.y + kTickLen), col, w);
+      }
+
+      // --- the live source: a ring the size of what is actually read -------
+      //
+      // **Gated on `haveOffset`, not on `g_stroke.active()`, and the choice is
+      // load-bearing in both directions.**
+      //
+      // Not on a live stroke: `source = pointer + offset` is as true between
+      // strokes as during one -- this build clones ALIGNED, so the offset that
+      // is showing is exactly the offset the next stroke will use. Hiding the
+      // mark on pen-up would make the indicator disappear at precisely the
+      // moment a retoucher lifts off to check their aim.
+      //
+      // But on `haveOffset`: before the first pen-down the offset is (0, 0)
+      // and means nothing, and the source for a stroke started under the
+      // current pointer would be the ANCHOR (`latchCloneOffset()` derives
+      // `anchor - penDown` for exactly that reason). So the crosshair above is
+      // already the whole truth in that state, and a second ring drawn on top
+      // of it would be a duplicate that starts lying the instant the pointer
+      // moves.
+      //
+      // Radius is the brush tip's, in canvas space, so this ring is the region
+      // that will actually be sampled rather than a decorative dot -- the same
+      // number and the same reasoning as the brush cursor ring further down,
+      // which says the same thing about the destination. The pair reads as
+      // "this disc goes there", which is what a clone is.
+      if (st.clone.haveOffset && hovered && inside) {
+        const Vec2 srcDoc{tx + st.clone.offset.x, ty + st.clone.offset.y};
+        const Vec2 srcScr = xform.toScreen(srcDoc);
+        const Vec2 ptrScr = xform.toScreen(Vec2{tx, ty});
+        const ImVec2 sc(srcScr.x, srcScr.y);
+        const ImVec2 pc(ptrScr.x, ptrScr.y);
+        const float srcR = std::max(4.0f, (st.brush.model.tip.diameterPx * 0.5f) * st.view.zoom);
+
+        // The offset itself, drawn once. Dim and hairline deliberately: it is
+        // the least important of the three things here (the two ends are what
+        // the eye needs) and a full-weight line across the middle of the
+        // picture would be chrome competing with the painting for attention.
+        // Worth its two lines anyway -- without it the ring is an unexplained
+        // circle somewhere else on the canvas, and the report's own words are
+        // about the RELATIONSHIP ("where it is cloning FROM").
+        dl->AddLine(sc, pc, IM_COL32(0, 0, 0, 70), 2.0f);
+        // The accent at reduced alpha, DERIVED from the token rather than
+        // retyped as a literal. `IM_COL32(255, 86, 60, 90)` is the same colour
+        // today and is a hand-copy of `kAccent`'s 0xff563c, which is the drift
+        // this file already avoids the same way two hundred lines up
+        // (`kTextSecondary` masked and re-alpha'd for the overflow glyph): the
+        // day the theme's accent moves, a literal keeps the old one and
+        // nothing says so.
+        dl->AddLine(sc, pc, (markCol & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 90), 1.0f);
+
+        // Segment count given explicitly for the reason the gradient's rim
+        // circle gives: ImGui's auto-tessellation error budget is in LOGICAL
+        // px and doubles on the way to a 2x framebuffer, so a large ring comes
+        // out visibly faceted. Scaled and capped the same way.
+        const int srcSegs = std::clamp(static_cast<int>(srcR * 0.5f), 24, 128);
+        dl->AddCircle(sc, srcR, haloCol, srcSegs, 3.0f);
+        dl->AddCircle(sc, srcR, markCol, srcSegs, 1.5f);
+        // A filled centre dot, which the crosshair deliberately does not have:
+        // at a glance the two marks differ by whether the middle is solid, and
+        // that reads even when the ring is small enough to be nearly a dot
+        // itself.
+        dl->AddCircleFilled(sc, 2.5f, haloCol);
+        dl->AddCircleFilled(sc, 1.5f, markCol);
+      }
+    }
+    // === END Tool::CloneStamp source marker ================================
+
     if (st.showGuides) {
       constexpr ImU32 kGuideCol = IM_COL32(70, 190, 230, 200);
       constexpr ImU32 kPendingGuideCol = IM_COL32(140, 230, 255, 230);

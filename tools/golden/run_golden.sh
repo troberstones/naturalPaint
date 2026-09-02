@@ -5,7 +5,8 @@
 # screen-recording permission, exact rendered pixels -- see that header for
 # why). This script is the missing other half: it drives the app through a
 # handful of known, scripted UI states via its existing --demo-document /
-# --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo
+# --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo /
+# --gradient-demo / --clone-demo
 # CLI flags, crops each capture down
 # to one small region, and compares it against a reference image committed
 # under tests/golden/ with src/tools/GoldenTool.cpp.
@@ -356,8 +357,43 @@ measure_n="${2:-10}"
 #     here; `tools` and `canvas` are exact for the same reason, and
 #     `toolbar`'s own 4-pixel bimodality is documented above as a specific
 #     finding rather than a property of text in general.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular")
+#
+#   clone_anchor / clone_source  -- the Clone Stamp's source marker
+#     (--clone-demo), the chrome answering "clone needs to show an indicator of
+#     where it is cloning from".
+#
+#     **These two views are the whole of this feature's test coverage, and that
+#     is a statement about `--selftest` rather than about effort.** The state
+#     underneath (`AppState::CloneSourceState`, `setCloneAnchor()`,
+#     `latchCloneOffset()`) was already asserted headlessly and was already
+#     right; what was missing was every pixel of it. A marker drawn under the
+#     document quad, clipped to nothing, at `anchor` when it should be at
+#     `pointer + offset`, or in an accent with no halo over a same-hue
+#     painting, is a marker that ships broken with a green suite -- and the
+#     revision immediately before this one closed a defect that made a whole
+#     tool useless for its entire history for exactly that reason, inside a
+#     canvas block `--selftest` cannot reach.
+#
+#     They share a crop deliberately, the way the three gradient canvas views
+#     do, so the positive and the negative are directly diffable: the ONLY
+#     difference between the two captures should be the live ring, its centre
+#     dot and the leader line.
+#
+#     `clone_source` is the positive -- anchor crosshair at document (660,
+#     300), live ring at (170, 128), pointer parked at the canvas band's centre
+#     with the leader line between the last two. Three marks in three places,
+#     none of them collinear and none of them on top of another piece of
+#     chrome, so a photograph can be read.
+#
+#     `clone_anchor` is the negative and is not decoration. `--clone-demo
+#     anchor` runs the identical fixture with the offset NOT latched, and the
+#     live ring is gated on `haveOffset` precisely because before the first
+#     pen-down the source IS the anchor. A build that dropped that gate would
+#     draw the ring at `pointer + (0,0)` -- concentric with the brush cursor
+#     ring, which is where it is least likely to be noticed -- and
+#     `clone_source` would still pass. This view is what fails.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -563,11 +599,25 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #    of secondary effect, not a mistake in this revision's own arithmetic, is
 #    the more likely explanation than a bug in a shift that six other views
 #    confirm cleanly.
-view_crop_x=(0    1916 920  0   0   0    900 1000 1830 1900 1900 40   480  40   480  480)
-view_crop_y=(5    927  965  148 664 0    628 1000 158  166  1462 76   560  76   560  560)
-view_crop_w=(1400 640  384  100 400 2560 700 900  100  660  660  1090 1100 1090 1100 1100)
-view_crop_h=(166  190  192  402 350 77   500 400  500  64   64   76   800  76   800  800)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+#
+# `clone_anchor`/`clone_source`'s (390, 370, 1110, 550) has no genealogy yet --
+# it is the first revision of these views -- but it was derived rather than
+# framed by eye, and the derivation is worth recording because it is not the
+# one the arithmetic suggests. `--demo-document` opens 1024x1024 at 100% with
+# the document's origin at the canvas band's TOP-LEFT, not centred in it, so
+# the band shows only document x 0..899, y 0..675 and its centre -- where
+# `--clone-demo` parks the pointer -- is document (450, 338). The three marks
+# therefore land at device (448, 428) [live ring], (1008, 848) [pointer] and
+# (1428, 772) [anchor crosshair]; this crop is their bounding box plus a
+# margin wider than the largest mark's own radius. Two earlier guesses at the
+# demo's document coordinates, both made from the centred-document assumption,
+# put one mark or the other outside the window entirely -- a correct marker
+# that no photograph contained.
+view_crop_x=(0    1916 920  0   0   0    900 1000 1830 1900 1900 40   480  40   480  480  390  390)
+view_crop_y=(5    927  965  148 664 0    628 1000 158  166  1462 76   560  76   560  560  370  370)
+view_crop_w=(1400 640  384  100 400 2560 700 900  100  660  660  1090 1100 1090 1100 1100 1110 1110)
+view_crop_h=(166  190  192  402 350 77   500 400  500  64   64   76   800  76   800  800  550  550)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -600,7 +650,21 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # than a second number invented for it. `canvas` and `tools` stay exact
 # because they genuinely contain no text, and `tools` was re-measured at
 # exactly 0 after the palette grew to 28 cells.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0)
+#
+# **`clone_anchor` / `clone_source` are exact (0, 0), and the number was
+# measured before it was written down rather than copied from the view above
+# them.** These two hold a synthetic pointer parked over the canvas, which is
+# the single thing that cost `toolbar` its exact threshold (a hover tint) and
+# `canvas` its first one (a cursor ring), so the guess going in was that they
+# would need a budget. They do not: 8 separately-launched captures per view,
+# each diffed against its own batch's first launch (610 500 px crop), gave 14
+# comparisons at 0 mismatched px and max channel diff 0 -- every one. The
+# pointer is parked over the canvas rather than over a widget, so there is no
+# hover lerp to settle and no glyph in frame at all, and the brush cursor ring
+# it does produce is drawn at a fixed position rather than chased across the
+# frame. Giving these a text budget by analogy would have cost the sensitivity
+# `gradient_drag`'s own entry above records losing for exactly that reason.
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -616,7 +680,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

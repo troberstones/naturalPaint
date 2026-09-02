@@ -1082,6 +1082,10 @@ int main(int argc, char** argv) {
   bool compsDemoDrop = false;
   bool uiLayerDemo = false;
   bool marqueeDemo = false;
+  // --clone-demo [anchor]: see the argument-parsing block for what this
+  // covers and why a flag is the only way to photograph it.
+  bool cloneDemo = false;
+  bool cloneDemoOffset = true;
   bool gradientDemo = false;
   bool gradientDemoDrag = false;
   np::GradientKind gradientDemoKind = np::GradientKind::Linear;
@@ -1347,6 +1351,39 @@ int main(int argc, char** argv) {
         if (k == "linear") { gradientDemoKind = np::GradientKind::Linear; ++i; }
         else if (k == "radial") { gradientDemoKind = np::GradientKind::Radial; ++i; }
         else if (k == "angular") { gradientDemoKind = np::GradientKind::Angular; ++i; }
+      }
+    } else if (a == "--clone-demo") {
+      // `--clone-demo [anchor]`: the Clone Stamp's source marker
+      // (ui/MacPaintUI.cpp's `Tool::CloneStamp source marker` block), which is
+      // three things `--screenshot` cannot otherwise reach at once.
+      //
+      // The tool, because a palette cell cannot be clicked from a screenshot
+      // run -- the same gap `--gradient-demo` and `--marquee-demo` cover. The
+      // SOURCE, because it is set by an Option+click and this run has no
+      // clicks. And the POINTER, because the live half of the marker sits at
+      // `pointer + offset` and a screenshot run's mouse is wherever the human
+      // left it -- exactly the nondeterminism `--gradient-demo drag` pins for
+      // the gradient's far handle, arriving here through the pointer rather
+      // than through a stored endpoint.
+      //
+      // **The pointer is injected as a real ImGui mouse position, not pinned
+      // as extra AppState.** `--pen-demo` already does this and the frame loop
+      // already has the injection window for it, so the marker under test is
+      // reached by the same `hovered`/`tx`/`ty` a hand reaches it by; a
+      // screenshot-only field on `AppState` would have been a second, quieter
+      // path into the block, and the one thing a golden view of chrome must
+      // not do is photograph a path no user takes. It also keeps this feature
+      // out of `app/AppState.hpp` entirely: this revision adds no state.
+      //
+      // `anchor` runs the identical fixture WITHOUT latching the offset. That
+      // is the negative half and it is not decoration: the live ring is gated
+      // on `haveOffset`, so a build that dropped that gate would draw a ring
+      // at `pointer + (0,0)` -- under the pointer, where it is easy to mistake
+      // for the brush cursor -- and every positive view would still pass.
+      cloneDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "anchor") {
+        cloneDemoOffset = false;
+        ++i;
       }
     } else if (a == "--flyout-demo") {
       // sidequest/lucide-toolbox, the nested-flyout revision: holds the
@@ -2924,6 +2961,48 @@ int main(int argc, char** argv) {
                   np::gradientKindLabel(gradientDemoKind));
     }
   }
+  if (cloneDemo) {
+    st.brush.tool = np::Tool::CloneStamp;
+    // Document texels, and every one of the four numbers is chosen rather than
+    // convenient. Both marks are off-centre and off-axis so a marker drawn
+    // from a swapped or dropped coordinate lands somewhere obviously wrong
+    // rather than somewhere plausible -- the same argument
+    // `--gradient-demo drag`'s deliberately-not-45-degree drag makes about
+    // its own endpoints.
+    //
+    // The three points -- anchor, live source, pointer -- are deliberately
+    // spread into three different quadrants of the visible document. Two of
+    // them coinciding would leave the view unable to tell "two marks" from
+    // "one mark drawn twice", which is the one thing this feature's design
+    // rests on.
+    //
+    // **They also have to be inside the part of the document that is on
+    // screen, which is neither the whole document nor centred on it.**
+    // `--demo-document` is 1024x1024 and this build opens it at 100% with the
+    // origin at the canvas band's top-left corner, so at the screenshot window
+    // size the band shows roughly x 0..899, y 0..675 -- and the band's centre,
+    // where the pointer parks, is document (450, 338) rather than the (512,
+    // 512) the arithmetic suggests. Both facts were measured off a capture,
+    // and both had to be: the first numbers tried here put the live ring off
+    // the top edge and the crosshair off the bottom, and each was a perfectly
+    // correct mark that no photograph contained.
+    //
+    // `offset = anchor - penDown` = (-280, -210), so the live ring lands at
+    // document (170, 128), the crosshair stays at (660, 300), and the pointer
+    // sits between them.
+    //
+    // The crosshair is deliberately NOT on the ray the leader line runs along
+    // (that ray reaches y = 465 by x = 660, and this is at 300) and
+    // deliberately NOT over the navigator thumbnail in the canvas's
+    // bottom-right corner. Collinear marks and a mark on top of another piece
+    // of chrome are both states a reviewer cannot read a photograph of.
+    np::setCloneAnchor(st.clone, np::Vec2{660.0f, 300.0f});
+    if (cloneDemoOffset) np::latchCloneOffset(st.clone, np::Vec2{940.0f, 510.0f});
+    std::printf("[clone-demo] Tool::CloneStamp, anchor 660,300%s -- pointer injected at the "
+                "canvas band's centre\n",
+                cloneDemoOffset ? ", offset latched from pen-down 940,510 (-280,-210)"
+                                : ", offset NOT latched (the negative: no live ring)");
+  }
   if (flyoutDemo)
     std::printf("[flyout-demo] Brush group's flyout held open (right-click/press-hold demo)\n");
   if (panelStackDemo)
@@ -3521,6 +3600,35 @@ int main(int argc, char** argv) {
       }
     }
 
+    // --clone-demo: park a synthetic pointer over the canvas, and leave the
+    // button UP.
+    //
+    // The pointer is the whole of what this injection is for. The Clone
+    // Stamp's live source marker sits at `pointer + offset`, so without a
+    // pointer there is nothing to photograph -- and with the operator's real
+    // one there is nothing REPRODUCIBLE to photograph, which is worse.
+    //
+    // **Button up, deliberately.** The marker is drawn between strokes as well
+    // as during them (this build clones aligned, so the offset showing is the
+    // offset the next stroke will use -- see the marker block's own note), so
+    // a held button would prove less, not more: it would also start a stroke,
+    // whose refusal-or-deposit depends on the active layer's kind and would
+    // put a moving subject in a byte-equality view. A hovering pointer is the
+    // state the marker has to be right in anyway.
+    //
+    // The band centre rather than a hard-coded screen point, for `--pen-demo`'s
+    // own reason directly above: `ui/AtelierLayout` is where the canvas
+    // actually is, and a literal would stop being over it the first time a
+    // band's height changed.
+    if (cloneDemo) {
+      ImGuiIO& io = ImGui::GetIO();
+      const np::AtelierBands bands =
+          np::atelierLayout(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y,
+                            /*showTabStrip=*/true);
+      io.AddMousePosEvent(bands.canvas.x + bands.canvas.w * 0.5f,
+                          bands.canvas.y + bands.canvas.h * 0.5f);
+    }
+
     // --- the screenshot path takes no mouse ---------------------------------
     //
     // **`--screenshot` photographs a real window, and a real window is under
@@ -3549,7 +3657,12 @@ int main(int argc, char** argv) {
     // mouse after it queued one would erase the input under test. The guard is
     // the flag rather than "did anything call AddMousePosEvent this frame",
     // because the former is checkable and the latter is not.
-    if (screenshotPath != nullptr && !penDemo) {
+    //
+    // `--clone-demo` is in the list for the same reason and not by analogy:
+    // its subject is a mark whose position is READ from the pointer, so
+    // suppressing the pointer does not merely remove a hover tint from the
+    // capture, it removes the feature.
+    if (screenshotPath != nullptr && !penDemo && !cloneDemo) {
       ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
 
