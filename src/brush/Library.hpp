@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "brush/BrushModel.hpp"
 #include "brush/Deposit.hpp"
 #include "brush/Dynamics.hpp"
 
@@ -73,11 +74,17 @@ struct BrushPreset {
   // brush, and the EDITED badge must not trip because of it.
   bool builtin = false;
 
-  float radius = 20.0f;
-  float hardness = 0.35f;
-  float spacing = 0.25f;
-  float roundness = 1.0f;
-  float angle = 0.0f;
+  // Radius/hardness/spacing/roundness/angle used to live here as their own
+  // five scalars, read by `app/StrokeSession::brushTipFor()` alongside
+  // `links` below. They are gone: `model` (below) is now authoritative for
+  // all five -- `model.tip.diameterPx / 2.0f` for radius,
+  // `model.tip.hardness` for hardness, `model.tip.spacingPercent / 100.0f`
+  // for spacing, `model.tip.roundness` for roundness, `model.tip.angleDeg`
+  // for angle -- and every reader of the old fields was moved to read the
+  // model equivalent instead, mechanically, at the same relocation
+  // `tipBitmap`/`dualTip`/`grain` below already went through when THEY
+  // gained a durable home. `load` and `wetness` stay: naturalPaint's own two
+  // concepts, not Photoshop's, with no equivalent in `BrushModel`.
   float load = 0.9f;
   float wetness = 1.3f;
   BrushLinkSet links;
@@ -128,7 +135,33 @@ struct BrushPreset {
   // and the sample id to re-resolve on load, which is a real feature with its
   // own failure mode (the source file moved or was edited) and was scoped out
   // of this step rather than built in a hurry.
+  //
+  // **That gap is now closed, and not the way the paragraph above guessed.**
+  // Re-resolving from the source `.abr` would inherit that file's whole
+  // lifetime -- moved, edited, on a volume that is not mounted. Instead each
+  // imported tip is written once to `dabs-imported/<uuid>.png`
+  // (app/DabLibrary's `extractAbrTips()`) and `dabId` below names it, so the
+  // bitmap stops depending on the pack at all. The paragraph is kept rather
+  // than rewritten because its accounting of the cost -- why a bitmap is not
+  // in `user-presets.txt` and why keeping every library's tips resident was
+  // refused -- is still exactly why the answer is a file in a folder.
   std::shared_ptr<const BrushTipBitmap> tipBitmap;
+
+  // The dab-library id this preset's tip came from: `abr:<uuid>` for an
+  // extracted Photoshop tip, `file:`/`gbr:`/`gih:` for one out of the user's
+  // own folder (app/DabLibrary.hpp §3), empty for a procedural tip.
+  //
+  // **This, and not `tipBitmap`, is what `user-presets.txt` persists.** It is
+  // one short line of text pointing at a file with a durable home, which is
+  // what makes Duplicate -> Save -> relaunch keep the bitmap and what makes
+  // unloading the source library stop taking it away. The pointer above stays
+  // the thing everything downstream reads, resolved from this id on load.
+  //
+  // An id that no longer resolves -- the user deleted the PNG -- leaves
+  // `tipBitmap` null and the brush falls back to its procedural tip, which is
+  // exactly what it does today for a preset that never had one. A missing
+  // file is a visibly different brush, not a crash and not an empty one.
+  std::string dabId;
 
   // A Dual Brush's second tip (brush/Deposit.hpp §2d) -- Photoshop's own
   // second tip, stamped through this one and combined by `dualBlend`. Null
@@ -161,6 +194,44 @@ struct BrushPreset {
   // verbatim by that parser's own forward-compatible "a key this version does
   // not know" branch -- no code needed here to earn that.
   GrainParams grain;
+
+  // Photoshop's own Brush Settings panel, in its own shape (brush/BrushModel.hpp),
+  // carried beside the fourteen scalars/pointers above rather than folded into
+  // them.
+  //
+  // **Why a whole second copy of the brush lives here.** `io/AbrBrushes.cpp`
+  // decodes every one of the ~117 fields Photoshop writes -- Texture, Transfer,
+  // Scatter Count, the Dual Brush's own cadence, the tool options -- and until
+  // this field existed that decode was thrown away the moment `importAbrBrushes()`
+  // returned: `AbrImportResult::models` was a vector parallel to `presets` that
+  // died with the import call, and the only thing that ever read a `BrushModel`
+  // was `--abr-report`'s table. Everything that actually painted, `applyPresetToBrush()`
+  // below, worked from the lossy 14-scalar projection alone. The cost of that
+  // was invisible until Duplicate: `presetFromBrush()` had nowhere to WRITE a
+  // model, because `BrushState` had none either, so duplicating an imported
+  // preset silently discarded its texture pattern, its transfer curves, its
+  // blend mode, its dual tip's own scatter -- everything this struct's other
+  // fields have no room for. This field is that room.
+  //
+  // **Deliberately inert for now.** Nothing reads `model` to paint yet --
+  // `brushTipFor()` and the stroke engine still work exclusively from
+  // `radius`/`hardness`/`links`/`grain`/etc above, so this commit changes no
+  // pixel. It exists so the model has somewhere durable to live WHILE it is
+  // carried in lockstep with every other field by `applyPresetToBrush()` and
+  // `presetFromBrush()` (app/StrokeSession.cpp) -- the same lockstep discipline
+  // `tipBitmap` and `dualTip` above already follow, and for the identical
+  // reason: a field only one of the two directions copies is a field
+  // Duplicate quietly drops.
+  //
+  // Not yet compared by `presetMatches()`, and not yet persisted by
+  // `app/UserBrushLibraryStore` -- both are the next step, not this one. A
+  // model with no reader has no independent control that could disagree with
+  // the fourteen scalars above the way `grain`'s slider can, so leaving it out
+  // of the EDITED-badge comparison cannot yet produce a wrong badge; that
+  // reasoning stops holding the moment something in `ui/` gets its own control
+  // over a `BrushModel` field, at which point this paragraph needs revisiting
+  // exactly as `grain`'s own comment above describes for itself.
+  BrushModel model;
 };
 
 struct BrushLibrary {

@@ -2,23 +2,30 @@
 
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
+#include "ui/DabPicker.hpp"
+#include "ui/DynamicsMatrixPanel.hpp"
 #include "ui/FileDialog.hpp"
+#include "ui/LabelledControl.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/DockLayout.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/NewDocumentDialog.hpp"
 
+#include <filesystem>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include <functional>
 #include <optional>
 #include <utility>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "app/BrushLibraryFile.hpp"
@@ -58,6 +65,9 @@
 #include "ops/FloodFill.hpp"
 #include "ops/Gradient.hpp"
 #include "io/ExportStates.hpp"
+#include "brush/BrushModelFields.hpp"
+#include "ui/BrushFieldPresentation.hpp"
+#include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/DocumentTexture.hpp"
 #include "ui/Fonts.hpp"
@@ -208,97 +218,6 @@ std::optional<SDL_SystemCursor> g_canvasCursor;
 // same reason: a stale request surviving a frame the canvas branch never runs
 // would be exactly the stale-cursor bug §6 already fixed once.
 std::optional<Tool> g_canvasBitmapTool;
-
-// --- The label column (UI detour step 3, problem 1b) ----------------------
-//
-// Dear ImGui draws a widget's label to the *right* of the widget, and the
-// controls column is a fixed-width docked panel, so before this step four of
-// its sliders read "Granulatio", "Edge darke", "Paper slop" and "Working ti" --
-// clipped by the window edge, mid-word.
-//
-// Every labelled control in that column now goes through `ctlSlider()` /
-// `ctlSliderInt()` / `ctlCombo()` below, which draw the label at the left and
-// give the widget what is left. app/ControlsLayout owns the arithmetic and its
-// one invariant (the widget never starts before the label ends); this half owns
-// the measurement, because only ImGui knows how wide a string is in the loaded
-// font at the current scale.
-//
-// `g_labelColumn` only grows, and it grows in the same frame that first
-// measures a wider label, so a slider added later cannot clip even on its
-// first frame. The widest label and the column it forced are printed whenever
-// they change -- once at startup, and again only if a wider label ever appears
-// -- so the claim "no label is clipped" is a measured number in the log rather
-// than a look at a screenshot.
-float g_labelColumn = 0.0f;
-float g_widestLabelPx = 0.0f;
-std::string g_widestLabel;
-float g_reportedColumn = -1.0f;
-
-// Draws `label`, positions the cursor for the widget and sizes it. Returns the
-// `##`-prefixed id the widget must be given, in a caller-owned buffer, so the
-// label is never drawn twice.
-void beginLabelled(const char* label, char* idOut, size_t idCap) {
-  std::snprintf(idOut, idCap, "##%s", label);
-  const float labelPx = ImGui::CalcTextSize(label).x;
-  if (labelPx > g_widestLabelPx) {
-    g_widestLabelPx = labelPx;
-    g_widestLabel = label;
-  }
-  const float startX = ImGui::GetCursorPosX();
-  const LabelledControlLayout lay =
-      layoutLabelledControl(g_labelColumn, labelPx, ImGui::GetContentRegionAvail().x);
-  ImGui::TextUnformatted(label);
-  if (!lay.labelOnOwnLine) {
-    // SameLine()'s own offset argument is measured from the line start and
-    // ignores the current indent, which the layers panel uses; setting the x
-    // directly keeps an indented control aligned with its own group.
-    ImGui::SameLine(0.0f, 0.0f);
-    ImGui::SetCursorPosX(startX + lay.labelColumn);
-  }
-  ImGui::SetNextItemWidth(lay.widgetWidth);
-}
-
-bool ctlSlider(const char* label, float* v, float lo, float hi, const char* fmt = "%.3f") {
-  char id[96];
-  beginLabelled(label, id, sizeof(id));
-  return ImGui::SliderFloat(id, v, lo, hi, fmt);
-}
-
-bool ctlSliderInt(const char* label, int* v, int lo, int hi) {
-  char id[96];
-  beginLabelled(label, id, sizeof(id));
-  return ImGui::SliderInt(id, v, lo, hi);
-}
-
-// BeginCombo, laid out the same way. The caller ends it with EndCombo() as
-// usual -- this only replaces the label and the width.
-bool ctlBeginCombo(const char* label, const char* preview) {
-  char id[96];
-  beginLabelled(label, id, sizeof(id));
-  return ImGui::BeginCombo(id, preview);
-}
-
-// `ImGui::TextDisabled()` that wraps at the panel edge. The same failure as
-// the labels above, in a different widget: the layers panel's own status lines
-// carry a document name and a counter triple, neither of which is bounded, and
-// an unwrapped one is cut off by the window rather than continued.
-void textDisabledWrapped(const char* fmt, ...) IM_FMTARGS(1);
-void textDisabledWrapped(const char* fmt, ...) {
-  char buf[512];
-  va_list args;
-  va_start(args, fmt);
-  std::vsnprintf(buf, sizeof(buf), fmt, args);
-  va_end(args);
-  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-  ImGui::TextWrapped("%s", buf);
-  ImGui::PopStyleColor();
-}
-
-bool ctlInputText(const char* label, char* buf, size_t cap, ImGuiInputTextFlags flags) {
-  char id[96];
-  beginLabelled(label, id, sizeof(id));
-  return ImGui::InputText(id, buf, cap, flags);
-}
 
 // --- The layer editor's shared state (UI detour step 3, problem 2) --------
 //
@@ -863,7 +782,7 @@ void applyToolToBrush(AppState& st) {
     default:
       st.sim.brushPigment = st.brush.load;
       st.sim.brushWater = st.brush.wetness;
-      st.sim.brushHardness = st.brush.hardness;
+      st.sim.brushHardness = st.brush.model.tip.hardness;
       break;
   }
 }
@@ -1196,6 +1115,15 @@ float distancePointToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
 // a 322 px column, and that design's note is explicit that it is the same
 // widget as the grading stack's -- so it is this function at another size, not
 // a second implementation that would drift.
+//
+// **External linkage, breaking out of this file's anonymous namespace for
+// this one function** -- the identical reason `ctlSlider()` above does, and
+// for the identical caller: `ui/DynamicsMatrixPanel.cpp`'s `drawLinkEditor()`
+// draws its own 104 px curve plot with this exact function, per this
+// function's own comment above ("the grading stack's own widget rather than
+// a second one"). Reopened immediately after this function's closing brace.
+}  // namespace
+
 bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
   const float kPlotSize = plotSize;
   constexpr float kHitRadiusPx = 8.0f;
@@ -1341,6 +1269,8 @@ bool drawCurveWidget(Curve& curve, float plotSize = 200.0f) {
                       kMaxCurvePointsPerChannel);
   return changed;
 }
+
+namespace {
 
 // --- One op stack, edited ------------------------------------------------
 //
@@ -3693,315 +3623,9 @@ void drawTestStroke(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
 }
 
 
-// One labelled row of the matrix's own geometry: a 54 px row label, twelve
-// equal cells, a 34 px live-value gutter. Shared by the header row and the
-// ten source rows so the columns cannot drift between them.
-constexpr float kMatrixLabelW = 54.0f;
-constexpr float kMatrixGutterW = 34.0f;
-constexpr float kMatrixRowH = 19.0f;
-constexpr float kMatrixHeadH = 16.0f;
-
-// The two shades the matrix needs that the token table does not carry: the
-// alternating column wash, and the dot marking a cell with no link. Local to
-// the matrix because that is the only thing with columns to alternate.
-constexpr uint32_t kMatrixColumnAlt = 0x333030;
-constexpr uint32_t kMatrixEmptyDot = 0x4f4c4c;
-
-// The DYNAMICS matrix: every source against every target it could drive.
-//
-// **Drawing the whole space is the design's central claim, not a stylistic
-// choice** -- "an empty cell is as informative as a filled one -- you can see
-// that nothing drives spacing". A list of existing links would be smaller and
-// would answer a different question. The cost the design names honestly is
-// that twelve targets in 322 px means two-letter heads, which have to be
-// learned; the full names are on the cells' tooltips.
-void drawDynamicsMatrix(AppState& st) {
-  const DynamicInputs live = dynamicInputsFor(st);
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  const float width = ImGui::GetContentRegionAvail().x;
-  const float cellsW = width - kMatrixLabelW - kMatrixGutterW;
-  if (!(cellsW > 0.0f)) return;
-  const float cellW = cellsW / static_cast<float>(kDynamicTargetCount);
-
-  const ImU32 ruleCol = atelierToken(kDivider);
-  const ImU32 textCol = atelierToken(kTextPrimary);
-  const ImU32 mutedCol = atelierToken(kTextSecondary);
-  const ImU32 accentCol = atelierToken(kAccent);
-  const ImU32 altCol = atelierToken(kMatrixColumnAlt);
-
-  pushAtelierMono();
-
-  // --- header row: the two-letter target heads --------------------------
-  {
-    const ImVec2 o = ImGui::GetCursorScreenPos();
-    for (size_t t = 0; t < kDynamicTargetCount; ++t) {
-      const float x0 = o.x + kMatrixLabelW + cellW * static_cast<float>(t);
-      if (t % 2 == 1)
-        dl->AddRectFilled(ImVec2(x0, o.y), ImVec2(x0 + cellW, o.y + kMatrixHeadH), altCol);
-      const DynamicTarget headTarget = static_cast<DynamicTarget>(t);
-      const char* ab = targetAbbrev(headTarget);
-      const ImVec2 sz = ImGui::CalcTextSize(ab);
-      // A refused column's head reads in the muted colour too -- the same
-      // "disabled rather than absent" treatment `newLayerKindMenuItem()`
-      // gives a layer kind with nowhere to land, so a reader learns the
-      // matrix has twelve columns even though one of them does nothing.
-      const bool headBuildable = targetUnbuildableReason(headTarget) == nullptr;
-      dl->AddText(ImVec2(x0 + (cellW - sz.x) * 0.5f, o.y + (kMatrixHeadH - sz.y) * 0.5f),
-                  headBuildable ? textCol : mutedCol, ab);
-    }
-    dl->AddLine(ImVec2(o.x, o.y + kMatrixHeadH), ImVec2(o.x + width, o.y + kMatrixHeadH),
-                ruleCol, 1.0f);
-    ImGui::Dummy(ImVec2(width, kMatrixHeadH));
-  }
-
-  // --- one row per source -------------------------------------------------
-  for (size_t s = 0; s < kDynamicSourceCount; ++s) {
-    const DynamicSource source = static_cast<DynamicSource>(s);
-    const ImVec2 o = ImGui::GetCursorScreenPos();
-
-    dl->AddText(ImVec2(o.x + 5.0f, o.y + (kMatrixRowH - ImGui::GetFontSize()) * 0.5f), textCol,
-                sourceName(source));
-    dl->AddLine(ImVec2(o.x + kMatrixLabelW, o.y),
-                ImVec2(o.x + kMatrixLabelW, o.y + kMatrixRowH), ruleCol, 1.0f);
-
-    for (size_t t = 0; t < kDynamicTargetCount; ++t) {
-      const DynamicTarget target = static_cast<DynamicTarget>(t);
-      const float x0 = o.x + kMatrixLabelW + cellW * static_cast<float>(t);
-      const ImVec2 cellMin(x0, o.y);
-      const ImVec2 cellMax(x0 + cellW, o.y + kMatrixRowH);
-      if (t % 2 == 1) dl->AddRectFilled(cellMin, cellMax, altCol);
-
-      const size_t at = findLink(st.brush.links, source, target);
-      const bool selected = st.brush.editSource == source && st.brush.editTarget == target;
-      const ImVec2 mid((cellMin.x + cellMax.x) * 0.5f, (cellMin.y + cellMax.y) * 0.5f);
-      // Per-CELL, not merely per-column (`cellUnbuildableReason()`,
-      // brush/Dynamics.hpp): Wetness refuses its whole column, but Hue/
-      // Saturation/Value refuse only the four cells a stroke-local source
-      // would otherwise resolve to a silent constant. A refused cell draws
-      // as neither filled nor an empty dot: it is not a decision the user
-      // can make yet, so it should not look like one that simply has not
-      // been made.
-      const char* unbuildable = cellUnbuildableReason(source, target);
-
-      if (unbuildable != nullptr) {
-        dl->AddLine(ImVec2(mid.x - 3.0f, mid.y), ImVec2(mid.x + 3.0f, mid.y), mutedCol, 1.0f);
-      } else if (at != kNoLink) {
-        // A link that has been switched off keeps its curve but drives
-        // nothing, so it draws as neither filled nor empty -- an outline.
-        const float half = selected ? 5.5f : 4.5f;
-        const ImVec2 a(mid.x - half, mid.y - half), b(mid.x + half, mid.y + half);
-        if (st.brush.links.links[at].enabled) {
-          dl->AddRectFilled(a, b, accentCol);
-        } else {
-          dl->AddRect(a, b, accentCol, 0.0f, 0, 1.0f);
-        }
-        if (selected) dl->AddRect(ImVec2(a.x - 1, a.y - 1), ImVec2(b.x + 1, b.y + 1), textCol,
-                                  0.0f, 0, 1.0f);
-      } else {
-        dl->AddRectFilled(ImVec2(mid.x - 1.0f, mid.y - 1.0f), ImVec2(mid.x + 1.0f, mid.y + 1.0f),
-                          atelierToken(kMatrixEmptyDot));
-        if (selected)
-          dl->AddRect(ImVec2(mid.x - 5.5f, mid.y - 5.5f), ImVec2(mid.x + 5.5f, mid.y + 5.5f),
-                      mutedCol, 0.0f, 0, 1.0f);
-      }
-
-      // One hit target per cell. Clicking an empty cell selects it rather
-      // than creating a link there -- creation is the editor's ADD button,
-      // so that a stray click on a 17 px cell cannot silently change how the
-      // brush paints. A refused cell is disabled outright -- the same
-      // `BeginDisabled()` / `IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)`
-      // pair `newLayerKindMenuItem()` uses, so the reason is still reachable
-      // by hovering a cell that cannot be clicked.
-      ImGui::SetCursorScreenPos(cellMin);
-      char id[48];
-      std::snprintf(id, sizeof id, "##cell%zu_%zu", s, t);
-      ImGui::BeginDisabled(unbuildable != nullptr);
-      ImGui::InvisibleButton(id, ImVec2(cellW, kMatrixRowH));
-      ImGui::EndDisabled();
-      if (unbuildable != nullptr) {
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled |
-                                 ImGuiHoveredFlags_DelayNormal)) {
-          popAtelierMono();
-          ImGui::SetTooltip("%s \xE2\x86\x92 %s\n%s", sourceName(source), targetName(target),
-                            unbuildable);
-          pushAtelierMono();
-        }
-      } else {
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-          popAtelierMono();
-          ImGui::SetTooltip("%s \xE2\x86\x92 %s%s", sourceName(source), targetName(target),
-                            at == kNoLink ? "  (no link)" : "");
-          pushAtelierMono();
-        }
-        if (ImGui::IsItemClicked()) {
-          st.brush.editSource = source;
-          st.brush.editTarget = target;
-        }
-      }
-    }
-
-    // The live gutter. Its whole job is that the matrix teaches what a source
-    // IS while you paint, so it shows the value in the source's own unit --
-    // degrees for the angular three -- not the normalised number the model
-    // carries.
-    char val[32];
-    sourceDisplay(source, sourceValue(live, source), val, sizeof val);
-    const ImVec2 vsz = ImGui::CalcTextSize(val);
-    const float gx = o.x + width - kMatrixGutterW;
-    dl->AddLine(ImVec2(gx, o.y), ImVec2(gx, o.y + kMatrixRowH), ruleCol, 1.0f);
-    // RANDOM genuinely is redrawn per dab now (`dynamicRandomDraw()`,
-    // `app/StrokeSession`'s deposit loop), so it has no value between dabs;
-    // its em dash is drawn muted for the same reason. VELOCITY, FADE, NOISE,
-    // DIRECTION and INITIAL DIRECTION are also stroke-local -- `live` here is
-    // `dynamicInputsFor()`'s per-FRAME hardware sample, which cannot see a
-    // dab in progress, so this gutter shows their truthful idle reading (0.0,
-    // "not moving" / "just started" / "at rest" / "no heading yet" / "no
-    // heading LATCHED yet") rather than what the stroke is doing right now.
-    dl->AddText(ImVec2(o.x + width - 5.0f - vsz.x, o.y + (kMatrixRowH - vsz.y) * 0.5f),
-                source == DynamicSource::Random ? mutedCol : textCol, val);
-
-    ImGui::SetCursorScreenPos(o);
-    ImGui::Dummy(ImVec2(width, kMatrixRowH));
-    dl->AddLine(ImVec2(o.x, o.y + kMatrixRowH), ImVec2(o.x + width, o.y + kMatrixRowH), ruleCol,
-                1.0f);
-  }
-  popAtelierMono();
-
-  if (!st.penSeen)
-    ImGui::TextDisabled("No tablet: tilt, azimuth and barrel read as rest.");
-}
-
-// The LINK editor: one cell's response curve, its range, and what it is
-// resolving to right now.
-void drawLinkEditor(AppState& st) {
-  const DynamicSource source = st.brush.editSource;
-  const DynamicTarget target = st.brush.editTarget;
-  const size_t at = findLink(st.brush.links, source, target);
-
-  pushAtelierMono();
-  ImGui::Text("%s \xE2\x86\x92 %s", sourceName(source), targetName(target));
-  popAtelierMono();
-
-  // The same per-CELL refusal the matrix's own cells already enforce by
-  // disabling the click that would get here -- restated rather than
-  // trusted, because a link loaded from an older preset file (or a future
-  // importer) could name a refused cell directly, without ever going
-  // through a matrix click.
-  if (const char* unbuildable = cellUnbuildableReason(source, target)) {
-    ImGui::TextDisabled("%s", unbuildable);
-    return;
-  }
-
-  if (at == kNoLink) {
-    ImGui::TextDisabled("No link in this cell.");
-    if (ImGui::Button("Add link")) {
-      BrushLink made;
-      made.source = source;
-      made.target = target;
-      targetDefaultRange(target, made.rangeLo, made.rangeHi);
-      addLink(st.brush.links, made);
-    }
-    return;
-  }
-
-  // Hue/Saturation/Value shift the deposited colour only -- brush/
-  // Dynamics.hpp's own section comment on `applyHsvDynamics()` is the full
-  // argument; this is that same caveat surfaced where the one person who
-  // needs it, someone wiring up exactly this link, can actually see it.
-  if (target == DynamicTarget::Hue || target == DynamicTarget::Saturation ||
-      target == DynamicTarget::Value) {
-    ImGui::TextDisabled(
-        "Shifts the deposited colour only. Density, staining and granulation stay the "
-        "swatch's own.");
-  }
-
-  BrushLink& link = st.brush.links.links[at];
-  const DynamicInputs live = dynamicInputsFor(st);
-  const float in = sourceValue(live, source);
-
-  ImGui::Checkbox("On", &link.enabled);
-  ImGui::SameLine();
-  if (ImGui::Button("Delete")) {
-    removeLink(st.brush.links, source, target);
-    return;  // `link` is dangling from here on.
-  }
-
-  // The design's 104 px plot, and the grading stack's own widget rather than
-  // a second one -- see drawCurveWidget()'s comment.
-  drawCurveWidget(link.curve, 104.0f);
-
-  // IN is the source's live value; OUT is what the link resolves to. Showing
-  // both is what makes the curve legible while painting: the design rides the
-  // live value along the curve as the pen moves.
-  const float out = link.enabled ? linkContribution(link, in) : targetIdentity(target);
-  pushAtelierMono();
-  ImGui::Text("IN  %.2f", in);
-  ImGui::Text("OUT %.3f", out);
-  popAtelierMono();
-
-  // RANGE bounds the OUTPUT (brush/Dynamics.hpp): at curve 0 the link resolves
-  // to lo, at 1 to hi. On PRESSURE -> SIZE at 0.10-1.00 that is a floor on
-  // size, not a deadzone on pressure.
-  float lo = link.rangeLo, hi = link.rangeHi;
-  const bool angular = targetCombine(target) == TargetCombine::Add;
-  const float sliderLo = angular ? -360.0f : 0.0f;
-  const float sliderHi = angular ? 360.0f : 2.0f;
-  if (ctlSlider("Range lo", &lo, sliderLo, sliderHi)) link.rangeLo = lo;
-  if (ctlSlider("Range hi", &hi, sliderLo, sliderHi)) link.rangeHi = hi;
-  ImGui::Checkbox("Invert", &link.invert);
-
-  // The easing chips. They set the SAME Curve the widget edits, so a chip and
-  // a hand-drawn curve cannot disagree -- and a curve dragged away from all of
-  // them lights none of them, which is the honest answer.
-  //
-  // **All five presets are here, including LogTaper and PowerIn.** A preset
-  // `easingCurve()` can build but no chip can select is reachable only from
-  // code, which is this codebase's own silent-no-op class (docs/reachability-
-  // audit.md): the feature exists, nothing in the application can turn it on,
-  // and nothing says so. The two paper-derived laws are the ones most worth
-  // reaching -- they are the shapes a real medium has, not shapes that were
-  // eyeballed -- so they get chips on the same row-break rule as the rest.
-  //
-  // The list itself is `brush/Dynamics.hpp`'s `easingPresetCount()`/`At()`,
-  // not a literal here: a hand-written array in this file is what let two
-  // presets ship with no chip. Only the TOOLTIP text is the panel's -- and it
-  // is a switch with no `default:`, so a sixth preset cannot reach the row
-  // without someone writing its explanation.
-  auto chipTooltip = [](EasingPreset preset) -> const char* {
-    switch (preset) {
-      case EasingPreset::Linear:
-        return "Straight through: OUT tracks IN with no shaping.";
-      case EasingPreset::EaseOut:
-        return "Quick at first, flattening toward the top.";
-      case EasingPreset::SCurve:
-        return "Slow at both ends, fast through the middle.";
-      case EasingPreset::LogTaper:
-        return "log(1+9p)/log(10) -- PaintCopilot's radius law.\n"
-               "Most of the growth in the first light third of\n"
-               "the range. On PRESSURE -> SIZE this is how a real\n"
-               "brush head spreads: it fattens fast off the paper,\n"
-               "then resists.";
-      case EasingPreset::PowerIn:
-        return "p^2.5 -- PaintCopilot's opacity law, the mirror\n"
-               "shape. Barely builds at low IN, most of the gain\n"
-               "in the top third. On PRESSURE -> FLOW that is a\n"
-               "long, honest light range before the mark goes solid.";
-    }
-    return "";
-  };
-  // Three per row: five chips do not fit the panel's width, and letting them
-  // run off the edge would hide the last ones behind a clip rather than
-  // showing them -- which would be the same unreachability wearing a chip.
-  for (size_t i = 0; i < easingPresetCount(); ++i) {
-    if (i > 0 && (i % 3) != 0) ImGui::SameLine();
-    const EasingPreset preset = easingPresetAt(i);
-    const bool active = matchesPreset(link.curve, preset);
-    if (active) ImGui::PushStyleColor(ImGuiCol_Button, atelierToken(kAccent));
-    if (ImGui::Button(easingPresetName(preset))) link.curve = easingCurve(preset);
-    if (active) ImGui::PopStyleColor();
-    ImGui::SetItemTooltip("%s", chipTooltip(preset));
-  }
-}
+// drawDynamicsMatrix() and drawLinkEditor() moved to ui/DynamicsMatrixPanel.cpp --
+// see that header's own comment for why, and for the shelved matrix's three-edit
+// path back to being live again.
 
 // --- BRUSH LIBRARY ---------------------------------------------------------
 //
@@ -4185,6 +3809,59 @@ void saveBrushLibraries(AppState& st) {
 // in memory this session and silently drop every preset this session never
 // touched. Guarded by its own flag, so a frame where both call sites fire
 // costs one extra boolean check.
+// The dab library, scanned once and then only on demand (app/DabLibrary.hpp
+// §2). Cheap by construction -- one `stat()` per file against the index, no
+// decode for anything unchanged -- but still not run until something actually
+// needs a tip, which is the same lazy gate the two preference stores above use.
+// "Reveal in Finder" -- a watched folder nobody can find is not a feature.
+//
+// **The folder is created here, and this is the one place that creates it.**
+// `rescan()` deliberately does not (app/DabLibrary.hpp): a scan that made
+// directories because a picker opened would leave folders in the user's
+// Application Support for an application they only launched. Pressing a button
+// labelled "Reveal" is a different thing entirely -- it is a user asking to be
+// shown the folder, and showing them a path that does not exist would be a
+// worse answer than making it.
+//
+// `SDL_OpenURL` on a `file://` URL is what the platform layer already has;
+// there is no `open -R` shell-out here and no `NSWorkspace` call, so this is
+// the same on every platform SDL supports and adds no dependency.
+void revealDabFolder(AppState& st) {
+  std::error_code ec;
+  std::filesystem::create_directories(st.dabLibrary.userRoot(), ec);
+  const std::string url = "file://" + st.dabLibrary.userRoot();
+  if (!SDL_OpenURL(url.c_str()))
+    g_brushLibraryStatus = "could not open " + st.dabLibrary.userRoot();
+}
+
+void ensureDabLibraryScanned(AppState& st) {
+  if (st.dabLibraryScanned) return;
+  st.dabLibraryScanned = true;
+  st.dabLibrary.setRoots(dabUserRootPath(), dabImportedRootPath(), dabIndexPath());
+  st.dabLibrary.rescan();
+  // The load half of the persistence: `user-presets.txt` stores an id, not a
+  // bitmap, so this is what turns a freshly parsed preset's `dabId` into the
+  // tip it names. A preset whose tip has been deleted keeps its note and
+  // paints procedurally rather than failing to load.
+  std::vector<std::string> notes;
+  resolveDabIds(st.brush.brushLibrary, st.dabLibrary, &notes);
+  if (!notes.empty() && g_brushLibraryStatus.empty()) g_brushLibraryStatus = notes.front();
+
+  // `--brush-dab-demo <id>`: the same two assignments the picker's own
+  // selection makes, and deliberately the same two -- a demo path that set the
+  // brush differently from the control it stands in for would photograph
+  // something no user can reach.
+  if (!st.dabDemoId.empty()) {
+    if (auto bitmap = st.dabLibrary.resolve(st.dabDemoId)) {
+      st.brush.dabId = st.dabDemoId;
+      st.brush.tipBitmap = std::move(bitmap);
+    } else {
+      g_brushLibraryStatus = "--brush-dab-demo: no dab with id '" + st.dabDemoId + "'";
+    }
+    st.dabDemoId.clear();
+  }
+}
+
 void ensureUserBrushLibraryLoaded(AppState& st) {
   if (st.userBrushLibraryLoaded) return;
   st.userBrushLibraryLoaded = true;
@@ -4193,7 +3870,9 @@ void ensureUserBrushLibraryLoaded(AppState& st) {
                                         &err) &&
       !err.empty())
     g_brushLibraryStatus = err;
+  ensureDabLibraryScanned(st);
 }
+
 
 // Write user-presets.txt, and say so only when it fails -- saveBrushLibraries()'s
 // shape, for the file app/UserBrushLibrary.hpp §4 durability-hardens instead
@@ -4255,10 +3934,10 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
   // from -- only the hover branch gets the stationary+delay treatment.
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) || ImGui::IsItemClicked())
     ImGui::SetTooltip(
-        "Imports the brush PARAMETERS -- size, spacing, roundness, angle and the whole\n"
-        "dynamics graph. Sampled bitmap tips are not imported: those brushes will behave\n"
-        "like the originals and paint with this application's round tip. The import says\n"
-        "which ones.");
+        "Imports the brush parameters -- size, spacing, roundness, angle, the dynamics,\n"
+        "the paper texture -- and the sampled bitmap tips, which are written out to the\n"
+        "dab library so they survive unloading this pack. Anything that could not be\n"
+        "brought across is named in the import's own notes.");
   ImGui::Separator();
 
   const std::vector<BrushPaneRow> rows = st.brushLibraries.paneRows(lib);
@@ -4502,7 +4181,148 @@ void drawBrushLibrarySection(AppState& st, GpuContext& gpu, const MixboxLut& lut
   }
 }
 
-void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
+}  // namespace
+
+// --- The brush groups ------------------------------------------------------
+//
+// **Declared in ui/BrushSettingsWindow.hpp and defined here**, with external
+// linkage on purpose: the settings window calls the same code the docked
+// column does, so the two surfaces cannot drift into disagreeing about their
+// own brush. That header's section 2 gives the full reason the definitions
+// are here rather than there -- each group reaches this file's own file-local
+// helpers (`drawTestStroke()`, `ensureDabLibraryScanned()`,
+// `revealDabFolder()`, `saveUserBrushLibrary()`, the `ctlSlider()` family and
+// its shared widest-label column), and hoisting those out of an 11,000-line
+// file to satisfy a header would be a far larger and riskier change than
+// declaring five functions. Those helpers stay in the unnamed namespace above
+// and stay reachable from here, because an unnamed namespace is visible to
+// the namespace enclosing it.
+//
+// `drawBrushSection()` at the bottom calls them in column order; the window
+// calls them one per tab.
+
+namespace {
+
+// --- The presentation-table dispatch --------------------------------------
+//
+// `ui/BrushFieldPresentation.hpp`'s table says WHICH leaves get a control and
+// what each one is called and ranged; these functions say HOW to draw one,
+// dispatched on the leaf's own C++ type. Overloaded rather than templated or
+// switched, matching `brush/BrushModelIo.cpp`'s `toFieldString()`/
+// `parseField()` overload set for the identical reason: the set of types a
+// `BrushModel` leaf can be is CLOSED (bool, int32_t, float, std::string,
+// `VarianceControl`, `CoverageBlend`), so a leaf of some new type added to
+// `BrushModel` with no matching overload here fails to COMPILE rather than
+// silently drawing nothing or picking the wrong widget.
+
+void drawBrushFieldControl(const BrushFieldSpec& spec, bool& v) { ImGui::Checkbox(spec.label, &v); }
+
+void drawBrushFieldControl(const BrushFieldSpec& spec, int32_t& v) {
+  int iv = v;
+  if (ctlSliderInt(spec.label, &iv, spec.iLo, spec.iHi)) v = iv;
+}
+
+void drawBrushFieldControl(const BrushFieldSpec& spec, float& v) {
+  ctlSlider(spec.label, &v, spec.lo, spec.hi, spec.fmt);
+}
+
+void drawBrushFieldControl(const BrushFieldSpec& spec, std::string& v) {
+  char buf[256];
+  std::snprintf(buf, sizeof(buf), "%s", v.c_str());
+  if (spec.readOnly) {
+    ImGui::BeginDisabled(true);
+    ctlInputText(spec.label, buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+    ImGui::EndDisabled();
+  } else if (ctlInputText(spec.label, buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+    v = buf;
+  }
+}
+
+void drawBrushFieldControl(const BrushFieldSpec& spec, VarianceControl& v) {
+  if (ctlBeginCombo(spec.label, varianceControlName(v))) {
+    for (int i = 0; i <= static_cast<int>(VarianceControl::InitialDirection); ++i) {
+      const auto candidate = static_cast<VarianceControl>(i);
+      const bool selected = v == candidate;
+      if (ImGui::Selectable(varianceControlName(candidate), selected)) v = candidate;
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+}
+
+void drawBrushFieldControl(const BrushFieldSpec& spec, CoverageBlend& v) {
+  if (ctlBeginCombo(spec.label, coverageBlendName(v))) {
+    for (int i = 0; i <= static_cast<int>(CoverageBlend::LinearHeight); ++i) {
+      const auto candidate = static_cast<CoverageBlend>(i);
+      const bool selected = v == candidate;
+      if (ImGui::Selectable(coverageBlendName(candidate), selected)) v = candidate;
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+}
+
+// Draws every leaf of `st.brush.model` whose path starts with `prefix`, in
+// `visitBrushModelFields()`'s own walk order, skipping:
+//   * any path found in `skipPaths` -- already drawn by a hand-written
+//     control elsewhere on the SAME tab (Tip Shape's Radius/Angle/Roundness/
+//     Spacing/Hardness sliders, which use different units than a raw model
+//     leaf would);
+//   * any path with no row in `brushFieldPresentationTable()` -- silently,
+//     because `runBrushPanelBindingTest()` is what proves that means the
+//     path is instead on the omission table, not that it was forgotten.
+//
+// **`Variance::fadeSteps` is drawn disabled, with a reason, whenever its own
+// sibling `control` is not `Fade`** (Variance.hpp's own comment: fadeSteps
+// only matters under Fade). This walk can do that with one piece of local
+// state because `visitVariance()` (brush/BrushModelFields.hpp) always visits
+// a Variance's five leaves in the fixed order control/jitter/minimum/
+// fadeSteps/present, so the most recently seen `VarianceControl` is always
+// the fadeSteps leaf's own sibling, never a different Variance's.
+void drawBrushModelFieldsForPrefix(AppState& st, const char* prefix,
+                                    const std::set<std::string>& skipPaths = {}) {
+  const size_t prefixLen = std::strlen(prefix);
+  VarianceControl lastControl = VarianceControl::Off;
+  visitBrushModelFields(st.brush.model, [&](const std::string& path, auto& leaf) {
+    if (path.compare(0, prefixLen, prefix) != 0) return;
+    if (skipPaths.count(path) != 0) return;
+    using LeafType = std::decay_t<decltype(leaf)>;
+    if constexpr (std::is_same_v<LeafType, VarianceControl>) lastControl = leaf;
+    const BrushFieldSpec* spec = findBrushFieldSpec(path);
+    if (spec == nullptr) return;
+    if constexpr (std::is_same_v<LeafType, int32_t>) {
+      const bool isFadeSteps =
+          path.size() > 10 && path.compare(path.size() - 10, 10, ".fadeSteps") == 0;
+      if (isFadeSteps) {
+        const bool relevant = lastControl == VarianceControl::Fade;
+        ImGui::BeginDisabled(!relevant);
+        drawBrushFieldControl(*spec, leaf);
+        ImGui::EndDisabled();
+        if (!relevant) ImGui::TextDisabled("Only used when Control is Fade.");
+        return;
+      }
+    }
+    drawBrushFieldControl(*spec, leaf);
+  });
+}
+
+// Draws `path`'s own control (a checkbox, in practice -- every panel's own
+// `enabled` leaf is a bool) unconditionally, live, regardless of any
+// enclosing BeginDisabled(). Used for the one control on each gated tab that
+// must stay clickable even while the rest of the tab is greyed out: the
+// checkbox that turns the greying off.
+void drawBrushModelField(AppState& st, const char* path) {
+  visitBrushModelFields(st.brush.model, [&](const std::string& p, auto& leaf) {
+    if (p != path) return;
+    const BrushFieldSpec* spec = findBrushFieldSpec(p);
+    if (spec == nullptr) return;
+    drawBrushFieldControl(*spec, leaf);
+  });
+}
+
+}  // namespace
+
+void drawBrushPresetHeader(AppState& st) {
   // Defensive, not the primary load site (that is drawBrushLibrarySection()
   // above): the BRUSH LIBRARY pane can be collapsed while this one is drawn,
   // and Save below must never write user-presets.txt from a `lib` that has
@@ -4573,7 +4393,9 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     ImGui::EndDisabled();
     ImGui::Separator();
   }
+}
 
+void drawBrushTipShapeGroup(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   // --- TIP ---------------------------------------------------------------
   // Radius, hardness and spacing already existed; roundness is new with this
   // panel. Spacing is in radii, and the design's caption is the reason it can
@@ -4586,15 +4408,98 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   drawTestStroke(st, gpu, lut);
   // kBrushRadiusMin/Max (app/AppState.hpp): the one range for this field,
   // also read by the options bar's SIZE slider. See that constant's comment.
-  ctlSlider("Radius", &st.brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
+  //
+  // `st.brush.radius`/`hardness`/`spacing`/`roundness`/`angle` are gone
+  // (Part 5) -- each is now a projection of `st.brush.model.tip`, read into
+  // a local before the slider (which needs a `float*` it can write through
+  // every frame) and written back after, in this widget's own units
+  // (radius is half of `diameterPx`; spacing is a 0..1 fraction of
+  // `spacingPercent`).
+  {
+    float radius = st.brush.model.tip.diameterPx / 2.0f;
+    ctlSlider("Radius", &radius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
+    st.brush.model.tip.diameterPx = radius * 2.0f;
+  }
   // kBrushHardnessMin/Max (app/AppState.hpp): the one range for this field,
   // also read by the options bar's HARD slider.
-  ctlSlider("Hardness", &st.brush.hardness, kBrushHardnessMin, kBrushHardnessMax);
-  ctlSlider("Spacing", &st.brush.spacing, 0.02f, 1.0f, "%.2f r");
-  ctlSlider("Roundness", &st.brush.roundness, 0.05f, 1.0f);
-  ctlSlider("Angle", &st.brush.angle, -180.0f, 180.0f, "%.0f deg");
+  ctlSlider("Hardness", &st.brush.model.tip.hardness, kBrushHardnessMin, kBrushHardnessMax);
+  {
+    // `spacing` here is in RADII (the slider's own "%.2f r" label, and the
+    // old, now-deleted `st.brush.spacing` scalar's exact range/unit:
+    // 0.02..1.0 r) -- `spacingPercent` is a percentage OF THE DIAMETER, so
+    // the boundary conversion is `/100 * 2` one way and `/2 * 100` (`* 50`)
+    // the other, not a bare `/100`/`* 100`. See
+    // `app/StrokeSession::brushTipFor()`'s own comment on `tip.spacing` for
+    // the full argument.
+    float spacing = st.brush.model.tip.spacingPercent / 100.0f * 2.0f;
+    ctlSlider("Spacing", &spacing, 0.02f, 1.0f, "%.2f r");
+    st.brush.model.tip.spacingPercent = spacing * 50.0f;
+  }
+  ctlSlider("Roundness", &st.brush.model.tip.roundness, 0.05f, 1.0f);
+  ctlSlider("Angle", &st.brush.model.tip.angleDeg, -180.0f, 180.0f, "%.0f deg");
   ImGui::TextDisabled("Dabs are spaced by arc length, not by time.");
 
+  // --- The tip itself -----------------------------------------------------
+  //
+  // Below the shape sliders rather than above them, because the sliders shape
+  // whatever tip is chosen and the preview at the top of this section already
+  // shows the result: the order reads "here is what it does, here is its
+  // shape, here is what it is stamping".
+  //
+  // **The whole panel is one call into `ui/DabPicker`** -- the merge rule for
+  // this file is move code out, never in, and a grid with a hit test and an
+  // atlas in it is exactly the kind of thing that should not be another two
+  // hundred lines here. It reports; this block decides.
+  if (ImGui::TreeNodeEx("Tip", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ensureDabLibraryScanned(st);
+    const DabPickerAction action = drawDabPicker("brush-tip", st.dabLibrary, gpu, st.brush.dabId);
+    if (action.rescanRequested) st.dabLibrary.rescan();
+    if (action.revealRequested) revealDabFolder(st);
+    if (action.selected) {
+      // **The tip, and nothing else** (ui/DabPicker.hpp §3). Radius, spacing,
+      // hardness and roundness are left exactly as they were, so trying the
+      // next tip along is one click to do and one to undo.
+      st.brush.dabId = action.id;
+      st.brush.tipBitmap = action.id.empty() ? nullptr : st.dabLibrary.resolve(action.id);
+      // An id that resolved a moment ago for the thumbnail and does not now
+      // means the file went away between the two. Falling back to the
+      // procedural tip AND clearing the id keeps the two in step -- an id
+      // naming a bitmap the brush is not using is what would get saved.
+      if (!action.id.empty() && st.brush.tipBitmap == nullptr) st.brush.dabId.clear();
+    }
+    if (action.useNativeSize && action.nativeWidth > 0 && action.nativeHeight > 0) {
+      // The tip's own larger dimension is its DIAMETER; Radius is half of it.
+      // Same reading `io/AbrBrushes.cpp` gives a `#Prc` diameter, and clamped
+      // to the slider's own range rather than to something wider, so the
+      // button can never put the brush somewhere the slider cannot express.
+      const float diameter = static_cast<float>(std::max(action.nativeWidth, action.nativeHeight));
+      st.brush.model.tip.diameterPx =
+          std::clamp(diameter * 0.5f, kBrushRadiusMin, kBrushRadiusMax) * 2.0f;
+    }
+    if (action.useFileSpacing)
+      // `action.fileSpacing` is already in the same RADII unit the slider
+      // above uses (`ui/DabPicker.cpp`'s own conversion off the dab
+      // library's `spacingPercent` field) -- `* 50` is the radii ->
+      // percent-of-diameter boundary conversion, not `* 100` (this group's
+      // Spacing slider, just above, names the same factor of two).
+      st.brush.model.tip.spacingPercent = std::clamp(action.fileSpacing, 0.02f, 1.0f) * 50.0f;
+    ImGui::TreePop();
+  }
+
+  // --- The rest of tip.* ---------------------------------------------------
+  //
+  // diameterPx/angleDeg/roundness/spacingPercent/hardness are drawn above by
+  // hand, in different units (radius, spacing-in-radii) than a raw model
+  // leaf would use -- skipped here so this walk cannot draw a second,
+  // differently-scaled control for the same field. `tip.computed` is on
+  // `ui/BrushFieldPresentation`'s omission table, so it is simply absent
+  // from `brushFieldPresentationTable()` and this walk skips it on its own.
+  drawBrushModelFieldsForPrefix(
+      st, "tip.",
+      {"tip.diameterPx", "tip.angleDeg", "tip.roundness", "tip.spacingPercent", "tip.hardness"});
+}
+
+void drawBrushPaintGroup(AppState& st) {
   // kBrushLoadMin/Max (app/AppState.hpp): the one range for this field, also
   // read by the options bar's LOAD slider.
   ctlSlider("Load", &st.brush.load, kBrushLoadMin, kBrushLoadMax);
@@ -4707,7 +4612,9 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     popAtelierMono();
     ImGui::EndGroup();
   }
+}
 
+void drawBrushTextureGroup(AppState& st, bool ownPage) {
   // --- PAPER GRAIN ---------------------------------------------------------
   // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) -- docs/
   // reachability-audit.md's B10 caught exactly this mistake once already: a
@@ -4724,22 +4631,49 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
   // from the watercolour solver's own "Grain block" slider two panels over
   // (`drawMediumSection()`'s `st.sim.grainBlock`, an unrelated granulation-
   // blocking parameter on the fluid model): the two are different mechanisms
-  // on different routes (this one on the CPU pigment deposit, that one on
+  // on different routes (this one on the CPU layer routes, that one on
   // `sim::PaintSim`), and a user who has seen one "Grain" slider elsewhere
   // must not read this one as the same control moved.
-  if (ImGui::CollapsingHeader("PAPER GRAIN")) {
-    // **Reaches exactly one route** -- brush/Deposit.hpp §2e's own stated
-    // scope: `depositDab()` (the Pigment layer's CPU deposit) and its
-    // preview. `brush/RgbDeposit.cpp` calls `dabCoverage()` directly and was
-    // left untouched by that step, so an RGB layer's stroke ignores this
-    // section entirely, same disabled-rather-than-hidden honesty OPACITY and
-    // WET already give a route that cannot use them, and for the identical
-    // reason: a painter who turns this on and sees no change on an RGB layer
-    // is told why instead of concluding the slider is broken.
+  //
+  // `ownPage` short-circuits the header rather than passing it a
+  // default-open flag: on a tab there should be no header, not an opened one.
+  // ui/BrushSettingsWindow.hpp carries the reasoning.
+  //
+  // **`ownPage` now also draws a `SeparatorText()` label**, unlike before
+  // this task: a tab used to have exactly one topic, so no title was needed
+  // (the tab's own label already said what the page was) -- now it has two,
+  // PAPER GRAIN and the model.texture.* section appended below, and two
+  // controls both named "Enabled" with two different "Scale"/"Depth"
+  // sliders under them is genuinely ambiguous without one.
+  if (ownPage) ImGui::SeparatorText("PAPER GRAIN");
+  if (ownPage || ImGui::CollapsingHeader("PAPER GRAIN")) {
+    // **Reaches all four layer-writing routes**, and that is a correction
+    // rather than a fact that was always true. This block used to read
+    // `honoured = route == StrokeRoute::CpuDeposit` and grey itself out on
+    // every other route, because grain genuinely was called from
+    // `depositDab()` alone; `brush/RgbDeposit.cpp`, `brush/RgbErase.cpp` and
+    // `brush/PigmentErase.cpp` each computed coverage and never asked the
+    // paper about it.
+    //
+    // The texture work closed that gap in the engine -- all four now call
+    // `grainCoverageAt()` -- and **left this predicate behind**, which is the
+    // worse half of the same defect the disabled-with-a-reason idiom exists to
+    // prevent: a control that works, greyed out, over a sentence explaining
+    // that it cannot. An RGB layer is what File > New gives you, so that was
+    // every stroke most painters make.
+    //
+    // What is left is a real limit and keeps its honesty: the SOLVER route
+    // (`sim::PaintSim`) has no grain of its own, and no CPU coverage for
+    // `grainCoverageAt()` to modify.
+    //
+    // The answer is `grainReachesRoute()` (app/StrokeSession.hpp) rather than
+    // a four-way comparison written out here, for the reason that predicate's
+    // own comment gives: a private copy of the answer is what went stale in
+    // the first place, and there is now a selftest standing behind this one.
     const OpenDocument* od = st.documents.active();
     const Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
     const StrokeRoute route = strokeRouteFor(st.brush.tool, target);
-    const bool honoured = route == StrokeRoute::CpuDeposit;
+    const bool honoured = grainReachesRoute(route);
     ImGui::BeginDisabled(!honoured);
     ImGui::Checkbox("Enabled", &st.brush.grain.enabled);
     ImGui::BeginDisabled(!st.brush.grain.enabled);
@@ -4760,7 +4694,7 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (!honoured)
-      ImGui::TextDisabled("Grain reaches the Pigment layer deposit; this stroke goes to %s.",
+      ImGui::TextDisabled("Grain reaches the layer routes; this stroke goes to %s.",
                           strokeRouteName(route));
     else if (st.brush.grain.enabled)
       ImGui::TextDisabled("Deep valleys fill; peaks get skipped, at the same pressure.");
@@ -4768,15 +4702,176 @@ void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
       ImGui::TextDisabled("Off: every dab covers exactly what its falloff says, paper or not.");
   }
 
+  // --- BrushModel::texture -- Photoshop's imported Texture panel ----------
+  //
+  // A DIFFERENT struct from PAPER GRAIN above (`st.brush.grain`): this is
+  // `model.texture`, what a '.abr' file's own Texture panel carries --
+  // pattern, scale, depth, blend mode, brightness/contrast. Not yet read at
+  // paint time (`BrushModel.hpp`'s own comment: "imported by nothing until
+  // now" still holds for this struct, unlike shape/scatter/transfer, which
+  // Phase B/C wired), so its controls are shown live and persist to the
+  // model and the saved preset -- the same treatment Tool Options gets, for
+  // the same reason: this is ordinary "not wired yet", not the specific,
+  // permanent refusals Dual Brush's LinearHeight blend or Color Dynamics
+  // carry.
+  //
+  // `ownPage`-gated for the identical reason PAPER GRAIN's own header is:
+  // the docked column has no room for 16 more controls (`ui/
+  // BrushSettingsWindow.hpp` §2's asymmetry) -- so this section exists only
+  // on the window's own Texture tab.
+  if (ownPage) {
+    ImGui::SeparatorText("TEXTURE (IMPORTED)");
+    drawBrushModelField(st, "texture.enabled");
+    const bool enabled = st.brush.model.texture.enabled;
+    ImGui::BeginDisabled(!enabled);
+    drawBrushModelFieldsForPrefix(st, "texture.", {"texture.enabled"});
+    ImGui::EndDisabled();
+    if (!enabled)
+      ImGui::TextDisabled("Texture is off -- turn it on above to edit these.");
+  }
+}
+
+// **The two draws below are gated behind `st.showAdvancedDynamics`.** The
+// 10x12 LINK MATRIX (`ui/DynamicsMatrixPanel.hpp`) is shelved: nothing that
+// paints reads `BrushState::links` any more (brush/BrushModel.hpp's own
+// header), so drawing it un-gated would show a live-looking editor over a
+// brush property that no longer does anything. `--advanced-dynamics` is the
+// flag that reopens it -- see `ui/DynamicsMatrixPanel.hpp` for the
+// three-edit path all the way back to it driving a stroke again.
+void drawBrushDynamicsGroup(AppState& st) {
   // --- DYNAMICS ----------------------------------------------------------
   if (ImGui::CollapsingHeader("DYNAMICS", ImGuiTreeNodeFlags_DefaultOpen)) {
     pushAtelierMono();
     ImGui::Text("%zu LINKS", st.brush.links.links.size());
     popAtelierMono();
-    drawDynamicsMatrix(st);
+    if (st.showAdvancedDynamics) drawDynamicsMatrix(st);
   }
-  if (ImGui::CollapsingHeader("LINK", ImGuiTreeNodeFlags_DefaultOpen)) drawLinkEditor(st);
+  if (ImGui::CollapsingHeader("LINK", ImGuiTreeNodeFlags_DefaultOpen))
+    if (st.showAdvancedDynamics) drawLinkEditor(st);
 }
+
+// --- The six Photoshop-shaped, presentation-table-driven groups -----------
+//
+// Window-only (`ui/BrushSettingsWindow.hpp` §2's asymmetry) and each built
+// the same way: the panel's own `Enabled` checkbox drawn live by hand (so it
+// stays clickable while the rest of the tab is greyed out), then a generic
+// walk of that panel's own path prefix through `ui/BrushFieldPresentation`'s
+// table, disabled with a one-line reason when the panel itself is off. Every
+// leaf either gets a control this way or is on the omission table --
+// `runBrushPanelBindingTest()` is what proves it.
+
+void drawBrushShapeDynamicsGroup(AppState& st) {
+  drawBrushModelField(st, "shape.enabled");
+  const bool enabled = st.brush.model.shape.enabled;
+  ImGui::BeginDisabled(!enabled);
+  drawBrushModelFieldsForPrefix(st, "shape.", {"shape.enabled"});
+  ImGui::EndDisabled();
+  if (!enabled) ImGui::TextDisabled("Shape Dynamics is off -- turn it on above to edit these.");
+}
+
+void drawBrushScatteringGroup(AppState& st) {
+  drawBrushModelField(st, "scatter.enabled");
+  const bool enabled = st.brush.model.scatter.enabled;
+  ImGui::BeginDisabled(!enabled);
+  drawBrushModelFieldsForPrefix(st, "scatter.", {"scatter.enabled"});
+  ImGui::EndDisabled();
+  if (!enabled) ImGui::TextDisabled("Scattering is off -- turn it on above to edit these.");
+}
+
+void drawBrushDualBrushGroup(AppState& st) {
+  drawBrushModelField(st, "dual.enabled");
+  const bool enabled = st.brush.model.dual.enabled;
+  ImGui::BeginDisabled(!enabled);
+
+  // Blend Mode stays live inside the `enabled` gate but OUTSIDE the
+  // renderability gate below it -- a painter stuck on Linear Height needs
+  // this control clickable to get off it.
+  drawBrushModelField(st, "dual.blend");
+
+  // **Linear Height is REFUSED, deliberately** (brush/CoverageBlend.hpp's
+  // own comment on `CoverageBlend::LinearHeight`): no per-pixel formula in
+  // any source consulted, and `applyCoverageBlend()` will not compute it --
+  // `coverageBlendIsRenderable()` is the same predicate that function's own
+  // caller must check. 29 of 66 dual-brush presets measured name it, so this
+  // is not a rare corner: the second tip's shape/scatter controls below are
+  // real but currently inert whenever this is the blend, and this says so
+  // rather than leaving them live over nothing.
+  const bool blendRenderable = coverageBlendIsRenderable(st.brush.model.dual.blend);
+  ImGui::BeginDisabled(!blendRenderable);
+  drawBrushModelFieldsForPrefix(st, "dual.", {"dual.enabled", "dual.blend"});
+  ImGui::EndDisabled();
+  if (!blendRenderable)
+    ImGui::TextDisabled(
+        "Linear Height is refused, deliberately -- no per-pixel formula for it exists in "
+        "any source consulted. Pick a different Blend Mode above to edit these.");
+
+  ImGui::EndDisabled();
+  if (!enabled) ImGui::TextDisabled("Dual Brush is off -- turn it on above to edit these.");
+}
+
+void drawBrushColorDynamicsGroup(AppState& st) {
+  // **A permanent fact about the ENGINE, independent of this panel's own
+  // `enabled` gate below** -- `StrokeSession::brushTipFor()` passes the
+  // Hue/Saturation/Value identity regardless of what is set here (that
+  // function's own comment: "future work, not this commit's"), and measured
+  // 1 of 101 presets uses this panel at all. So this is a standing caption,
+  // not a BeginDisabled(): the controls stay live and persist to the model
+  // and the saved preset either way, honestly reflecting that this build
+  // remembers Color Dynamics without yet painting from it.
+  textDisabledWrapped(
+      "naturalPaint does not yet apply Color Dynamics to a stroke. These settings persist "
+      "to the model and the saved preset, but are not read when painting.");
+  ImGui::Separator();
+
+  drawBrushModelField(st, "color.enabled");
+  const bool enabled = st.brush.model.color.enabled;
+  ImGui::BeginDisabled(!enabled);
+  drawBrushModelFieldsForPrefix(st, "color.", {"color.enabled"});
+  ImGui::EndDisabled();
+  if (!enabled) ImGui::TextDisabled("Color Dynamics is off -- turn it on above to edit these.");
+}
+
+void drawBrushTransferGroup(AppState& st) {
+  drawBrushModelField(st, "transfer.enabled");
+  const bool enabled = st.brush.model.transfer.enabled;
+  ImGui::BeginDisabled(!enabled);
+  drawBrushModelFieldsForPrefix(st, "transfer.", {"transfer.enabled"});
+  ImGui::EndDisabled();
+  if (!enabled) ImGui::TextDisabled("Transfer is off -- turn it on above to edit these.");
+}
+
+void drawBrushToolOptionsGroup(AppState& st) {
+  // No `enabled` field on `PsToolOptions` -- Tool Options has no off switch
+  // in Photoshop either (BrushSettingsTab::ToolOptions's own comment).
+  drawBrushModelFieldsForPrefix(st, "options.");
+
+  // The bare top-level checkbox tail -- `noise`/`wetEdges`/`airbrush`/
+  // `brushPose`, no `options.` prefix and no Photoshop panel of their own
+  // (`BrushModel::noise`'s own comment calls this "the checkbox tail of
+  // Photoshop's panel"). Landed on this tab for lack of a more specific one
+  // -- see `BrushSettingsTab::ToolOptions`'s own comment on the decision.
+  ImGui::Separator();
+  textDisabledWrapped(
+      "Parsed from the file and carried; none of the four below is applied to a stroke "
+      "yet -- io/AbrBrushes.cpp has each one's own refusal reason.");
+  drawBrushModelField(st, "noise");
+  drawBrushModelField(st, "wetEdges");
+  drawBrushModelField(st, "airbrush");
+  drawBrushModelField(st, "brushPose");
+}
+
+// The docked BRUSH column: every group, in the order it has always drawn
+// them. The window (ui/BrushSettingsWindow) draws the same five calls one per
+// tab, which is what makes the two surfaces incapable of disagreeing.
+void drawBrushSection(AppState& st, GpuContext& gpu, const MixboxLut& lut) {
+  drawBrushPresetHeader(st);
+  drawBrushTipShapeGroup(st, gpu, lut);
+  drawBrushPaintGroup(st);
+  drawBrushTextureGroup(st, /*ownPage=*/false);
+  drawBrushDynamicsGroup(st);
+}
+
+namespace {
 
 // A5 (reachability audit): Density, Staining and Granulation used to be live
 // `ctlSlider()`s here, and a drag on any of them worked for exactly one
@@ -9318,6 +9413,7 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.grayscale = st.view.grayscale;
   ctx.showRulers = st.showRulers;
   ctx.showNavigator = st.showNavigator;
+  ctx.showBrushSettings = st.showBrushSettings;
   ctx.showGuides = st.showGuides;
   ctx.showGrid = st.showGrid;
   ctx.snappingEnabled = st.snappingEnabled;
@@ -9765,6 +9861,13 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::GrayscalePreview: st.view.grayscale = !st.view.grayscale;   break;
     case MenuAction::Rulers:           st.showRulers = !st.showRulers;           break;
     case MenuAction::Navigator:        st.showNavigator = !st.showNavigator;     break;
+    // Inline, not Deferred: this flips a bool that next frame's
+    // `drawBrushSettingsWindow()` reads. It opens no ImGui popup, so it is
+    // safe to perform from a native menu callback with no frame in progress
+    // -- which is the distinction MenuEffect exists to make.
+    case MenuAction::BrushSettings:
+      st.showBrushSettings = !st.showBrushSettings;
+      break;
     case MenuAction::Guides:           st.showGuides = !st.showGuides;           break;
     case MenuAction::Grid:             st.showGrid = !st.showGrid;               break;
     case MenuAction::Snap:             st.snappingEnabled = !st.snappingEnabled; break;
@@ -11656,13 +11759,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // frame that has drawn every open panel once, and moves again only if a
   // panel that opens later carries a wider label. A log line is what makes "no
   // label is clipped" a number rather than a look at a screenshot.
-  if (g_labelColumn != g_reportedColumn) {
-    g_reportedColumn = g_labelColumn;
-    std::printf("[controls] label column %.0f px -- widest label \"%s\" at %.0f px, "
-                "right dock %.0f px, so a slider gets %.0f px\n",
-                g_labelColumn, g_widestLabel.c_str(), g_widestLabelPx, bands.rightDock.w,
-                std::max(0.0f, bands.rightDock.w - g_labelColumn));
-  }
+  //
+  // **Neither side of this merge compiled on its own**, which is why the
+  // resolution is a third thing rather than a choice. D0 moved the state this
+  // reads (`g_labelColumn` and friends) into ui/LabelledControl.cpp as
+  // file-static, so main's inline `printf` no longer had the symbols; and D0's
+  // replacement call passed `kControlsW`, which the dockable-panel revision
+  // deleted (see this file's own note on it) because the right-hand column
+  // stopped being a fixed width. So: D0's factoring -- this is the one call
+  // into that module from outside its own six functions -- carrying main's
+  // number, `bands.rightDock.w`, the dock extent the user actually drags.
+  //
+  // The branch's 93-line controls-column loop that also sat in this conflict
+  // is deliberately NOT here: it is the pre-dock single column, and the four
+  // `drawDock()` calls above are what replaced it.
+  reportLabelColumnIfChanged(bands.rightDock.w, bands.rightDock.w);
 
   // ------------------------------------------------------------ canvas
   //
@@ -12325,8 +12436,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // `radiusForDrag()` is where the "this is still honestly a pure
       // function of total drag pixels" argument lives; it does not need
       // restating at every call site.
-      st.brush.radius =
-          clampBrushRadius(radiusForDrag(st.brush.radius, ImGui::GetIO().MouseDelta.x));
+      const float radius = st.brush.model.tip.diameterPx / 2.0f;
+      st.brush.model.tip.diameterPx =
+          clampBrushRadius(radiusForDrag(radius, ImGui::GetIO().MouseDelta.x)) * 2.0f;
     }
 
     // --- zoom, anchored the same way regardless of what triggered it (PRD
@@ -13213,27 +13325,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const BrushTip tip = brushTipFor(st.brush, lut, live);
       if (!g_stroke.active()) {
         g_strokeRefusal.clear();
-        // **`&st.brush.links` is what makes the stroke-local dynamics sources
-        // reach a real stroke.** Velocity, Fade, Noise and Random resolve per
-        // dab inside `StrokeSession`, not once per frame in `dynamicInputsFor()`
-        // above, so they can only be driven by a link set the session holds for
-        // the stroke's whole life. The track that built those four sources could
-        // not add this argument -- this block was reserved for another track at
-        // the time -- and said so plainly: without it the four were reachable
-        // from `--selftest` and from nowhere a user could click, which is the
-        // exact defect class docs/reachability-audit.md exists to remove. It is
-        // one argument, and it is the whole difference between "implemented" and
-        // "reachable".
-        //
-        // Direction, and Initial Direction after it, added later as this
-        // same link set's fifth and sixth stroke-local sources, needed no
-        // second argument here -- each rides this identical
-        // `&st.brush.links` pointer into `StrokeSession::begin()`, so each
-        // was reachable from the live canvas from the moment
-        // `sourceIsStrokeLocal()` learned about it, with no change to this
-        // block at all.
+        // **`&st.brush.model` is what makes the Variance-driven, per-dab
+        // sources reach a real stroke.** Size, Angle and Roundness resolve
+        // per dab inside `StrokeSession`, not once per frame in
+        // `dynamicInputsFor()` above, so they can only be driven by a model
+        // the session holds for the stroke's whole life. This used to be
+        // `&st.brush.links` -- the matrix's `BrushLinkSet`, now shelved
+        // behind `--advanced-dynamics` (`ui/DynamicsMatrixPanel.hpp`) -- and
+        // that pointer was what made ITS stroke-local sources (Velocity,
+        // Fade, Noise, Random, Direction, Initial Direction) reachable from
+        // a real click rather than only from `--selftest`. `live` is passed
+        // alongside as the hardware sample `begin()` latches for the
+        // stroke's life, the same role `&st.brush.links` used to share this
+        // call with.
         if (!g_stroke.begin(*strokeDoc, strokeDoc->activeLayer, tip, st.brush.tool,
-                            &g_strokeRefusal, &st.brush.links)) {
+                            &g_strokeRefusal, &st.brush.model, live)) {
           st.paintingThisFrame = false;
         }
         st.lastX = tx;
@@ -13255,7 +13361,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // before a single dab is ever emitted from it.
         DynamicInputs smoothed = live;
         smoothed.pressure = g_stroke.smoothPressure(live.pressure);
-        g_stroke.setTip(brushTipFor(st.brush, lut, smoothed));
+        g_stroke.setTip(brushTipFor(st.brush, lut, smoothed), smoothed);
         g_stroke.addPoint(tx, ty);
         st.lastX = tx;
         st.lastY = ty;
@@ -13392,9 +13498,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // See that field's own comment (brush/Deposit.hpp) for the worked
         // counter-example proving a floor belongs at the LAST multiply, not
         // folded into an intermediate one.
+        //
+        // `st.brush.radius`/`spacing` are gone (Part 5) -- this SOLVER
+        // route (`sim::PaintSim`, not the CPU deposit `brushTipFor()`/
+        // `StrokeSession` migrated elsewhere in this change) still reads
+        // `st.brush.links` directly, unmigrated and out of this task's own
+        // scope; only the two deleted scalars are redirected here, to their
+        // `model.tip` projections, with no other change to this route's
+        // behaviour.
+        const float baseRadius = st.brush.model.tip.diameterPx / 2.0f;
         st.sim.brushRadius =
-            std::max(st.brush.radius * sizeMul,
-                     st.brush.radius *
+            std::max(baseRadius * sizeMul,
+                     baseRadius *
                          st.brush.links.multiplyFloor[static_cast<size_t>(DynamicTarget::Size)]);
         st.sim.brushPigment *= flowMul;
         st.sim.brushWater *= flowMul;
@@ -13405,7 +13520,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // along the smoothed path, carrying any leftover sub-spacing
         // distance across frames so spacing stays continuous rather than
         // resetting on every render frame.
-        const float spacingPx = std::max(st.brush.spacing * st.sim.brushRadius, 0.1f);
+        //
+        // `spacingPercent` is a percentage OF THE DIAMETER; this route wants
+        // a fraction OF THE RADIUS (same "radii" unit the old, now-deleted
+        // `st.brush.spacing` scalar always held) -- `/100 * 2` is that
+        // conversion, identically to `app/StrokeSession::brushTipFor()`'s
+        // own `tip.spacing` (its comment names the same doubling).
+        const float spacingPx =
+            std::max(st.brush.model.tip.spacingPercent / 100.0f * 2.0f * st.sim.brushRadius, 0.1f);
         st.strokePath.addPoint(tx, ty, spacingPx, st.pendingDabs);
         applyDabsToOilSegment();
 
@@ -13418,7 +13540,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // back for lack of a real "next" sample to confirm its shape --
         // otherwise the last stretch of a stroke (up to one spacing
         // interval) silently deposits nothing.
-        const float spacingPx = std::max(st.brush.spacing * st.sim.brushRadius, 0.1f);
+        const float spacingPx = std::max(st.brush.model.tip.spacingPercent / 100.0f * 2.0f * st.sim.brushRadius, 0.1f);
         st.strokePath.flush(spacingPx, st.pendingDabs);
         applyDabsToOilSegment();
       }
@@ -13686,7 +13808,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // the brush's tip (ADR-0007), so the ring is telling the truth about the
     // footprint of the next dab whichever direction that dab moves the alpha.
     if (hovered && strokeTool && inside) {
-      dl->AddCircle(mouse, st.brush.radius * st.view.zoom,
+      dl->AddCircle(mouse, (st.brush.model.tip.diameterPx / 2.0f) * st.view.zoom,
                     IM_COL32(235, 235, 225, 170), 32, 1.0f);
     }
 
@@ -14127,6 +14249,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // One write per frame that changed something. See where
   // `panelLayoutChanged` is declared for why it is not one write per gesture.
   if (panelLayoutChanged) savePanelLayout(st);
+
+  // Modeless, and drawn here rather than inside a docked panel's own window:
+  // a `Begin()` nested inside another window's draw is a child of it, and this
+  // one has to be able to float over the canvas and outlive the panel being
+  // scrolled or collapsed.
+  drawBrushSettingsWindow(st, gpu, lut);
 
   if (st.showDemo) ImGui::ShowDemoWindow(&st.showDemo);
 

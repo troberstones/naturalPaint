@@ -30,24 +30,38 @@
 # same script did five minutes ago rather than on the code under test.
 # Discovered by hitting it directly while picking these views.
 #
-# **And with its own empty $NP_PANEL_LAYOUT** (app/PanelLayout.cpp), for the
-# same reason and with a far larger blast radius. Since the dockable-panel
-# revision the entire chrome -- which panels exist, which dock they are in,
-# which are collapsed, and how wide each dock is -- comes out of
-# `~/Library/Application Support/naturalPaint/panel-layout.txt`. A developer
-# who collapses a panel in the running app has silently changed what every
-# golden view captures from then on, and the references in this repo would
-# then encode one machine's session rather than the code.
+# **The same argument applies to every other preference file, and used not to
+# be made.** The app also reads a panel layout, a brush-library registry, a
+# dab folder and a document-preset list out of
+# `~/Library/Application Support/naturalPaint/`, and each of them changes what
+# the chrome looks like:
 #
-# That is not hypothetical: it happened during the revision that added this
-# line. Four views came back red, and the cause was that a hand-testing
-# session had left COLOR, BRUSH LIBRARY, BRUSH EDITOR and LAYERS collapsed,
-# so `layers` had captured an empty dock -- no rows at all -- and the crop
-# had been re-aimed twice against that. Pointing the app at a scratch file
-# that does not exist makes every capture start from
-# `PanelLayout::resetToDefault()`, which is the arrangement the references
-# are supposed to be OF. The app may write to this path; nothing reads it
-# back, because it is deleted before each capture.
+#   * `panel-layout.txt` records which sections of the right-hand column are
+#     open. Open one more and the column's content grows past its height, a
+#     scrollbar appears, and **sixteen pixels of every crop that reaches the
+#     window's right edge change colour**.
+#   * `brush-libraries.txt` records imported `.abr` packs and caches a row per
+#     brush. Importing a pack makes the BRUSH LIBRARY pane taller, with the
+#     same consequence.
+#   * `dabs/` and `dabs-imported/` (app/DabLibrary) size the tip grid.
+#   * `document-presets.txt` sizes the New Document dialog's list.
+#
+# This was found the way these things are found: `layers` failed with a
+# diffuse 3046-pixel shift that was neither noise nor a code change -- it was
+# a 16 px scrollbar at the crop's right edge, and the only thing that had
+# happened was a human opening the application and leaving two more panels
+# expanded than the references were blessed with. A regression detector whose
+# verdict depends on which panels the developer last had open is not detecting
+# regressions; it is reporting the developer.
+#
+# So each capture gets its own empty scratch copies of all of them, via the
+# same env overrides the app already supports for exactly this purpose
+# (`NP_PANEL_LAYOUT`, `NP_BRUSH_LIBRARIES`, `NP_DAB_DIR`,
+# `NP_DOCUMENT_PRESETS`). Pointing them at paths that do not exist yet is
+# deliberate and is what the app's own defaults are for: a missing file means
+# "no imported libraries, no dabs, the built-in panel layout", which is a
+# defined starting state, the same one on every machine, and the one the
+# references are blessed against.
 #
 # Reference images are kept tightly cropped, not full-window, both for
 # repository size and because a smaller region is less likely to contain an
@@ -530,12 +544,16 @@ run_view_capture() {
   local idx="$1" outPng="$2" jdir="$3"
   local name="${view_names[$idx]}"
   local fullPng="$WORK_DIR/${name}.full.png"
-  # See the header note: an absent file is what makes the app fall back to
-  # `PanelLayout::resetToDefault()`, so this is removed rather than written.
-  local layoutFile="$WORK_DIR/${name}.panel-layout.txt"
   mkdir -p "$jdir"
-  rm -f "$layoutFile"
-  if ! NP_JOURNAL_DIR="$jdir" NP_PANEL_LAYOUT="$layoutFile" \
+  # The preference isolation described at the top of this file. `$jdir` is
+  # already per-capture and already empty, so it doubles as the scratch root
+  # for the rest -- and the app CREATES these on save rather than requiring
+  # them, so naming files that do not exist is the whole mechanism.
+  if ! NP_JOURNAL_DIR="$jdir" \
+      NP_PANEL_LAYOUT="$jdir/panel-layout.txt" \
+      NP_BRUSH_LIBRARIES="$jdir/brush-libraries.txt" \
+      NP_DAB_DIR="$jdir/dabs-root" \
+      NP_DOCUMENT_PRESETS="$jdir/document-presets.txt" \
       "$BIN" ${view_args[$idx]} --screenshot "$fullPng" "${view_frames[$idx]}" \
       > "$WORK_DIR/${name}.stdout.log" 2> "$WORK_DIR/${name}.stderr.log"; then
     echo "run_golden.sh: $name: naturalPaint exited nonzero -- see $WORK_DIR/${name}.stderr.log" >&2

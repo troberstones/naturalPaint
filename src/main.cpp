@@ -23,6 +23,7 @@
 #include "app/AbrReport.hpp"
 #include "app/ProfileToggle.hpp"
 #include "app/PsdReport.hpp"
+#include "app/DabLibrary.hpp"
 #include "app/BrushSheet.hpp"
 #include "app/StrokePreview.hpp"
 #include "app/AppState.hpp"
@@ -53,6 +54,7 @@
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/BrushSettingsWindow.hpp"
 #include "ui/CanvasQuad.hpp"
 #include "ui/FileDialog.hpp"
 #include "ui/MacNativeMenu.hpp"
@@ -1093,6 +1095,7 @@ int main(int argc, char** argv) {
   bool openExportStates = false;
   const char* exportStatesFolder = nullptr;
   bool openLayerProperties = false;
+  bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
   // nothing, because this loop matched only `--flag` strings and fell
   // through every positional argument with no `else` to catch it -- silent,
@@ -1138,6 +1141,19 @@ int main(int argc, char** argv) {
   const char* profileTogglePath = nullptr;
   int profileToggleLayer = -1;
   int profileToggleIterations = 50;
+  // --abr-keys <file.abr> : one level below --abr-report -- the 8BIM section
+  // table and a census of every descriptor key the file actually contains.
+  // See app/AbrReport.hpp on why measuring beats remembering here.
+  const char* abrKeysPath = nullptr;
+  bool dabScan = false;
+  const char* dabImportPath = nullptr;
+  // --patt-write <file.abr> : the `patt`-block equivalent of --dab-import --
+  // extract a pack's scanned patterns into patterns-imported/ and report what
+  // landed. See app/DabLibrary's extractAbrPatterns().
+  const char* pattWritePath = nullptr;
+  const char* dabDemoId = nullptr;
+  bool brushSettingsDemo = false;
+  int brushSettingsDemoTab = -1;
   // --brush-sheet <file.abr> <out.png> : paint every imported preset with
   // Photoshop's own preview stroke and write one contact sheet. Also headless.
   const char* brushSheetAbr = nullptr;
@@ -1172,6 +1188,46 @@ int main(int argc, char** argv) {
       if (i + 1 < argc) profileTogglePath = argv[++i];
       if (i + 1 < argc) profileToggleLayer = std::atoi(argv[++i]);
       if (i + 1 < argc && argv[i + 1][0] != '-') profileToggleIterations = std::atoi(argv[++i]);
+    } else if (a == "--abr-keys") {
+      if (i + 1 < argc) abrKeysPath = argv[++i];
+    } else if (a == "--dab-scan") {
+      dabScan = true;
+    } else if (a == "--dab-import") {
+      if (i + 1 < argc) dabImportPath = argv[++i];
+    } else if (a == "--brush-dab-demo") {
+      // --brush-dab-demo <id> : put that dab on the brush before the first
+      // frame, so --screenshot can photograph the BRUSH EDITOR actually
+      // painting with a sampled tip. The picker needs a click and the
+      // screenshot path has no pointer. See AppState::dabDemoId.
+      if (i + 1 < argc) dabDemoId = argv[++i];
+    } else if (a == "--brush-settings-demo") {
+      // --brush-settings-demo : open ui/BrushSettingsWindow before the first
+      // frame, so `--screenshot` can photograph it. Same reason
+      // `--brush-dab-demo` exists -- the window is opened from a menu, and
+      // the screenshot path has no pointer to open one with. This is also the
+      // hook a golden case for the window would drive (Phase 8 of the ABR
+      // plan); it is deliberately a flag rather than a default, so no other
+      // capture grows a window over it.
+      brushSettingsDemo = true;
+      // An optional tab name, so a capture can photograph any one of the four
+      // rather than only whichever ImGui opens on. Matched against
+      // `brushSettingsTabName()` so there is one spelling of each, not two.
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        const std::string want = argv[++i];
+        for (size_t t = 0; t < np::kBrushSettingsTabCount; ++t) {
+          const auto tab = static_cast<np::BrushSettingsTab>(t);
+          if (want == np::brushSettingsTabName(tab)) {
+            brushSettingsDemoTab = static_cast<int>(t);
+            break;
+          }
+        }
+        if (brushSettingsDemoTab < 0)
+          std::fprintf(stderr,
+                       "--brush-settings-demo: '%s' is not a tab; opening on the "
+                       "default one. Tabs: TipShape ShapeDynamics Scattering Texture "
+                       "DualBrush ColorDynamics Transfer ToolOptions Dynamics\n",
+                       want.c_str());
+      }
     } else if (a == "--brush-sheet") {
       if (i + 1 < argc) brushSheetAbr = argv[++i];
       if (i + 1 < argc) brushSheetOut = argv[++i];
@@ -1326,6 +1382,15 @@ int main(int argc, char** argv) {
       // --open-export-states one dialog over: it too is opened by a click and
       // --screenshot has no input. See AppState::openLayerProperties.
       openLayerProperties = true;
+    } else if (a == "--patt-write") {
+      if (i + 1 < argc) pattWritePath = argv[++i];
+    } else if (a == "--advanced-dynamics") {
+      // --advanced-dynamics : reopen the shelved 10x12 LINK MATRIX editor
+      // (ui/DynamicsMatrixPanel.hpp) in the BRUSH column. Off by default now
+      // that brush/BrushModel/brush/Variance are what a stroke actually
+      // reads; this flag is step (a) of that header's own three-edit path
+      // back to the matrix mattering again.
+      advancedDynamics = true;
     } else if (np::looksLikePositionalArgument(a)) {
       // D4: the one case none of the branches above matched -- a bare
       // filename. See this loop's own comment, just above it, and
@@ -1349,6 +1414,10 @@ int main(int argc, char** argv) {
   if (psdReportPath != nullptr) return np::runPsdReport(psdReportPath);
   if (profileTogglePath != nullptr)
     return np::runProfileToggle(profileTogglePath, profileToggleLayer, profileToggleIterations);
+  if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
+  if (dabImportPath != nullptr) return np::runDabImport(dabImportPath);
+  if (pattWritePath != nullptr) return np::runPattWrite(pattWritePath);
+  if (dabScan) return np::runDabScan();
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
   if (strokePreviewOut != nullptr)
@@ -1787,15 +1856,62 @@ int main(int argc, char** argv) {
     // hardware/stroke-local split, rather than once per contributing link or
     // once per half. Headless and GPU-free.
     const bool multiplyFloorOk = np::runMultiplyFloorTest();
+    // app/selftest/ShelvedLinks.cpp: the dedicated test for the shelved
+    // 10x12 link matrix -- a user-presets.txt fixture's link/floor/point
+    // lines round-trip byte-for-byte with no live BrushLinkSet built, and a
+    // hand-built, non-empty BrushLinkSet changes nothing brushTipFor()
+    // reads. Headless and GPU-free.
+    const bool shelvedLinksOk = np::runShelvedLinksTest();
     // app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md
     // B5's axis defect. Checks the geometry directly -- tangent component
     // ~0, perpendicular component real -- rather than a flag. Headless and
     // GPU-free.
     const bool scatterOk = np::runScatterTest();
+    // Phase C Part 1: Scatter Count, resolved per dab and dispatched as N
+    // sub-dabs per nominal position. Headless and GPU-free.
+    const bool scatterCountOk = np::runScatterCountTest();
     // io/AbrBrushes' `samp` block: sampled bitmap tips decoded and stamped by
     // brush/Deposit.hpp §2c in place of the procedural tip. Headless and
     // GPU-free.
     const bool abrSampledTipsOk = np::runAbrSampledTipsTest();
+    // io/PsPatterns: the `patt` block, decoded rather than stepped over.
+    const bool psPatternsOk = np::runPsPatternsTest();
+    // io/GimpBrush: `.gbr`/`.gih`, the other brush corpus the dab folder takes.
+    const bool gimpBrushOk = np::runGimpBrushTest();
+    // brush/Variance: the one resolver behind all twelve of Photoshop's
+    // Control/Jitter/Minimum/Fade groups.
+    const bool varianceOk = np::runVarianceTest();
+    // brush/CoverageBlend: the shared Dual-Brush/Texture blend table, and the
+    // no-blend-creates-coverage invariant both of its callers stand on.
+    const bool coverageBlendOk = np::runCoverageBlendTest();
+    // brush/Grain's sampled `PaperField` -- a `.abr`'s own scanned paper under
+    // the brush -- and the three deposit routes that had no grain call at all.
+    const bool paperTextureOk = np::runPaperTextureTest();
+    // app/DabLibrary: the watched folder -- an unchanged rescan decoding
+    // nothing, and a rename not orphaning the presets that point at it.
+    const bool dabLibraryOk = np::runDabLibraryTest();
+    // app/DabLibrary's pattern extraction: a decoded `.abr` pattern written to
+    // patterns-imported/<uuid>.png, single-channel and byte-exact, the
+    // patt-block sibling of the dab-library test's own tip-extraction section.
+    const bool patternExtractOk = np::runPatternExtractTest();
+    // ui/DabPicker: the grid arithmetic, including the hit test as the exact
+    // inverse of the cell placement.
+    const bool dabPickerOk = np::runDabPickerTest();
+    // ui/BrushSettingsWindow: the tab table -- one row per group of brush
+    // settings, each carrying its own id.
+    const bool brushSettingsWindowOk = np::runBrushSettingsWindowTest();
+    // brush/BrushModelIo: the text form of a BrushModel -- one templated
+    // visitor over all 151 leaves rather than 151 hand-written branches, in
+    // both directions. Headless and GPU-free.
+    const bool brushModelIoOk = np::runBrushModelIoTest();
+    // brush/BrushModelDiff: the diff/equal pair over the same 151 leaves,
+    // which presetMatches() and the round-trip proof both need. Headless.
+    const bool brushModelDiffOk = np::runBrushModelDiffTest();
+    // ui/BrushFieldPresentation: every BrushModel leaf is in exactly one of
+    // the presentation table (gets a live control) or the omission table
+    // (deliberately does not, with a reason) -- the exhaustiveness guarantee
+    // behind ui/BrushSettingsWindow's Photoshop-shaped tabs. Headless.
+    const bool brushPanelBindingOk = np::runBrushPanelBindingTest();
     // track10/angle: an independent geometric pin -- BrushTip::angle is
     // clockwise-positive on screen, and DIRECTION->Angle actually faces the
     // tip along the stroke's travel vector. Headless and GPU-free.
@@ -2322,6 +2438,12 @@ int main(int argc, char** argv) {
     // track10/feel (PaintCopilot §3.2, arXiv:2605.20941): the log/power
     // pressure-response curves and the pressure EMA's per-stroke reset.
     const bool pressureFeelOk = np::runPressureFeelTest();
+    // Phase C Part 2: Transfer Opacity/Flow, latched once at pen-down and
+    // (for Flow) applied fresh every dab. Headless and GPU-free.
+    const bool transferDynamicsOk = np::runTransferDynamicsTest();
+    // Phase C Part 3 (bounded): the `Md ` blend id mapping and its one call
+    // site -- groundwork only, no route wired. Headless and GPU-free.
+    const bool toolOptionsBlendOk = np::runToolOptionsBlendTest();
   const bool strokePreviewOk = np::runStrokePreviewTest();
     // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp), US 5,347,620:
     // the tiled grain field, `F = clamp(P*S*O1 - G, 0, 1)`, grain OFF as a
@@ -2401,12 +2523,15 @@ int main(int argc, char** argv) {
                     ellipseMarqueePreviewOk &&
                     selectionBoundaryOk && floodFillOk &&
                     clipboardOk && opStackOk &&
-                    lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk && documentTransformOk &&
-                    transformSessionOk && transformPreviewTextureOk &&
-                    transformCompositeSplitOk && blurOk &&
-                    blurSimdOk &&
-                    filtersOk && filtersExtOk &&
-                    curveEditOk && brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk && multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk && userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
+                    documentTransformOk && transformSessionOk && transformPreviewTextureOk &&
+                    transformCompositeSplitOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
+                    brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
+                    multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
+                    userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
+                    shelvedLinksOk && scatterCountOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
+                    && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
+                    brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
@@ -2421,11 +2546,10 @@ int main(int argc, char** argv) {
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
                     closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
-                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk &&
-                    selectMenuOk &&
-                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk &&
-                    canvasDimensionsOk && angleConventionOk && wheelInputOk && touchGestureOk &&
-                    touchGestureSessionOk && pressureFeelOk &&
+                    openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && selectMenuOk &&
+                    chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
+                    angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
+                    && transferDynamicsOk && toolOptionsBlendOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk;
@@ -2644,8 +2768,14 @@ int main(int argc, char** argv) {
   st.openLayerMenu = openLayerMenu;
   st.openToolFlyoutDemo = flyoutDemo;
   st.panelStackDemo = panelStackDemo;
+  if (dabDemoId != nullptr) st.dabDemoId = dabDemoId;
+  if (brushSettingsDemo) {
+    st.showBrushSettings = true;
+    st.brushSettingsDemoTab = brushSettingsDemoTab;
+  }
   st.openExportStatesDialog = openExportStates;
   st.openLayerProperties = openLayerProperties;
+  st.showAdvancedDynamics = advancedDynamics;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
   if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
   if (uiLayerDemo) {
@@ -2768,7 +2898,7 @@ int main(int argc, char** argv) {
   // step existed, this constructor seeded two fixed debug ops here so the
   // Apply pass (step 6) had something to show in the running app; that
   // scaffolding is gone now that real UI exists.
-  st.sim.brushRadius = st.brush.radius;
+  st.sim.brushRadius = st.brush.model.tip.diameterPx / 2.0f;
   // Fixed timestep (PRD H7): the look of a wash should not depend on the
   // frame rate. `st.sim.dt` is set once, here, to the constant physics tick
   // — never recomputed per frame — so PaintSim::frame()'s existing
@@ -3106,12 +3236,20 @@ int main(int argc, char** argv) {
         // words: "a constant is wrong across a 1..200 range"), and
         // `clampBrushRadius()` is the exact same clamp the gesture uses --
         // one range, not two.
-        else if (action == "size_down")
-          st.brush.radius = np::clampBrushRadius(
-              st.brush.radius - np::bracketStepForRadius(st.brush.radius));
-        else if (action == "size_up")
-          st.brush.radius = np::clampBrushRadius(
-              st.brush.radius + np::bracketStepForRadius(st.brush.radius));
+        // Read/written through `model.tip.diameterPx` now (`BrushState::
+        // radius` is gone, Part 5) -- `radius` here is just this block's own
+        // local view of it, in the same half-diameter units every other
+        // caller of `clampBrushRadius()`/`bracketStepForRadius()` already
+        // uses.
+        else if (action == "size_down") {
+          const float radius = st.brush.model.tip.diameterPx / 2.0f;
+          st.brush.model.tip.diameterPx =
+              np::clampBrushRadius(radius - np::bracketStepForRadius(radius)) * 2.0f;
+        } else if (action == "size_up") {
+          const float radius = st.brush.model.tip.diameterPx / 2.0f;
+          st.brush.model.tip.diameterPx =
+              np::clampBrushRadius(radius + np::bracketStepForRadius(radius)) * 2.0f;
+        }
         else if (action == "mirror_x") st.view.mirrorX = !st.view.mirrorX;
         else if (action == "mirror_y") st.view.mirrorY = !st.view.mirrorY;
         else if (action == "reset_rotation") st.view.rotation = 0.0f;

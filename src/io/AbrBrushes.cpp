@@ -8,6 +8,9 @@
 #include <unordered_map>
 
 #include "io/Descriptor.hpp"
+#include "brush/BrushModel.hpp"
+#include "io/PackBits.hpp"
+#include "io/PsPatterns.hpp"
 
 namespace np {
 
@@ -87,70 +90,6 @@ float clampf(float v, float lo, float hi) noexcept {
 // bounded 16 MiB, not the unbounded allocation a raw `width * height` would
 // be for an adversarial rectangle.
 inline constexpr uint32_t kMaxSampledTipDimension = 4096;
-
-// Photoshop's per-scanline RLE for `samp` image data: `height` big-endian
-// u16 compressed-byte-counts, then that many PackBits-compressed bytes,
-// decoded as ONE continuous stream (not re-synchronised at each scanline
-// boundary) to exactly `expected` bytes.
-//
-// **Decoding as one stream rather than one call per row is deliberate, not a
-// shortcut.** A PackBits run or literal never straddles Photoshop's own row
-// boundaries in a well-formed file -- Adobe's own encoder does not emit one
-// that does -- so decoding scanline-by-scanline and decoding the whole
-// concatenated stream in one pass produce identical bytes for every well-
-// formed file, and the single-pass form is what the openly-published
-// `abrupng` reader this framing was cross-checked against does too (this
-// file's header). Where the two approaches WOULD diverge -- a malformed
-// stream where a run crosses a row boundary -- this form still cannot read
-// past `end`, because every byte access below is checked against it first;
-// it can only decode fewer than `expected` bytes and report the shortfall,
-// never more.
-bool decodePackBits(std::span<const uint8_t> body, size_t off, size_t end, uint32_t height,
-                    size_t expected, std::vector<uint8_t>& out) noexcept {
-  if (off > end || end > body.size()) return false;
-
-  // The row-length table: `height` u16s, big-endian, summed for the total
-  // compressed byte count -- `abrupng`'s own `read_rle_data()` does the same
-  // ("We just need the total length"), which is what makes decoding as one
-  // stream rather than `height` separate calls correct rather than merely
-  // convenient (see this function's own comment above).
-  if (static_cast<uint64_t>(height) * 2u > end - off) return false;
-  uint64_t total = 0;
-  size_t p = off;
-  for (uint32_t i = 0; i < height; ++i) {
-    uint16_t rowLen = 0;
-    if (!readU16(body, p, rowLen)) return false;
-    total += rowLen;
-    p += 2;
-  }
-  if (total > end - p) return false;
-  const size_t dataEnd = p + static_cast<size_t>(total);
-
-  out.clear();
-  out.reserve(expected);
-  while (p < dataEnd && out.size() < expected) {
-    const int8_t n = static_cast<int8_t>(body[p]);
-    ++p;
-    if (n == -128) {
-      continue;  // NOP: PackBits' own no-op control byte
-    } else if (n < 0) {
-      // Run: repeat the next byte (-n + 1) times.
-      if (p >= dataEnd) return false;
-      const size_t count = static_cast<size_t>(-static_cast<int>(n) + 1);
-      const uint8_t b = body[p];
-      ++p;
-      for (size_t k = 0; k < count && out.size() < expected; ++k) out.push_back(b);
-    } else {
-      // Literal: the next (n + 1) bytes, verbatim.
-      const size_t count = static_cast<size_t>(n) + 1;
-      size_t next = 0;
-      if (!checkedAdd(p, count, next) || next > dataEnd) return false;
-      out.insert(out.end(), body.data() + p, body.data() + p + count);
-      p = next;
-    }
-  }
-  return out.size() == expected;
-}
 
 // A `UntF` read that does not care which unit tag it carries.
 //
@@ -348,6 +287,12 @@ struct AbrTipShape {
   float angle = 0.0f;
   float spacing = 0.25f;
   std::shared_ptr<const BrushTipBitmap> bitmap;
+  // The `sampledData` uuid, carried out so the preset can store `abr:<uuid>`
+  // and re-find the tip next launch without the pack (brush/Library.hpp's
+  // `dabId`). Set whenever the descriptor named one, INCLUDING when the
+  // lookup then failed -- a preset that names a tip this build could not
+  // decode should still say which tip it wanted.
+  std::string sampleId;
 };
 
 AbrTipShape readAbrTipShape(
@@ -366,7 +311,8 @@ AbrTipShape readAbrTipShape(
   if (sampledDataRef.valid()) {
     bool found = false;
     if (const auto idText = sampledDataRef.asText()) {
-      const auto it = sampledTips.find(std::string(*idText));
+      t.sampleId = std::string(*idText);
+      const auto it = sampledTips.find(t.sampleId);
       if (it != sampledTips.end()) {
         t.bitmap = it->second;
         found = true;
@@ -436,6 +382,115 @@ AbrTipShape readAbrTipShape(
   return t;
 }
 
+// `BlnM` (Dual Brush) and `textureBlendMode` (Texture) share this table,
+// because they are the same question asked in two panels: how a second
+// coverage value combines with the first (brush/CoverageBlend.hpp). An id not
+// listed is left at the caller's default rather than approximated.
+//
+// **Provenance, per id, kept in full because the confidence genuinely
+// differs between them** -- this began as the Dual Brush's own if/else chain
+// and the evidence is the reason each line is here:
+//
+// **`Mltp`/`Ovrl` cross-checked against `psd_tools.terminology`
+// (Adobe's own Action Descriptor `BlnM` enumeration, independently
+// reverse-engineered), not against a real `.abr`** -- this build's
+// PLAN.md forbids shipping one, and no `dualBrush.BlnM` field has been
+// read from a real Kyle Webster file the way `AbrControl`'s own header
+// reads a real `bVTy` off "Blot Bot Perfecto". Treat this pair with the
+// same "inferred, not observed" caution that header gives control 7,
+// and re-check against a real file's bytes before trusting it further.
+// **`CBrn` -- Color Burn. HIGH confidence, TWO independent sources,
+// both giving the identical terse id in the identical enum family
+// `Mltp`/`Ovrl` already came from:**
+//   1. `psd_tools/terminology.py`'s `Enum` class -- the SAME class,
+//      not a sibling one -- carries `ColorBurn = b"CBrn"` alongside
+//      `Multiply = b"Mltp"` and `Overlay = b"Ovrl"`.
+//   2. `ag-psd` (Agamnentzar/ag-psd, `src/descriptor.ts`)'s `BlnM`
+//      enum -- built specifically to decode/encode THIS field
+//      (`db.BlnM` for a `dualBrush`, `fx['Md  ']` for a layer effect,
+//      the same enum both places) -- has `'color burn': 'CBrn'`.
+// No caution needed the way `hMix` below needs it: this id is short,
+// matches the naming convention of every other original-era mode in
+// both tables (`Drkn`, `Lghn`, `Scrn`, `Dfrn`, `Xclu`...), and both
+// sources that use it are purpose-built for exactly this field.
+// **`hMix` -- Hard Mix. MEDIUM confidence, and the caveat is worth
+// keeping rather than smoothing over.** `psd_tools/constants.py`'s
+// `BlendMode` enum (a DIFFERENT table from `terminology.py`'s `Enum`
+// above -- it serialises a PSD layer record's fixed 4-byte
+// blend-mode-key field, not an Action Descriptor value) has
+// `HARD_MIX = b"hMix"`. That table is NOT purpose-built for `BlnM`
+// and its vocabulary provably differs from `terminology.py`'s for the
+// SAME concept -- it spells Color Burn `b"idiv"`, not `CBrn` -- so
+// `hMix` being real in ONE Adobe wire format does not by itself prove
+// it is what `dualBrush.BlnM` emits. Independently, `ag-psd`'s `BlnM`
+// enum (the one built for this exact field, cited above) spells Hard
+// Mix the LONG way, `'hard mix': 'hardMix'`, alongside every other
+// "second-generation" mode added after the original terse set
+// (`linearBurn`, `darkerColor`, `linearDodge`, `lighterColor`,
+// `vividLight`, `linearLight`, `pinLight`, `blendSubtraction`,
+// `blendDivide`) -- a pattern `hMix` breaks and `hardMix` fits.
+//
+// **The tie is broken by the bytes, first-hand.** Scanned both sample
+// packs directly: `threeOtherBrushes.abr` contains the literal
+// `hMix` twice and `hardMix` zero times, and both occurrences sit at
+// the end of the same key run every Dual Brush descriptor in these
+// files has -- `Dmtr Hrdn Angl Rndn Spcn Intr flipX flipY
+// sampledData`, then `BlnM enum`, then `useScatter` -- so this is
+// `dualBrush.BlnM` and not some other descriptor's blend field. `hMix`
+// is therefore the spelling that actually occurs; `hardMix` is kept as
+// an accepted alias only because `ag-psd` documents it and accepting an
+// id that never arrives costs nothing, while refusing one that does
+// costs a brush. The MEANING was never in question either way -- both
+// spellings mean Hard Mix in every source checked, and none suggests a
+// third reading.
+// **`linearHeight` -- deliberately NOT mapped.** `ag-psd`'s `BlnM`
+// enum (again, the table built for this exact field) has
+// `'linear height': 'linearHeight'`, with its own "// used in ABR"
+// comment -- so this id is confirmed real and confirmed to appear in
+// exactly this context, not a typo for "Linear Light". Confirmed
+// first-hand too: `runny_inkers.abr` carries `linearHeight` twice, both
+// times at the end of the same Dual Brush key run described for `hMix`
+// above, so it genuinely is a `dualBrush.BlnM` value and not a
+// Texture-panel field that merely looks like one. But "Linear
+// Height" is not one of Photoshop's paint/layer blend modes at all:
+// the Krita `abr_brush_importer` plugin's own texture-mode table
+// (`kpp_writer.py`, `_map_ps_texture_mode()`) lists "Height" and
+// "Linear Height" as TEXTURE-panel compositing modes -- how a
+// pattern's grayscale HEIGHT MAP blends into a stroke, not how two
+// coverage discs blend into each other. No source found gives that a
+// per-pixel formula, so this id is left unmapped and falls through to
+// `dualBrushUnsupportedBlend` below, honestly, rather than reusing one
+// of the four color-blend formulas as a guess.
+//
+// **What changed when the two panels merged onto one table.** `linearHeight`
+// is now MAPPED rather than dropped. The reasoning above still stands
+// unaltered -- no source gives it a per-pixel formula and this build still
+// refuses to invent one -- but there is a difference between "cannot read
+// this field" and "read it, and cannot render what it says". Mapping it lets
+// the importer NAME what it found and count it; `coverageBlendIsRenderable()`
+// is the question a caller asks before using one, and it is false for
+// `linearHeight` alone. `Hght` ("Height", 31 of the 84 textured presets and
+// the most common texture blend) IS mapped, to Zimmer's subtractive
+// height-vs-pressure comparison, which is stated as an approximation where it
+// is implemented rather than as a decoded formula.
+// `BlnM` and `textureBlendMode` share this table, because they are the same
+// question asked in two panels (brush/BrushModel.hpp's `CoverageBlend`). Every
+// id below was observed in a real pack; an id not here is left at the caller's
+// default rather than approximated.
+bool coverageBlendFromId(const std::string& id, CoverageBlend& out) noexcept {
+  if (id == "Mltp") { out = CoverageBlend::Multiply; return true; }
+  if (id == "Ovrl") { out = CoverageBlend::Overlay; return true; }
+  if (id == "CBrn") { out = CoverageBlend::ColorBurn; return true; }
+  if (id == "hMix" || id == "hardMix") { out = CoverageBlend::HardMix; return true; }
+  if (id == "linearBurn") { out = CoverageBlend::LinearBurn; return true; }
+  if (id == "CDdg") { out = CoverageBlend::ColorDodge; return true; }
+  if (id == "Drkn") { out = CoverageBlend::Darken; return true; }
+  if (id == "Sbtr") { out = CoverageBlend::Subtract; return true; }
+  if (id == "Hght") { out = CoverageBlend::Height; return true; }
+  if (id == "linearHeight") { out = CoverageBlend::LinearHeight; return true; }
+  return false;
+}
+
 BrushPreset presetFromDescriptor(
     const DescriptorRef& node, AbrImportResult& result,
     const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& sampledTips) {
@@ -443,15 +498,29 @@ BrushPreset presetFromDescriptor(
   if (const auto nm = node.field("Nm  ").asText()) p.name = std::string(*nm);
   if (p.name.empty()) p.name = "Untitled brush";
 
-  const AbrTipShape primary = readAbrTipShape(node.field("Brsh"), p.radius, p.hardness,
+  // 20.0f/0.35f: the OLD `BrushPreset::radius`/`hardness` field defaults,
+  // kept here as plain literals now that those fields are gone -- they were
+  // never anything but `readAbrTipShape()`'s own fallback for a `Brsh` with
+  // no `Dmtr`/`Hrdn` key, which real content essentially never omits
+  // (`PsTipShape::diameterPx`'s own comment: "#Pxl on all 101 presets
+  // measured").
+  const AbrTipShape primary = readAbrTipShape(node.field("Brsh"), 20.0f, 0.35f,
                                               /*readHardness=*/true, p.name, "", result,
                                               sampledTips);
   p.tipBitmap = primary.bitmap;
-  p.radius = primary.radius;
-  p.hardness = primary.hardness;
-  p.roundness = primary.roundness;
-  p.angle = primary.angle;
-  p.spacing = primary.spacing;
+  // The durable half of the same thing (brush/Library.hpp's `dabId`): the
+  // pointer above lives as long as the library stays loaded, this id survives
+  // a relaunch once app/DabLibrary has written the tip out.
+  if (!primary.sampleId.empty()) p.dabId = "abr:" + primary.sampleId;
+  // **`primary.radius`/`.hardness`/`.roundness`/`.angle`/`.spacing` go
+  // nowhere else.** They used to be copied onto `BrushPreset`'s own five
+  // scalars, which are gone -- `importAbrBrushes()`'s own caller already
+  // fills the real, authoritative shape onto `preset.model` right after this
+  // function returns, via `brushModelFromDescriptor()`'s SEPARATE parse of
+  // the identical `Brsh` node (that function's own comment: "filled
+  // alongside and attached to the SAME preset it was read from"). `primary`
+  // above is kept only for its bitmap and sample id -- the two fields
+  // `p.tipBitmap`/`p.dabId` still carry, unaffected by this migration.
 
   // Dynamics. `useTipDynamics` gates the first three the way the Brush panel's
   // own Shape Dynamics checkbox does: with it off, Photoshop keeps the authored
@@ -515,84 +584,20 @@ BrushPreset presetFromDescriptor(
     // whether this build can composite it, and the three outcomes below
     // (built / understood-but-unsupported / nothing usable) are told apart by
     // what this enumerated read produces.
+    // One table, `coverageBlendFromId()` above, shared with the Texture
+    // panel's `textureBlendMode` -- see its comment for where every id came
+    // from and how confident each one is. `linearHeight` is now MAPPED rather
+    // than dropped: naming a mode this build cannot render is strictly better
+    // than reporting an unreadable field, and `coverageBlendIsRenderable()`
+    // is the question asked here in its place.
     const auto blendEnum = dual.field("BlnM").asEnumerated();
     std::optional<DualBrushBlend> blend;
     if (blendEnum) {
-      // **`Mltp`/`Ovrl` cross-checked against `psd_tools.terminology`
-      // (Adobe's own Action Descriptor `BlnM` enumeration, independently
-      // reverse-engineered), not against a real `.abr`** -- this build's
-      // PLAN.md forbids shipping one, and no `dualBrush.BlnM` field has been
-      // read from a real Kyle Webster file the way `AbrControl`'s own header
-      // reads a real `bVTy` off "Blot Bot Perfecto". Treat this pair with the
-      // same "inferred, not observed" caution that header gives control 7,
-      // and re-check against a real file's bytes before trusting it further.
-      if (blendEnum->valueId == "Mltp") blend = DualBrushBlend::Multiply;
-      else if (blendEnum->valueId == "Ovrl") blend = DualBrushBlend::Overlay;
-      // **`CBrn` -- Color Burn. HIGH confidence, TWO independent sources,
-      // both giving the identical terse id in the identical enum family
-      // `Mltp`/`Ovrl` already came from:**
-      //   1. `psd_tools/terminology.py`'s `Enum` class -- the SAME class,
-      //      not a sibling one -- carries `ColorBurn = b"CBrn"` alongside
-      //      `Multiply = b"Mltp"` and `Overlay = b"Ovrl"`.
-      //   2. `ag-psd` (Agamnentzar/ag-psd, `src/descriptor.ts`)'s `BlnM`
-      //      enum -- built specifically to decode/encode THIS field
-      //      (`db.BlnM` for a `dualBrush`, `fx['Md  ']` for a layer effect,
-      //      the same enum both places) -- has `'color burn': 'CBrn'`.
-      // No caution needed the way `hMix` below needs it: this id is short,
-      // matches the naming convention of every other original-era mode in
-      // both tables (`Drkn`, `Lghn`, `Scrn`, `Dfrn`, `Xclu`...), and both
-      // sources that use it are purpose-built for exactly this field.
-      else if (blendEnum->valueId == "CBrn") blend = DualBrushBlend::ColorBurn;
-      // **`hMix` -- Hard Mix. MEDIUM confidence, and the caveat is worth
-      // keeping rather than smoothing over.** `psd_tools/constants.py`'s
-      // `BlendMode` enum (a DIFFERENT table from `terminology.py`'s `Enum`
-      // above -- it serialises a PSD layer record's fixed 4-byte
-      // blend-mode-key field, not an Action Descriptor value) has
-      // `HARD_MIX = b"hMix"`. That table is NOT purpose-built for `BlnM`
-      // and its vocabulary provably differs from `terminology.py`'s for the
-      // SAME concept -- it spells Color Burn `b"idiv"`, not `CBrn` -- so
-      // `hMix` being real in ONE Adobe wire format does not by itself prove
-      // it is what `dualBrush.BlnM` emits. Independently, `ag-psd`'s `BlnM`
-      // enum (the one built for this exact field, cited above) spells Hard
-      // Mix the LONG way, `'hard mix': 'hardMix'`, alongside every other
-      // "second-generation" mode added after the original terse set
-      // (`linearBurn`, `darkerColor`, `linearDodge`, `lighterColor`,
-      // `vividLight`, `linearLight`, `pinLight`, `blendSubtraction`,
-      // `blendDivide`) -- a pattern `hMix` breaks and `hardMix` fits.
-      //
-      // **The tie is broken by the bytes, first-hand.** Scanned both sample
-      // packs directly: `threeOtherBrushes.abr` contains the literal
-      // `hMix` twice and `hardMix` zero times, and both occurrences sit at
-      // the end of the same key run every Dual Brush descriptor in these
-      // files has -- `Dmtr Hrdn Angl Rndn Spcn Intr flipX flipY
-      // sampledData`, then `BlnM enum`, then `useScatter` -- so this is
-      // `dualBrush.BlnM` and not some other descriptor's blend field. `hMix`
-      // is therefore the spelling that actually occurs; `hardMix` is kept as
-      // an accepted alias only because `ag-psd` documents it and accepting an
-      // id that never arrives costs nothing, while refusing one that does
-      // costs a brush. The MEANING was never in question either way -- both
-      // spellings mean Hard Mix in every source checked, and none suggests a
-      // third reading.
-      else if (blendEnum->valueId == "hMix" || blendEnum->valueId == "hardMix")
-        blend = DualBrushBlend::HardMix;
-      // **`linearHeight` -- deliberately NOT mapped.** `ag-psd`'s `BlnM`
-      // enum (again, the table built for this exact field) has
-      // `'linear height': 'linearHeight'`, with its own "// used in ABR"
-      // comment -- so this id is confirmed real and confirmed to appear in
-      // exactly this context, not a typo for "Linear Light". Confirmed
-      // first-hand too: `runny_inkers.abr` carries `linearHeight` twice, both
-      // times at the end of the same Dual Brush key run described for `hMix`
-      // above, so it genuinely is a `dualBrush.BlnM` value and not a
-      // Texture-panel field that merely looks like one. But "Linear
-      // Height" is not one of Photoshop's paint/layer blend modes at all:
-      // the Krita `abr_brush_importer` plugin's own texture-mode table
-      // (`kpp_writer.py`, `_map_ps_texture_mode()`) lists "Height" and
-      // "Linear Height" as TEXTURE-panel compositing modes -- how a
-      // pattern's grayscale HEIGHT MAP blends into a stroke, not how two
-      // coverage discs blend into each other. No source found gives that a
-      // per-pixel formula, so this id is left unmapped and falls through to
-      // `dualBrushUnsupportedBlend` below, honestly, rather than reusing one
-      // of the four color-blend formulas as a guess.
+      CoverageBlend parsed = CoverageBlend::Multiply;
+      if (coverageBlendFromId(blendEnum->valueId, parsed) &&
+          coverageBlendIsRenderable(parsed)) {
+        blend = parsed;
+      }
     }
 
     const DescriptorRef dualBrsh = dual.field("Brsh");
@@ -605,7 +610,12 @@ BrushPreset presetFromDescriptor(
       // measured one: it matches "Hard Round", Photoshop's own default
       // second-tip preset, but was not checked against a real file's second
       // tip, sampled or procedural.
-      const AbrTipShape second = readAbrTipShape(dualBrsh, p.radius, /*defaultHardness=*/1.0f,
+      // `primary.radius`, not a fresh literal: the old code read this
+      // fallback off `p.radius`, which by this point had already been copied
+      // from `primary.radius` (the now-deleted `p.radius = primary.radius;`
+      // a few dozen lines up) -- reading `primary.radius` directly here is
+      // the identical value, unchanged behaviour.
+      const AbrTipShape second = readAbrTipShape(dualBrsh, primary.radius, /*defaultHardness=*/1.0f,
                                                  /*readHardness=*/false, p.name, "Dual Brush's ",
                                                  result, sampledTips);
       auto dualTip = std::make_shared<BrushTip>();
@@ -657,6 +667,273 @@ BrushPreset presetFromDescriptor(
   }
 
   return p;
+}
+
+
+// ===========================================================================
+// The BrushModel path -- Photoshop's own panels, read whole.
+// ===========================================================================
+//
+// **This runs ALONGSIDE `presetFromDescriptor()` above, not instead of it.**
+// The engine still paints from `BrushPreset`'s fourteen scalars and its link
+// matrix; this fills the model the engine will move to, so the switchover is
+// one commit that changes what CONSUMES the data rather than one that changes
+// both producer and consumer in the same breath. The model is attached to
+// the preset it belongs to (`BrushPreset::model`, filled just below) so it
+// survives past the `importAbrBrushes()` call and follows the preset through
+// Duplicate -- but nothing reads it to paint yet. Until the engine moves
+// over, the model's job is `--abr-report`'s: saying what is actually in the
+// file, which for Texture, Transfer and Scatter Count is the first time
+// anything has said so.
+
+Variance readVariance(const DescriptorRef& owner, const char* key) {
+  Variance v;
+  const DescriptorRef ref = owner.field(key);
+  if (!ref.valid()) return v;
+  v.present = true;
+  if (const auto c = ref.field("bVTy").asInteger()) {
+    // Ordinals outside 0..7 are NOT clamped into range. An unknown control is
+    // a control this reader does not understand, and silently calling it
+    // `InitialDirection` because 7 is the nearest legal value is the shape of
+    // guess that produced the 6/7 defect in the first place.
+    if (*c >= 0 && *c <= 7) v.control = static_cast<VarianceControl>(*c);
+  }
+  double d = 0.0;
+  if (unitValue(ref.field("jitter"), d))
+    v.jitter = clampf(static_cast<float>(d) / 100.0f, 0.0f, 1.0f);
+  if (unitValue(ref.field("Mnm "), d))
+    v.minimum = clampf(static_cast<float>(d) / 100.0f, 0.0f, 1.0f);
+  if (const auto f = ref.field("fStp").asInteger()) v.fadeSteps = *f;
+  return v;
+}
+
+bool readBoolField(const DescriptorRef& owner, const char* key, bool fallback = false) {
+  if (const auto b = owner.field(key).asBoolean()) return *b;
+  return fallback;
+}
+
+// A percentage read as a 0..1 fraction. Leaves `out` alone when the key is
+// absent, so a struct default survives rather than being overwritten with 0.
+void readPercentField(const DescriptorRef& owner, const char* key, float& out) {
+  double d = 0.0;
+  if (unitValue(owner.field(key), d)) out = static_cast<float>(d) / 100.0f;
+}
+
+void readRawField(const DescriptorRef& owner, const char* key, float& out) {
+  double d = 0.0;
+  if (unitValue(owner.field(key), d)) out = static_cast<float>(d);
+}
+
+
+PsTipShape tipShapeFromDescriptor(
+    const DescriptorRef& brsh,
+    const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& tipsById) {
+  PsTipShape tip;
+  if (!brsh.valid()) return tip;
+
+  tip.computed = brsh.classId() == "computedBrush";
+  if (const auto id = brsh.field("sampledData").asText()) {
+    tip.dab.id = "abr:" + std::string(*id);
+    const auto found = tipsById.find(std::string(*id));
+    if (found != tipsById.end()) tip.dab.bitmap = found->second;
+  }
+
+  double d = 0.0;
+  if (const auto dmtr = brsh.field("Dmtr").asUnitFloat()) {
+    // A `#Prc` diameter is a percentage of the SAMPLE's own pixel size; with
+    // no sample there is nothing to take a percentage of, which is why the
+    // unit is checked here and nowhere else. Never observed in any of the 101
+    // presets measured -- every `Dmtr` is `#Pxl` -- so this branch is carried
+    // for files that have not turned up yet, not for any seen so far.
+    if (dmtr->unit == "#Prc") {
+      if (tip.dab.bitmap != nullptr) {
+        const int32_t larger = std::max(tip.dab.bitmap->width, tip.dab.bitmap->height);
+        tip.diameterPx = static_cast<float>(dmtr->value / 100.0 * larger);
+      }
+    } else {
+      tip.diameterPx = static_cast<float>(dmtr->value);
+    }
+  } else if (unitValue(brsh.field("Dmtr"), d)) {
+    tip.diameterPx = static_cast<float>(d);
+  }
+
+  readRawField(brsh, "Angl", tip.angleDeg);
+  readPercentField(brsh, "Rndn", tip.roundness);
+  readRawField(brsh, "Spcn", tip.spacingPercent);
+  readPercentField(brsh, "Hrdn", tip.hardness);
+  tip.spacingEnabled = readBoolField(brsh, "Intr", true);
+  tip.flipX = readBoolField(brsh, "flipX");
+  tip.flipY = readBoolField(brsh, "flipY");
+  return tip;
+}
+
+PsScatter scatterFromDescriptor(const DescriptorRef& owner, const char* enableKey) {
+  PsScatter sc;
+  sc.enabled = readBoolField(owner, enableKey);
+  sc.scatter = readVariance(owner, "scatterDynamics");
+  sc.bothAxes = readBoolField(owner, "bothAxes");
+  double d = 0.0;
+  if (unitValue(owner.field("Cnt "), d)) sc.count = static_cast<int32_t>(d);
+  sc.countJitter = readVariance(owner, "countDynamics");
+  return sc;
+}
+
+BrushModel brushModelFromDescriptor(
+    const DescriptorRef& brush,
+    const std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>>& tipsById) {
+  BrushModel m;
+
+  m.tip = tipShapeFromDescriptor(brush.field("Brsh"), tipsById);
+
+  // --- Shape Dynamics ---
+  m.shape.enabled = readBoolField(brush, "useTipDynamics");
+  m.shape.size = readVariance(brush, "szVr");
+  m.shape.angle = readVariance(brush, "angleDynamics");
+  m.shape.roundness = readVariance(brush, "roundnessDynamics");
+  // Photoshop's Minimum Diameter and Minimum Roundness ARE the floors of their
+  // variances, and folding them in here is what leaves exactly one minimum per
+  // site -- the structural half of audit B6 (brush/Variance.hpp).
+  readPercentField(brush, "minimumDiameter", m.shape.size.minimum);
+  readPercentField(brush, "minimumRoundness", m.shape.roundness.minimum);
+  m.shape.flipXJitter = readBoolField(brush, "flipX");
+  m.shape.flipYJitter = readBoolField(brush, "flipY");
+  m.shape.brushProjection = readBoolField(brush, "brushProjection");
+  readPercentField(brush, "tiltScale", m.shape.tiltScale);
+
+  // --- Scattering ---
+  m.scatter = scatterFromDescriptor(brush, "useScatter");
+
+  // --- Texture ---
+  m.texture.enabled = readBoolField(brush, "useTexture");
+  {
+    const DescriptorRef txtr = brush.field("Txtr");
+    if (txtr.valid()) {
+      if (const auto id = txtr.field("Idnt").asText())
+        m.texture.pattern.id = std::string(*id);
+      if (const auto nm = txtr.field("Nm  ").asText())
+        m.texture.pattern.name = std::string(*nm);
+    }
+  }
+  m.texture.invert = readBoolField(brush, "InvT");
+  readRawField(brush, "textureScale", m.texture.scalePercent);
+  readPercentField(brush, "textureDepth", m.texture.depth);
+  readPercentField(brush, "minimumDepth", m.texture.minimumDepth);
+  m.texture.depthJitter = readVariance(brush, "textureDepthDynamics");
+  readRawField(brush, "textureBrightness", m.texture.brightness);
+  readRawField(brush, "textureContrast", m.texture.contrast);
+  m.texture.eachTip = readBoolField(brush, "TxtC");
+  m.texture.protectTexture = readBoolField(brush, "protectTexture");
+  if (const auto blend = brush.field("textureBlendMode").asEnumerated())
+    coverageBlendFromId(blend->valueId, m.texture.blend);
+
+  // --- Dual Brush ---
+  {
+    const DescriptorRef dual = brush.field("dualBrush");
+    if (dual.valid()) {
+      // Gated on `useDualBrush`, never on the object's presence: every real
+      // preset carries the object, so presence says nothing at all.
+      m.dual.enabled = readBoolField(dual, "useDualBrush");
+      m.dual.tip = tipShapeFromDescriptor(dual.field("Brsh"), tipsById);
+      m.dual.scatter = scatterFromDescriptor(dual, "useScatter");
+      m.dual.flip = readBoolField(dual, "Flip");
+      if (const auto blend = dual.field("BlnM").asEnumerated())
+        coverageBlendFromId(blend->valueId, m.dual.blend);
+    }
+  }
+
+  // --- Color Dynamics ---
+  m.color.enabled = readBoolField(brush, "useColorDynamics");
+  m.color.perTip = readBoolField(brush, "colorDynamicsPerTip");
+  m.color.foregroundBackground = readVariance(brush, "clVr");
+  readPercentField(brush, "H   ", m.color.hueJitter);
+  readPercentField(brush, "Strt", m.color.saturationJitter);
+  readPercentField(brush, "Brgh", m.color.brightnessJitter);
+  readPercentField(brush, "purity", m.color.purity);
+
+  // --- Transfer ---
+  m.transfer.enabled = readBoolField(brush, "usePaintDynamics");
+  m.transfer.opacity = readVariance(brush, "opVr");
+  m.transfer.flow = readVariance(brush, "prVr");
+  m.transfer.wetness = readVariance(brush, "wtVr");
+  m.transfer.mix = readVariance(brush, "mxVr");
+
+  // --- The options bar state Photoshop saves WITH the preset ---
+  {
+    const DescriptorRef opts = brush.field("toolOptions");
+    if (opts.valid()) {
+      if (const auto md = opts.field("Md  ").asEnumerated()) m.options.blendMode = md->valueId;
+      readPercentField(opts, "Opct", m.options.opacity);
+      readPercentField(opts, "flow", m.options.flow);
+      m.options.smoothing = readBoolField(opts, "smoothing", true);
+      m.options.pressureOverridesSize = readBoolField(opts, "usePressureOverridesSize");
+      m.options.pressureOverridesOpacity = readBoolField(opts, "usePressureOverridesOpacity");
+      m.options.useLegacy = readBoolField(opts, "useLegacy");
+      m.options.sizeOverride = readVariance(opts, "szVr");
+      m.options.opacityOverride = readVariance(opts, "opVr");
+      m.options.flowOverride = readVariance(opts, "prVr");
+      m.options.colorOverride = readVariance(opts, "clVr");
+    }
+  }
+
+  // --- The checkbox tail ---
+  m.noise = readBoolField(brush, "Nose");
+  m.wetEdges = readBoolField(brush, "Wtdg");
+  m.airbrush = readBoolField(brush, "Rpt ");
+  m.brushPose = readBoolField(brush, "useBrushPose");
+
+  return m;
+}
+
+
+// The Texture panel, into `GrainParams`.
+//
+// **This is the one place a `.abr`'s own paper reaches the deposit**, and it
+// goes through `BrushPreset::grain` rather than waiting for the model to be
+// consumed -- because `grain` already exists, is already persisted by
+// app/UserBrushLibraryStore, and is already sampled by all four deposit
+// routes. 84 of the 101 presets measured switch Texture on; before this every
+// one of them painted on the procedural lattice or on nothing.
+//
+// Returns false, with `grain` untouched, when the brush names a pattern this
+// file's `patt` block does not contain or whose blend mode has no formula --
+// the caller counts those rather than substituting a different paper, for the
+// same reason a missing sampled tip falls back to a round dab loudly.
+bool grainFromTexture(const PsTexture& texture,
+                      const std::unordered_map<std::string, std::shared_ptr<const PaperField>>&
+                          patternsById,
+                      GrainParams& grain, std::string& why) {
+  if (!texture.enabled) return false;
+  if (texture.pattern.id.empty()) {
+    why = "Texture is on but names no pattern";
+    return false;
+  }
+  const auto found = patternsById.find(texture.pattern.id);
+  if (found == patternsById.end() || found->second == nullptr) {
+    why = "Texture names pattern '" + texture.pattern.name +
+          "' which this file's `patt` block does not contain";
+    return false;
+  }
+  if (!coverageBlendIsRenderable(texture.blend)) {
+    why = std::string("Texture's blend mode '") + coverageBlendName(texture.blend) +
+          "' has no per-pixel formula in any source consulted";
+    return false;
+  }
+
+  grain.enabled = true;
+  grain.field = found->second;
+  grain.depth = clampf(texture.depth, 0.0f, 1.0f);
+  // Photoshop's Scale is a percentage of the pattern's own size. Clamped away
+  // from zero because a zero scale is a division, and clamped at the top
+  // because a pattern stretched a hundredfold is a flat colour, not paper.
+  grain.scale = clampf(texture.scalePercent / 100.0f, 0.01f, 16.0f);
+  grain.invert = texture.invert;
+  grain.brightness = clampf(texture.brightness / 100.0f, -1.0f, 1.0f);
+  grain.contrast = clampf(texture.contrast / 100.0f, -1.0f, 1.0f);
+  grain.blend = texture.blend;
+  // `strength` stays at its default 1.0: Photoshop's Texture panel has no
+  // second multiplier on the tip's coverage, so inventing one from `depth`
+  // would be this importer's opinion rather than the file's.
+  return true;
 }
 
 }  // namespace
@@ -756,14 +1033,27 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, ui
     const size_t bodyEnd = bodyStart + recLen;  // safe: recLen <= samp.size() - bodyStart, just checked
 
     AbrSampledTip tip;
-    // The key: a literal '$' then a 36-character UUID, 37 bytes, at the very
-    // start of the record body -- confirmed by direct inspection of a real
-    // pack (this file's header) and not otherwise documented. Missing or
-    // short is not fatal to the record; it just means this sample cannot be
-    // named, so it can be decoded but never matched by a preset's
-    // `sampledData`.
-    if (recLen >= 37 && samp[bodyStart] == '$') {
-      tip.id.assign(reinterpret_cast<const char*>(samp.data() + bodyStart + 1), 36);
+    // The key: a **Pascal string** -- one length byte, then that many
+    // characters -- at the very start of the record body.
+    //
+    // **This was read as a literal '$' followed by 36 fixed bytes until
+    // io/PsPatterns.cpp was written**, and it worked, because `0x24` is both
+    // the character '$' and the length 36, and every id Photoshop has written
+    // into either block so far is a 36-character UUID. The two readings agree
+    // on every real file and disagree on the first one that carries an id of
+    // any other length: the old form would refuse it outright (no '$'), and a
+    // sample that cannot be named can never be matched by a preset's
+    // `sampledData`, so the brush silently falls back to a round dab.
+    //
+    // The same encoding appears in `patt`, where the ids are the join key the
+    // Texture panel resolves against -- so getting it right in one place and
+    // not the other would have been two readers disagreeing about the same
+    // four bytes. Missing or short is still not fatal to the record; it just
+    // means this sample cannot be named.
+    if (recLen >= 1) {
+      const size_t idLength = samp[bodyStart];
+      if (idLength > 0 && recLen - 1 >= idLength)
+        tip.id.assign(reinterpret_cast<const char*>(samp.data() + bodyStart + 1), idLength);
     }
 
     size_t hoff = bodyStart + skipAmt;
@@ -843,34 +1133,39 @@ std::vector<AbrSampledTip> parseAbrSampledTips(std::span<const uint8_t> samp, ui
   return out;
 }
 
-AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
-  AbrImportResult result;
+AbrSectionTable readAbrSections(std::span<const uint8_t> bytes) {
+  AbrSectionTable table;
 
-  uint16_t version = 0, subversion = 0;
-  if (!readU16(bytes, 0, version) || !readU16(bytes, 2, subversion)) {
-    result.error = "not an .abr file: fewer than four bytes.";
-    return result;
+  if (!readU16(bytes, 0, table.version) || !readU16(bytes, 2, table.subversion)) {
+    table.error = "not an .abr file: fewer than four bytes.";
+    return table;
   }
-  if (version != 6) {
-    // Versions 1 and 2 are a wholly different layout with no descriptor block
-    // at all. Refused by name rather than parsed hopefully, because the framing
-    // is the only thing standing between this and reading arbitrary memory.
-    result.error = "unsupported .abr version " + std::to_string(version) +
-                   " (only version 6 is read; 1 and 2 are a different, much older layout).";
-    return result;
+  // Version 10 is the same layout as version 6. `abrupng`'s own
+  // `src/abr/mod.rs` routes `(version == 6 || version == 10) && (subversion
+  // == 1 || subversion == 2)` through ONE decoder, and this reader's `samp`
+  // framing was derived against that project (this file's header names it).
+  // **No version 10 file was available to test against here**, so the layout
+  // is inherited rather than observed -- `importAbrBrushes()` says so in a
+  // note rather than presenting the assumption as a reading, and the first
+  // person to open a real v10 pack sees the assumption instead of a silent
+  // misparse. Versions 1 and 2 are a wholly different layout carrying no
+  // descriptor block at all, and stay refused by name.
+  if (table.version != 6 && table.version != 10) {
+    table.error = "unsupported .abr version " + std::to_string(table.version) +
+                  " (only versions 6 and 10 are read; 1 and 2 are a different, much older layout).";
+    return table;
   }
 
-  // Walk the 8BIM sections for `samp` and `desc`. Both are located here
-  // rather than each reading past the other, because a real file (and this
-  // module's own `wrapAbr` fixture) puts `samp` BEFORE `desc` -- so a walk
-  // that stopped at the first section it specifically wanted would need to
-  // run twice, once per section, and disagree with itself about where `off`
-  // resumes. One pass, one `off`, every section keeps its own start/length.
   size_t off = 4;
-  size_t descAt = 0, descLen = 0;
-  size_t sampAt = 0, sampLen = 0;
-  bool haveDesc = false;
   for (;;) {
+    // A checked add, not `off + 12 <= bytes.size()`. `checkedAdd()`'s own
+    // comment above names the three ways the unchecked form goes wrong and
+    // one of them is "a merge that drops the earlier guard" -- which is
+    // precisely what this line is. The branch that factored this walk out of
+    // `importAbrBrushes()` into `readAbrSections()` forked BEFORE
+    // docs/architecture-review.md P2-2 hardened the walk in place, so taking
+    // the new factoring wholesale would have quietly restored the wrapping
+    // add. The factoring is the branch's; the check is main's.
     size_t body = 0;
     if (!checkedAdd(off, 12, body) || body > bytes.size()) break;
     if (std::memcmp(bytes.data() + off, "8BIM", 4) != 0) break;
@@ -882,18 +1177,47 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     // rather than clamping, since a clamped block would parse as a shorter
     // descriptor and silently import half a library.
     if (len > bytes.size() - body) break;
-    if (std::strcmp(key, "desc") == 0 && !haveDesc) {
-      descAt = body;
-      descLen = len;
-      haveDesc = true;
-    } else if (std::strcmp(key, "samp") == 0) {
-      sampAt = body;
-      sampLen = len;
-    }
+
+    AbrSection section;
+    section.key = key;
+    section.at = body;
+    section.length = len;
+    table.sections.push_back(std::move(section));
+
     off = body + len;
     if (len % 2 != 0) ++off;  // 8BIM sections are word-aligned (2 bytes) --
                               // NOT `samp`'s own internal 4-byte record
                               // alignment; see `parseAbrSampledTips()`.
+  }
+
+  table.ok = true;
+  return table;
+}
+
+AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
+  AbrImportResult result;
+
+  const AbrSectionTable table = readAbrSections(bytes);
+  if (!table.ok) {
+    result.error = table.error;
+    return result;
+  }
+
+  // The two asymmetric tie-breaks are the previous walk's, preserved
+  // bit-for-bit: the FIRST `desc` wins and the LAST `samp` wins. See
+  // `AbrSectionTable`'s own comment on why neither is known to matter.
+  size_t descAt = 0, descLen = 0;
+  size_t sampAt = 0, sampLen = 0;
+  bool haveDesc = false;
+  for (const AbrSection& section : table.sections) {
+    if (section.key == "desc" && !haveDesc) {
+      descAt = section.at;
+      descLen = section.length;
+      haveDesc = true;
+    } else if (section.key == "samp") {
+      sampAt = section.at;
+      sampLen = section.length;
+    }
   }
 
   if (descLen == 0) {
@@ -901,15 +1225,55 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     return result;
   }
 
+  // The layout for version 10 is inherited from `abrupng`, never observed
+  // here (`readAbrSections()`'s own comment). Say so per import rather than
+  // letting the assumption pass as a reading -- a note costs nothing on the
+  // six-and-only-six-version files every pack examined so far has been.
+  if (table.version == 10) {
+    result.notes.push_back(
+        {"", "this is a version 10 .abr; its layout is assumed identical to version 6 on "
+             "abrupng's authority and has never been checked against a real v10 file"});
+  }
+
   // Decoded before the descriptor is walked, so `presetFromDescriptor()` can
   // resolve a `sampledData` id against real pixels rather than deferring it.
   // Absent or empty `samp` decodes to an empty map, same as a `.abr` with
   // only procedural brushes -- every `sampledData` lookup then misses, which
   // is the existing "not imported" path and not a new failure mode.
+  // The `patt` block, decoded once per import and keyed by the same UUID a
+  // brush's `Txtr` puts in `Idnt` -- verified against real packs, so the join
+  // needs nothing invented in between. Patterns no brush references are freed
+  // when this map goes out of scope; the referenced ones live on the presets
+  // that took a `shared_ptr` to them.
+  std::unordered_map<std::string, std::shared_ptr<const PaperField>> patternsById;
+  size_t pattAt = 0, pattLen = 0;
+  for (const AbrSection& section : table.sections)
+    if (section.key == "patt" && pattLen == 0) {
+      pattAt = section.at;
+      pattLen = section.length;
+    }
+  if (pattLen > 0) {
+    PsPatternResult pat = parseAbrPatterns(bytes.subspan(pattAt, pattLen));
+    result.patternsDecoded = pat.patterns.size();
+    result.patternsSkipped = pat.skipped;
+    result.patternSamples.reserve(pat.patterns.size());
+    for (PsPattern& q : pat.patterns) {
+      auto field = std::make_shared<PaperField>();
+      field->width = q.width;
+      field->height = q.height;
+      field->height8 = std::move(q.height8);
+      // `result.patternSamples` gets the same shared_ptr `patternsById` keeps
+      // -- one allocation, two owners, exactly how `tipsById`/`tipSamples`
+      // already share a `BrushTipBitmap` a few lines below.
+      result.patternSamples.push_back(AbrPatternSample{q.id, q.name, field});
+      patternsById.emplace(std::move(q.id), std::move(field));
+    }
+  }
+
   std::unordered_map<std::string, std::shared_ptr<const BrushTipBitmap>> tipsById;
   if (sampLen > 0) {
-    for (AbrSampledTip& tip : parseAbrSampledTips(bytes.subspan(sampAt, sampLen), subversion))
-      tipsById.emplace(std::move(tip.id), std::move(tip.bitmap));
+    result.tipSamples = parseAbrSampledTips(bytes.subspan(sampAt, sampLen), table.subversion);
+    for (const AbrSampledTip& tip : result.tipSamples) tipsById.emplace(tip.id, tip.bitmap);
   }
 
   const DescriptorParseResult parsed =
@@ -926,8 +1290,33 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes) {
     return result;
   }
 
-  for (size_t i = 0; i < list.childCount(); ++i)
+  for (size_t i = 0; i < list.childCount(); ++i) {
     result.presets.push_back(presetFromDescriptor(list.child(i), result, tipsById));
+    BrushPreset& preset = result.presets.back();
+    // The Photoshop-shaped model, filled alongside and attached to the SAME
+    // preset it was read from -- see the `brushModelFromDescriptor()` block's
+    // own comment on why both, for now. Written directly onto `preset.model`
+    // rather than into a second, index-parallel vector: that used to be
+    // `AbrImportResult::models`, and a vector that has to stay aligned with
+    // another one by construction is exactly the shape of bug that let
+    // Duplicate silently drop it (`brush/Library.hpp`'s `BrushPreset::model`
+    // comment has the whole story) -- there is no index to get out of step
+    // with when the model lives on the thing it describes.
+    preset.model = brushModelFromDescriptor(list.child(i), tipsById);
+
+    // The Texture panel, resolved against this file's own patterns and
+    // attached to the preset that will paint with it.
+    const BrushModel& model = preset.model;
+    if (model.texture.enabled) {
+      std::string why;
+      if (grainFromTexture(model.texture, patternsById, preset.grain, why)) {
+        ++result.texturesApplied;
+      } else {
+        ++result.texturesNotApplied;
+        result.notes.push_back({preset.name, why + " -- painting without paper texture"});
+      }
+    }
+  }
 
   result.ok = true;
   return result;

@@ -1273,6 +1273,13 @@ bool runCheckedAddTest();
 // new per-target floor.
 bool runMultiplyFloorTest();
 
+// app/selftest/ShelvedLinks.cpp: the dedicated test for the shelved 10x12
+// link matrix (brush/Dynamics.hpp) -- a `user-presets.txt` fixture's
+// link/floor/point lines round-trip byte-for-byte with no live
+// `BrushLinkSet` ever built from them, and a hand-built, non-empty
+// `BrushLinkSet` changes nothing `app/StrokeSession::brushTipFor()` reads.
+bool runShelvedLinksTest();
+
 // app/StrokeSession's applyPerDabScatter(): docs/reachability-audit.md B5's
 // axis defect. Asserted geometrically -- each dab's displacement is
 // projected onto the stroke's own tangent and perpendicular -- that the
@@ -1282,6 +1289,15 @@ bool runMultiplyFloorTest();
 // that a stroke's first dab (no tangent yet) scatters along a deterministic
 // due-+y axis rather than an undefined one. Pure CPU, no document, no GPU.
 bool runScatterTest();
+
+// Phase C Part 1: Scatter Count (`PsScatter::count`/`countJitter`, `Cnt ` on
+// disk) resolved per dab in `app/StrokeSession.cpp`'s `depositPending()` and
+// dispatched as N sub-dabs per nominal stroke position, each with its own
+// `applyPerDabScatter()` offset. Asserts the no-op at `resolvedCount == 1`
+// (dabCount()/texelsWritten()/strokeTiles() bit-identical to no model at
+// all) and the measured claim that count == 3 writes exactly 3x the texels
+// of count == 1. Pure CPU, no document window, no GPU.
+bool runScatterCountTest();
 
 // io/AbrBrushes' `samp` block and brush/Deposit.hpp §2c: a sampled bitmap tip
 // decoded (raw and PackBits, both subversions' header skip), matched to a
@@ -1294,6 +1310,169 @@ bool runScatterTest();
 // informed the framing (see io/AbrBrushes.hpp's header) but never touch
 // --selftest. Headless and GPU-free.
 bool runAbrSampledTipsTest();
+
+// io/PsPatterns: the `patt` block -- Adobe's published Pattern structure plus
+// the Virtual Memory Array List, which is 98-99% of the bytes of every brush
+// pack that has one and was read by nothing at all until now. Hand-built
+// fixtures only; no real pack's bytes are in this repository. The three
+// sections that matter are the ones the specification does not warn you
+// about: `numberOfChannels` reading 24 and not being a count, the four-byte
+// record alignment, and the four-byte short tail. Headless and GPU-free.
+bool runPsPatternsTest();
+
+// io/GimpBrush: `.gbr` and `.gih`, read for the dab library. Hand-built
+// fixtures ONLY -- no file GIMP itself wrote was available where this was
+// written, so these prove the reader agrees with the published standard and
+// cannot prove the standard agrees with GIMP. io/GimpBrush.hpp names the one
+// inference that leaves open (mask polarity) and what would settle it.
+// Headless and GPU-free.
+bool runGimpBrushTest();
+
+// brush/Variance: Photoshop's `brVr` object -- the same four fields at twelve
+// sites -- resolved by one formula. The sections that matter are the two audit
+// findings this type makes UNREPRESENTABLE rather than merely fixed: B6's
+// squared floor (the minimum is outside the product) and B7's
+// absent-device-resolves-to-the-floor (an unavailable axis contributes
+// identity). Headless and GPU-free.
+bool runVarianceTest();
+
+// brush/CoverageBlend: the ten ways two coverage values combine into one --
+// the Dual Brush's `BlnM` and the Texture panel's `textureBlendMode`, which
+// are the same question asked in two panels and now share one table.
+//
+// Four of the arms MOVED here out of `combineDualCoverage()`, so this checks
+// them against expressions written out by hand rather than against the
+// function under test. And it pins the invariant BOTH callers depend on and
+// neither could recover from: **no blend may create coverage where the
+// primary has none** -- a second tip must not paint outside the first tip's
+// footprint, and `depositDab()` only visits texels `dabCoverage()` already
+// accepted. Exactly one mode can violate it (Hard Mix), which is why the
+// guard lives in the shared function.
+//
+// Pure arithmetic: no document, no tile, no GPU, and every asserted value
+// exact in binary floating point, so the comparisons are `==`.
+bool runCoverageBlendTest();
+
+// **A real scanned paper under the brush** -- `GrainParams::field`, and the
+// three deposit routes that never asked for grain at all.
+//
+// brush/Grain generates its height field procedurally (its own §0: the patent
+// names a stored table, this codebase ships no binary fixtures). A `.abr`
+// carries the real thing in its `patt` block -- 98-99% of the file's bytes,
+// named by 84 of the 101 presets measured -- and io/PsPatterns now decodes it.
+// Sections A-C are the sampling: nearest, wrapped at negative coordinates,
+// scaled, and shaped by brightness/contrast/invert in the panel's own order,
+// with a null field falling through to the procedural path bit for bit.
+//
+// **Sections D-F close a gap rather than guard a feature.** `grainCoverageAt()`
+// was called from the CPU Pigment deposit and the preview and NOWHERE else, so
+// paper texture worked on a Pigment layer and silently did nothing on an RGB
+// layer -- the layer an ordinary File > New selects. Those assertions fail on
+// the code as it stood.
+//
+// The field is a checkerboard at depth 1.0, not a scan and not a hash, so the
+// outcome is binary and exact: a peak texel takes no paint at all, a valley
+// takes it in full, and "the grain call is missing" reads as "the disc is
+// solid". Headless and GPU-free.
+bool runPaperTextureTest();
+
+// app/DabLibrary: the watched folder, and the two claims it stands on.
+//
+//   * **An unchanged rescan decodes nothing** -- asserted against
+//     `decodeCount()`, not described. It is what makes a scan cheap enough to
+//     run on a window-focus event, and a rescan that quietly re-decoded a
+//     500-file folder would pass every correctness assertion here and still
+//     make the feature unusable.
+//   * **A rename does not orphan a preset** -- a `file:` id names a path, so
+//     the index carries a fingerprint of the decoded coverage and a rescan
+//     recognises the file under its new name. Section E walks up to one of
+//     the edges that mitigation admits to.
+//
+// Also: the one rule that turns a picture into coverage (a real alpha channel
+// if there is one, otherwise `1 - display-encoded luminance`), the index's
+// escaping and version discipline, and that a library with no folders scans
+// to nothing without creating a folder or a stub index.
+//
+// Runs entirely against a scratch directory under the system temp path --
+// the roots are injected, so this never touches
+// `~/Library/Application Support/naturalPaint`. Headless and GPU-free.
+bool runDabLibraryTest();
+
+// app/DabLibrary's PATTERN extraction -- `extractAbrPatterns()` and
+// `patternsImportedRootPath()`, the `patt`-block sibling of the tip
+// extraction `runDabLibraryTest()`'s own section G proves.
+//
+// A decoded `PaperField` written to `patterns-imported/<uuid>.png` reads back
+// byte for byte (single-channel, not alpha-over-black -- a height field
+// answers to none of the coverage-polarity rules a tip's mask does), a second
+// import of the same uuid leaves the file on disk alone, and a malformed id
+// is refused rather than trusted as a path component. A synthetic
+// `PaperField` fixture throughout, not a real `.abr`. Runs entirely against a
+// scratch directory under the system temp path. Headless and GPU-free.
+bool runPatternExtractTest();
+
+// ui/DabPicker's arithmetic -- the half of a picker that can be wrong in a way
+// a screenshot would not show. `--selftest` cannot reach an ImGui dispatch
+// site (reachability-audit F4), so everything here is a pure function of
+// numbers: column fit, cell placement, the hit test, thumbnail letterboxing,
+// atlas paging.
+//
+// The load-bearing section is the hit test, checked as the INVERSE of the cell
+// placement over every cell of twelve layouts rather than against a
+// hand-written table -- a hit test derived independently from the layout is
+// exactly how a picker ends up selecting the cell next to the one clicked, a
+// bug that looks like a rendering glitch and is not one. Headless and GPU-free.
+bool runDabPickerTest();
+
+// ui/BrushSettingsWindow's tab table -- which groups of brush settings exist,
+// what they are called, and that each row of the table carries its own id.
+//
+// Same reason as the picker above: `--selftest` cannot reach an ImGui dispatch
+// site (reachability-audit F4), so a tab strip written as a run of
+// `BeginTabItem()` calls has no assertions on it and a group dropped in a
+// later edit is invisible until a painter goes looking for a control that is
+// no longer anywhere. The load-bearing assertion is that the table is indexed
+// by its own enum -- ui/MenuModel's spec table has the identical hazard, and a
+// row out of order draws one group's controls under another group's name,
+// which is completely invisible on inspection. Headless and GPU-free.
+bool runBrushSettingsWindowTest();
+
+// brush/BrushModelIo: the text format for a `BrushModel` (Photoshop's Brush
+// Settings panel, ~117 addressable leaves once every `Variance` is counted
+// out) and the one templated visitor (brush/BrushModelIo.hpp's
+// `visitBrushModelFields()`) both `brushModelToLines()` and
+// `brushModelApplyLine()` walk instead of ~117 hand-written branches. Round-
+// trips a model with every field set to a distinct value at zero tolerance,
+// asserts a default model writes zero lines, that every path is unique, that
+// the path count is pinned to a literal (so a field added to `BrushModel`
+// without a matching visitor call fails here), and that an unknown path, a
+// malformed value, and an out-of-range enum ordinal are each refused without
+// mutating the model. Headless and GPU-free.
+bool runBrushModelIoTest();
+
+// brush/BrushModelDiff: `brushModelDiff()`/`brushModelEqual()`, the two
+// functions that will let `presetMatches()` compare BrushModel's full ~151
+// leaves instead of the 14 scalars it checks today, and let a round-trip
+// test name which field did not survive instead of just that one didn't.
+// Both are built on ONE templated visitor (brush/BrushModelDiff.hpp's
+// `detail::visitBrushModel`) walked in two modes: read-only over two const
+// models here, and read-write over one mutable model in this file's own
+// "every field is reachable" section, which sets exactly the k-th leaf (in
+// the visitor's own walk order) and nothing else, then asserts the diff
+// names exactly that path. Also pins `brushModelDiffPaths().size()` to a
+// literal, so a field added to BrushModel without its one visitor line
+// fails here instead of silently under-counting. Pure CPU, no GPU, no file
+// I/O -- BrushModel is a plain struct.
+bool runBrushModelDiffTest();
+
+// ui/BrushFieldPresentation: the exhaustiveness guarantee that a BrushModel
+// leaf cannot silently end up with no control anywhere. Asserts that every
+// path `brushModelFieldPaths()` produces is in EXACTLY ONE of
+// `brushFieldPresentationTable()` (gets a live control) or
+// `brushFieldOmissionTable()` (deliberately does not, with a reason), and
+// that neither table names a field that does not exist (the mirror-image
+// failure -- a rename or removal left a stale row behind). Pure CPU, no GPU.
+bool runBrushPanelBindingTest();
 
 // track10/angle: is the angle input interpreted correctly? An independent
 // (never-read-back-from-the-code-under-test) geometric pin on two claims --
@@ -4176,6 +4355,29 @@ bool runTouchGestureSessionTest();
 bool runStrokePreviewTest();
 
 bool runPressureFeelTest();
+
+// Phase C Part 2: Transfer Opacity/Flow (`PsTransfer::opacity`/`.flow`,
+// `opVr`/`prVr`), latched once at `StrokeSession::begin()` -- Opacity
+// directly into the RGB deposit/erase accumulators, Flow into
+// `transferFlowMul_`, applied fresh every dab. Asserts a stroke with an
+// inert Transfer Variance paints bit-identically to no model at all (dab/
+// texel counts, tile set AND the stored pixel), and that a real, hand-built
+// `opVr`/`prVr` with a `PenPressure` control measurably -- and, at a single
+// non-overlapping hard-disc dab's own centre, EXACTLY -- changes the stored
+// alpha (1.0 unscaled vs 0.5 halved, for both Opacity's ceiling and Flow's
+// weight). Pure CPU, no document window, no GPU.
+bool runTransferDynamicsTest();
+
+// Phase C Part 3 (bounded investigation): `blendModeFromPsToolOptions()`
+// (brush/ToolOptionsBlend.hpp), the edge mapping from Photoshop's own `Md `
+// tool-options blend id onto `core::BlendMode`, and `brushTipFor()`'s one
+// call site for it. Groundwork only -- `BrushTip::blend` is not wired into
+// any of the four deposit routes (see that field's own comment in
+// brush/Deposit.hpp for the two obstacles found), so this asserts the
+// mapping's three honoured ids, its three distinctly-worded refusals, and
+// the fallback to Normal, rather than any painted pixel. Pure CPU, no
+// document window, no GPU.
+bool runToolOptionsBlendTest();
 
 // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp): US 5,347,620's tiled
 // grain field and its `F = clamp(P*S*O1 - G, 0, 1)` overlay fraction, headless

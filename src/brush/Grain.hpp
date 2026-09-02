@@ -1,6 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "brush/CoverageBlend.hpp"
 
 // brush/Grain -- **paper tooth: a tiled height field the tip pushes paint
 // into, and skips over.**
@@ -172,6 +176,25 @@
 // and is not this one.
 namespace np {
 
+// A SAMPLED paper height field -- a real scan, as opposed to the procedural
+// lattice `grainHeightAt()` generates when there is none.
+//
+// **This is where a `.abr`'s own paper lands.** A brush pack's `patt` block
+// holds the papers the brushes were authored against -- "Extra Heavy Canvas",
+// "ktw watercolor paper 2k17 b", "Brayer 3" -- and is 98-99% of the file's
+// bytes. 84 of the 101 presets measured name one. io/PsPatterns decodes them;
+// this is the shape they take once they reach the deposit.
+//
+// Scalar, not colour: paper tooth is a height, and the patent's `G` is one
+// number per texel. An RGB pattern collapses to luminance on the way in
+// (io/PsPatterns.cpp) rather than carrying two channels nothing samples.
+struct PaperField {
+  int32_t width = 0;
+  int32_t height = 0;
+  std::vector<uint8_t> height8;  // width * height, row-major, top to bottom
+};
+
+
 // What a "paper" is, for this module's purposes -- generated rather than
 // scanned (§0), and parameterised by the two things a procedural field can
 // vary that a scanned bitmap's own pixels would otherwise fix: how often it
@@ -224,6 +247,42 @@ struct GrainParams {
   // fully loaded tip bite HARDER than its own coverage is a legitimate
   // "rough paper" setting, not a value this struct should refuse.
   float strength = 1.0f;
+
+  // --- The sampled field, and the shaping applied to it ---------------------
+  //
+  // **Null is the procedural field, and that is the default**, so every brush
+  // authored before this existed -- and every `--selftest` assertion and
+  // golden reference written against it -- takes the identical code path and
+  // the identical arithmetic it always did. The bitmap branch is entered only
+  // when a pattern is actually attached.
+  std::shared_ptr<const PaperField> field;
+
+  // How many document texels one texel of `field` covers. Photoshop's Texture
+  // panel calls this Scale and expresses it as a percentage of the pattern's
+  // own size; this is that percentage divided by 100. Ignored when `field` is
+  // null -- the procedural field has `periodX`/`periodY` for the same job.
+  float scale = 1.0f;
+
+  // Photoshop's Invert checkbox, on for 40 of the 84 textured presets
+  // measured. Applied to the SAMPLED height before `depth` scales it, so
+  // inverting a paper swaps which parts of it resist paint rather than
+  // changing how deep the tooth is.
+  bool invert = false;
+
+  // Photoshop's Brightness and Contrast, both in the panel's own -150..150
+  // units divided by 100 here. Applied to the sampled height, in that order,
+  // before `invert`. Both default to the identity.
+  float brightness = 0.0f;
+  float contrast = 0.0f;
+
+  // How the height combines with the tip's coverage.
+  //
+  // **Subtract is the default and it is the behaviour this file has always
+  // had** -- `grainOverlayFraction()`'s `P*S*O1 - G` is a subtraction, so an
+  // existing brush keeps its exact arithmetic by keeping the default. The
+  // other modes arrive with the Texture panel, whose `textureBlendMode` names
+  // seven across the packs measured.
+  CoverageBlend blend = CoverageBlend::Subtract;
 };
 
 // G: the grain surface height at absolute document texel `(x, y)`, in

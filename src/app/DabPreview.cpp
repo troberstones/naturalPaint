@@ -169,14 +169,19 @@ std::array<BrushTip, kDabPreviewCells> dabPreviewTipsFor(const BrushState& brush
     DynamicInputs in = live;
     in.pressure = kDabPreviewPressures[i];
     tips[i] = brushTipFor(brush, lut, in);
-    // The floor, applied here because it never gets a second chance to be:
-    // a preview cell has no stroke, so it never reaches
-    // `app/StrokeSession::depositPending()`'s own floor application, and
-    // `brushTipFor()` deliberately leaves `tip.radius` unfloored (see
-    // `BrushTip::sizeFloorPx`'s comment, brush/Deposit.hpp) for a
-    // stroke-local multiply that, on THIS path, is never coming. This IS
-    // the last multiply, so this is where the floor belongs.
-    tips[i].radius = std::max(tips[i].radius, tips[i].sizeFloorPx);
+    // **No floor application here any more, and none is missing.**
+    // `BrushTip::sizeFloorPx` is gone -- `brush/Variance.hpp`'s `minimum` is
+    // the floor now, applied inside `varianceScale()`'s own formula, which
+    // only runs per DAB inside a real `StrokeSession` (`depositPending()`).
+    // A preview cell has no stroke and therefore no dab index or seed to
+    // resolve Variance against at all, so `tips[i]` here carries
+    // `brushTipFor()`'s unvaried BASE size/angle/roundness -- narrower than
+    // what a real stroke paints for a brush with Size/Angle/Roundness
+    // jitter, in the same "a preview cell is not a stroke" sense this
+    // function's own removed floor-application line used to state for
+    // `sizeFloorPx`. A real, named scope boundary rather than a silent gap;
+    // resolving Variance per preview cell against a synthetic dab index is
+    // future work, not part of this migration.
   }
   return tips;
 }

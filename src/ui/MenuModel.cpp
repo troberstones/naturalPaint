@@ -190,6 +190,11 @@ const MenuItemSpec* specTable() {
     set(MenuAction::Snap, "Snap", "Cmd+Shift+;",
         MenuKeyEquivalent{';', kMenuModCmd | kMenuModShift, "toggle_snapping"});
 
+    // No key equivalent. `docs/shortcuts.md` assigns nothing here, and
+    // claiming a chord from a native menu **consumes** it before SDL sees it
+    // (MenuKeyEquivalent's own header) -- not a thing to do speculatively for
+    // a panel that already has a home in the docked column.
+    set(MenuAction::BrushSettings, "Brush Settings", "");
     set(MenuAction::ImGuiDemo, "ImGui demo", "");
     family(MenuAction::ActivateDocument);
 
@@ -433,6 +438,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::GrayscalePreview: return "GrayscalePreview";
     case MenuAction::Rulers: return "Rulers";
     case MenuAction::Navigator: return "Navigator";
+    case MenuAction::BrushSettings: return "BrushSettings";
     case MenuAction::Guides: return "Guides";
     case MenuAction::AddGuide: return "AddGuide";
     case MenuAction::ClearGuides: return "ClearGuides";
@@ -934,6 +940,8 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
   // ---------------------------------------------------------------- Window
   {
     MenuNode window = submenu("Window");
+    window.children.push_back(check(MenuAction::BrushSettings, ctx.showBrushSettings));
+    window.children.push_back(separator());
     window.children.push_back(check(MenuAction::ImGuiDemo, ctx.showDemo));
     window.children.push_back(separator());
     // The open documents, and which one the lifecycle commands act on. The tab

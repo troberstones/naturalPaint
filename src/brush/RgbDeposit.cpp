@@ -171,8 +171,22 @@ DepositCount RgbStroke::depositDab(TileStore& store, const BrushTip& tip, Vec2 c
           const float dx = (static_cast<float>(x) + 0.5f) - centre.x;
           const PixelCoord local = tileLocalOffset(PixelCoord{x, y});
 
-          const float cov = dabCoverage(tip, dx, dy);
-          if (!(cov > 0.0f)) continue;
+          const float rawCov = dabCoverage(tip, dx, dy);
+          if (!(rawCov > 0.0f)) continue;
+
+          // Paper tooth, at this texel's ABSOLUTE canvas position -- `x`/`y`,
+          // not `dx`/`dy`, which is why it cannot live inside `dabCoverage()`.
+          // Identical line and identical reasoning to brush/Deposit.cpp's own
+          // (§2e); see there for the full argument.
+          //
+          // **This route had no grain call at all until now**, so a brush with
+          // PAPER GRAIN switched on painted textured on a Pigment layer and
+          // perfectly smooth on an RGB one -- which is most layers -- with no
+          // control disabled and nothing said. `grainCoverageAt()` returns its
+          // input bit-identical when grain is off, so adding it changes
+          // nothing for a brush that has not turned it on.
+          const float cov = grainCoverageAt(tip.grain, rawCov, x, y);
+          if (!(cov > 0.0f)) continue;  // a grain peak too tall for this pressure
           const float sel = selection != nullptr ? selectionTileCoverage(cover, local) : 1.0f;
           if (!(sel > 0.0f)) continue;
 

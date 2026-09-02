@@ -174,6 +174,80 @@ bool runChromeConsistencyTest() {
           "constrains layer-writing routes, not the solver route");
   }
 
+  // --- Part C2: PAPER GRAIN's disabled state, and the staleness it had -----
+  //
+  // `grainReachesRoute()` (app/StrokeSession.hpp) is the same extraction as
+  // WET's above, made for a worse reason: the BRUSH panel's copy of this
+  // answer went **stale** rather than merely duplicated. Grain was called
+  // from `depositDab()` alone when the panel was written; the texture work
+  // added `grainCoverageAt()` to `brush/RgbDeposit.cpp`,
+  // `brush/RgbErase.cpp` and `brush/PigmentErase.cpp` and left the panel
+  // greying itself out on all three, over a sentence saying grain could not
+  // reach them. An RGB layer is what File > New gives you.
+  //
+  // Two claims, and the second is the load-bearing one:
+  //
+  //   1. every route that writes a layer honours grain, RGB included;
+  //   2. and the predicate is not simply `true` -- the solver route says no.
+  //
+  // Without (2) this section would pass just as happily against
+  // `return true`, which is exactly the "what OTHER implementation would also
+  // pass?" question this suite's sabotage discipline exists to force.
+  {
+    OpenDocument doc = makeBlankOpenDocument(64, 64, WorkingSpace{}, "chrome-grain");
+    Layer* rgbTarget = activeLayerOf(doc);
+    check(rgbTarget != nullptr && rgbTarget->kind == LayerKind::RGB,
+          "fixture: a fresh document's active layer is RGB-kind");
+
+    // **The regression, named.** Brush onto an ordinary RGB layer is
+    // RgbDeposit, and RgbDeposit calls grainCoverageAt(). This is the exact
+    // case the panel used to grey out.
+    check(grainReachesRoute(strokeRouteFor(Tool::Brush, rgbTarget)),
+          "Brush onto an RGB layer: RgbDeposit calls grainCoverageAt() -- PAPER GRAIN "
+          "honoured, the case the panel used to grey out and explain away");
+    check(grainReachesRoute(strokeRouteFor(Tool::Eraser, rgbTarget)),
+          "Eraser onto an RGB layer: RgbErase calls it too -- honoured");
+
+    // The one that must still say NO, and the reason the predicate is not a
+    // constant: the solver computes no CPU coverage for grain to modify.
+    check(!grainReachesRoute(strokeRouteFor(Tool::Water, rgbTarget)),
+          "Water: the solver route computes no CPU coverage, so there is nothing for "
+          "grain to modify -- disabled, and this is what stops the predicate being 'true'");
+    check(!grainReachesRoute(strokeRouteFor(Tool::Brush, nullptr)),
+          "no layer at all: Brush falls through to the solver -- still disabled");
+
+    // The original route, unchanged by any of this.
+    applyLayerCommand(doc, LayerCommand::NewPigmentLayer, doc.activeLayer);
+    setActiveLayer(doc, doc.document.layers.size() - 1);
+    Layer* pigTarget = activeLayerOf(doc);
+    check(pigTarget != nullptr && pigTarget->kind == LayerKind::Pigment,
+          "fixture: the new layer is Pigment-kind");
+    check(grainReachesRoute(strokeRouteFor(Tool::Brush, pigTarget)),
+          "Brush onto a Pigment layer: CpuDeposit, grain's original home -- still honoured");
+
+    // A locked layer routes to None, which writes nothing and therefore
+    // grains nothing. Not a special case in the predicate -- a consequence of
+    // it -- and asserted so it stays one.
+    pigTarget->locked = true;
+    check(!grainReachesRoute(strokeRouteFor(Tool::Brush, pigTarget)),
+          "a locked layer: route None writes nothing, so there is no coverage to grain");
+
+    // **WET and GRAIN must never agree.** They are complementary by
+    // construction -- one is the solver route, the other is every
+    // layer-writing route -- and a copy-paste that pointed the grain block at
+    // `wetnessReachesSolver()` would be invisible in the panel until someone
+    // noticed grain worked only with the Water tool.
+    bool everDisagree = false;
+    for (const StrokeRoute r : {StrokeRoute::None, StrokeRoute::PaintSim,
+                                StrokeRoute::CpuDeposit, StrokeRoute::RgbDeposit,
+                                StrokeRoute::RgbErase, StrokeRoute::PigmentErase})
+      if (grainReachesRoute(r) == wetnessReachesSolver(r) && r != StrokeRoute::None)
+        everDisagree = true;
+    check(!everDisagree,
+          "on every route but None the two predicates are opposites -- pointing the grain "
+          "block at WET's predicate would make grain work only with the Water tool");
+  }
+
   // --- Part D: A5, asserted explicitly -------------------------------------
   //
   // Resolved: the loaded PIGMENT owns Density/Staining/Granulation. PLAN.md's

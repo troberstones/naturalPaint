@@ -472,4 +472,43 @@ bool exportDocumentToFile(const Document& doc, const std::string& path, ImageFor
 // empty vector for a zero-sized image or a null pixel pointer.
 std::vector<uint8_t> encodePng16(uint32_t width, uint32_t height, const uint16_t* rgba);
 
+// 8-bit RGBA PNG, exposed for the same reason `encodePng16` above is: this
+// file is the one translation unit that defines
+// `STB_IMAGE_WRITE_IMPLEMENTATION`, so anything else needing a PNG writer has
+// to come through here rather than compile a second copy of stb's bodies.
+//
+// Its caller is app/DabLibrary's `.abr` tip extraction, which writes a
+// coverage mask and not a picture -- see there for why the mask goes in the
+// ALPHA channel over black rather than into a greyscale PNG.
+//
+// Returns an empty vector on a zero dimension or a null pointer, which is the
+// same "no bytes" answer `encodePng16` gives and which every caller already
+// has to handle.
+std::vector<uint8_t> encodePng8Rgba(uint32_t width, uint32_t height, const uint8_t* rgba);
+
+// 8-bit SINGLE-CHANNEL (greyscale, PNG colour type 0) PNG, exposed for the
+// same reason `encodePng8Rgba` is: this file is the one translation unit that
+// defines `STB_IMAGE_WRITE_IMPLEMENTATION`.
+//
+// Its caller is app/DabLibrary's `.abr` PATTERN extraction. A decoded pattern
+// (io/PsPatterns.hpp's `PsPattern::height8`, `brush/Grain.hpp`'s
+// `PaperField::height8`) is a scalar height field, not a picture -- unlike a
+// sampled TIP, which `extractAbrTips()` deliberately writes as alpha-over-
+// black RGBA because it must round-trip through the "real alpha, else
+// `1 - luminance`" coverage rule (this header's neighbour, `encodePng8Rgba`'s
+// own comment). A height field answers to no such rule: nothing downstream
+// reads it as a picture, so there is no polarity to get right and no reason
+// to spend four bytes on disk for one byte of real information.
+//
+// This is NOT a second hand-rolled encoder alongside `encodePng16` above --
+// it is the same `stbi_write_png_to_func()` call `encodePng8Rgba` already
+// makes, with `comp` at 1 instead of 4 (stb_image_write's own channel-count
+// table maps 1 to PNG colour type 0, greyscale). `encodePng16` needed a
+// hand-rolled writer because stb_image_write's PNG path has no >8-bit entry
+// point at all; single-channel 8-bit is a case it already handles.
+//
+// Returns an empty vector on a zero dimension or a null pointer, same as the
+// other two encoders here.
+std::vector<uint8_t> encodePng8Gray(uint32_t width, uint32_t height, const uint8_t* gray);
+
 }  // namespace np

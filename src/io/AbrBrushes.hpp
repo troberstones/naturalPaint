@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "brush/BrushModel.hpp"
 #include "brush/Library.hpp"
 
 namespace np {
@@ -94,11 +95,68 @@ struct AbrImportNote {
   std::string what;
 };
 
+// One decoded sample: the id its `samp` record carries (the 36-character
+// UUID text, with the on-disk record's leading `$` stripped -- see this
+// file's header) and the bitmap, or a null bitmap when the record's own
+// header did not describe something this reader trusts (§ this file's header
+// again, the three failure modes).
+struct AbrSampledTip {
+  std::string id;
+  std::shared_ptr<const BrushTipBitmap> bitmap;
+};
+
+// One decoded pattern from the `patt` block, exposed the same way
+// `AbrSampledTip` exposes a `samp` tip, and for the same reason.
+// `importAbrBrushes()` already resolves a pattern into `BrushPreset::grain`
+// for the presets THIS import decoded (via `grainFromTexture()`, below), but
+// that binding lives only as long as this one `AbrImportResult` does --
+// unload the pack and the paper is gone with it. `id` and `field` are exactly
+// what `patternsById`'s map entries hold internally; this is that same data,
+// named and handed to the caller instead of discarded when the map goes out
+// of scope. `field` is the shared_ptr `grainFromTexture()` itself took, not a
+// copy, so exposing it costs nothing extra.
+struct AbrPatternSample {
+  std::string id;
+  std::string name;  // the record's own name, for a future picker's label
+  std::shared_ptr<const PaperField> field;
+};
+
 struct AbrImportResult {
   bool ok = false;
   std::string error;  // set when ok is false, and then presets is empty
 
+  // Each preset's `model` (`brush/Library.hpp`'s `BrushPreset::model`) is
+  // filled alongside it, read into Photoshop's own panel structure
+  // (brush/BrushModel.hpp) rather than flattened onto the link matrix.
+  //
+  // **This USED to be a separate `models` vector here, index-parallel to
+  // `presets` and read by nothing but `--abr-report`.** That shape is exactly
+  // the bug `presetFromBrush()` used to have no way around: a model that
+  // lives in a second vector, one call's lifetime away from the preset it
+  // describes, is a model Duplicate has no path to carry (`BrushPreset::model`
+  // has the full account). Writing it directly onto `presets[i].model`
+  // removes the index to get out of step, and gives the model the same
+  // lifetime as the preset it belongs to -- for as long as the preset
+  // survives, whether that is the length of this function call or, via
+  // Duplicate, well beyond it.
   std::vector<BrushPreset> presets;
+
+  // The `samp` block's tips, flat and in file order, beside the presets that
+  // reference them.
+  //
+  // **Exposed so the tips can be written somewhere durable.**
+  // brush/Library.hpp is blunt about the alternative: a preset's `tipBitmap`
+  // lives exactly as long as the library stays loaded, so a duplicated
+  // sampled-tip brush "reloads next launch as the round procedural tip".
+  // Writing them out is the app layer's job -- `io/` does not reach into
+  // `app/` -- and app/DabLibrary's `extractAbrTips()` needs the tips to do it,
+  // which until now only existed inside `importAbrBrushes()`'s own scope.
+  //
+  // Named `tipSamples` and not `sampledTips` because `sampledTips` further
+  // down is already a COUNT of the ones that FAILED, and two members one
+  // letter apart meaning opposite things is a defect waiting to be written.
+  std::vector<AbrSampledTip> tipSamples;
+
   std::vector<AbrImportNote> notes;
 
   // Counters for the summary line, so a caller does not have to walk `notes`
@@ -146,6 +204,32 @@ struct AbrImportResult {
   // fired on it would carry no information -- the same discipline
   // `useDualBrush`'s own "present but off" case already applies below.
   size_t dualBrushCadenceNotHonoured = 0;
+
+  // --- The Texture panel -----------------------------------------------
+  //
+  // Patterns found in this file's `patt` block, and those its framing
+  // reached but would not decode (io/PsPatterns.hpp names the four ways).
+  // A pack with no `patt` at all -- threeOtherBrushes.abr carries one of
+  // length zero -- reports 0 and 0, which is a different fact from a pack
+  // whose patterns failed.
+  size_t patternsDecoded = 0;
+  size_t patternsSkipped = 0;
+
+  // The `patt` block's own patterns, flat and in file order, beside the
+  // presets that reference them -- `tipSamples`' own comment states the
+  // argument and it applies unchanged here: writing them somewhere durable is
+  // the app layer's job, not `io/`'s, and app/DabLibrary's
+  // `extractAbrPatterns()` needs them to do it.
+  std::vector<AbrPatternSample> patternSamples;
+
+  // Brushes whose Texture is ON and whose paper reached `BrushPreset::grain`,
+  // against those where it did not -- an id this file's `patt` does not
+  // contain, or a blend mode with no formula (`linearHeight`). A brush
+  // counted in the second paints on no paper at all and says so, rather than
+  // silently reading smoother than the original, which is what every one of
+  // the 84 textured presets did before this existed.
+  size_t texturesApplied = 0;
+  size_t texturesNotApplied = 0;
 };
 
 // Parse a whole `.abr` file.
@@ -157,15 +241,8 @@ AbrImportResult importAbrBrushes(std::span<const uint8_t> bytes);
 
 // --- The `samp` block, exposed so it can be tested without a whole `.abr` --
 
-// One decoded sample: the id its `samp` record carries (the 36-character
-// UUID text, with the on-disk record's leading `$` stripped -- see this
-// file's header) and the bitmap, or a null bitmap when the record's own
-// header did not describe something this reader trusts (§ this file's header
-// again, the three failure modes).
-struct AbrSampledTip {
-  std::string id;
-  std::shared_ptr<const BrushTipBitmap> bitmap;
-};
+// `AbrSampledTip` is declared ABOVE `AbrImportResult`, which carries a vector
+// of them -- see there.
 
 // Parses every brush sample out of one `samp` block's body (the bytes AFTER
 // its own `8BIM samp <length>` framing -- `importAbrBrushes()` hands this the
@@ -256,5 +333,48 @@ float abrSpacingToRadii(double percentOfDiameter) noexcept;
 // otherwise introduce were the doubling applied before Photoshop's own
 // 0-100% jitter clamp instead of after it.
 float abrScatterFractionToRadii(float fractionOfDiameter) noexcept;
+
+// --- The `8BIM` section table, exposed so tooling need not re-walk ---------
+
+// One top-level `8BIM` section as the walk found it: its four-character key,
+// and where its BODY begins and how long it is. Offsets are into the same span
+// `readAbrSections()` was handed, so a caller subspans rather than re-walks.
+struct AbrSection {
+  std::string key;  // "samp", "patt", "desc", "phry", or whatever else is there
+  size_t at = 0;      // offset of the body -- past the 12 bytes of framing
+  size_t length = 0;
+};
+
+// Every `8BIM` section in one pass, plus the file's own two version words.
+//
+// Split out of `importAbrBrushes()` -- which now calls it rather than keeping
+// its own copy -- for two reasons: `--abr-report` can print the section table
+// without a second walk that could disagree with the importer's, and a reader
+// of `patt` or `phry` does not have to reimplement the framing to find its
+// block. The rules are unchanged from the walk this replaces: it stops at the
+// first tag that is not `8BIM` (no resync -- a file whose framing has already
+// gone wrong is not one to guess further into), a length running past the end
+// of the buffer stops the walk rather than being clamped (a clamped block
+// would parse as a shorter descriptor and silently import half a library),
+// and sections are word-aligned to 2 bytes -- **not** `samp`'s own internal
+// 4-byte record alignment, which is a different number in a different place
+// and has been confused before.
+//
+// Note the two asymmetric tie-breaks `importAbrBrushes()` applies over this
+// table, preserved from the walk it replaces: the FIRST `desc` wins and the
+// LAST `samp` wins. Neither has ever been exercised by a real file -- no pack
+// examined carries two of either -- so they are the previous code's behaviour
+// kept bit-for-bit rather than a rule anything is known to depend on.
+struct AbrSectionTable {
+  bool ok = false;
+  std::string error;  // set when ok is false, and then `sections` is empty
+  uint16_t version = 0;
+  uint16_t subversion = 0;
+  std::vector<AbrSection> sections;
+};
+
+// Reads no byte outside `bytes`, the same contract everything else in this
+// header holds itself to and for the same reason.
+AbrSectionTable readAbrSections(std::span<const uint8_t> bytes);
 
 }  // namespace np

@@ -31,10 +31,17 @@ std::vector<uint8_t> buildSampRecord(const char* uuid36, uint16_t subversion, ui
                                      uint16_t depth, uint8_t compression,
                                      const std::vector<uint8_t>& imageBytes) {
   DescFixture body;
-  body.u8v('$');
+  size_t idLength = 0;
+  for (const char* p = uuid36; *p != '\0'; ++p) ++idLength;
+  // A Pascal string: the LENGTH byte, then the characters. For the usual
+  // 36-character UUID that byte is 0x24, which is also '$' -- which is exactly
+  // why this was misread as a sigil for so long (io/AbrBrushes.cpp's own
+  // comment on the fix). Written as a length here so a fixture can carry an id
+  // of some other length and the two readings can disagree.
+  body.u8v(static_cast<unsigned>(idLength));
   for (const char* p = uuid36; *p != '\0'; ++p) body.u8v(static_cast<unsigned char>(*p));
   const size_t skipAmt = (subversion == 1) ? 47 : 301;
-  for (size_t i = 37; i < skipAmt; ++i) body.u8v(0);
+  for (size_t i = 1 + idLength; i < skipAmt; ++i) body.u8v(0);
   body.u32v(top).u32v(left).u32v(bottom).u32v(right);
   body.u16v(depth);
   body.u8v(compression);
@@ -57,28 +64,6 @@ std::vector<uint8_t> buildSampSection(const std::vector<std::vector<uint8_t>>& r
     while (out.size() % 4 != 0) out.push_back(0);
   }
   return out;
-}
-
-// PackBits-encodes `raw` (`width` x `height`) as one literal run per scanline
-// -- valid for `width <= 128`, which is every fixture below. Good enough to
-// prove the row-length table and the literal opcode; the run (negative n) and
-// NOP (-128) opcodes are exercised separately, hand-built, where the decoder's
-// handling of THOSE specifically is what a test is about.
-std::vector<uint8_t> packBitsLiteralRows(const std::vector<uint8_t>& raw, uint32_t width,
-                                         uint32_t height) {
-  DescFixture rowLens;
-  DescFixture stream;
-  for (uint32_t y = 0; y < height; ++y) {
-    DescFixture row;
-    row.u8v(width - 1);  // literal opcode: `width` bytes follow, verbatim
-    for (uint32_t x = 0; x < width; ++x) row.u8v(raw[y * width + x]);
-    rowLens.u16v(static_cast<unsigned>(row.bytes.size()));
-    for (const uint8_t b : row.bytes) stream.u8v(b);
-  }
-  DescFixture out;
-  for (const uint8_t b : rowLens.bytes) out.u8v(b);
-  for (const uint8_t b : stream.bytes) out.u8v(b);
-  return out.bytes;
 }
 
 // One brush preset descriptor, minimal but real: a name, a `Dmtr` (either
@@ -117,6 +102,38 @@ std::vector<uint8_t> wrapAbrWithSamp(const std::vector<uint8_t>& sampBody,
   return f.bytes;
 }
 
+// A one-brush `desc` body with the Texture panel ON: `useTexture` plus a
+// `Txtr` object naming a pattern by `Idnt`/`Nm  ` -- the two fields
+// `brushModelFromDescriptor()` (io/AbrBrushes.cpp) reads into
+// `BrushModel::texture.pattern`, and deliberately nothing else Texture has
+// (scale, depth, blend mode...): section E below is testing that the model
+// SURVIVES past import, not re-testing what `brushModelFromDescriptor()`
+// already decodes correctly on its own account, which is out of this file's
+// scope (io/AbrBrushes.hpp's own reader is where that belongs).
+//
+// Chosen over a Dual Brush or Shape Dynamics fixture as the discriminating
+// field because it is the cheapest panel to fabricate that no other field
+// on `BrushPreset` or `BrushModel` already carries: `GrainParams` (attached
+// separately, from this SAME `Txtr` block, by `grainFromTexture()`) stores
+// the pattern's pixel data, never its name -- so an assertion on
+// `model.texture.pattern.name` cannot be satisfied by accident through
+// `preset.grain` and proves the model itself, and nothing upstream of it,
+// made the trip.
+std::vector<uint8_t> oneTexturedBrushDesc(const char* name, const char* patternId,
+                                          const char* patternName) {
+  DescFixture f;
+  f.version();
+  f.descriptor("null", "null", 1);
+  f.key4("Brsh").vlls(1);
+  f.objc("brushPreset", "brushPreset", 3);
+  f.key4("Nm  ").textv(name);
+  f.keyN("useTexture").boolv(true);
+  f.keyN("Txtr").objc("texturePattern", "texturePattern", 2);
+  f.key4("Idnt").textv(patternId);
+  f.key4("Nm  ").textv(patternName);
+  return f.bytes;
+}
+
 }  // namespace
 
 // io/AbrBrushes' `samp` block (brush/Deposit.hpp §2c): the bitmap tip a
@@ -150,7 +167,16 @@ bool runAbrSampledTipsTest() {
     check(tips.size() == 1, "abr-samp: one well-formed raw record decodes to one tip");
     if (tips.size() == 1) {
       check(tips[0].id == "aaaaaaaa-0000-1111-2222-333333333333",
-            "abr-samp: the id is the 36 characters AFTER the record's leading '$'");
+            "abr-samp: the id is the Pascal string's characters, its length byte consumed");
+      // The reading that worked only by the 0x24 coincidence: an id of any
+      // length other than 36 is where a '$'-sigil reader and a Pascal-string
+      // reader part company. A sample that cannot be named can never be
+      // matched by a preset's `sampledData`, so the brush falls back to a
+      // round dab -- silently, which is the whole failure mode.
+      const auto shortId = buildSampRecord("short-id-01", 2, 0, 0, 2, 3, 8, 0, raw3x2);
+      const auto shortTips = parseAbrSampledTips(std::span<const uint8_t>(shortId), 2);
+      check(shortTips.size() == 1 && shortTips[0].id == "short-id-01",
+            "abr-samp: an id whose length is not 36 is still read, not refused");
       check(tips[0].bitmap != nullptr && tips[0].bitmap->width == 3 && tips[0].bitmap->height == 2,
             "abr-samp: width is right-left, height is bottom-top");
       check(tips[0].bitmap != nullptr && tips[0].bitmap->alpha == raw3x2,
@@ -340,6 +366,19 @@ bool runAbrSampledTipsTest() {
         check(r.sampledTips == 0 && r.notes.empty(),
               "abr-samp: a brush whose bitmap DID arrive costs no count and no note -- most of "
               "Kyle Webster's inkers, once this lands");
+        // **The durable half.** The pointer above lives as long as the library
+        // stays loaded; this id is what `user-presets.txt` writes, so a
+        // duplicated preset still has its tip next launch (brush/Library.hpp's
+        // `dabId`, app/DabLibrary's extraction). Asserted HERE, on the
+        // importer's own output, because app/selftest/DabLibrary.cpp §G tests
+        // the extractor and the resolver directly and would not notice the
+        // importer forgetting to set the id at all -- which a sabotage
+        // confirmed by surviving.
+        check(p.dabId == "abr:f00dcafe-1234-5678-9abc-def012345678",
+              "abr-samp: and the preset carries the tip's id, which is what survives a relaunch");
+        check(r.tipSamples.size() == 1 && r.tipSamples[0].id == "f00dcafe-1234-5678-9abc-def012345678" &&
+                  r.tipSamples[0].bitmap != nullptr,
+              "abr-samp: and the tips come OUT of the import, so the app layer can write them");
       }
     }
 
@@ -359,6 +398,13 @@ bool runAbrSampledTipsTest() {
                 r.notes[0].what.find("sampled bitmap") != std::string::npos,
             "abr-samp: ...and is counted and noted exactly as an unmatched sampledData always "
             "was");
+      // The id is still recorded, even though the lookup failed: a preset that
+      // NAMES a tip this build could not decode should still say which one it
+      // wanted, so importing the pack that has it later can make the brush
+      // whole rather than leaving it silently round forever.
+      check(r.ok && r.presets.size() == 1 &&
+                r.presets[0].dabId == "abr:not-a-real-id-in-this-file",
+            "abr-samp: ...and it still records WHICH tip it wanted, for a later import to find");
     }
 
     // B3. `#Prc` Dmtr, resolved: 50% of this sample's own larger dimension
@@ -368,7 +414,7 @@ bool runAbrSampledTipsTest() {
                                             "f00dcafe-1234-5678-9abc-def012345678");
       const AbrImportResult r = importAbrBrushes(wrapAbrWithSamp(samp, desc));
       check(r.ok && r.presets.size() == 1 &&
-                nearf(r.presets[0].radius, 1.0f, 1e-4f),
+                nearf(r.presets[0].model.tip.diameterPx / 2.0f, 1.0f, 1e-4f),
             "abr-samp: a #Prc Dmtr resolves against the SAMPLE's own larger dimension (4px), so "
             "50% is radius 1");
       check(r.notes.empty(), "abr-samp: ...and costs no note, because it DID resolve");
@@ -643,7 +689,7 @@ bool runAbrSampledTipsTest() {
     bmp->alpha.assign(9, 200);
 
     BrushPreset preset;
-    preset.radius = 12.0f;
+    preset.model.tip.diameterPx = 24.0f;
     preset.tipBitmap = bmp;
 
     BrushState brush;
@@ -669,12 +715,99 @@ bool runAbrSampledTipsTest() {
     differentBmp->height = 3;
     differentBmp->alpha.assign(9, 1);
     other.tipBitmap = differentBmp;
-    check(presetMatches(other, brush.radius, brush.hardness, brush.spacing, brush.roundness,
-                        brush.angle, brush.load, brush.wetness, brush.links, brush.grain),
+    check(presetMatches(other, brush.model.tip.diameterPx / 2.0f, brush.model.tip.hardness,
+                        brush.model.tip.spacingPercent / 100.0f, brush.model.tip.roundness,
+                        brush.model.tip.angleDeg, brush.load, brush.wetness, brush.links,
+                        brush.grain),
           "abr-samp/roundtrip: presetMatches() DELIBERATELY cannot tell `other`'s different "
           "bitmap apart from `brush`'s -- documented on BrushPreset::tipBitmap and on "
           "presetMatches() itself, because nothing today can move a live bitmap independently "
           "of picking a whole preset");
+  }
+
+  // ==========================================================================
+  std::printf("  -- E. the Photoshop-shaped model travels with the preset --\n");
+  // ==========================================================================
+  // brush/BrushModel.hpp's ~117 fields used to be decoded correctly and then
+  // discarded: `AbrImportResult::models` (io/AbrBrushes.hpp) lived exactly as
+  // long as `importAbrBrushes()`'s own stack frame, `BrushPreset` and
+  // `BrushState` had nowhere to hold one, and the only reader of a
+  // `BrushModel` outside its own header was `--abr-report`'s table. This
+  // section is the defect described on `BrushPreset::model`'s own comment
+  // (brush/Library.hpp), proven rather than asserted in prose.
+  {
+    // E1. The importer writes the model onto the SAME preset it decoded it
+    // from (`preset.model`, io/AbrBrushes.cpp), not into a side vector --
+    // and it is not left default-constructed for a preset whose Texture
+    // panel is on. `model.texture.pattern.name` is the discriminating field:
+    // `preset.grain`, filled from this identical `Txtr` block by
+    // `grainFromTexture()` a few lines below where `preset.model` is set,
+    // carries the pattern's PIXELS but never its name -- so this assertion
+    // cannot pass by accident through the grain path, only through the model
+    // itself having made the trip.
+    const auto desc = oneTexturedBrushDesc("Textured Inker",
+                                           "a1b2c3d4-0000-1111-2222-333333333333",
+                                           "Kyle's Rough Watercolor Paper");
+    const AbrImportResult r = importAbrBrushes(wrapAbrWithSamp({}, desc));
+    check(r.ok && r.presets.size() == 1,
+          "abr-samp/model: a textured one-brush library still imports");
+    if (r.ok && r.presets.size() == 1) {
+      const BrushModel& m = r.presets[0].model;
+      check(m.texture.enabled &&
+                m.texture.pattern.id == "a1b2c3d4-0000-1111-2222-333333333333" &&
+                m.texture.pattern.name == "Kyle's Rough Watercolor Paper",
+            "abr-samp/model: the importer writes the Texture panel onto presets[i].model, by "
+            "name and id -- not just a bit saying something was on");
+    }
+
+    // E2. Duplicate preserves the model. This is the defect itself: before
+    // `BrushState` had a `model` field, `applyPresetToBrush()` had nowhere to
+    // COPY a model TO and `presetFromBrush()` had nowhere to read one BACK
+    // FROM, so this round trip built a preset whose model was silently
+    // default-constructed -- discarding the Texture panel just proven above,
+    // and with it Transfer, the Dual Brush's own cadence and the blend mode.
+    // At the base commit this block does not compile at all: `BrushState`
+    // and `BrushPreset` had no `model` member for `brush.model`/`dup.model`
+    // to name, which is the sharpest form "fails on the base commit" can
+    // take for a structural fix -- verified by actually building this file
+    // against that commit (uncommitted, not asserted from memory) rather
+    // than assumed from the diff.
+    BrushPreset preset;
+    preset.model.tip.diameterPx = 18.0f;
+    preset.model.texture.enabled = true;
+    preset.model.texture.pattern.id = "deadbeef-0000-1111-2222-333333333333";
+    preset.model.texture.pattern.name = "Kyle's Rough Watercolor Paper";
+
+    BrushState brush;
+    applyPresetToBrush(preset, brush);
+    check(brush.model.texture.enabled &&
+              brush.model.texture.pattern.name == "Kyle's Rough Watercolor Paper",
+          "abr-samp/model: applyPresetToBrush() carries the model onto the live brush");
+
+    const BrushPreset dup = presetFromBrush("Duplicate", brush);
+    check(dup.model.texture.enabled &&
+              dup.model.texture.pattern.id == "deadbeef-0000-1111-2222-333333333333" &&
+              dup.model.texture.pattern.name == "Kyle's Rough Watercolor Paper",
+          "abr-samp/model: presetFromBrush() (Duplicate) carries the model back into a preset "
+          "-- Duplicate on an imported brush no longer discards its Photoshop panels");
+
+    // E3. The model travels WITH BrushState, so picking a different preset
+    // and picking the first one back does not leave the model stuck, stale,
+    // or partially merged -- `applyPresetToBrush()` overwrites `brush.model`
+    // wholesale on every call, the same all-or-nothing copy `tipBitmap` and
+    // `dualTip` already get and for the identical reason (Library.hpp's own
+    // comments on both): a model that survived by merging fields could leave
+    // a brush painting with one preset's Texture and another's Dual Brush.
+    BrushPreset plain;  // default BrushModel{}: texture off, empty pattern name
+    applyPresetToBrush(plain, brush);
+    check(!brush.model.texture.enabled && brush.model.texture.pattern.name.empty(),
+          "abr-samp/model: switching to a preset with no model clears the previous one's, "
+          "rather than leaving it stuck on the live brush");
+    applyPresetToBrush(preset, brush);
+    check(brush.model.texture.enabled &&
+              brush.model.texture.pattern.name == "Kyle's Rough Watercolor Paper",
+          "abr-samp/model: ...and switching back restores it exactly, because the source is "
+          "presets[active].model and not the live brush's own history");
   }
 
   std::printf("[selftest] abr sampled tips %s\n", ok ? "PASS" : "FAIL");

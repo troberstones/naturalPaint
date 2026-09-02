@@ -709,7 +709,15 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   // comment: this bar used to hardcode 2..90, a narrower range than the
   // panel's 1..200, so a value the panel set above 90 clamped back down the
   // moment this widget was touched (reachability audit B3).
-  ImGui::SliderFloat("##size", &st.brush.radius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
+  // `st.brush.radius` is gone (Part 5) -- read/written through
+  // `model.tip.diameterPx` now, via a local half-diameter view of it since
+  // `SliderFloat()` needs a `float*` it can write through directly every
+  // frame.
+  {
+    float sizeRadius = st.brush.model.tip.diameterPx / 2.0f;
+    ImGui::SliderFloat("##size", &sizeRadius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
+    st.brush.model.tip.diameterPx = sizeRadius * 2.0f;
+  }
   popAtelierMono();
 
   bandSeparator();
@@ -719,7 +727,8 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   pushAtelierMono();
   // kBrushHardnessMin/Max (app/AppState.hpp) -- the one range for this
   // field, also read by the BRUSH panel's Hardness slider.
-  ImGui::SliderFloat("##hard", &st.brush.hardness, kBrushHardnessMin, kBrushHardnessMax, "%.2f");
+  ImGui::SliderFloat("##hard", &st.brush.model.tip.hardness, kBrushHardnessMin, kBrushHardnessMax,
+                     "%.2f");
   popAtelierMono();
 
   bandSeparator();

@@ -7,11 +7,13 @@
 
 #include "app/AppState.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "brush/BrushModel.hpp"
 #include "brush/Deposit.hpp"
 #include "brush/PigmentErase.hpp"
 #include "brush/RgbDeposit.hpp"
 #include "brush/RgbErase.hpp"
 #include "brush/StrokePath.hpp"
+#include "brush/Variance.hpp"
 #include "paint/Palette.hpp"
 #include "core/Layer.hpp"
 #include "core/Tile.hpp"
@@ -348,6 +350,34 @@ inline bool wetnessReachesSolver(StrokeRoute route) noexcept {
   return route == StrokeRoute::PaintSim;
 }
 
+// Does the PAPER GRAIN group do anything on this route?
+//
+// **This predicate exists because the answer to it was already wrong once.**
+// `brush/Grain`'s `grainCoverageAt()` was called from `depositDab()` alone,
+// so the BRUSH panel greyed the whole group out on every other route and said
+// why. The texture work then added the call to `brush/RgbDeposit.cpp`,
+// `brush/RgbErase.cpp` and `brush/PigmentErase.cpp` -- and the UI's private
+// copy of the old answer stayed behind, leaving a working control greyed out
+// over a sentence explaining that it could not work. An RGB layer is what
+// File > New gives you, so that was most strokes.
+//
+// It delegates to `strokeRouteWritesLayer()` because the two agree today:
+// grain modifies a CPU-computed coverage, and every route that computes one
+// writes a layer. **It is a separate name rather than a call to that
+// predicate at the UI site, because it is a separate claim** -- a fifth
+// layer-writing route added without a `grainCoverageAt()` call would make
+// `strokeRouteWritesLayer()` still correct and this still wrong, and there
+// would again be nothing to notice. `app/selftest/StrokeSession.cpp` asserts
+// the agreement route by route, so adding a route means answering the
+// question for grain rather than inheriting an answer.
+//
+// The solver route is the real exclusion and keeps the group honest: it has
+// no CPU coverage for grain to modify at all (brush/BrushModel.hpp on the
+// editor-versus-solver divergence generally).
+inline bool grainReachesRoute(StrokeRoute route) noexcept {
+  return strokeRouteWritesLayer(route);
+}
+
 const char* strokeRouteName(StrokeRoute route) noexcept;
 
 // `target` is the layer the stroke is aimed at, or nullptr when there is none.
@@ -658,8 +688,23 @@ DynamicInputs dynamicInputsFor(const AppState& st) noexcept;
 // draw. See `app/StrokeSession.cpp`'s own definition for the geometry:
 // perpendicular-to-the-stroke by default (`tip.scatterBothAxes == false`,
 // Photoshop's own default), full-circle isotropic when it is set.
+//
+// `subIndex` (Part 1, Scatter Count) picks which of `resolvedCount` sub-dabs
+// stamped at ONE nominal position this call is drawing an offset for --
+// folded into the seed before SCATTER's own random draw, so each sub-dab
+// lands independently rather than all of them piling onto the same offset.
+// Defaulted to `0`, unlike `brush/Deposit.hpp`'s deliberately non-defaulted
+// `Selection*` (whose header explains why THAT default would be a trap):
+// omitting `subIndex` always means "the only dab at this position", which is
+// the correct and only meaning for every one of this function's callers that
+// predate Scatter Count, so a default here cannot silently produce a wrong
+// answer the way a defaulted selection could. At `subIndex == 0` the fold is
+// the identity (`app/StrokeSession.cpp`'s own definition proves it: the
+// salt is multiplied by `subIndex`, which is exactly zero there), so every
+// existing call site -- including `app/selftest/Scatter.cpp`'s, which does
+// not pass this argument -- keeps reading bit-identically.
 Vec2 applyPerDabScatter(Vec2 centre, const BrushTip& tip, uint64_t seed, uint32_t dabIndex,
-                        float stepDx, float stepDy) noexcept;
+                        float stepDx, float stepDy, uint32_t subIndex = 0) noexcept;
 
 // --- The brush library, against the live brush ------------------------------
 //
@@ -722,21 +767,35 @@ class StrokeSession {
   //
   // Records no history entry and does not move the revision -- §2.
   //
-  // `strokeLocalLinks`, latched alongside the tool and the route: the brush's
-  // own link set, read again per DAB inside the deposit loop to resolve
-  // VELOCITY, FADE, NOISE, RANDOM, DIRECTION and INITIAL DIRECTION
-  // (`dynamicInputsFor()`'s own comment on why those six cannot be resolved
-  // here, before a dab's position exists).
-  // **Defaulted to `nullptr` so every existing caller compiles unchanged** --
-  // a session built without it behaves exactly as it did before this
-  // parameter existed, because §1's frame-level `brushTipFor()` already
-  // resolves every OTHER source, and a null stroke-local set simply means no
-  // additional per-dab correction runs. `DynamicsSources.cpp` is what
-  // exercises it; nothing in `ui/MacPaintUI.cpp`'s canvas block passes it
-  // yet, which is a real, stated gap and not an oversight -- see this
-  // header's own top-of-file note on why.
+  // `model`, latched alongside the tool and the route: the brush's own
+  // Photoshop-shaped model (brush/BrushModel.hpp), read again per DAB inside
+  // the deposit loop to resolve Size/Angle/Roundness/Scatter through
+  // `brush/Variance`'s `varianceScale()`/`varianceOffset()` -- each exactly
+  // ONCE per dab per site, which is the whole invariant `brush/Variance.hpp`
+  // exists to make structurally true (its floor is applied once, inside its
+  // own formula; a stroke-begin base times a second per-dab correction would
+  // apply it twice, reintroducing audit B6 in a new shape). This replaces the
+  // old `BrushLinkSet* strokeLocalLinks` parameter -- the matrix is shelved
+  // (`ui/DynamicsMatrixPanel.hpp`) and nothing in the paint path reads
+  // `BrushState::links`/`BrushPreset::links` any more.
+  //
+  // **Defaulted to `nullptr` so a caller that only has a bare `BrushTip`
+  // compiles unchanged** -- a session begun without a model simply gets
+  // `tip_` unmodified at every dab, exactly the old null-`strokeLocalLinks`
+  // identity path this replaces. `app/selftest/VarianceConsumption.cpp` is
+  // what exercises the non-null path against a real stroke.
+  //
+  // `hardwareInputs`, latched with it: the Pressure/Tilt/Azimuth/Barrel
+  // sample (and its `has*` availability flags) that built `tip` -- what the
+  // per-dab loop feeds `varianceScale()`/`varianceOffset()` so a
+  // PenPressure/PenTilt/Rotation Control still reads the pen, at the SAME
+  // frame granularity `dynamicInputsFor()`'s own header describes (this
+  // codebase does not resample pressure per dab, and this does not change
+  // that). Defaults to a plain `DynamicInputs{}` -- a mouse at full pressure,
+  // which is the neutral reading for every caller that does not care.
   bool begin(OpenDocument& doc, size_t layerIndex, const BrushTip& tip, Tool tool,
-             std::string* errorOut, const BrushLinkSet* strokeLocalLinks = nullptr);
+             std::string* errorOut, const BrushModel* model = nullptr,
+             const DynamicInputs& hardwareInputs = DynamicInputs{});
 
   // Which of §1's four layer-writing routes this stroke took. Meaningless before
   // `begin()` succeeds.
@@ -758,7 +817,16 @@ class StrokeSession {
   // changed also changes the spacing from that point on rather than keeping
   // pen-down's -- which is what "spacing is in radii" has to mean for a
   // pressure-sized brush.
-  void setTip(const BrushTip& tip) noexcept { tip_ = tip; }
+  //
+  // `hardwareInputs`, replaced alongside it -- `begin()`'s own comment on the
+  // identical parameter. Defaults to `DynamicInputs{}` so a caller that only
+  // ever passes a bare tip (this codebase's other three, non-interactive
+  // `setTip()` call sites) keeps reading a neutral mouse sample, which is
+  // what they were already getting before this parameter existed.
+  void setTip(const BrushTip& tip, const DynamicInputs& hardwareInputs = DynamicInputs{}) noexcept {
+    tip_ = tip;
+    hardwareInputs_ = hardwareInputs;
+  }
   const BrushTip& tip() const noexcept { return tip_; }
 
   // PRESSURE SMOOTHING (brush/Dynamics.hpp's `dynamicPressureEma()`, from
@@ -897,11 +965,65 @@ class StrokeSession {
   // Dynamics.hpp's own section comment on why RANDOM must be a fresh draw per
   // dab and not per input event).
 
-  // The brush's link set, for resolving VELOCITY/FADE/NOISE/RANDOM/DIRECTION/
-  // INITIAL-DIRECTION-sourced links per dab. Null unless `begin()`'s caller
-  // passed one -- see `begin()` for why a null one is the default and today's
-  // live-paint behaviour.
-  const BrushLinkSet* strokeLocalLinks_ = nullptr;
+  // Whether `begin()`'s caller passed a `BrushModel` -- see `begin()`'s own
+  // comment. False leaves every dab of this stroke reading `tip_` unmodified,
+  // exactly the old null-`strokeLocalLinks_` identity path this replaced.
+  bool haveModel_ = false;
+
+  // Photoshop's own base Size/Angle/Roundness (`PsTipShape::diameterPx`/
+  // `angleDeg`/`roundness`) and their Variance objects (`PsShapeDynamics`),
+  // plus Scatter's own magnitude Variance (`PsScatter::scatter`) -- copied out
+  // of the brush's `BrushModel` at `begin()` rather than kept as a pointer
+  // into it, because nothing guarantees the `BrushState`/`BrushPreset` `begin()`
+  // was called with outlives the stroke.
+  //
+  // **Resolved ENTIRELY inside the per-dab loop in `depositPending()`, in ONE
+  // call each to `varianceScale()`/`varianceOffset()` per dab -- never a
+  // stroke-begin base times a separate per-dab correction.** That is
+  // `brush/Variance.hpp`'s own load-bearing invariant: its floor is applied
+  // once, inside the formula, so two calls composed onto one product would
+  // apply the floor twice and reintroduce audit B6 in a new shape.
+  float baseDiameterPx_ = 0.0f;
+  float baseAngleDeg_ = 0.0f;
+  float baseRoundness_ = 1.0f;
+  Variance sizeVariance_;
+  Variance angleVariance_;
+  Variance roundnessVariance_;
+  Variance scatterVariance_;
+
+  // Scatter COUNT's own base value and Variance (Part 1, `PsScatter::count`/
+  // `countJitter`) -- copied out at `begin()` alongside the four above, and
+  // resolved the identical single-call-per-dab way in `depositPending()`.
+  // `baseCount_` defaults to 1, `BrushTip::count`'s own identity, so a
+  // session begun with `haveModel_` false (or never resolving this member at
+  // all) reads exactly the pre-existing single-dab-per-position behaviour.
+  int32_t baseCount_ = 1;
+  Variance countVariance_;
+
+  // Transfer FLOW's own resolved multiplier (Part 2, `PsTransfer::flow`) --
+  // latched ONCE at `begin()`, from `hardwareInputs` and a fixed placeholder
+  // seed (`begin()`'s own comment says why: there is no real stroke position
+  // yet), and applied to `tip_.flow` fresh every dab in `depositPending()`
+  // rather than baked into `tip_.flow` here. Baking it in would not survive
+  // `setTip()` rebuilding `tip_` from a fresh, Transfer-unaware
+  // `brushTipFor()` call on the stroke's very next frame -- `depositPending()`
+  // 's own comment on this member has the full argument. Defaults to 1.0f,
+  // the multiplicative identity, so a session with no model or an inert
+  // Transfer Flow Variance reads `tip_.flow` completely unmodified.
+  //
+  // Transfer OPACITY has no equivalent member: it is a per-stroke CEILING,
+  // latched directly into `rgb_`/`erase_`/`pigErase_`'s own accumulators at
+  // `begin()` (their `*_.begin()` calls take the resolved value directly),
+  // which is immune to `setTip()` by construction -- `setTip()` never touches
+  // any of those three objects, only `tip_`.
+  float transferFlowMul_ = 1.0f;
+
+  // The hardware sample `begin()`/`setTip()` latched -- see either's own
+  // comment. Read by the per-dab loop below to resolve a
+  // PenPressure/PenTilt/Rotation Control, alongside the six stroke-local
+  // signals (Velocity, Fade, Noise, Random, Direction, Initial Direction)
+  // that loop already computes fresh every dab.
+  DynamicInputs hardwareInputs_;
 
   // The stroke's seed (brush/Dynamics.hpp's `strokeSeedFromStart()`), latched
   // from the FIRST dab position this stroke deposits -- not at `begin()`,

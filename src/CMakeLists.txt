@@ -1,6 +1,7 @@
 add_executable(naturalPaint
   main.cpp
   app/BrushLibraryFile.cpp
+  app/DabLibrary.cpp
   app/AbrReport.cpp
   app/BrushSheet.cpp
   app/BrushRowIcon.cpp
@@ -40,6 +41,18 @@ add_executable(naturalPaint
   app/selftest/AbrBrushes.cpp
   app/selftest/AbrDualBrush.cpp
   app/selftest/AbrSampledTips.cpp
+  app/selftest/PsPatterns.cpp
+  app/selftest/GimpBrush.cpp
+  app/selftest/Variance.cpp
+  app/selftest/CoverageBlend.cpp
+  app/selftest/PaperTexture.cpp
+  app/selftest/DabLibrary.cpp
+  app/selftest/PatternExtract.cpp
+  app/selftest/DabPicker.cpp
+  app/selftest/BrushSettingsWindow.cpp
+  app/selftest/BrushModelIo.cpp
+  app/selftest/BrushModelDiff.cpp
+  app/selftest/BrushPanelBinding.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
   app/selftest/Blur.cpp
@@ -144,6 +157,7 @@ add_executable(naturalPaint
   app/selftest/RgbErase.cpp
   app/selftest/SaveReadback.cpp
   app/selftest/Scatter.cpp
+  app/selftest/ScatterCount.cpp
   app/selftest/Selection.cpp
   app/selftest/SelectionBoundary.cpp
   app/selftest/SelectionDrag.cpp
@@ -152,6 +166,7 @@ add_executable(naturalPaint
   app/selftest/SelectionTools.cpp
   app/selftest/SelectMenu.cpp
   app/selftest/Shaper.cpp
+  app/selftest/ShelvedLinks.cpp
   app/selftest/SolverPersistence.cpp
   app/selftest/StrokePreview.cpp
   app/selftest/StrokeBridge.cpp
@@ -161,8 +176,10 @@ add_executable(naturalPaint
   app/selftest/TileStore.cpp
   app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
+  app/selftest/ToolOptionsBlend.cpp
   app/selftest/TouchGesture.cpp
   app/selftest/TouchGestureSession.cpp
+  app/selftest/TransferDynamics.cpp
   app/selftest/Transform.cpp
   app/selftest/TransformCompositeSplit.cpp
   app/selftest/TransformPreviewTexture.cpp
@@ -186,6 +203,10 @@ add_executable(naturalPaint
   app/ViewTransform.cpp
   app/WheelInput.cpp
   app/ZoomAndSize.cpp
+  brush/BrushModel.cpp
+  brush/BrushModelIo.cpp
+  brush/BrushModelDiff.cpp
+  brush/CoverageBlend.cpp
   brush/Deposit.cpp
   brush/Dynamics.cpp
   brush/Grain.cpp
@@ -194,6 +215,8 @@ add_executable(naturalPaint
   brush/RgbDeposit.cpp
   brush/RgbErase.cpp
   brush/StrokePath.cpp
+  brush/ToolOptionsBlend.cpp
+  brush/Variance.cpp
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
@@ -230,10 +253,13 @@ add_executable(naturalPaint
   io/ExportAs.cpp
   io/ExportStates.cpp
   io/FileKind.cpp
+  io/GimpBrush.cpp
   io/ImageDecode.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
+  io/PackBits.cpp
+  io/PsPatterns.cpp
   io/PsdImport.cpp
   io/TileResidency.cpp
   ops/AutoLevels.cpp
@@ -254,11 +280,16 @@ add_executable(naturalPaint
   paint/Palette.cpp
   sim/PaintSim.cpp
   ui/DocumentTexture.cpp
+  ui/LabelledControl.cpp
+  ui/DynamicsMatrixPanel.cpp
   ui/MacPaintUI.cpp
   ui/NaturalPaintUI.cpp
   ui/Fonts.cpp
   ui/AtelierTheme.cpp
   ui/CanvasQuad.cpp
+  ui/DabPicker.cpp
+  ui/BrushSettingsWindow.cpp
+  ui/BrushFieldPresentation.cpp
   ui/FileDialog.cpp
   ui/AtelierLayout.cpp
   ui/DockLayout.cpp
@@ -520,7 +551,8 @@ target_compile_options(naturalPaint PRIVATE
   # tree.** Several files argue that a `switch` over a closed enum with no
   # `default:` makes adding an enumerator a COMPILE error -- `sourceUnavailable()`
   # and `easingPresetName()` in `brush/Dynamics.cpp`, `combineDualCoverage()` in
-  # `brush/Deposit.cpp`, the LINK editor's chip tooltips in `ui/MacPaintUI.cpp`.
+  # `brush/Deposit.cpp`, the LINK editor's chip tooltips in
+  # `ui/DynamicsMatrixPanel.cpp`.
   # That was **false** until this line: clang enables `-Wswitch` by default, but
   # a warning nobody reads is not a guard, and this build elevates only the three
   # `unused-*` diagnostics above. A subagent tested it directly -- commented out a

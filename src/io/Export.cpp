@@ -503,6 +503,26 @@ bool exportDocumentToFile(const Document& doc, const std::string& path, ImageFor
   return true;
 }
 
+std::vector<uint8_t> encodePng8Rgba(uint32_t width, uint32_t height, const uint8_t* rgba) {
+  if (width == 0 || height == 0 || rgba == nullptr) return {};
+  std::vector<uint8_t> out;
+  if (stbi_write_png_to_func(&appendToVector, &out, static_cast<int>(width),
+                             static_cast<int>(height), 4, rgba,
+                             static_cast<int>(width) * 4) == 0)
+    return {};
+  return out;
+}
+
+std::vector<uint8_t> encodePng8Gray(uint32_t width, uint32_t height, const uint8_t* gray) {
+  if (width == 0 || height == 0 || gray == nullptr) return {};
+  std::vector<uint8_t> out;
+  if (stbi_write_png_to_func(&appendToVector, &out, static_cast<int>(width),
+                             static_cast<int>(height), 1, gray,
+                             static_cast<int>(width)) == 0)
+    return {};
+  return out;
+}
+
 std::vector<uint8_t> encodePng16(uint32_t width, uint32_t height, const uint16_t* rgba) {
   if (width == 0 || height == 0 || rgba == nullptr) return {};
 

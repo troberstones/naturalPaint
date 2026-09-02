@@ -238,6 +238,14 @@ enum class MenuAction : uint16_t {
   Snap,
 
   // --- Window -------------------------------------------------------------
+  //
+  // `BrushSettings` opens ui/BrushSettingsWindow -- the brush groups as a
+  // modeless window with one tab each, over the same draw functions the
+  // docked BRUSH column uses. A Check rather than a Command, because the
+  // window's own close button writes the same flag: an item that only ever
+  // opened would leave the menu unable to say whether the window was already
+  // there.
+  BrushSettings,
   ImGuiDemo,
   ActivateDocument,     // family: param = index into the open-document session
 
@@ -635,6 +643,7 @@ struct MenuContext {
   bool hasGuides = false;           // Clear Guides is dead with none placed
 
   // --- Window -------------------------------------------------------------
+  bool showBrushSettings = false;
   bool showDemo = false;
   std::vector<MenuFamilyEntry> openDocuments;
 

@@ -391,17 +391,25 @@ bool runGrainTest() {
     // function's own header comment: a preset and a "brush" that agree on
     // every OTHER field but grain must read as edited, not as matching.
     BrushPreset preset;  // every field at BrushPreset's own defaults
+    // `preset.radius`/`hardness`/`spacing`/`roundness`/`angle` no longer
+    // exist (Part 5 deleted the shadow scalars) -- `presetMatches()` now
+    // compares projections of `preset.model.tip`, so a "compare a preset
+    // against itself" fixture reads them from there instead.
     const bool matchesWhenIdentical =
-        presetMatches(preset, preset.radius, preset.hardness, preset.spacing, preset.roundness,
-                     preset.angle, preset.load, preset.wetness, preset.links, preset.grain);
+        presetMatches(preset, preset.model.tip.diameterPx / 2.0f, preset.model.tip.hardness,
+                     preset.model.tip.spacingPercent / 100.0f, preset.model.tip.roundness,
+                     preset.model.tip.angleDeg, preset.load, preset.wetness, preset.links,
+                     preset.grain);
     check(matchesWhenIdentical,
           "grain/edited-badge: identical grain (and everything else) reads as matching");
 
     GrainParams turnedOn = preset.grain;
     turnedOn.enabled = true;
     const bool matchesWhenGrainDiffers =
-        presetMatches(preset, preset.radius, preset.hardness, preset.spacing, preset.roundness,
-                     preset.angle, preset.load, preset.wetness, preset.links, turnedOn);
+        presetMatches(preset, preset.model.tip.diameterPx / 2.0f, preset.model.tip.hardness,
+                     preset.model.tip.spacingPercent / 100.0f, preset.model.tip.roundness,
+                     preset.model.tip.angleDeg, preset.load, preset.wetness, preset.links,
+                     turnedOn);
     check(!matchesWhenGrainDiffers,
           "grain/edited-badge: turning grain on, with every other field unchanged, reads as "
           "edited");

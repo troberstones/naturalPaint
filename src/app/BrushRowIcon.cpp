@@ -14,11 +14,31 @@ std::array<BrushTip, kDabPreviewCells> brushRowIconTips(const BrushRow& row,
   // `brushTipFor()`'s load-to-flow mapping, which is precisely the drift
   // app/DabPreview §1 exists to prevent.
   BrushState as = live;
-  as.radius = row.radius;
-  as.hardness = row.hardness;
-  as.roundness = row.roundness;
-  as.angle = row.angle;
-  as.spacing = row.spacing;
+  // `BrushState`'s own radius/hardness/roundness/angle/spacing are gone
+  // (Part 5) -- `as.model.tip.*` is what `brushTipFor()` actually reads now,
+  // so the row's geometry has to land there instead. `BrushRow`'s own seven
+  // scalars are untouched by that deletion (a separate, cheap struct,
+  // app/BrushLibraryFile.hpp §4) -- only the destination changed.
+  //
+  // **`as.model` is reset to a plain default first, not left as `live`'s.**
+  // The identical reasoning `as.links = BrushLinkSet{}` below already states
+  // for the old link matrix: a row carries no Variance data of its own
+  // (Size/Angle/Roundness/Scatter jitter included), and inheriting the live
+  // brush's would draw an icon that changes when an unrelated brush is
+  // edited -- the same "not loaded yet" identity the links clear used to be
+  // the whole story for, now restated for the field that actually drives a
+  // dab's per-site jitter.
+  as.model = BrushModel{};
+  as.model.tip.diameterPx = row.radius * 2.0f;
+  as.model.tip.hardness = row.hardness;
+  as.model.tip.roundness = row.roundness;
+  as.model.tip.angleDeg = row.angle;
+  // `row.spacing` is RADII (`app/BrushLibraryFile.cpp`'s `brushRowFor()`, and
+  // the old, now-deleted `BrushPreset::spacing` scalar's own unit) --
+  // `spacingPercent` is a percentage OF THE DIAMETER, so `* 50` is the
+  // conversion, not a bare `* 100` (`app/StrokeSession::brushTipFor()`'s
+  // `tip.spacing` comment names the same factor of two).
+  as.model.tip.spacingPercent = row.spacing * 50.0f;
   as.load = row.load;
   // **Emptied, not left as the live brush's.** A row carries no links, and
   // borrowing the current brush's matrix would draw a picture of dynamics this

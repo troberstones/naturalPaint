@@ -104,61 +104,78 @@ bool runActiveLayerTest() {
     }
   }
 
-  // --- Part D: brushTipFor, the other half of the missing decision ---------
+  // --- Part D: brushTipFor, rewritten for the model migration --------------
+  //
+  // **Inverted from what this section proved before.** Radius/flow used to
+  // vary with pressure through `defaultBrushLinks()`'s two PRESSURE links
+  // (SIZE, FLOW). `brushTipFor()` no longer reads `BrushState::links` in any
+  // form, and no longer reads its own `inputs` parameter at all
+  // (`(void)inputs;`, its own comment) -- Size/Angle/Roundness are base-only
+  // there, resolved per dab only inside a real `StrokeSession`, and Flow is
+  // `brush.load` unscaled, deliberately. So what this section proves now is
+  // the opposite claim: the tip `brushTipFor()` returns is the model's own
+  // base values, AT EVERY PRESSURE, full stop.
   {
     MixboxLut noLut;  // never loaded: the fallback path, and the test's default
     BrushState brush;
-    brush.radius = 40.0f;
-    brush.hardness = 0.5f;
+    brush.model.tip.diameterPx = 80.0f;  // radius 40
+    brush.model.tip.hardness = 0.5f;
     brush.load = 0.8f;
-    brush.spacing = 0.3f;
+    brush.model.tip.spacingPercent = 30.0f;
     brush.pigment = 6;  // Ultramarine Blue, BrushState's own default
 
-    // Full pressure is the identity, which is what makes a mouse (pressure
-    // pinned to 1) behave as the sliders say.
     const BrushTip full = brushTipFor(brush, noLut, 1.0f);
-    check(full.radius == brush.radius && full.flow == brush.load,
-          "at full pressure the tip is the sliders, unmodified");
-    check(full.hardness == brush.hardness && full.spacing == brush.spacing,
+    check(full.radius == brush.model.tip.diameterPx / 2.0f && full.flow == brush.load,
+          "at full pressure the tip is the model's base values, unmodified");
+    // `full.spacing` is RADII (`brush/Deposit.hpp`'s own comment);
+    // `spacingPercent` is a percentage OF THE DIAMETER, so `/ 100 * 2` is the
+    // conversion `brushTipFor()` itself applies (its own comment on
+    // `tip.spacing` names the same factor of two), not a bare `/ 100`.
+    check(full.hardness == brush.model.tip.hardness &&
+              full.spacing == brush.model.tip.spacingPercent / 100.0f * 2.0f,
           "hardness and spacing do not vary with pressure at all");
 
-    // The two curves, which used to be `bool pressureSize` / `pressureFlow`
-    // with their ranges written in as literals, and are now two links in
-    // `defaultBrushLinks()`. **Still asserted as the literal expressions**, at
-    // every pressure rather than at one -- that is what makes the migration
-    // off the booleans checkable rather than asserted in a comment. If the
-    // default link set is not exactly the old formula, a pen that has felt one
-    // way for the whole project's life quietly starts feeling another.
-    bool exactEverywhere = true;
+    // At EVERY pressure, not merely full: `brushTipFor()` never reads its
+    // `inputs` argument (or `brush.links`) at all any more, so a sweep
+    // across the whole [0,1] range must return the IDENTICAL tip every
+    // time -- the direct replacement for the old "0.25+0.75p and
+    // 0.15+0.85p at every pressure" claim, restated as "constant at every
+    // pressure" instead.
+    bool constantEverywhere = true;
     for (int i = 0; i <= 20; ++i) {
       const float p = static_cast<float>(i) / 20.0f;
       const BrushTip t = brushTipFor(brush, noLut, p);
-      if (std::fabs(t.radius - brush.radius * (0.25f + 0.75f * p)) > 1e-5f)
-        exactEverywhere = false;
-      if (std::fabs(t.flow - brush.load * (0.15f + 0.85f * p)) > 1e-5f) exactEverywhere = false;
+      if (t.radius != full.radius || t.flow != full.flow) constantEverywhere = false;
     }
-    check(exactEverywhere,
-          "the default links ARE the old pressure curves, at every pressure -- 0.25+0.75p "
-          "and 0.15+0.85p, so replacing the two booleans changed no feel");
+    check(constantEverywhere,
+          "the tip is now the SAME at every pressure from 0 to 1 -- pressure no longer "
+          "reaches brushTipFor() at all, so there is no curve left to be the old formula");
 
-    // The two are independent, because a pen configured for size-only must
-    // feel the same on both routes. Expressed by removing a link rather than
-    // by clearing a boolean; the rule under test is unchanged.
+    // What used to be "the two [links] are independent" (removing one
+    // leaves the other's own behaviour unchanged) is now the stronger claim
+    // that removing EITHER (or both) changes nothing at all, because
+    // neither was ever read.
     removeLink(brush.links, DynamicSource::Pressure, DynamicTarget::Flow);
-    const BrushTip sizeOnly = brushTipFor(brush, noLut, 0.5f);
-    check(sizeOnly.flow == brush.load && sizeOnly.radius < brush.radius,
-          "pressure -> flow removed leaves flow alone and still sizes");
+    const BrushTip oneLinkRemoved = brushTipFor(brush, noLut, 0.5f);
+    check(oneLinkRemoved.flow == full.flow && oneLinkRemoved.radius == full.radius,
+          "removing the Pressure -> Flow link (still present in `brush.links`, just unread) "
+          "changes neither flow nor radius");
     brush.links = defaultBrushLinks();
     removeLink(brush.links, DynamicSource::Pressure, DynamicTarget::Size);
-    const BrushTip flowOnly = brushTipFor(brush, noLut, 0.5f);
-    check(flowOnly.radius == brush.radius && flowOnly.flow < brush.load,
-          "and the other way round");
+    const BrushTip otherLinkRemoved = brushTipFor(brush, noLut, 0.5f);
+    check(otherLinkRemoved.radius == full.radius && otherLinkRemoved.flow == full.flow,
+          "and removing Pressure -> Size instead changes neither either");
     brush.links = defaultBrushLinks();
 
-    // Out-of-range pressure is clamped rather than producing a negative
-    // radius, which `dabCoverage()` would read as "deposits nothing".
-    check(brushTipFor(brush, noLut, -3.0f).radius > 0.0f, "negative pressure clamps to zero, not to a negative tip");
-    check(brushTipFor(brush, noLut, 9.0f).radius == brush.radius, "and pressure above 1 clamps to 1");
+    // Out-of-range pressure used to be clamped rather than producing a
+    // negative radius; now it is simply never read, so an out-of-range
+    // value changes nothing at all -- the stronger claim subsumes the old
+    // clamp behaviour (a radius that never varies with pressure cannot go
+    // negative from pressure either).
+    check(brushTipFor(brush, noLut, -3.0f).radius == full.radius,
+          "negative pressure changes nothing -- not clamped, simply unread");
+    check(brushTipFor(brush, noLut, 9.0f).radius == full.radius,
+          "and pressure above 1 changes nothing either");
 
     // A palette index that is out of range picks entry 0 rather than reading
     // off the end. `BrushState::pigment` is a plain int on a public aggregate.
@@ -241,8 +258,17 @@ bool runActiveLayerTest() {
     // more texels, or pressure is not reaching the deposit at all.
     MixboxLut noLut;
     BrushState brush;
-    brush.radius = 30.0f;
+    brush.model.tip.diameterPx = 60.0f;  // radius 30
     brush.load = 1.0f;
+    // **`brushTipFor()`'s own pressure argument no longer widens anything**
+    // (Part D above, just proved) -- pressure now reaches a per-dab radius
+    // only through `model.shape.size`'s own `Variance`, resolved inside
+    // `StrokeSession`'s per-dab loop off the `hardwareInputs` `setTip()`
+    // latches. Rewritten to exercise THAT mechanism: a PenPressure-
+    // controlled Size Variance, with `hardwareInputs.pressure` supplied
+    // fresh at each `setTip()` call -- still mid-stroke, still reaching the
+    // deposit, just through the architecture that replaced the old one.
+    brush.model.shape.size.control = VarianceControl::PenPressure;
 
     const auto strokeTexels = [&](bool grow) {
       OpenDocument d = makeBlankOpenDocument(256, 256, WorkingSpace{}, "S");
@@ -250,12 +276,19 @@ bool runActiveLayerTest() {
       setActiveLayer(d, 1);
       StrokeSession session;
       std::string error;
-      if (!session.begin(d, d.activeLayer, brushTipFor(brush, noLut, 0.2f), Tool::Brush, &error))
+      DynamicInputs startIn;
+      startIn.hasPressure = true;
+      startIn.pressure = 0.2f;
+      if (!session.begin(d, d.activeLayer, brushTipFor(brush, noLut, 0.2f), Tool::Brush, &error,
+                         &brush.model, startIn))
         return size_t{0};
       constexpr int kSamples = 24;
       for (int i = 0; i <= kSamples; ++i) {
         const float u = static_cast<float>(i) / static_cast<float>(kSamples);
-        if (grow) session.setTip(brushTipFor(brush, noLut, 0.2f + 0.8f * u));
+        DynamicInputs in;
+        in.hasPressure = true;
+        in.pressure = grow ? 0.2f + 0.8f * u : 0.2f;
+        session.setTip(brushTipFor(brush, noLut, in.pressure), in);
         session.addPoint(40.0f + 170.0f * u, 128.0f);
       }
       session.end();
@@ -267,7 +300,9 @@ bool runActiveLayerTest() {
     std::printf("  [measured] a fixed light-pressure stroke wrote %zu texels; the same stroke\n"
                 "             with pressure ramping 0.2 -> 1.0 wrote %zu\n", flat, grown);
     check(flat > 0 && grown > flat,
-          "setTip mid-stroke reaches the deposit, so pressure widens the stroke");
+          "setTip's hardwareInputs mid-stroke reaches the per-dab Variance resolution, so "
+          "pressure widens the stroke -- through PenPressure-controlled Size now, not the "
+          "retired PRESSURE -> SIZE link");
   }
 
   std::printf("[selftest] active layer %s\n", ok ? "PASS" : "FAIL");

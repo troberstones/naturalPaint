@@ -79,11 +79,22 @@ constexpr int32_t kSamples = 240;    // path points per stroke, not dabs
 // It showed up as a spatter brush bleeding 83 stray pixels into the cell below
 // it -- small enough to read as "that brush is just noisy" rather than as an
 // overflow, which is exactly why it is worth computing rather than padding.
+// **`grow`, below, is now a LEGACY estimate.** The matrix no longer drives
+// Size (`ui/DynamicsMatrixPanel.hpp`) -- `io/AbrBrushes.cpp` still populates
+// `p.links` for an imported preset alongside `p.model` (so the shelved
+// editor has something real to show), which is what keeps this scan from
+// going stale to zero, but the true per-dab bound is now
+// `brush/Variance.hpp`'s own: `varianceScale()`'s maximum is exactly 1.0 at
+// every input, so a brush's `model.tip.diameterPx` alone is already an exact
+// upper bound and this function's `grow > 1.0` case can only ever be more
+// generous than necessary, never too tight. Left as a legacy widen rather
+// than tightened to 1.0 outright: a needlessly wide cell is a cosmetic
+// nit, and this sheet is a diagnostic tool, not the paint path.
 float widestRadius(const BrushPreset& p) {
   float grow = 1.0f;
   for (const BrushLink& l : p.links.links)
     if (l.target == DynamicTarget::Size && l.enabled) grow = std::max(grow, l.rangeHi);
-  float reach = p.radius * grow;
+  float reach = (p.model.tip.diameterPx / 2.0f) * grow;
   if (p.tipBitmap && p.tipBitmap->width > 0 && p.tipBitmap->height > 0) {
     const float w = static_cast<float>(p.tipBitmap->width);
     const float h = static_cast<float>(p.tipBitmap->height);
@@ -213,11 +224,20 @@ int runBrushSheet(const char* abrPath, const char* outPath, const char* experime
     brush.colorMode = ColorMode::Rgb;
     brush.rgb = {1.0f, 1.0f, 1.0f};
 
+    // **`experimentLinks()`'s effect on the sheet is now nil.** It still
+    // transforms `brush.links`, but the matrix is shelved
+    // (`ui/DynamicsMatrixPanel.hpp`) and nothing downstream reads
+    // `BrushState::links` to paint any more -- `--brush-sheet`'s own
+    // `experiment` argument is a real, narrow casualty of this migration
+    // left in place rather than removed, since redesigning it to instead
+    // perturb a `BrushModel` is a real feature and out of scope here.
     brush.links = experimentLinks(brush.links, experiment);
 
     StrokeSession stroke;
     std::string refusal;
-    if (!stroke.begin(od, 0, brushTipFor(brush, lut, 0.0f), brush.tool, &refusal, &brush.links)) {
+    DynamicInputs beginInputs;
+    if (!stroke.begin(od, 0, brushTipFor(brush, lut, beginInputs), brush.tool, &refusal,
+                      &brush.model, beginInputs)) {
       std::fprintf(stderr, "brush-sheet: %s refused: %s\n", preset.name.c_str(), refusal.c_str());
       continue;
     }
@@ -229,20 +249,29 @@ int runBrushSheet(const char* abrPath, const char* outPath, const char* experime
       const float y = cy - kAmplitude * std::sin(t * 2.0f * 3.14159265358979f);
       // 0 at both ends, 1 in the middle: the taper. `sin(pi t)` and not a
       // triangle because a triangle's corner at t=0.5 shows up as a visible
-      // kink in the width of any brush with a strong PRESSURE -> Size link.
+      // kink in the width of any brush with a strong PenPressure-controlled
+      // Size Variance.
       const float pressure = std::sin(t * 3.14159265358979f);
       // PRESSURE SMOOTHING: the same per-sample sequence `ui/MacPaintUI.cpp`
       // uses (this file's own top comment), now including the EMA `begin()`
       // above reset for this stroke. Damps this ramp's own instantaneous
       // rate of change rather than the shape of the ramp itself -- the
       // taper still runs 0->1->0, just lagged a few samples at each end.
-      stroke.setTip(brushTipFor(brush, lut, stroke.smoothPressure(pressure)));
+      DynamicInputs in;
+      in.pressure = stroke.smoothPressure(pressure);
+      stroke.setTip(brushTipFor(brush, lut, in), in);
       stroke.addPoint(x, y);
     }
     stroke.end();
-    std::printf("  [%2zu] r%d c%d  %-44.44s radius %5.1f spacing %5.2f links %zu\n", i, row, col,
-                preset.name.c_str(), static_cast<double>(preset.radius),
-                static_cast<double>(preset.spacing), preset.links.links.size());
+    // `spacingPercent` is a percentage OF THE DIAMETER; this column has
+    // always reported RADII (the old, now-deleted `BrushPreset::spacing`
+    // scalar's own unit), so `/ 100 * 2` is the conversion, not a bare `/
+    // 100` (`app/StrokeSession::brushTipFor()`'s `tip.spacing` comment names
+    // the same factor of two).
+    std::printf("  [%2zu] r%d c%d  %-44.44s diameter %5.1f spacing %5.2f links %zu\n", i, row, col,
+                preset.name.c_str(), static_cast<double>(preset.model.tip.diameterPx),
+                static_cast<double>(preset.model.tip.spacingPercent / 100.0f * 2.0f),
+                preset.links.links.size());
   }
 
   std::string error;
