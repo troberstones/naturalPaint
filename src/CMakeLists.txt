@@ -174,6 +174,7 @@ add_executable(naturalPaint
   app/selftest/Shaper.cpp
   app/selftest/ShelvedLinks.cpp
   app/selftest/SolverPersistence.cpp
+  app/selftest/StrokePath.cpp
   app/selftest/StrokePreview.cpp
   app/selftest/StrokeBridge.cpp
   app/selftest/StrokeSpeed.cpp

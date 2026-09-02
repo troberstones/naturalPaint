@@ -56,11 +56,26 @@ Vec2 evalCentripetalCatmullRom(Vec2 P0, Vec2 P1, Vec2 P2, Vec2 P3, float u) {
   return blend(B1, B2, t1, t2, t);
 }
 
+// How far a stroke's raw samples may wander and still count as "never moved"
+// for the single-click dab in flush(). This is a FLOAT-NOISE tolerance, not a
+// tremor budget: a thousandth of a texel is below anything a pointer, a pen or
+// the view transform can produce, so no stroke that a user would call a drag
+// can ever be reclassified as a click by it.
+//
+// The rejected alternative was a real slop budget -- a texel or two, to catch
+// the pen that wobbles slightly during a click. That would have made a
+// deliberate short drag under the slop distance emit a dab it does not emit
+// today, i.e. it would have changed moving strokes, which is exactly what this
+// change is not allowed to do. The wobbly-pen click therefore still deposits
+// nothing; that gap is real and is left open on purpose.
+constexpr float kStationaryPx = 1e-3f;
+
 }  // namespace
 
 void StrokePath::reset() {
   numPts_ = 0;
   leftover_ = 0.0f;
+  movedPx_ = 0.0f;
 }
 
 void StrokePath::emitAlongSegment(Vec2 P0, Vec2 P1, Vec2 P2, Vec2 P3,
@@ -96,6 +111,11 @@ void StrokePath::emitAlongSegment(Vec2 P0, Vec2 P1, Vec2 P2, Vec2 P3,
 
 void StrokePath::addPoint(float x, float y, float spacingPx, std::vector<Vec2>& out) {
   const Vec2 p{x, y};
+  // Measured against the point this one displaces as newest, before the
+  // shift below overwrites it. A stroke's whole travel is accumulated here
+  // because flush() needs the answer for the stroke as a WHOLE, and pts_ only
+  // remembers the last four samples.
+  if (numPts_ > 0) movedPx_ += distanceOf(pts_[numPts_ - 1], p);
   if (numPts_ < 4) {
     pts_[numPts_++] = p;
   } else {
@@ -122,7 +142,47 @@ void StrokePath::addPoint(float x, float y, float spacingPx, std::vector<Vec2>& 
 }
 
 void StrokePath::flush(float spacingPx, std::vector<Vec2>& out) {
-  if (numPts_ < 2) { numPts_ = 0; leftover_ = 0.0f; return; }
+  // --- The single click: a stroke whose samples never left one spot. ---
+  //
+  // Nothing below can emit for it. The arc-length walk divides a TRAVELLED
+  // distance by `spacingPx`, and this stroke travelled none: a click that
+  // lasted one frame never even reaches the walk (`numPts_ < 3` in addPoint(),
+  // and the guard below used to be `numPts_ < 2`), and a click held down for
+  // several frames feeds several coincident samples whose curve has zero
+  // length and so emits nothing either. Both are the same user gesture and
+  // both used to paint nothing at all -- the reported defect.
+  //
+  // It is deliberately keyed on DISTANCE and not on the sample count. Keying
+  // on `numPts_ == 1` looks like the smaller change and does not fix the bug:
+  // both live routes in ui/MacPaintUI.cpp call addPoint() once per render
+  // frame for as long as the button is held, without a moved-since-last-frame
+  // guard, so a physical click of even 50 ms arrives as several identical
+  // samples and would still have fallen through to the walk below.
+  //
+  // Moving strokes are untouched by this branch, by construction: any stroke
+  // with real travel fails the test and takes exactly the path it took before.
+  if (numPts_ > 0 && movedPx_ <= kStationaryPx) {
+    out.push_back(pts_[numPts_ - 1]);  // its own position, not the origin --
+                                       // for a stationary stroke every sample
+                                       // is that position anyway, and reading
+                                       // the newest keeps this true if the
+                                       // threshold above is ever loosened.
+    numPts_ = 0; leftover_ = 0.0f; movedPx_ = 0.0f;
+    return;
+  }
+
+  // Only a stroke with ZERO samples can still be here: one sample means
+  // `movedPx_ == 0` exactly, which the branch above already took.
+  if (numPts_ < 2) { numPts_ = 0; leftover_ = 0.0f; movedPx_ = 0.0f; return; }
+
+  // NOT DONE HERE, deliberately: a moving stroke still never stamps its own
+  // origin texel. `leftover_` starts at 0, so the first dab of a drag lands a
+  // full `spacingPx` along the path rather than at the first sample. Seeding
+  // `leftover_ = spacingPx` in reset() would fix that and make every stroke
+  // stamp its start -- but it also shifts every dab of every existing stroke,
+  // which is a change to drawing this one is not: the brief here was "single
+  // click draws dab, moving stroke will do what it currently does". Recorded
+  // so whoever weighs that change later starts from a measured fact.
 
   // The segment addPoint() never got to: between the last two real samples,
   // with no real point beyond them to confirm its shape, so the far control
@@ -136,6 +196,7 @@ void StrokePath::flush(float spacingPx, std::vector<Vec2>& out) {
 
   numPts_ = 0;
   leftover_ = 0.0f;
+  movedPx_ = 0.0f;
 }
 
 }  // namespace np

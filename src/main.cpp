@@ -1935,6 +1935,10 @@ int main(int argc, char** argv) {
     // Phase C Part 1: Scatter Count, resolved per dab and dispatched as N
     // sub-dabs per nominal position. Headless and GPU-free.
     const bool scatterCountOk = np::runScatterCountTest();
+    // brush/StrokePath itself: a single click lays exactly one dab at its own
+    // position, and a drag's dab coordinates are unchanged by that. Headless
+    // and GPU-free.
+    const bool strokePathOk = np::runStrokePathTest();
     // io/AbrBrushes' `samp` block: sampled bitmap tips decoded and stamped by
     // brush/Deposit.hpp §2c in place of the procedural tip. Headless and
     // GPU-free.
@@ -2632,7 +2636,7 @@ int main(int argc, char** argv) {
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
-                    shelvedLinksOk && scatterCountOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
+                    shelvedLinksOk && scatterCountOk && strokePathOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
                     exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&

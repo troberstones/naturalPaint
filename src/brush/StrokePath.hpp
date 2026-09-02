@@ -26,6 +26,12 @@ struct Vec2 {
 // frames still lay dabs down at the identical spatial spacing over the
 // identical path -- the property that makes deposition speed-independent.
 //
+// The one gesture that has no arc length to divide is a click that never
+// moved, and it is handled at flush() rather than by any rule about spacing:
+// a stationary stroke emits exactly one dab, at its own position. That is not
+// a violation of the distance-not-time rule above -- one dab is what a click
+// deposits whether it was held for one frame or three hundred.
+//
 // Pure geometry: no notion of brush radius, pigment, or GPU state. The
 // caller supplies `spacingPx` (already `spacing * radius`) and is
 // responsible for turning each returned position into an actual deposit.
@@ -52,8 +58,19 @@ class StrokePath {
   // last sample -- never gets walked by addPoint() alone, because no further
   // sample ever arrives to confirm its shape. flush() walks that final
   // segment, extrapolating the one missing control point the same way the
-  // *start* of a stroke already has to. Safe to call on a stroke with 0 or 1
-  // samples (does nothing) or more than once (a no-op after the first).
+  // *start* of a stroke already has to.
+  //
+  // **A stroke that never moved emits exactly one dab here, at its own
+  // position** -- a single click paints. It has to happen at flush() and not
+  // in addPoint(), because "never moved" is only knowable once the stroke is
+  // over: an addPoint() that stamped on the spot would double up the moment
+  // a second sample arrived and the arc-length walk laid its own first dab.
+  // The dab is emitted regardless of `spacingPx`, since spacing divides a
+  // distance and this stroke has none. See the .cpp for what counts as "never
+  // moved" and why the threshold is float noise rather than a tremor budget.
+  //
+  // Safe to call on a stroke with 0 samples (does nothing) or more than once
+  // (a no-op after the first).
   void flush(float spacingPx, std::vector<Vec2>& out);
 
  private:
@@ -66,6 +83,13 @@ class StrokePath {
   // calls (and into flush()) so spacing never resets at a render-frame
   // boundary.
   float leftover_ = 0.0f;
+  // Total straight-line distance between consecutive RAW samples of this
+  // stroke -- not the walked curve length, which pts_[4] cannot remember past
+  // four samples. Only ever compared against a float-noise threshold in
+  // flush() to answer one yes/no question ("did this stroke move at all?"),
+  // so the chord underestimate a curved path gives is irrelevant: a path with
+  // any curvature to underestimate has already moved.
+  float movedPx_ = 0.0f;
 };
 
 }  // namespace np

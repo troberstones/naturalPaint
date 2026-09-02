@@ -1364,6 +1364,20 @@ bool runScatterTest();
 // of count == 1. Pure CPU, no document window, no GPU.
 bool runScatterCountTest();
 
+// brush/StrokePath driven directly -- the arc-length dab emitter as pure
+// geometry, with no StrokeSession, document, PaintSim or GPU under it, which
+// is why it can assert the emitted dab COORDINATES and not merely their
+// effect. The claim it exists for is that **a single click lays exactly one
+// dab at its own position**: neither a one-sample stroke (which used to return
+// out of `flush()` before emitting) nor a click held for several frames (which
+// arrives as several coincident samples and walks a zero-length curve) put any
+// paint down at all before this. Its load-bearing half is the opposite
+// direction -- a real drag's six dab positions are asserted against values
+// derived by hand, so the section fails if the click case ever leaks into a
+// moving stroke, which counting dabs alone could not detect. Headless and
+// GPU-free.
+bool runStrokePathTest();
+
 // io/AbrBrushes' `samp` block and brush/Deposit.hpp §2c: a sampled bitmap tip
 // decoded (raw and PackBits, both subversions' header skip), matched to a
 // preset by UUID, resolving a `#Prc` `Dmtr` against the sample's own pixel
