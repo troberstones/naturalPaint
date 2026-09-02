@@ -37,6 +37,7 @@
 #include "app/SelfTest.hpp"
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
+#include "app/ToolSwitch.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
 #include "color/Space.hpp"
@@ -1715,6 +1716,13 @@ int main(int argc, char** argv) {
     // restated, the zero-length click, and the seventh canvas gate that had to
     // be added rather than folded into the eyedropper's. Headless and GPU-free.
     const bool measureOk = np::runMeasureTest();
+    // app/ToolSwitch (T20 + T24): the single writer of `brush.tool`, the
+    // previous-tool ledger it keeps, the spring-loaded Hand's borrow-and-give-
+    // back (which deliberately leaves no ledger entry), and the angle
+    // `Image > Transform...` opens with -- both directions of that
+    // conditional, walked over the whole `Tool` enum rather than sampled.
+    // Headless and GPU-free.
+    const bool toolSwitchOk = np::runToolSwitchTest();
     // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
     // transform's round-trip identity, one hand-worked known-point check,
     // and the view-only proof that mirror/rotation/grayscale never mutate
@@ -2656,7 +2664,7 @@ int main(int argc, char** argv) {
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
-                    eyedropperOk && measureOk &&
+                    eyedropperOk && measureOk && toolSwitchOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -2937,12 +2945,12 @@ int main(int argc, char** argv) {
       // the selection's true bounds rather than a tile grid.
       od->selection = np::selectRectangle(180.0f, 150.0f, 700.0f, 560.0f);
       ++od->selectionRevision;
-      st.brush.tool = np::Tool::Marquee;
+      np::setActiveTool(st, np::Tool::Marquee);
       std::printf("[marquee-demo] selection installed: 180,150 -> 700,560\n");
     }
   }
   if (gradientDemo) {
-    st.brush.tool = np::Tool::Gradient;
+    np::setActiveTool(st, np::Tool::Gradient);
     std::printf("[gradient-demo] Tool::Gradient selected, kind=%s -- the options bar shows its ramp\n",
                 np::gradientKindLabel(gradientDemoKind));
     st.gradient.kind = gradientDemoKind;
@@ -2962,7 +2970,7 @@ int main(int argc, char** argv) {
     }
   }
   if (cloneDemo) {
-    st.brush.tool = np::Tool::CloneStamp;
+    np::setActiveTool(st, np::Tool::CloneStamp);
     // Document texels, and every one of the four numbers is chosen rather than
     // convenient. Both marks are off-centre and off-axis so a marker drawn
     // from a swapped or dropped coordinate lands somewhere obviously wrong

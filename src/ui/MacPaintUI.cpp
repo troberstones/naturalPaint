@@ -50,6 +50,7 @@
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/Snapping.hpp"
+#include "app/ToolSwitch.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "app/ViewTransform.hpp"
 #include "app/WheelInput.hpp"
@@ -536,7 +537,7 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
     const std::string tip = toolTooltip(t);
     ImGui::SetTooltip("%s", tip.c_str());
   }
-  if (clicked) st.brush.tool = t;
+  if (clicked) setActiveTool(st, t);
   ImGui::PopID();
   return clicked;
 }
@@ -729,7 +730,7 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
         const Tool member = group.members[m];
         if (toolFlyoutRow(member, member == current, rowW)) {
           current = member;                                     // display state always updates
-          if (toolImplemented(member)) st.brush.tool = member;  // selection only if real
+          if (toolImplemented(member)) setActiveTool(st, member);  // selection only if real
           ImGui::CloseCurrentPopup();
         }
       }
@@ -8978,6 +8979,16 @@ void drawCanvasSizeDialog(AppState& st) {
   ImGui::EndPopup();
 }
 
+// The centre that both the seeded angle below and every live edit rotate and
+// scale about. One function rather than the expression twice, so a seeded
+// rotation and a dragged one cannot end up about different pivots -- which
+// would show as the preview jumping the first time the user touched a field.
+Point2 numericTransformPivot(const TransformSession& session) noexcept {
+  const DocumentRegion& b = session.sourceBounds();
+  return Point2{static_cast<float>(b.x) + static_cast<float>(b.width) * 0.5f,
+                static_cast<float>(b.y) + static_cast<float>(b.height) * 0.5f};
+}
+
 // PRD item 10: a Photoshop-style numeric Transform dialog -- typed rotate/
 // scale/translate fields instead of dragging the Free Transform gizmo's
 // handles. Begins the identical `app/TransformSession` a Cmd+T gizmo would
@@ -9022,12 +9033,31 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
         if (!began.ok) {
           status = began.error;
         } else {
-          rotateDeg = 0.0f;
+          // T24: "when the transform panel is open, and the measure was the
+          // last tool, the angle from the measure is put into the transform
+          // angle field; if it wasn't the last tool the angle should be
+          // zero." Both halves are `transformSeedAngleDeg()`'s -- including
+          // the zero, which is the easy half of this feature to drop and the
+          // only half the user notices when it is wrong. Its header's §3
+          // carries why the predicate is the tool the user is IN rather than
+          // the previous one.
+          rotateDeg = transformSeedAngleDeg(st, od->id);
           scaleXPercent = 100.0f;
           scaleYPercent = 100.0f;
           translateX = 0.0f;
           translateY = 0.0f;
           beginTransformPreview(st, gpu);
+          // A seeded angle that Apply ignored would be a lie the dialog tells
+          // in its own field: `setPending()` is otherwise only reached from
+          // the `edited` branch below, so a user who read 37.4 off the field
+          // and pressed Apply without touching anything would commit the
+          // identity. Composed through the same `composeNumericTransform()`
+          // and the same pivot the edits use, so the seed is a starting point
+          // in that function's terms rather than a second transform path.
+          if (rotateDeg != 0.0f) {
+            st.transform.setPending(composeNumericTransform(
+                rotateDeg, 1.0f, 1.0f, 0.0f, 0.0f, numericTransformPivot(st.transform)));
+          }
         }
       }
       ImGui::OpenPopup("Numeric Transform");
@@ -9048,9 +9078,7 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
     return;
   }
 
-  const DocumentRegion& bounds = st.transform.sourceBounds();
-  const Point2 pivot{static_cast<float>(bounds.x) + static_cast<float>(bounds.width) * 0.5f,
-                     static_cast<float>(bounds.y) + static_cast<float>(bounds.height) * 0.5f};
+  const Point2 pivot = numericTransformPivot(st.transform);
 
   bool edited = false;
   ImGui::SetNextItemWidth(200.0f);
@@ -9929,7 +9957,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
 
     case MenuAction::ToolItem:
       if (param < 0 || param >= static_cast<int>(Tool::Count)) break;
-      st.brush.tool = static_cast<Tool>(param);
+      setActiveTool(st, static_cast<Tool>(param));
       break;
 
     case MenuAction::PauseSolver:
@@ -12541,6 +12569,62 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // --- the spring-loaded Hand (T20): Space held pans, release gives the
+    // tool back -------------------------------------------------------------
+    //
+    // Read live rather than through app/Keymap's resolve(), for the reason
+    // `rotateHeld` just below already states: that dispatcher fires once per
+    // discrete SDL_EVENT_KEY_DOWN and has no way to express "held". Resolved
+    // HERE, above `panning`, so the borrow is in effect for the same frame's
+    // drag -- `panning` reads `toolPansView(st.brush.tool)`, and installing
+    // the Hand after it would cost a dead frame at the start of every pan.
+    //
+    // The borrow itself is app/ToolSwitch's, not an assignment here: §1 of
+    // that header is why the spring is NOT `setActiveTool(st, Tool::Hand)`
+    // followed by `setActiveTool(st, previous)` (that pair records "previous
+    // = Hand" and erases the fact the feature exists to keep), and §0 is why
+    // `st.brush.tool` is not written from this file at all.
+    //
+    // Three guards, and each names a gesture the Space key already belongs to:
+    //
+    //   * `!io.WantTextInput` -- Space is a space. The transform block above
+    //     states the rule this obeys ("an unmodified key must not be claimed
+    //     globally, because it would be swallowed out of every text field in
+    //     the application"), and the layer-rename box is one panel over.
+    //   * no mouse button down -- **this is the guard that keeps the existing
+    //     Space-move working.** A marquee drag reads
+    //     `IsKeyDown(ImGuiKey_Space)` as its move modifier (the
+    //     `updateSelectionMove()` call in the selection block below), and
+    //     swapping the tool out from under it would take that block's own
+    //     `toolDrawsSelection()` gate false mid-gesture and abandon the
+    //     rectangle. The button is down for the whole of that gesture, so
+    //     "is a button down" IS the question "is Space already spoken for".
+    //     Spelled as three `IsMouseDown()` calls rather than
+    //     `IsAnyMouseDown()`, which imgui.h marks `[WILL OBSOLETE]`.
+    //   * `!st.polygonLassoActive` -- the one canvas gesture that spans
+    //     frames with the button UP. It accumulates clicks, so the guard
+    //     above cannot see it, and a tool swap between two clicks of a path
+    //     would strand the half-built polygon.
+    //
+    // The release is `!IsKeyDown`, not `IsKeyReleased`, for the reason the
+    // Measure handler below gives about `!IsMouseDown`: a released edge can
+    // be missed -- Cmd-Tab away with Space held and the key-up lands in
+    // another application -- after which `IsKeyReleased` is false forever and
+    // the user is stranded in the Hand with no way out but the palette.
+    // Asking whether the key is still down cannot miss an edge, because it is
+    // not an edge.
+    {
+      const bool anyMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                                ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+                                ImGui::IsMouseDown(ImGuiMouseButton_Right);
+      if (ImGui::IsKeyPressed(ImGuiKey_Space, /*repeat=*/false) &&
+          !ImGui::GetIO().WantTextInput && !anyMouseDown && !st.polygonLassoActive) {
+        beginSpringHand(st);
+      } else if (springHandHeld(st) && !ImGui::IsKeyDown(ImGuiKey_Space)) {
+        endSpringHand(st);
+      }
+    }
+
     // --- rotate view on drag (PRD Q4: "R" held + drag) -- resolved before
     // the pan/zoom blocks below since, like Hand-tool panning, it claims
     // the left-mouse-drag gesture; the two must agree on who wins. Not
@@ -13270,10 +13354,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) endMeasureLine(st.measure);
         else if (!blocked) updateMeasureLine(st.measure, tx, ty);
       }
-    } else if (st.measure.active) {
+    } else if (st.measure.active && !springHandHeld(st)) {
       // Leaving the tool throws the ruler away (app/MeasureLine.hpp's
       // `clearMeasureLine()`): a line drawn with Measure means nothing under
       // the brush, and there would be no gesture left to dismiss it with.
+      //
+      // `!springHandHeld()`: borrowing the Hand for a Space-pan is not
+      // leaving the tool. Without it, T20 would delete the ruler of anyone
+      // who panned the canvas to see the far end of their own measurement --
+      // the gate above reads `st.brush.tool`, which IS the Hand for the
+      // duration of the borrow -- and it would take T24's seed down with it,
+      // since a cleared line fails `measureLineAppliesTo()`. Spelled as a
+      // second condition on the clear rather than by widening the gate above
+      // to `effectiveTool()`, deliberately: the ruler must survive the pan,
+      // but a click while Space is held is a pan and must not also start a
+      // new measurement, which is exactly what an `effectiveTool()` gate
+      // would have allowed on the frames where the pointer has not moved far
+      // enough for `panning` to be true yet.
       clearMeasureLine(st.measure);
     }
     // === END Tool::Measure handler =========================================

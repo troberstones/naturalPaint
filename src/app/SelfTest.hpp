@@ -359,6 +359,50 @@ bool runEyedropperTest();
 // to `applyEyedropperPick()`. Headless and GPU-free.
 bool runMeasureTest();
 
+// app/ToolSwitch (T20 "space bar should switch to the hand tool while held
+// down and go back to the previous tool when released" and T24 "the measure
+// tool's angle should be remembered ... if it wasn't the last tool the angle
+// should be zero"). Both reports needed the same fact -- which tool was
+// active before this one -- which nothing in the build recorded, because
+// `brush.tool` had four independent assignment sites and none of them looked
+// at what they were overwriting.
+//
+// The suite cannot press a key or open a modal, so this asserts the decisions
+// that were lifted out of `ui/MacPaintUI.cpp`'s canvas block in order to be
+// assertable:
+//
+//   * `setActiveTool()` records the outgoing tool, and a switch to the tool
+//     that is ALREADY active does not overwrite the ledger with itself --
+//     walked over every value of `Tool`, not sampled, because a Hand -> Hand
+//     pick losing the real previous is the concrete loss and the palette, the
+//     flyout and the menu can each deliver one.
+//   * the spring-loaded Hand borrows and gives back, and leaves NO ledger
+//     entry: a Space press that recorded "previous = Hand" and then restored
+//     the Hand on release would be a self-erasing feature, so the assertion
+//     is that `previousTool()` is untouched across a whole borrow, that
+//     auto-repeat does not overwrite what is owed back, and that a release
+//     with no press is a no-op rather than an install of a stale field.
+//   * a deliberate tool pick made WHILE Space is held wins, ends the borrow,
+//     and records the tool the user was actually in rather than the Hand that
+//     happened to be installed at that instant.
+//   * a borrow survives a document switch (two real `OpenDocument`s, made and
+//     activated through `DocumentSession`), because the tool is application
+//     state and not a property of a document.
+//   * `transformSeedAngleDeg()` in BOTH directions: `measureReadout()`'s own
+//     angle -- non-zero, and equal to it rather than to a second `atan2` --
+//     when Measure is the tool the user is in and the ruler belongs to the
+//     document in front of them; and exactly `0.0f` for every other value of
+//     `Tool` (the enum walked again), for a ruler measured on a different
+//     document, for no ruler at all, and for a state where Measure is merely
+//     the PREVIOUS tool -- which is a recorded decision and not an oversight,
+//     since `ui/MacPaintUI.cpp` destroys the ruler on every frame Measure is
+//     not active. It also holds through a spring-loaded borrow, which is the
+//     one place the previous-tool machinery genuinely earns its keep here.
+//
+// Headless and GPU-free: app/ToolSwitch, app/MeasureLine and
+// app/DocumentLifecycle only.
+bool runToolSwitchTest();
+
 // Headless check on the unified view transform (PLAN.md Phase 2 step 11,
 // "View controls" -- PRD Q1-Q4; docs/shortcuts.md section 3's own mandate
 // that mirror and rotation compose into one matrix and pen input maps back

@@ -460,6 +460,52 @@ enum class AdjustmentRequest {
   Equalize,
 };
 
+// Which tool the user was in before this one, and whether the Hand is being
+// borrowed for a Space-pan right now. **Every field here is written by
+// `app/ToolSwitch.cpp` and by nothing else** -- see that header for the whole
+// argument, which is short: `brush.tool` had four independent assignment sites
+// and the fact "what was it before?" cannot be reconstructed from any of them
+// after the fact.
+//
+// It is a struct of its own rather than three loose `AppState` members
+// because the three are only ever meaningful together -- `previous` says
+// nothing without `hasPrevious`, and `springReturn` says nothing without
+// `springHeld` -- and a loose set of three invites the next reader to write
+// one of them from the UI "just this once", which is exactly the defect this
+// whole change exists to prevent.
+//
+// Not persisted, and that is deliberate rather than an omission: the previous
+// tool is an answer to "what were you just doing", which a relaunched
+// application has no honest answer to. `app/BrushLibraryFile.cpp` freezes
+// positional keys forever, and freezing one for a session fact would be a
+// permanent cost for a value that is wrong the moment it is read back.
+struct ToolSwitchState {
+  // The tool the user was in before the current one. Only meaningful when
+  // `hasPrevious` is true; the initialiser is a value and not a sentinel on
+  // purpose -- `Tool::Count` reads as a Tool everywhere it is passed, and
+  // `ui/AtelierChrome.cpp`'s `kToolMeta` is indexed by `static_cast<size_t>(t)`
+  // with a `static_assert` that checks only the COUNT, so a sentinel Tool
+  // escaping into a table lookup is an out-of-bounds read that no assertion in
+  // this build would catch.
+  Tool previous = Tool::Brush;
+  // Whether `previous` has ever been written. False at launch, and the reason
+  // it exists is that the first tool switch of a session has no predecessor
+  // and must be able to say so rather than claiming the default.
+  bool hasPrevious = false;
+
+  // --- the spring-loaded Hand (T20) ---------------------------------------
+  //
+  // Space held pans the canvas and lets go back to whatever the user was
+  // holding. That is a *borrow*, not a tool switch, so it deliberately does
+  // NOT move `previous`/`hasPrevious`: a Space press that recorded
+  // "previous = Hand" and then restored the Hand on release would erase the
+  // very fact this struct exists to keep.
+  bool springHeld = false;
+  // The tool to hand back on release. Written only by `beginSpringHand()`,
+  // and read only by `endSpringHand()` and `effectiveTool()`.
+  Tool springReturn = Tool::Brush;
+};
+
 struct AppState {
   PaintMode mode = PaintMode::Watercolor;
   // The stroke bridge's per-frame cycle. It lives here rather than as a local
@@ -473,6 +519,14 @@ struct AppState {
   // absorption together via setWorkingTime(); 15 matches the shipped defaults.
   float workingTime = 15.0f;
   BrushState brush;
+  // The ledger behind `brush.tool` -- app/ToolSwitch.hpp owns every write to
+  // both. Here rather than on `BrushState` because `BrushState` is copied
+  // wholesale by the brush presets (`applyPresetToBrush()`, and
+  // `app/BrushSheet.cpp` builds throwaway `BrushState`s by value): a preset
+  // that carried a previous-tool ledger with it would restore some other
+  // session's tool on load, and a stack `BrushState` would silently answer
+  // questions about a tool history it has none of.
+  ToolSwitchState tools;
   CanvasView view;
   SimParams sim;
 
