@@ -1,6 +1,7 @@
 # ADR-0008 — Recovery needs a model journal, not tile spill
 
-**Status:** accepted · **Date:** 2026-08-17
+**Status:** accepted, but **SUSPENDED IN THE SHIPPING DEFAULT** since 2026-09-01 —
+see "Status note" at the end · **Date:** 2026-08-17
 **Corrects:** [DESIGN-imaging.md](../../DESIGN-imaging.md) §3, "Crash recovery falls out
 of it nearly free."
 
@@ -82,3 +83,47 @@ structural-edit trigger gets the important property — bounded loss — without
 
 **Trust the GPU/driver and skip this.** Not credible on wgpu, where device loss is a
 documented, handled path in the code already.
+
+## Status note — 2026-09-01: journalling is OFF by default
+
+The decision below stands. What does not stand is the **write policy** built on
+it, so the application now starts with journalling off and `--journal` turns it
+back on. This was the user's call, made with the numbers below in front of them.
+
+**What went wrong.** `journalWriteDue()` writes immediately on every
+`EditKind::Structural` edit, and `recordLayerEdit()` (app/DocumentLifecycle.cpp)
+classifies **every** `core::LayerOps` operation as structural — including the
+metadata-only ones: visibility, rename, opacity, blend, lock, colour label.
+Each such write is a complete `.npaint` of the whole document; there is no
+delta path. On a measured real document the model was **162,943,474 bytes**, so
+one click of an eye icon cost ~163 MB of disk traffic and a few minutes of
+ordinary layer work cost gigabytes. Painting was never the problem — strokes
+are `EditKind::Content` and already ride the 60 s timer.
+
+Note this is a **second** defect found in the same trigger. The first was that
+the write ran synchronously on the paint thread, froze the UI for ~1 s per
+structural edit, and sat outside every `--frame-trace` phase timer; that was
+fixed by moving the write to a background thread (`d59c308`). Moving it off the
+main thread stopped the freeze but did not reduce a byte of the traffic, which
+is the part this note is about.
+
+**What has to happen before the default flips back.** Split the trigger rather
+than the timer:
+
+1. Edits that **create or destroy pixels or layers** — add, delete, duplicate,
+   merge, paste, import, transform commit, filters, adjustments — keep writing
+   at once. That is the loss this ADR exists to prevent, and the "Journal every
+   edit" alternative below was rejected partly because a bounded trigger was
+   supposed to be cheap.
+2. Edits that only change **metadata** ride `kJournalIntervalSeconds` like any
+   content edit. Losing a re-typed layer name to a crash is not the failure
+   this ADR is about.
+3. Optionally debounce (1) as well, so a burst of real edits collapses into one
+   write instead of one per edit.
+
+A delta or append-only model format would remove the whole problem, but that is
+a format change and is explicitly *not* what this note is asking for.
+
+**Until then, `--journal` is the switch, and recovery of EARLIER sessions still
+works with the journal off** — discovery runs before `begin()` and is not gated
+on it, so a session that crashed while journalling was on is still offered back.

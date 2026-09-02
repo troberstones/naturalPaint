@@ -1024,6 +1024,31 @@ int main(int argc, char** argv) {
   // arriving through the real entry path rather than a hand-built session
   // that could look right while the path to it was broken. Combines with
   // --demo-document, which gives it a layer to put a box around.
+  // --- The recovery journal, OFF by default as of 2026-09-01 ---------------
+  //
+  // ADR-0008 and PRD O5 both want this on. It is off at the user's explicit
+  // instruction, as a stopgap, because its write POLICY is too eager for the
+  // documents this application is now being used on -- not because journalling
+  // is unwanted. `journalWriteDue()` writes IMMEDIATELY on every
+  // `EditKind::Structural` edit, and `recordLayerEdit()` classifies every
+  // layer operation as structural -- including a visibility toggle, a rename
+  // and an opacity change, which are metadata-only and cheap to redo. Each of
+  // those writes a COMPLETE `.npaint` of the whole document (io/NpaintFile via
+  // JournalSession::writeJob -- there is no delta path), which on a measured
+  // real document was 162,943,474 bytes. So one eye-icon click cost ~163 MB of
+  // disk traffic, and a session of clicking cost gigabytes.
+  //
+  // **What has to happen before this goes back to on** (see ADR-0008's own
+  // status note): split `EditKind::Structural` so that edits which create or
+  // destroy pixels keep writing at once -- that is the loss ADR-0008 exists to
+  // prevent -- while metadata-only edits ride the ordinary
+  // `kJournalIntervalSeconds` timer. Optionally debounce the immediate write
+  // as well, so a burst of any kind collapses.
+  //
+  // Recovery DISCOVERY is deliberately still on below: a session that crashed
+  // while journalling was enabled must still be offered its work back. This
+  // flag stops this session from WRITING, not from reading.
+  bool journalEnabled = false;
   bool transformDemo = false;
   // Optional layer index for --transform-demo. -1 means "whatever layer is
   // active", which is what a bare Cmd+T does. A number SELECTS that layer
@@ -1252,6 +1277,10 @@ int main(int argc, char** argv) {
     } else if (a == "--ui-merge-demo") {
       // Phase 5 step 10 / PRD C10: press one merge button. See runUiMergeDemo().
       if (i + 1 < argc && argv[i + 1][0] != '-') uiMergeDemo = argv[++i];
+    } else if (a == "--journal") {
+      journalEnabled = true;
+    } else if (a == "--no-journal") {
+      journalEnabled = false;
     } else if (a == "--transform-demo") {
       transformDemo = true;
       if (i + 1 < argc && argv[i + 1][0] != '-')
@@ -2533,7 +2562,17 @@ int main(int argc, char** argv) {
     // what should now read ~0 on the frame an edit lands.
     np::JournalOptions journalOptions;
     journalOptions.asynchronous = true;
-    const bool journalling = st.journal.begin(journalOptions, &journalError);
+    // Said out loud every launch, deliberately. A painting application that
+    // silently stopped protecting unsaved work would be the worse failure of
+    // the two this choice is between; see `journalEnabled`'s declaration for
+    // why it is off and what has to change for it to come back.
+    if (!journalEnabled)
+      std::fprintf(stderr,
+                   "[journal] OFF -- no crash-recovery scratch is being written this "
+                   "session. Pass --journal to turn it on. Recovery of EARLIER sessions "
+                   "still works.\n");
+    const bool journalling =
+        journalEnabled && st.journal.begin(journalOptions, &journalError);
     if (journalling)
       std::fprintf(stderr, "[journal] recovery scratch: %s (every %.0f s)\n",
                    st.journal.directory().c_str(), np::kJournalIntervalSeconds);
