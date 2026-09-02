@@ -15,6 +15,11 @@ out-*.png
 selftest.png
 mode_*.png
 
+# Instruments profiling bundles (`app_profile.trace` and friends). Directories,
+# not files, and they hold recorded samples of one run on one machine -- useful
+# while a measurement is being made, meaningless to anyone else afterwards.
+*.trace
+
 # tools/golden/run_golden.sh scratch output and failure-diagnosis artifacts.
 # Reference images under tests/golden/*.png are committed; everything this
 # generates alongside them on a failing run is not.
