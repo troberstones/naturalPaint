@@ -819,6 +819,27 @@ bool runChannelsTest();
 // selected, which is what fails if a second tolerance implementation ever grows
 // inside the fill.
 bool runFloodFillTest();
+
+// The wand's and the bucket's OPTIONS -- `app/AppState.hpp`'s two
+// `FloodFillParams` blocks, the `floodToolParamsFor()` mapping, the REACH
+// vocabulary table and TOLERANCE's 0..255 display units. Headless and GPU-free.
+//
+// Not a second test of `ops/FloodFill`: that engine was already complete and is
+// untouched by the work this section covers. What is new is the BINDING, and
+// the trap a binding carries is a control wired to a field nothing reads -- so
+// every claim here that could have been made about a field is made about
+// pixels instead. Changing tolerance moves which texels are selected (asserted
+// as a subset relation on the texel SETS, not as two counts, so a region that
+// merely moved sideways cannot pass); the anti-alias setting's two values leave
+// the reached set identical and the seed at exactly 1.0 while changing the
+// boundary's coverage from binary to ramped; the two reaches disagree on a
+// fixture built with a disconnected same-coloured block, which is the only
+// picture that can tell them apart; and the bucket's fill writes exactly the
+// region ITS OWN block produces, which is strictly larger than the wand's under
+// the two states `--wand-demo` also photographs. See
+// app/selftest/FloodFillOptions.cpp.
+bool runFloodFillOptionsTest();
+
 // core/SelectionShapes (PRD E3's ellipse, lasso and polygon lasso). Headless
 // and GPU-free.
 //

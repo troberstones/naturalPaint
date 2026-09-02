@@ -392,8 +392,59 @@ measure_n="${2:-10}"
 #     draw the ring at `pointer + (0,0)` -- concentric with the brush cursor
 #     ring, which is where it is least likely to be noticed -- and
 #     `clone_source` would still pass. This view is what fails.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo")
+#   wand_options / bucket_options  -- the options bar with `Tool::MagicWand`
+#     and with `Tool::PaintBucket` selected (`--wand-demo` and `--wand-demo
+#     bucket`): the flood-fill row that gave those two tools their TOLERANCE,
+#     REACH and ANTI-ALIAS controls, plus the trailing route indicator that
+#     follows it.
+#
+#     **Two views, and the pair is the point.** The row is one block of drawing
+#     code read by two tools, and the fact it exists to establish -- that each
+#     tool holds its OWN `FloodFillParams` (app/AppState.hpp) rather than
+#     sharing one -- is invisible in any single photograph, because a shared
+#     block and two blocks look identical until their values differ. So the
+#     demo flag puts the bucket at the opposite state of every control (All
+#     Similar rather than Contiguous, anti-alias unticked rather than ticked, a
+#     tolerance of 96 rather than the default 32) and the two references
+#     disagree, control for control. A regression that collapsed the two blocks
+#     into one would make one of these two views show the other's values.
+#
+#     It also puts BOTH states of the combo and BOTH states of the checkbox
+#     under coverage, which is the argument `gradient_spread_off` makes for
+#     existing beside `gradient`: a control has more than one appearance and
+#     only one of them is the default.
+#
+#     `--selftest`'s own section (app/selftest/FloodFillOptions.cpp) proves
+#     every one of these parameters against real texels, and provably cannot
+#     reach any of the following, each of which ships a green suite and a
+#     visibly wrong toolbar: the row drawn for the wrong tool or for no tool;
+#     the REACH combo reading the wrong row of `kFloodReaches`; the ANTI-ALIAS
+#     checkbox drawn ticked whatever `edgeBand` holds; the TOLERANCE slider
+#     showing the engine's 0.125 instead of Photoshop's 32. The first capture
+#     taken for this view found a real one of exactly that class: the REACH
+#     combo's width was measured with the band's proportional face and drawn in
+#     the mono one, so "Contiguous" was clipped under its own arrow. Headless,
+#     that combo was perfect.
+#
+#     **The crop deliberately runs past the row, to x=1440**, so the trailing
+#     "-> none" / "-> rgb-fill" indicator is in frame. That is not decoration:
+#     the three blocks above this one in the options bar take an early return
+#     and never reach that indicator, and these two must NOT -- it is the one
+#     place in the chrome that answers a refused bucket click, and its own
+#     comment records that the bucket used to be missing from it. A view that
+#     stopped at the checkbox would pass just as happily with the indicator
+#     dropped.
+#
+#     Both measured at exact **(0, 0)**, and measured rather than reasoned
+#     about -- these crops hold five pieces of antialiased text each, which by
+#     `toolbar`'s own history is the profile that flakes. 8 separately launched
+#     captures per view, each diffed against that batch's first (106 400 px
+#     crop): 14 comparisons total, every one 0 mismatched px at max channel
+#     diff 0. So they are blessed exact, like `gradient` and `gradient_drag`
+#     before them, rather than handed `toolbar`'s (48, 16) by analogy -- the
+#     mistake `gradient_drag`'s own entry above records making and correcting.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -613,11 +664,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920  0   0   0    900 1000 1830 1900 1900 40   480  40   480  480  390  390)
-view_crop_y=(5    927  965  148 664 0    628 1000 158  166  1462 76   560  76   560  560  370  370)
-view_crop_w=(1400 640  384  100 400 2560 700 900  100  660  660  1090 1100 1090 1100 1100 1110 1110)
-view_crop_h=(166  190  192  402 350 77   500 400  500  64   64   76   800  76   800  800  550  550)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920 0   0   0    900 1000 1830 1900 1900 40   480  40   480  480  390  390  40   40)
+view_crop_y=(5    927  965 148 664 0    628 1000 158  166  1462 76   560  76   560  560  370  370  76   76)
+view_crop_w=(1400 640  384 100 400 2560 700 900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400)
+view_crop_h=(166  190  192 402 350 77   500 400  500  64   64   76   800  76   800  800  550  550  76   76)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -664,7 +715,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # it does produce is drawn at a fixed position rather than chased across the
 # frame. Giving these a text budget by analogy would have cost the sensitivity
 # `gradient_drag`'s own entry above records losing for exactly that reason.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -680,7 +731,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

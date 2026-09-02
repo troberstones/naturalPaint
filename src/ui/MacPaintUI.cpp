@@ -13188,20 +13188,39 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // RGB neighbourhood and ops/FloodFill says so in its own header;
             // rather than flood something that is not there, the click is
             // refused and the selection is left exactly as it was.
-            if (target != nullptr && target->rgbTiles.has_value()) {
-              FloodFillParams params;
-              // Global mode on Option -- "fill all similar" (PRD D25) is the
-              // same predicate without the connectivity walk. It shares the
-              // modifier with Subtract deliberately: the wand's Option-click
-              // subtracts a GLOBAL region, which is the combination a user
-              // reaching for either one actually wants.
-              params.reach = mods.KeyAlt ? FloodFillReach::Global : FloodFillReach::Contiguous;
+            // The wand's own parameter block, as the options bar left it, and
+            // **read rather than rebuilt** -- `floodToolParamsFor()` is the one
+            // mapping from a tool to its block (app/AppState.hpp), so the row
+            // the user just edited and the click that consumes it cannot be
+            // looking at two different structs.
+            const FloodFillParams* params = floodToolParamsFor(st, st.brush.tool);
+            // **Option no longer forces Global here, and that removal is the
+            // point of the row rather than a casualty of it.** It used to:
+            // `params.reach = mods.KeyAlt ? Global : Contiguous`, an
+            // undocumented modifier that was the only way to reach half of PRD
+            // D25. With REACH visible in the options bar, keeping the modifier
+            // would leave two sources of truth for one question -- the combo
+            // says Contiguous, the held key says All Similar, and the band that
+            // exists to say what the next click will do would be wrong every
+            // time Option was down.
+            //
+            // The modifier is not lost, it is **un-overloaded**. Option is
+            // already Subtract for every selection tool
+            // (`selectionCombineFromModifiers()`, latched into
+            // `st.marqueeCombine` a few hundred lines up), and the wand was the
+            // one tool where it silently meant two things at once -- which also
+            // meant "subtract a CONTIGUOUS region" was a gesture this build
+            // could not express at all. So this deletion adds a capability
+            // rather than removing one: Global moved from a hidden key to a
+            // visible combo, and Option went back to meaning exactly what the
+            // user's hands already know it means everywhere else.
+            if (target != nullptr && target->rgbTiles.has_value() && params != nullptr) {
               commitDrawnSelection(
                   st, *od,
                   floodFillSelection(*target->rgbTiles,
                                      PixelCoord{static_cast<int32_t>(tx),
                                                 static_cast<int32_t>(ty)},
-                                     od->document.width, od->document.height, params));
+                                     od->document.width, od->document.height, *params));
             }
           }
           break;
@@ -13471,19 +13490,34 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // refusals below -- and cleared on the next click that lands, so
             // the sentence describes this click rather than an older one.
             g_strokeRefusal = pixelOpRefusalMessage(refusal, target, "paint bucket");
-          } else {
+            // **The bucket's own parameter block**, bound in the condition
+            // below, from the same single mapping the wand's click and the
+            // options-bar row both use (app/AppState.hpp's
+            // `floodToolParamsFor()`) -- a second block, not the wand's, and
+            // that header carries the argument for why these two tools hold
+            // separate values while sharing one algorithm.
+            //
+            // Bound in the condition rather than dereferenced: the enclosing
+            // `if` already pins the tool to `PaintBucket`, so the null arm is
+            // unreachable -- writing it this way costs nothing and leaves no
+            // raw deref for a later edit to that enclosing `if` to turn into a
+            // crash. `--selftest` walks every `Tool` value against the mapping,
+            // so the arm that is reachable is the proven one.
+            //
+            // Option's Global override is gone here too, for the wand's reason
+            // one tool over: with REACH drawn in the band, a modifier that
+            // silently disagreed with it would make the visible control a lie
+            // whenever the key was down. Unlike the wand, Option had no second
+            // meaning to fall back to on the bucket -- it was a pure shortcut,
+            // and a shortcut that contradicts a visible control is worth less
+            // than the control.
+          } else if (const FloodFillParams* params = floodToolParamsFor(st, st.brush.tool)) {
             // No clear here: the block head already cleared it this frame, and
             // a second one would suggest the refusal's lifetime is per click.
-            FloodFillParams params;
-            // Same modifier meaning the wand gives it: Option is "fill all
-            // similar" (PRD D25's second half), the global predicate pass
-            // rather than the connectivity walk.
-            params.reach = ImGui::GetIO().KeyAlt ? FloodFillReach::Global
-                                                 : FloodFillReach::Contiguous;
             Selection region = floodFillSelection(
                 *target->rgbTiles,
                 PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)},
-                od->document.width, od->document.height, params);
+                od->document.width, od->document.height, *params);
             // **The active selection still bounds the bucket.** PRD E1 is P0 --
             // "every deposit and every op respects the active selection" -- and
             // a bucket that ignored it would be the one op in the build that

@@ -1090,6 +1090,8 @@ int main(int argc, char** argv) {
   bool gradientDemo = false;
   bool gradientDemoDrag = false;
   np::GradientKind gradientDemoKind = np::GradientKind::Linear;
+  bool wandDemo = false;
+  bool wandDemoBucket = false;
   bool flyoutDemo = false;
   bool panelStackDemo = false;
   bool uiLayerDemoClip = true;
@@ -1384,6 +1386,28 @@ int main(int argc, char** argv) {
       cloneDemo = true;
       if (i + 1 < argc && std::string_view(argv[i + 1]) == "anchor") {
         cloneDemoOffset = false;
+        ++i;
+      }
+    } else if (a == "--wand-demo") {
+      // Selects `Tool::MagicWand`, or `Tool::PaintBucket` with the optional
+      // word `bucket`. The same gap `--gradient-demo` and `--marquee-demo`
+      // cover: the options bar's flood-fill row is a per-tool block, so it
+      // draws for exactly these two tools and for no other, and `--screenshot`
+      // has no way to click a palette cell.
+      //
+      // Two tools rather than one, and the second is deliberately NOT at the
+      // defaults. The row is drawn once and read twice, and the fact worth
+      // photographing is that those two reads land on **different blocks**
+      // (app/AppState.hpp) -- which one view of one tool cannot show, because a
+      // shared block and two blocks look identical until their values differ.
+      // So the bucket view carries the other state of every control in the row:
+      // All Similar rather than Contiguous, anti-alias off rather than on, and
+      // a tolerance that is not the default. That also puts both states of the
+      // combo and both states of the checkbox under coverage, which is the
+      // argument `gradient_spread_off` makes for existing beside `gradient`.
+      wandDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "bucket") {
+        wandDemoBucket = true;
         ++i;
       }
     } else if (a == "--flyout-demo") {
@@ -1828,6 +1852,13 @@ int main(int argc, char** argv) {
     // tile store, and the fill that goes through the selection the wand
     // produces. Also headless and GPU-free.
     const bool floodFillOk = np::runFloodFillTest();
+    // app/AppState's two FloodFillParams blocks and the options-bar row that
+    // edits them (PRD D25, E3): the tool -> block mapping, the REACH table,
+    // TOLERANCE's 0..255 display units, and what each of the three controls
+    // does to real texels. The engine above was already complete; this is the
+    // binding, and the trap a binding carries is a control wired to a field
+    // nothing reads. Headless and GPU-free.
+    const bool floodFillOptionsOk = np::runFloodFillOptionsTest();
     // core/SelectionShapes (PRD E3): the ellipse, lasso and polygon lasso, and
     // the exact-area claim behind all three. Headless, pure CPU.
     const bool selectionShapesOk = np::runSelectionShapesTest();
@@ -2671,7 +2702,7 @@ int main(int argc, char** argv) {
                     gradientOk && selectionOk && channelsOk &&
                     selectionShapesOk && selectionRefineOk && selectionToolsOk && selectionDragOk &&
                     ellipseMarqueePreviewOk &&
-                    selectionBoundaryOk && floodFillOk &&
+                    selectionBoundaryOk && floodFillOk && floodFillOptionsOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
                     documentTransformOk && transformSessionOk && moveToolOk &&
@@ -3010,6 +3041,30 @@ int main(int argc, char** argv) {
                 "canvas band's centre\n",
                 cloneDemoOffset ? ", offset latched from pen-down 940,510 (-280,-210)"
                                 : ", offset NOT latched (the negative: no live ring)");
+  }
+  if (wandDemo) {
+    if (wandDemoBucket) {
+      np::setActiveTool(st, np::Tool::PaintBucket);
+      // Every control in the row at its OTHER state, on purpose -- see the
+      // flag's own comment above. The tolerance is 96/255 rather than a round
+      // float so the slider's readout is unmistakably not the 32 the wand view
+      // shows, and `edgeBand = 0` is the ANTI-ALIAS checkbox unticked (the
+      // hard-edge setting `ops/FloodFill.hpp` § 2 documents as legitimate, not
+      // a disabled feature).
+      st.paintBucket.tolerance = np::floodToleranceFromUi(96);
+      st.paintBucket.edgeBand = 0.0f;
+      st.paintBucket.reach = np::FloodFillReach::Global;
+      std::printf(
+          "[wand-demo] Tool::PaintBucket selected, tolerance=96 reach=%s anti-alias=off -- the "
+          "options bar shows ITS block, not the wand's\n",
+          np::floodReachLabel(st.paintBucket.reach));
+    } else {
+      np::setActiveTool(st, np::Tool::MagicWand);
+      std::printf(
+          "[wand-demo] Tool::MagicWand selected, tolerance=%d reach=%s anti-alias=on -- the "
+          "options bar shows its flood-fill row\n",
+          np::floodToleranceToUi(st.magicWand.tolerance), np::floodReachLabel(st.magicWand.reach));
+    }
   }
   if (flyoutDemo)
     std::printf("[flyout-demo] Brush group's flyout held open (right-click/press-hold demo)\n");

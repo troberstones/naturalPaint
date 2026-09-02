@@ -104,6 +104,7 @@ add_executable(naturalPaint
   app/selftest/Filters.cpp
   app/selftest/FiltersExt.cpp
   app/selftest/FloodFill.cpp
+  app/selftest/FloodFillOptions.cpp
   app/selftest/Fonts.cpp
   app/selftest/AutoLevels.cpp
   app/selftest/AtelierChrome.cpp

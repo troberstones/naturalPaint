@@ -30,6 +30,7 @@
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "core/Probe.hpp"
+#include "ops/FloodFill.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
 
@@ -576,6 +577,56 @@ struct AppState {
   // property of the hand, not of the picture), and it does not persist across
   // a restart because this build still has no preferences file to put it in.
   GradientToolState gradient;
+
+  // ------------------------------------------------------------------------
+  // The magic wand's and the paint bucket's flood-fill parameters (PRD D25,
+  // E3; `ops/FloodFill.hpp`).
+  // ------------------------------------------------------------------------
+  //
+  // **`FloodFillParams` itself, not a parallel struct that mirrors it.** The
+  // engine's block is already exactly the three settings a user has -- a
+  // tolerance, a ramp width and a reach -- so a UI-side copy would be three
+  // fields that must be kept equal to three other fields, and the failure mode
+  // of that is silent: a field added to `FloodFillParams` gets a default here
+  // that nobody notices is a *second* default, and the two disagree the day one
+  // of them changes. Holding the engine's own type means the call sites below
+  // are a copy, not a translation, and there is nothing to fall out of step.
+  //
+  // **Two blocks, not one shared block, and that is the decision this pair is
+  // making out loud.** `ops/FloodFill.hpp`'s opening argument is that the wand
+  // and the bucket are ONE ALGORITHM -- and that is an argument about the
+  // implementation, which these two fields do not touch: both still run the
+  // identical `floodFillSelection()`. What differs is the *value*, and the
+  // reasons to split it are:
+  //
+  //   * The options bar is per-tool by construction. Every other row in that
+  //     band belongs to the tool named at its left end, so one shared block
+  //     drawn under two different tool names would be a hidden coupling --
+  //     nudge TOLERANCE with the wand selected and the bucket's next click
+  //     silently changed too, with nothing on screen saying so. A control that
+  //     moves something the user cannot see is the defect class this file keeps
+  //     naming.
+  //   * They are different gestures with genuinely different tuning. A wand is
+  //     usually run loose and then refined (`core/SelectionRefine`'s grow and
+  //     shrink exist for exactly that); a bucket lays ink that cannot be
+  //     refined afterwards without an undo, so it is usually run tight.
+  //   * Photoshop, GIMP and Krita all keep them separate, and §1 of
+  //     `ops/FloodFill.hpp` already argues that this number should mean what a
+  //     user arriving from another editor believes it means.
+  //
+  // The cost of the split is the workflow "wand to see the region, bucket to
+  // fill it", where two tolerances give two regions. That is real, and it is
+  // the price paid; the mitigation is that both blocks start at the same
+  // defaults, so the two tools disagree only after the user has deliberately
+  // made them.
+  //
+  // Session state that survives a tool switch, and **not persisted** -- the
+  // same caveat and the same reason as `EyedropperState` and
+  // `GradientToolState` directly above: there is still no preferences file that
+  // is not the brush-library file, and freezing a positional key there for
+  // three floats is a format commitment bought for a convenience.
+  FloodFillParams magicWand;
+  FloodFillParams paintBucket;
 
   // `--gradient-demo drag`: a gradient drag HELD OPEN, the way
   // `openToolFlyoutDemo` holds a flyout open and `panelStackDemo` holds a
@@ -1344,5 +1395,98 @@ struct AppState {
   // a different string run to run rather than stable glyph-edge noise.
   bool screenshotCliActive = false;
 };
+
+// ---------------------------------------------------------------------------
+// The flood-fill tools' options: the tool -> parameter-block mapping, the
+// REACH vocabulary table, and the TOLERANCE unit conversion.
+// ---------------------------------------------------------------------------
+
+// **The one mapping from a tool to the block its click reads.**
+//
+// Two readers need it and they must never disagree: the options bar
+// (`ui/AtelierChrome.cpp`) edits a block, and the canvas click
+// (`ui/MacPaintUI.cpp`) consumes one. Spelling `st.magicWand` at one site and
+// `st.paintBucket` at the other is two copies of the same fact, and the failure
+// it produces is the worst kind this band can have -- a row of live controls
+// wired to a struct the click does not read, which looks exactly like a working
+// toolbar and changes nothing. `--selftest` walks every `Tool` value against
+// this function, so a third flood-fill tool cannot be added without either
+// appearing here or failing the suite.
+//
+// `nullptr` for every tool that does not flood -- which is also how the options
+// bar asks "does this tool get the row", so the row and the click are gated by
+// the identical predicate rather than by two lists.
+inline FloodFillParams* floodToolParamsFor(AppState& st, Tool tool) noexcept {
+  switch (tool) {
+    case Tool::MagicWand:
+      return &st.magicWand;
+    case Tool::PaintBucket:
+      return &st.paintBucket;
+    default:
+      return nullptr;
+  }
+}
+
+// The REACH combo's vocabulary, the same shape and for the same reason as
+// `kGradientKinds` (`app/GradientTool.hpp` § 4): one table where the engine's
+// enum and the toolbar's words meet, so a reach added to `FloodFillReach`
+// without a row here is caught by `--selftest` rather than by a combo that
+// silently offers one of two modes.
+//
+// The two vocabularies do NOT agree here, unlike the gradient kinds. The engine
+// says `Global`, which is the right word for a whole-document predicate pass;
+// the toolbar says **All Similar**, which is PRD D25's own phrase ("contiguous
+// fill with tolerance, and fill-all-similar") and the one a painter reads
+// without having to know that "global" is about traversal rather than about
+// colour.
+struct FloodReachRow {
+  FloodFillReach reach;
+  const char* label;
+  const char* tip;
+};
+inline constexpr size_t kFloodReachCount = 2;
+inline constexpr FloodReachRow kFloodReaches[kFloodReachCount] = {
+    {FloodFillReach::Contiguous, "Contiguous",
+     "Only the region connected to the texel you click, walked 4-connected -- so a diagonal "
+     "hairline stops the fill and an enclosed shape holds it in."},
+    {FloodFillReach::Global, "All Similar",
+     "Every texel in the layer within the tolerance, connected to your click or not. Costs a "
+     "pass over the whole document rather than over the region found."},
+};
+
+inline const char* floodReachLabel(FloodFillReach reach) noexcept {
+  for (size_t i = 0; i < kFloodReachCount; ++i)
+    if (kFloodReaches[i].reach == reach) return kFloodReaches[i].label;
+  // Unreachable while the table covers the enum, which `--selftest` asserts.
+  // Contiguous is the safe answer because it is the default the rest of this
+  // build assumes.
+  return kFloodReaches[0].label;
+}
+
+// TOLERANCE is shown in **Photoshop's units, 0..255**, and stored in the
+// engine's 0..1.
+//
+// This is a display conversion and not a second field, so it is two functions
+// rather than a second member: `ops/FloodFill.hpp` § 1's whole argument is that
+// this number should mean what a user coming from another editor already
+// believes it means, and `kFloodDefaultTolerance` is literally Photoshop's
+// default *converted* (32/255). Showing 0.125 would throw that away at the last
+// step, after the file went to the trouble of measuring distance in the domain
+// that makes 32 meaningful.
+//
+// Integer, because Photoshop's is: a slider that could sit at 32.4 offers a
+// precision the reference does not have and that no user wants, and the
+// round trip through an int is what makes the default reproduce EXACTLY --
+// `--selftest` asserts all 256 steps round-trip to themselves and that the
+// shipped default lands on 32.
+inline constexpr int kFloodToleranceUiMax = 255;
+inline int floodToleranceToUi(float tolerance) noexcept {
+  const int v = static_cast<int>(tolerance * 255.0f + 0.5f);
+  return v < 0 ? 0 : (v > kFloodToleranceUiMax ? kFloodToleranceUiMax : v);
+}
+inline float floodToleranceFromUi(int ui) noexcept {
+  const int v = ui < 0 ? 0 : (ui > kFloodToleranceUiMax ? kFloodToleranceUiMax : ui);
+  return static_cast<float>(v) / 255.0f;
+}
 
 }  // namespace np

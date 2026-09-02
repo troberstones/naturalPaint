@@ -986,78 +986,221 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     return;
   }
 
-  bandSeparator();
-  capsLabel("SIZE");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(140.0f);
-  // The value inside the slider is a live numeric, so it is monospace: it
-  // changes every frame of a drag, and a proportional face makes the track's
-  // text jump about as the digits change width.
-  pushAtelierMono();
-  // kBrushRadiusMin/Max (app/AppState.hpp) -- the one range for this field,
-  // also read by the BRUSH panel's Radius slider. See that constant's own
-  // comment: this bar used to hardcode 2..90, a narrower range than the
-  // panel's 1..200, so a value the panel set above 90 clamped back down the
-  // moment this widget was touched (reachability audit B3).
-  // `st.brush.radius` is gone (Part 5) -- read/written through
-  // `model.tip.diameterPx` now, via a local half-diameter view of it since
-  // `SliderFloat()` needs a `float*` it can write through directly every
-  // frame.
-  {
-    float sizeRadius = st.brush.model.tip.diameterPx / 2.0f;
-    ImGui::SliderFloat("##size", &sizeRadius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
-    st.brush.model.tip.diameterPx = sizeRadius * 2.0f;
+  // --- the magic wand's and the paint bucket's flood-fill options ---------
+  //
+  // **Six engine parameters across two tools, with zero visible controls until
+  // this row existed.** `ops/FloodFill.hpp` has shipped `tolerance`, `edgeBand`
+  // and `reach` fully implemented since it was written; both call sites in
+  // `ui/MacPaintUI.cpp` default-constructed a `FloodFillParams` and set at most
+  // one of them, from an undocumented Option-click. That is the same
+  // engine-capability-with-no-control gap the KIND combo three blocks up closed
+  // for the gradient, and this closes it for the other two tools.
+  //
+  // **Not an early return, unlike the three blocks above.** Eyedropper, Measure
+  // and Gradient each `return` before the band's trailing "what will this tool
+  // do to this layer" line; these two must not. That line is the one place in
+  // the chrome that answers the bucket's refusals (a Pigment layer, a locked
+  // layer), and its own comment records that the bucket used to be missing from
+  // it and read a grey "-> none" about a tool that was about to fill. So the
+  // row is drawn here, the four brush sliders below are skipped instead, and
+  // the trailing block is reached exactly as before.
+  //
+  // The gate is `floodToolParamsFor()` -- `app/AppState.hpp`'s single mapping
+  // from a tool to the block its click actually reads -- and not a
+  // `tool == MagicWand || tool == PaintBucket` spelled again here. Those two
+  // spellings agree until the day they do not, and the way they stop agreeing
+  // is a row of live controls bound to a struct the canvas never looks at: a
+  // toolbar that responds perfectly and changes nothing.
+  FloodFillParams* flood = floodToolParamsFor(st, st.brush.tool);
+  if (flood != nullptr) {
+    bandSeparator();
+    // Photoshop's units, 0..255, converted at the widget rather than stored --
+    // `floodToleranceToUi()` carries the argument for why the number a painter
+    // reads is not the number the engine holds. A local int, the same shape as
+    // the SIZE slider's local half-diameter view of `diameterPx` below:
+    // `SliderInt()` needs an `int*` it can write through every frame.
+    capsLabel("TOLERANCE");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    pushAtelierMono();
+    {
+      int toleranceUi = floodToleranceToUi(flood->tolerance);
+      // Written back only on an actual edit. An unconditional write-back would
+      // push the field through the integer grid on every frame this tool is
+      // selected, quantising a tolerance some other writer had set -- a widget
+      // that silently rounds a value it is not being used to change.
+      if (ImGui::SliderInt("##floodTolerance", &toleranceUi, 0, kFloodToleranceUiMax))
+        flood->tolerance = floodToleranceFromUi(toleranceUi);
+    }
+    popAtelierMono();
+    ImGui::SetItemTooltip(
+        "How far from the texel you click a texel may be and still be taken: the largest "
+        "per-channel difference, on the colours as DISPLAYED (0-255, Photoshop's units and "
+        "Photoshop's default of 32). Measured on screen values rather than on stored light, so "
+        "one number means the same thing in a sky and in a shadow.");
+
+    bandSeparator();
+    capsLabel("REACH");
+    ImGui::SameLine();
+    int reachIndex = 0;
+    for (size_t i = 0; i < kFloodReachCount; ++i)
+      if (kFloodReaches[i].reach == flood->reach) reachIndex = static_cast<int>(i);
+    // Width measured from the longest label rather than guessed, the same rule
+    // the eyedropper's two combos and the gradient's two state at their own
+    // call sites: a label added to `kFloodReaches` cannot silently start
+    // clipping.
+    //
+    // **Measured over the table, and INSIDE the mono push** -- on both counts
+    // unlike those four. Each of them measures one hand-copied string with the
+    // band's proportional face active and then draws it in the mono one, which
+    // is a different metric; that over- or under-reserves by a little and has
+    // been harmless only because their labels are short. This row's are not:
+    // measured the old way, "Contiguous" reserved less than it draws and the
+    // combo clipped it under its own arrow, which the first capture of the
+    // `wand_options` golden view showed directly. Walking the table also means
+    // the widest label wins whether or not whoever adds one notices that "All
+    // Similar" is a character longer than "Contiguous".
+    pushAtelierMono();
+    float widestReachLabel = 0.0f;
+    for (size_t i = 0; i < kFloodReachCount; ++i)
+      widestReachLabel = std::max(widestReachLabel, ImGui::CalcTextSize(kFloodReaches[i].label).x);
+    ImGui::SetNextItemWidth(widestReachLabel + ImGui::GetFrameHeight() + 16.0f);
+    if (ImGui::BeginCombo("##floodReach", kFloodReaches[reachIndex].label)) {
+      for (size_t i = 0; i < kFloodReachCount; ++i) {
+        if (ImGui::Selectable(kFloodReaches[i].label, static_cast<int>(i) == reachIndex))
+          flood->reach = kFloodReaches[i].reach;
+        // Two words cannot carry "4-connected, so a diagonal hairline holds it
+        // in" or "costs a pass over the whole document" -- the same argument
+        // the eyedropper's SOURCE rows make for carrying theirs.
+        ImGui::SetItemTooltip("%s", kFloodReaches[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // **A checkbox and not a slider, and the engine's own derivation is what
+    // settles that.** `edgeBand` is a float, so a slider is the obvious
+    // binding -- and it would be a track almost none of whose interior is
+    // defensible. `ops/FloodFill.hpp` § 2 derives `kFloodEdgeBandFloor` as the
+    // NARROWEST ramp that is not a lie (anything narrower cannot reach all 256
+    // coverage levels the store holds, whatever the picture contains), and
+    // `FloodFillParams` clamps the band to `tolerance` internally. So below the
+    // floor the control claims precision the pipeline provably cannot deliver,
+    // and above the tolerance it is clamped and moves no texel: at the shipped
+    // default that is a slider whose left half lies and whose right half is
+    // dead, which is the control `docs/ui.md` §4a forbids.
+    //
+    // What is left is two defensible values -- 0 and the floor -- and a
+    // two-value field deserves a two-state control. Photoshop ships this same
+    // field as an "Anti-alias" checkbox; that is corroboration here rather than
+    // the reason, because the reason is above and is this build's own.
+    //
+    // The LABEL is Photoshop's word rather than the implementation's. "Edge
+    // band" is what the code calls the ramp; ANTI-ALIAS is what the setting
+    // does, and `ops/FloodFill.hpp` § 2 already equates the two in its own
+    // prose ("`edgeBand == 0` ... is Photoshop's Anti-alias checkbox,
+    // unticked").
+    //
+    // The field stays a float and the checkbox is a VIEW of it -- read as
+    // `> 0`, written as one of the two values -- rather than `AppState` holding
+    // a bool the call site expands. A bool there would be a second spelling of
+    // the engine's own field, which is exactly the drift `app/AppState.hpp`
+    // holds `FloodFillParams` itself in order to avoid.
+    capsLabel("ANTI-ALIAS");
+    ImGui::SameLine();
+    {
+      bool antiAlias = flood->edgeBand > 0.0f;
+      if (ImGui::Checkbox("##floodAntiAlias", &antiAlias))
+        flood->edgeBand = antiAlias ? kFloodDefaultEdgeBand : 0.0f;
+    }
+    ImGui::SetItemTooltip(
+        "Soft edges. On, the outermost sliver of the accepted band is partially selected "
+        "instead of in-or-out; off, every texel is fully in or fully out. It never changes "
+        "WHICH texels are taken, only how much of the boundary ones -- so turning it off "
+        "cannot move the region you are about to select or fill.");
   }
-  popAtelierMono();
 
-  bandSeparator();
-  capsLabel("HARD");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(110.0f);
-  pushAtelierMono();
-  // kBrushHardnessMin/Max (app/AppState.hpp) -- the one range for this
-  // field, also read by the BRUSH panel's Hardness slider.
-  ImGui::SliderFloat("##hard", &st.brush.model.tip.hardness, kBrushHardnessMin, kBrushHardnessMax,
-                     "%.2f");
-  popAtelierMono();
+  // The brush's own four parameters, for the tools that actually carry a tip.
+  // Skipped for the two flood tools above, for the reason the eyedropper's and
+  // the gradient's early returns give: SIZE, HARD, LOAD and WET are read by no
+  // code path a click on the wand or the bucket can reach, and a live control
+  // over something the tool provably never reads is the same defect as a
+  // palette cell for a tool that does not exist.
+  if (flood == nullptr) {
+    bandSeparator();
+    capsLabel("SIZE");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140.0f);
+    // The value inside the slider is a live numeric, so it is monospace: it
+    // changes every frame of a drag, and a proportional face makes the track's
+    // text jump about as the digits change width.
+    pushAtelierMono();
+    // kBrushRadiusMin/Max (app/AppState.hpp) -- the one range for this field,
+    // also read by the BRUSH panel's Radius slider. See that constant's own
+    // comment: this bar used to hardcode 2..90, a narrower range than the
+    // panel's 1..200, so a value the panel set above 90 clamped back down the
+    // moment this widget was touched (reachability audit B3).
+    // `st.brush.radius` is gone (Part 5) -- read/written through
+    // `model.tip.diameterPx` now, via a local half-diameter view of it since
+    // `SliderFloat()` needs a `float*` it can write through directly every
+    // frame.
+    {
+      float sizeRadius = st.brush.model.tip.diameterPx / 2.0f;
+      ImGui::SliderFloat("##size", &sizeRadius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
+      st.brush.model.tip.diameterPx = sizeRadius * 2.0f;
+    }
+    popAtelierMono();
 
-  bandSeparator();
-  // kBrushLoadMin/Max (app/AppState.hpp) -- the same range drawBrushSection()
-  // uses, not a second one invented here: one field behind two widgets with
-  // two ranges is two clamps, and the narrower one silently truncates what
-  // the other set.
-  capsLabel("LOAD");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(110.0f);
-  pushAtelierMono();
-  ImGui::SliderFloat("##load", &st.brush.load, kBrushLoadMin, kBrushLoadMax, "%.2f");
-  popAtelierMono();
+    bandSeparator();
+    capsLabel("HARD");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    pushAtelierMono();
+    // kBrushHardnessMin/Max (app/AppState.hpp) -- the one range for this
+    // field, also read by the BRUSH panel's Hardness slider.
+    ImGui::SliderFloat("##hard", &st.brush.model.tip.hardness, kBrushHardnessMin, kBrushHardnessMax,
+                       "%.2f");
+    popAtelierMono();
 
-  bandSeparator();
-  capsLabel("WET");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(110.0f);
-  pushAtelierMono();
-  // **Same honest-refusal treatment MacPaintUI.cpp's drawBrushSection() gives
-  // this same field** (see that comment for the full argument):
-  // `st.brush.wetness` reaches `sim::PaintSim`'s `brushWater` only, through
-  // `applyToolToBrush()`, and that is called only when `strokeRouteFor()`
-  // answers `StrokeRoute::PaintSim` -- Water always, or Brush/DryBrush with
-  // no document layer to aim at. A locally-scoped `route`, not the band's own
-  // one three separators down: that one is computed after this slider and
-  // reusing it here would mean drawing WET's disabled state off a value this
-  // control has not reached yet on the very frame the tool or layer changes.
-  {
-    const OpenDocument* wetOd = st.documents.active();
-    const Layer* wetTarget = wetOd != nullptr ? activeLayerOf(*wetOd) : nullptr;
-    const bool wetHonoured = wetnessReachesSolver(strokeRouteFor(st.brush.tool, wetTarget));
-    ImGui::BeginDisabled(!wetHonoured);
-    // kBrushWetnessMin/Max (app/AppState.hpp) -- the one range for this
-    // field, also read by the BRUSH panel's Water slider.
-    ImGui::SliderFloat("##wet", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax, "%.2f");
-    ImGui::EndDisabled();
+    bandSeparator();
+    // kBrushLoadMin/Max (app/AppState.hpp) -- the same range drawBrushSection()
+    // uses, not a second one invented here: one field behind two widgets with
+    // two ranges is two clamps, and the narrower one silently truncates what
+    // the other set.
+    capsLabel("LOAD");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    pushAtelierMono();
+    ImGui::SliderFloat("##load", &st.brush.load, kBrushLoadMin, kBrushLoadMax, "%.2f");
+    popAtelierMono();
+
+    bandSeparator();
+    capsLabel("WET");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    pushAtelierMono();
+    // **Same honest-refusal treatment MacPaintUI.cpp's drawBrushSection() gives
+    // this same field** (see that comment for the full argument):
+    // `st.brush.wetness` reaches `sim::PaintSim`'s `brushWater` only, through
+    // `applyToolToBrush()`, and that is called only when `strokeRouteFor()`
+    // answers `StrokeRoute::PaintSim` -- Water always, or Brush/DryBrush with
+    // no document layer to aim at. A locally-scoped `route`, not the band's own
+    // one three separators down: that one is computed after this slider and
+    // reusing it here would mean drawing WET's disabled state off a value this
+    // control has not reached yet on the very frame the tool or layer changes.
+    {
+      const OpenDocument* wetOd = st.documents.active();
+      const Layer* wetTarget = wetOd != nullptr ? activeLayerOf(*wetOd) : nullptr;
+      const bool wetHonoured = wetnessReachesSolver(strokeRouteFor(st.brush.tool, wetTarget));
+      ImGui::BeginDisabled(!wetHonoured);
+      // kBrushWetnessMin/Max (app/AppState.hpp) -- the one range for this
+      // field, also read by the BRUSH panel's Water slider.
+      ImGui::SliderFloat("##wet", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax, "%.2f");
+      ImGui::EndDisabled();
+    }
+    popAtelierMono();
   }
-  popAtelierMono();
 
   // --- what the next gesture will actually hit -----------------------------
   //
