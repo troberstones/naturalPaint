@@ -221,6 +221,7 @@ add_executable(naturalPaint
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp
   app/selftest/ZoomAndSize.cpp
+  app/selftest/TextSerial.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -314,6 +315,7 @@ add_executable(naturalPaint
   io/SvgPath.cpp
   io/SvgStyle.cpp
   io/TileResidency.cpp
+  io/TextSerial.cpp
   ops/AutoLevels.cpp
   ops/Blur.cpp
   ops/ColorOps.cpp

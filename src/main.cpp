@@ -2370,6 +2370,11 @@ int main(int argc, char** argv) {
     // core/DirtyTiles' pass 1 could not see one before this phase.
     // Headless and GPU-free; writes no files.
     const bool vectorLayerOk = np::runVectorLayerTest();
+    // io/TextSerial -- the `np:text` carrier for a `LayerKind::Text` layer's
+    // content, io/PathSerial's sibling for a `TextContent` instead of a
+    // shape list. Headless and GPU-free, and NOT guarded on
+    // `shaperAvailable()`: a serialiser has no platform dependency.
+    const bool textSerialOk = np::runTextSerialTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -3218,7 +3223,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk;
+                    penToolOk && textSerialOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
