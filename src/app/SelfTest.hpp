@@ -5470,6 +5470,31 @@ bool runVectorLayerTest();
 // crashing. See app/selftest/TextShaper.cpp.
 bool runTextShaperTest();
 
+// core/TextContent (PLAN.md phase 14; PRD K1-K3): what a `LayerKind::Text`
+// layer holds, and `textContentToShapes()`'s claim that a Text layer is a
+// Vector layer that has not been typed out yet -- the conversion produces
+// exactly the `std::vector<VectorShape>` a Vector layer already holds, so
+// core/PathRaster, core/VectorRaster's cache, and the compositor all stay
+// untouched by this phase.
+//
+// **Guarded on `shaperAvailable()`, exactly like app/selftest/TextShaper.cpp**
+// -- every assertion here shapes real text, so a build with no CoreText
+// (text/StubShaper.cpp) sees a skipped section, not a red one.
+//
+// The load-bearing checks: a two-different-glyph string proves each glyph is
+// translated by its OWN `ShapedGlyph::{x, y}` rather than all landing at the
+// same spot; `origin` shifts the whole block's bounds by exactly that
+// amount; a hash table walks every field of `TextContent` one mutation at a
+// time, because a forgotten field means a user changes the font and keeps
+// seeing the old one; empty text and invalid UTF-8 both leave the shape
+// vector empty and are told apart ONLY by `errorOut`, which is the entire
+// reason that parameter exists; and a "p" reaches further down than a "b" at
+// the same origin -- not `bounds.maxY > 0`, which app/selftest/
+// TextShaper.cpp's own section 4 already found is true in both y
+// conventions and proves nothing. Headless, GPU-free, writes no files. See
+// app/selftest/TextContent.cpp.
+bool runTextContentTest();
+
 // io/TextSerial: the `np:text` carrier for a `LayerKind::Text` layer's
 // content (PLAN.md phase 14; PRD K1-K3, I10, I11). io/PathSerial's sibling
 // for a `TextContent` instead of a shape list -- same hex-string carrier,

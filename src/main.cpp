@@ -2379,6 +2379,14 @@ int main(int argc, char** argv) {
     // core/DirtyTiles' pass 1 could not see one before this phase.
     // Headless and GPU-free; writes no files.
     const bool vectorLayerOk = np::runVectorLayerTest();
+    // core/TextContent (PLAN.md phase 14): what a `LayerKind::Text` layer
+    // holds -- makeTextContent(), textContentToShapes() (shaping a block
+    // into per-glyph VectorShapes, translated by origin plus each glyph's
+    // own pen position), textContentBounds() and textContentDraws(). Also
+    // guarded on `shaperAvailable()`, for the same reason runTextShaperTest()
+    // is. Headless, GPU-free, writes no files.
+    const bool textContentOk = np::runTextContentTest();
+
     // io/TextSerial -- the `np:text` carrier for a `LayerKind::Text` layer's
     // content, io/PathSerial's sibling for a `TextContent` instead of a
     // shape list. Headless and GPU-free, and NOT guarded on
@@ -3197,7 +3205,7 @@ int main(int argc, char** argv) {
                     documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk &&
                     framePacingOk &&
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
-                    textShaperOk && vectorLayerOk &&
+                    textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
