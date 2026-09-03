@@ -1073,6 +1073,27 @@ bool runTransformSessionTest();
 // layer with no selection does not. Headless and GPU-free.
 bool runMoveToolTest();
 
+// app/FramePacing (T27, "throttle the UI unless drawing to 60fps, and when
+// nothing is happening, throttle it further"): the three-tier frame budget,
+// lifted out of `main.cpp`'s frame loop so it can be asserted at all --
+// `--selftest` never enters that loop, and pacing is a property of *when*
+// frames happen, which no golden reference can hold. Proves: a painting frame
+// is unthrottled at every idle age and with or without a live solver (the
+// frames BETWEEN dabs, where the pen is down and still, are the ones that
+// matter); a `--screenshot` run is exempt even though a settled golden view
+// is the most idle-looking state in the build, which is what keeps
+// `run_golden.sh`'s 1800 frames from taking minutes; the idle tier begins
+// exactly at `kFramePacingIdleAfterNs` and not a nanosecond earlier; one
+// frame of activity leaves it with no ramp; only the idle tier blocks on the
+// event queue, because a 60 fps cap that waited on events would be defeated
+// by the pointer's own sample rate; and the solver ceiling -- a live PaintSim
+// clamps the idle period to the longest frame `consumeFixedSteps()` can keep
+// real time at, asserted by running the real accumulator on both sides of it
+// and showing the debt is bounded at the ceiling and unbounded past it.
+// Headless and GPU-free -- the decision takes no clock and no SDL handle.
+// See app/selftest/FramePacing.cpp.
+bool runFramePacingTest();
+
 // app/GradientTool (`Tool::Gradient`, the palette's `G` cell): the gradient
 // tool's own three answers on top of ops/Gradient -- which ramp
 // (foreground-to-transparent, faded by the OPACITY stops so it cannot darken

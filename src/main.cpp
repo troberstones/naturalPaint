@@ -28,6 +28,7 @@
 #include "app/StrokePreview.hpp"
 #include "app/AppState.hpp"
 #include "app/FixedStep.hpp"
+#include "app/FramePacing.hpp"
 #include "app/Keymap.hpp"
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
@@ -1910,6 +1911,12 @@ int main(int argc, char** argv) {
     // move), the refusals, the arrow-key nudge, and the bit-identity of an
     // integer translate there and back. Headless and GPU-free.
     const bool moveToolOk = np::runMoveToolTest();
+    // app/FramePacing: T27's three frame-budget tiers, the --screenshot
+    // exemption the golden harness depends on, and the fixed-timestep ceiling
+    // that decides how slow the idle tier is allowed to be. Headless and
+    // GPU-free -- and the only place this decision is observable at all, since
+    // --selftest never reaches the frame loop it was lifted out of.
+    const bool framePacingOk = np::runFramePacingTest();
     // app/GradientTool: Tool::Gradient -- the ramp, the aim, the shared
     // degeneracy test, and that the options bar swatch and the committed
     // pixels are one computation rather than two that agree. Headless and
@@ -2705,7 +2712,7 @@ int main(int argc, char** argv) {
                     selectionBoundaryOk && floodFillOk && floodFillOptionsOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
-                    documentTransformOk && transformSessionOk && moveToolOk &&
+                    documentTransformOk && transformSessionOk && moveToolOk && framePacingOk &&
                     gradientToolOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
@@ -3268,13 +3275,77 @@ int main(int argc, char** argv) {
   uint64_t clickMarkerUntilNs = 0;
   ImVec2 clickMarkerPos{};
 
+  // T27 frame pacing (app/FramePacing.hpp). Two carried values: when the
+  // previous frame started, which is what a frame period is measured from,
+  // and when something last happened, which is what picks the tier.
+  //
+  // `pacingLastActivityNs` starts at "now" rather than at 0 so that the
+  // window's first two seconds are never spent in the idle tier -- the app is
+  // laying out docked panels, sizing the canvas and settling ImGui's first
+  // frames in exactly that window, and none of it is input-driven.
+  uint64_t pacingPrevFrameNs = 0;
+  uint64_t pacingLastActivityNs = SDL_GetTicksNS();
+  np::FramePacingTier pacingTier = np::FramePacingTier::Unthrottled;
+
   while (!st.quit) {
+    // The wait goes here: FIRST, before frameStartNs is sampled and before
+    // the event queue is drained. app/FramePacing.hpp §4 -- doing it after
+    // the poll would fold the wait into every app/Latency pen-to-photon
+    // sample and into --frame-trace's total_ms, so the throttle would be
+    // measuring itself.
+    {
+      np::FramePacingInputs pacing;
+      // AppState::screenshotCliActive is true for the whole life of a
+      // --screenshot run, which is every capture tools/golden/run_golden.sh
+      // takes. `st.requestScreenshot` is deliberately NOT tested alongside
+      // it: that flag is set from the action dispatch below and cleared by
+      // the capture further down the same iteration, so it is always false at
+      // this point, and an `|| st.requestScreenshot` here would be an inert
+      // term that reads like coverage. The in-session capture needs none
+      // anyway -- the menu click that asks for it is itself input, so that
+      // frame is at worst tier 2.
+      pacing.exempt = st.screenshotCliActive;
+      // Both, not either: paintingThisFrame covers the frames between dabs
+      // where the pen is down but has not moved (it is gated on the button
+      // state, not on a motion event), and strokeActive covers a stroke whose
+      // pointer has wandered off the canvas mid-gesture, which drops
+      // paintingThisFrame but must not stutter the stroke.
+      pacing.painting = st.paintingThisFrame || st.strokeActive;
+      pacing.simLive = sim != nullptr && !st.paused;
+      const uint64_t pacingNowNs = SDL_GetTicksNS();
+      pacing.nsSinceActivity =
+          pacingNowNs > pacingLastActivityNs ? pacingNowNs - pacingLastActivityNs : 0;
+      const np::FramePacingPlan plan = np::planFramePacing(pacing);
+      pacingTier = plan.tier;
+      const uint64_t waitNs = np::framePacingWaitNs(plan.periodNs, pacingPrevFrameNs, pacingNowNs);
+      if (waitNs > 0) {
+        if (plan.waitOnEvents) {
+          // A null event pointer leaves whatever arrived in the queue for the
+          // SDL_PollEvent drain below to handle normally; all this call is
+          // used for is the blocking. Rounded up so a sub-millisecond
+          // remainder cannot become a zero-timeout spin.
+          SDL_WaitEventTimeout(nullptr,
+                               static_cast<Sint32>((waitNs + 999'999ull) / 1'000'000ull));
+        } else {
+          SDL_DelayNS(waitNs);
+        }
+      }
+    }
     const uint64_t frameStartNs = SDL_GetTicksNS();
+    pacingPrevFrameNs = frameStartNs;
     st.lastInputEventNs = 0;
+    // Any SDL event at all, not just the pointer samples isPointerSampleEvent()
+    // admits: a keystroke, a wheel notch, a button release, a drop, a window
+    // resize are all "something is happening" for pacing purposes even though
+    // none of them is a pen-to-photon sample. st.lastInputEventNs deliberately
+    // stays the narrower signal it has always been -- app/Latency's meaning of
+    // it must not change.
+    bool pacingSawEvent = false;
     bool clickedThisFrame = false;
     bool releasedThisFrame = false;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+      pacingSawEvent = true;
       ImGui_ImplSDL3_ProcessEvent(&e);
       handlePenEvent(st, e);
       // e.common.timestamp is when SDL generated the event, not when we
@@ -3978,6 +4049,22 @@ int main(int argc, char** argv) {
     if (strokeWasActive && !st.strokeActive) latency.endStroke();
     strokeWasActive = st.strokeActive;
 
+    // T27: what "something is happening" means, evaluated here at the end of
+    // the frame because two of its three terms are only true after drawUI has
+    // run. Stamped with frameStartNs rather than the clock now, so the idle
+    // interval measures from the start of the last busy frame -- a long frame
+    // must not shorten the interval by its own duration.
+    //
+    // ImGui::IsAnyItemActive() is the term that keeps a *held* widget out of
+    // the idle tier: a grabbed slider, an open combo, a text field with the
+    // caret in it. None of those necessarily produces an event while the
+    // pointer is still, and all of them are live gestures. It is safe to call
+    // outside a NewFrame/EndFrame pair -- it reads the persisted ActiveId, not
+    // per-frame layout state -- and here it reports the frame just ended,
+    // which is precisely what a pacing decision wants.
+    if (pacingSawEvent || st.paintingThisFrame || st.strokeActive || ImGui::IsAnyItemActive())
+      pacingLastActivityNs = frameStartNs;
+
     // The recovery journal's timer (PLAN.md Phase 4 step 9, PRD O5, O6, O10).
     //
     // Here, at the very end of the frame, rather than beside the simulation:
@@ -4053,7 +4140,7 @@ int main(int argc, char** argv) {
                     "journal_ms=%.2f journal_write_ms=%.2f journal_docs=%zu loop_total_ms=%.2f "
                     "reason=%s dirty_tiles=%zu uploaded_texels=%llu upload_total_ms=%.2f "
                     "composite_ms=%.2f pack_ms=%.2f upload_calls_ms=%.2f pending_tiles=%zu "
-                    "deferred_updates=%llu\n",
+                    "deferred_updates=%llu pacing=%s\n",
                     static_cast<unsigned long long>(frameIndex - 1), clickedThisFrame ? " CLICK" : "",
                     releasedThisFrame ? " UP" : "",
                     static_cast<unsigned long long>(revisionBeforeUI),
@@ -4068,7 +4155,8 @@ int main(int argc, char** argv) {
                     static_cast<double>(journalEndNs - frameStartNs) / 1e6, fullReasonName, dirtyTiles,
                     static_cast<unsigned long long>(uploadedTexels), lastUploadMs, compositeMs, packMs,
                     lastUploadMs - compositeMs - packMs, pendingTiles,
-                    static_cast<unsigned long long>(deferredUpdates));
+                    static_cast<unsigned long long>(deferredUpdates),
+                    np::framePacingTierName(pacingTier));
     }
 
     wgpuTextureViewRelease(backbuffer);

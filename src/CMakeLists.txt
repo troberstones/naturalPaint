@@ -25,6 +25,7 @@ add_executable(naturalPaint
   app/TransformSession.cpp
   app/MoveTool.cpp
   app/ToolSwitch.cpp
+  app/FramePacing.cpp
   app/LayerPanel.cpp
   app/Latency.cpp
   app/Memory.cpp
@@ -195,6 +196,7 @@ add_executable(naturalPaint
   app/selftest/TransformCompositeSplit.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
+  app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MoveTool.cpp
   app/selftest/UserBrushLibrary.cpp
