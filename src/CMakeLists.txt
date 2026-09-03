@@ -18,6 +18,7 @@ add_executable(naturalPaint
   app/Keymap.cpp
   app/PenAxes.cpp
   app/PsdReport.cpp
+  app/SvgReport.cpp
   app/ProfileToggle.cpp
   app/Screenshot.cpp
   app/SelectionDrag.cpp
@@ -194,6 +195,7 @@ add_executable(naturalPaint
   app/selftest/GradientTool.cpp
   app/selftest/MoveTool.cpp
   app/selftest/PathRaster.cpp
+  app/selftest/SvgImport.cpp
   app/selftest/SvgPath.cpp
   app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
@@ -287,6 +289,7 @@ add_executable(naturalPaint
   io/PathSerial.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
+  io/SvgImport.cpp
   io/SvgPath.cpp
   io/SvgStyle.cpp
   io/TileResidency.cpp
@@ -494,6 +497,12 @@ target_compile_definitions(naturalPaint PRIVATE
   # -- "every name you use MUST exist in codepoints.json" checked against the
   # vendored file itself at test time, not merely at authoring time.
   NP_LUCIDE_CODEPOINTS_JSON="${CMAKE_SOURCE_DIR}/third_party/lucide/codepoints.json"
+  # app/selftest/SvgImport.cpp's two on-disk fixtures written to look like
+  # real Inkscape and Illustrator exporter output (tests/svg/*.svg) -- a
+  # source-tree-relative path, same convention as the four resources above,
+  # since this is a developer/CI-time test asset, never staged for a shipped
+  # build.
+  NP_SVG_TEST_DIR="${CMAKE_SOURCE_DIR}/tests/svg"
 )
 
 # Stages tier 2 of core/ResourcePaths.hpp's search order: a copy of the same

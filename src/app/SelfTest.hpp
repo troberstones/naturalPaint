@@ -5004,6 +5004,30 @@ bool runSvgPathTest();
 // 10 000-rule sheet -- never crashes or hangs. See app/selftest/SvgStyle.cpp.
 bool runSvgStyleTest();
 
+// io/SvgImport: the pugixml-backed walk that turns a real SVG document into
+// document-space `core::VectorShape`s -- the third leg alongside io/SvgPath
+// (grammars) and io/SvgStyle (the cascade), neither of which touches XML.
+// Proves: every supported element's geometry (rect/circle/ellipse/line/
+// polyline/polygon/path); the transform stack composing correctly through
+// nested `<g>`; `viewBox` scaling; `<use>` expansion (including its own
+// `transform` composing with its `x`/`y` offset, and both `href` and
+// `xlink:href`); the cascade reaching a real shape (a `<style>` rule beating
+// a presentation attribute, end to end, not just at the io/SvgStyle level);
+// colour parsing in every supported spelling (`#rgb`, `#rrggbb`, `rgb()`/
+// `rgba()` with integers and percentages, the CSS named colours,
+// `transparent`, `currentColor`); `fill="none"` genuinely distinct from a
+// real zero-alpha paint; `clip-path` attaching a clip, including the
+// multi-shape union case; every refused construct named (filters, patterns,
+// masks, `<switch>`, `<foreignObject>`, `<image>`, `<text>`, scripts,
+// animation elements, an external `<use>` reference, a `url(#id)` paint
+// pointing at a gradient); every security cap firing, including the
+// self-referencing `<use>` bomb returning promptly rather than hanging; and
+// two on-disk fixtures written to carry real Inkscape/Illustrator exporter
+// boilerplate (tests/svg/*.svg), each still producing the geometry and
+// paint their visible shapes call for. Headless, GPU-free; writes no files.
+// See app/selftest/SvgImport.cpp.
+bool runSvgImportTest();
+
 // `LayerKind::Vector` (PLAN.md phase 13): the layer that holds Bezier geometry
 // instead of pixels, its raster cache, and the materialised view through which
 // it reaches core/Composite without that file gaining a Vector branch.

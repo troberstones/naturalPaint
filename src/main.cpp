@@ -1840,6 +1840,13 @@ int main(int argc, char** argv) {
     // outranks a presentation attribute, whatever its own specificity.
     // Headless, GPU-free, writes no files, and depends on no XML parser.
     const bool svgStyleOk = np::runSvgStyleTest();
+    // io/SvgImport -- the pugixml-backed walk that turns a real SVG document
+    // into document-space core::VectorShapes, wiring io/SvgPath's grammars
+    // and io/SvgStyle's cascade to a real element tree: the transform stack,
+    // viewBox, <use> expansion, colour, clip-path, every refusal named, and
+    // the security caps against a hostile <use> bomb. Headless, GPU-free,
+    // writes no files.
+    const bool svgImportOk = np::runSvgImportTest();
     // LayerKind::Vector -- the geometry-holding layer, its raster cache, and
     // the materialised view it reaches core/Composite through. The
     // load-bearing check is that a pure geometry edit is VISIBLE:
@@ -2633,7 +2640,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
                     documentTransformOk && transformSessionOk && moveToolOk &&
-                    gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && vectorLayerOk &&
+                    gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk && vectorLayerOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
