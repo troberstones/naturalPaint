@@ -102,6 +102,7 @@ add_executable(naturalPaint
   app/selftest/ExportStates.cpp
   app/selftest/Eyedropper.cpp
   app/selftest/FieldAllocation.cpp
+  app/selftest/SolverFootprint.cpp
   app/selftest/FileDialog.cpp
   app/selftest/FilterMenu.cpp
   app/selftest/Filters.cpp

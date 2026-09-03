@@ -95,7 +95,7 @@ bool runStrokeSpeedTest(GpuContext& gpu, PaintSim& sim, const MixboxLut& lut);
 // so that configuration gets a separate, additive, separately-*printed*
 // 32 MB allowance rather than a raised single number. SelfTest.cpp carries
 // the full measurement and why PLAN.md step 6's lazy init cannot recover it.
-bool runIdleMemoryTest(size_t idleRssBytes);
+bool runIdleMemoryTest(size_t idleRssBytes, size_t idleFootprintBytes);
 
 // 1.4 / ADR-0001 bullets 2 and 3. Two things, both about the same invariant:
 // (a) right after PaintSim::init(), still the default Watercolour mode, the
@@ -107,6 +107,17 @@ bool runIdleMemoryTest(size_t idleRssBytes);
 // residency table. Mutates `sim`'s mode via setMode() and leaves it back in
 // Watercolour when done.
 bool runFieldAllocationTest(GpuContext& gpu, PaintSim& sim);
+
+// docs/testing-issues.md T6. The solver's field set priced in real bytes --
+// `PaintSim::fieldTextureBytes()` asked of the live textures -- held against
+// the `kFieldBytesPerTexel` / `kInkFieldBytesPerTexel` constants the budget
+// check in app/ZoomAndSize.hpp reasons from, so a field added to
+// allocFields() cannot leave the documented cost behind. Also asserts that
+// the solver's size follows the DOCUMENT and not the window, that no document
+// size a user can reach puts base+ink over the 512 MB budget, and that
+// app/Memory's two quantities (resident_size and phys_footprint) really are
+// two quantities. Mutates `sim`'s mode and leaves it in Watercolour.
+bool runSolverFootprintTest(GpuContext& gpu, PaintSim& sim);
 
 // Headless, GPU-free check on app/Keymap (Phase 2 step 15, PRD R7/R8).
 // Loads the real shipped keymaps/default.json and confirms it has no

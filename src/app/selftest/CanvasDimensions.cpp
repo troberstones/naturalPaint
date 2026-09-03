@@ -133,8 +133,10 @@ bool runCanvasDimensionsTest() {
   // `ui/MacPaintUI.cpp` hands the active document's size to TWO places that
   // take the same-shaped argument and pay wildly different prices for it: the
   // canvas quad (free) and `ensurePaintSim()` (`sim/PaintSim.cpp`'s
-  // `allocFields()`, 176 bytes per texel unconditionally and 272 once
-  // `allocInkFields()` has run). `paintSimDimensionsFor()` is the second one's
+  // `allocFields()`, 197 bytes per texel unconditionally and 293 once
+  // `allocInkFields()` has run -- both measured, and asserted against a live
+  // solver by `app/selftest/SolverFootprint.cpp`). `paintSimDimensionsFor()`
+  // is the second one's
   // guard, and these are the assertions that would catch someone later
   // "simplifying" the two call sites back into one -- which is exactly the
   // shape the canvasdim fix arrived in, and which turns the first brush-down
@@ -170,21 +172,21 @@ bool runCanvasDimensionsTest() {
           "back to the caller's own size");
 
     // An ordinary photo import -- the case a user reaches without trying. At
-    // 272 B/texel this is 3.3 GB, against the 285 MB this build has ever
+    // 293 B/texel this is 3.5 GB, against the 308 MB this build has ever
     // actually allocated.
     OpenDocument photo = makeBlankOpenDocument(4000, 3000, WorkingSpace{}, "photo");
     const CanvasDimensions ph = paintSimDimensionsFor(&photo, 1024, 1024);
     check(ph.w == 1024.0f && ph.h == 1024.0f,
-          "paintSimDimensionsFor: an ordinary 4000x3000 import (3.3 GB of solver "
+          "paintSimDimensionsFor: an ordinary 4000x3000 import (3.5 GB of solver "
           "fields) falls back rather than being allocated");
 
     // The preset maximum (app/DocumentPresets.hpp's kMaxDocumentPresetDimension
-    // = 32768). 1.07 Gtexel x 272 B = 292 GB. This is the assertion that says
+    // = 32768). 1.07 Gtexel x 293 B = 315 GB. This is the assertion that says
     // the guard is not decorative.
     OpenDocument huge = makeBlankOpenDocument(32768, 32768, WorkingSpace{}, "huge");
     const CanvasDimensions hu = paintSimDimensionsFor(&huge, 1024, 1024);
     check(hu.w == 1024.0f && hu.h == 1024.0f,
-          "paintSimDimensionsFor: the 32768x32768 preset maximum (292 GB of solver "
+          "paintSimDimensionsFor: the 32768x32768 preset maximum (315 GB of solver "
           "fields) falls back rather than being allocated");
 
     // And the two functions genuinely disagree on that document -- the display

@@ -20,8 +20,23 @@ constexpr WGPUTextureFormat kWaterFormat = WGPUTextureFormat_RGBA16Float;
 constexpr WGPUTextureFormat kPigmentFormat = WGPUTextureFormat_RGBA32Float;
 constexpr uint32_t kWorkgroup = 8;
 
+// Every format this file creates a texture in, not only the two the ping-pong
+// fields use. The extra two arms are for `fieldTextureBytes()`, which has to
+// price `canvas_`/`grayscale_`/`graded_` (RGBA8Unorm) and `selection_`
+// (R8Unorm) as well; the pigment-readback caller only ever passes a PingPong's
+// own format, so widening this cannot change what it computes.
+//
+// The default arm stays 8 rather than 0 so that an unpriced format shows up as
+// an arithmetic disagreement in app/selftest/SolverFootprint.cpp rather than
+// silently making a field free.
 uint32_t texelBytes(WGPUTextureFormat f) {
-  return f == WGPUTextureFormat_RGBA32Float ? 16u : 8u;
+  switch (f) {
+    case WGPUTextureFormat_RGBA32Float: return 16u;
+    case WGPUTextureFormat_RGBA16Float: return 8u;
+    case WGPUTextureFormat_RGBA8Unorm:  return 4u;
+    case WGPUTextureFormat_R8Unorm:     return 1u;
+    default:                            return 8u;
+  }
 }
 
 uint32_t groups(uint32_t n) { return (n + kWorkgroup - 1) / kWorkgroup; }
@@ -165,6 +180,28 @@ bool PaintSim::init(GpuContext& gpu, uint32_t width, uint32_t height,
   if (!buildPipelines(gpu)) return false;
   allocFields(gpu, width, height);
   return true;
+}
+
+// PaintSim.hpp's doc comment has the reasoning; the short version is that this
+// asks the live textures what they are rather than re-deriving them, and that
+// it deliberately iterates the SAME two initialiser lists `releaseFields()`
+// immediately below does. Keep the two functions adjacent and keep the lists
+// identical: a field added to one and not the other either leaks (if it misses
+// the release) or is priced at zero (if it misses this), and the second of
+// those is how the documented per-texel cost drifted 21 B/texel low.
+uint64_t PaintSim::fieldTextureBytes() const {
+  uint64_t total = 0;
+  const auto add = [&total](WGPUTexture t) {
+    if (t == nullptr) return;
+    total += static_cast<uint64_t>(texelBytes(wgpuTextureGetFormat(t))) *
+             wgpuTextureGetWidth(t) * wgpuTextureGetHeight(t);
+  };
+  for (const PingPong* f : {&water_, &pigC_, &pigR_, &depC_, &depR_, &sat_, &aux_})
+    for (WGPUTexture t : f->tex) add(t);
+  for (const PingPong* f : {&lbmA_, &lbmB_, &lbmC_, &brushVol_, &brushC_, &brushR_})
+    for (WGPUTexture t : f->tex) add(t);
+  for (WGPUTexture t : {paper_, selection_, canvas_, grayscale_, graded_}) add(t);
+  return total;
 }
 
 void PaintSim::releaseFields() {

@@ -304,134 +304,206 @@ solver — exactly what each of those tools' own headers argues against.
 
 ---
 
-## T6 — 500+ MB of memory at startup, against a documented <100 MB · open
+## T6 — 500+ MB of memory at startup, against a documented <100 MB · RESOLVED as documentation
 
 **Reported.** naturalPaint shows 500+ MB of RAM on open; it was supposed to
 be under 100 MB.
 
-**Verified — both figures are right, and they are measuring different
-processes.** Measured on this machine, 2026-08-26, idle, **no document
-opened**:
+**Answered, 2026-09-02.** Both figures are right, they measure different
+quantities, and **384 MiB of the difference is allocated by the graphics
+driver, not by this build.** Nothing in naturalPaint's own allocation can be
+reduced to move it; what was missing was anything in the application saying
+so, and that has been fixed rather than the number. The measurement that
+settles it — `MTLDevice.currentAllocatedSize`, the sum of every Metal resource
+this build, wgpu-native, Dear ImGui and SDL have between them created — reads
+**34.8 MB at the instant the footprint jumps by 414 MB.**
 
-| Measurement | Value |
+The corrections and the new coverage are in
+`app/Memory.hpp`, `app/selftest/IdleMemory.cpp`,
+`app/selftest/SolverFootprint.cpp` (new), `sim/PaintSim` and the status bar's
+tooltip. The rest of this entry is the measurement.
+
+### 1. Re-measured, 2026-09-02 (the 2026-08-26 figures had not moved)
+
+Idle windowed launch, no document, sampled after 10 s:
+
+| Measurement | 2026-08-26 | 2026-09-02 |
+|---|---|---|
+| `--selftest`'s `idle RSS` assertion | 92.6 MB | **91.2 MB** |
+| GUI process, `ps` RSS | 155.5 MB | **143.5 MB** |
+| GUI process, `footprint` total | 577 MB | **551 MB** |
+| of which `IOAccelerator (graphics)` | 404 MB | **401 MB** |
+| `vmmap` regions of exactly 8192 K | 48 | **48** |
+
+Unchanged across a week and several waves, including
+`docs/architecture-review.md`'s P0-1/P0-2. The 48 × 8 MiB signature is exact
+and reproducible.
+
+### 2. Where it happens: the first command buffer to execute
+
+A temporary `phys_footprint` probe at every startup milestone and at eight
+points inside each of the first three frames (reverted; the tree is clean):
+
+```
+after RequestDevice        rss= 87.5 MB  footprint= 35.1 MB
+after configureSurface     rss= 87.6 MB  footprint= 35.1 MB
+after ImGui_ImplWGPU_Init  rss=102.8 MB  footprint= 44.6 MB
+f0 pre-drawUI              rss=113.4 MB  footprint= 48.3 MB   metal= 1.0 MB
+f0 pre-Submit              rss=137.1 MB  footprint= 68.6 MB   metal=34.8 MB
+after frame 1 (present)    rss=137.4 MB  footprint= 84.8 MB   metal=34.8 MB
+f1 pre-NewFrameWGPU        rss=138.0 MB  footprint=498.7 MB   metal=34.8 MB   <-- +414 MB
+after frame 12             rss=139.9 MB  footprint=549.7 MB
+after frame 120            rss=136.5 MB  footprint=548.1 MB
+```
+
+It is **one step, in the gap between `wgpuSurfacePresent()` of frame 1 and the
+top of frame 2** — a gap that contains no application allocation at all. RSS
+moves 0.6 MB across it. So it is the GPU asynchronously executing the first
+submitted command buffer, and the cost is charged to our ledger when it does.
+
+Device creation is not it (`RequestDevice` costs 1.1 MB). Surface
+configuration is not it. ImGui's backend is not it.
+
+### 3. What it is not: nobody allocated it
+
+`metal=` above is `[MTLDevice currentAllocatedSize]`, read through the
+`CAMetalLayer`'s device — every texture, buffer and heap any code in this
+process has asked Metal for. **It is 34.8 MB when the footprint jumps by
+414 MB, and never exceeds 57 MB at idle.**
+
+The probe is not blind; it was validated against a known allocation before it
+was trusted. Constructing `PaintSim` at 1024×1024 moves it by **+198.13 MiB**,
+and `allocInkFields()` by **+96.00 MiB exactly** — the right order of
+magnitude, at the right moment, from the right call.
+
+So the 384 MiB is not a texture, not a buffer, not the swapchain, not
+wgpu-native suballocating Metal resources (those would count), and not
+naturalPaint's. It is the AGX driver's own arena, mapped `SM=SHM` into our
+address space and charged to `phys_footprint`.
+
+### 4. It is invariant to everything we control
+
+| Varied | Result |
 |---|---|
-| `--selftest`'s own `idle RSS` assertion | **92.6 MB** (ceiling 80 MB core + 32 MB OpenImageIO allowance) |
-| GUI process, `ps` RSS | **155.5 MB** |
-| GUI process, `footprint` (what Activity Monitor shows) | **577 MB** |
+| Window 400×300 vs 1480×940 vs 2400×1500 (36× area) | **48 regions** in all three |
+| `--no-document` | **48** |
+| `--pen-demo` | **48** |
+| `ImGui_ImplWGPU` `NumFramesInFlight` = 1 / 3 / 6 | **48 / 48 / 39** |
+| `--selftest` (no ImGui frame at all) | **48** |
 
-`footprint -p` breaks the 577 MB down, and it is not the heap:
+Window area changes the footprint by ~42 MB — and that ~42 MB *does* show up
+in `currentAllocatedSize` (16.4 MB at 400×300, 57.0 MB at 2400×1500), which is
+the swapchain behaving exactly as it should. The 384 MiB does not move.
 
-| Category | Dirty |
-|---|---|
-| IOAccelerator (graphics) | **404 MB** |
-| IOSurface | 46 MB |
-| IOAccelerator | 32 MB |
-| MALLOC_SMALL + MEDIUM + LARGE + TINY | 74 MB combined |
+The last row is the important one. **`--selftest` is not the "headless" process
+this entry used to call it.** `main()` gives it a real `SDL_Window` and a real
+WebGPU adapter — it prints `[gpu] adapter: Apple M4 Max` — and it carries the
+same 48 regions. It simply never runs an ImGui frame. The earlier text
+("no window, no GPU adapter and no ImGui") was wrong about the mechanism while
+being right that the assertion does not cover the windowed application.
 
-**482 MB of the 577 MB is GPU allocation.** So the "<100 MB" figure was never
-violated — it is asserted by a **headless** selftest section that has no
-window, no GPU adapter and no ImGui, and it therefore **has never covered the
-windowed application at all**. This is the pattern
-`docs/reachability-audit.md` already names: a green suite describing a
-property nobody checked.
+### 5. Why the two numbers could never agree, and what now says so
 
-**Work.** Give the windowed process a measured budget of its own, the way
-`--selftest` has one for the headless path, so this cannot drift again
-unnoticed.
+`app::currentResidentBytes()` is `MACH_TASK_BASIC_INFO`'s `resident_size`.
+Activity Monitor shows `phys_footprint`. **Neither contains the other:**
 
-**Reconciled 2026-09-02 — the work above is still not done, and one figure in
-this entry needs restating so it is not misread.** `--selftest` prints
-`[measured] resident 357.0 MB of a 512 MB budget`
-(`app/selftest/AtelierChrome.cpp:321`, PRD L7). That number is easy to mistake
-for an answer to this entry and is not one:
+* `phys_footprint` adds the driver's SM=SHM regions, which are not this task's
+  resident pages;
+* `phys_footprint` omits clean file-backed pages, which `resident_size`
+  counts.
 
-* It is the **headless selftest process**, the same process this entry already
-  showed has no window, no GPU adapter and no ImGui. The 482 MB of GPU
-  allocation that *is* the reported symptom cannot appear in it.
-* The 512 MB is the **status bar's** design budget — what PRD L7 puts in front
-  of the user — not a ceiling anything fails against. `mem.bytes > 0` is the
-  only assertion on the numerator; the printed megabytes are asserted by
-  nothing.
-* It drifts between runs of the same binary (357.0 MB here, 349.5 MB in an
-  earlier run) — this suite's documented RSS noise class.
+Both directions are observable in one run:
 
-So the gap this entry names is unchanged: **there is still no measured budget
-covering the windowed process**, and the 577 MB `footprint` figure has not been
-re-measured since 2026-08-26, which now predates
-`docs/architecture-review.md`'s P0-1/P0-2. A re-measure is cheap and should
-come before any work, since it may well have moved.
+```
+idle capture (main.cpp, before the GPU has executed anything):
+    resident  91.2 MB   >   footprint  38.5 MB
+the same process after a WebGPU submission:
+    resident 143.7 MB   <   footprint 622.3 MB
+```
 
-**Where the 482 MB comes from is OPEN, and the obvious answer is wrong.** This
-entry originally ended "see T7, which is where it comes from". It is not.
-`sim::PaintSim` is never constructed at idle — proved by a temporary
-`fprintf` at the top of `PaintSim::init()`, which fires once under
-`--diag 1` (`[PROBE] PaintSim::init 1024x1024`) and **zero** times across ten
-seconds of idle GUI, while `footprint` on that same process still reads
-404 MB IOAccelerator. See T7 for why the solver was never the suspect it
-looked like.
+The first line is the OpenImageIO dylib chain — the same 29.5 MB of clean
+mapped pages that forced `--selftest`'s idle ceiling up by 32 MB, and which
+`phys_footprint` does not charge us for at all.
 
-### Narrowed 2026-08-27 — three measurements, and two of the old leads are dead
+**Work done.**
 
-**1. It does not scale with the window.** A temporary `NP_PROBE_WINDOW` hook
-on `SDL_CreateWindow` (reverted; the tree is clean) ran the GUI at three
-sizes, each sampled after 9 s idle:
+* `app::currentFootprintBytes()` (`app/Memory.*`), `TASK_VM_INFO` /
+  `phys_footprint`, with the whole of the above in its header comment.
+* `--selftest` now prints `idle phys_footprint` on the line after `idle RSS`,
+  **printed and not asserted** — there is no ceiling it could be held against
+  that would mean anything. The 80 + 32 MB RSS ceiling is unchanged; what it
+  gained is a comment saying what it structurally cannot see.
+* The status bar's readout keeps its glyphs and gains a tooltip naming both
+  numbers, computing both live, and saying where the difference goes. A user
+  who sees `145 MB / 512 MB` here and `551 MB` in Activity Monitor now has the
+  reconciliation under the cursor.
 
-| Window | Device pixels @2× | IOAccelerator (graphics) |
+### 6. The status-bar note in the old entry was wrong
+
+This entry previously said the status bar's `402 MB / 512 MB` was "the
+**History** byte budget (`ui/AtelierChrome.cpp:828`), not memory in use …
+Worth relabelling". It is not. `atelierResident()`
+(`ui/AtelierChrome.cpp:109`) returns `currentResidentBytes()` against
+`kResidentBudgetBytes` — it is a real RAM meter, of real RSS, and line 828 is
+in the gradient tool's ramp swatch. The readout is honest about what it
+measures. Its actual defect was the one now fixed: it measures a different
+quantity from the one the user is comparing it against, and never said so.
+
+### 7. The solver's cost was documented 12% low
+
+Chasing the above turned up a real arithmetic error in the code, of exactly
+the kind T7's postmortem warns about. `app/ZoomAndSize.hpp`'s budget rationale
+said the solver costs **176 B/texel, 272 with ink**. Measured:
+
+| | documented | measured |
 |---|---|---|
-| 640×480 | 1280×960 | **399 MB** |
-| 1480×940 (shipping) | 2960×1880 | **401 MB** |
-| 2400×1500 | 4800×3000 | **404 MB** |
+| base field set | 176 B/texel | **197 B/texel** (198.13 MiB at 1024², of which 197.00 MiB texture) |
+| ink increment | 96 B/texel | **96 B/texel** exactly |
+| worst case | 272 B/texel | **293 B/texel** |
 
-An 11.7× change in area moves the figure by **1.25%**. A triple-buffered
-swapchain across that range would differ by ~158 MB on its own, so **the
-surface is not in this number** — the HIGH_PIXEL_DENSITY-surface lead is
-refuted, not merely unproven.
+The 176 counted `allocFields()`'s seven ping-pong fields and omitted the five
+singles allocated in the same function — `paper_` 8, `selection_` 1,
+`canvas_` 4, `grayscale_` 4, `graded_` 4 — another 21 B/texel. The "3.3 GB"
+and "292 GB" figures in `app/selftest/CanvasDimensions.cpp`'s assertion prose
+were 12% low for the same reason; both are corrected.
 
-**2. It is one-shot at startup, not accumulation.** Sampled at ~1, 2, 4, 8
-and 16 s in a single run: 407, 404, 404, 406, 404 MB. Flat from the first
-second. That also disposes of the `ui/CanvasQuad` per-frame-churn lead —
-there is nothing left for churn to explain.
+**This is now asserted rather than written down.** `PaintSim::
+fieldTextureBytes()` interrogates the live textures (walking the same lists
+`releaseFields()` walks, which already has a forcing function keeping it
+complete), `PaintSim::kFieldBytesPerTexel` / `kInkFieldBytesPerTexel` are what
+the budget reasons from, and `app/selftest/SolverFootprint.cpp` holds one
+against the other. A field added to `allocFields()` now fails the suite
+instead of silently shifting the documented cost.
 
-**3. It is 48 identical 8 MiB allocations.** `vmmap`, resident-size histogram
-of the 154 `IOAccelerator (graphics)` regions:
+### 8. And the solver was never sized to the window
 
-| Count | Size | Subtotal |
-|---|---|---|
-| **48** | **8192 K** | **384 MiB** |
-| 1 | 8224 K | 8 MiB |
-| 48 | 32 K | 1.5 MiB |
-| 23 | 16 K | 0.4 MiB |
-| rest | ≤2 MiB each | ~10 MiB |
+The hypothesis that opened this round — a solver that grows when the user
+maximises — is **false, and was already engineered against**.
+`ui/MacPaintUI.cpp:14364` sizes the first (and only) construction from
+`paintSimDimensionsFor()`, which takes the *document* and a caller fallback
+and has no window, display, zoom or DPI parameter at all; it caps at
+`kPaintSimMaxTexels = 1024²`, the status-quo size. `app/ZoomAndSize.hpp`
+§4 argues the whole design at length. `SolverFootprint.cpp` adds the assertion
+that was missing: an in-budget document sizes the solver identically whatever
+fallback it is handed, and no document size a user can reach — up to the
+32768² preset maximum — puts base + ink over the 512 MB budget.
 
-**95% of the total is 48 allocations of exactly 8 MiB**, all
-`SM=SHM PURGE=N`, all non-volatile.
+### 9. Still open, and deliberately not concluded
 
-**What this rules out on our side.** 8 MiB is exactly a 1024×1024
-RGBA16Float texture, which is suggestive — but the interactive path has only
-four `wgpuDeviceCreateTexture` call sites outside `sim/PaintSim` (proven
-unconstructed, above), and none can produce 48 of them:
+**Whether the 384 MiB can be influenced at all.** Everything measured says no:
+it is invariant to window size, document, frames-in-flight and the presence of
+an ImGui frame, and it does not appear in the Metal allocation the process
+made. But "an AGX per-process GPU arena" is a *story*, not a measurement — it
+is the same shape of plausible-sounding explanation that made T7 wrong, and
+the honest statement is the negative one: **nothing this build allocates
+accounts for it, and no change to what this build allocates moves it.**
+Anyone wanting more should instrument below the wgpu boundary (Metal System
+Trace, or `MTLHeap`-level accounting), not reason from here.
 
-| Site | Size | Ceiling |
-|---|---|---|
-| `ui/DocumentTexture.cpp:98` "document composite" | RGBA16F, doc-sized | **`kVisibleDocumentCap` = 2** slots (`DocumentTexture.hpp:452`) |
-| `ui/NaturalPaintUI.cpp:114` tile mip chain | `kTileSize` = **128** → 128 KiB | wrong order of magnitude |
-| `ui/MacPaintUI.cpp:2890`, `:2954` brush previews | RGBA8, `app/DabPreview` constants | kilobytes |
-| `color/LutBake.cpp:59` 3-D LUT | size³ RGBA16F | ~2 MiB at 64³ |
-
-So 384 MiB in 8 MiB units is **not accounted for by naturalPaint's own
-textures**, and the remaining suspect is wgpu-native's / Metal's allocator
-behaviour.
-
-**Deliberately NOT concluded.** "8 MiB is a common suballocator block size"
-is a plausible story and it is *exactly* the kind of header-derived
-arithmetic that made T7 wrong. The next person should prove it — instrument
-allocation at the wgpu boundary, or vary our own texture demand and see
-whether the count of 8 MiB regions moves — rather than inherit this
-paragraph as a finding.
-
-**Note the third number.** The status bar's "402 MB / 512 MB" is the
-**History** byte budget (`ui/AtelierChrome.cpp:828`), not memory in use. It
-is easy to read as a RAM meter and it is not one. Worth relabelling.
+**PRD A1's "<100 MB" is a heap figure and should say so.** This entry has now
+made that explicit in three places in the code; the PRD itself still reads as
+though it bounds what the user sees. Left alone rather than edited from this
+track.
 
 ---
 
@@ -480,7 +552,12 @@ fluid engine is not stranded — but the *default* brush on the *default*
 document does not touch it, which is the same canvas-versus-document split
 **T5** is about, seen from the routing table.
 
-**No work.** The 482 MB question moves to **T6**, where it started.
+**No work.** The 482 MB question moved to **T6**, where it started, and was
+answered there on 2026-09-02: it is the graphics driver's, not ours. This
+entry's header arithmetic was wrong about *whether the object existed*; it was
+also, as it turns out, wrong about *what the fields cost* — 13 ping-pongs at
+1024x1024 is not 248 MiB and the real base field set is 197 B/texel, measured.
+Both errors have the same cause and T6 §7 has the corrected arithmetic.
 
 ---
 

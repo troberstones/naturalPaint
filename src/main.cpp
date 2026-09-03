@@ -1674,6 +1674,13 @@ int main(int argc, char** argv) {
   // rather than one taken after a sim it constructs eagerly for its own
   // purposes.
   const size_t idleRssBytes = np::currentResidentBytes();
+  // Captured in the same breath as the RSS above and for the same reason --
+  // this is the last moment at which "idle" means anything. It is the number
+  // Activity Monitor would show for this process right now, and
+  // docs/testing-issues.md T6 exists because it and `idleRssBytes` differ by
+  // roughly a factor of four with nothing in the build saying so.
+  // app/selftest/IdleMemory.cpp prints it beside the assertion.
+  const size_t idleFootprintBytes = np::currentFootprintBytes();
 
   // Null until something actually needs the solver. --selftest/--diag/
   // --modes exist specifically to exercise it, so they construct it via
@@ -1712,6 +1719,15 @@ int main(int argc, char** argv) {
     // and confirms each outgoing medium's fields actually get freed, not
     // just the incoming one's allocated.
     const bool fieldAllocOk = np::runFieldAllocationTest(gpu, *s);
+    // docs/testing-issues.md T6: the same solver, priced in bytes. Placed
+    // here, and the ordering is load-bearing in both directions -- the
+    // section above must run first because its own premise is a sim that has
+    // never changed mode, and this one must run before any later section
+    // resizes the solver, because it reads the live field textures and prices
+    // them against `sim->width()`/`height()`. The section above leaves the
+    // mode back in Watercolour, which is what this one's first assertion
+    // checks rather than assumes.
+    const bool solverFootprintOk = np::runSolverFootprintTest(gpu, *s);
     const bool pigmentOk = np::runSelfTest(gpu, *s, lut,
                                     selfTestOut ? selfTestOut : "selftest.png");
     // Headless, GPU-free — doesn't need sim/gpu at all, but runs from the
@@ -2704,7 +2720,7 @@ int main(int argc, char** argv) {
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
     // any other) ever constructed a PaintSim.
-    const bool idleMemOk = np::runIdleMemoryTest(idleRssBytes);
+    const bool idleMemOk = np::runIdleMemoryTest(idleRssBytes, idleFootprintBytes);
     // track8/zoom (PRD Q1, R5): the Zoom tool's click/Alt-click/scrubby-drag
     // anchor math and the brush-size gesture/bracket-key range, both as pure
     // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
@@ -2805,7 +2821,7 @@ int main(int argc, char** argv) {
     // a parked backlog, prompt catch-up on scroll-into-view, and a printed
     // (not asserted) per-tile cost measurement.
     const bool viewportDeferredCompositeOk = np::runViewportDeferredCompositeTest(gpu);
-    const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
+    const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk && toolSurfaceOk &&

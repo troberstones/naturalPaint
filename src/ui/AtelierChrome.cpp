@@ -1428,6 +1428,29 @@ void drawAtelierStatusBar(AppState& st, const AtelierBands& bands, uint32_t canv
   if (over) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
   ImGui::Text("%s / %s", formatMiB(mem.bytes).c_str(), formatMiB(mem.budget).c_str());
   if (over) ImGui::PopStyleColor();
+  // docs/testing-issues.md T6, and the one place a user will actually look
+  // for the answer. This readout is honest -- it is the real `resident_size`
+  // against the design's 512 MB -- but Activity Monitor's "Memory" column is
+  // `phys_footprint`, a different quantity, and on this application it reads
+  // about four times higher. A user who sees "145 MB / 512 MB" here and
+  // "551 MB" there has no way to reconcile them, and re-reports it; that is
+  // literally how T6 was filed.
+  //
+  // A tooltip rather than a longer label, deliberately: the band is dense,
+  // the visible glyphs stay exactly as `docs/ui.md` section 2 draws them, and
+  // both numbers are computed here rather than one of them being narrated
+  // from a comment that could go stale.
+  ImGui::SetItemTooltip(
+      "Resident memory: %s of a %s budget.\n\n"
+      "Activity Monitor will show a larger number (%s right now). It reports "
+      "phys_footprint, which also charges this process for memory the graphics "
+      "driver maps in on its behalf -- around 400 MB of it, allocated once when "
+      "the GPU starts work and independent of window size, document size and "
+      "whether the fluid solver exists.\n\n"
+      "This meter tracks the memory naturalPaint itself holds, which is the part "
+      "the budget is about.",
+      formatMiB(mem.bytes).c_str(), formatMiB(mem.budget).c_str(),
+      formatMiB(currentFootprintBytes()).c_str());
 
   const std::string markers = atelierViewStateMarkers(st.view);
   if (!markers.empty()) {
