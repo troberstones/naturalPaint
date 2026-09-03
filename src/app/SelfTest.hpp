@@ -52,6 +52,25 @@ bool runAccumulatorTest();
 // encode(decode(x)) == x within float tolerance.
 bool runColorSpaceTest();
 
+// Headless, GPU-free check on color/Munsell -- the geometry behind the COLOR
+// panel's third picker (docs/munsell-picker.md). One claim carries the
+// section: **a page row has one relative luminance and it does not move when
+// the hue changes.** Munsell value is defined by ASTM D1535 as a quintic in
+// the luminance factor and nothing else, so that claim is an equality rather
+// than a tolerance, and it is measured off the float triple a swatch would
+// actually receive.
+//
+// Around it: the D1535 round trip and its published mid-scale value (19.28%
+// at V=5, not the pre-D1535 19.77 -- a round trip cannot catch that, since a
+// round trip only asks the function to agree with itself); the RGB->XYZ
+// matrix color/Munsell *derives* from color/Space.hpp's primaries, checked
+// against the published sRGB constants rather than against itself; that
+// out-of-gamut cells answer a void rather than a clamped triple, because
+// clamping a channel would change the luminance the section exists to pin;
+// and that the maximum in-gamut chroma really is a boundary rather than
+// merely some in-gamut number.
+bool runMunsellTest();
+
 // Headless, GPU-free check on color/Shaper (Phase 3 step 1, ADR-0004). This
 // is the *grading* transfer function -- the shaper's log domain curves are
 // authored in, per ADR-0004's "format-level commitment" callout -- as

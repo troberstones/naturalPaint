@@ -32,6 +32,8 @@
 #include "app/Keymap.hpp"
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
+#include "app/MunsellSelection.hpp"
+#include "color/Munsell.hpp"
 #include "app/OpenAnyFile.hpp"
 #include "app/PenAxes.hpp"
 #include "app/Screenshot.hpp"
@@ -1185,6 +1187,12 @@ int main(int argc, char** argv) {
   bool maskDemo = false;
   bool maskDemoTarget = true;
   bool overRangeDemo = false;
+  bool munsellDemo = false;
+  int munsellDemoSteps = 9;
+  float munsellDemoHue = 252.0f;
+  int munsellDemoRow = 6;
+  int munsellDemoCol = 8;
+  bool munsellDemoPerRow = false;
   bool flyoutDemo = false;
   // --no-document: see the argument-parsing block, and the "A session always
   // has a document" comment this flag is the deliberate exception to.
@@ -1583,6 +1591,51 @@ int main(int argc, char** argv) {
       // panel is what every other view of the app already shows, so a second
       // spelling would only photograph the status quo.
       overRangeDemo = true;
+    } else if (a == "--munsell-demo") {
+      // docs/munsell-picker.md. The COLOR panel's third mode is a *state*, not
+      // a document or a tool: nothing about a demo document or a stroke puts
+      // the panel into it, so without this flag the whole branch is
+      // unreachable from the command line and therefore invisible to
+      // `--screenshot` and to tools/golden. That is the specific blind spot
+      // the golden harness has -- states no launch flag can reach -- and it
+      // costs four lines to not have it here.
+      munsellDemo = true;
+      // `--munsell-demo [n [hue [row [col]]]] [perrow]`. Optional positional
+      // numbers, in the order the panel's own controls read left to right,
+      // then an optional word.
+      //
+      // **Parameterised, where `--overrange-demo` deliberately is not**, and
+      // the difference is what a second spelling would photograph. That flag
+      // has one state worth a picture because the in-range panel is what every
+      // other view already shows. This one has several that are genuinely
+      // different pictures and not merely different numbers: the leaf leans
+      // the other way at a yellow hue than at a blue one, `n` changes the chip
+      // aspect ratio and therefore whether the page is legible at all, and
+      // `perrow` fills the grid that `perpage` leaves half empty. Those are
+      // the three decisions in docs/munsell-picker.md that a reader is most
+      // likely to want to argue with, and an argument goes better with the
+      // pictures in front of it.
+      const auto nextNumber = [&](float& out) {
+        if (i + 1 >= argc) return false;
+        const std::string_view w(argv[i + 1]);
+        if (w.empty() || w.rfind("--", 0) == 0) return false;
+        try {
+          out = std::stof(std::string(w));
+        } catch (...) {
+          return false;
+        }
+        ++i;
+        return true;
+      };
+      float v = 0.0f;
+      if (nextNumber(v)) munsellDemoSteps = static_cast<int>(v);
+      if (nextNumber(v)) munsellDemoHue = v;
+      if (nextNumber(v)) munsellDemoRow = static_cast<int>(v);
+      if (nextNumber(v)) munsellDemoCol = static_cast<int>(v);
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "perrow") {
+        munsellDemoPerRow = true;
+        ++i;
+      }
     } else if (a == "--flyout-demo") {
       // sidequest/lucide-toolbox, the nested-flyout revision: holds the
       // Brush group's flyout open (four members, Brush/Pencil implemented-
@@ -1870,6 +1923,10 @@ int main(int argc, char** argv) {
     // 2.3: color/Space's sRGB/Rec.709 transfer function round trip. Also
     // headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool colorSpaceOk = np::runColorSpaceTest();
+    // color/Munsell: the third COLOR picker's geometry
+    // (docs/munsell-picker.md). Headless and GPU-free -- pure CPU math, the
+    // same standing as the two sections either side of it.
+    const bool munsellOk = np::runMunsellTest();
     // Phase 3 step 1 (ADR-0004): color/Shaper's ACEScct log encode/decode --
     // breakpoint continuity, round trip, a hand-computed known-value check,
     // and monotonicity. Also headless and GPU-free -- pure CPU math, no
@@ -3009,7 +3066,7 @@ int main(int argc, char** argv) {
     // a parked backlog, prompt catch-up on scroll-into-view, and a printed
     // (not asserted) per-tile cost measurement.
     const bool viewportDeferredCompositeOk = np::runViewportDeferredCompositeTest(gpu);
-    const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
+    const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk && toolSurfaceOk &&
@@ -3466,6 +3523,29 @@ int main(int argc, char** argv) {
     std::printf("[overrange-demo] COLOR in RGB mode, foreground linear 2.600 0.450 0.180 = "
                 "sRGB %.3f %.3f %.3f -- red is above the display range, so the panel shows "
                 "the readout and the OVER RANGE badge and the swatch is clamped\n",
+                static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
+                static_cast<double>(st.brush.rgb[2]));
+  }
+  if (munsellDemo) {
+    st.brush.colorMode = np::ColorMode::Munsell;
+    // Not the defaults: a page whose selected cell is near the ragged edge,
+    // so a screenshot of it shows the voids the branch exists to draw rather
+    // than a comfortably interior chip that any grid would render.
+    st.brush.munsellSteps = munsellDemoSteps;
+    st.brush.munsellHueDeg = munsellDemoHue;
+    st.brush.munsellRow = munsellDemoRow;
+    st.brush.munsellCol = munsellDemoCol;
+    st.brush.munsellPerRowChroma = munsellDemoPerRow;
+    // The clamp runs here, so a demo that asks for a cell outside the page --
+    // which the defaults deliberately do -- lands where a user's click would.
+    np::applyMunsellSelection(st.brush);
+    std::printf("[munsell-demo] COLOR in MUNSELL mode, %d steps, hue %.0f deg, chroma "
+                "per %s, cell (row %d, col %d) -- asked for column %d; the clamp walks left "
+                "along the row, never off it. Value %.1f, foreground sRGB %.3f %.3f %.3f\n",
+                st.brush.munsellSteps, static_cast<double>(st.brush.munsellHueDeg),
+                st.brush.munsellPerRowChroma ? "row" : "page",
+                st.brush.munsellRow, st.brush.munsellCol, munsellDemoCol,
+                np::munsellPageRowValue(st.brush.munsellRow, st.brush.munsellSteps),
                 static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
                 static_cast<double>(st.brush.rgb[2]));
   }

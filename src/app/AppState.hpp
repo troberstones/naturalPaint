@@ -144,6 +144,25 @@ enum class ColorMode {
   // settles or lifts, and inventing values for that would be a lie the user
   // could not detect.
   Rgb,
+  // The foreground is still `BrushState::rgb` -- byte for byte the same
+  // field, with the same encoding and the same absence of physical constants
+  // as `Rgb` -- but it is *edited* as a cell of a Munsell hue page
+  // (`color/Munsell.hpp`, docs/munsell-picker.md) rather than as an HSV
+  // square. The `munsell*` fields below are the editing state that an RGB
+  // triple cannot round-trip: which cell, on which page, at what
+  // quantization.
+  //
+  // **Every consumer must test this by `!= Pigment`, never by `== Rgb`.**
+  // The enum had two members for its whole life and all three consumers were
+  // written as `if (colorMode == Rgb) <colour> else <pigment>`, so a third
+  // member is silently a *pigment* everywhere -- a panel that looks entirely
+  // live while every stroke lays down `defaultPalette()[pigment]`. That is a
+  // compile-clean bug with no diagnostic, and it is the specific reason
+  // `--selftest`'s Munsell section asserts `foregroundSrgb()` in this mode
+  // rather than trusting the reading. The three sites were
+  // `app/StrokeSession.cpp`'s `foregroundSrgb()` and `foregroundName()` and
+  // `ui/MacPaintUI.cpp`'s eyedropper report.
+  Munsell,
 };
 // **The one range per `BrushState` field, read by every widget that edits
 // it.** Reachability audit B3: the options bar (`ui/AtelierChrome.cpp`'s
@@ -279,6 +298,41 @@ struct BrushState {
   // carried over unchanged so the RGB picker opens where it always did --
   // in range, because that is where a picker should open.
   std::array<float, 3> rgb = {0.10f, 0.12f, 0.45f};
+
+  // --- The Munsell page's editing state (ColorMode::Munsell) --------------
+  //
+  // `rgb` above stays the single source of truth for *painting*; these five
+  // are what it cannot round-trip. An sRGB triple does not say which cell of
+  // which page produced it, so without them changing the hue could not keep
+  // the row -- which is the one thing the picker promises -- and re-entering
+  // the mode would land somewhere arbitrary.
+  //
+  // **The desync this invites, and the one rule that answers it.** Two
+  // fields describing one colour is exactly the "fourth value only the
+  // clamps know about" shape that `rgb`'s own header argues against, and it
+  // is admitted rather than hidden: `rgb` and the cell CAN disagree, because
+  // the eyedropper writes `rgb` directly. The rule is therefore *any route
+  // that writes `rgb` without going through the page must leave this mode*,
+  // and the eyedropper is the route that does (`ui/MacPaintUI.cpp`'s
+  // `applyEyedropperPick`, which sets `ColorMode::Rgb`). Nothing reads these
+  // fields outside `ColorMode::Munsell`, so a stale cell is inert rather
+  // than wrong.
+  //
+  // Hue is a **CIELUV hue angle in degrees**, not a Munsell hue. The two are
+  // not the same and the mapping is a 40-entry table that has to come out of
+  // the Munsell renotation data; until it exists nothing prints `5R` or
+  // `7.5PB` (docs/munsell-picker.md, "The hue control").
+  float munsellHueDeg = 27.0f;
+  int munsellRow = 4;  // 0-based, bottom-up: row 0 is the darkest value
+  int munsellCol = 4;  // 0-based, left-to-right: column 0 is chroma 0, the neutral
+  // `n`, clamped to [kMinPageSteps, kMaxPageSteps] by the panel and by
+  // `clampMunsellSelection()`. 9 puts the rows on V = 1..9, the classic
+  // printed Munsell page.
+  int munsellSteps = 9;
+  // Per-row chroma normalisation instead of per-page: fills every cell, at
+  // the cost of a column no longer meaning one chroma across the page. The
+  // luminance invariant holds either way.
+  bool munsellPerRowChroma = false;
 
   // **`radius`/`hardness`/`roundness`/`angle` (and `spacing`, further down
   // this struct) are gone.** They used to be five parallel scalars,

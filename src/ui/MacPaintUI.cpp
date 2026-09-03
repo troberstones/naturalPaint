@@ -67,6 +67,8 @@
 #include "imgui.h"
 #include "io/ExportAs.hpp"
 #include "color/Space.hpp"
+#include "app/MunsellSelection.hpp"
+#include "color/Munsell.hpp"
 #include "ops/Feather.hpp"
 #include "ops/FloodFill.hpp"
 #include "ops/Gradient.hpp"
@@ -3648,6 +3650,271 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
 // every brush, bucket and gradient in the build lays down. A file static could
 // not be reached by `app/StrokeSession`, could not be written by the
 // eyedropper, and could not be asserted by `--selftest`.
+// The MUNSELL branch of the COLOR panel (docs/munsell-picker.md).
+//
+// **What the geometry is for.** Rows are Munsell values, columns are chroma.
+// Munsell value is ASTM D1535's quintic in the luminance factor and nothing
+// else, so a row is a constant-luminance set -- and that is the property the
+// picker exists to give the user, because the `ColorPicker3` in the branch
+// below cannot: its `V` is `max(r,g,b)`, so sliding hue along the top edge of
+// its square walks from a yellow of relative luminance 0.928 to a blue of
+// 0.072 with nothing on screen saying so. Here, changing hue moves the page
+// under the selection and the row -- therefore the luminance -- does not move.
+//
+// **Voids are drawn, not skipped.** A cell whose colour is outside sRGB gets
+// a hairline outline on the panel ground instead of a chip. Clamping it into
+// range would change its luminance, which is the one thing this branch
+// promises; and a gap left blank reads as a layout bug, where an outline
+// reads as "there is no such colour", which is the truth. The ragged edge
+// that results is the shape of the sRGB gamut at that hue, and it leans --
+// there is no light saturated blue and no dark saturated yellow.
+//
+// **One `InvisibleButton` for the whole grid, not n*n of them.** The cell is
+// computed from the mouse position instead. That is not a micro-optimisation
+// (n is at most 16, so 256 buttons would be affordable): it is what makes
+// press-and-drag across the page work, since a per-cell button captures the
+// mouse on press and the neighbours never see it. Dragging a picker is how
+// people use one.
+void drawMunsellPage(AppState& st, const Pigment& sel) {
+  BrushState& br = st.brush;
+  // A hand-set or reloaded `BrushState` may be off the page; do this before
+  // any arithmetic reads the indices rather than trusting the panel to be the
+  // only writer.
+  clampMunsellSelection(br);
+  const int n = br.munsellSteps;
+
+  // --- Sizing, against a measured slot rather than a guessed one ----------
+  //
+  // **The COLOR section's content region is 294 x 126 px in the default
+  // dock.** That is measured, from a throwaway `NP_MUNSELL_LAYOUT_DUMP` build
+  // of this very function, not recalled -- the first version of this branch
+  // reserved five lines below a square grid, asked for 221 px of the 126 it
+  // had, and silently clipped the chroma toggle and every readout line. The
+  // dock does not scroll (docs/ui.md 2c), so clipped here means unreachable,
+  // not merely off-screen.
+  //
+  // **So the chips are not square, and that is the trade the measurement
+  // forced.** A square grid capped by the height is 126-ish px wide at most,
+  // which throws away 170 px of a 294 px column and leaves 9 px cells anyway.
+  // Sizing width and height independently gives 32 x 9 px chips at n = 9 --
+  // wide and short rather than small and square. A colour grid reads fine as
+  // rectangles (printed Munsell pages are rectangular too); an unreachable
+  // control does not read at all.
+  //
+  // **One control row, not two, and no readout block.** What fits under the
+  // grid is the hue strip and a single row. The pigment constants that the
+  // PIGMENT and RGB branches print are therefore *not* printed here --
+  // docs/munsell-picker.md said they should be, and the measurement says
+  // there is no room, so they moved to this panel's "?" text instead of being
+  // drawn into the clipped region where nobody would ever see them. The
+  // per-cell value, chroma and sRGB triple live in the grid's own tooltip,
+  // which costs no height at all.
+  constexpr float kMinCellPx = 5.0f;
+  constexpr float kHueBarW = 15.0f;
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  // **The hue control is a vertical bar to the RIGHT of the page, not a strip
+  // under it, and the measurement is why.** Under the grid it cost 14 px of
+  // height plus its spacing out of a 126 px slot, which left 7 px rows at
+  // n = 9. Beside the grid it costs 15 px of a 306 px width -- width this
+  // panel has to spare and height it does not -- and the rows come out 10 px
+  // instead. A vertical hue bar next to a value/chroma page is also the
+  // conventional arrangement, so the layout forced by the measurement is the
+  // one a picker would have wanted anyway.
+  //
+  // `GetFrameHeightWithSpacing()`, not `GetTextLineHeightWithSpacing()`: the
+  // control row holds a `SliderInt`, whose frame is the text line plus
+  // `FramePadding.y` twice. Reserving a text line for it under-reserved by
+  // exactly that padding and clipped the bottom of the only row of controls
+  // this branch has.
+  const float reserveBelow = ImGui::GetFrameHeightWithSpacing();
+  const float cellW = std::max(
+      kMinCellPx, std::floor((avail.x - kHueBarW - spacing) / static_cast<float>(n)));
+  const float cellH =
+      std::max(kMinCellPx, std::floor((avail.y - reserveBelow) / static_cast<float>(n)));
+  const float gridW = cellW * static_cast<float>(n);
+  const float gridH = cellH * static_cast<float>(n);
+  // **`NP_MUNSELL_LAYOUT_DUMP=1` prints what this branch actually asked for
+  // against what it was given, and it is kept rather than deleted.** Three
+  // readings of this function produced three wrong guesses about why the
+  // controls were clipped; one run of this printf gave the answer in one line
+  // (294x126 available, 221 drawn). If the dock's geometry ever changes, the
+  // numbers in the comment above are re-measured with this rather than
+  // re-derived. Env-gated, so it costs a `getenv` per frame in this branch
+  // and nothing anywhere else.
+  const bool dumpLayout = std::getenv("NP_MUNSELL_LAYOUT_DUMP") != nullptr;
+  const float startY = ImGui::GetCursorPosY();
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+
+  // --- the page ------------------------------------------------------------
+  const ImVec2 gridOrigin = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##munsellpage", ImVec2(gridW, gridH));
+  const bool gridHeld = ImGui::IsItemActive();
+  const bool gridHovered = ImGui::IsItemHovered();
+
+  int hoverRow = -1, hoverCol = -1;
+  if (gridHeld || gridHovered) {
+    const ImVec2 m = ImGui::GetIO().MousePos;
+    const int col = static_cast<int>((m.x - gridOrigin.x) / cellW);
+    // Rows are drawn bottom-up -- light at the top, the way a value scale is
+    // always printed -- so the screen row index is mirrored here rather than
+    // in the two loops below.
+    const int rowFromTop = static_cast<int>((m.y - gridOrigin.y) / cellH);
+    if (col >= 0 && col < n && rowFromTop >= 0 && rowFromTop < n) {
+      hoverCol = col;
+      hoverRow = n - 1 - rowFromTop;
+    }
+  }
+
+  for (int row = 0; row < n; ++row) {
+    for (int col = 0; col < n; ++col) {
+      const float x0 = gridOrigin.x + static_cast<float>(col) * cellW;
+      const float y0 = gridOrigin.y + static_cast<float>(n - 1 - row) * cellH;
+      // An inset gives the grid its gap without a second layout pass, and
+      // keeps the selection ring off a neighbour's chip. Dropped to zero once
+      // a cell is small enough that two 1 px insets would be a third of it --
+      // a 5 px chip with a gap on each side is a 3 px chip.
+      const float inset = (cellW >= 8.0f && cellH >= 8.0f) ? 1.0f : 0.0f;
+      const ImVec2 p0(x0 + inset, y0 + inset);
+      const ImVec2 p1(x0 + cellW - inset, y0 + cellH - inset);
+      const auto cell = munsellCellSrgb(br, row, col);
+      const bool selected = row == br.munsellRow && col == br.munsellCol;
+      if (cell) {
+        dl->AddRectFilled(p0, p1,
+                          IM_COL32(static_cast<int>((*cell)[0] * 255.0f + 0.5f),
+                                   static_cast<int>((*cell)[1] * 255.0f + 0.5f),
+                                   static_cast<int>((*cell)[2] * 255.0f + 0.5f), 255));
+      } else {
+        // The void: an outline on the panel ground, so it reads as "no such
+        // colour" rather than as a hole where a chip failed to draw.
+        dl->AddRect(p0, p1, atelierToken(kDivider), 0.0f, 0, kDividerThickness);
+      }
+      if (selected)
+        dl->AddRect(ImVec2(p0.x - 1.0f, p0.y - 1.0f), ImVec2(p1.x + 1.0f, p1.y + 1.0f),
+                    atelierToken(kAccent), 0.0f, 0, kRuleThickness);
+    }
+  }
+
+  // Press *or* drag onto a live cell selects it. A void is ignored rather
+  // than clamped-to here: `clampMunsellSelection()` exists for the case where
+  // the page moves under a selection the user did not touch, which is not
+  // this one -- dragging across a void and out the other side should leave
+  // the selection where it was, not drag it along the row.
+  if (gridHeld && hoverRow >= 0 && munsellCellSrgb(br, hoverRow, hoverCol)) {
+    br.munsellRow = hoverRow;
+    br.munsellCol = hoverCol;
+    applyMunsellSelection(br);
+  }
+  if (gridHovered && hoverRow >= 0) {
+    const double v = munsellPageRowValue(hoverRow, n);
+    const auto cell = munsellCellSrgb(br, hoverRow, hoverCol);
+    if (cell)
+      ImGui::SetTooltip("value %.1f  chroma %.0f\nsRGB %.3f %.3f %.3f", v,
+                        munsellCellChroma(br, hoverRow, hoverCol),
+                        static_cast<double>((*cell)[0]), static_cast<double>((*cell)[1]),
+                        static_cast<double>((*cell)[2]));
+    else
+      ImGui::SetTooltip("value %.1f  chroma %.0f\nOutside sRGB -- no such colour on screen.", v,
+                        munsellCellChroma(br, hoverRow, hoverCol));
+  }
+
+  // --- the hue bar ---------------------------------------------------------
+  //
+  // Drawn at the **selected row's** value, so the bar is itself a
+  // constant-luminance band: it demonstrates the invariant instead of
+  // asserting it, and it is honest about what a dark row costs (at value 1
+  // the bar is a column of near-blacks, because that is what those hues are
+  // at that luminance).
+  //
+  // 40 steps, which is Munsell's own 2.5-hue convention. The step count is
+  // deliberately NOT `n`: `n` quantizes tints and shades, which is what the
+  // user asked it to do, and tying hue to it as well would mean a coarse page
+  // could not reach a hue a fine one could.
+  constexpr int kHueSteps = 40;
+  ImGui::SameLine(0.0f, spacing);
+  const ImVec2 hueOrigin = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##munsellhue", ImVec2(kHueBarW, gridH));
+  const bool hueHeld = ImGui::IsItemActive();
+  const float hueCell = gridH / static_cast<float>(kHueSteps);
+  const double rowL = munsellRowLStar(br.munsellRow, n);
+  const int selectedHueStep =
+      static_cast<int>(br.munsellHueDeg / (360.0f / kHueSteps) + 0.5f) % kHueSteps;
+  for (int k = 0; k < kHueSteps; ++k) {
+    const double h = k * 360.0 / kHueSteps;
+    // 0.8 of the row's own maximum rather than the maximum itself: the exact
+    // boundary is where the bisection converges, and a bar drawn on it shows
+    // one channel pinned at 0 or 1 for most of its length, which reads as
+    // banding rather than as hue.
+    const auto linear = munsellCellLinearRgb(rowL, 0.8 * maxInGamutChroma(rowL, h), h);
+    const ImVec2 p0(hueOrigin.x, hueOrigin.y + static_cast<float>(k) * hueCell);
+    const ImVec2 p1(hueOrigin.x + kHueBarW, p0.y + hueCell);
+    if (linear)
+      dl->AddRectFilled(p0, p1,
+                        IM_COL32(static_cast<int>(srgbEncode((*linear)[0]) * 255.0f + 0.5f),
+                                 static_cast<int>(srgbEncode((*linear)[1]) * 255.0f + 0.5f),
+                                 static_cast<int>(srgbEncode((*linear)[2]) * 255.0f + 0.5f), 255));
+    if (k == selectedHueStep)
+      dl->AddRect(p0, p1, atelierToken(kAccent), 0.0f, 0, kRuleThickness);
+  }
+  if (hueHeld) {
+    const float local = ImGui::GetIO().MousePos.y - hueOrigin.y;
+    const int k = std::clamp(static_cast<int>(local / hueCell), 0, kHueSteps - 1);
+    br.munsellHueDeg = static_cast<float>(k) * 360.0f / kHueSteps;
+    // The hue moved, so the selected cell may now be a void. The row is never
+    // traded away for it -- `clampMunsellSelection()` walks left along the
+    // row, and `applyMunsellSelection()` calls it.
+    applyMunsellSelection(br);
+  }
+  ImGui::SetItemTooltip("Hue: 40 steps, drawn at the selected row's value.\n"
+                        "Changing it never changes the row, so the foreground's\n"
+                        "luminance does not move.");
+
+  // --- the control row -----------------------------------------------------
+  //
+  // Both controls on ONE row, and `SliderInt` directly rather than
+  // `ctlSliderInt()`. That is a deliberate departure from this column's rule
+  // that every labelled control goes through the `ctl*` family so its name
+  // cannot be clipped, and the reason is the measurement above: the label
+  // column those helpers reserve is most of a 294 px row, and two rows do not
+  // exist here at all. The label is one character, drawn explicitly, so the
+  // failure the rule guards against -- a name clipped by the panel edge --
+  // cannot happen either way.
+  pushAtelierMono();
+  ImGui::TextDisabled("n");
+  popAtelierMono();
+  ImGui::SameLine();
+  const float toggleW = ImGui::CalcTextSize("per page").x + ImGui::GetStyle().FramePadding.x * 4.0f;
+  ImGui::SetNextItemWidth(
+      std::max(60.0f, avail.x - ImGui::GetCursorPosX() - toggleW - ImGui::GetStyle().ItemSpacing.x));
+  if (ImGui::SliderInt("##munsellsteps", &br.munsellSteps, kMinPageSteps, kMaxPageSteps))
+    applyMunsellSelection(br);
+  ImGui::SetItemTooltip(
+      "How finely the page is quantized: n values by n chromas.\n"
+      "9 puts the rows on value 1..9, the classic printed Munsell page.");
+  ImGui::SameLine();
+  if (ImGui::SmallButton(br.munsellPerRowChroma ? "per row" : "per page")) {
+    br.munsellPerRowChroma = !br.munsellPerRowChroma;
+    applyMunsellSelection(br);
+  }
+  ImGui::SetItemTooltip(
+      "Chroma normalisation.\n"
+      "per page: one chroma scale for the whole page, so a column means one\n"
+      "chroma in every row and the ragged edge is the sRGB gamut's own shape.\n"
+      "per row: every row spans its own gamut, so the grid fills but a column\n"
+      "no longer means one chroma. Row luminance is exact either way.");
+
+  if (dumpLayout)
+    std::printf("[munsell-layout] avail=%.1fx%.1f cell=%.1fx%.1f gridH=%.1f reserveBelow=%.1f "
+                "blockHeight=%.1f drawnHeight=%.1f overflow=%.1f\n",
+                static_cast<double>(avail.x), static_cast<double>(avail.y),
+                static_cast<double>(cellW), static_cast<double>(cellH),
+                static_cast<double>(gridH),
+                static_cast<double>(reserveBelow), static_cast<double>(gridH + reserveBelow),
+                static_cast<double>(ImGui::GetCursorPosY() - startY),
+                static_cast<double>((ImGui::GetCursorPosY() - startY) - avail.y));
+}
+
 void drawColorSection(AppState& st) {
   // The mode toggle in the header row, where section 3.3 puts it ("COLOR
   // gains a mode toggle in its header"). Two buttons rather than a combo: the
@@ -3666,10 +3933,28 @@ void drawColorSection(AppState& st) {
     if (on) ImGui::PopStyleColor(3);
     return pressed;
   };
-  const bool pigmentMode = st.brush.colorMode == ColorMode::Pigment;
+  // Three buttons now, not two, and the row still fits the 322 px column at
+  // the mono face this panel uses. A combo was reconsidered when the set
+  // grew and rejected again for the same reason: the accent marking which
+  // one is on is the whole readout, and a combo hides two thirds of it
+  // behind a click.
+  const ColorMode mode = st.brush.colorMode;
+  const bool pigmentMode = mode == ColorMode::Pigment;
   if (modeButton("PIGMENT", pigmentMode)) st.brush.colorMode = ColorMode::Pigment;
   ImGui::SameLine();
-  if (modeButton("RGB", !pigmentMode)) st.brush.colorMode = ColorMode::Rgb;
+  if (modeButton("RGB", mode == ColorMode::Rgb)) st.brush.colorMode = ColorMode::Rgb;
+  ImGui::SameLine();
+  if (modeButton("MUNSELL", mode == ColorMode::Munsell)) {
+    st.brush.colorMode = ColorMode::Munsell;
+    // **Entering the mode commits the selection immediately**, rather than
+    // waiting for the first click. Otherwise the first frame shows a
+    // highlighted chip that is not the foreground -- the swatch in the
+    // status bar, the FG well and the next stroke would all still be
+    // whatever RGB or PIGMENT last set, while the panel points confidently
+    // at a different colour. A picker whose highlight is a lie until you
+    // touch it is worse than one that moves the foreground on entry.
+    applyMunsellSelection(st.brush);
+  }
 
   const std::vector<Pigment>& palette = defaultPalette();
   // `foregroundPhysicalConstants()` rather than `palette[st.brush.pigment]`:
@@ -3728,6 +4013,14 @@ void drawColorSection(AppState& st) {
     // "The RGB readout stays visible as the resulting colour, read-only."
     ImGui::TextDisabled("rgb         %.3f %.3f %.3f", sel.rgb[0], sel.rgb[1], sel.rgb[2]);
     popAtelierMono();
+  } else if (mode == ColorMode::Munsell) {
+    // **Its own branch, not a variant of the RGB one below.** The two share
+    // a field (`BrushState::rgb`) and nothing else: this one has no
+    // over-range badge because every cell it can produce is in gamut by
+    // construction, no `ColorPicker3`, and a reserve arithmetic of its own
+    // because what draws under the square here is a hue strip and two
+    // controls rather than a numeric row.
+    drawMunsellPage(st, sel);
   } else {
     // **The over-range badge, drawn FIRST -- above the picker, not under the
     // readouts -- and the position is measured rather than a matter of
@@ -5841,7 +6134,14 @@ EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
   // whole contract; `--selftest`'s scene-referred-colour section pins it.
   for (int c = 0; c < 3; ++c) st.brush.rgb[c] = out.sample.display[c];
 
-  out.switchedToRgbMode = st.brush.colorMode == ColorMode::Pigment;
+  // **`!= Rgb`, not `== Pigment`.** This bool drives the sentence below,
+  // which explains that the physical constants keep coming from the pigment
+  // because a sampled colour has none -- and that explanation is exactly as
+  // needed when the user was on the Munsell page as when they were on the
+  // pigment well. Written as `== Pigment` it reported "no mode change" while
+  // silently changing the mode, which is the one case where the report and
+  // the act disagree.
+  out.switchedToRgbMode = st.brush.colorMode != ColorMode::Rgb;
   st.brush.colorMode = ColorMode::Rgb;
 
   // Asked of what was **stored**, not of `out.sample.display`. They are the
