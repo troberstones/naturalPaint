@@ -4952,4 +4952,30 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu);
 // anchor's handles. See app/selftest/PathRaster.cpp.
 bool runPathRasterTest();
 
+// `LayerKind::Vector` (PLAN.md phase 13): the layer that holds Bezier geometry
+// instead of pixels, its raster cache, and the materialised view through which
+// it reaches core/Composite without that file gaining a Vector branch.
+// Headless, GPU-free, writes no files.
+//
+// The load-bearing section is **the hazard**: core/DirtyTiles' pass 1 compares
+// kind, ops, mask presence and tile-store presence and nothing else, so before
+// this phase a pure geometry edit compared equal on every field it inspects
+// and produced an EMPTY dirty set -- an edit that silently does not appear.
+// Proved closed in both halves at once (a non-empty dirty set AND composited
+// pixels that genuinely moved), because either alone passes while the feature
+// is broken; plus the mirror image, that an untouched layer does NOT force a
+// recomposite, so the fix is not "always redraw".
+//
+// Also proves: a filled shape's composited alpha sums to its exact area; the
+// stroke paints over the fill and outside the path; a clip multiplies coverage
+// and a clip covering nothing HIDES rather than reveals; the content hash
+// moves for a sub-texel anchor nudge, a handle, paint, a dash offset, a pivot
+// and a fill rule; a Vector layer owns neither tile store and compositing does
+// not write one back onto it (which is what keeps core/History cheap); the
+// cache hits, misses on a stale hash, replaces rather than accumulates, and
+// forgets a deleted layer; a document with no Vector layer is not copied at
+// all; and stroke bounds outset by half the width, or by miterLimit times it
+// for a miter join. See app/selftest/VectorLayer.cpp.
+bool runVectorLayerTest();
+
 }  // namespace np

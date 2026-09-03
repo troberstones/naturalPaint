@@ -194,6 +194,7 @@ add_executable(naturalPaint
   app/selftest/GradientTool.cpp
   app/selftest/MoveTool.cpp
   app/selftest/PathRaster.cpp
+  app/selftest/VectorLayer.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp
@@ -253,6 +254,8 @@ add_executable(naturalPaint
   core/PathFlatten.cpp
   core/PathRaster.cpp
   core/PathStroke.cpp
+  core/VectorRaster.cpp
+  core/VectorShape.cpp
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp

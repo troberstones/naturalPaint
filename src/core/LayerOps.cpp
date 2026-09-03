@@ -86,6 +86,16 @@ Layer makeAdjustmentLayer(std::string name) {
   return layer;
 }
 
+Layer makeVectorLayer(std::string name) {
+  Layer layer;
+  layer.kind = LayerKind::Vector;
+  // No tiles, no mask, no ops, and an empty `shapes` -- see core/LayerOps.hpp.
+  // As with an Adjustment layer, every one of those absences is the kind's
+  // definition rather than an omission.
+  layer.name = std::move(name);
+  return layer;
+}
+
 std::string defaultNewGroupName(const Document& doc) {
   // `defaultNewLayerName()`'s own scan, restricted to Group-kind layers so a
   // document with "Layer 3" and "Group 3" both on screen is not a collision --

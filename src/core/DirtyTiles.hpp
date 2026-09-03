@@ -303,6 +303,17 @@ enum class FullRecompositeReason {
   LayerOpsChanged,
   LayerMaskPresenceChanged,
   LayerStoragePresenceChanged,
+  // PLAN.md phase 13. A `LayerKind::Vector` layer's geometry or paint moved.
+  //
+  // **This enumerator exists because its absence was a correctness bug, not a
+  // performance one.** Pass 1 below is a whitelist -- it compares kind, ops,
+  // mask presence and tile-store presence, and nothing else on `Layer`. A
+  // Vector layer holds neither tiles nor ops, so a pure geometry edit compared
+  // EQUAL on every one of those and produced an empty dirty set: the edit was
+  // simply invisible until something unrelated dirtied the canvas, landing on
+  // ui/DocumentTexture's already-named "the revision moved and nothing the
+  // compositor reads did" branch.
+  VectorGeometryChanged,
 };
 
 const char* fullRecompositeReasonName(FullRecompositeReason reason) noexcept;

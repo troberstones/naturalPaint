@@ -182,6 +182,16 @@ Layer makePigmentLayer(std::string name);
 // factory could exist without handing a user a layer that a save would empty.
 Layer makeAdjustmentLayer(std::string name);
 
+// A Vector layer (PLAN.md phase 13; PRD J1-J5): no tile storage of any kind
+// and an empty `shapes` list, so a fresh one draws nothing. Exactly
+// `makeAdjustmentLayer()`'s shape of emptiness, for exactly its reason -- the
+// content is a parameter member, not pixels.
+//
+// Takes no Document, unlike `makeGroupLayer()`: shape ids are handed out by
+// the layer's own `nextShapeId` and only have to be unique WITHIN the layer,
+// because a shape is always addressed through the layer that owns it.
+Layer makeVectorLayer(std::string name);
+
 // A default name for a new group: "Group N", `defaultNewLayerName()`'s own
 // rule restricted to Group-kind layers -- see core/LayerOps.cpp.
 std::string defaultNewGroupName(const Document& doc);

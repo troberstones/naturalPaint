@@ -42,6 +42,10 @@ const char* layerKindGlyph(LayerKind kind) noexcept {
     // glyph has no design mock to match and no reason to cost a font-merge
     // codepoint the way the other new-since-1a marks do.
     case LayerKind::Group: return "G";
+    // ASCII for `Group`'s stated reason: a Vector layer is not one of design
+    // 2a's seven rows, so there is no mock to match and no reason to spend a
+    // font-merge codepoint (ui/Fonts.cpp's merge list is exactly those seven).
+    case LayerKind::Vector: return "V";
   }
   return "?";
 }
@@ -64,6 +68,9 @@ uint32_t layerKindRailRgb(LayerKind kind) noexcept {
     // note); distinct from all seven anyway, cheaply, so a future row for it
     // is not stuck picking a colour under time pressure.
     case LayerKind::Group: return 0x5a8a5a;       // moss green
+    // Distinct from all eight above in hue, not merely in value -- see this
+    // switch's own note on why 3 px of rail cannot carry a lightness step.
+    case LayerKind::Vector: return 0x3aa0b8;      // cyan-teal
   }
   // Unreachable while every enumerator is covered, which `-Wswitch` and
   // `--selftest` both check. A grey rather than a colour, so a kind added
@@ -85,6 +92,12 @@ const std::vector<NewLayerKindEntry>& newLayerKindMenu() {
       {LayerKind::Strokes, false, {}},
       {LayerKind::Text, false, {}},
       {LayerKind::Flats, false, {}},
+      // Buildable as of PLAN.md phase 13: an empty Vector layer is a real,
+      // saveable, editable thing, unlike the four above it. Appended rather
+      // than slotted among the parametric kinds because design 2a's popup
+      // order predates it and reordering that list would move the four rows a
+      // --selftest already pins by position.
+      {LayerKind::Vector, true, LayerCommand::NewVectorLayer},
   };
   return kMenu;
 }
@@ -97,6 +110,7 @@ const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
     case LayerKind::Pigment:
     case LayerKind::RGB:
     case LayerKind::Adjustment:
+    case LayerKind::Vector:
       return nullptr;
     case LayerKind::Media:
       return "Not built yet. A Media layer needs the fluid solver's own per-medium state on "

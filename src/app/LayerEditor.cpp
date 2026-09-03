@@ -62,7 +62,8 @@ LayerEditResult recordMerge(OpenDocument& doc, LayerOpResult result, size_t sele
 const std::vector<LayerCommand>& allLayerCommands() {
   static const std::vector<LayerCommand> kAll = {
       LayerCommand::NewRgbLayer,    LayerCommand::NewPigmentLayer,
-      LayerCommand::NewAdjustmentLayer, LayerCommand::DuplicateLayer,
+      LayerCommand::NewAdjustmentLayer, LayerCommand::NewVectorLayer,
+      LayerCommand::DuplicateLayer,
       LayerCommand::DeleteLayer,    LayerCommand::MoveLayerUp,
       LayerCommand::MoveLayerDown,  LayerCommand::AddMask,
       LayerCommand::RemoveMask,     LayerCommand::ToggleVisible,
@@ -81,6 +82,7 @@ const char* layerCommandLabel(LayerCommand command) noexcept {
     case LayerCommand::NewRgbLayer:        return "New RGB Layer";
     case LayerCommand::NewPigmentLayer:    return "New Pigment Layer";
     case LayerCommand::NewAdjustmentLayer: return "New Adjustment Layer";
+    case LayerCommand::NewVectorLayer:     return "New Vector Layer";
     case LayerCommand::DuplicateLayer:     return "Duplicate Layer";
     case LayerCommand::DeleteLayer:        return "Delete Layer";
     case LayerCommand::MoveLayerUp:        return "Move Layer Up";
@@ -106,6 +108,7 @@ const char* layerCommandGlyph(LayerCommand command) noexcept {
     case LayerCommand::NewRgbLayer: return layerKindGlyph(LayerKind::RGB);
     case LayerCommand::NewPigmentLayer: return layerKindGlyph(LayerKind::Pigment);
     case LayerCommand::NewAdjustmentLayer: return layerKindGlyph(LayerKind::Adjustment);
+    case LayerCommand::NewVectorLayer: return layerKindGlyph(LayerKind::Vector);
     case LayerCommand::DuplicateLayer: return "\xE2\x96\xA3";  // U+25A3 square-in-square
     case LayerCommand::DeleteLayer: return "\xE2\x9C\x95";     // U+2715 multiplication x
     case LayerCommand::AddMask: return "\xE2\x97\x90";         // U+25D0 circle, left half
@@ -136,6 +139,7 @@ bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t sel
     case LayerCommand::NewRgbLayer:
     case LayerCommand::NewPigmentLayer:
     case LayerCommand::NewAdjustmentLayer:
+    case LayerCommand::NewVectorLayer:
       return true;
     case LayerCommand::DuplicateLayer:
     case LayerCommand::DeleteLayer:
@@ -215,6 +219,8 @@ LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t
     case LayerCommand::NewAdjustmentLayer:
       return record(od, addLayer(doc, at, makeAdjustmentLayer(defaultNewLayerName(doc))), selected,
                     at);
+    case LayerCommand::NewVectorLayer:
+      return record(od, addLayer(doc, at, makeVectorLayer(defaultNewLayerName(doc))), selected, at);
     case LayerCommand::DuplicateLayer:
       // The copy lands directly above the source (core/LayerOps.hpp), and the
       // selection follows it there -- duplicating and then immediately editing

@@ -1,5 +1,7 @@
 #include "core/Composite.hpp"
 
+#include "core/VectorRaster.hpp"
+
 #include <algorithm>
 #include <optional>
 #include <unordered_map>
@@ -1308,8 +1310,14 @@ void compositeWalk(const Document& doc, const std::unordered_set<TileCoord>* onl
 
 }  // namespace
 
-void compositeDocumentPremultipliedInto(const Document& doc, std::vector<float>& buffer,
-                                        std::vector<std::string>* warningsOut) {
+void compositeDocumentPremultipliedInto(const Document& doc_, std::vector<float>& buffer,
+                                        std::vector<std::string>* warningsOut,
+                                        VectorRasterCache* vectorCache) {
+  // Vector layers become RGB layers carrying their raster; a document with
+  // none is not copied. Everything below this line sees an ordinary document
+  // and needs no knowledge of the kind. See core/VectorRaster.hpp section 2.
+  const MaterializedDocument materialized(doc_, vectorCache);
+  const Document& doc = materialized.get();
   if (doc.width <= 0 || doc.height <= 0) {
     buffer.clear();
     return;
@@ -1347,19 +1355,24 @@ void compositeDocumentPremultipliedInto(const Document& doc, std::vector<float>&
 }
 
 std::vector<float> compositeDocumentPremultiplied(const Document& doc,
-                                                  std::vector<std::string>* warningsOut) {
+                                                  std::vector<std::string>* warningsOut,
+                                                  VectorRasterCache* vectorCache) {
   // A fresh, empty buffer every call, so this is exactly the one-shot
   // allocate-and-zero-and-walk `compositeDocumentPremultipliedInto()`
   // documents itself as reducing to when its caller does not reuse `buffer`
   // -- the two functions cannot drift because this *is* that function.
   std::vector<float> out;
-  compositeDocumentPremultipliedInto(doc, out, warningsOut);
+  compositeDocumentPremultipliedInto(doc, out, warningsOut, vectorCache);
   return out;
 }
 
-void compositeDocumentTilesPremultiplied(const Document& doc, const std::vector<TileCoord>& tiles,
+void compositeDocumentTilesPremultiplied(const Document& doc_,
+                                         const std::vector<TileCoord>& tiles,
                                          const CompositeRegion& region,
-                                         std::vector<std::string>* warningsOut) {
+                                         std::vector<std::string>* warningsOut,
+                                         VectorRasterCache* vectorCache) {
+  const MaterializedDocument materialized(doc_, vectorCache);
+  const Document& doc = materialized.get();
   if (doc.width <= 0 || doc.height <= 0) return;
   // An **empty** tile set with a zero-sized region is legal and is how a
   // caller asks for nothing but the warnings: no tile is visited, so `accum()`

@@ -74,6 +74,10 @@ enum class LayerCommand {
   // PLAN.md Phase 5 step 5. No tile storage at all: its op stack is its
   // content, so a fresh one is an exact no-op until an op is added to it.
   NewAdjustmentLayer,
+  // PLAN.md phase 13. No tile storage at all: its `shapes` list is its
+  // content, so a fresh one draws nothing until a shape is added -- the same
+  // shape of emptiness `NewAdjustmentLayer` above has.
+  NewVectorLayer,
   DuplicateLayer,
   DeleteLayer,
   MoveLayerUp,

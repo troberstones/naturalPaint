@@ -1036,8 +1036,22 @@ std::string clippedLayerWithoutBaseWarning(const Document& doc, size_t layerInde
 // and one `clippedLayerWithoutBaseWarning()` per layer that asks to be clipped
 // with nothing beneath it to clip to. It is appended to, never cleared, so a
 // caller can collect from several stages.
+// PLAN.md phase 13: a `LayerKind::Vector` layer holds geometry, not tiles, so
+// every entry point here first takes a **materialised view** of the document
+// in which each Vector layer has been replaced by an ordinary RGB layer
+// carrying its rasterised result (core/VectorRaster.hpp). That is why none of
+// the walk below has a Vector branch, and why `layerHoldsPixels()` still
+// answers false for the kind.
+//
+// `vectorCache` is a pure optimisation and may be null, in which case every
+// Vector layer is rasterised afresh on this call -- correct, and what a
+// one-shot caller such as io/Export wants. A document with no Vector layer is
+// not copied at all, so every pre-existing caller pays nothing.
+class VectorRasterCache;
+
 std::vector<float> compositeDocumentPremultiplied(
-    const Document& doc, std::vector<std::string>* warningsOut = nullptr);
+    const Document& doc, std::vector<std::string>* warningsOut = nullptr,
+    VectorRasterCache* vectorCache = nullptr);
 
 // The same walk as `compositeDocumentPremultiplied()`, writing into a
 // caller-owned buffer instead of returning a freshly allocated one --
@@ -1063,7 +1077,8 @@ std::vector<float> compositeDocumentPremultiplied(
 // already-correctly-sized buffer, is the entire saving this function offers
 // over the plain one.
 void compositeDocumentPremultipliedInto(const Document& doc, std::vector<float>& buffer,
-                                        std::vector<std::string>* warningsOut = nullptr);
+                                        std::vector<std::string>* warningsOut = nullptr,
+                                        VectorRasterCache* vectorCache = nullptr);
 
 // --- The same walk, restricted to a tile set (the incremental composite) ---
 //
@@ -1124,6 +1139,7 @@ struct CompositeRegion {
 void compositeDocumentTilesPremultiplied(const Document& doc,
                                          const std::vector<TileCoord>& tiles,
                                          const CompositeRegion& region,
-                                         std::vector<std::string>* warningsOut = nullptr);
+                                         std::vector<std::string>* warningsOut = nullptr,
+                                         VectorRasterCache* vectorCache = nullptr);
 
 }  // namespace np

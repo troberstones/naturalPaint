@@ -9,6 +9,7 @@
 #include "core/OpStack.hpp"
 #include "core/Pigment.hpp"
 #include "core/TileStore.hpp"
+#include "core/VectorShape.hpp"
 
 // core/Layer (PLAN.md "Phase 2 -- See a file", step 4; CONTEXT.md "Layer
 // kinds"). "Design for N, ship 1": all seven kinds CONTEXT.md names are
@@ -65,6 +66,21 @@ enum class LayerKind {
   // member finds its group, and core/Composite.hpp's group section for what
   // `visible`/`opacity` do to a group's members.
   Group,
+  // **A vector layer** (PLAN.md phase 13; PRD J1-J5). Appended at the END for
+  // the identical reason `Group` was, and this header's own rule against
+  // keying anything by an ordinal is what makes appending safe.
+  //
+  // It holds `shapes` below -- Bezier geometry and paint -- and **no tiles of
+  // any kind**. `rgbTiles` and `pigmentTiles` are both `nullopt`, exactly
+  // Adjustment's and Group's contract, and that is a deliberate choice rather
+  // than a deferral: a raster cache stored here would be copied into every
+  // `HistoryEntry` (core/History.hpp holds a whole Document by value), and
+  // because a geometry edit re-rasterises the whole path footprint rather
+  // than a few tiles, consecutive entries would share nothing. Measured
+  // against the 128 MiB budget that is roughly one undoable edit for a
+  // full-canvas layer. The cache therefore lives outside the document
+  // entirely, keyed by `vectorContentHash()`; see core/VectorShape.hpp.
+  Vector,
 };
 
 // Small enough to be `inline` in-header, matching TileStore.hpp/Tile.hpp's
@@ -78,6 +94,7 @@ inline const char* layerKindName(LayerKind kind) {
     case LayerKind::Adjustment: return "Adjustment";
     case LayerKind::Text: return "Text";
     case LayerKind::Flats: return "Flats";
+    case LayerKind::Vector: return "Vector";
     // Lower-case where every other kind is capitalised -- `kChannelKindName`
     // ("selection") already set this precedent for a non-ordinary-layer `np:kind`,
     // and docs/document-format.md's own sketch for a group spells it this way,
@@ -120,6 +137,7 @@ inline std::optional<LayerKind> layerKindFromName(std::string_view name) {
   if (name == "Adjustment") return LayerKind::Adjustment;
   if (name == "Text") return LayerKind::Text;
   if (name == "Flats") return LayerKind::Flats;
+  if (name == "Vector") return LayerKind::Vector;
   if (name == "group") return LayerKind::Group;
   return std::nullopt;
 }
@@ -332,6 +350,20 @@ struct Layer {
   // interpret survives the round trip as an `OpClass::Unknown` op holding its
   // own bytes (PRD I10).
   OpStack ops;
+
+  // The content of a `LayerKind::Vector` layer: an ordered list of painted
+  // Bezier shapes, bottom to top. Empty for every other kind, and it is an
+  // invariant of this struct that a non-Vector layer never populates it.
+  //
+  // This is the layer's ONLY content -- there is no tile store beside it. See
+  // `LayerKind::Vector` above for why the rasterised result deliberately does
+  // not live here, and core/VectorShape.hpp for the shape model.
+  std::vector<VectorShape> shapes;
+
+  // Hands out `VectorShape::id`. Same shape as `Document::nextLayerId`: ids
+  // must be stable across a save and reopen so that a Paths panel selection,
+  // and Stage 4's component selection, survive one.
+  uint64_t nextShapeId = 1;
 
   // The user-facing name. Deliberately NOT unique and deliberately not used
   // to identify anything: docs/document-format.md is explicit that "layer

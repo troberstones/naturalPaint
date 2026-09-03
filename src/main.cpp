@@ -1829,6 +1829,12 @@ int main(int argc, char** argv) {
     // `selectPolygon()`, to that oracle's own 1/255 quantisation step.
     // Headless and GPU-free; writes no files.
     const bool pathRasterOk = np::runPathRasterTest();
+    // LayerKind::Vector -- the geometry-holding layer, its raster cache, and
+    // the materialised view it reaches core/Composite through. The
+    // load-bearing check is that a pure geometry edit is VISIBLE:
+    // core/DirtyTiles' pass 1 could not see one before this phase.
+    // Headless and GPU-free; writes no files.
+    const bool vectorLayerOk = np::runVectorLayerTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -2616,7 +2622,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
                     documentTransformOk && transformSessionOk && moveToolOk &&
-                    gradientToolOk && pathRasterOk &&
+                    gradientToolOk && pathRasterOk && vectorLayerOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&

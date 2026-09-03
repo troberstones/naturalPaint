@@ -54,7 +54,8 @@ bool runFontsTest() {
   bool allListed = true;
   for (const LayerKind kind :
        {LayerKind::Pigment, LayerKind::RGB, LayerKind::Media, LayerKind::Strokes,
-        LayerKind::Adjustment, LayerKind::Text, LayerKind::Flats, LayerKind::Group}) {
+        LayerKind::Adjustment, LayerKind::Text, LayerKind::Flats, LayerKind::Group,
+        LayerKind::Vector}) {
     for (const uint32_t cp : decodeUtf8(layerKindGlyph(kind))) {
       if (cp < 0x0100u) continue;  // ImGui's default range draws these already
       if (std::find(required.begin(), required.end(), cp) == required.end()) allListed = false;
@@ -99,8 +100,8 @@ bool runFontsTest() {
   // it used to probe. There is no way to spell "one past the end" without a
   // number, so the tripwire is this comment plus this assertion, not the
   // literal alone.
-  check(std::string(layerKindGlyph(static_cast<LayerKind>(8))) == "?",
-        "LayerKind still has exactly 8 values, so the walk above is complete");
+  check(std::string(layerKindGlyph(static_cast<LayerKind>(9))) == "?",
+        "LayerKind still has exactly 9 values, so the walk above is complete");
 
   // The three creation icons are their kind's own glyph, verbatim -- not a
   // second copy of it, so the toolbar button and the row it produces can

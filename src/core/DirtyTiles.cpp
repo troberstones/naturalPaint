@@ -164,6 +164,7 @@ const char* fullRecompositeReasonName(FullRecompositeReason reason) noexcept {
     case FullRecompositeReason::LayerMaskPresenceChanged: return "layer mask added or removed";
     case FullRecompositeReason::LayerStoragePresenceChanged: return "layer tile store added or "
                                                                     "removed";
+    case FullRecompositeReason::VectorGeometryChanged: return "vector layer geometry changed";
   }
   return "?";
 }
@@ -181,6 +182,7 @@ std::string fullRecompositeExplanation(FullRecompositeReason reason, size_t laye
     case FullRecompositeReason::LayerOpsChanged:
     case FullRecompositeReason::LayerMaskPresenceChanged:
     case FullRecompositeReason::LayerStoragePresenceChanged:
+    case FullRecompositeReason::VectorGeometryChanged:
       s += " on layer " + std::to_string(layerIndex);
       break;
     default: break;
@@ -228,6 +230,21 @@ DocumentDirtyTiles documentDirtyTiles(const Document& before, const Document& af
     if (a.rgbTiles.has_value() != b.rgbTiles.has_value() ||
         a.pigmentTiles.has_value() != b.pigmentTiles.has_value())
       return whole(FullRecompositeReason::LayerStoragePresenceChanged, i);
+    // A Vector layer's content is `shapes`, which no comparison above reaches.
+    // Hashed rather than compared field by field so that adding a field to
+    // `VectorShape` cannot silently fall out of this test -- the same argument
+    // core/VectorShape.hpp makes for hashing rather than counting revisions.
+    //
+    // **Deliberately coarse: a geometry edit forces a FULL recomposite.** The
+    // narrow answer is available -- the union of the old and new shape bounds,
+    // via `vectorShapesBounds()` -- but it has to be threaded through both the
+    // pass-2 fast path and the pass-3 per-layer path, and getting it wrong
+    // reintroduces exactly the invisible-edit bug this block exists to close.
+    // Correct first; narrowing is a measured optimisation with its own proof,
+    // and Stage 4's manipulator drag is where it will be worth taking.
+    if (a.kind == LayerKind::Vector && b.kind == LayerKind::Vector &&
+        vectorContentHash(a.shapes) != vectorContentHash(b.shapes))
+      return whole(FullRecompositeReason::VectorGeometryChanged, i);
   }
 
   // --- Pass 2: which layers changed visible/opacity/blend/clipped ----------
