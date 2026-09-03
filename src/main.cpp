@@ -2547,6 +2547,10 @@ int main(int argc, char** argv) {
     // shape list. Headless and GPU-free, and NOT guarded on
     // `shaperAvailable()`: a serialiser has no platform dependency.
     const bool textSerialOk = np::runTextSerialTest();
+    // app/PathConsumers (PRD J1/J2/J3/J4): path -> selection, fill path, and
+    // stroke path with the current brush. Headless and GPU-free; guards its
+    // Text sections on shaperAvailable() the way runTextContentTest() does.
+    const bool pathConsumersOk = np::runPathConsumersTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -3396,7 +3400,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && textSerialOk && textToolOk;
+                    penToolOk && textSerialOk && textToolOk && pathConsumersOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
