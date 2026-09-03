@@ -1847,6 +1847,12 @@ int main(int argc, char** argv) {
     // the security caps against a hostile <use> bomb. Headless, GPU-free,
     // writes no files.
     const bool svgImportOk = np::runSvgImportTest();
+    // app/PenTool -- the headless core of Stage 4's vector editing: the two
+    // selection modes and their shared modifier grammar, gnomon/pivot/anchor/
+    // tangent/segment hit-test priority, the two pivot concepts and the
+    // shape-vs-component affine asymmetry between them, and toolEditsPath().
+    // Headless and GPU-free; writes no files; touches no ui/ file.
+    const bool penToolOk = np::runPenToolTest();
     // LayerKind::Vector -- the geometry-holding layer, its raster cache, and
     // the materialised view it reaches core/Composite through. The
     // load-bearing check is that a pure geometry edit is VISIBLE:
@@ -2673,7 +2679,8 @@ int main(int argc, char** argv) {
                     && transferDynamicsOk && toolOptionsBlendOk &&
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
-                    opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk;
+                    opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
+                    penToolOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
