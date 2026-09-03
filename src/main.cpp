@@ -1853,6 +1853,13 @@ int main(int argc, char** argv) {
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penToolOk = np::runPenToolTest();
+    // text/Shaper: PRD K2's platform-independent shaping interface and its
+    // CoreText implementation -- point/paragraph text, the y-up-to-y-down
+    // flip, quadratic-to-cubic glyph outlines, and UTF-16 clusters translated
+    // to UTF-8 byte offsets. Guarded on `shaperAvailable()`, so a build with
+    // no CoreText (text/StubShaper.cpp) skips this section rather than
+    // failing it. Headless, GPU-free, writes no files.
+    const bool textShaperOk = np::runTextShaperTest();
     // LayerKind::Vector -- the geometry-holding layer, its raster cache, and
     // the materialised view it reaches core/Composite through. The
     // load-bearing check is that a pure geometry edit is VISIBLE:
@@ -2646,7 +2653,8 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
                     documentTransformOk && transformSessionOk && moveToolOk &&
-                    gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk && vectorLayerOk &&
+                    gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
+                    textShaperOk && vectorLayerOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
