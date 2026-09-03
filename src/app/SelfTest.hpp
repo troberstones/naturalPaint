@@ -1275,7 +1275,14 @@ bool runCropToolTest();
 // thumbnails take DIFFERENT transfer functions -- linear 0.5 encodes to byte
 // 188 in a layer thumbnail and coverage 0.5 stays byte 128 in a mask one; and
 // the thumbnail cache rebuilds when, and only when, the revision it claims to
-// key on moves. Headless and GPU-free.
+// key on moves. Also app/LayerThumbnail §5: a Vector or Text layer draws its
+// GEOMETRY into the cell rather than the blank checkerboard it used to get for
+// failing `layerHoldsPixels()`, with the shape asserted in the right quadrant
+// of a fixture asymmetric in both axes, the sRGB encode and the un-premultiply
+// asserted on a half-covered edge, a Text layer's thumbnail asserted
+// BYTE-identical to a Vector layer holding `textContentToShapes()` of the same
+// content, and an empty layer of either kind asserted transparent rather than
+// black. Headless and GPU-free.
 bool runMaskTargetTest();
 
 // app/FramePacing (T27, "throttle the UI unless drawing to 60fps, and when

@@ -3,7 +3,11 @@
 #include "app/LayerThumbnail.hpp"
 #include "app/StrokeSession.hpp"
 #include "brush/MaskPaint.hpp"
+#include "core/LayerOps.hpp"
 #include "core/SelectionShapes.hpp"
+#include "core/TextContent.hpp"
+#include "core/VectorShape.hpp"
+#include "text/Shaper.hpp"
 
 namespace np {
 
@@ -688,6 +692,229 @@ bool runMaskTargetTest() {
     std::printf("  [thumb cost] %zu samples per thumbnail on both documents; two built in "
                 "%.3f ms -> ~%.2f ms for 10 visible rows x 2 thumbnails\n",
                 a.samples, ms, ms * 10.0);
+  }
+
+  // ======================================================================
+  // 13. A Vector or Text layer draws a PICTURE, not a blank checkerboard
+  // ======================================================================
+  //
+  // app/LayerThumbnail §5. The bug this section is the regression test for was
+  // visible on screen and invisible to every assertion above: a Vector layer's
+  // row read `VECTOR - NORMAL - 100%` beside an empty checkerboard while the
+  // canvas showed the drawing, because `layerHoldsPixels()` is false for a kind
+  // whose content is geometry and the thumbnail asked that question instead of
+  // its own.
+  //
+  // Every assertion here is about a PLACE and a BYTE, never about "the function
+  // returned something non-empty". A 24 px square is exactly the size at which
+  // a transpose or a y-flip is invisible to a person and passes any is-it-empty
+  // check, so the fixtures are asymmetric in both axes and the assertions name
+  // the quadrant that must be dark as well as the one that must be lit.
+  {
+    // A closed axis-aligned rectangle, straight-line encoded -- the same helper
+    // app/selftest/VectorLayer.cpp builds its fixtures from.
+    auto rectShape = [](float x0, float y0, float x1, float y1) {
+      VectorShape s;
+      SubPath sub;
+      sub.closed = true;
+      for (const PathPoint& q :
+           {PathPoint{x0, y0}, PathPoint{x1, y0}, PathPoint{x1, y1}, PathPoint{x0, y1}}) {
+        Anchor a;
+        a.pt = a.in = a.out = q;
+        sub.anchors.push_back(a);
+      }
+      s.path.subpaths.push_back(std::move(sub));
+      s.path.rule = FillRule::NonZero;
+      return s;
+    };
+    auto filled = [&](float x0, float y0, float x1, float y1,
+                      const std::array<float, 4>& linearStraight) {
+      VectorShape s = rectShape(x0, y0, x1, y1);
+      s.fill.on = true;
+      s.fill.rgba = linearStraight;  // core/VectorShape.hpp: linear, straight
+      return s;
+    };
+    auto vectorDoc = [&](int32_t w, int32_t h, std::vector<VectorShape> shapes) {
+      OpenDocument od = makeBlankOpenDocument(w, h, WorkingSpace{}, "vector thumb");
+      od.document.layers.clear();
+      addLayer(od.document, 0, makeVectorLayer("shapes"));
+      od.document.layers[0].shapes = std::move(shapes);
+      return od;
+    };
+
+    // --- Orientation, on a fixture asymmetric in BOTH axes ----------------
+    //
+    // A 256x256 document is a square cell (24x24, no letterbox), and the shape
+    // is a band across the TOP-LEFT: document x in [0, 128) -> cell x in
+    // [0, 12), document y in [0, 64) -> cell y in [0, 6). Three of the four
+    // sample points are outside it, and each is outside for a different reason,
+    // so a transpose fails on one and a y-flip on another.
+    {
+      OpenDocument od = vectorDoc(256, 256, {filled(0.0f, 0.0f, 128.0f, 64.0f,
+                                                    {1.0f, 0.0f, 0.0f, 1.0f})});
+      const LayerThumbnail t = layerContentThumbnail(od.document, 0);
+      auto px = [&](int x, int y, int c) {
+        return t.rgba[(static_cast<size_t>(y) * kLayerThumbPx + static_cast<size_t>(x)) * 4 +
+                      static_cast<size_t>(c)];
+      };
+      check(t.w == kLayerThumbPx && t.h == kLayerThumbPx,
+            "vec thumb: a Vector layer gets a real letterbox rect, not the empty one");
+      check(px(3, 2, 3) == 255 && px(3, 2, 0) == 255 && px(3, 2, 1) == 0,
+            "vec thumb: the shape is THERE, opaque and red -- not a blank checkerboard");
+      check(px(3, 10, 3) == 0,
+            "vec thumb: below the band is empty -- a y-flip would light this texel");
+      check(px(20, 2, 3) == 0,
+            "vec thumb: right of the band is empty -- a transpose would light this texel");
+      check(px(20, 20, 3) == 0, "vec thumb: and the far corner is empty in both axes");
+    }
+
+    // --- The transfer function, §1, in the middle of the range ------------
+    //
+    // The same claim section 9 makes for a tiled layer, asserted again on this
+    // path because it is a SECOND rasteriser feeding the same texture: a
+    // `Paint::rgba` is linear-light, so linear 0.5 must reach the thumbnail as
+    // the sRGB byte. Getting this wrong makes a vector thumbnail merely a bit
+    // dark, which reads as a design choice rather than as a bug.
+    {
+      OpenDocument od = vectorDoc(256, 256, {filled(0.0f, 0.0f, 256.0f, 256.0f,
+                                                    {0.5f, 0.5f, 0.5f, 1.0f})});
+      const LayerThumbnail t = layerContentThumbnail(od.document, 0);
+      const size_t centre =
+          (static_cast<size_t>(kLayerThumbPx / 2) * kLayerThumbPx + kLayerThumbPx / 2) * 4;
+      const int encodedByte = static_cast<int>(std::lround(srgbEncode(0.5f) * 255.0f));
+      check(t.rgba[centre] == static_cast<uint8_t>(encodedByte) && encodedByte != 128,
+            "vec thumb: a linear 0.5 fill becomes the sRGB byte, not the linear one");
+      check(t.rgba[centre + 3] == 255,
+            "vec thumb: alpha is a coverage and is NOT encoded -- opaque stays 255");
+    }
+
+    // --- Premultiplication: a half-covered edge, §2 -----------------------
+    //
+    // A 240x240 document makes each cell texel exactly 10 document texels, so a
+    // shape ending at document y = 5 covers exactly HALF of the top cell row.
+    // The whole point of accumulating premultiplied and un-premultiplying once
+    // is that such a texel comes out at half COVERAGE of the full colour, not
+    // at full coverage of a half-bright one -- so the two bytes are asserted
+    // together and a straight-average implementation fails the colour one while
+    // passing the alpha one.
+    {
+      OpenDocument od = vectorDoc(240, 240, {filled(0.0f, 0.0f, 240.0f, 5.0f,
+                                                    {1.0f, 0.0f, 0.0f, 1.0f})});
+      const LayerThumbnail t = layerContentThumbnail(od.document, 0);
+      auto px = [&](int x, int y, int c) {
+        return static_cast<int>(
+            t.rgba[(static_cast<size_t>(y) * kLayerThumbPx + static_cast<size_t>(x)) * 4 +
+                   static_cast<size_t>(c)]);
+      };
+      check(std::abs(px(12, 0, 3) - 128) <= 1,
+            "vec thumb: a half-covered edge texel is half COVERAGE (byte 128)");
+      check(px(12, 0, 0) == 255,
+            "vec thumb: ...of the full-strength colour, not full coverage of a dimmer one");
+      check(px(12, 1, 3) == 0, "vec thumb: and the row below the edge is untouched");
+      std::printf("  [vec thumb edge] half-covered texel -> rgba(%d, %d, %d, %d)\n", px(12, 0, 0),
+                  px(12, 0, 1), px(12, 0, 2), px(12, 0, 3));
+    }
+
+    // --- The letterbox, on a document that is not square ------------------
+    //
+    // A raster that ignored `fitRect()`'s translate would draw a correct picture
+    // in the WRONG PLACE -- at the top of the cell rather than centred -- and
+    // every assertion above would still pass, because they all use a square
+    // document where the translate is zero.
+    {
+      OpenDocument od = vectorDoc(400, 100, {filled(0.0f, 0.0f, 400.0f, 100.0f,
+                                                    {1.0f, 1.0f, 1.0f, 1.0f})});
+      const LayerThumbnail t = layerContentThumbnail(od.document, 0);
+      auto alphaAt = [&](int x, int y) {
+        return t.rgba[(static_cast<size_t>(y) * kLayerThumbPx + static_cast<size_t>(x)) * 4 + 3];
+      };
+      check(t.w == kLayerThumbPx && t.h < t.w && t.y > 0,
+            "vec thumb: a 4:1 document letterboxes and is centred, never stretched");
+      check(alphaAt(12, t.y + t.h / 2) == 255,
+            "vec thumb: the shape fills the letterboxed band...");
+      check(alphaAt(12, 0) == 0 && alphaAt(12, kLayerThumbPx - 1) == 0,
+            "vec thumb: ...and the margin above and below it stays transparent");
+    }
+
+    // --- Empty is transparent, never a black square -----------------------
+    //
+    // Both are one click of NEW away, and a black 24 px square in the panel
+    // would say the layer is full of black paint.
+    {
+      OpenDocument od = vectorDoc(128, 128, {});
+      const LayerThumbnail t = layerContentThumbnail(od.document, 0);
+      bool anyByte = false;
+      for (const uint8_t b : t.rgba)
+        if (b != 0) anyByte = true;
+      check(!anyByte && t.w == kLayerThumbPx,
+            "vec thumb: a Vector layer with no shapes is fully transparent, not black");
+
+      OpenDocument empty = makeBlankOpenDocument(128, 128, WorkingSpace{}, "empty text");
+      empty.document.layers.clear();
+      addLayer(empty.document, 0, makeTextLayer("text"));
+      const LayerThumbnail e = layerContentThumbnail(empty.document, 0);
+      bool anyTextByte = false;
+      for (const uint8_t b : e.rgba)
+        if (b != 0) anyTextByte = true;
+      check(!anyTextByte && e.w == kLayerThumbPx,
+            "vec thumb: a Text layer with no string is fully transparent too");
+    }
+
+    // --- Text IS Vector, and the two paths must agree byte for byte -------
+    //
+    // core/TextContent.hpp §1's claim, asserted where it would otherwise be a
+    // promise: `textContentToShapes()` returns exactly the shapes a Vector
+    // layer holds, so a Text layer's thumbnail and a Vector layer's thumbnail
+    // of the SAME shapes must be identical. If they differ, one of the two
+    // paths is wrong and the panel is showing a picture from a renderer nothing
+    // else uses. Guarded on `shaperAvailable()`, exactly as
+    // app/selftest/TextShaper.cpp is: a build with no CoreText shapes nothing.
+    if (shaperAvailable()) {
+      OpenDocument od = makeBlankOpenDocument(256, 256, WorkingSpace{}, "text thumb");
+      od.document.layers.clear();
+      addLayer(od.document, 0, makeTextLayer("type"));
+      TextContent tc = makeTextContent("Agj", PathPoint{16.0f, 96.0f});
+      tc.style.sizePx = 96.0f;
+      od.document.layers[0].text = tc;
+      const LayerThumbnail textThumb = layerContentThumbnail(od.document, 0);
+
+      size_t lit = 0;
+      for (size_t i = 3; i < textThumb.rgba.size(); i += 4)
+        if (textThumb.rgba[i] != 0) ++lit;
+      check(lit > 0, "text thumb: a Text layer with a real string draws SOMETHING");
+      check(lit < static_cast<size_t>(kLayerThumbPx) * kLayerThumbPx,
+            "text thumb: ...and not everything -- glyphs, not a filled square");
+
+      OpenDocument asVector = vectorDoc(256, 256, textContentToShapes(tc));
+      const LayerThumbnail vecThumb = layerContentThumbnail(asVector.document, 0);
+      check(vecThumb.rgba == textThumb.rgba,
+            "text thumb: a Text layer and a Vector layer of its shapes are BYTE-identical");
+      check(vecThumb.samples == textThumb.samples && textThumb.samples > 0,
+            "text thumb: ...and cost the same, so it really is one code path");
+      std::printf("  [text thumb] %zu of %d cell texels lit, %zu coverage texels emitted\n", lit,
+                  kLayerThumbPx * kLayerThumbPx, textThumb.samples);
+    }
+
+    // --- The cost is the CELL's, not the document's -----------------------
+    //
+    // §5's honest claim. The same geometry on a document 16 times as wide maps
+    // onto the same 24 px cell, so the rasteriser must emit the same coverage
+    // texels -- the failure this guards is a thumbnail that rasterises at
+    // document resolution and downsamples, which has the identical signature
+    // and is 256 times the work.
+    {
+      OpenDocument small = vectorDoc(256, 256, {filled(0.0f, 0.0f, 128.0f, 128.0f,
+                                                       {1.0f, 1.0f, 1.0f, 1.0f})});
+      OpenDocument big = vectorDoc(4096, 4096, {filled(0.0f, 0.0f, 2048.0f, 2048.0f,
+                                                       {1.0f, 1.0f, 1.0f, 1.0f})});
+      const LayerThumbnail a = layerContentThumbnail(small.document, 0);
+      const LayerThumbnail b = layerContentThumbnail(big.document, 0);
+      check(a.samples == b.samples && a.samples > 0,
+            "vec cost: a 4096px document emits the same coverage texels as a 256px one");
+      check(a.samples <= static_cast<size_t>(kLayerThumbPx) * kLayerThumbPx,
+            "vec cost: and one shape never emits more texels than the cell has");
+      check(a.rgba == b.rgba, "vec cost: and the two pictures are identical, as they must be");
+    }
   }
 
   std::printf("[selftest] mask target %s\n", ok ? "PASS" : "FAIL");
