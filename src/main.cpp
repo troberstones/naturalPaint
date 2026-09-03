@@ -1093,6 +1093,7 @@ int main(int argc, char** argv) {
   np::GradientKind gradientDemoKind = np::GradientKind::Linear;
   bool wandDemo = false;
   bool wandDemoBucket = false;
+  bool smudgeDemo = false;
   bool flyoutDemo = false;
   bool panelStackDemo = false;
   bool uiLayerDemoClip = true;
@@ -1411,6 +1412,21 @@ int main(int argc, char** argv) {
         wandDemoBucket = true;
         ++i;
       }
+    } else if (a == "--smudge-demo") {
+      // Selects `Tool::Smudge`, and changes nothing else -- which is the whole
+      // point of this one, unlike `--wand-demo bucket` above.
+      //
+      // The options bar's smudge row is a per-tool block and `--screenshot` has
+      // no way to click a palette cell, so this is the only way to photograph
+      // it at all (`--selftest` has no window and no ImGui frame). And what it
+      // must photograph is the row **at its defaults**: `brush/Smudge.hpp` §3b's
+      // defect was a default, not a control -- the STRENGTH slider reading 0.50
+      // rather than 1.00 is the fix, and a demo that set a value first would
+      // photograph the setter instead of the shipped state. The row also has to
+      // be seen sitting BESIDE the four brush sliders rather than replacing
+      // them, which is this tool's departure from every other per-tool block in
+      // that function (`docs/ui.md` §4b).
+      smudgeDemo = true;
     } else if (a == "--flyout-demo") {
       // sidequest/lucide-toolbox, the nested-flyout revision: holds the
       // Brush group's flyout open (four members, Brush/Pencil implemented-
@@ -2458,6 +2474,15 @@ int main(int argc, char** argv) {
     // strength are exact: 0 is a byte-identical no-op with the rejected blur
     // measured beside it, 1 carries one colour the whole length of the stroke.
     const bool smudgeOk = np::runSmudgeTest();
+    // brush/Smudge §3b -- the smudge's own parameter block, and the section
+    // that exists because the one directly above it was green while the tool
+    // was unusable. Strength was the OPACITY slider, which defaults to 1, and 1
+    // is the one strength at which a smear provably never fades; every
+    // assertion above sets a strength first, so none of them ever asked what
+    // the default does. This one runs the tip the app itself builds out of an
+    // unconfigured AppState and requires the fade, with the identical drag at
+    // strength 1 measured beside it as the negative.
+    const bool smudgeOptionsOk = np::runSmudgeOptionsTest();
     // PRD E1 (P0) on the layer kind that never had it, and ADR-0007's Pigment
     // eraser row that gate unblocked. brush/Deposit.hpp did not contain the word
     // "Selection", so a natural-media stroke on a Pigment layer painted straight
@@ -2733,6 +2758,7 @@ int main(int argc, char** argv) {
                     pencilDepositOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && tonalBrushOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && smudgeOk &&
+                    smudgeOptionsOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
                     pigmentSelectionOk && cloneStampOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
@@ -3072,6 +3098,13 @@ int main(int argc, char** argv) {
           "options bar shows its flood-fill row\n",
           np::floodToleranceToUi(st.magicWand.tolerance), np::floodReachLabel(st.magicWand.reach));
     }
+  }
+  if (smudgeDemo) {
+    np::setActiveTool(st, np::Tool::Smudge);
+    std::printf("[smudge-demo] Tool::Smudge selected, strength=%.2f tip=%s -- the options bar "
+                "shows its STRENGTH/TIP row AND keeps the brush sliders\n",
+                st.brush.smudge.strength,
+                st.brush.smudge.dabId.empty() ? "the brush's" : st.brush.smudge.dabId.c_str());
   }
   if (flyoutDemo)
     std::printf("[flyout-demo] Brush group's flyout held open (right-click/press-hold demo)\n");

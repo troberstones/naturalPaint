@@ -679,6 +679,55 @@ identical held drag. The canvas views exist because the defect that made this to
 for its whole history (T3) was invisible to `--selftest` by construction: it lived in a
 canvas block, in a mutable flag two unrelated gestures shared.
 
+### The smudge brings a row and **keeps** the brush sliders
+
+The smudge is the first tool in the band to draw its own controls *without* taking an early
+return, and it is deliberately **not** in the table above. Apply §4b's own test rather than
+the loose one and the answer is plain: the four sliders would have to be live over something
+the tool provably never reads, and `smudgeDab()` (`brush/Smudge.hpp`) reads three of them —
+`dabCoverage()` is SIZE and HARD (and the roundness and angle behind them), and every texel's
+weight is multiplied by `tip.flow`, which is LOAD. Only WET is dead here, and WET is already
+disabled on its own by `wetnessReachesSolver()`. A tool that walks a shape with a tip belongs
+with the brush sliders; the eyedropper and the measure have no tip, the gradient has no
+stroke, and the two flood tools find their region with a predicate instead of a shape. So the
+table stays at five, and the smudge appends **STRENGTH** and **TIP** to the row it already
+had.
+
+**STRENGTH exists because it used to be OPACITY, and that was the defect.**
+`brush/Smudge.hpp` §3b carries the whole account; the short form is that the smudge latched
+`BrushTip::opacity`, whose default is 1, and 1 is the single strength at which the fade the
+tool is built around is exactly the identity — `lerp(pick, finger, 1)` returns `finger`, so
+the colour picked up at pen-down was dragged to the far edge of the canvas and the finger
+never reloaded. It shipped that way and was reported that way ("It never fades"). The only
+control over it was the BRUSH panel's OPACITY slider, which means "the fraction of the
+maximum effect one stroke may reach" on five other routes, so moving it for the smudge moved
+it for the eraser too. STRENGTH is `st.brush.smudge.strength` now, defaults to 0.5, and
+OPACITY is drawn **disabled** while the smudge is selected — the same
+disabled-rather-than-hidden treatment §4a requires of any control a tool provably never
+reads, applied here to a slider that until now looked live and meant something else.
+
+The control is called STRENGTH and not PICKUP, which is the word the report used, because
+naming it for the pick-up inverts the slider, and inverting the slider puts the bit-exact
+**no-op** at the top of the track: strength 0 writes nothing at all, so "maximum pickup"
+would be the setting that stops the tool — §4a's dead control wearing the most inviting
+label on the row. The report's vocabulary is answered in the tooltip instead.
+
+**TIP** is the second half of the same report ("picking a dab shape as well … for smudge is
+likely ideal"), scoped to the dab-shape half: it offers `app/DabLibrary`'s own entries through
+the same `resolve()` the BRUSH panel's picker grid calls, and stores the same `(id, bitmap)`
+pair. "Brush's tip" is the default and is what this tool has dragged for its whole history. An
+override applies to smudge strokes and to nothing else, so choosing a smear shape is not an
+edit to the brush. **A second brush engine — its own size, spacing, dynamics and preset — is
+deliberately not built**: every field but the bitmap would be a copy of a field the smudge
+already reads off the brush, which is the drift the wand and bucket blocks are shaped to
+avoid. What is left specified and unbuilt is a *preset* picker for the smudge (choose a whole
+brush, not a tip), which needs a second `BrushState`-shaped block and is its own job.
+
+`smudge_options` is the golden view. `--selftest` has no window and no ImGui frame, so it is
+the only coverage the two controls have; `app/selftest/SmudgeOptions.cpp` covers the block
+behind them, including the assertion the old suite did not have — that at the **default**
+nobody sets, the smear actually fades.
+
 `wand_options` and `bucket_options` cover the flood-fill row the same way, and the pair is
 the point: one block of drawing code read by two tools looks identical to two blocks until
 the values differ, so the bucket view sits at the opposite state of every control. The

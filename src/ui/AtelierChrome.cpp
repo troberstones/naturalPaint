@@ -1202,6 +1202,120 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     popAtelierMono();
   }
 
+  // --- the smudge's own controls -------------------------------------------
+  //
+  // **In ADDITION to the four brush sliders above, not instead of them, and
+  // that is a deliberate departure from every other per-tool block in this
+  // function.** `docs/ui.md` §4b's test for taking an early return is not "does
+  // this tool have settings" but *would the four brush sliders be live controls
+  // over something this tool provably never reads*, and the smudge fails that
+  // test three ways: `smudgeDab()` calls `dabCoverage()` (SIZE, HARD, and the
+  // roundness/angle behind them) and multiplies every texel's weight by
+  // `tip.flow` (LOAD). Only WET is dead here, and WET is already disabled by
+  // `wetnessReachesSolver()` on its own. So this is the first tool in the band
+  // to bring a row and keep the sliders -- the eyedropper, the measure and the
+  // gradient have no tip at all, and the two flood tools walk a predicate
+  // rather than a shape.
+  //
+  // The gate is `smudgeToolParamsFor()` -- `app/AppState.hpp`'s single mapping
+  // from a tool to the block a stroke actually reads -- and not a
+  // `tool == Smudge` spelled again here, for `floodToolParamsFor()`'s stated
+  // reason one block up.
+  if (SmudgeParams* smudge = smudgeToolParamsFor(st.brush, st.brush.tool)) {
+    bandSeparator();
+    // **STRENGTH, and it is a new field rather than the OPACITY slider it used
+    // to be** -- `brush/Smudge.hpp` §3b. That sharing is what shipped the tool
+    // at strength 1, the one value at which a smear provably never fades, with
+    // its only control in the BRUSH panel under a name that means something
+    // else on five other routes.
+    capsLabel("STRENGTH");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    pushAtelierMono();
+    ImGui::SliderFloat("##smudgeStrength", &smudge->strength, 0.0f, 1.0f, "%.2f");
+    popAtelierMono();
+    ImGui::SetItemTooltip(
+        "How far the colour you picked up is carried before the canvas takes it back. Lower "
+        "picks up more of what it crosses, so the smear fades sooner; 1 drags the colour "
+        "under the pen at pen-down to the far end of the stroke with no fade at all, and 0 "
+        "leaves the layer untouched byte for byte.");
+
+    bandSeparator();
+    // **TIP: the smudge's own dab, or the brush's.** The report's second half
+    // ("picking a dab shape as well ... for smudge is likely ideal"), scoped to
+    // the half that reuses machinery that exists: this offers `app/DabLibrary`'s
+    // own entries, resolved through the same `resolve()` the BRUSH panel's
+    // picker grid calls, and stores the same `(id, bitmap)` pair
+    // `BrushState::dabId`/`tipBitmap` stores. **A full second brush -- its own
+    // size, spacing, dynamics and preset -- is deliberately not here**; see
+    // `brush/Smudge.hpp` §3b's last paragraph for why every field but the
+    // bitmap would be a copy of a field the smudge already reads off the brush.
+    capsLabel("TIP");
+    ImGui::SameLine();
+    // The label a cell shows, capped so the preview can never be clipped under
+    // its own arrow. Dab names come from FILENAMES, so unlike every other combo
+    // in this band their length is unbounded and measuring the true widest one
+    // would let a folder full of long names push the trailing route indicator
+    // out of the band. Truncating and then measuring over the TRUNCATED forms
+    // is what keeps the measurement and the drawing the same string -- the
+    // REACH combo's own history two blocks up is what happens when they are
+    // not. The back-off loop is because a name is UTF-8 and a byte cut through
+    // a continuation byte draws as a replacement glyph.
+    constexpr size_t kTipLabelMax = 18;
+    auto shortLabel = [](const std::string& s) -> std::string {
+      if (s.size() <= kTipLabelMax) return s;
+      size_t cut = kTipLabelMax - 1;
+      while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
+      return s.substr(0, cut) + "\xE2\x80\xA6";  // U+2026 HORIZONTAL ELLIPSIS
+    };
+    // "Brush's tip" rather than "None" or "Default": the empty state is not the
+    // absence of a tip, it is the tip the brush is on, which is what this tool
+    // has used for its whole history and what a user who never opens this combo
+    // keeps getting.
+    static const char* kBrushTipLabel = "Brush's tip";
+    const DabEntry* chosen =
+        smudge->dabId.empty() ? nullptr : st.dabLibrary.find(smudge->dabId);
+    // A set id the library cannot resolve falls back to the brush's tip in
+    // `brushTipFor()`, so it says so here too rather than showing a name for a
+    // dab that is not going to paint.
+    const std::string preview =
+        chosen != nullptr ? shortLabel(chosen->name) : std::string(kBrushTipLabel);
+    pushAtelierMono();
+    float widest = ImGui::CalcTextSize(kBrushTipLabel).x;
+    for (const DabEntry& e : st.dabLibrary.entries())
+      widest = std::max(widest, ImGui::CalcTextSize(shortLabel(e.name).c_str()).x);
+    ImGui::SetNextItemWidth(widest + ImGui::GetFrameHeight() + 16.0f);
+    if (ImGui::BeginCombo("##smudgeTip", preview.c_str())) {
+      if (ImGui::Selectable(kBrushTipLabel, smudge->dabId.empty())) {
+        // Both halves cleared together, always -- `SmudgeParams`' own contract
+        // and `BrushState::dabId`'s before it. An id cleared without its bitmap
+        // leaves a tip that paints from a dab the UI says is not selected.
+        smudge->dabId.clear();
+        smudge->tipBitmap.reset();
+      }
+      for (const DabEntry& e : st.dabLibrary.entries()) {
+        if (ImGui::Selectable(shortLabel(e.name).c_str(), e.id == smudge->dabId)) {
+          smudge->dabId = e.id;
+          // `resolve()` decodes on first use and caches -- the same call the
+          // BRUSH panel's picker makes, so a dab chosen in either place costs
+          // one decode between them rather than one each.
+          smudge->tipBitmap = st.dabLibrary.resolve(e.id);
+        }
+        // The full name, since the row above may be the truncated one. The
+        // tooltip is the only place the whole name is readable at all.
+        ImGui::SetItemTooltip("%s", e.name.c_str());
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+    ImGui::SetItemTooltip(
+        "Which dab this tool drags. \"%s\" follows whatever tip the brush is on, which is what "
+        "the smudge has always used; anything else overrides it for smudge strokes and for "
+        "nothing else, so picking a smear shape does not repaint your next brush stroke with "
+        "it. SIZE, HARD and LOAD above are still the brush's and are still live here.",
+        kBrushTipLabel);
+  }
+
   // --- what the next gesture will actually hit -----------------------------
   //
   // The layers panel says which layer is selected; this says what *using this

@@ -6,7 +6,7 @@
 # why). This script is the missing other half: it drives the app through a
 # handful of known, scripted UI states via its existing --demo-document /
 # --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo /
-# --gradient-demo / --clone-demo
+# --gradient-demo / --clone-demo / --smudge-demo
 # CLI flags, crops each capture down
 # to one small region, and compares it against a reference image committed
 # under tests/golden/ with src/tools/GoldenTool.cpp.
@@ -443,8 +443,55 @@ measure_n="${2:-10}"
 #     diff 0. So they are blessed exact, like `gradient` and `gradient_drag`
 #     before them, rather than handed `toolbar`'s (48, 16) by analogy -- the
 #     mistake `gradient_drag`'s own entry above records making and correcting.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket")
+#   smudge_options  -- the options bar with `Tool::Smudge` selected
+#     (`--smudge-demo`): the STRENGTH slider and the TIP combo the smudge got
+#     when its strength stopped being the OPACITY slider (brush/Smudge.hpp
+#     §3b), the four brush sliders it KEEPS, and the trailing route indicator.
+#
+#     **One view rather than a pair, unlike the two above, and for the reason
+#     that pair exists**: there they are two tools reading one block of drawing
+#     code, and only two photographs at different values can show the blocks are
+#     separate. Here there is one tool and one block, so a second view would
+#     photograph the same fact twice.
+#
+#     **What it is actually for is a DEFAULT, which is unusual for a view here
+#     and is the whole point.** The defect this row answers was not a missing
+#     control, it was `strength` being `BrushTip::opacity`, whose default is 1
+#     -- and 1 is the single strength at which the fade brush/Smudge §5 derives
+#     is exactly the identity, so the shipped tool smeared one colour to the far
+#     edge of the canvas and never reloaded. The user reported it; the suite did
+#     not, because every strength assertion in `app/selftest/Smudge.cpp` sets a
+#     strength before measuring. So the thing this capture must hold is the
+#     characters **0.50** in the STRENGTH track, and `--smudge-demo`
+#     deliberately sets nothing at all: a demo that configured the row first
+#     would photograph the demo instead of the shipped state.
+#     `app/selftest/SmudgeOptions.cpp` asserts the same number headlessly and
+#     asserts the fade it buys. **What that section provably cannot reach is
+#     whether anything DRAWS it**, and that is measured rather than assumed:
+#     gating the row on the wrong tool, so it is drawn for none, left
+#     `--selftest` at 0 FAIL and exit 0 while moving 10 176 of this crop's
+#     170 240 px at max channel diff 223. A row bound to the right struct and
+#     shown to nobody is a green suite and an empty band.
+#
+#     **The crop is 2240 wide, the widest in this table, and every part of it
+#     is load-bearing.** It starts at the band's left end so the tool NAME is in
+#     frame (a row drawn under the wrong tool name is the failure
+#     `floodToolParamsFor()`'s sibling exists to prevent), runs through SIZE,
+#     HARD, LOAD and WET because this is the first tool in the band to bring a
+#     row and KEEP the brush sliders -- `docs/ui.md` §4b's test is whether those
+#     four are live, and `smudgeDab()` reads three of them -- and ends past
+#     `-> smudge` so the trailing route indicator is included, for the reason
+#     the two entries above give for running to x=1440.
+#
+#     Measured at exact **(0, 0)**, and measured rather than reasoned about:
+#     8 separately launched captures, each cropped identically and diffed
+#     against the batch's first (170 240 px crop). 7 comparisons, every one
+#     0 mismatched px at max channel diff 0. Blessed exact rather than handed
+#     `toolbar`'s (48, 16) by analogy, which is the mistake `gradient_drag`'s
+#     entry records making and correcting -- this crop holds more antialiased
+#     text than any other in the table and still did not move a bit.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -664,11 +711,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920 0   0   0    900 1000 1830 1900 1900 40   480  40   480  480  390  390  40   40)
-view_crop_y=(5    927  965 148 664 0    628 1000 158  166  1462 76   560  76   560  560  370  370  76   76)
-view_crop_w=(1400 640  384 100 400 2560 700 900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400)
-view_crop_h=(166  190  192 402 350 77   500 400  500  64   64   76   800  76   800  800  550  550  76   76)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920 0   0   0    900 1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40)
+view_crop_y=(5    927  965 148 664 0    628 1000 158  166  1462 76   560  76   560  560  370  370  76   76   76)
+view_crop_w=(1400 640  384 100 400 2560 700 900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240)
+view_crop_h=(166  190  192 402 350 77   500 400  500  64   64   76   800  76   800  800  550  550  76   76   76)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -715,7 +762,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # it does produce is drawn at a fixed position rather than chased across the
 # frame. Giving these a text budget by analogy would have cost the sensitivity
 # `gradient_drag`'s own entry above records losing for exactly that reason.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -731,7 +778,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

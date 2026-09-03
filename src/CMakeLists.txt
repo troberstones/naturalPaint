@@ -164,6 +164,7 @@ add_executable(naturalPaint
   app/selftest/RgbDeposit.cpp
   app/selftest/RgbErase.cpp
   app/selftest/Smudge.cpp
+  app/selftest/SmudgeOptions.cpp
   app/selftest/SaveReadback.cpp
   app/selftest/Scatter.cpp
   app/selftest/ScatterCount.cpp

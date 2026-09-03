@@ -686,6 +686,32 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   tip.opacity = brush.opacity;
   tip.grain = brush.grain;
 
+  // --- the smudge's own block (brush/Smudge.hpp §3b) ----------------------
+  //
+  // **The single site that resolves it**, and the reason `SmudgeParams` sits on
+  // `BrushState` rather than beside the flood tools' blocks: both halves land
+  // here, in one place, off the one mapping `smudgeToolParamsFor()`. Spelling
+  // `brush.tool == Tool::Smudge` here instead would be a second copy of the
+  // options bar's own gate, and the way two copies stop agreeing is a row of
+  // live controls over a struct no stroke reads.
+  //
+  // `tip.smudgeStrength` is left at its own default -- the same 0.5 -- for
+  // every other tool. It is read by exactly one route, so what it holds while
+  // a brush is selected changes nothing; setting it unconditionally from a
+  // block that only the smudge edits would be the more surprising of the two.
+  //
+  // **The bitmap override is deliberately last of the two and deliberately
+  // conditional on the POINTER, not on the id.** An id naming a dab the
+  // library can no longer resolve (a folder moved out from under the app)
+  // leaves `tipBitmap` null, and falling through to the brush's own tip is the
+  // only answer that still smudges: substituting an empty bitmap would give a
+  // tip with no coverage anywhere, which on this route is indistinguishable
+  // from the tool being broken.
+  if (const SmudgeParams* smudge = smudgeToolParamsFor(brush, brush.tool)) {
+    tip.smudgeStrength = smudge->strength;
+    if (smudge->tipBitmap) tip.bitmap = smudge->tipBitmap;
+  }
+
   // The `Md ` per-stroke blend mode (Part 3, `PsToolOptions::blendMode`),
   // mapped once at the edge. Unlike Transfer and Scatter Count, this is
   // groundwork only: `blend` is not read by any of the four deposit routes
@@ -1076,10 +1102,10 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
                  resolvedOpacity, layer.alphaLocked);
   else
     clone_.end();
-  // The smudge route's carried colour and its strength, latched from the SAME
-  // slider (brush/Smudge.hpp §3): there it means how far the finger dominates
-  // the canvas, and a stroke whose dominance moved half way through would have
-  // been picking up under one rule and putting down under another. A fourth
+  // The smudge route's carried colour and its strength, latched for the stroke
+  // (brush/Smudge.hpp §3): strength is how far the finger dominates the canvas,
+  // and a stroke whose dominance moved half way through would have been picking
+  // up under one rule and putting down under another. A fourth
   // `begin()`/`end()` pair rather than a fifth arm of a switch, for the reason
   // the three above are pairs: the `else` is the load-bearing half. It matters
   // more here than anywhere else, because what this engine holds after an
@@ -1087,8 +1113,17 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   // would lay the previous stroke's paint down before the new stroke had picked
   // anything up, which is invisible until the two strokes are different
   // colours.
+  //
+  // **`tip.smudgeStrength`, NOT `resolvedOpacity`** -- brush/Smudge.hpp §3b.
+  // This line used to read the same slider as the four `begin()`s above it, on
+  // the argument that a strength and a stroke ceiling are one quantity; they
+  // are not, and the price of pretending so was that the smudge inherited
+  // `BrushState::opacity`'s default of 1, which is the single value at which
+  // the tool provably never fades. The field it reads now has its own default
+  // (0.5) and its own control, and there is deliberately no Transfer variance
+  // applied to it: `opVr` is an opacity dynamic and this is not an opacity.
   if (route_ == StrokeRoute::Smudge)
-    smudge_.begin(resolvedOpacity);
+    smudge_.begin(tip.smudgeStrength);
   else
     smudge_.end();
 

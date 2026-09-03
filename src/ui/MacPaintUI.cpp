@@ -4621,21 +4621,23 @@ void drawBrushPaintGroup(AppState& st) {
     // dimmed and inert whenever a tonal tool was selected -- the exact complaint
     // this disabled-rather-than-hidden treatment exists to answer.
     const bool toning = route == StrokeRoute::TonalBrush;
+    // **The smudge USED to read this slider as its STRENGTH, and no longer
+    // does** -- brush/Smudge.hpp §3b. That reading is what shipped the tool at
+    // `BrushState::opacity`'s default of 1, which is the one strength at which a
+    // smear provably never fades and never reloads; the user report that
+    // section quotes is what it cost. STRENGTH is `st.brush.smudge.strength`
+    // now, with its own default and its own control in the options bar, so this
+    // slider is **dead** on the smudge route and is dimmed accordingly -- the
+    // same disabled-rather-than-hidden treatment the pigment deposit gets, and
+    // the treatment this block exists to apply.
     const bool smudging = route == StrokeRoute::Smudge;
     // The clone reads it as its per-stroke ceiling too -- the same slider and
     // the same meaning, "the fraction of the maximum effect one stroke may
     // reach" (brush/CloneStamp §1's accumulator is brush/RgbDeposit §2's). Left
     // out of `honoured`, this control would have been dimmed over a sentence
     // saying it did nothing while it in fact set how opaque the copy came out.
-    const bool honoured = erasing || toning || smudging ||
-                          route == StrokeRoute::RgbDeposit ||
-                          route == StrokeRoute::CloneStamp;
-    // **And the smudge reads it as its STRENGTH** (brush/Smudge.hpp §3) -- one
-    // more reading of the same slider, so it is live on that route too. Its
-    // sentence is its own rather than the eraser's, because the number does
-    // something visibly different: at 0 the tool is a bit-exact no-op and at 1
-    // it carries the colour it picked up at pen-down for the whole stroke with
-    // no decay at all, which is not what "how much it takes" describes.
+    const bool honoured =
+        erasing || toning || route == StrokeRoute::RgbDeposit || route == StrokeRoute::CloneStamp;
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
@@ -4644,7 +4646,11 @@ void drawBrushPaintGroup(AppState& st) {
     else if (toning)
       ImGui::TextDisabled("Flow is how fast the tone moves; opacity is how far it goes.");
     else if (smudging)
-      ImGui::TextDisabled("Opacity is how far the colour is carried; 0 does nothing.");
+      // Named rather than left to the generic sentence below, because this is
+      // the one route whose answer changed: a user who learnt that this slider
+      // was the smudge's strength has to be told where it went, not merely that
+      // it is inert.
+      ImGui::TextDisabled("The smudge reads STRENGTH in the options bar, not this.");
     else if (honoured)
       ImGui::TextDisabled("Flow is how fast paint builds; opacity is where it stops.");
     else

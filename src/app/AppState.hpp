@@ -27,6 +27,7 @@
 #include "core/SelectionBoundary.hpp"
 #include "core/SelectionOps.hpp"
 #include "core/SelectionShapes.hpp"
+#include "brush/Smudge.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "core/Probe.hpp"
@@ -343,17 +344,49 @@ struct BrushState {
   // pass.
   //
   // 1.0 rather than a lower default because a brush that does not reach the
-  // colour it is loaded with is the surprising one, and because it makes this
-  // field invisible to every existing behaviour until someone moves it. **No UI
-  // control yet** -- exposing it is a later step's job, exactly as `spacing`
-  // above still says of itself; this is the constant default and the place the
+  // colour it is loaded with is the surprising one. This is also the place the
   // DYNAMICS matrix would multiply if a `DynamicTarget::Opacity` is ever added
   // (there is none today, which is why `brushTipFor()` copies this straight
   // through rather than scaling it).
   //
-  // Read only by the RGB deposit route. The pigment route caps at `kMaxMass`,
-  // a property of the paper rather than of the stroke.
+  // **Two stale claims used to sit here and both mattered**, so they are
+  // corrected rather than deleted. It said "No UI control yet": the BRUSH
+  // panel's OPACITY slider (`ui/MacPaintUI.cpp`'s `drawBrushPaintGroup()`) has
+  // written this field for some time. And it said "Read only by the RGB deposit
+  // route": the RGB erase, the pigment erase, the tonal brushes and the clone
+  // stamp each latch it too, as their own headers say -- one slider, one
+  // meaning, "the fraction of the maximum effect one stroke may reach".
+  //
+  // **The SMUDGE used to be a sixth reader and no longer is.** It read this
+  // field as its `strength`, which is a different quantity in different units,
+  // and inherited the 1.0 above as a default under which a smear provably never
+  // fades -- `brush/Smudge.hpp` §3b is the whole account. `smudge.strength`
+  // below is where that lives now, and the OPACITY slider is drawn disabled
+  // while the smudge is selected.
   float opacity = 1.0f;
+
+  // **The smudge's own settings** (`brush/Smudge.hpp` §3b): the strength that
+  // used to be `opacity` directly above, and the dab this tool drags if the
+  // user has picked one.
+  //
+  // On `BrushState` rather than beside `magicWand`/`paintBucket` on `AppState`
+  // proper, and the reason is `brushTipFor()`. That function already takes a
+  // `BrushState` and already knows `brush.tool`, so it is a site that can apply
+  // BOTH halves of this block -- the strength into `BrushTip::smudgeStrength`
+  // and the tip into `BrushTip::bitmap` -- with no signature change and, more
+  // to the point, in exactly ONE place. The flood tools' blocks live on
+  // `AppState` because nothing builds a `BrushTip` for a bucket click; a smudge
+  // is a stroke, so its parameters belong where a stroke's parameters are
+  // resolved. `smudgeToolParamsFor()` below is still the single tool->block
+  // mapping, for `floodToolParamsFor()`'s stated reason.
+  //
+  // Session state that survives a tool switch and **not persisted**, the same
+  // caveat `EyedropperState`, `GradientToolState` and the two `FloodFillParams`
+  // blocks all carry and for the same reason: there is still no preferences
+  // file that is not the brush-library file. `dabId` is the half that COULD
+  // survive a save if there ever is one -- it is an id, not a bitmap, exactly
+  // as `BrushState::dabId` above is.
+  SmudgeParams smudge;
 
   // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) -- OFF by default,
   // `GrainParams`'s own default. The BRUSH EDITOR's PAPER GRAIN section
@@ -1425,6 +1458,41 @@ inline FloodFillParams* floodToolParamsFor(AppState& st, Tool tool) noexcept {
     default:
       return nullptr;
   }
+}
+
+// **The one mapping from a tool to the smudge's settings block**, the same
+// shape and for the same reason as `floodToolParamsFor()` directly above.
+//
+// Two readers, and they must never disagree: the options bar
+// (`ui/AtelierChrome.cpp`) edits the block, and `brushTipFor()`
+// (`app/StrokeSession.cpp`) resolves it into the `BrushTip` a stroke is begun
+// with. `brush/Smudge.hpp` §3b's defect was one narrower than the one this
+// function prevents -- there the row and the stroke agreed perfectly, on a
+// field that meant something else -- but the shape of the fix is the same:
+// one predicate, so the row is drawn for exactly the tools whose strokes read
+// it.
+//
+// **It takes a `BrushState`, not an `AppState`**, unlike its flood-fill
+// sibling, and that is the whole of why the block lives on `BrushState` (see
+// `BrushState::smudge`'s own comment): `brushTipFor()` is handed a
+// `BrushState` and nothing else, so this signature is what lets the consumer
+// side of the mapping be the same function the UI side calls rather than a
+// second spelling of the same condition.
+//
+// `nullptr` for every tool that does not smudge, which is also how the options
+// bar asks "does this tool get the row". `--selftest` walks every `Tool` value
+// against it, so a second smudging tool cannot be added without either
+// appearing here or failing the suite.
+inline SmudgeParams* smudgeToolParamsFor(BrushState& brush, Tool tool) noexcept {
+  switch (tool) {
+    case Tool::Smudge:
+      return &brush.smudge;
+    default:
+      return nullptr;
+  }
+}
+inline const SmudgeParams* smudgeToolParamsFor(const BrushState& brush, Tool tool) noexcept {
+  return smudgeToolParamsFor(const_cast<BrushState&>(brush), tool);
 }
 
 // The REACH combo's vocabulary, the same shape and for the same reason as

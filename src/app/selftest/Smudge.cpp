@@ -470,7 +470,18 @@ bool runSmudgeTest() {
     fillRect(*od3.document.layers[0].rgbTiles, 0, 0, 63, 127, kPaint);
     od3.selection = selectRectangle(0.0f, 0.0f, 120.0f, 128.0f);
     BrushTip sessionTip = discTip(6.0f, 1.0f);
-    sessionTip.opacity = 0.9f;
+    // **`smudgeStrength`, not `opacity`** -- brush/Smudge.hpp §3b. This line
+    // read `sessionTip.opacity = 0.9f` until strength stopped being the opacity
+    // slider, and the assertion below cared: at the new default of 0.5 the
+    // finger halves per dab, so the probe at x=100 (about four dabs past the
+    // paint's edge at x=63) falls under its own 0.02 floor and this section
+    // reddened. Set explicitly rather than raised-floor-and-hoped, because the
+    // claim here is about the SELECTION and nothing about it should depend on
+    // what the shipped default happens to be this month.
+    sessionTip.smudgeStrength = 0.9f;
+    // Deliberately hostile: the field this route used to read, left at a value
+    // that would sail past the probe below if anything still latched it.
+    sessionTip.opacity = 0.0f;
     StrokeSession sess;
     std::string err;
     check(sess.begin(od3, 0, sessionTip, Tool::Smudge, &err) && err.empty() &&
@@ -502,7 +513,11 @@ bool runSmudgeTest() {
     const uint64_t revBefore = od.revision;
 
     BrushTip t = discTip(24.0f, 1.0f);
-    t.opacity = 1.0f;
+    // Strength 1 here on purpose and through the new field (brush/Smudge.hpp
+    // §3b): the claim is that a drag over blank canvas allocates nothing, and
+    // strength 1 is the *hardest* setting to make that true at, because it is
+    // the one under which the finger never decays back toward zero once loaded.
+    t.smudgeStrength = 1.0f;
     StrokeSession s;
     std::string err;
     s.begin(od, 0, t, Tool::Smudge, &err);
@@ -638,7 +653,10 @@ bool runSmudgeTest() {
 
     BrushTip t = discTip(14.0f, 0.6f);
     t.hardness = 0.4f;
-    t.opacity = 0.7f;
+    // brush/Smudge.hpp §3b again: the strength this stroke runs at, through the
+    // field the route reads now rather than through the opacity slider it used
+    // to share.
+    t.smudgeStrength = 0.7f;
     StrokeSession s;
     std::string err;
     s.begin(od, 0, t, Tool::Smudge, &err);

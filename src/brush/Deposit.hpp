@@ -764,6 +764,29 @@ struct BrushTip {
   // what a half-loaded brush means physically, not a plumbing job.
   float opacity = 1.0f;
 
+  // **The smudge's strength, and it is deliberately NOT `opacity` above** --
+  // `brush/Smudge.hpp` §3b carries the whole argument. Until that section
+  // existed the smudge latched `opacity`, whose default is 1, and 1 is the one
+  // value at which a smudge provably never fades: `lerp(pick, finger, 1)`
+  // returns `finger`, so the colour loaded at pen-down was carried to the far
+  // edge of the canvas with no decay at all. A separate field with a separate
+  // default is what makes the shipped behaviour a decision rather than a
+  // coincidence of two unrelated meanings sharing one slider.
+  //
+  // Read by exactly one route (`StrokeRoute::Smudge`, latched at
+  // `StrokeSession::begin()`), and unscaled by anything Photoshop calls
+  // Transfer unlike `opacity` directly above: `opVr` is a per-stroke OPACITY
+  // dynamic and this is not an opacity, so running it through that multiplier
+  // would be inventing a link no `.abr` contains.
+  //
+  // **0.5 must equal `kSmudgeDefaultStrength`** (`brush/Smudge.hpp`), which
+  // this header cannot name -- `brush/Smudge.hpp` includes this file, not the
+  // other way round. Spelled as a literal here and pinned by an assertion in
+  // `app/selftest/SmudgeOptions.cpp` rather than left to agree by inspection:
+  // two defaults for one quantity is exactly the drift `app/AppState.hpp`
+  // holds `FloodFillParams` itself in order to avoid.
+  float smudgeStrength = 0.5f;
+
   // How many dabs land at ONE nominal stroke position -- Photoshop's own
   // Scattering "Count" (`PsScatter::count`, `Cnt ` on disk). 1 is the
   // identity every `BrushTip` this codebase already builds by naming its

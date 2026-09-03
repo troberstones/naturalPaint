@@ -3690,6 +3690,55 @@ bool runTonalBrushTest();
 // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
 // it reads no file at all. Headless and GPU-free; writes no files.
 bool runSmudgeTest();
+// **The smudge's own parameter block** (brush/Smudge §3b): the strength that
+// used to be the OPACITY slider, the default it now ships at, the single
+// tool->block mapping, and the tip override.
+//
+// **This section exists because the section directly above it was green while
+// the tool was unusable.** `strength` was `BrushTip::opacity`, whose default is
+// 1, and 1 is the one strength at which the fade `brush/Smudge` §5 derives is
+// exactly the identity -- so out of the box the finger loaded at pen-down was
+// carried to the far edge of the canvas and never reloaded. `runSmudgeTest()`
+// missed it by construction: every one of its strength assertions *sets* a
+// strength first, so not one of them ever asked what a user who had never found
+// the control would get. The user asked instead ("It never fades, Need to
+// reload with the areas been smeared across").
+//
+// What this section proves:
+//
+//  - **The default is 0.5 and is strictly inside (0,1)**, on a
+//    default-constructed `SmudgeParams`, on a bare `BrushTip` (whose literal
+//    `brush/Deposit.hpp` cannot name and must still match), and on a freshly
+//    built `AppState` -- a default nothing reaches is not a default.
+//  - **At that default the smear FADES**, measured on the tip the app itself
+//    builds out of an unconfigured `AppState`: colour is carried past the
+//    boundary and is over 100x weaker 220 texels further along. **With the
+//    identical drag at strength 1 measured beside it** and still over half
+//    opaque out there, so the claim is about the default rather than about the
+//    fixture.
+//  - **The decoupling, stated as a negative and twice in opposite
+//    directions**: dragging OPACITY from 1.00 to 0.02 does not move the
+//    strength by a bit; a stroke at opacity 0 and strength 0.9 smudges
+//    normally; and strength 0 at opacity 1 is still a **bit-exact** no-op that
+//    writes no texel, allocates no tile, moves no revision and records no undo
+//    step.
+//  - **`smudgeToolParamsFor()` answers non-null for exactly `Tool::Smudge`**,
+//    walked over every `Tool` value, and the pointer it returns *is*
+//    `&brush.smudge` -- the options row and the stroke read one struct, not two
+//    that agree today.
+//  - **The tip override is applied for the smudge and for no other tool**, so
+//    choosing a smear shape is not an edit to the brush; and an id whose bitmap
+//    no longer resolves falls back to the brush's tip rather than to an empty
+//    one, which would be a tip with no coverage anywhere.
+//
+// What it deliberately cannot reach: the options bar row itself. `--selftest`
+// has no window and no ImGui frame, so the golden view `smudge_options`
+// (tools/golden/run_golden.sh) is the only coverage the STRENGTH slider and the
+// TIP combo have.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runSmudgeOptionsTest();
 // **The active selection on a Pigment layer** (brush/Deposit §4; PRD E1, **P0**)
 // and **the eraser that gate unblocked** (brush/PigmentErase; PRD F9/F10, both
 // **P0**; ADR-0007's Pigment row).
