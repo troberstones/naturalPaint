@@ -193,6 +193,7 @@ add_executable(naturalPaint
   app/selftest/TransformSession.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MoveTool.cpp
+  app/selftest/PathRaster.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp
@@ -248,6 +249,10 @@ add_executable(naturalPaint
   core/LayerSetOps.cpp
   core/Merge.cpp
   core/OpStack.cpp
+  core/Path.cpp
+  core/PathFlatten.cpp
+  core/PathRaster.cpp
+  core/PathStroke.cpp
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp

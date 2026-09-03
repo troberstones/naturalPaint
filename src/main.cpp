@@ -1822,6 +1822,13 @@ int main(int argc, char** argv) {
     // pixels are one computation rather than two that agree. Headless and
     // GPU-free.
     const bool gradientToolOk = np::runGradientToolTest();
+    // core/Path, core/PathFlatten, core/PathRaster: PLAN.md phase 13's
+    // geometry model, curve flattener and antialiased coverage rasteriser.
+    // The load-bearing check is differential -- the new rasteriser is held
+    // against core/SelectionShapes' independently written exact-area
+    // `selectPolygon()`, to that oracle's own 1/255 quantisation step.
+    // Headless and GPU-free; writes no files.
+    const bool pathRasterOk = np::runPathRasterTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -2609,7 +2616,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
                     documentTransformOk && transformSessionOk && moveToolOk &&
-                    gradientToolOk &&
+                    gradientToolOk && pathRasterOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&

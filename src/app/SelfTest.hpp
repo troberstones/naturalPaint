@@ -4923,4 +4923,33 @@ bool runCompositeParallelTest();
 // ViewportDeferredComposite.cpp.
 bool runViewportDeferredCompositeTest(GpuContext& gpu);
 
+// core/Path, core/PathFlatten and core/PathRaster: the Bezier model, the curve
+// flattener and the antialiased coverage rasteriser that PLAN.md phase 13
+// ("Paths") is built on. Headless, GPU-free, writes no files.
+//
+// The load-bearing section is a **differential oracle**: for randomised
+// single-contour polygons the new cell-accumulation rasteriser is held
+// against `core/SelectionShapes`' `selectPolygon()`, which computes exact
+// coverage by an entirely unrelated method (clip the polygon to each boundary
+// texel, take the true area) and is already trusted by the selection tools.
+// Two independent exact-area implementations agreeing is a far stronger claim
+// than either matching a tolerance someone chose; the bound used is the
+// oracle's OWN 1/255 quantisation step, because a `SelectionTile` stores
+// uint8 coverage and cannot report agreement finer than that.
+//
+// Also proves: total coverage equals the true area for an off-grid rectangle
+// and a circle built through `arcToCubics()`, and is invariant under
+// sub-texel translation (the property that separates exact area from
+// supersampling); an opposite-wound inner contour is a hole under NonZero;
+// **and the two fill rules genuinely differ on same-wound concentric squares
+// -- the one assertion a saturating signed-area rasteriser would fail, which
+// is why it is here**; a shape larger than the clip fills it in both
+// directions (the classic drop-the-off-clip-edge bug); non-finite
+// coordinates are refused at the flattener rather than reaching the scanline
+// walk; the flattener's segment count is tolerance-driven, translation-
+// invariant and clamped against a zero tolerance; tight bounds find a curve's
+// true peak where hull bounds do not; and `moveAnchorTo()` carries an
+// anchor's handles. See app/selftest/PathRaster.cpp.
+bool runPathRasterTest();
+
 }  // namespace np
