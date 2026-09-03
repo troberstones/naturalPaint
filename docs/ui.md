@@ -597,9 +597,11 @@ emits exactly the `std::vector<VectorShape>` a Vector layer holds, so there is o
 rasteriser in this build and text goes through it. What is NOT built for it yet, by name:
 selection ranges (the caret is a single byte offset, so there is no shift-click, no
 double-click-a-word and no styled run), text on a path, and vertical text — the last two
-out of scope per PRD.md:102. Its LAYERS-panel thumbnail is also blank, which is Vector's
-gap rather than Text's: `layerContentThumbnail()` gates on `layerHoldsPixels()` and neither
-kind has a tile store.
+out of scope per PRD.md:102. Its LAYERS-panel thumbnail draws its shaped
+glyphs, rasterised at 24x24 on the spot — the same one code path a Vector layer's shapes go
+through, because `textContentToShapes()` makes them the same thing. Note the honest limit:
+at 48 px on a 1024 px canvas a text block is about ONE texel of that cell, so a small caption
+on a large canvas is a smudge and not a legible label.
 
 **Pen and Curve** shipped on 2026-09-03 with PLAN Phase 13's path model: `core/Path`,
 `core/PathRaster`, `core/PathStroke`, a `LayerKind::Vector` layer, `io/SvgImport`, and the
