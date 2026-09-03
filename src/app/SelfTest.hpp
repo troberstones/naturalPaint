@@ -4952,6 +4952,30 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu);
 // anchor's handles. See app/selftest/PathRaster.cpp.
 bool runPathRasterTest();
 
+// io/SvgPath: SVG's text-to-geometry grammars -- the `d` path mini-language,
+// `transform`, lengths/units, `viewBox`/`preserveAspectRatio`, and the basic
+// shapes as paths. Pure parsing (`std::string_view` in, geometry out); no
+// XML, no file I/O, no GPU.
+//
+// The load-bearing section is the `d` grammar's number lexer, because that
+// is where real exporter output breaks a naive implementation: `1.5.5` must
+// lex as two numbers (a second `.` closes the number in progress) and
+// `10-5` must lex as two numbers (a sign closes the number in progress
+// unless it follows an exponent), both asserted directly rather than
+// inferred from a passing round-trip. Also proves: implicit lineto after
+// `M`/`m`; quadratic-to-cubic elevation sampled against the quadratic at
+// several `t`; `S`/`T` reflection with and without a preceding matching
+// command; an arc's final anchor lands exactly on the stated endpoint and a
+// zero-radius arc degenerates to a line; the SVG 1.1 8.3.1 error contract --
+// a grammar error returns `false`, names the offending byte, and leaves the
+// valid prefix in `*out`; `transform`'s composition order and rotation sign
+// convention, each pinned by mapping a concrete point rather than trusting
+// the algebra; unit resolution at the stated 96 dpi basis; the viewBox ->
+// viewport algorithm for `meet`, `slice` and `none`, and its zero-size
+// no-render case; and `svgRectPath()`'s `rx`/`ry` clamping and defaulting.
+// See app/selftest/SvgPath.cpp.
+bool runSvgPathTest();
+
 // `LayerKind::Vector` (PLAN.md phase 13): the layer that holds Bezier geometry
 // instead of pixels, its raster cache, and the materialised view through which
 // it reaches core/Composite without that file gaining a Vector branch.
