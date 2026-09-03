@@ -5455,4 +5455,24 @@ bool runVectorLayerTest();
 // crashing. See app/selftest/TextShaper.cpp.
 bool runTextShaperTest();
 
+// io/TextSerial: the `np:text` carrier for a `LayerKind::Text` layer's
+// content (PLAN.md phase 14; PRD K1-K3, I10, I11). io/PathSerial's sibling
+// for a `TextContent` instead of a shape list -- same hex-string carrier,
+// same bit-pattern floats, same version-in-the-prefix rule. Headless,
+// GPU-free, writes no files, and does NOT depend on `shaperAvailable()`: a
+// serialiser has no platform dependency.
+//
+// Proves a full field-by-field round trip on a `TextContent` with every
+// field set to a distinctive non-default value, including a UTF-8 string
+// mixing 2-, 3- and 4-byte sequences; a per-field table proving each field is
+// actually carried (change ONLY that field, round-trip, assert the change
+// survived, name the field); the version prefix, refusing a future
+// `nptext2:` tag by name while carrying an otherwise-valid payload; refusal
+// (not a crash) on odd-length hex, a non-hex character, several truncation
+// points, and an oversized declared string length -- the allocation-bomb
+// case a `.npaint` from anywhere could otherwise trigger; a well-formed
+// empty-content round trip; and bit-identical survival of a float whose
+// decimal rendering would lose precision. See app/selftest/TextSerial.cpp.
+bool runTextSerialTest();
+
 }  // namespace np
