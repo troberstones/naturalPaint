@@ -180,4 +180,33 @@ bool shaperAvailable() noexcept;
 // already uses for the same shape of question.
 const char* shaperUnavailableReason() noexcept;
 
+// --------------------------------------------------------------------------
+// Font enumeration, for a font-picker UI
+// --------------------------------------------------------------------------
+
+// Every font family this platform can shape with: sorted and de-duplicated
+// (text/CoreTextShaper.mm says which ordering and why), with hidden system
+// families filtered out -- CoreText names families like ".SF NS" and
+// ".LastResort" with a leading '.' precisely so its OWN font panels can hide
+// them from users, and a picker built on this list should hide them for the
+// same reason: nobody can type or intentionally choose one.
+//
+// Empty on the stub (text/StubShaper.cpp), matching `shaperAvailable()`'s
+// own false there -- a picker with no shaper has no catalog to populate
+// itself from.
+std::vector<std::string> availableFontFamilies();
+
+// Whether `family` is one of `availableFontFamilies()`, case-insensitively.
+// Case-insensitive because a font name arriving from an imported document,
+// or from a user typing into a picker's search field, will not reliably
+// match the platform's own capitalisation -- refusing "helvetica" when
+// "Helvetica" exists would be a bug that only shows up on someone else's
+// file, never on a name this codebase wrote itself.
+//
+// This is a linear scan over a freshly-built list, not a cache keyed by
+// `family` -- see text/CoreTextShaper.mm for why that call is cheap enough
+// that correctness (fonts can be installed or removed while the app runs)
+// beats an invalidation story this file cannot test.
+bool fontFamilyAvailable(std::string_view family);
+
 }  // namespace np
