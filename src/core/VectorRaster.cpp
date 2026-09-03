@@ -6,6 +6,7 @@
 #include "core/PathFlatten.hpp"
 #include "core/PathStroke.hpp"
 #include "core/SelectionMask.hpp"
+#include "core/TextContent.hpp"
 
 namespace np {
 namespace {
@@ -142,7 +143,7 @@ void VectorRasterCache::forgetLayersNotIn(const Document& doc) {
   for (auto it = byLayer_.begin(); it != byLayer_.end();) {
     bool present = false;
     for (const Layer& l : doc.layers)
-      if (l.kind == LayerKind::Vector && l.id == it->first) {
+      if (layerRastersToTiles(l.kind) && l.id == it->first) {
         present = true;
         break;
       }
@@ -159,9 +160,13 @@ size_t VectorRasterCache::residentBytes() const noexcept {
   return total;
 }
 
+bool layerRastersToTiles(LayerKind kind) noexcept {
+  return kind == LayerKind::Vector || kind == LayerKind::Text;
+}
+
 bool documentHasVectorLayers(const Document& doc) noexcept {
   for (const Layer& l : doc.layers)
-    if (l.kind == LayerKind::Vector) return true;
+    if (layerRastersToTiles(l.kind)) return true;
   return false;
 }
 
@@ -172,13 +177,26 @@ MaterializedDocument::MaterializedDocument(const Document& doc, VectorRasterCach
 
   Document copy = doc;
   for (Layer& layer : copy.layers) {
-    if (layer.kind != LayerKind::Vector) continue;
+    if (!layerRastersToTiles(layer.kind)) continue;
 
-    const uint64_t hash = vectorContentHash(layer.shapes);
+    // **Text takes the same path as Vector because it IS the same path.**
+    // `textContentToShapes()` produces the identical `std::vector<VectorShape>`
+    // a Vector layer stores, so the only per-kind work is deciding which
+    // content to hash and where the shapes come from -- everything past these
+    // four lines is shared, which is core/TextContent.hpp section 1's whole
+    // claim made concrete.
+    const bool isText = layer.kind == LayerKind::Text;
+    const uint64_t hash =
+        isText ? textContentHash(layer.text) : vectorContentHash(layer.shapes);
     std::shared_ptr<const TileStore> tiles =
         cache ? cache->lookup(layer.id, hash) : nullptr;
     if (!tiles) {
-      TileStore built = rasterizeVectorLayer(layer.shapes, doc.width, doc.height);
+      // Shaping happens ONLY on a cache miss. A hit skips it entirely, which
+      // matters more for text than for geometry: shaping is a CoreText call
+      // and a per-frame one would be visible.
+      const std::vector<VectorShape> shapes =
+          isText ? textContentToShapes(layer.text) : layer.shapes;
+      TileStore built = rasterizeVectorLayer(shapes, doc.width, doc.height);
       tiles = cache ? cache->store(layer.id, hash, std::move(built))
                     : std::make_shared<const TileStore>(std::move(built));
     }
@@ -195,6 +213,7 @@ MaterializedDocument::MaterializedDocument(const Document& doc, VectorRasterCach
     layer.kind = LayerKind::RGB;
     layer.rgbTiles = *tiles;  // shares tiles; copies the slot map only
     layer.shapes.clear();
+    layer.text = TextContent{};
   }
   rewritten_ = std::move(copy);
 }

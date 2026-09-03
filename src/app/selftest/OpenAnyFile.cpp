@@ -2,6 +2,8 @@
 
 #include "app/ImportImage.hpp"
 #include "app/OpenAnyFile.hpp"
+
+#include "core/CanvasLimits.hpp"
 #include "io/FileKind.hpp"
 
 namespace np {
@@ -500,23 +502,92 @@ bool runOpenAnyFileTest() {
               c.document.document.layers.empty(),
           "no refusal leaves a half-built document behind");
 
-    // The fourth, temporary refusal: recognised, but there is no importer for
-    // it yet. Asserted by name so this cannot silently decay into the
-    // 'match no image format' sentence above while io/SvgImport is still
-    // being written -- that would be a strictly worse message for a file
-    // this build DID recognise.
-    const std::string svgPath =
-        writeText("picture.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>\n");
+    // An SVG OPENS, as a one-layer Vector document. This used to be the
+    // fourth refusal ("recognised, but there is no importer yet"); io/SvgImport
+    // landed, so the contract inverted and these assertions inverted with it
+    // rather than being deleted.
+    const std::string svgPath = writeText(
+        "picture.svg",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"30\">"
+        "<rect x=\"1\" y=\"2\" width=\"10\" height=\"20\" fill=\"#ff0000\"/>"
+        "<circle cx=\"20\" cy=\"15\" r=\"5\" fill=\"#00ff00\"/></svg>\n");
     const OpenAnyResult svg = openAnyFileAsDocument(svgPath);
-    check(!svg.ok, "an SVG is refused -- there is no importer for it yet");
+    check(svg.ok, "an SVG opens, now that io/SvgImport exists");
     check(svg.kind == FileKind::Vector,
-          "...and it was recognised as one on the way to being refused, not mistaken for "
-          "an unrecognised format");
+          "...and is reported as Vector, not mistaken for an unrecognised format");
+    check(svg.document.document.layers.size() == 1 &&
+              svg.document.document.layers[0].kind == LayerKind::Vector,
+          "...as exactly one Vector layer -- not rasterised into an RGB one");
+    check(svg.document.document.width == 40 && svg.document.document.height == 30,
+          "...on a canvas sized from the <svg> viewport");
+    check(svg.document.document.layers.size() == 1 &&
+              svg.document.document.layers[0].shapes.size() == 2,
+          "...carrying both shapes the file declares");
+    // **The id assignment, which nothing else would catch.** io/SvgImport
+    // leaves every id at zero (core/VectorShape.hpp: zero means unassigned)
+    // and app/PenTool keys its selection on the id, so an import that skipped
+    // this step would produce a layer whose shapes are all individually
+    // unselectable -- every one of them answering to shape 0. That failure is
+    // invisible until someone tries to click a shape, which no headless test
+    // does, so it is asserted here at the seam that assigns them.
+    if (svg.document.document.layers.size() == 1) {
+      const Layer& v = svg.document.document.layers[0];
+      bool idsUnique = true;
+      for (size_t i = 0; i < v.shapes.size(); ++i) {
+        if (v.shapes[i].id == 0) idsUnique = false;
+        for (size_t j = i + 1; j < v.shapes.size(); ++j)
+          if (v.shapes[i].id == v.shapes[j].id) idsUnique = false;
+      }
+      check(idsUnique, "...with every shape id assigned and distinct, so app/PenTool can "
+                       "tell them apart (zero would make them all one shape)");
+      check(v.nextShapeId > v.shapes.size(),
+            "...and nextShapeId past the last one, so a shape added later cannot collide");
+    }
     check(contains(svg.status, "picture.svg") && contains(svg.status, "SVG"),
-          "...and the refusal names both the file and SVG by name, rather than falling "
-          "through to the generic 'matches no image format this build reads' sentence");
-    check(svg.document.document.layers.empty(),
-          "...and leaves no half-built document behind, same as every other refusal");
+          "...and the status names both the file and SVG");
+
+    // **An SVG bigger than the adapter can draw is refused, not opened.**
+    //
+    // This assertion exists because of a merge, and the merge produced no
+    // conflict. The SVG branch was written when `kMaxDocumentPresetDimension`
+    // (32768) was the only canvas limit in the tree, so it bounded the
+    // viewport against that; core/CanvasLimits landed in parallel with the
+    // real ceiling, which on this adapter is 16384. The two commits touch
+    // different lines of `openAnyFileAsDocument()` and text-merged cleanly,
+    // leaving an SVG declaring a 20000px viewport passing the only check it
+    // had and then aborting the process at the first
+    // `wgpuDeviceCreateTexture` -- exactly the failure the ceiling exists to
+    // prevent, reintroduced through a path neither side's tests covered.
+    //
+    // Driven at `maxCanvasDimension() + 1` rather than a literal, so this
+    // stays meaningful on an adapter that reports something other than 16384.
+    {
+      const long long over = static_cast<long long>(maxCanvasDimension()) + 1;
+      const std::string huge = writeText(
+          "huge.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" +
+                          std::to_string(over) + "\" height=\"10\">"
+                          "<rect x=\"0\" y=\"0\" width=\"5\" height=\"5\" fill=\"#000\"/></svg>\n");
+      const OpenAnyResult r = openAnyFileAsDocument(huge);
+      check(!r.ok, "an SVG wider than the adapter can draw is refused, not opened");
+      check(r.kind == FileKind::Vector,
+            "...still recognised as an SVG -- refused for its size, not misidentified");
+      check(r.document.document.layers.empty(),
+            "...and leaves no half-built document behind");
+
+      // The complement, so the guard cannot pass by refusing every SVG --
+      // exactly at the ceiling must still open.
+      const std::string atLimit = writeText(
+          "at-limit.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" +
+                              std::to_string(maxCanvasDimension()) + "\" height=\"4\">"
+                              "<rect x=\"0\" y=\"0\" width=\"2\" height=\"2\" fill=\"#000\"/></svg>\n");
+      const OpenAnyResult ok2 = openAnyFileAsDocument(atLimit);
+      check(ok2.ok && ok2.document.document.width == maxCanvasDimension(),
+            "...while an SVG exactly AT the ceiling still opens");
+    }
+    // Bound to nothing, exactly as an opened picture is: a Cmd-S here would
+    // otherwise write EXR bytes over the user's .svg.
+    check(svg.document.path.empty(),
+          "...and is bound to no path, so Save cannot overwrite the .svg with EXR bytes");
   }
 
   // --- E. what an opened picture IS, and why Save cannot go wrong -----------
@@ -716,13 +787,15 @@ bool runOpenAnyFileTest() {
     check(dropActionFor(FileKind::Unknown, false) == DropAction::Refuse &&
               dropActionFor(FileKind::Unknown, true) == DropAction::Refuse,
           "an unrecognised file is refused rather than attempted twice");
-    // A placeholder, not a permanent rule: io/SvgImport does not exist yet, so
-    // there is nowhere to route a recognised SVG. Refused rather than
-    // imported or opened, document open or not.
-    check(dropActionFor(FileKind::Vector, false) == DropAction::Refuse &&
-              dropActionFor(FileKind::Vector, true) == DropAction::Refuse,
-          "a dropped SVG is refused, document open or not -- recognised, but there is no "
-          "importer for it yet");
+    // An SVG opens as a document, document already open or not -- like a
+    // `.npaint` and unlike a picture. Importing one as a LAYER is not a
+    // missing branch but an unmade decision (see dropActionFor()'s own
+    // comment: the shapes are in the SVG viewport's coordinates, and placing
+    // them into a differently-sized document has three defensible answers).
+    check(dropActionFor(FileKind::Vector, false) == DropAction::OpenAsDocument &&
+              dropActionFor(FileKind::Vector, true) == DropAction::OpenAsDocument,
+          "a dropped SVG opens as a document, whether or not one is already open -- never "
+          "silently placed into the open document at a guessed position");
   }
 
   // --- G2. drop destination: the enum the drop *point* resolves to ---------
@@ -776,11 +849,11 @@ bool runOpenAnyFileTest() {
       check(dropActionFor(FileKind::Unknown, false, d) == DropAction::Refuse &&
                 dropActionFor(FileKind::Unknown, true, d) == DropAction::Refuse,
             "an unrecognised file is refused regardless of destination");
-      check(dropActionFor(FileKind::Vector, false, d) == DropAction::Refuse &&
-                dropActionFor(FileKind::Vector, true, d) == DropAction::Refuse,
-            "an SVG is refused regardless of destination and whether a document is open -- "
-            "every combination of the other two arguments, for the one kind that has no "
-            "importer yet");
+      check(dropActionFor(FileKind::Vector, false, d) == DropAction::OpenAsDocument &&
+                dropActionFor(FileKind::Vector, true, d) == DropAction::OpenAsDocument,
+            "an SVG opens as a document regardless of destination and whether one is open "
+            "-- every combination of the other two arguments, for the kind whose "
+            "place-into-a-document rule is deliberately unmade");
     }
   }
 

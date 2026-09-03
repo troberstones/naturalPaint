@@ -5,6 +5,7 @@
 #import <CoreText/CoreText.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <unordered_map>
 #include <utility>
@@ -247,6 +248,75 @@ void appendRunGlyphs(CTRunRef run, double lineOriginX, double lineBaselineYDown,
 bool shaperAvailable() noexcept { return true; }
 
 const char* shaperUnavailableReason() noexcept { return ""; }
+
+std::vector<std::string> availableFontFamilies() {
+  std::vector<std::string> result;
+  // A "Copy" function per the Create Rule (see this file's ARC/CF header
+  // comment): this file owns `families` and releases it once below.
+  CFArrayRef families = CTFontManagerCopyAvailableFontFamilyNames();
+  if (!families) return result;
+
+  const CFIndex count = CFArrayGetCount(families);
+  result.reserve(static_cast<size_t>(std::max<CFIndex>(count, 0)));
+  for (CFIndex i = 0; i < count; ++i) {
+    // `CFArrayGetValueAtIndex` is a "Get" accessor, not a "Copy" -- the
+    // array owns this `CFStringRef`, so it is released once above with
+    // `families` itself, never per-element.
+    CFStringRef name = static_cast<CFStringRef>(CFArrayGetValueAtIndex(families, i));
+    if (!name) continue;
+    // 256 bytes matches `runFontName()` above: a font FAMILY name (unlike
+    // arbitrary document text) is always short, and `CFStringGetCString`
+    // simply fails this entry -- rather than truncating it -- if it is not.
+    char buf[256];
+    if (!CFStringGetCString(name, buf, sizeof(buf), kCFStringEncodingUTF8)) continue;
+    const std::string family(buf);
+    // Filter: CoreText names its own internal, non-user-selectable families
+    // ("`.SF NS`", "`.LastResort`", the per-glyph fallback fonts it keeps
+    // for characters no installed font covers) with a leading '.' precisely
+    // so its own font panels can hide them -- a picker built on this list
+    // should hide them the same way, so this is deliberate, not an
+    // oversight a later reader should "fix" by deleting the check.
+    if (family.empty() || family[0] == '.') continue;
+    result.push_back(family);
+  }
+  CFRelease(families);
+
+  // Byte-wise order (`std::string::operator<`), not locale-aware
+  // (`localizedCompare`): deterministic across machines and `LANG`/
+  // `LC_COLLATE` settings, which is what lets app/selftest/TextShaper.cpp
+  // assert "strictly ascending" without the assertion's truth depending on
+  // where it runs. A picker that wants locale-correct DISPLAY order is free
+  // to re-sort this same list at the UI layer; this file only has to hand
+  // back one array, not one display list, so it picks the reproducible
+  // ordering rather than the prettier one.
+  std::sort(result.begin(), result.end());
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+// `CTFontManagerCopyAvailableFontFamilyNames()` is a lookup against the
+// already-built ATS/CoreText font registry -- not a filesystem scan and not
+// per-glyph work -- and answers in well under a millisecond even with the
+// few hundred families a typical Mac has installed (measured while writing
+// this function). That is cheap enough that rebuilding and linearly
+// scanning the list on every call, below, is the right answer rather than a
+// cache: fonts can be installed or removed while the app is running, and a
+// cache would need an invalidation story (a filesystem watch, or a
+// CTFontManager change notification) that nothing in this codebase asks for
+// yet and that `--selftest` -- a process that starts, shapes a handful of
+// strings, and exits -- has no way to exercise anyway.
+bool fontFamilyAvailable(std::string_view family) {
+  auto toLower = [](std::string_view s) {
+    std::string out(s);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+  };
+  const std::string target = toLower(family);
+  for (const std::string& candidate : availableFontFamilies())
+    if (toLower(candidate) == target) return true;
+  return false;
+}
 
 ShapedText shapeText(std::string_view utf8, const TextStyle& style,
                      const TextFrame& frame, TextAlign align) {

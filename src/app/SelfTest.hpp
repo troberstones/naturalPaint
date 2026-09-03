@@ -52,6 +52,19 @@ bool runAccumulatorTest();
 // encode(decode(x)) == x within float tolerance.
 bool runColorSpaceTest();
 
+// core/CanvasLimits: the guard that turned "opening a 17000px file aborts the
+// process" into a refusal. Headless and GPU-free -- the predicate takes its
+// ceiling as a parameter precisely so this can drive both sides of the
+// boundary without depending on what this machine's adapter reports.
+bool runCanvasLimitsTest();
+
+// color/Gamut + io/SourceGamut: the primaries a file declares, and the
+// conversion into the working space. Headless and GPU-free; every matrix is
+// asserted against a PUBLISHED value rather than against this build's own
+// output, which is the only way the derivation itself can be wrong and be
+// caught.
+bool runGamutTest();
+
 // Headless, GPU-free check on color/Munsell -- the geometry behind the COLOR
 // panel's third picker (docs/munsell-picker.md). One claim carries the
 // section: **a page row has one relative luminance and it does not move when
@@ -1121,8 +1134,8 @@ bool runEllipseMarqueePreviewTest();
 // The panel is mostly string assembly and table lookup, so this is where the
 // design's own example rows are asserted character for character: the kind rail
 // (seven distinct colours, none of them the colour of the row it marks), the
-// `NEW` popup (all seven kinds, exactly the three `core/LayerOps` can make
-// wired to their own commands), the `LINKED+n` badge, the `KIND: ALL` chip and
+// `NEW` popup (2a's seven kinds plus the appended Vector, exactly the four
+// `core/LayerOps` can make wired to their own commands), the `LINKED+n` badge, the `KIND: ALL` chip and
 // the header count.
 //
 // **The other half is the omissions**, which is what makes it worth a section
@@ -5286,9 +5299,11 @@ bool runCompositeParallelTest();
 // deferred tile; a tile that newly enters the viewport is caught up
 // unconditionally the very next call, never waiting on the trickle budget
 // (the "prompt scroll into view" property); and a performance section prints
-// (not asserts) this module's own per-tile composite+pack+upload cost on a
-// large synthetic, which is what `kViewportTrickleBudget`
-// (ui/DocumentTexture.hpp) is set from. See app/selftest/
+// (not asserts) this module's own per-call setup and per-tile cost on a large
+// synthetic -- the two terms `kViewportTrickleBudgetMs`
+// (ui/DocumentTexture.hpp) is spent against -- and a further section asserts
+// that the budget genuinely ADAPTS, on a cheap one-layer fixture where it must
+// buy more tiles than the old fixed count did. See app/selftest/
 // ViewportDeferredComposite.cpp.
 bool runViewportDeferredCompositeTest(GpuContext& gpu);
 
@@ -5418,6 +5433,21 @@ bool runSvgImportTest();
 // app/selftest/PenTool.cpp.
 bool runPenToolTest();
 
+// app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
+// gate predicate (`toolEditsText()`), the caret-editing session's UTF-8-safe
+// string edits (insert/backspace/forward-delete/caret movement, every one
+// routed through a single clamp so the caret can never split a multi-byte
+// character), the paragraph-frame drag (a click is point text, a drag past
+// the minimum size is a frame, and the frame's origin is always the drag's
+// top-left regardless of which direction it was dragged), and block
+// hit-testing. Calls none of core/TextContent.hpp's own free functions --
+// those are a sibling track's `.cpp`, built by a parallel effort against the
+// same base and not yet linkable here -- so every `TextContent` in this
+// section is built by field assignment. Headless, GPU-free, writes no files,
+// touches no `ui/` file, and does not exercise `AppState`. See
+// app/selftest/TextTool.cpp.
+bool runTextToolTest();
+
 // `LayerKind::Vector` (PLAN.md phase 13): the layer that holds Bezier geometry
 // instead of pixels, its raster cache, and the materialised view through which
 // it reaches core/Composite without that file gaining a Vector branch.
@@ -5473,5 +5503,50 @@ bool runVectorLayerTest();
 // string and an unknown font family each return a defined result rather than
 // crashing. See app/selftest/TextShaper.cpp.
 bool runTextShaperTest();
+
+// core/TextContent (PLAN.md phase 14; PRD K1-K3): what a `LayerKind::Text`
+// layer holds, and `textContentToShapes()`'s claim that a Text layer is a
+// Vector layer that has not been typed out yet -- the conversion produces
+// exactly the `std::vector<VectorShape>` a Vector layer already holds, so
+// core/PathRaster, core/VectorRaster's cache, and the compositor all stay
+// untouched by this phase.
+//
+// **Guarded on `shaperAvailable()`, exactly like app/selftest/TextShaper.cpp**
+// -- every assertion here shapes real text, so a build with no CoreText
+// (text/StubShaper.cpp) sees a skipped section, not a red one.
+//
+// The load-bearing checks: a two-different-glyph string proves each glyph is
+// translated by its OWN `ShapedGlyph::{x, y}` rather than all landing at the
+// same spot; `origin` shifts the whole block's bounds by exactly that
+// amount; a hash table walks every field of `TextContent` one mutation at a
+// time, because a forgotten field means a user changes the font and keeps
+// seeing the old one; empty text and invalid UTF-8 both leave the shape
+// vector empty and are told apart ONLY by `errorOut`, which is the entire
+// reason that parameter exists; and a "p" reaches further down than a "b" at
+// the same origin -- not `bounds.maxY > 0`, which app/selftest/
+// TextShaper.cpp's own section 4 already found is true in both y
+// conventions and proves nothing. Headless, GPU-free, writes no files. See
+// app/selftest/TextContent.cpp.
+bool runTextContentTest();
+
+// io/TextSerial: the `np:text` carrier for a `LayerKind::Text` layer's
+// content (PLAN.md phase 14; PRD K1-K3, I10, I11). io/PathSerial's sibling
+// for a `TextContent` instead of a shape list -- same hex-string carrier,
+// same bit-pattern floats, same version-in-the-prefix rule. Headless,
+// GPU-free, writes no files, and does NOT depend on `shaperAvailable()`: a
+// serialiser has no platform dependency.
+//
+// Proves a full field-by-field round trip on a `TextContent` with every
+// field set to a distinctive non-default value, including a UTF-8 string
+// mixing 2-, 3- and 4-byte sequences; a per-field table proving each field is
+// actually carried (change ONLY that field, round-trip, assert the change
+// survived, name the field); the version prefix, refusing a future
+// `nptext2:` tag by name while carrying an otherwise-valid payload; refusal
+// (not a crash) on odd-length hex, a non-hex character, several truncation
+// points, and an oversized declared string length -- the allocation-bomb
+// case a `.npaint` from anywhere could otherwise trigger; a well-formed
+// empty-content round trip; and bit-identical survival of a float whose
+// decimal rendering would lose precision. See app/selftest/TextSerial.cpp.
+bool runTextSerialTest();
 
 }  // namespace np

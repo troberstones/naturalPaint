@@ -1020,7 +1020,9 @@ std::string pixelOpRefusalMessage(PixelOpRefusal reason, const Layer* target,
 //
 // The foreground colour, in **display-referred sRGB** -- whichever of
 // `BrushState`'s two colour representations `BrushState::colorMode` currently
-// selects.
+// selects. **Two representations, three modes**: RGB and MUNSELL both resolve
+// to `BrushState::rgb` and differ only in how the panel edits it, which is why
+// the test below is `!= Pigment` rather than `== Rgb`.
 //
 // This is the whole of the union, and it is one function rather than a
 // conditional at each call site for the reason this codebase keeps

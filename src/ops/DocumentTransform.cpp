@@ -1,5 +1,7 @@
 #include "ops/DocumentTransform.hpp"
 
+#include "core/CanvasLimits.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -768,6 +770,18 @@ DocumentTransformResult resizeDocumentCanvas(Document& doc, uint32_t width, uint
                             "changed.",
                         doc);
 
+  // The renderer's ceiling (core/CanvasLimits.hpp). Checked beside the
+  // zero-extent refusal rather than in the UI, because Image Size and Canvas
+  // Size are the two commands that can take a document that opened fine and
+  // grow it past what ui/DocumentTexture can create -- an upscale to 20000px
+  // aborted the process exactly as opening a 20000px file did, and the guard
+  // at the open path would never have seen it. Refused before any pixel moves,
+  // so "Nothing was changed" stays true.
+  if (std::string why = canvasDimensionRefusal(static_cast<int32_t>(width),
+                                               static_cast<int32_t>(height));
+      !why.empty())
+    return failDocument("canvas size refused: " + why + " Nothing was changed.", doc);
+
   // The offset the anchor implies, **floored** for a centred one. Growing by an
   // odd number of pixels has to put the extra pixel on one side, and flooring
   // puts it on the right/bottom for every parity -- rounding would put it on
@@ -820,6 +834,18 @@ DocumentTransformResult resizeDocumentImage(Document& doc, uint32_t width, uint3
                             ", so there is no scale factor from it to " + std::to_string(width) +
                             "x" + std::to_string(height) + ". Nothing was changed.",
                         doc);
+
+  // The renderer's ceiling (core/CanvasLimits.hpp). Checked beside the
+  // zero-extent refusal rather than in the UI, because Image Size and Canvas
+  // Size are the two commands that can take a document that opened fine and
+  // grow it past what ui/DocumentTexture can create -- an upscale to 20000px
+  // aborted the process exactly as opening a 20000px file did, and the guard
+  // at the open path would never have seen it. Refused before any pixel moves,
+  // so "Nothing was changed" stays true.
+  if (std::string why = canvasDimensionRefusal(static_cast<int32_t>(width),
+                                               static_cast<int32_t>(height));
+      !why.empty())
+    return failDocument("image size refused: " + why + " Nothing was changed.", doc);
 
   if (static_cast<int32_t>(width) == doc.width && static_cast<int32_t>(height) == doc.height) {
     // A 1:1 "resize" must not perturb a value. `resizeImage()` short-circuits

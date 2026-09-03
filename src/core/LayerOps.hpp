@@ -192,6 +192,11 @@ Layer makeAdjustmentLayer(std::string name);
 // because a shape is always addressed through the layer that owns it.
 Layer makeVectorLayer(std::string name);
 
+// A `LayerKind::Text` layer with an empty string, black fill, and
+// `TextStyle`'s own defaults. Same shape of emptiness as the three makers
+// above: no tiles, no mask, no ops. PLAN.md phase 14.
+Layer makeTextLayer(std::string name);
+
 // A default name for a new group: "Group N", `defaultNewLayerName()`'s own
 // rule restricted to Group-kind layers -- see core/LayerOps.cpp.
 std::string defaultNewGroupName(const Document& doc);

@@ -574,14 +574,22 @@ Selection → path (contour extraction plus curve fitting) is a non-goal.
 > vendored), and the headless core of editing (`app/PenTool`) against the
 > design in `docs/vector-editing.md`.
 >
-> **Not built, by name:** every part of this phase a user can reach. `Tool::Pen`
-> and `Tool::Curve` are still `implemented=false`, there is no canvas gesture,
-> no PATHS panel, and `app/OpenAnyFile` still refuses an SVG by name rather
-> than importing it -- the importer exists and nothing calls it. Path ->
-> selection, fill path and stroke-path-with-brush are likewise unwired. That
-> work is deliberately serialised rather than parallelised: it all lands in
-> `ui/MacPaintUI.cpp`, which is ~14 900 lines with every tool's gesture block
-> inline in `drawUI()`.
+> **The UI landed 2026-09-03**, serialised rather than parallelised because it
+> all lands in `ui/MacPaintUI.cpp`, which is ~14 900 lines with every tool's
+> gesture block inline in `drawUI()`. `Tool::Pen` and `Tool::Curve` are
+> `implemented=true` with a `toolEditsPath()` gate, a canvas gesture block
+> driving `app/PenTool`'s six drag kinds, and an on-canvas overlay (outlines,
+> anchors, tangent handles for selected anchors, the per-shape pivot crosshair,
+> the marquee -- deliberately not marching ants). `File > Open` and drag-drop
+> import an SVG as a Vector document. Three golden views photograph the
+> overlay: `vector_shape`, `vector_components`, `vector_marquee`.
+>
+> **Not built, by name:** the options bar's Shape/Component mode segment, which
+> leaves `pathEditSetSelectMode()` built, tested and uncalled -- so Component
+> mode is unreachable from the UI; the gnomon's drawn scale and rotate handles
+> (`gnomonHandlePositions()` is hit-tested, never drawn); the PATHS panel; and
+> the three PRD J consumers -- path -> selection, fill path, and
+> stroke-path-with-brush.
 >
 > Also unbuilt: gradients. `io/SvgImport` refuses a gradient paint **by name**
 > rather than half-wiring one, because the intended design
@@ -596,16 +604,33 @@ FreeType could replace · point and paragraph text, alignment, leading.
 
 Text on a path, vertical text and rich-text runs are non-goals.
 
-> 🔨 **Shaping engine delivered, the layer kind not, 2026-09-03, same branch.**
+> ✅ **Done, 2026-09-03, same branch.**
 > `text/Shaper.hpp` is the platform-independent interface PRD K2 asks for --
 > no CoreText type appears in it -- with `text/CoreTextShaper.mm` behind it
 > (point and paragraph text, alignment, leading, tracking, bidi and fallback
 > from the OS, glyph outlines through `CTFontCreatePathForGlyph` into
 > `core::Path`) and `text/StubShaper.cpp` for every other platform.
 >
-> **`LayerKind::Text` still carries no content**, which is the half a user
-> would notice. It fans out across the layer panel, `io/NpaintFile` and the
-> compositor, so it is sequenced with phase 13's UI work rather than beside it.
+> **The decision the phase turned on: a Text layer is a Vector layer that has
+> not been typed out yet.** `core/TextContent`'s `textContentToShapes()`
+> returns exactly the `std::vector<VectorShape>` a Vector layer holds, so
+> phase 13's rasteriser, its cache and its materialised view are untouched and
+> there is one rasteriser in this build. That is what made the layer kind
+> small: a content struct, a shaping call, one predicate
+> (`layerRastersToTiles()`) at the three sites that dispatch on it, and
+> `np:text` on the io side.
+>
+> **The hazard worth recording, because its failure is silent:**
+> `core/DirtyTiles` pass 1 is a whitelist over kind, ops, mask and store
+> presence, and a Text layer has none of those -- so a pure text edit compared
+> EQUAL, produced an empty dirty set, and was invisible until something
+> unrelated dirtied the canvas. Phase 13 hit the identical wall. Nothing
+> tested it until the fix was sabotaged; the sabotage reddened nothing, which
+> is how the missing test was found rather than the missing code.
+>
+> Not built, by name: selection ranges (the caret is one byte offset, so no
+> shift-click, no double-click-a-word, no styled runs). Text on a path,
+> vertical text and rich-text runs stay non-goals.
 
 ## 15 — PSD export
 Not the save path — native save shipped in phase 4. Flattened PSD first (small), then

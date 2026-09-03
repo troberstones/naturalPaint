@@ -314,6 +314,21 @@ enum class FullRecompositeReason {
   // ui/DocumentTexture's already-named "the revision moved and nothing the
   // compositor reads did" branch.
   VectorGeometryChanged,
+  // PLAN.md phase 14. A `LayerKind::Text` layer's string, style, frame,
+  // alignment, origin or paint moved.
+  //
+  // **A separate enumerator from `VectorGeometryChanged`, not a shared one**,
+  // even though both mean "parametric content moved" and both force the same
+  // full recomposite. The reason is `fullRecompositeExplanation()`: its whole
+  // job is to let a slow frame say why it was slow, and "vector layer geometry
+  // changed" pointed at a Text layer would send a reader looking for a path
+  // edit that never happened. One enumerator per thing a user actually did.
+  //
+  // Everything `VectorGeometryChanged`'s comment says about WHY it exists
+  // applies here unchanged and with more force: a Text layer holds neither
+  // tiles nor ops nor shapes, so pass 1's whitelist compares EQUAL on every
+  // field for a layer whose entire string just changed.
+  TextContentChanged,
 };
 
 const char* fullRecompositeReasonName(FullRecompositeReason reason) noexcept;

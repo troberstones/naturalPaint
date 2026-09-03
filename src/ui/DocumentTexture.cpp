@@ -328,7 +328,14 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
     // view prompt: the caller recomputes `viewport` from the CURRENT pan/zoom
     // every call, so a tile that newly intersects it is processed THIS call,
     // whether or not it was in `pendingTiles_` a moment ago.
-    const size_t take = std::min(outViewport.size(), kViewportTrickleBudget);
+    // Decision 6 (amended): the take comes from the time budget, not a fixed
+    // count. `inViewport.size()` is passed because those tiles are
+    // unconditional -- the frame pays them whether or not anything is
+    // deferred -- so the budget governs only what this call *adds*. See
+    // `kViewportTrickleBudgetMs` for why the rate is an estimate rather than
+    // a clock checked mid-call.
+    lastTrickleTake_ = trickleTake(inViewport.size());
+    const size_t take = std::min(outViewport.size(), lastTrickleTake_);
     std::vector<TileCoord> processSet = inViewport;
     processSet.insert(processSet.end(), outViewport.begin(),
                       outViewport.begin() + static_cast<ptrdiff_t>(take));
@@ -351,7 +358,7 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
 
     if (processSet.empty()) {
       // Every dirty tile is off-screen and the trickle budget's own `take`
-      // came up empty -- unreachable while `kViewportTrickleBudget >= 1`,
+      // came up empty -- unreachable while `kMinViewportTrickleTiles >= 1`,
       // since `take >= 1` whenever `outViewport` is non-empty and
       // `inViewport` is what leaves `processSet` empty. Guarded anyway,
       // because warnings are a property of the document, not of whether a
@@ -385,7 +392,44 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
                       std::chrono::steady_clock::now() - started)
                       .count();
   totalUploadMs_ += lastUploadMs_;
+  // After `lastUploadMs_` and `lastDirtyTiles_` are both final for this call,
+  // and after `totalUploadMs_` so an observation can never be counted twice.
+  observeTrickleRate();
   return view_;
+}
+
+size_t DocumentTexture::trickleTake(size_t inViewportTiles) const noexcept {
+  // Nothing observed yet: the floor. A first call has no basis for taking
+  // more, and taking the old fixed budget makes the very first deferred call
+  // behave exactly as it did before this change.
+  if (msPerTileEma_ <= 0.0) return kMinViewportTrickleTiles;
+
+  // The viewport's own tiles are not optional, so they are spent from the
+  // budget before anything is bought with it. A viewport that alone exceeds
+  // the deadline buys the floor and nothing more -- it cannot buy negative
+  // work, and refusing to trickle at all would strand the backlog forever.
+  const double required = msPerTileEma_ * static_cast<double>(inViewportTiles);
+  const double remaining = trickleBudgetMs_ - required;
+  if (remaining <= 0.0) return kMinViewportTrickleTiles;
+
+  const double n = remaining / msPerTileEma_;
+  if (n <= static_cast<double>(kMinViewportTrickleTiles)) return kMinViewportTrickleTiles;
+  if (n >= static_cast<double>(kMaxViewportTrickleTiles)) return kMaxViewportTrickleTiles;
+  return static_cast<size_t>(n);
+}
+
+void DocumentTexture::observeTrickleRate() noexcept {
+  // A call that composited nothing says nothing about the rate. So does one
+  // the clock reported as taking no measurable time -- dividing by it would
+  // drive the estimate to zero and the take straight to the cap, which is
+  // precisely the stale-optimistic case the cap exists to bound rather than
+  // a reading worth learning from.
+  if (lastDirtyTiles_ == 0 || lastUploadMs_ <= 0.0) return;
+
+  const double observed = lastUploadMs_ / static_cast<double>(lastDirtyTiles_);
+  constexpr double kAlpha = 0.25;
+  msPerTileEma_ = msPerTileEma_ <= 0.0 ? observed
+                                       : (1.0 - kAlpha) * msPerTileEma_ + kAlpha * observed;
 }
 
 // Decision 4's band/run walk, unmodified in shape from when it lived inline

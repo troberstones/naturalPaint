@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "app/PenTool.hpp"
+#include "app/TextTool.hpp"    // toolEditsText()
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
 #include "app/DocumentLifecycle.hpp"
@@ -57,6 +61,47 @@ void centreInBand(float h, float contentH) {
 // A caps label in the secondary colour -- docs/ui.md section 1's "800-weight
 // caps" role, standing in until the type ramp lands (this build still draws
 // the whole UI in one 13 px face; see ui/Fonts.hpp).
+// A small on/off chip: a `SmallButton` whose accented state says it is on.
+// `Checkbox` is what the flood-fill row uses and is right there -- a labelled
+// tick for a setting with a name. These four are DIFFERENT: B / I / L / C / R /
+// J are a mutually-legible row of single letters where the letter IS the label,
+// and six ticks in a row read as a list of unrelated options rather than as one
+// choice. Returns true on the frame it was pressed; the caller owns the state,
+// so a radio group and a pair of independent toggles both fall out of it.
+bool atelierToggleChip(const char* id, bool on) {
+  if (on) {
+    ImGui::PushStyleColor(ImGuiCol_Button, atelierToken(kAccent));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, atelierToken(kAccent));
+    ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(kOnAccent));
+  }
+  const bool pressed = ImGui::SmallButton(id);
+  if (on) ImGui::PopStyleColor(3);
+  return pressed;
+}
+
+// ASCII case-insensitive substring test, for the font filter box. ASCII-only
+// on purpose and not a locale-aware fold: a font family name that needs one
+// (a Japanese family typed in kana) will not match a Latin filter string
+// either way, and pulling in a locale fold to almost-handle that would be a
+// behaviour that varies by machine -- which is the property
+// `availableFontFamilies()`'s own byte-wise sort was chosen to avoid.
+bool containsNoCase(const std::string& haystack, const char* needle) {
+  const size_t n = std::strlen(needle);
+  if (n == 0) return true;
+  if (haystack.size() < n) return false;
+  auto lower = [](unsigned char c) {
+    return static_cast<char>(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
+  };
+  for (size_t i = 0; i + n <= haystack.size(); ++i) {
+    size_t k = 0;
+    while (k < n && lower(static_cast<unsigned char>(haystack[i + k])) ==
+                        lower(static_cast<unsigned char>(needle[k])))
+      ++k;
+    if (k == n) return true;
+  }
+  return false;
+}
+
 void capsLabel(const char* text) {
   pushAtelierMono();
   ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
@@ -231,9 +276,16 @@ constexpr ToolMeta kToolMeta[] = {
     // wires the drag, not in the one that writes the arithmetic, and until it
     // flips the palette cell is disabled and the route is unreachable however
     // complete the engine is.
-    {"Pen", "pen-tool", 57649u, "P", false},
-    {"Curve", "spline", 58251u, "Shift+P", false},
-    {"Text", "type", 57752u, "T", false},
+    // Pen and Curve flip **here**, in the commit that adds their canvas block
+    // to `drawUI()` and `toolEditsPath()` to `toolHasCanvasHandler()` below.
+    // That pairing is not a style preference: `app/selftest/Eyedropper.cpp`
+    // asserts `toolImplemented(t) == toolHasCanvasHandler(t)` for every tool
+    // and separately asserts `toolNoHandlerException()` is empty, so flipping
+    // either half alone turns the suite red -- and the tempting repair is a
+    // row in the table that is asserted to have none.
+    {"Pen", "pen-tool", 57649u, "P", true},
+    {"Curve", "spline", 58251u, "Shift+P", true},
+    {"Text", "type", 57752u, "T", true},
     {"Shape", "shapes", 58547u, "", false},
     {"Slice", "slice", 58096u, "", false},
 };
@@ -256,7 +308,7 @@ const char* toolName(Tool t) { return metaFor(t).name; }
 bool toolImplemented(Tool t) noexcept { return metaFor(t).implemented; }
 
 bool toolHasCanvasHandler(Tool t) noexcept {
-  // Seven gates, each of them the expression the corresponding block in
+  // Ten gates, each of them the expression the corresponding block in
   // `ui/MacPaintUI.cpp`'s canvas is actually written with. Nothing here is a
   // restatement of "which tools work" -- see the header.
   //
@@ -297,7 +349,8 @@ bool toolHasCanvasHandler(Tool t) noexcept {
   // for the ordering reason stated above: it is cheap and `noexcept`.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
          toolMeasuresCanvas(t) || toolPansView(t) || toolMovesPixels(t) ||
-         toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t);
+         toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t) ||
+         toolEditsPath(t) || toolEditsText(t);
 }
 
 const char* toolNoHandlerException(Tool) noexcept {
@@ -1154,6 +1207,232 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
           "middle of the result.");
       ImGui::PopStyleColor();
     }
+    return;
+  }
+
+
+  // --- Tool::Text: FONT, SIZE, style, ALIGN and COLOUR --------------------
+  //
+  // **The fifth early return in this band, and docs/ui.md section 4b's test
+  // settles it without argument.** That test is not "does this tool have
+  // settings" but *would the four brush sliders be live controls over
+  // something this tool provably never reads*, and the Text tool reads none
+  // of them: nothing in `core/TextContent`, `text/Shaper` or `app/TextTool`
+  // touches a `BrushTip`. It has no tip, no stroke and no deposit -- the
+  // crop's case exactly, not the smudge's marginal one.
+  //
+  // ==========================================================================
+  // What these five controls edit, which is the only real decision here
+  // ==========================================================================
+  //
+  // **They edit `st.textStyle` / `st.textAlign` -- the TOOL's own defaults --
+  // and write through to the active Text layer when one is being edited.**
+  // `app/AppState.hpp`'s own comment on those two members is the argument;
+  // the short version is that a per-tool row cannot go dead for the entire
+  // time before the first click, which is exactly when a user is choosing a
+  // font.
+  //
+  // COLOR is the one exception and is NOT a tool default: a new text block
+  // takes the FOREGROUND colour, like every other tool in this build, so a
+  // third colour store would be a colour the user set that nothing painted
+  // with. The swatch therefore edits the active layer's own `fill` and goes
+  // dead -- visibly, with the reason -- when there is no Text layer, which is
+  // SPREAD-on-Angular's precedent rather than a new idea.
+  if (st.brush.tool == Tool::Text) {
+    OpenDocument* textOd = st.documents.active();
+    Layer* textLayer = textOd != nullptr ? activeLayerOf(*textOd) : nullptr;
+    if (textLayer != nullptr && textLayer->kind != LayerKind::Text) textLayer = nullptr;
+
+    // Every control below funnels its change through this, so "write through
+    // to the layer, and mark the document dirty so the composite actually
+    // updates" exists once rather than five times. The revision bump is not
+    // optional: `core/DirtyTiles` compares two documents, and without a
+    // recorded edit there is no *before* for it to compare against.
+    auto pushStyleToLayer = [&](const char* what) {
+      if (textLayer == nullptr || textOd == nullptr) return;
+      textLayer->text.style = st.textStyle;
+      textLayer->text.align = st.textAlign;
+      textOd->recordEdit(what, EditKind::Content);
+    };
+
+    bandSeparator();
+    capsLabel("FONT");
+    ImGui::SameLine();
+
+    // **The list is built once per process, not per frame.**
+    // `availableFontFamilies()` walks the platform's whole font catalogue
+    // (321 families on the machine this was written on), and this row draws
+    // every frame the Text tool is selected. The invalidation story is stated
+    // rather than hidden: a font installed while the app is running does not
+    // appear until a restart. That is the wrong trade for a font manager and
+    // the right one for a paint program, and it is one line to change if it
+    // ever bites.
+    static std::vector<std::string> families;
+    static bool familiesLoaded = false;
+    if (!familiesLoaded) {
+      families = availableFontFamilies();
+      familiesLoaded = true;
+    }
+
+    // The combo's label is `style.fontFamily` itself and NOT anything read
+    // back from the shaper. `ShapedText::fontsUsed` reports POSTSCRIPT names
+    // ("Times New Roman" comes back as "TimesNewRomanPSMT"), measured while
+    // building this -- so a label sourced from there would show the user a
+    // name they never picked and could not find in this list.
+    const float fontComboW = 180.0f;
+    ImGui::SetNextItemWidth(fontComboW);
+    pushAtelierMono();
+    if (ImGui::BeginCombo("##textFont", st.textStyle.fontFamily.c_str())) {
+      // A filter box, because 321 rows is a scroll and not a choice. Kept in a
+      // static for the same reason the list is: it is transient UI state with
+      // no meaning to the document, and putting it on `AppState` would imply
+      // it were worth persisting.
+      static char fontFilter[64] = {};
+      ImGui::SetNextItemWidth(fontComboW - 8.0f);
+      ImGui::InputTextWithHint("##fontFilter", "filter", fontFilter, sizeof(fontFilter));
+      ImGui::Separator();
+      if (families.empty()) {
+        // Only reachable on a build with no shaper (text/StubShaper.cpp), and
+        // it says which rather than drawing an empty popup that looks broken.
+        ImGui::TextDisabled("%s", shaperUnavailableReason()[0] != '\0'
+                                      ? shaperUnavailableReason()
+                                      : "no font families reported");
+      }
+      for (const std::string& f : families) {
+        if (fontFilter[0] != '\0' && !containsNoCase(f, fontFilter)) continue;
+        if (ImGui::Selectable(f.c_str(), f == st.textStyle.fontFamily)) {
+          st.textStyle.fontFamily = f;
+          pushStyleToLayer("text font");
+        }
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+    ImGui::SetItemTooltip(
+        "The font family, from the platform's own catalogue (%zu here). A family this "
+        "build cannot find is not an error: CoreText substitutes its own default and the "
+        "text still renders, so an imported document with a typo in its font name still "
+        "opens.",
+        families.size());
+
+    bandSeparator();
+    capsLabel("SIZE");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(72.0f);
+    pushAtelierMono();
+    float sizePx = st.textStyle.sizePx;
+    // Drag rather than a slider: type size has no natural maximum, and a
+    // slider would have to invent one. `%.1f` because half-point sizes are
+    // real and 0.1 px is the finest anyone sets by hand.
+    if (ImGui::DragFloat("##textSize", &sizePx, 0.5f, 1.0f, 2000.0f, "%.1f px")) {
+      st.textStyle.sizePx = std::max(1.0f, sizePx);
+      pushStyleToLayer("text size");
+    }
+    popAtelierMono();
+    ImGui::SetItemTooltip("Type size in document pixels at 1:1 zoom. Drag, or double-click "
+                          "to type a value.");
+
+    bandSeparator();
+    // **B and I are toggles rather than a family-variant list**, and that is a
+    // deliberate simplification with a named cost: CoreText resolves them
+    // through its own font-descriptor traits, so a family with no italic gets
+    // a synthesised slant rather than a refusal. Offering the real variant
+    // list means enumerating each family's faces, which is a second platform
+    // call and a second control; the day someone needs Semibold, that is the
+    // change. Until then these two cover what a paint program's captions need.
+    pushAtelierMono();
+    bool bold = st.textStyle.bold;
+    if (atelierToggleChip("B##textBold", bold)) {
+      st.textStyle.bold = !bold;
+      pushStyleToLayer("text weight");
+    }
+    ImGui::SameLine();
+    bool italic = st.textStyle.italic;
+    if (atelierToggleChip("I##textItalic", italic)) {
+      st.textStyle.italic = !italic;
+      pushStyleToLayer("text slant");
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // **ALIGN goes dead for POINT text, greyed with the reason in a tooltip.**
+    // `text/Shaper.hpp` is explicit that a point-text block is one line with
+    // nothing to align against, so a live control here would sit over
+    // something that provably changes no texel -- the identical situation
+    // SPREAD-on-Angular is in, decided the identical way (docs/ui.md section
+    // 4a's "no dead button looks live"). Disabled rather than hidden so the
+    // band does not reflow and the user's choice is still visible and still
+    // remembered for the next paragraph block.
+    const bool paragraph = textLayer != nullptr ? textLayer->text.frame.width > 0.0f
+                                                : st.textEdit.frameDragActive;
+    capsLabel("ALIGN");
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::BeginDisabled(!paragraph);
+    struct AlignChip {
+      const char* label;
+      TextAlign align;
+      const char* tip;
+    };
+    static const AlignChip kAlignChips[] = {
+        {"L##textAlignL", TextAlign::Left, "Left"},
+        {"C##textAlignC", TextAlign::Center, "Centred"},
+        {"R##textAlignR", TextAlign::Right, "Right"},
+        {"J##textAlignJ", TextAlign::Justified,
+         "Justified -- the last line stays left-aligned, which is CoreText's own rule"},
+    };
+    for (const AlignChip& chip : kAlignChips) {
+      bool on = st.textAlign == chip.align;
+      if (atelierToggleChip(chip.label, on)) {
+        st.textAlign = chip.align;
+        pushStyleToLayer("text alignment");
+      }
+      ImGui::SetItemTooltip("%s", chip.tip);
+      ImGui::SameLine();
+    }
+    ImGui::NewLine();
+    ImGui::EndDisabled();
+    popAtelierMono();
+    // Outside the BeginDisabled pair on purpose: a disabled item reports no
+    // hover, so a tooltip set inside it is the one tooltip nobody can read --
+    // the gradient's SPREAD row learned this the same way.
+    if (!paragraph)
+      ImGui::SetItemTooltip(
+          "This is point text -- one line, no wrapping, so there is nothing for an "
+          "alignment to align against. Drag with the Text tool instead of clicking to make "
+          "a paragraph box, and these come alive. Your choice is remembered.");
+
+    bandSeparator();
+    // **COLOR edits the LAYER, not a tool default** -- see this block's own
+    // header. Dead with no Text layer, and the tooltip says where the colour
+    // of the next block comes from instead, because "this control is off" and
+    // "your text will be black" are different facts and the user needs both.
+    capsLabel("COLOR");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(textLayer == nullptr);
+    // sRGB-encoded on the way in and decoded on the way out. `Paint::rgba` is
+    // linear-light straight alpha (core/VectorShape.hpp), ImGui's picker is
+    // display-referred, and skipping the conversion is the failure the
+    // gradient ramp's own comment describes from the other side: the swatch
+    // would read far darker than the text it is promising.
+    std::array<float, 4> lin = textLayer != nullptr ? textLayer->text.fill.rgba
+                                                    : std::array<float, 4>{0, 0, 0, 1};
+    float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
+    if (ImGui::ColorEdit4("##textColor", enc,
+                          ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
+                              ImGuiColorEditFlags_AlphaPreviewHalf) &&
+        textLayer != nullptr && textOd != nullptr) {
+      textLayer->text.fill.on = true;
+      textLayer->text.fill.rgba = {srgbDecode(enc[0]), srgbDecode(enc[1]), srgbDecode(enc[2]),
+                                   enc[3]};
+      textOd->recordEdit("text colour", EditKind::Content);
+    }
+    ImGui::EndDisabled();
+    if (textLayer == nullptr)
+      ImGui::SetItemTooltip(
+          "No Text layer selected, so there is no text whose colour this could be. Click on "
+          "the canvas to make one -- it takes the FOREGROUND colour, like every other tool "
+          "here -- and then this edits it.");
     return;
   }
 

@@ -1858,6 +1858,7 @@ const char* layerCommandGlyphFallback(LayerCommand command) noexcept {
     case LayerCommand::NewPigmentLayer: return "[P]";
     case LayerCommand::NewAdjustmentLayer: return "[A]";
     case LayerCommand::NewVectorLayer: return "[V]";
+    case LayerCommand::NewTextLayer: return "[T]";
     case LayerCommand::DuplicateLayer: return "[Dup]";
     case LayerCommand::DeleteLayer: return "[Del]";
     case LayerCommand::AddMask: return "[+Mask]";
@@ -3285,13 +3286,13 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
   }
   {
     // Disabled with no document only; which *kinds* it can make is the popup's
-    // own business, and three of the seven entries in it are always live.
+    // own business, and four of the eight entries in it are always live.
     pushAtelierMono();
     const bool pressed = ImGui::SmallButton("NEW +");
     popAtelierMono();
     if (pressed) ImGui::OpenPopup("newLayerKind");
-    ImGui::SetItemTooltip("New layer -- pick a kind. Three of the seven kinds can be\n"
-                        "made in this build; the other four are listed and disabled,\n"
+    ImGui::SetItemTooltip("New layer -- pick a kind. Five of the eight kinds can be\n"
+                        "made in this build; the other three are listed and disabled,\n"
                         "because the kinds exist and their content does not.");
     if (ImGui::BeginPopup("newLayerKind")) {
       const ImVec2 metrics = newLayerKindMenuMetrics();
@@ -14691,6 +14692,320 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // now lives beside `strokeRouteWritesLayer()` (that header's §6) so the
     // gate, the message and the options bar's indicator are one answer rather
     // than three, and the click is REFUSED OUT LOUD instead of discarded.
+    // --- Tool::Pen / Tool::Curve: editing vector geometry --------------------
+    //
+    // Gated on `toolEditsPath()` -- app/PenTool's own predicate, and a NEW term
+    // in `toolHasCanvasHandler()` rather than a name added to an existing one,
+    // for the reason `toolMeasuresCanvas()` states one gate over: widening a
+    // sibling predicate is precisely the failure the tool-table tripwire in
+    // app/selftest/Eyedropper.cpp exists to catch.
+    //
+    // **This block writes no `st.pathEdit` field.** Every transition goes
+    // through app/PenTool.cpp's four functions, so the state machine is in one
+    // greppable place -- `grep -rnP 'pathEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` finding
+    // anything is the defect. Storage on AppState with mutation spread through
+    // `drawUI()` is exactly how `marqueeDragging` got three writers and an
+    // unconditional clear in a sibling tool's else arm.
+    if (toolEditsPath(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      OpenDocument* pathDoc = st.documents.active();
+      const DocumentId pathDocId = pathDoc != nullptr ? pathDoc->id : 0u;
+
+      // A drag begun on another tab means nothing here -- CropSession's rule.
+      if (st.pathEdit.drag != PathDragKind::None && st.pathEdit.documentId != pathDocId)
+        pathEditCancel(&st.pathEdit);
+
+      Layer* pathLayer = pathDoc != nullptr ? activeLayerOf(*pathDoc) : nullptr;
+      const bool pathTargetOk = pathLayer != nullptr && pathLayer->kind == LayerKind::Vector;
+
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) pathEditCancel(&st.pathEdit);
+
+      if (!pathTargetOk) {
+        // **Refused at pen-DOWN and out loud**, the gradient's rule rather than
+        // the bucket's: a Pen drag across a raster layer that silently did
+        // nothing is the same invisible wrong-target failure app/StrokeSession
+        // section 1 was written about.
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          g_strokeRefusal =
+              pathLayer == nullptr
+                  ? std::string("The Pen needs a layer to edit: this document has none "
+                                "selected.")
+                  : std::string("The Pen edits vector geometry, and '" + pathLayer->name +
+                                "' is a " + layerKindName(pathLayer->kind) +
+                                " layer. Make one with NEW + > Vector in the LAYERS "
+                                "panel, or open an SVG.");
+        }
+      } else {
+        // The pick radius is a constant number of SCREEN pixels, converted to
+        // document units here -- the crop tool's `grabTexels` rule, and the
+        // reason app/PenTool takes it as a parameter rather than owning a
+        // constant it could not zoom-correct.
+        const float pickTexels = std::max(3.0f, 8.0f / std::max(0.05f, st.view.zoom));
+        // Alt suppresses the gnomon for the duration of the press, which is
+        // docs/vector-editing.md section 3's escape hatch for a handle sitting
+        // underneath it.
+        const bool gnomonSuppressed = ImGui::GetIO().KeyAlt;
+
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          // One modifier grammar for the whole app: core/SelectionOps' own
+          // mapping, applied with SET semantics here rather than coverage
+          // semantics (docs/vector-editing.md section 4).
+          const SelectionCombine how = selectionCombineFromModifiers(
+              ImGui::GetIO().KeyShift, ImGui::GetIO().KeyAlt);
+          pathEditBegin(&st.pathEdit, pathLayer->shapes, PathPoint{tx, ty}, pickTexels,
+                        gnomonSuppressed, how, pathDocId);
+        }
+
+        // `--vector-demo marquee` pins a held-open drag for the camera
+        // (app/AppState.hpp). Both branches below are skipped for it, and for
+        // the reason stated there: one would drag `dragNow` to wherever the
+        // human left the mouse, and the other would end the drag on frame 1.
+        if (st.pathEdit.drag != PathDragKind::None && pathDoc != nullptr &&
+            !st.pathEditDemo) {
+          // **Ended when the button is NOT DOWN, not only when a release is
+          // seen.** The two agree on every ordinary drag -- `IsMouseReleased`
+          // is true on a frame where `IsMouseDown` is already false -- and
+          // they differ on exactly one case: a release ImGui never saw,
+          // because it happened outside the window. On the release-only form
+          // the drag stays live afterwards, and the block below then rewrites
+          // geometry and amends the undo entry from a pointer with no button
+          // held, every frame, for the rest of the session. That is a worse
+          // failure here than in the sibling gestures that use the narrower
+          // form: theirs redraw a preview, this one writes the document.
+          if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            pathEditEnd(&st.pathEdit, pathLayer->shapes);
+          } else {
+            const PathEditChange changed =
+                pathEditUpdate(&st.pathEdit, &pathLayer->shapes, PathPoint{tx, ty});
+            // recordEdit on the FIRST frame that moves anything and amendEdit
+            // after, so a drag is ONE undo step and a click that never moved
+            // leaves no entry at all (app/DocumentLifecycle.hpp's rule, and the
+            // reason PathEditChange has three values rather than being a bool).
+            if (changed == PathEditChange::EditBegan) {
+              pathDoc->recordEdit("edit path", EditKind::Content);
+            } else if (changed == PathEditChange::EditContinued) {
+              pathDoc->amendEdit("edit path", EditKind::Content);
+            }
+          }
+        }
+      }
+    }
+
+
+    // --- Tool::Text: setting type --------------------------------------------
+    //
+    // Gated on `toolEditsText()` -- app/TextTool's own predicate, and the TENTH
+    // term in `toolHasCanvasHandler()` rather than a name folded into
+    // `toolEditsPath()`. The two tools both edit parametric content and both
+    // want the `Select` family of cursor, which is exactly what makes widening
+    // the Pen's gate the tempting one-liner -- and exactly the failure the
+    // tool-table tripwire in app/selftest/Eyedropper.cpp exists to catch. The
+    // concrete consequence: `toolEditsPath()` gates the Pen's own block above,
+    // so a Text tool that satisfied it would have every click handed to
+    // `pathEditBegin()` and hit-tested against anchors that do not exist.
+    //
+    // **This block writes no `st.textEdit` field.** Every transition goes
+    // through app/TextTool.cpp, so a
+    // `grep -rnP 'textEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` finding
+    // anything is the defect -- `pathEdit`'s rule, for `marqueeDragging`'s
+    // reason.
+    //
+    // ==========================================================================
+    // The gesture, and why a click and a drag mean different things
+    // ==========================================================================
+    //
+    //   click on an existing Text block  -> edit it, caret placed AT THE CLICK
+    //   click on empty canvas            -> a new POINT text layer there
+    //   drag on empty canvas             -> a new PARAGRAPH text layer, that box
+    //
+    // That is every vector tool's convention and it is also the only way to
+    // reach a paragraph frame without inventing a second tool: `frame.width`
+    // is the single number that tells point text from paragraph text
+    // (core/TextContent.hpp section 2), and a click cannot supply one.
+    if (toolEditsText(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      OpenDocument* textDoc = st.documents.active();
+      const DocumentId textDocId = textDoc != nullptr ? textDoc->id : 0u;
+
+      // A session begun on another tab means nothing here -- CropSession's
+      // rule, and `pathEdit`'s one block up.
+      if (st.textEdit.documentId != textDocId) textEditCancel(&st.textEdit);
+
+      // Which layer the live session is editing, re-resolved every frame
+      // rather than cached: the stack can be reordered or the layer deleted
+      // while a caret is up, and a stale index would type into whatever moved
+      // into that slot.
+      Layer* editing = nullptr;
+      if (textDoc != nullptr && st.textEdit.layerIndex < textDoc->document.layers.size()) {
+        Layer* candidate = &textDoc->document.layers[st.textEdit.layerIndex];
+        if (candidate->kind == LayerKind::Text) editing = candidate;
+      }
+      if (editing == nullptr && !st.textEdit.frameDragActive) textEditCancel(&st.textEdit);
+
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) textEditCancel(&st.textEdit);
+
+      if (textDoc != nullptr && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // A click on the ACTIVE layer's own text block edits it. Only the
+        // active layer, and deliberately not a search down the stack: the
+        // LAYERS panel is where a layer is chosen in this application, and a
+        // click that silently switched the active layer would make the panel
+        // lie about what the next brush stroke would hit.
+        Layer* active = activeLayerOf(*textDoc);
+        bool startedOnExisting = false;
+        if (active != nullptr && active->kind == LayerKind::Text) {
+          // The pad is a constant number of SCREEN pixels converted to
+          // document units, so clicking near a thin glyph works the same at
+          // every zoom -- the Pen's `pickTexels` rule.
+          const float padTexels = std::max(3.0f, 6.0f / std::max(0.05f, st.view.zoom));
+          if (textBlockHit(textContentBounds(active->text), PathPoint{tx, ty}, padTexels)) {
+            // Through `activeLayerIndex()` and not `doc.activeLayer`: that
+            // header is explicit that the member can be stale past a layer
+            // delete or an undo, and every reader clamps.
+            const size_t activeIndex = activeLayerIndex(*textDoc).value_or(0);
+            textEditBegin(&st.textEdit, textDocId, activeIndex, active->text);
+            // `textEditBegin()` puts the caret at the END, which is right for
+            // "clicked to start editing" and wrong for "clicked at a
+            // character". Both gestures are one click here, so the caret is
+            // then moved to the click -- `core/TextContent`'s
+            // `textOffsetAtPoint()`, which returns a real UTF-8 boundary so
+            // no clamp is needed on the way in.
+            textCaretSetOffset(&st.textEdit, active->text,
+                               textOffsetAtPoint(active->text, PathPoint{tx, ty}));
+            // The row must show the block the user just clicked into, not the
+            // last one they typed in -- app/AppState.hpp's stated rule that
+            // selecting a Text layer loads its content back into the tool.
+            st.textStyle = active->text.style;
+            st.textAlign = active->text.align;
+            startedOnExisting = true;
+          }
+        }
+        // Empty canvas (or a non-Text active layer): a candidate frame drag.
+        // Which of the two things it becomes is decided on pen-UP, because
+        // until the button lifts there is no way to know.
+        if (!startedOnExisting) textEditFrameDragBegin(&st.textEdit, PathPoint{tx, ty}, textDocId);
+      }
+
+      if (st.textEdit.frameDragActive && textDoc != nullptr && !st.textEditDemo) {
+        textEditFrameDragUpdate(&st.textEdit, PathPoint{tx, ty});
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          // `!IsMouseDown` rather than `IsMouseReleased`, for the reason the
+          // Pen's block states: a release ImGui never saw (outside the window)
+          // would otherwise leave the drag live for the rest of the session.
+          //
+          // The new layer takes the TOOL's current style and the FOREGROUND
+          // colour -- app/AppState.hpp's rule, and the same colour every other
+          // tool in this build paints with.
+          TextContent made = makeTextContent(std::string(), PathPoint{tx, ty});
+          made.style = st.textStyle;
+          made.align = st.textAlign;
+          const std::array<float, 4> fg = foregroundLinearRgba(st.brush);
+          made.fill.on = true;
+          made.fill.rgba = fg;
+          // A drag smaller than this is a CLICK, and a click means point text.
+          // In screen pixels converted to document units, so the threshold is
+          // the same gesture at every zoom: below ~8 px of travel nobody meant
+          // to draw a box.
+          const float minSizeTexels = std::max(2.0f, 8.0f / std::max(0.05f, st.view.zoom));
+          if (!textEditFrameDragEnd(&st.textEdit, &made, minSizeTexels))
+            made.origin = PathPoint{tx, ty};  // a click: point text, at the click
+
+          const size_t at = textDoc->document.layers.size();
+          Layer layer = makeTextLayer(defaultNewLayerName(textDoc->document));
+          layer.text = made;
+          addLayer(textDoc->document, at, std::move(layer));
+          setActiveLayer(*textDoc, at);
+          setLayersPanelSelection(*textDoc, at);
+          textDoc->recordEdit("new text layer", EditKind::Structural);
+          textEditBegin(&st.textEdit, textDocId, at,
+                        textDoc->document.layers[at].text);
+        }
+      }
+
+      // --- the keyboard, which is the whole of typing --------------------
+      //
+      // **Guarded on `!io.WantTextInput`.** Every key below is a bare key, and
+      // the layer-rename box one panel over needs all of them -- app/Keymap's
+      // own rule for unmodified keys, stated where the Move tool's arrows use
+      // it. Without this, renaming a layer while the Text tool happens to be
+      // selected types into the canvas instead.
+      if (editing != nullptr && textDoc != nullptr && !ImGui::GetIO().WantTextInput) {
+        ImGuiIO& io = ImGui::GetIO();
+        bool edited = false;
+
+        // Characters first, from ImGui's own queue rather than from key
+        // events: the queue is already decoded past the platform's dead keys,
+        // IME composition and modifier layout, which is a problem this file
+        // has no business solving a second time.
+        for (int i = 0; i < io.InputQueueCharacters.Size; ++i) {
+          const ImWchar c = io.InputQueueCharacters[i];
+          if (c < 0x20 && c != '\n' && c != '\t') continue;  // control keys, handled below
+          // UTF-8 encode. `ImWchar` is UTF-16 in this build, so a character
+          // outside the BMP arrives as a surrogate PAIR across two queue
+          // entries -- and encoding a lone surrogate would put invalid UTF-8
+          // into the string, which makes `shapeText()` refuse the WHOLE block
+          // (text/Shaper.hpp). Surrogates are therefore skipped rather than
+          // encoded: an emoji typed directly is dropped, which is wrong but
+          // silent-and-harmless, where encoding it would blank the layer.
+          // Pasting one still works, because paste does not come through here.
+          if (c >= 0xD800 && c <= 0xDFFF) continue;
+          char buf[4];
+          int n = 0;
+          const unsigned int cp = static_cast<unsigned int>(c);
+          if (cp < 0x80) {
+            buf[n++] = static_cast<char>(cp);
+          } else if (cp < 0x800) {
+            buf[n++] = static_cast<char>(0xC0 | (cp >> 6));
+            buf[n++] = static_cast<char>(0x80 | (cp & 0x3F));
+          } else {
+            buf[n++] = static_cast<char>(0xE0 | (cp >> 12));
+            buf[n++] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            buf[n++] = static_cast<char>(0x80 | (cp & 0x3F));
+          }
+          textInsertUtf8(&editing->text, &st.textEdit, std::string_view(buf, static_cast<size_t>(n)));
+          edited = true;
+        }
+        io.InputQueueCharacters.resize(0);
+
+        // Return inserts a newline rather than committing. There is no
+        // "commit" for text: the layer IS the document, every keystroke is
+        // already in it, and Escape just puts the caret away. A Return that
+        // ended editing would make a two-line caption impossible.
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter, true) ||
+            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, true)) {
+          textInsertUtf8(&editing->text, &st.textEdit, "\n");
+          edited = true;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Backspace, true))
+          edited = textBackspace(&editing->text, &st.textEdit) || edited;
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete, true))
+          edited = textDeleteForward(&editing->text, &st.textEdit) || edited;
+        // Caret moves change no document content, so they record no edit --
+        // app/DocumentLifecycle.hpp's rule that a selection change is not an
+        // edit, applied to a caret.
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
+          textCaretLeft(editing->text, &st.textEdit);
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
+          textCaretRight(editing->text, &st.textEdit);
+        if (ImGui::IsKeyPressed(ImGuiKey_Home, false)) textCaretHome(&st.textEdit);
+        if (ImGui::IsKeyPressed(ImGuiKey_End, false)) textCaretEnd(editing->text, &st.textEdit);
+
+        // **One undo entry per BURST of typing, not per keystroke.** A
+        // `recordEdit()` per character would fill PRD A9's byte budget with
+        // single-character states and make Cmd+Z delete one letter at a time,
+        // which is not what any editor does. `amendEdit()` folds the whole run
+        // into one entry; a caret move, a tool change or a click starts the
+        // next one.
+        if (edited) {
+          if (st.textEdit.undoOpened) {
+            textDoc->amendEdit("type", EditKind::Content);
+          } else {
+            textDoc->recordEdit("type", EditKind::Content);
+            textEditMarkUndoOpened(&st.textEdit);
+          }
+        }
+      }
+    }
+
     if (toolWritesRgbPixels(st.brush.tool) && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       OpenDocument* od = st.documents.active();
@@ -15747,6 +16062,265 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       float lassoPhase = marchingAntPhase();
       drawAntPolyline(dl, xform, pts, /*closed=*/false, lassoPhase);
     }
+
+    // === BEGIN Tool::Pen / Tool::Curve overlay (app/PenTool) ================
+    //
+    // **Not marching ants.** In this build ants mean "this region is selected"
+    // everywhere else, and a path outline selects nothing -- it is geometry.
+    // The gradient's band states the same rule two arms up, and the Measure
+    // ruler states it first.
+    //
+    // Its own block after the rubber-band chain rather than an arm inside it,
+    // because this overlay is not a drag preview: it is drawn whenever the tool
+    // is active, drag or no drag, the way the crop shield below is.
+    //
+    // Everything goes through `xform.toScreen()`, so zoom, pan, rotation and
+    // mirror are inherited for free rather than re-derived here -- the one rule
+    // that keeps an overlay from drifting off the picture under a rotated
+    // canvas.
+    if (toolEditsPath(st.brush.tool)) {
+      const OpenDocument* pathOd = st.documents.active();
+      const Layer* pl = pathOd != nullptr ? activeLayerOf(*pathOd) : nullptr;
+      if (pl != nullptr && pl->kind == LayerKind::Vector) {
+        // Flattening tolerance in DEVICE pixels, so the outline stays smooth
+        // when zoomed in rather than going visibly faceted -- core/PathFlatten's
+        // "quality tracks zoom" rule, which is the caller's job precisely
+        // because only the caller knows the zoom.
+        const float overlayZoom = std::max(0.05f, st.view.zoom);
+        const float overlayTol = 0.3f / overlayZoom;
+        const float anchorHalf = 3.0f;  // screen px
+
+        const ImU32 kPathCasing = IM_COL32(0, 0, 0, 150);
+        const ImU32 kPathCore = atelierToken(kAccent);
+        const ImU32 kAnchorIdle = IM_COL32(255, 255, 255, 235);
+        const ImU32 kAnchorEdge = IM_COL32(0, 0, 0, 200);
+
+        for (const VectorShape& shape : pl->shapes) {
+          const bool shapeSelected =
+              std::find(st.pathEdit.selection.shapes.begin(),
+                        st.pathEdit.selection.shapes.end(),
+                        shape.id) != st.pathEdit.selection.shapes.end();
+
+          // --- the outline ---
+          const std::vector<FlatContour> contours = flattenPath(shape.path, overlayTol);
+          for (const FlatContour& c : contours) {
+            if (c.points.size() < 2) continue;
+            const size_t segs = c.closed ? c.points.size() : c.points.size() - 1;
+            for (size_t i = 0; i < segs; ++i) {
+              const PathPoint& p0 = c.points[i];
+              const PathPoint& p1 = c.points[(i + 1) % c.points.size()];
+              const Vec2 a = xform.toScreen(Vec2{p0.x, p0.y});
+              const Vec2 b = xform.toScreen(Vec2{p1.x, p1.y});
+              // A dark casing under a light core, for the gradient band's own
+              // reason: this is drawn over the user's picture at whatever
+              // colour that happens to be.
+              dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), kPathCasing,
+                          shapeSelected ? 3.0f : 2.0f);
+              dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y),
+                          shapeSelected ? kPathCore : IM_COL32(255, 255, 255, 190),
+                          shapeSelected ? 1.6f : 1.0f);
+            }
+          }
+
+          // --- anchors, and the handles of SELECTED ones only ---
+          //
+          // docs/vector-editing.md section 3: drawing every anchor's tangents
+          // is what would bury the gnomon in a thicket of handles, and it is
+          // half of why that section's hit-test priority is liveable.
+          for (size_t sp = 0; sp < shape.path.subpaths.size(); ++sp) {
+            const SubPath& sub = shape.path.subpaths[sp];
+            for (size_t ai = 0; ai < sub.anchors.size(); ++ai) {
+              const Anchor& an = sub.anchors[ai];
+              bool anchorSelected = false;
+              for (const ComponentRef& c : st.pathEdit.selection.components) {
+                if (c.shapeId == shape.id && c.subPath == static_cast<uint32_t>(sp) &&
+                    c.anchor == static_cast<uint32_t>(ai)) {
+                  anchorSelected = true;
+                  break;
+                }
+              }
+
+              const Vec2 ap = xform.toScreen(Vec2{an.pt.x, an.pt.y});
+
+              if (anchorSelected) {
+                const PathPoint handles[2] = {an.in, an.out};
+                for (const PathPoint& h : handles) {
+                  // A handle coincident with its anchor is a straight segment's
+                  // "no handle" (core/Path.hpp), and drawing a zero-length stick
+                  // with a knob on it would claim a curve that is not there.
+                  if (h.x == an.pt.x && h.y == an.pt.y) continue;
+                  const Vec2 hp = xform.toScreen(Vec2{h.x, h.y});
+                  dl->AddLine(ImVec2(ap.x, ap.y), ImVec2(hp.x, hp.y),
+                              IM_COL32(0, 0, 0, 140), 2.0f);
+                  dl->AddLine(ImVec2(ap.x, ap.y), ImVec2(hp.x, hp.y), kPathCore, 1.0f);
+                  dl->AddCircleFilled(ImVec2(hp.x, hp.y), anchorHalf - 0.5f, kPathCore);
+                  dl->AddCircle(ImVec2(hp.x, hp.y), anchorHalf - 0.5f, kAnchorEdge, 0, 1.0f);
+                }
+              }
+
+              // A SQUARE for an anchor and a DISC for a handle, so the two are
+              // told apart by shape and not only by colour -- they sit a few
+              // pixels apart and one drags into the other.
+              const ImVec2 tl(ap.x - anchorHalf, ap.y - anchorHalf);
+              const ImVec2 br(ap.x + anchorHalf, ap.y + anchorHalf);
+              dl->AddRectFilled(tl, br, anchorSelected ? kPathCore : kAnchorIdle);
+              dl->AddRect(tl, br, kAnchorEdge, 0.0f, 0, 1.0f);
+            }
+          }
+
+          // --- the persistent per-shape pivot ---
+          //
+          // Only for a selected shape: an unselected one's pivot is not
+          // actionable, and a canvas full of crosshairs reads as noise.
+          if (shapeSelected) {
+            const PathPoint pv = shapePivot(shape);
+            const Vec2 c = xform.toScreen(Vec2{pv.x, pv.y});
+            const float r = 6.0f;
+            dl->AddCircle(ImVec2(c.x, c.y), r, IM_COL32(0, 0, 0, 170), 0, 3.0f);
+            dl->AddCircle(ImVec2(c.x, c.y), r, kPathCore, 0, 1.5f);
+            dl->AddLine(ImVec2(c.x - r - 3.0f, c.y), ImVec2(c.x + r + 3.0f, c.y), kPathCore,
+                        1.5f);
+            dl->AddLine(ImVec2(c.x, c.y - r - 3.0f), ImVec2(c.x, c.y + r + 3.0f), kPathCore,
+                        1.5f);
+          }
+        }
+
+        // --- the marquee ---
+        //
+        // Again NOT ants. It selects components, but the ants vocabulary here
+        // is specifically about a pixel region, and borrowing it would say the
+        // wrong thing about what is being selected.
+        if (st.pathEdit.drag == PathDragKind::Marquee) {
+          const Vec2 a =
+              xform.toScreen(Vec2{st.pathEdit.dragStart.x, st.pathEdit.dragStart.y});
+          const Vec2 b = xform.toScreen(Vec2{st.pathEdit.dragNow.x, st.pathEdit.dragNow.y});
+          const ImVec2 tl(std::min(a.x, b.x), std::min(a.y, b.y));
+          const ImVec2 br(std::max(a.x, b.x), std::max(a.y, b.y));
+          dl->AddRectFilled(tl, br, IM_COL32(255, 255, 255, 24));
+          dl->AddRect(tl, br, IM_COL32(0, 0, 0, 160), 0.0f, 0, 2.0f);
+          dl->AddRect(tl, br, kPathCore, 0.0f, 0, 1.0f);
+        }
+      }
+    }
+    // === END Tool::Pen / Tool::Curve overlay ================================
+
+    // === BEGIN Tool::Text overlay (app/TextTool, core/TextContent) ==========
+    //
+    // Three things, and each is the answer to a question a user has while
+    // typing that nothing else on screen answers:
+    //
+    //   * the block's BOX -- "which of these captions am I editing?"
+    //   * the CARET -- "where will the next character go?"
+    //   * the frame drag's rectangle -- "how wide will this paragraph be?",
+    //     which exists only while the pointer is down and is therefore
+    //     unphotographable any other way.
+    //
+    // Everything goes through `xform.toScreen()`, so zoom, pan, rotation and
+    // mirror are inherited rather than re-derived -- the rule that keeps an
+    // overlay from drifting off the picture under a rotated canvas.
+    //
+    // **Not marching ants**, for the reason the Pen's overlay states one block
+    // up: in this build ants mean "this region of pixels is selected", and a
+    // text block's box is a frame around parametric content.
+    if (toolEditsText(st.brush.tool)) {
+      const OpenDocument* textOd = st.documents.active();
+      const Layer* tl = textOd != nullptr ? activeLayerOf(*textOd) : nullptr;
+
+      const ImU32 kTextCasing = IM_COL32(0, 0, 0, 150);
+      const ImU32 kTextCore = atelierToken(kAccent);
+
+      if (tl != nullptr && tl->kind == LayerKind::Text) {
+        // **The BOX is the LAYOUT frame for paragraph text and the painted
+        // bounds for point text**, and the difference is not cosmetic. A
+        // paragraph's frame is a thing the user set and can reason about, and
+        // it stays put as the text inside it changes; point text has no frame
+        // at all, so the only honest box is the ink's own extent.
+        //
+        // Drawing the painted bounds for a paragraph would make the box jump
+        // every time a line wrapped, which reads as the frame moving when it
+        // did not.
+        const bool paragraph = tl->text.frame.width > 0.0f;
+        PathBounds box;
+        if (paragraph) {
+          box.valid = true;
+          box.minX = tl->text.origin.x;
+          box.minY = tl->text.origin.y;
+          box.maxX = tl->text.origin.x + tl->text.frame.width;
+          // `frame.height == 0` means "as tall as the lines need"
+          // (core/TextContent.hpp), so the box has to ASK how tall that came
+          // out rather than drawing a zero-height line.
+          const PathBounds ink = textContentBounds(tl->text);
+          box.maxY = tl->text.frame.height > 0.0f
+                         ? tl->text.origin.y + tl->text.frame.height
+                         : (ink.valid ? ink.maxY : tl->text.origin.y);
+        } else {
+          box = textContentBounds(tl->text);
+        }
+
+        if (box.valid) {
+          const Vec2 a = xform.toScreen(Vec2{box.minX, box.minY});
+          const Vec2 b = xform.toScreen(Vec2{box.maxX, box.maxY});
+          const ImVec2 tlp(std::min(a.x, b.x), std::min(a.y, b.y));
+          const ImVec2 brp(std::max(a.x, b.x), std::max(a.y, b.y));
+          // A dark casing under a light core, the gradient band's own reason:
+          // this is drawn over the user's picture at whatever colour that
+          // happens to be.
+          dl->AddRect(tlp, brp, kTextCasing, 0.0f, 0, 3.0f);
+          dl->AddRect(tlp, brp, paragraph ? kTextCore : IM_COL32(255, 255, 255, 200), 0.0f, 0,
+                      1.5f);
+        }
+
+        // --- the caret ---
+        //
+        // Only while a session is actually live on THIS layer. A caret drawn
+        // over a block nobody is editing claims a keystroke would go there,
+        // which is the one thing an insertion point must never lie about.
+        const bool editingThis =
+            textOd != nullptr && st.textEdit.documentId == textOd->id &&
+            st.textEdit.layerIndex == activeLayerIndex(*textOd).value_or(SIZE_MAX);
+        if (editingThis) {
+          float caretH = 0.0f;
+          const PathPoint cp = textCaretPosition(tl->text, st.textEdit.caret, &caretH);
+          // The caret hangs from the pen position UP by the ascent and DOWN by
+          // the descent, because the pen position is on the BASELINE and a bar
+          // drawn downward from it would sit entirely under the text. 0.8/0.2
+          // is the conventional ascent/descent split of a line box, and it is
+          // an approximation for the reason `caretHeightFor()` states: the
+          // font's real metrics would need a second platform call.
+          const Vec2 top = xform.toScreen(Vec2{cp.x, cp.y - caretH * 0.8f});
+          const Vec2 bot = xform.toScreen(Vec2{cp.x, cp.y + caretH * 0.2f});
+          // **Blinking, and NOT on a `static` clock.** `ImGui::GetTime()` is
+          // the frame clock this whole UI already runs on, so the caret blinks
+          // at the same rate on every document and stops nothing when the
+          // window is idle. 1.06 s is ImGui's own `InputText` period, so the
+          // canvas caret and the panel's rename box blink together rather
+          // than beating against each other.
+          const bool on = std::fmod(ImGui::GetTime(), 1.06) < 0.66;
+          if (on) {
+            dl->AddLine(ImVec2(top.x, top.y), ImVec2(bot.x, bot.y), kTextCasing, 4.0f);
+            dl->AddLine(ImVec2(top.x, top.y), ImVec2(bot.x, bot.y), kTextCore, 2.0f);
+          }
+        }
+      }
+
+      // --- the frame drag ---
+      //
+      // Held open only while the pointer is down, so this is the one piece of
+      // this tool's chrome a screenshot cannot otherwise reach --
+      // `--text-demo frame` pins it for exactly that reason.
+      if (st.textEdit.frameDragActive) {
+        const Vec2 a = xform.toScreen(
+            Vec2{st.textEdit.frameDragStart.x, st.textEdit.frameDragStart.y});
+        const Vec2 b =
+            xform.toScreen(Vec2{st.textEdit.frameDragNow.x, st.textEdit.frameDragNow.y});
+        const ImVec2 tlp(std::min(a.x, b.x), std::min(a.y, b.y));
+        const ImVec2 brp(std::max(a.x, b.x), std::max(a.y, b.y));
+        dl->AddRectFilled(tlp, brp, IM_COL32(255, 255, 255, 20));
+        dl->AddRect(tlp, brp, kTextCasing, 0.0f, 0, 3.0f);
+        dl->AddRect(tlp, brp, kTextCore, 0.0f, 0, 1.5f);
+      }
+    }
+    // === END Tool::Text overlay =============================================
 
     // === BEGIN Tool::Crop overlay (app/CropTool) ===========================
     //

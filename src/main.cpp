@@ -45,6 +45,7 @@
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
 #include "color/Space.hpp"
+#include "core/CanvasLimits.hpp"
 #include "core/Composite.hpp"
 #include "core/Blend.hpp"
 #include "app/LayerEditor.hpp"
@@ -434,6 +435,260 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
               od.document.layers[target].rgbTiles.has_value()
                   ? od.document.layers[target].rgbTiles->occupiedTileCount()
                   : 0);
+}
+
+// --vector-demo [components|marquee] (PLAN.md Phase 13; docs/vector-editing.md):
+// puts a `LayerKind::Vector` layer on the session's document, selects
+// `Tool::Pen`, and drives `app/PenTool`'s real pen-down/pen-up transitions so
+// the on-canvas path overlay can be photographed.
+//
+// It exists for the reason every other `--*-demo` flag in this file exists:
+// the overlay is per-tool chrome drawn over the picture, `--screenshot` has no
+// way to click a palette cell or drag a pointer, and a feature that can only
+// be checked by a human is one that silently rots. `--selftest` proves
+// app/PenTool's hit testing, its selection algebra and its affines; none of
+// that can prove the anchors are ON SCREEN, the right way up, under the
+// canvas's zoom/pan rather than in raw document coordinates, and not hidden
+// behind the layer they belong to.
+//
+// **Every state below is reached through `pathEditBegin()`/`pathEditUpdate()`/
+// `pathEditEnd()`, never by assigning to `st.pathEdit`.** A fixture that wrote
+// the selection directly would photograph a struct field and would keep
+// working after the hit test broke -- and it would be a second writer of the
+// state whose single-writer rule app/PenTool.hpp makes greppable.
+//
+//   (default)     Shape mode: a click on a segment, which selects the whole
+//                 shape -- so the picture carries a selected outline and the
+//                 persistent per-shape pivot crosshair.
+//   components    Component mode: the same click, which in that mode selects
+//                 every anchor of the shape -- so the picture carries the
+//                 tangent handles, which are drawn for selected anchors ONLY.
+//   marquee       A marquee held open mid-drag: pen-down on empty canvas and a
+//                 move, with no pen-up. The rubber band exists only while the
+//                 pointer is down, so it is unphotographable any other way --
+//                 `--gradient-demo drag`'s argument exactly.
+void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
+  // Two shapes, deliberately unalike. The blob's handles do not coincide with
+  // their anchors, so it draws tangent sticks; the triangle's do, so it draws
+  // none -- and the overlay's "a zero-length stick with a knob on it would
+  // claim a curve that is not there" branch is under the camera as well.
+  np::VectorShape blob;
+  {
+    np::SubPath sub;
+    sub.closed = true;
+    // A rounded quadrilateral around (400, 380), inset well clear of the
+    // 1024-px demo canvas's edges so no part of the overlay is clipped away by
+    // the canvas bounds rather than by anything this flag is testing.
+    const float cx = 400.0f, cy = 380.0f, r = 190.0f, k = 105.0f;
+    const np::PathPoint pts[4] = {{cx, cy - r}, {cx + r, cy}, {cx, cy + r}, {cx - r, cy}};
+    const np::PathPoint tan[4] = {{k, 0.0f}, {0.0f, k}, {-k, 0.0f}, {0.0f, -k}};
+    for (int i = 0; i < 4; ++i) {
+      np::Anchor a;
+      a.pt = pts[i];
+      a.in = np::PathPoint{pts[i].x - tan[i].x, pts[i].y - tan[i].y};
+      a.out = np::PathPoint{pts[i].x + tan[i].x, pts[i].y + tan[i].y};
+      a.smooth = true;
+      sub.anchors.push_back(a);
+    }
+    blob.path.subpaths.push_back(sub);
+    blob.fill.on = true;
+    blob.fill.rgba = {0.16f, 0.32f, 0.55f, 1.0f};
+  }
+
+  np::VectorShape tri;
+  {
+    np::SubPath sub;
+    sub.closed = true;
+    const np::PathPoint pts[3] = {{700.0f, 620.0f}, {900.0f, 860.0f}, {560.0f, 860.0f}};
+    for (const np::PathPoint& p : pts) {
+      np::Anchor a;
+      // Handles ON the anchor: core/Path's "no handle," i.e. a straight edge.
+      a.pt = p;
+      a.in = p;
+      a.out = p;
+      sub.anchors.push_back(a);
+    }
+    tri.path.subpaths.push_back(sub);
+    tri.fill.on = true;
+    tri.fill.rgba = {0.62f, 0.24f, 0.14f, 1.0f};
+  }
+
+  np::Layer vec = np::makeVectorLayer("Vector demo");
+  vec.shapes.push_back(std::move(blob));
+  vec.shapes.push_back(std::move(tri));
+  uint64_t nextId = 1;
+  for (np::VectorShape& s : vec.shapes) s.id = nextId++;
+  vec.nextShapeId = nextId;
+
+  const size_t at = od.document.layers.size();
+  np::addLayer(od.document, at, std::move(vec));
+  np::setActiveLayer(od, at);
+  np::setLayersPanelSelection(od, at);
+  np::setActiveTool(st, np::Tool::Pen);
+
+  std::vector<np::VectorShape>& shapes = od.document.layers[at].shapes;
+
+  // The pick radius the canvas block itself computes at zoom 1. Passing a
+  // different one here would make the demo hit things the real gesture would
+  // miss.
+  const float pickTexels = 8.0f;
+
+  if (mode == 2) {
+    // Empty canvas, well clear of both shapes, then a move and NO pen-up.
+    np::pathEditBegin(&st.pathEdit, shapes, np::PathPoint{140.0f, 120.0f}, pickTexels,
+                      false, np::SelectionCombine::Replace, od.id);
+    np::pathEditUpdate(&st.pathEdit, &shapes, np::PathPoint{760.0f, 540.0f});
+    // The pin, without which the canvas block ends this drag on frame 1 (the
+    // button is not down) and, before that, drags `dragNow` to wherever the
+    // human left the mouse. app/AppState.hpp states the mechanism.
+    st.pathEditDemo = true;
+    std::printf("[vector-demo] marquee held open: 140,120 -> 760,540, drag=%d\n",
+                static_cast<int>(st.pathEdit.drag));
+    return;
+  }
+
+  if (mode == 1) np::pathEditSetSelectMode(&st.pathEdit, np::PathSelectMode::Component, shapes);
+
+  // The midpoint (t = 0.5) of the blob's north-west arc, which is a SEGMENT
+  // and not an anchor -- the hit the two modes answer differently. The four
+  // anchors sit at the compass points, so this is ~145 px from the nearest
+  // two, well outside `pickTexels`. Aiming at a compass point instead is the
+  // trap: `{cx - r, cy}` reads like "the middle of the left edge" and is in
+  // fact the west ANCHOR exactly, which hits `PathHitKind::Anchor` and
+  // selects one component where the picture wants four.
+  const np::PathPoint onSegment{265.6f, 245.6f};
+  np::pathEditBegin(&st.pathEdit, shapes, onSegment, pickTexels, false,
+                    np::SelectionCombine::Replace, od.id);
+  np::pathEditEnd(&st.pathEdit, shapes);
+
+  std::printf("[vector-demo] %zu shapes, %s mode: %zu shapes / %zu components selected\n",
+              shapes.size(),
+              st.pathEdit.selection.mode == np::PathSelectMode::Component ? "component"
+                                                                          : "shape",
+              st.pathEdit.selection.shapes.size(),
+              st.pathEdit.selection.components.size());
+  if (st.pathEdit.selection.shapes.empty() && st.pathEdit.selection.components.empty())
+    std::fprintf(stderr,
+                 "[vector-demo] nothing selected -- the click at %.0f,%.0f missed the "
+                 "path, so this photograph shows an UNSELECTED overlay\n",
+                 static_cast<double>(onSegment.x), static_cast<double>(onSegment.y));
+}
+
+// --text-demo [paragraph|frame] (PLAN.md Phase 14; PRD K1-K3): puts a
+// `LayerKind::Text` layer on the session's document, selects `Tool::Text`, and
+// drives `app/TextTool`'s real session transitions so the on-canvas text
+// chrome and the Text options row can be photographed.
+//
+// Same argument as `runVectorDemo()` above, one tool along: `--selftest`
+// proves the caret arithmetic, the UTF-8 boundary invariant, the frame-drag
+// threshold and the shaping, and none of that can prove the block box is ON
+// SCREEN under the canvas's zoom and pan, that the caret bar lands on the
+// baseline rather than a guessed constant above it, or that the options row's
+// six controls are drawn at all.
+//
+// **Every state below is reached through `textEditBegin()` /
+// `textCaretSetOffset()` / `textEditFrameDragBegin()`, never by assigning to
+// `st.textEdit`** -- app/TextTool.hpp's single-writer rule, which is greppable
+// precisely so that a fixture cannot quietly become a second writer:
+// `grep -rnP 'textEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` must find
+// nothing, and that grep covers this file.
+//
+//   (default)     Point text: a one-line block with a caret placed by CLICK
+//                 position, so the picture carries the block box, the caret
+//                 bar, and an ALIGN segment correctly greyed out -- point text
+//                 has nothing to align against (text/Shaper.hpp), and that
+//                 disabled state is itself a claim worth photographing.
+//   paragraph     A wrapped block with a frame width, left align, so ALIGN is
+//                 live and the box drawn is the LAYOUT frame rather than the
+//                 glyph bounds -- the two differ, and the overlay picks
+//                 deliberately between them.
+//   frame         A paragraph-frame drag held open mid-gesture: pen-down on
+//                 empty canvas and a move, with no pen-up. Unphotographable
+//                 any other way, and pinned by `st.textEditDemo` for a reason
+//                 the Pen's marquee does not have -- this gesture's pen-up
+//                 CREATES A LAYER, so an unpinned camera would photograph a
+//                 finished text block and label it a rubber band.
+//
+// The frame drag's corners (180,200 -> 760,540) are `--vector-demo marquee`'s
+// own, and for the same reason: the three text canvas views share one golden
+// crop so they are directly diffable, and a rectangle that ran past its
+// bottom edge would be cropped by the harness rather than by anything under
+// test.
+void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
+  np::setActiveTool(st, np::Tool::Text);
+
+  if (mode == 2) {
+    // Empty canvas, well clear of anything, then a move and NO pen-up. No
+    // layer is created and none should be: the layer is the pen-up's product.
+    np::textEditFrameDragBegin(&st.textEdit, np::PathPoint{180.0f, 200.0f}, od.id);
+    np::textEditFrameDragUpdate(&st.textEdit, np::PathPoint{760.0f, 540.0f});
+    st.textEditDemo = true;
+    std::printf("[text-demo] frame drag held open: 180,200 -> 760,540, active=%d, layer=%s\n",
+                static_cast<int>(st.textEdit.frameDragActive),
+                st.textEdit.layerIndex == np::kNoLayer ? "none yet" : "SET (wrong)");
+    return;
+  }
+
+  // 48 px rather than the 24 px default: the block box, the caret bar and the
+  // glyph outlines all have to be separable in a screenshot, and at 24 px on
+  // this canvas the box and the caret are within a pixel or two of each other.
+  np::TextContent text = np::makeTextContent(
+      mode == 1 ? "Paragraph text wraps inside the frame it was dragged out."
+                : "Handgloves",
+      np::PathPoint{200.0f, 300.0f});
+  text.style.sizePx = 48.0f;
+  // A deliberately non-black fill: the overlay draws its chrome in the
+  // accent, and black-on-white text with black chrome over it makes a
+  // mis-registered box indistinguishable from a correctly registered one.
+  text.fill.rgba = {0.10f, 0.14f, 0.22f, 1.0f};
+  if (mode == 1) {
+    // A frame NARROWER than the string needs, so the picture shows real
+    // wrapping rather than one line that happens to fit -- a frame wide
+    // enough to hold the whole string would photograph identically to point
+    // text and prove nothing about the paragraph path.
+    text.frame.width = 520.0f;
+    text.align = np::TextAlign::Center;
+  }
+
+  np::Layer layer = np::makeTextLayer(mode == 1 ? "Paragraph demo" : "Point text demo");
+  layer.text = text;
+
+  const size_t at = od.document.layers.size();
+  np::addLayer(od.document, at, std::move(layer));
+  np::setActiveLayer(od, at);
+  np::setLayersPanelSelection(od, at);
+
+  const np::TextContent& placed = od.document.layers[at].text;
+
+  // The two writes the options bar itself makes when a Text layer is clicked
+  // into (app/AppState.hpp's stated rule), so the row shows THIS block's font
+  // and alignment rather than the tool's untouched defaults. Without them the
+  // photograph would show SIZE 24 beside 48 px text, which looks like the
+  // control is broken and is in fact the fixture skipping a step.
+  st.textStyle = placed.style;
+  st.textAlign = placed.align;
+
+  np::textEditBegin(&st.textEdit, od.id, at, placed);
+  // `textEditBegin()` leaves the caret at the END. A click also positions it,
+  // and the mid-string caret is the more informative photograph: a caret at
+  // the end of the string sits just past the last glyph, which is also where a
+  // caret computed from entirely the wrong glyph would land if the string were
+  // measured instead of shaped.
+  const np::PathPoint clickAt{
+      placed.origin.x + (mode == 1 ? 210.0f : 150.0f),
+      placed.origin.y + (mode == 1 ? 30.0f : 20.0f)};
+  np::textCaretSetOffset(&st.textEdit, placed, np::textOffsetAtPoint(placed, clickAt));
+
+  const np::PathBounds bounds = np::textContentBounds(placed);
+  std::printf("[text-demo] %s, %zu glyph shape(s), caret at byte %zu of %zu, bounds %s\n",
+              mode == 1 ? "paragraph" : "point text",
+              np::textContentToShapes(placed).size(), st.textEdit.caret, placed.utf8.size(),
+              bounds.valid ? "valid" : "INVALID");
+  if (!np::textContentDraws(placed) || !bounds.valid)
+    std::fprintf(stderr,
+                 "[text-demo] this block draws NOTHING -- either the shaper is unavailable in "
+                 "this build or the fill is off, so the photograph shows chrome over an empty "
+                 "canvas\n");
 }
 
 // --ui-merge-demo <command> (PLAN.md Phase 5 step 10): press exactly one of
@@ -1186,6 +1441,13 @@ int main(int argc, char** argv) {
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
+  // --vector-demo [components|marquee]: see runVectorDemo().
+  bool vectorDemo = false;
+  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee
+
+  // --text-demo [paragraph|frame]: see runTextDemo().
+  bool textDemo = false;
+  int textDemoMode = 0;  // 0 = point text, 1 = paragraph, 2 = held-open frame drag
   bool overRangeDemo = false;
   bool munsellDemo = false;
   int munsellDemoSteps = 9;
@@ -1559,6 +1821,41 @@ int main(int argc, char** argv) {
         maskDemoTarget = false;
         ++i;
       }
+    } else if (a == "--vector-demo") {
+      // Selects `Tool::Pen` and puts a Vector layer under it. See
+      // `runVectorDemo()` for what each argument photographs and why the flag
+      // drives app/PenTool's real transitions rather than writing the
+      // selection. **Not `--pen-demo`** -- that name is already taken, by the
+      // *transform* demo's synthetic pointer drag further up this file, and
+      // reusing it would silently change what an existing golden view shoots.
+      vectorDemo = true;
+      if (i + 1 < argc) {
+        const std::string_view arg(argv[i + 1]);
+        if (arg == "components") {
+          vectorDemoMode = 1;
+          ++i;
+        } else if (arg == "marquee") {
+          vectorDemoMode = 2;
+          ++i;
+        }
+      }
+    } else if (a == "--text-demo") {
+      // Selects `Tool::Text` and puts a Text layer under it. See
+      // `runTextDemo()` for what each argument photographs. `--text-demo`
+      // rather than any shorter name for `--vector-demo`'s reason: `--pen-demo`
+      // was taken by the transform demo, and this file's flag namespace is
+      // shared with golden views that already point at the old meanings.
+      textDemo = true;
+      if (i + 1 < argc) {
+        const std::string_view arg(argv[i + 1]);
+        if (arg == "paragraph") {
+          textDemoMode = 1;
+          ++i;
+        } else if (arg == "frame") {
+          textDemoMode = 2;
+          ++i;
+        }
+      }
     } else if (a == "--smudge-demo") {
       // Selects `Tool::Smudge`, and changes nothing else -- which is the whole
       // point of this one, unlike `--wand-demo bucket` above.
@@ -1844,6 +2141,13 @@ int main(int argc, char** argv) {
   np::GpuContext gpu;
   if (!gpu.init(window)) return 1;
 
+  // The single writer core/CanvasLimits.hpp names, placed here because this is
+  // the first line after `gpu.init()` and before any document can exist: every
+  // path that sets a document's extent -- open, New, Image Size, Canvas Size --
+  // reads this figure, and one of them running against the 8192 default while
+  // the adapter allows 16384 would refuse files this machine draws perfectly.
+  np::setMaxCanvasDimension(static_cast<int32_t>(gpu.maxTextureDimension));
+
   np::MixboxLut lut;
   const std::string mixboxLutPath = np::mixboxLutPath();
   if (!lut.load(mixboxLutPath)) {
@@ -1923,9 +2227,20 @@ int main(int argc, char** argv) {
     // 2.3: color/Space's sRGB/Rec.709 transfer function round trip. Also
     // headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool colorSpaceOk = np::runColorSpaceTest();
+    // core/CanvasLimits: the extent guard. Headless and GPU-free for the same
+    // reason -- and deliberately so, since the abort it prevents is a GPU
+    // failure that a GPU-driven test could only reproduce by causing it.
+    std::printf("-- canvas limits (core/CanvasLimits) --\n");
+    const bool canvasLimitsOk = np::runCanvasLimitsTest();
+    // color/Gamut + io/SourceGamut: import-time gamut conversion. Headless
+    // and GPU-free -- pure colour maths plus container parsing.
+    std::printf("-- gamut (color/Gamut, io/SourceGamut) --\n");
+    const bool gamutOk = np::runGamutTest();
     // color/Munsell: the third COLOR picker's geometry
     // (docs/munsell-picker.md). Headless and GPU-free -- pure CPU math, the
-    // same standing as the two sections either side of it.
+    // same standing as the sections either side of it. The banner follows the
+    // convention main introduced while this branch was out.
+    std::printf("-- munsell page (color/Munsell, app/MunsellSelection) --\n");
     const bool munsellOk = np::runMunsellTest();
     // Phase 3 step 1 (ADR-0004): color/Shaper's ACEScct log encode/decode --
     // breakpoint continuity, round trip, a hand-computed known-value check,
@@ -2256,6 +2571,15 @@ int main(int argc, char** argv) {
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penToolOk = np::runPenToolTest();
+    // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
+    // gate predicate, the caret-editing session's UTF-8-safe string edits
+    // (insert/backspace/forward-delete/caret movement, all routed through
+    // one clamp so a caret can never split a multi-byte character), the
+    // paragraph-frame drag, and block hit-testing. Calls none of
+    // core/TextContent.hpp's own free functions -- a sibling track's `.cpp`,
+    // not yet linkable against this base. Headless and GPU-free; writes no
+    // files; touches no ui/ file.
+    const bool textToolOk = np::runTextToolTest();
     // text/Shaper: PRD K2's platform-independent shaping interface and its
     // CoreText implementation -- point/paragraph text, the y-up-to-y-down
     // flip, quadratic-to-cubic glyph outlines, and UTF-16 clusters translated
@@ -2269,6 +2593,19 @@ int main(int argc, char** argv) {
     // core/DirtyTiles' pass 1 could not see one before this phase.
     // Headless and GPU-free; writes no files.
     const bool vectorLayerOk = np::runVectorLayerTest();
+    // core/TextContent (PLAN.md phase 14): what a `LayerKind::Text` layer
+    // holds -- makeTextContent(), textContentToShapes() (shaping a block
+    // into per-glyph VectorShapes, translated by origin plus each glyph's
+    // own pen position), textContentBounds() and textContentDraws(). Also
+    // guarded on `shaperAvailable()`, for the same reason runTextShaperTest()
+    // is. Headless, GPU-free, writes no files.
+    const bool textContentOk = np::runTextContentTest();
+
+    // io/TextSerial -- the `np:text` carrier for a `LayerKind::Text` layer's
+    // content, io/PathSerial's sibling for a `TextContent` instead of a
+    // shape list. Headless and GPU-free, and NOT guarded on
+    // `shaperAvailable()`: a serialiser has no platform dependency.
+    const bool textSerialOk = np::runTextSerialTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -3066,7 +3403,8 @@ int main(int argc, char** argv) {
     // a parked backlog, prompt catch-up on scroll-into-view, and a printed
     // (not asserted) per-tile cost measurement.
     const bool viewportDeferredCompositeOk = np::runViewportDeferredCompositeTest(gpu);
-    const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk && munsellOk && shaperOk && keymapOk &&
+    const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
+                   canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk && toolSurfaceOk &&
@@ -3082,7 +3420,7 @@ int main(int argc, char** argv) {
                     documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk &&
                     framePacingOk &&
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
-                    textShaperOk && vectorLayerOk &&
+                    textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
@@ -3117,7 +3455,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk;
+                    penToolOk && textSerialOk && textToolOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -3360,6 +3698,18 @@ int main(int argc, char** argv) {
   // After --demo-document, which is the fixture it aims at.
   if (maskDemo) {
     if (np::OpenDocument* od = st.documents.active()) runMaskDemo(*od, maskDemoTarget);
+  }
+  if (vectorDemo) {
+    if (np::OpenDocument* od = st.documents.active()) runVectorDemo(st, *od, vectorDemoMode);
+    else
+      std::fprintf(stderr, "[vector-demo] no document open -- this flag needs one to put a "
+                           "Vector layer in\n");
+  }
+  if (textDemo) {
+    if (np::OpenDocument* od = st.documents.active()) runTextDemo(st, *od, textDemoMode);
+    else
+      std::fprintf(stderr, "[text-demo] no document open -- this flag needs one to put a "
+                           "Text layer in\n");
   }
   if (marqueeDemo) {
     if (np::OpenDocument* od = st.documents.active()) {

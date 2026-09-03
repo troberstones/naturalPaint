@@ -89,7 +89,7 @@ bool runLayerPanel2aTest() {
           "colour of the row it marks is not drawn at all");
   }
 
-  std::printf("  -- B. the NEW popup: eight kinds, four of them buildable --\n");
+  std::printf("  -- B. the NEW popup: eight kinds, five of them buildable --\n");
 
   // 2a's second change: "the three `New` buttons collapse into one `NEW` with a
   // kind popup carrying all seven kinds and their rails". All seven, so the
@@ -108,7 +108,8 @@ bool runLayerPanel2aTest() {
     bool reasonsMatch = true;
     for (const NewLayerKindEntry& e : menu) {
       const bool expected = e.kind == LayerKind::Pigment || e.kind == LayerKind::RGB ||
-                            e.kind == LayerKind::Adjustment || e.kind == LayerKind::Vector;
+                            e.kind == LayerKind::Adjustment || e.kind == LayerKind::Vector ||
+                            e.kind == LayerKind::Text;
       if (e.buildable != expected) correctSet = false;
       if (e.buildable) ++buildable;
       // A disabled entry must SAY why, and a live one must not carry an excuse
@@ -116,9 +117,9 @@ bool runLayerPanel2aTest() {
       const char* reason = layerKindUnbuildableReason(e.kind);
       if (e.buildable != (reason == nullptr)) reasonsMatch = false;
     }
-    check(buildable == 4 && correctSet,
-          "new: exactly Pigment, RGB, Adjustment and Vector are buildable -- core/LayerOps has "
-          "four maker functions and Media/Strokes/Text/Flats hold no content at all");
+    check(buildable == 5 && correctSet,
+          "new: exactly Pigment, RGB, Adjustment, Vector and Text are buildable -- core/LayerOps "
+          "has five maker functions and Media/Strokes/Flats hold no content at all");
     check(reasonsMatch,
           "new: every disabled kind carries a reason and every live one carries none -- a "
           "greyed row that cannot say why is indistinguishable from a broken button");
@@ -135,6 +136,9 @@ bool runLayerPanel2aTest() {
       if (e.kind == LayerKind::RGB && e.command != LayerCommand::NewRgbLayer) wiredRight = false;
       if (e.kind == LayerKind::Adjustment && e.command != LayerCommand::NewAdjustmentLayer)
         wiredRight = false;
+      if (e.kind == LayerKind::Vector && e.command != LayerCommand::NewVectorLayer)
+        wiredRight = false;
+      if (e.kind == LayerKind::Text && e.command != LayerCommand::NewTextLayer) wiredRight = false;
     }
     check(wiredRight,
           "new: each buildable entry issues ITS OWN kind's command -- a transposed pair "

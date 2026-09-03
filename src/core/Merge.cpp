@@ -11,8 +11,10 @@
 #include "core/LayerOpRefusal.hpp"
 #include "core/Mask.hpp"
 #include "core/Pigment.hpp"
+#include "core/TextContent.hpp"
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
+#include "core/VectorRaster.hpp"
 
 namespace np {
 namespace {
@@ -508,9 +510,12 @@ LayerOpResult mergeLayerDown(Document& doc, size_t index, std::vector<std::strin
     return layerOpFail(
         "merge down refused: " + layerOpDescribe(doc, holdsPixels(up) ? lower : index) +
         " is a " + layerKindName(holdsPixels(up) ? low.kind : up.kind) +
-        " layer, which owns no pixel storage in this build (core/Layer.hpp: Media needs "
-        "the fluid solver's per-medium state, and Text/Strokes/Flats have no parameter "
-        "member yet). A merge would produce an empty layer and call it a merge.");
+        " layer, which owns no pixel storage in this build (core/Layer.hpp: Vector holds "
+        "shapes and Text holds a text block, neither of which is a tile store; Media needs "
+        "the fluid solver's per-medium state; Strokes and Flats have no parameter member "
+        "yet). A merge would produce an empty layer and call it a merge. Layer > Rasterise "
+        "Layer turns a Vector or Text layer into pixels first (PRD C11), and then this "
+        "merge is an ordinary one.");
 
   if (pigmentPair) {
     const std::string obstacle = latentPathObstacle(doc, index);
@@ -703,15 +708,53 @@ LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::strin
     return refusal;
 
   const Layer& layer = doc.layers[index];
+
+  // **Vector and Text rasterise WITHOUT looking at the composite below**, and
+  // that is the whole difference from the Adjustment case that occupies the
+  // rest of this function. An Adjustment layer holds no pixels because it *is*
+  // a transformation of what is beneath it, so the only meaning "rasterise" can
+  // have there is "evaluate against the stack below and become that" -- with
+  // all of that path's consequences: the layers below stay, the result is only
+  // exact where they are opaque, and a clipped adjustment must not be cut
+  // twice. A Vector or Text layer holds no pixels for an entirely different
+  // reason: its content is parametric and self-contained. Its rasterised form
+  // depends on nothing outside itself, so this is a straight substitution of
+  // the tiles core/VectorRaster would have handed the compositor anyway, with
+  // no warning to issue and nothing beneath it to be inexact about.
+  //
+  // The mask, opacity, blend, visibility, clip flag and group tag all carry
+  // over untouched, because every one of them applied to the layer before and
+  // must apply to it after -- rasterising changes what the layer's content IS,
+  // not how it participates in the stack.
+  if (layerRastersToTiles(layer.kind)) {
+    const std::vector<VectorShape> shapes = layer.kind == LayerKind::Text
+                                                ? textContentToShapes(layer.text)
+                                                : layer.shapes;
+    const size_t geometryCount = shapes.size();
+    Layer raster = layer;
+    raster.kind = LayerKind::RGB;
+    raster.rgbTiles = rasterizeVectorLayer(shapes, doc.width, doc.height);
+    raster.shapes.clear();
+    raster.nextShapeId = 1;
+    raster.text = TextContent{};
+    append(warningsOut,
+           "rasterise layer baked " + std::to_string(geometryCount) +
+               " shape(s) into pixels; the layer was resolution-independent before and is "
+               "not now, and its geometry is gone. Undo restores it.");
+    const std::string vectorLabel = "rasterise " + layerOpDescribe(doc, index);
+    doc.layers[index] = std::move(raster);
+    return layerOpSucceed(vectorLabel, index);
+  }
+
   if (layer.kind != LayerKind::Adjustment)
     return layerOpFail(
         "rasterise layer refused: " + layerOpDescribe(doc, index) + " is a " +
         layerKindName(layer.kind) +
-        " layer. PRD C11 rasterises a *parametric* layer -- Text, Adjustment, Strokes, "
-        "Flats -- and of those four only Adjustment exists in this build: a Text layer "
-        "here has no text, a Strokes layer no dabs and a Flats layer no regions, because "
-        "none of them has a parameter member yet (core/Layer.hpp). An RGB or Pigment "
-        "layer is already pixels and has nothing to rasterise.");
+        " layer. PRD C11 rasterises a *parametric* layer, and of the kinds this build "
+        "has, Adjustment, Vector and Text are the three that qualify -- a Strokes layer "
+        "here has no dabs and a Flats layer no regions, because neither has a parameter "
+        "member yet, and Media needs the fluid solver's per-medium state (core/Layer.hpp). "
+        "An RGB or Pigment layer is already pixels and has nothing to rasterise.");
 
   if (layer.ops.size() == 0)
     return layerOpFail(

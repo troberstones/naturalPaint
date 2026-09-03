@@ -260,8 +260,10 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen);
 // palette.
 std::array<float, 4> foregroundLinearRgba(int pigmentIndex);
 
-// The same, for **whichever** of the two colours `BrushState::colorMode`
-// currently selects -- `app/StrokeSession`'s `foregroundSrgb()`, decoded.
+// The same, for **whichever** colour `BrushState::colorMode` currently selects
+// -- `app/StrokeSession`'s `foregroundSrgb()`, decoded. Three modes, still two
+// representations: MUNSELL edits `BrushState::rgb` through a hue page rather
+// than adding a third thing a colour can be.
 //
 // Both overloads exist on purpose. The index form above is the *palette*
 // question ("what linear colour is row 6"), which `--selftest` walks over every

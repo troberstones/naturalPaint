@@ -276,7 +276,7 @@ this reason (§4a), and the rest of the table follows the same instinct.
 | 10 | Brush, Pencil, Water, Dry Brush | Brush — implemented |
 | 11 | Smudge | Smudge |
 | 12 | Dodge, Burn | Dodge |
-| 13 | Pen, Curve | Pen |
+| 13 | Pen, Curve | Pen — implemented |
 | 14 | Text | Text |
 | 15 | Shape | Shape |
 | 16 | Hand | Hand — implemented |
@@ -556,7 +556,7 @@ scope**, which changes the PRD's non-goals.
 | DODGE, BURN | PRD **D13**, phase 10 — as a brush painting an adjustment mask, not a pixel op. |
 | GRAD | PRD **D24**, phase 6 — linear/radial/angular with an editor and presets. |
 | FILL | PRD **D25, D26**, phase 6 — the paint bucket with tolerance is distinct from Fill-with-colour. |
-| **PEN, CURVE, + PATHS tab** | New subsystem. Phase 13. |
+| **PEN, CURVE, + PATHS tab** | New subsystem. Phase 13. Pen and Curve shipped 2026-09-03 (§4a); **the PATHS tab has not** — §5 still reserves it. |
 | **TEXT** | Was a documented non-goal. Now phase 14. |
 | MEASURE | **Un-dropped** (sidequest/lucide-toolbox). This row used to say "**Dropped.** The pixel probe and the rulers cover what it was for." The supplied palette design draws Measure as its own cell regardless of that judgement, and the user's own words on reversing it: **"the palette keeps them for now, and we'll prune the unneeded tools in the future as the capabilities settle in."** No PRD id assigned yet — drawn disabled (§4a) until one is. |
 | SLICE | **Un-dropped** (sidequest/lucide-toolbox), same reversal and the same words as MEASURE above. This row used to say "Web-export slicing. Dropped — no plausible use in visdev or texture work, and it is the one tool here with no constituency." That judgement about its usefulness is not retracted, only the disposition is: the palette draws its cell either way, and a cell that exists gets a name rather than a silent gap. No PRD id assigned yet — drawn disabled (§4a) until one is. |
@@ -577,24 +577,47 @@ The palette also needs two tools the wireframe did not draw: the **eraser** (PRD
 
 Of the 28 `Tool` values (`app/AppState.hpp`) — reachable either directly, as the icon a
 palette cell shows, or through a flyout for every group with more than one member (§2b) —
-**21 have real behaviour and 7 exist for their name, icon and keyboard-shortcut slot
-only.** As of 2026-09-02 the unbuilt seven are **Crop, Frame, Pen, Curve, Text, Shape and
-Slice**, and they are not seven instances of the same gap:
+**25 have real behaviour and 3 exist for their name, icon and keyboard-shortcut slot
+only.** As of 2026-09-03 the unbuilt three are **Frame, Shape and Slice**, and they are not
+three instances of the same gap:
 
-* **Pen and Curve** are blocked on PLAN Phase 13 — there is no path model in the build, no
-  bezier storage and no stroke-or-fill-from-path.
-* **Text** is blocked on PLAN Phase 14: no font rasteriser, and `LayerKind::Text` is inert.
 * **Frame and Slice** are blocked on a *receiving model* rather than on effort. Both name a
   document-level region concept that does not exist, and building the gesture without it
   produces a tool that draws a rectangle and forgets it.
-* **Crop and Shape** are blocked on nothing structural and are the natural next wave.
+* **Shape** is blocked on nothing structural and is the natural next one. It is no longer
+  blocked on geometry either: `core/Path`, `core/PathRaster` and `core/VectorShape` are
+  built, so a Shape tool is a gesture that emits a `VectorShape` into the layer the Pen
+  already edits.
+
+**Text** shipped on 2026-09-03 with PLAN Phase 14: `text/Shaper` and its CoreText
+implementation, `core/TextContent`, a live `LayerKind::Text` layer, the `np:text` attribute,
+the canvas gesture and overlay in `ui/MacPaintUI.cpp`, and the options row §4b describes.
+A Text layer is a Vector layer that has not been typed out yet — `textContentToShapes()`
+emits exactly the `std::vector<VectorShape>` a Vector layer holds, so there is one
+rasteriser in this build and text goes through it. What is NOT built for it yet, by name:
+selection ranges (the caret is a single byte offset, so there is no shift-click, no
+double-click-a-word and no styled run), text on a path, and vertical text — the last two
+out of scope per PRD.md:102. Its LAYERS-panel thumbnail is also blank, which is Vector's
+gap rather than Text's: `layerContentThumbnail()` gates on `layerHoldsPixels()` and neither
+kind has a tile store.
+
+**Pen and Curve** shipped on 2026-09-03 with PLAN Phase 13's path model: `core/Path`,
+`core/PathRaster`, `core/PathStroke`, a `LayerKind::Vector` layer, `io/SvgImport`, and the
+canvas gesture and overlay in `ui/MacPaintUI.cpp` driving `app/PenTool`'s six drag kinds
+(docs/vector-editing.md). What is NOT built for them yet, by name: the options bar's
+shape/component mode segment (`pathEditSetSelectMode()` exists and has no caller in `ui/`),
+the gnomon's own scale and rotate handles (`gnomonHandlePositions()` is hit-tested but not
+drawn), the PATHS dock tab (§5 reserves it), and the three consumers — path-to-selection,
+fill path and stroke path with the current brush.
 
 `docs/spec-vs-implementation.md` §2 carries the same table with the file-and-line evidence.
 
-**Do not trust that list; trust the table.** This paragraph has been stale twice — it said
-"seven" and named a set that already included three built tools — because a prose count has
-to be re-edited by hand every time a tool ships, and seven shipped at once on 2026-09-02
-(Move, Measure, Pencil, Dodge, Burn, Clone Stamp, Smudge). The authority is the `implemented` column
+**Do not trust that list; trust the table.** This paragraph has now been stale three times
+— it has twice said "seven" while naming a set that already included built tools, most
+recently by leaving **Crop** in the unbuilt list after Crop shipped — because a prose count
+has to be re-edited by hand every time a tool ships, and they ship in batches: seven at
+once on 2026-09-02 (Move, Measure, Pencil, Dodge, Burn, Clone Stamp, Smudge), then Pen and
+Curve on 2026-09-03. The authority is the `implemented` column
 of `kToolMeta` (`ui/AtelierChrome.cpp`), and it is not merely a convention: `--selftest`
 asserts `toolImplemented(t) == toolHasCanvasHandler(t)` for **every** `Tool`, where
 `toolHasCanvasHandler()` reads the canvas's own gate expressions rather than a second list.
@@ -628,6 +651,26 @@ sliders be live controls over something this tool provably never reads**:
 | Magic Wand | TOLERANCE (0..255), REACH (Contiguous / All Similar), ANTI-ALIAS | It selects; nothing it does deposits a texel. |
 | Paint Bucket | The same three, over its **own** parameter block | It fills a region found by a predicate, not a shape walked by a tip. |
 | Crop | MODE (Rectangle / Perspective), SIZE (the extent that will result), CROP and CANCEL, and the refusal sentence when there is one | It has no tip, no stroke and no deposit; nothing in `app/CropTool` or in the two engines behind it reads a `BrushTip`. |
+| Text | FONT (the installed families, with a filter box), SIZE (px), B and I, ALIGN (L / C / R / J) and COLOR | A glyph is an outline filled by `core/PathRaster`, not a stroke walked by a tip. |
+
+**ALIGN goes dead on point text**, greyed with the reason in a tooltip — SPREAD-on-Angular
+below, exactly. `text/Shaper.hpp` is explicit that alignment means nothing when
+`frame.width == 0`: there is one line and nothing to align it against. Disabled rather than
+hidden for the same reason SPREAD is, and the chosen value is remembered and applies again
+the moment the block gets a frame. The golden pair `text_options` / `text_options_paragraph`
+photographs both states over one crop, because a disabled control is a visual claim and
+`--selftest` can assert the predicate but not the pixel.
+
+**Pen and Curve belong in that table and are not in it yet.** They shipped on 2026-09-03
+without an options row, so they currently take the default and the band shows SIZE / HARD /
+LOAD / WET over a tool that reads none of them — precisely the "live controls over
+something this tool provably never reads" this section exists to rule out. The row they
+need is a **MODE segment, Shape / Component**, which is the whole of docs/vector-editing.md
+§3's two selection modes and the only one of the Pen's behaviours a user cannot reach any
+other way: `pathEditSetSelectMode()` is built and tested and has no caller under `ui/`, so
+the build ships with Component mode unreachable. This entry is here rather than in a
+tracker because the gap is invisible from the canvas — the Pen works, it just only ever
+selects whole shapes.
 
 The gradient's RAMP cell is the only place in this build whose content is a colour ramp
 rather than a number or a glyph, and it is drawn from the same `gradientToolStops()` the

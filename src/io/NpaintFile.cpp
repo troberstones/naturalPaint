@@ -25,6 +25,7 @@
 #include "io/Export.hpp"
 #include "io/OpSerial.hpp"
 #include "io/PathSerial.hpp"
+#include "io/TextSerial.hpp"
 
 // io/OiioBackend is the only translation unit that may include an
 // OpenImageIO header, so this file reaches it the same way io/Export.cpp
@@ -96,6 +97,7 @@ constexpr const char* kAttrGroupId = "np:groupId";
 // empty produces the bytes it produced before this attribute existed --
 // `np:ops`' and `np:label`'s rule.
 constexpr const char* kAttrVector = "np:vector";
+constexpr const char* kAttrText = "np:text";
 // The colour label and the link group (PLAN.md Phase 5 step 11; PRD C15).
 //
 // **Scalars, and deliberately not a third string carrier.**
@@ -278,7 +280,8 @@ bool isLayerAttributeRecognised(const std::string& name) {
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
          name == kAttrParent || name == kAttrOps || name == kAttrMask ||
          name == kAttrClipped || name == kAttrLabel || name == kAttrLink ||
-         name == kAttrGroupId || name == kAttrAlphaLocked || name == kAttrVector;
+         name == kAttrGroupId || name == kAttrAlphaLocked || name == kAttrVector ||
+         name == kAttrText;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -727,6 +730,15 @@ NpaintRawPart buildGroupLayerPart(const Layer& layer, const std::string& partNam
 // carries the one `mask` channel EXR requires. Its content lives in the
 // `np:vector` attribute, not in a channel.
 NpaintRawPart buildVectorLayerPart(const Layer& layer, const std::string& partName) {
+  return buildAdjustmentLayerPart(layer, partName);
+}
+
+// A Text layer's part. Adjustment's shape for the third time, and for the same
+// two reasons: a Text layer holds no pixels (its content is `np:text`), and a
+// zero-channel `ImageSpec` makes this OpenEXR plugin refuse the WHOLE FILE at
+// `open()` -- so the one `mask` channel is not optional even though nothing
+// reads it.
+NpaintRawPart buildTextLayerPart(const Layer& layer, const std::string& partName) {
   return buildAdjustmentLayerPart(layer, partName);
 }
 
@@ -1492,7 +1504,7 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     const Layer& layer = doc.layers[i];
     if (layer.kind != LayerKind::RGB && layer.kind != LayerKind::Pigment &&
         layer.kind != LayerKind::Adjustment && layer.kind != LayerKind::Group &&
-        layer.kind != LayerKind::Vector) {
+        layer.kind != LayerKind::Vector && layer.kind != LayerKind::Text) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") is a " + layerKindName(layer.kind) +
                   " layer, and this build has no on-disk representation for that kind -- "
@@ -1872,6 +1884,7 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
       case LayerKind::Adjustment: part = buildAdjustmentLayerPart(layer, layerNames[i]); break;
       case LayerKind::Group: part = buildGroupLayerPart(layer, layerNames[i]); break;
       case LayerKind::Vector: part = buildVectorLayerPart(layer, layerNames[i]); break;
+      case LayerKind::Text: part = buildTextLayerPart(layer, layerNames[i]); break;
       default: part = buildLayerPart(layer, layerNames[i]); break;
     }
     part.attributes.push_back(stringAttr(kAttrKind, layerKindName(layer.kind)));
@@ -1906,6 +1919,28 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     if (layer.kind == LayerKind::Vector && !layer.shapes.empty())
       part.attributes.push_back(
           stringAttr(kAttrVector, serializeVectorShapes(layer.shapes, layer.nextShapeId)));
+    // **Text parts, UNCONDITIONALLY -- and that is a deliberate divergence
+    // from the line above.** `np:vector`'s `!shapes.empty()` guard exists so
+    // that a document with no vector content keeps producing the exact bytes
+    // this build produced before that attribute existed. No build before this
+    // one could save a Text layer AT ALL (the save refusal above listed the
+    // kind), so there are no earlier bytes to match and the argument does not
+    // apply.
+    //
+    // What the guard would cost here is real: an empty string with a chosen
+    // font, size and colour is a legitimate state -- it is the state a layer
+    // is in between being created and being typed into -- and skipping the
+    // write would silently discard the user's font choice on save. `np:vector`
+    // has no equivalent, because a shape list with no shapes carries no
+    // settings.
+    //
+    // The mutual exclusion with a carried `np:text` is handled where the carry
+    // is replayed, a few lines below, rather than by a predicate here: an
+    // empty `TextContent` is a legitimate value and therefore is NOT evidence
+    // that a decode failed, so `shapes.empty()`'s trick has no analogue.
+    const bool writesOwnText = layer.kind == LayerKind::Text;
+    if (writesOwnText)
+      part.attributes.push_back(stringAttr(kAttrText, serializeTextContent(layer.text)));
     // **Written only when the layer is actually clipped** (PLAN.md Phase 5
     // step 9), for the reason `np:ops` and `np:mask` each state in their own
     // way: a document with no clipped layer has to keep producing the bytes
@@ -1945,7 +1980,13 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
             // in its place. Without this test a layer would emit TWO
             // `np:vector` attributes and OpenImageIO's last-write-wins would
             // silently pick one -- io/CompSerial's `doc.comps.empty()` rule.
-            !(a.name == kAttrVector && layer.shapes.empty()))
+            !(a.name == kAttrVector && layer.shapes.empty()) &&
+            // A carried `np:text` this build could not parse is written back
+            // verbatim, but only when this build did not just write one of its
+            // own -- which, per the block above, is exactly when the layer is
+            // not a Text layer. Two `np:text` attributes on one part would
+            // leave OpenImageIO's last-write-wins to pick between them.
+            !(a.name == kAttrText && !writesOwnText))
           continue;
         part.attributes.push_back(a);
       }
@@ -2331,6 +2372,13 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     const bool isVectorLayer = isLayerPartName(part.name) && namedKind &&
                                kind->stringValue == layerKindName(LayerKind::Vector) &&
                                adjustmentChannels && tileAligned;
+    // A Text part: the same one-channel shape under a fourth `np:kind`.
+    // `buildTextLayerPart()` is a third thin wrapper over
+    // `buildAdjustmentLayerPart()`, so the reader's test is again the
+    // identical `adjustmentChannels` predicate.
+    const bool isTextLayer = isLayerPartName(part.name) && namedKind &&
+                             kind->stringValue == layerKindName(LayerKind::Text) &&
+                             adjustmentChannels && tileAligned;
     // An alpha channel part (PRD E11, E13): `S####`, `np:kind = "selection"`,
     // and exactly one HALF channel named `coverage`. Matched by name like every
     // other channel here even though there is only one of them -- a part whose
@@ -2405,7 +2453,7 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     }
 
     if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer && !isGroupLayer &&
-        !isVectorLayer) {
+        !isVectorLayer && !isTextLayer) {
       std::string reason;
       if (isChannelPartName(part.name)) {
         // An `S####` part that failed the test above. Worth its own sentence
@@ -2424,10 +2472,11 @@ NpaintLoadResult loadNpaint(const std::string& path) {
                  kind->stringValue != layerKindName(LayerKind::Pigment) &&
                  kind->stringValue != layerKindName(LayerKind::Adjustment) &&
                  kind->stringValue != layerKindName(LayerKind::Group) &&
-                 kind->stringValue != layerKindName(LayerKind::Vector)) {
+                 kind->stringValue != layerKindName(LayerKind::Vector) &&
+                 kind->stringValue != layerKindName(LayerKind::Text)) {
         reason = "its np:kind is \"" + kind->stringValue +
-                 "\", and this build can only hold RGB, Pigment, Adjustment, group and Vector "
-                 "layers (see io/NpaintFile.hpp's deferrals)";
+                 "\", and this build can only hold RGB, Pigment, Adjustment, group, Vector "
+                 "and Text layers (see io/NpaintFile.hpp's deferrals)";
       } else if (kind->stringValue == layerKindName(LayerKind::Adjustment)) {
         reason = "it declares np:kind \"Adjustment\" but its channels are not exactly one "
                  "named mask, in half -- an Adjustment layer holds no pixels, so its part "
@@ -2437,6 +2486,11 @@ NpaintLoadResult loadNpaint(const std::string& path) {
                  "mask, in half -- a Vector layer holds no pixels, so its part carries only "
                  "the one channel EXR requires it to have (buildVectorLayerPart() shares "
                  "Adjustment's shape), and its geometry lives in np:vector";
+      } else if (kind->stringValue == layerKindName(LayerKind::Text)) {
+        reason = "it declares np:kind \"Text\" but its channels are not exactly one named "
+                 "mask, in half -- a Text layer holds no pixels either, so its part carries "
+                 "only the one channel EXR requires it to have (buildTextLayerPart() shares "
+                 "Adjustment's shape), and its text lives in np:text";
       } else if (kind->stringValue == layerKindName(LayerKind::Group)) {
         reason = "it declares np:kind \"group\" but its channels are not exactly one named "
                  "mask, in half -- a Group holds no pixels, so its part carries only the one "
@@ -2497,6 +2551,7 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     // so it must stay in the carry and be written back verbatim -- `opsCarried`
     // below is the same idea for `np:ops`, and the naming follows it.
     bool vectorCarried = false;
+    bool textCarried = false;
     if (isAdjustmentLayer) {
       layer.kind = LayerKind::Adjustment;
       // No tile storage of any kind is engaged: that is the kind's definition,
@@ -2548,6 +2603,49 @@ NpaintLoadResult loadNpaint(const std::string& path) {
             "' has an np:vector attribute that is not a string; this build's geometry carrier "
             "is a hex `string` (io/PathSerial), so the value could not be decoded. The layer "
             "opened with no shapes and the attribute is written back unchanged (PRD I10).");
+      }
+    } else if (isTextLayer) {
+      layer.kind = LayerKind::Text;
+      // Adjustment's reading of the one channel, a third time.
+      const NpaintAttribute* hasMask = findAttr(part.attributes, kAttrMask);
+      if (hasMask != nullptr && hasMask->type == NpaintAttribute::Type::Int &&
+          hasMask->intValue != 0) {
+        maskIdx = 0;
+        hasMaskChannel = true;
+      }
+      // The text block, on `np:vector`'s rules: a future `nptext2:` or a
+      // corrupt payload is NOT an error and is NOT guessed at, the layer comes
+      // back with a default `TextContent`, and the attribute stays in the
+      // carry so saving writes it back verbatim (PRD I10).
+      //
+      // **`textCarried` is set on the ABSENT case too, unlike `np:vector`.**
+      // A Text part with no `np:text` at all is a part this build wrote in an
+      // impossible state or a part something else wrote -- either way the
+      // layer has no content, and the warning is the only thing that
+      // distinguishes "an empty text layer" from "a text layer whose content
+      // did not survive". A missing `np:vector` is silent because an empty
+      // shape list is exactly what this build writes for an empty Vector
+      // layer; a missing `np:text` is not, because this build always writes
+      // one for a Text layer.
+      if (const NpaintAttribute* t = findAttr(part.attributes, kAttrText);
+          t != nullptr && t->type == NpaintAttribute::Type::String) {
+        std::string why;
+        if (!deserializeTextContent(t->stringValue, &layer.text, &why)) {
+          textCarried = true;
+          result.warnings.push_back("part '" + part.name + "': " + why);
+        }
+      } else if (t != nullptr) {
+        textCarried = true;
+        result.warnings.push_back(
+            "part '" + part.name +
+            "' has an np:text attribute that is not a string; this build's text carrier is a "
+            "hex `string` (io/TextSerial), so the value could not be decoded. The layer "
+            "opened empty and the attribute is written back unchanged (PRD I10).");
+      } else {
+        result.warnings.push_back(
+            "part '" + part.name +
+            "' declares np:kind \"Text\" but carries no np:text attribute, so there is no "
+            "text to read. The layer opened empty.");
       }
     } else if (isGroupLayer) {
       layer.kind = LayerKind::Group;
@@ -2676,7 +2774,7 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     std::vector<NpaintAttribute> unknown;
     for (const NpaintAttribute& a : part.attributes) {
       if (isLayerAttributeRecognised(a.name) && !(opsCarried && a.name == kAttrOps) &&
-          !(vectorCarried && a.name == kAttrVector))
+          !(vectorCarried && a.name == kAttrVector) && !(textCarried && a.name == kAttrText))
         continue;
       unknown.push_back(a);
     }

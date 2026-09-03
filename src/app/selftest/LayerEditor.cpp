@@ -1,5 +1,8 @@
 #include "app/selftest/Support.hpp"
 
+#include "core/TextContent.hpp"
+#include "core/VectorRaster.hpp"
+
 namespace np {
 
 // UI detour step 3, problem 2: the five built features that had no entry
@@ -58,7 +61,7 @@ bool runLayerEditorTest() {
   // range is well defined to cast.
   {
     const std::vector<LayerCommand>& all = allLayerCommands();
-    check(all.size() == 20, "the menu walks all 20 commands");
+    check(all.size() == 21, "the menu walks all 21 commands");
     bool everyValueListed = true;
     size_t named = 0;
     for (int v = 0; v < 64; ++v) {
@@ -126,6 +129,50 @@ bool runLayerEditorTest() {
     withoutAdjustment.layers.pop_back();
     check(sameComposite(withAdjustment, composite(withoutAdjustment)),
           "an Adjustment layer with an empty stack changes no pixel");
+  }
+
+  // --- The two kinds the popup learned to build after this section was
+  // written (PLAN.md phases 13 and 14) ------------------------------------
+  //
+  // `runLayersPanel2aTest()` already asserts that the NEW popup's Vector and
+  // Text entries carry `NewVectorLayer` and `NewTextLayer`. That is the menu
+  // half. This is the other half, and the gap between them is exactly wide
+  // enough to hide a defect: an entry wired to the right *enumerator* whose
+  // `applyLayerCommand` arm calls the wrong *maker* produces a layer of the
+  // wrong kind under the right heading, and the popup test cannot see it
+  // because it never applies the command.
+  {
+    OpenDocument od = makeDoc();
+    const LayerEditResult vec = applyLayerCommand(od, LayerCommand::NewVectorLayer, 0);
+    check(vec.ok && od.document.layers[1].kind == LayerKind::Vector &&
+              !od.document.layers[1].rgbTiles.has_value() &&
+              !od.document.layers[1].pigmentTiles.has_value() &&
+              od.document.layers[1].shapes.empty(),
+          "New Vector Layer makes a Vector layer with no tiles and no shapes");
+
+    const LayerEditResult txt = applyLayerCommand(od, LayerCommand::NewTextLayer, vec.selected);
+    const Layer& text = od.document.layers[2];
+    check(txt.ok && text.kind == LayerKind::Text && !text.rgbTiles.has_value() &&
+              !text.pigmentTiles.has_value() && text.shapes.empty(),
+          "New Text Layer makes a Text layer with no tiles and no shapes");
+    // "Created but not yet typed into" is the state this command exists to
+    // produce, and it has to be distinguishable from "typed and invisible" --
+    // core/TextContent's own distinction. An empty string draws nothing and
+    // that is not a failure.
+    check(text.text.utf8.empty() && !textContentDraws(text.text),
+          "the new Text layer holds an empty text block and draws nothing yet -- the state a "
+          "user clicks NEW to reach, not an error");
+    // And it is a REAL Text layer, not an inert placeholder: giving it a
+    // string makes it draw, through the same predicate core/VectorRaster
+    // dispatches on.
+    Layer typed = text;
+    typed.text = makeTextContent("Ag", PathPoint{4.0f, 40.0f});
+    check(layerRastersToTiles(typed.kind) && textContentDraws(typed.text) &&
+              !textContentToShapes(typed.text).empty(),
+          "and typing into it makes it draw -- the kind rasters to tiles and the string "
+          "shapes to glyph outlines");
+    check(od.document.layers[1].name != od.document.layers[2].name,
+          "the Vector and Text layers get their own default names too");
   }
 
   // --- Part C: the mask, the clip, and the flags --------------------------

@@ -148,10 +148,28 @@ class MaterializedDocument {
   std::optional<Document> rewritten_;
 };
 
-// Whether `doc` has any Vector layer at all. The one-line test every caller
-// of `MaterializedDocument` implicitly makes; exposed because callers that
-// only want to know "is there vector content here" should not have to build a
-// materialised view to find out.
+// Which layer kinds hold parametric content that this file turns into tiles:
+// `Vector` (its `shapes`) and, since PLAN.md phase 14, `Text` (its `text`,
+// via `textContentToShapes()`).
+//
+// **A predicate rather than `kind == Vector || kind == Text` spelled out at
+// each site**, because there are THREE sites in this file and they are not
+// adjacent: the materialise loop, `documentHasVectorLayers()`, and
+// `VectorRasterCache::forgetLayersNotIn()`. Adding `Text` to the first two and
+// missing the third leaks a raster for every deleted Text layer for the rest
+// of the session, and nothing observable goes wrong until the memory panel is
+// read -- the same class of silent partial fan-out `layerHoldsPixels()`'s own
+// hand-copied duplicates caused, which section 1 above is about.
+bool layerRastersToTiles(LayerKind kind) noexcept;
+
+// Whether `doc` has any layer of a kind `layerRastersToTiles()` names. The
+// one-line test every caller of `MaterializedDocument` implicitly makes;
+// exposed because callers that only want to know "is there parametric content
+// here" should not have to build a materialised view to find out.
+//
+// The name predates `Text` joining `Vector` and is kept because every caller
+// spells it, and because what it actually answers -- "does materialising this
+// document do anything?" -- has not changed.
 bool documentHasVectorLayers(const Document& doc) noexcept;
 
 }  // namespace np

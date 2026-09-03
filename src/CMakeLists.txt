@@ -18,6 +18,7 @@ add_executable(naturalPaint
   app/Keymap.cpp
   app/PenAxes.cpp
   app/PenTool.cpp
+  app/TextTool.cpp
   app/PsdReport.cpp
   app/SvgReport.cpp
   app/ProfileToggle.cpp
@@ -63,6 +64,8 @@ add_executable(naturalPaint
   app/selftest/BrushPanelBinding.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
+  app/selftest/CanvasLimits.cpp
+  app/selftest/Gamut.cpp
   app/selftest/Blur.cpp
   app/selftest/BlurSimd.cpp
   app/selftest/BrushDynamics.cpp
@@ -215,14 +218,17 @@ add_executable(naturalPaint
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
   app/selftest/PenTool.cpp
+  app/selftest/TextTool.cpp
   app/selftest/TextShaper.cpp
   app/selftest/SvgPath.cpp
   app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
+  app/selftest/TextContent.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp
   app/selftest/ZoomAndSize.cpp
+  app/selftest/TextSerial.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -264,8 +270,10 @@ add_executable(naturalPaint
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
+  color/Gamut.cpp
   color/Munsell.cpp
   core/Blend.cpp
+  core/CanvasLimits.cpp
   core/Channels.cpp
   core/Clipboard.cpp
   core/Composite.cpp
@@ -284,6 +292,7 @@ add_executable(naturalPaint
   core/PathStroke.cpp
   core/VectorRaster.cpp
   core/VectorShape.cpp
+  core/TextContent.cpp
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp
@@ -306,6 +315,7 @@ add_executable(naturalPaint
   io/FileKind.cpp
   io/GimpBrush.cpp
   io/ImageDecode.cpp
+  io/SourceGamut.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
@@ -317,6 +327,7 @@ add_executable(naturalPaint
   io/SvgPath.cpp
   io/SvgStyle.cpp
   io/TileResidency.cpp
+  io/TextSerial.cpp
   ops/AutoLevels.cpp
   ops/Blur.cpp
   ops/ColorOps.cpp

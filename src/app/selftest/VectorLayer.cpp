@@ -222,6 +222,96 @@ bool runVectorLayerTest() {
           "hazard: a paint-only change is caught too, not just a moved anchor");
   }
 
+  // --- 4b. THE SAME HAZARD FOR TEXT, and it is worse -----------------------
+  //
+  // Every word of section 4 applies to a Text layer with more force: a Vector
+  // layer at least has a `shapes` member for a future comparison to reach,
+  // and a Text layer holds neither tiles nor ops nor shapes -- so before
+  // `TextContentChanged` existed, pass 1's whitelist compared EQUAL on every
+  // field for a layer whose entire string had just changed.
+  //
+  // This section is NOT guarded on `shaperAvailable()`. `documentDirtyTiles()`
+  // hashes the content and never shapes, so the invalidation is testable on
+  // every build; only the "and the pixels genuinely moved" half needs a
+  // shaper, and it is guarded on its own below.
+  {
+    Document before = Document::createBlank(kW, kH, WorkingSpace{});
+    before.layers.clear();
+    addLayer(before, 0, makeTextLayer("caption"));
+    before.layers[0].text.utf8 = "Hi";
+    before.layers[0].text.style.sizePx = 24.0f;
+    before.layers[0].text.origin = PathPoint{4.0f, 24.0f};
+
+    // The smallest possible text edit, and precisely the one a user makes on
+    // every keystroke.
+    Document typed = before;
+    typed.layers[0].text.utf8 = "Hip";
+
+    const DocumentDirtyTiles dirty = documentDirtyTiles(before, typed);
+    check(dirty.everything || !dirty.tiles.empty(),
+          "hazard: one keystroke on a Text layer produces a NON-EMPTY dirty set");
+    check(dirty.reason == FullRecompositeReason::TextContentChanged,
+          "hazard: attributed to the TEXT, not to VectorGeometryChanged -- a slow frame has "
+          "to name what the user actually did");
+
+    // Every OTHER field of the content, one at a time, because a hash that
+    // covers the string and nothing else would pass the assertion above and
+    // fail the moment a user changed the font. Named per field so a miss says
+    // which one.
+    struct Mutation {
+      const char* what;
+      void (*apply)(TextContent&);
+    };
+    static const Mutation kMutations[] = {
+        {"the font family", [](TextContent& c) { c.style.fontFamily = "Courier"; }},
+        {"the size", [](TextContent& c) { c.style.sizePx = 48.0f; }},
+        {"the tracking", [](TextContent& c) { c.style.tracking = 3.0f; }},
+        {"the leading", [](TextContent& c) { c.style.leading = 60.0f; }},
+        {"bold", [](TextContent& c) { c.style.bold = true; }},
+        {"italic", [](TextContent& c) { c.style.italic = true; }},
+        {"the frame width", [](TextContent& c) { c.frame.width = 120.0f; }},
+        {"the frame height", [](TextContent& c) { c.frame.height = 60.0f; }},
+        {"the alignment", [](TextContent& c) { c.align = TextAlign::Center; }},
+        {"the origin", [](TextContent& c) { c.origin = PathPoint{9.0f, 30.0f}; }},
+        {"the fill colour", [](TextContent& c) { c.fill.rgba = {0.0f, 1.0f, 0.0f, 1.0f}; }},
+        {"the stroke", [](TextContent& c) { c.stroke.on = true; }},
+    };
+    for (const Mutation& m : kMutations) {
+      Document changed = before;
+      m.apply(changed.layers[0].text);
+      const DocumentDirtyTiles d = documentDirtyTiles(before, changed);
+      std::string label = std::string("hazard: changing ") + m.what +
+                          " also invalidates -- a control that changed nothing on screen "
+                          "would look like a broken control";
+      check(d.reason == FullRecompositeReason::TextContentChanged, label.c_str());
+    }
+
+    // The mirror image, section 4's own: an edit that changes nothing must NOT
+    // force a full recomposite, or "detect a change" has become "always
+    // redraw" and every assertion above passes for the wrong reason.
+    Document same = before;
+    const DocumentDirtyTiles quiet = documentDirtyTiles(before, same);
+    check(quiet.reason != FullRecompositeReason::TextContentChanged,
+          "hazard: an untouched Text layer does NOT force a recomposite");
+
+    if (shaperAvailable()) {
+      const std::vector<float> a2 = compositeDocumentPremultiplied(before);
+      const std::vector<float> b2 = compositeDocumentPremultiplied(typed);
+      bool moved = a2.size() == b2.size();
+      if (moved) {
+        moved = false;
+        for (size_t i = 0; i < a2.size(); ++i)
+          if (a2[i] != b2[i]) {
+            moved = true;
+            break;
+          }
+      }
+      check(moved,
+            "hazard: and the composited pixels genuinely moved -- the invalidation firing "
+            "over a raster that never changed would be the other half of this bug");
+    }
+  }
+
   // --- 5. The content hash discriminates -----------------------------------
   {
     std::vector<VectorShape> base;
@@ -578,6 +668,158 @@ bool runVectorLayerTest() {
             "npaint: and comes back as an empty Vector layer, not as an RGB one");
     }
     std::remove(p3);
+  }
+
+  // --- 13. A Text layer's .npaint round trip (PLAN.md phase 14) ------------
+  //
+  // Here rather than in app/selftest/TextContent.cpp for one concrete reason:
+  // that section is guarded on `shaperAvailable()`, because every assertion in
+  // it shapes real text. **A round trip does not shape** -- it stores and
+  // reloads a string, a style and a paint -- so guarding it would leave the
+  // file format untested on exactly the build (text/StubShaper.cpp) where a
+  // document must still open and save correctly.
+  //
+  // The claim is the one `np:vector`'s section above makes, plus the two
+  // places Text deliberately behaves DIFFERENTLY: the attribute is written
+  // even for an empty string, and the reader warns when a Text part carries no
+  // `np:text` at all.
+  {
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+    doc.layers.clear();
+    addLayer(doc, 0, makeRgbLayer("under"));
+    addLayer(doc, 1, makeTextLayer("caption"));
+    Layer& t = doc.layers[1];
+    t.opacity = 0.375f;
+    t.blend = "screen";
+    // Every field non-default, and a string with a 2-, a 3- and a 4-byte UTF-8
+    // sequence: a serialiser that mishandled a continuation byte would still
+    // round-trip pure ASCII.
+    t.text.utf8 = "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x8E\xA8";
+    t.text.style.fontFamily = "Georgia";
+    t.text.style.sizePx = 37.5f;
+    t.text.style.tracking = 1.25f;
+    t.text.style.leading = 44.0f;
+    t.text.style.bold = true;
+    t.text.style.italic = true;
+    t.text.frame.width = 300.0f;
+    t.text.frame.height = 120.0f;
+    t.text.align = TextAlign::Justified;
+    t.text.origin = PathPoint{11.5f, 23.25f};
+    t.text.fill.on = true;
+    t.text.fill.rgba = {0.5f, 0.25f, 0.125f, 0.75f};
+    t.text.stroke.on = true;
+    t.text.stroke.rgba = {0.0f, 1.0f, 0.5f, 1.0f};
+    t.text.strokeStyle.width = 1.5f;
+
+    const char* tp = "selftest_text_roundtrip.npaint";
+    const NpaintSaveResult saved = saveNpaint(doc, tp, NpaintSaveOptions{});
+    check(saved.ok, "npaint: a document containing a Text layer SAVES (it used to be refused "
+                    "by name -- the kind had no on-disk representation)");
+    if (!saved.ok) std::printf("      save error: %s\n", saved.error.c_str());
+
+    if (saved.ok) {
+      const NpaintLoadResult loaded = loadNpaint(tp);
+      check(loaded.ok, "npaint: and the Text layer loads back");
+      if (loaded.ok && loaded.document.layers.size() == 2) {
+        const Layer& r = loaded.document.layers[1];
+        check(r.kind == LayerKind::Text,
+              "npaint: it is still a Text layer, not an RGB one -- the text is what was "
+              "stored, not a picture of it");
+        check(!r.rgbTiles.has_value() && !r.pigmentTiles.has_value(),
+              "npaint: and it came back with no tile store, which is the kind's definition");
+        check(r.name == "caption" && r.blend == "screen" && r.opacity == 0.375f,
+              "npaint: its ordinary layer metadata survives");
+        // The hash over every field is the strongest single statement of
+        // fidelity here, exactly as it is for `np:vector` above: a field the
+        // writer skipped or the reader never read back changes it.
+        check(textContentHash(r.text) == textContentHash(t.text),
+              "npaint: the text's content hash is identical across the round trip, so NO "
+              "field was silently dropped");
+        check(r.text.utf8 == t.text.utf8,
+              "npaint: including the multi-byte string, byte for byte");
+        check(r.text.style.sizePx == 37.5f && r.text.style.tracking == 1.25f,
+              "npaint: and the float fields exactly, not nearly -- io/TextSerial carries "
+              "IEEE-754 bit patterns, not decimal renderings");
+
+        const char* tp2 = "selftest_text_roundtrip2.npaint";
+        const NpaintSaveResult again = saveNpaint(loaded.document, tp2, NpaintSaveOptions{});
+        check(again.ok, "npaint: a second save of the reloaded document succeeds");
+        if (again.ok) {
+          const NpaintLoadResult twice = loadNpaint(tp2);
+          check(twice.ok && twice.document.layers.size() == 2 &&
+                    textContentHash(twice.document.layers[1].text) == textContentHash(t.text),
+                "npaint: and a SECOND generation is still identical -- one round trip only "
+                "shows the reader kept what the writer had in hand");
+        }
+        std::remove(tp2);
+
+        // **Edit the text, save again, and the EDIT must win.** This is the
+        // assertion that catches a missing `isLayerAttributeRecognised()`
+        // entry, and the round trips above provably cannot: without that
+        // entry the reader files `np:text` in the carry as an unknown
+        // attribute, and the writer then emits BOTH its own and the carried
+        // one, leaving OpenImageIO's last-write-wins to choose. On a document
+        // that has not been edited the two are byte-identical and every
+        // assertion above passes -- the version this test had before this
+        // block stayed green under exactly that sabotage.
+        //
+        // The user-visible failure is: type, save, reopen, and your typing is
+        // gone. So the test types.
+        Document edited = loaded.document;
+        edited.layers[1].text.utf8 = "edited after the round trip";
+        edited.layers[1].text.style.sizePx = 8.5f;
+        const char* tp4 = "selftest_text_edited.npaint";
+        // **`&loaded.carry` is the whole point of this block.** Without the
+        // carry, `saveNpaint()` has no unknown attributes to replay and the
+        // double-`np:text` hazard is unreachable -- which is exactly why the
+        // first version of this test stayed green under the sabotage. PRD
+        // I10's carry-forward is a real save path (every save of an opened
+        // document takes it), so testing the write path without it tests the
+        // wrong path.
+        const NpaintSaveResult afterEdit =
+            saveNpaint(edited, tp4, NpaintSaveOptions{}, &loaded.carry);
+        check(afterEdit.ok, "npaint: saving a Text layer that was edited after loading works");
+        if (afterEdit.ok) {
+          const NpaintLoadResult reread = loadNpaint(tp4);
+          check(reread.ok && reread.document.layers.size() == 2 &&
+                    reread.document.layers[1].text.utf8 == "edited after the round trip" &&
+                    reread.document.layers[1].text.style.sizePx == 8.5f,
+                "npaint: and the EDIT comes back, not the string the file was opened with -- "
+                "a stale np:text left in the carry alongside a fresh one would silently win "
+                "here and nowhere else");
+        }
+        std::remove(tp4);
+      }
+    }
+    std::remove(tp);
+
+    // **An EMPTY Text layer still writes `np:text`, unlike an empty Vector
+    // layer.** An empty string with a chosen font and size is a real state --
+    // the state a layer is in between being created and being typed into --
+    // and the guard `np:vector` uses would silently discard the font choice on
+    // save. Asserted through the reader, which is the property callers depend
+    // on: the style has to survive even though the string is empty.
+    Document emptyText = Document::createBlank(kW, kH, WorkingSpace{});
+    emptyText.layers.clear();
+    addLayer(emptyText, 0, makeTextLayer("nothing typed yet"));
+    emptyText.layers[0].text.style.fontFamily = "Courier";
+    emptyText.layers[0].text.style.sizePx = 96.0f;
+    const char* tp3 = "selftest_text_empty.npaint";
+    const NpaintSaveResult e2 = saveNpaint(emptyText, tp3, NpaintSaveOptions{});
+    check(e2.ok, "npaint: a Text layer with an empty string saves");
+    if (e2.ok) {
+      const NpaintLoadResult back = loadNpaint(tp3);
+      check(back.ok && back.document.layers.size() == 1 &&
+                back.document.layers[0].kind == LayerKind::Text &&
+                back.document.layers[0].text.utf8.empty(),
+            "npaint: and comes back as an empty Text layer, not as an RGB one");
+      check(back.ok && !back.document.layers.empty() &&
+                back.document.layers[0].text.style.fontFamily == "Courier" &&
+                back.document.layers[0].text.style.sizePx == 96.0f,
+            "npaint: with the FONT AND SIZE intact -- the reason an empty Text layer writes "
+            "its attribute where an empty Vector layer does not");
+    }
+    std::remove(tp3);
   }
 
   return ok;

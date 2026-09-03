@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <string>
 
@@ -330,6 +332,133 @@ bool runTextShaperTest() {
     }
   }
 #endif
+
+  // ==========================================================================
+  // 9. availableFontFamilies() / fontFamilyAvailable(): the font-picker's
+  //    query surface. Proves the list is well-formed (non-empty, filtered,
+  //    sorted, de-duplicated), that fontFamilyAvailable() agrees with it in
+  //    both directions, and that the list is not just names CoreText knows
+  //    about but names shapeText() will actually honour.
+  // ==========================================================================
+  std::printf("  -- 9. availableFontFamilies() / fontFamilyAvailable() --\n");
+  {
+    const std::vector<std::string> families = availableFontFamilies();
+    check(!families.empty(),
+          "availableFontFamilies() is non-empty -- an empty result on a real Mac would mean "
+          "the CTFontManager call was misused, not that the machine truly has zero fonts");
+
+    bool ascending = true;
+    for (size_t i = 1; i < families.size(); ++i)
+      if (!(families[i] > families[i - 1])) ascending = false;
+    check(ascending,
+          "the list is strictly ascending, which proves both sorted (non-decreasing) and "
+          "de-duplicated (no two equal neighbours) in one assertion");
+
+    bool wellFormed = true;
+    for (const std::string& f : families)
+      if (f.empty() || f[0] == '.') wellFormed = false;
+    check(wellFormed,
+          "no entry is empty and none begins with '.' (CoreText's own hidden system families, "
+          "e.g. \".SF NS\", \".LastResort\")");
+
+    bool allSelfAvailable = true;
+    for (const std::string& f : families)
+      if (!fontFamilyAvailable(f)) allSelfAvailable = false;
+    check(allSelfAvailable,
+          "fontFamilyAvailable() is true for every entry the list itself returned -- catches a "
+          "case-folding bug that would reject a family given back in its OWN capitalisation");
+
+    // Taken FROM the list at runtime, not a hardcoded "Helvetica" -- a
+    // hardcoded name is an assumption about this one machine's installed
+    // fonts, and this property must hold on every Mac this build runs on.
+    const std::string& sample = families.front();
+    auto flipCase = [](const std::string& s, bool toUpper) {
+      std::string out = s;
+      std::transform(out.begin(), out.end(), out.begin(), [toUpper](unsigned char c) {
+        return static_cast<char>(toUpper ? std::toupper(c) : std::tolower(c));
+      });
+      return out;
+    };
+    check(fontFamilyAvailable(flipCase(sample, false)),
+          "fontFamilyAvailable() accepts a lower-cased form of a real family name");
+    check(fontFamilyAvailable(flipCase(sample, true)),
+          "fontFamilyAvailable() accepts an upper-cased form of a real family name -- catches "
+          "the case-folding bug in the OTHER direction from the check above");
+
+    // No installed font family is 34 random alphanumeric characters with no
+    // spaces or punctuation -- real family names are short, human-chosen
+    // words. This is the same string section 3 above already relies on to
+    // prove shapeText() substitutes rather than failing on an unknown name.
+    check(!fontFamilyAvailable("ThisFontDoesNotExistAnywhere12345"),
+          "fontFamilyAvailable() is false for a name that cannot be an installed font family");
+
+#if defined(__APPLE__)
+    // The connection to shapeText(): a family taken from the list must be
+    // the family the shaper ACTUALLY uses, not just a name CoreText happens
+    // to recognise as installed. `fontsUsed` (text/Shaper.hpp's own comment)
+    // records the PostScript name of the run's font, which in general is
+    // NOT the family string itself -- e.g. family "Times New Roman" has
+    // PostScript name "TimesNewRomanPSMT" -- so the oracle here is
+    // CoreText's own CTFontCreateWithName()+CTFontCopyPostScriptName() on
+    // the exact same family, independent of text/CoreTextShaper.mm's own
+    // createFont()/runFontName(); the same "ask the platform a second time"
+    // pattern section 8 above uses for the same reason.
+    //
+    // The family is chosen to have its OWN glyph for 'A' (checked directly,
+    // not assumed) rather than just taking families.front(): this build's
+    // font catalog can contain families with no Latin coverage at all (a
+    // symbol font, a CJK-only family), and shaping "A" against one of those
+    // would trigger CoreText's per-run fallback -- a real and correct
+    // behaviour, but one that would fail this assertion for a reason that
+    // has nothing to do with whether the requested family was honoured.
+    // Scanning for Latin coverage keeps "was the family honoured" and "does
+    // this font have this glyph" as the two separate questions they are.
+    std::string latinSample;
+    std::string expectedPostScriptName;
+    for (const std::string& candidate : families) {
+      CFStringRef cfName =
+          CFStringCreateWithCString(kCFAllocatorDefault, candidate.c_str(), kCFStringEncodingUTF8);
+      CTFontRef font = cfName ? CTFontCreateWithName(cfName, 24.0, nullptr) : nullptr;
+      if (cfName) CFRelease(cfName);
+      if (!font) continue;
+
+      UniChar ch = 'A';
+      CGGlyph glyph = 0;
+      const bool hasGlyph = CTFontGetGlyphsForCharacters(font, &ch, &glyph, 1) && glyph != 0;
+      if (hasGlyph) {
+        CFStringRef psName = CTFontCopyPostScriptName(font);
+        if (psName) {
+          char buf[256];
+          if (CFStringGetCString(psName, buf, sizeof(buf), kCFStringEncodingUTF8)) {
+            expectedPostScriptName = buf;
+            latinSample = candidate;
+          }
+          CFRelease(psName);
+        }
+      }
+      CFRelease(font);
+      if (!latinSample.empty()) break;
+    }
+
+    if (latinSample.empty()) {
+      std::printf("  [skip] no family in availableFontFamilies() has its own 'A' glyph -- "
+                  "cannot test the shapeText() connection without a font this build actually "
+                  "has Latin coverage in\n");
+    } else {
+      TextStyle sampleStyle = style;
+      sampleStyle.fontFamily = latinSample;
+      const ShapedText shaped = shapeText("A", sampleStyle, pointFrame, TextAlign::Left);
+      check(shaped.ok, "shapeText() succeeds with a family taken from availableFontFamilies()");
+      const bool honoured = std::find(shaped.fontsUsed.begin(), shaped.fontsUsed.end(),
+                                      expectedPostScriptName) != shaped.fontsUsed.end();
+      check(honoured,
+            "shaping \"A\" with a family from availableFontFamilies() (chosen to have its own "
+            "'A' glyph, so fallback cannot confound the result) reports that exact font's "
+            "PostScript name in fontsUsed -- proves the list names fonts the shaper actually "
+            "uses, not just names CoreText happens to know about");
+    }
+#endif
+  }
 
   return ok;
 }

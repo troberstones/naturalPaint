@@ -81,16 +81,22 @@ uint32_t layerKindRailRgb(LayerKind kind) noexcept {
 const std::vector<NewLayerKindEntry>& newLayerKindMenu() {
   // Design 2a's popup order, which is not the enum's: Pigment first because
   // it is the default kind (PRD principle 3) and the design draws it in the
-  // highlighted slot, then RGB, then the five parametric kinds. The four with
-  // no maker function are listed with `buildable == false` -- see the header
-  // for why they are listed at all.
+  // highlighted slot, then RGB, then the five parametric kinds, then Vector
+  // (which the design predates). The three with no maker function are listed
+  // with `buildable == false` -- see the header for why they are listed at
+  // all.
   static const std::vector<NewLayerKindEntry> kMenu = {
       {LayerKind::Pigment, true, LayerCommand::NewPigmentLayer},
       {LayerKind::RGB, true, LayerCommand::NewRgbLayer},
       {LayerKind::Media, false, {}},
       {LayerKind::Adjustment, true, LayerCommand::NewAdjustmentLayer},
       {LayerKind::Strokes, false, {}},
-      {LayerKind::Text, false, {}},
+      // Buildable as of PLAN.md phase 14. Flipped IN PLACE rather than
+      // appended the way Vector was: Text is one of design 2a's own seven
+      // kinds and has been in this list since it existed, so its slot is
+      // already the design's and moving it is what would break the ordering a
+      // --selftest pins.
+      {LayerKind::Text, true, LayerCommand::NewTextLayer},
       {LayerKind::Flats, false, {}},
       // Buildable as of PLAN.md phase 13: an empty Vector layer is a real,
       // saveable, editable thing, unlike the four above it. Appended rather
@@ -111,6 +117,7 @@ const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
     case LayerKind::RGB:
     case LayerKind::Adjustment:
     case LayerKind::Vector:
+    case LayerKind::Text:
       return nullptr;
     case LayerKind::Media:
       return "Not built yet. A Media layer needs the fluid solver's own per-medium state on "
@@ -118,9 +125,6 @@ const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
     case LayerKind::Strokes:
       return "Not built yet. A Strokes layer here has no dabs: the kind has no parameter "
              "member to hold them.";
-    case LayerKind::Text:
-      return "Not built yet. A Text layer here has no text: the kind has no string or font "
-             "member to hold one.";
     case LayerKind::Flats:
       return "Not built yet. A Flats layer here has no regions: the kind has no fill list to "
              "hold them.";

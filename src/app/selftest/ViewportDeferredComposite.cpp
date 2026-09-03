@@ -35,10 +35,19 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
 
   // A 10x10-tile canvas (1280x1280): big enough that a small on-screen
   // viewport leaves the large majority of tiles off-screen, and that
-  // `kViewportTrickleBudget` (24, ui/DocumentTexture.hpp) does not clear the
-  // backlog in a single call -- both are load-bearing for the sections below
-  // actually exercising deferral rather than accidentally finishing in one
-  // shot.
+  // the trickle budget does not clear the backlog in a single call -- both are
+  // load-bearing for the sections below actually exercising deferral rather
+  // than accidentally finishing in one shot.
+  //
+  // **Since the budget became a deadline (`kViewportTrickleBudgetMs`) rather
+  // than a tile count, that second property is no longer free.** A 100-tile
+  // one-layer canvas is cheap enough that the production budget would buy the
+  // whole backlog in one call, and every deferral assertion below would then
+  // pass vacuously -- green while testing nothing. So the fixtures that need
+  // deferral call `setTrickleBudgetMs()` with a deliberately tiny deadline.
+  // That is strictly better than the old arrangement, which depended on a
+  // production constant happening to be smaller than this fixture and would
+  // have silently stopped testing anything the moment someone raised it.
   constexpr int32_t kTilesAcross = 10;
   constexpr int32_t kCanvasSize = kTilesAcross * kTileSize;
   const std::array<float, 4> kProbeColour{0.5f, 0.25f, 0.125f, 1.0f};
@@ -131,6 +140,11 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
     // A small on-screen rectangle roughly centred on tile (4,4)-(5,5), well
     // clear (more than one tile's margin) of tile (9,9) at the far corner.
     const DocumentTextureViewport centre{550, 550, 700, 700};
+    // A deadline small enough that the take pins to `kMinViewportTrickleTiles`
+    // on this fixture, so "off-screen is genuinely deferred" is a fact about
+    // the deferral machinery and not about how fast this machine happens to
+    // composite four tiles.
+    dtBacklog.setTrickleBudgetMs(0.000001);
     dtBacklog.viewFor(gpu, backlogDoc, nullptr, &centre);
 
     const std::vector<uint16_t> oracle = compositeDocumentStraightHalf(backlogDoc.document);
@@ -147,8 +161,8 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
           "priority: the on-screen tile is correct after ONE call");
     // The far corner is the LAST tile canvasTiles() visits (raster order),
     // so it is necessarily the last candidate the trickle budget would ever
-    // reach -- with kViewportTrickleBudget (24) far smaller than the ~84
-    // off-screen tiles here, it is not reached this call.
+    // reach -- with the take pinned to the floor (4) and ~84 off-screen tiles
+    // here, it is not reached this call.
     check(std::memcmp(texelAt(dtBacklog.uploadedHalves(), kCanvasSize, farCorner.x, farCorner.y)
                           .data(),
                       texelAt(oracle, kCanvasSize, farCorner.x, farCorner.y).data(),
@@ -188,6 +202,9 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
     od.recordEdit("fill", EditKind::Content);
 
     DocumentTexture dt;
+    // Same reason as section 3: pinned to the floor so convergence is being
+    // measured, not the machine's speed.
+    dt.setTrickleBudgetMs(0.000001);
     const DocumentTextureViewport centre{550, 550, 700, 700};
     const PixelCoord farCorner = tileCentre(9, 9);
     const std::vector<uint16_t> oracle = compositeDocumentStraightHalf(od.document);
@@ -196,9 +213,10 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
     bool everMonotonic = true;
     bool convergedWithinBudget = false;
     // Enough calls that `kTilesAcross * kTilesAcross` tiles minus a small
-    // on-screen viewport, at `kViewportTrickleBudget` a call, is guaranteed
-    // to finish -- (100 / 8) rounds up to 13; 40 is a generous margin so a
-    // change to either constant does not make this section flaky.
+    // on-screen viewport, at `kMinViewportTrickleTiles` a call, is guaranteed
+    // to finish -- (100 / 4) is 25; 40 is a margin so a change to the floor
+    // does not make this section flaky. The budget is pinned above, so this
+    // is the slowest the adaptive path can ever be, not a typical rate.
     for (int call = 0; call < 40 && !convergedWithinBudget; ++call) {
       dt.viewFor(gpu, od, nullptr, &centre);
       if (dt.pendingTiles() > previousPending) everMonotonic = false;
@@ -334,10 +352,14 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
 
     // Point B: a corner viewport on a fully-dirty canvas -- almost every one
     // of the 16x16 = 256 tiles is off-screen, so this call's `processSet` is
-    // bounded by kViewportTrickleBudget, cost ~= S + n*t at whatever n that
-    // budget currently produces.
+    // bounded by the trickle budget, cost ~= S + n*t at whatever n that
+    // budget currently produces. Pinned to the floor so the fit has two
+    // genuinely different tile counts to solve from; the adaptive take is
+    // measured separately below, where its whole point is that it is NOT a
+    // constant.
     size_t tilesB = 0;
     const DocumentTextureViewport corner{0, 0, 1, 1};
+    dt.setTrickleBudgetMs(0.000001);
     const double msB = medianCallMsFor(corner, 3, tilesB);
 
     const double perTileMs =
@@ -349,24 +371,176 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
                 "%.3f ms median -- fit: S (per-call setup) ~= %.3f ms, t (per-tile marginal) "
                 "~= %.4f ms/tile\n",
                 tilesA, msA, tilesB, msB, setupMs, perTileMs);
-    std::printf("    [measured] kViewportTrickleBudget=%zu -> S + budget*t ~= %.2f ms "
-                "(%.1f%% of PRD F3's %.0f ms) for a deferred call once the viewport itself is "
-                "empty (the worst case: every ms is backlog catch-up, none of it visible work)\n",
-                kViewportTrickleBudget, setupMs + perTileMs * static_cast<double>(kViewportTrickleBudget),
-                100.0 * (setupMs + perTileMs * static_cast<double>(kViewportTrickleBudget)) /
-                    kPenToPhotonMs,
-                kPenToPhotonMs);
     check(tilesA >= 1 && tilesB > tilesA,
           "performance: the two calibration points give a solvable (n increases) fit");
-    check(tilesB > 0 && tilesB <= kViewportTrickleBudget + 4,
-          "performance: a corner viewport's call is bounded by the trickle budget, not the "
-          "canvas");
+    check(tilesB > 0 && tilesB <= kMinViewportTrickleTiles + 4,
+          "performance: a pinned budget bounds the call by the floor, not the canvas");
+
+    // --- What the deadline buys, on this fixture ---------------------------
+    //
+    // The old constant was 4 tiles for every document. The whole claim of
+    // `kViewportTrickleBudgetMs` is that the take is derived from what a tile
+    // actually costs HERE -- 40 layers, deliberately pessimistic -- so this
+    // is where that claim is checked rather than asserted in a comment.
+    dt.setTrickleBudgetMs(kViewportTrickleBudgetMs);
+    size_t tilesAdaptive = 0;
+    const double msAdaptive = medianCallMsFor(corner, 3, tilesAdaptive);
+
+    std::printf("    [measured] budget %.1f ms on a %zu-layer %dx%d document -> learned rate "
+                "%.4f ms/tile, take %zu tile(s), call %.2f ms (%.0f%% of budget, %.0f%% of PRD "
+                "F3's %.0f ms)\n",
+                dt.trickleBudgetMs(), kLayerCount, kBigW, kBigH, dt.trickleMsPerTile(),
+                dt.lastTrickleTake(), msAdaptive, 100.0 * msAdaptive / dt.trickleBudgetMs(),
+                100.0 * msAdaptive / kPenToPhotonMs, kPenToPhotonMs);
+
+    // The floor is a floor. This is the assertion that would have caught the
+    // adaptive path degenerating into "always the minimum", which is the way
+    // this change could regress to the old behaviour while every other
+    // assertion here still passed.
+    check(dt.lastTrickleTake() >= kMinViewportTrickleTiles,
+          "performance: the adaptive take never falls below the old fixed budget");
+    check(dt.lastTrickleTake() <= kMaxViewportTrickleTiles,
+          "performance: and never exceeds the stale-estimate cap");
+
+    // The rate is learned, not assumed. A negative value means nothing was
+    // ever observed, which would make every take the floor.
+    check(dt.trickleMsPerTile() > 0.0,
+          "performance: a per-tile rate was actually learned from real calls");
+
+    // **The call's wall clock is PRINTED, not asserted**, and that correction
+    // is worth recording. This section first asserted
+    // `msAdaptive <= budget * 3 + S`, which passed on an idle machine and
+    // failed the moment the suite ran beside a compile: the learned rate went
+    // from 1.74 to 2.19 ms/tile and the call from 13.6 to 17.1 ms, purely
+    // from load. That is a machine-speed claim wearing an assertion's
+    // clothes -- the same mistake this file's own header warns about for the
+    // `S`/`t` fit -- and on a 40-layer document at the floor the deadline is
+    // arithmetically unmeetable anyway (`S` alone is ~3 ms and four tiles add
+    // ~5 ms), so the assertion was never testing the budget in the first
+    // place.
+    //
+    // What IS asserted instead is **monotonicity in the budget**, which is
+    // timing-free and is the property a deadline actually has to have: a
+    // smaller deadline must never buy more tiles. A take that ignored the
+    // budget -- returning the cap, or a constant -- fails this on any machine
+    // at any speed.
+    const size_t takeAtFullBudget = dt.lastTrickleTake();
+    dt.setTrickleBudgetMs(kViewportTrickleBudgetMs / 8.0);
+    size_t tilesSmallBudget = 0;
+    medianCallMsFor(corner, 3, tilesSmallBudget);
+    const size_t takeAtSmallBudget = dt.lastTrickleTake();
+    std::printf("    [measured] budget %.2f ms -> take %zu tile(s); budget %.2f ms -> take "
+                "%zu tile(s)\n",
+                kViewportTrickleBudgetMs, takeAtFullBudget, kViewportTrickleBudgetMs / 8.0,
+                takeAtSmallBudget);
+    // Weak HERE and known to be: on this 40-layer fixture both budgets pin to
+    // the floor, so 4 <= 4 holds vacuously. It is still worth asserting as an
+    // invariant, and section 8 runs the same comparison on the cheap fixture
+    // where the two takes genuinely differ -- that is the one that
+    // discriminates.
+    check(takeAtSmallBudget <= takeAtFullBudget,
+          "performance: an eighth of the deadline never buys MORE tiles (vacuous here -- "
+          "section 8 is the discriminating case)");
+    dt.setTrickleBudgetMs(kViewportTrickleBudgetMs);
+
+    // And it must still be a *deferred* call -- if the take swallowed all 256
+    // tiles, the two assertions above would be measuring a full recomposite
+    // and the deadline would mean nothing.
+    check(tilesAdaptive < static_cast<size_t>((kBigW / kTileSize) * (kBigH / kTileSize)),
+          "performance: the adaptive call still defers rather than clearing the canvas");
+
     // Printed, not asserted -- a machine-speed claim, exactly like
     // app/selftest/OpaqueFloor.cpp's and app/selftest/CompositeParallel.cpp's
-    // own perf sections. `kViewportTrickleBudget` is chosen from this
-    // number, by hand, in ui/DocumentTexture.hpp; this section does not
-    // enforce that choice because a future machine or compiler making the
-    // compositor faster or slower is not this section's failure to report.
+    // own perf sections. What IS asserted above is the shape the budget
+    // guarantees regardless of machine: floor respected, cap respected, rate
+    // learned, deadline the same order as the call, deferral still happening.
+    // That is the part a faster machine must not be allowed to hide.
+ 
+  }
+
+  std::printf("  -- 8. the budget ADAPTS: a cheap document must buy more than the floor --\n");
+
+  // -----------------------------------------------------------------------
+  // 8. The assertion section 7 could not make.
+  //
+  // **Every assertion in section 7 passes when `trickleTake()` is sabotaged
+  // to `return kMinViewportTrickleTiles;`.** That was checked by doing it,
+  // not reasoned about -- and it is the whole point of this section. Section
+  // 7's fixture is 40 layers at ~1.3 ms/tile, where a 4 ms deadline honestly
+  // buys the floor and nothing more, so "take >= floor" and "take <= cap"
+  // are both satisfied by the degenerate answer. A suite that only measured
+  // there would go green on a build that had silently reverted to the fixed
+  // budget this change exists to replace.
+  //
+  // So: the same machinery on a ONE-layer canvas, where a tile is cheap
+  // enough that the deadline must buy substantially more. This is the
+  // section that fails when the adaptive path stops adapting.
+  // -----------------------------------------------------------------------
+  {
+    OpenDocument od =
+        makeBlankOpenDocument(kCanvasSize, kCanvasSize, WorkingSpace{}, "adaptive");
+    fillEveryTile(od.document, kProbeColour);
+    od.recordEdit("fill", EditKind::Content);
+
+    DocumentTexture dt;
+    const DocumentTextureViewport corner{0, 0, 1, 1};
+
+    // Several calls, so the moving average has something to converge on --
+    // the first call always takes the floor (nothing observed yet), which is
+    // by design and must not be mistaken for the answer.
+    size_t take = 0;
+    for (int call = 0; call < 6; ++call) {
+      fillEveryTile(od.document, call % 2 == 0 ? kEditColour : kProbeColour);
+      od.recordEdit("touch", EditKind::Content);
+      dt.viewFor(gpu, od, nullptr, &corner);
+      take = dt.lastTrickleTake();
+    }
+
+    std::printf("    [measured] 1-layer %dx%d, budget %.1f ms -> learned rate %.4f ms/tile, "
+                "take %zu tile(s) (floor is %zu)\n",
+                kCanvasSize, kCanvasSize, dt.trickleBudgetMs(), dt.trickleMsPerTile(), take,
+                kMinViewportTrickleTiles);
+
+    // The load-bearing one. A one-layer 128x128-tile composite runs far under
+    // 4 ms / 4 tiles = 1 ms per tile on any machine this builds on, so the
+    // budget must buy more than the floor -- and if it does not, the take is
+    // no longer being derived from the deadline at all.
+    check(take > kMinViewportTrickleTiles,
+          "adaptive: a cheap one-layer document buys MORE than the floor (this is the "
+          "assertion a reverted trickleTake() fails)");
+
+    // Strictly more than the old fixed budget bought, stated as its own
+    // assertion so the regression reads as what it is rather than as an
+    // arithmetic coincidence about the floor's value.
+    check(take > 4, "adaptive: and more than the old fixed budget of 4 tiles");
+
+    // **Monotonicity in the budget, where it actually discriminates.** The
+    // same comparison in section 7 is vacuous (both budgets pin to the floor
+    // on 40 layers); here the full budget buys tens of tiles, so a take that
+    // ignored the deadline -- a constant, or the cap -- fails this. Timing-
+    // free: it compares two takes, never a clock, so machine load cannot
+    // move it.
+    const size_t takeFull = take;
+    dt.setTrickleBudgetMs(kViewportTrickleBudgetMs / 8.0);
+    fillEveryTile(od.document, kEditColour);
+    od.recordEdit("touch", EditKind::Content);
+    dt.viewFor(gpu, od, nullptr, &corner);
+    const size_t takeEighth = dt.lastTrickleTake();
+    std::printf("    [measured] 1-layer: budget %.2f ms -> take %zu, budget %.2f ms -> take %zu\n",
+                kViewportTrickleBudgetMs, takeFull, kViewportTrickleBudgetMs / 8.0, takeEighth);
+    check(takeEighth < takeFull,
+          "adaptive: an eighth of the deadline buys STRICTLY fewer tiles (the take really "
+          "is derived from the budget)");
+    check(takeEighth >= kMinViewportTrickleTiles,
+          "adaptive: ...but never below the floor, however small the deadline");
+    dt.setTrickleBudgetMs(kViewportTrickleBudgetMs);
+
+    // Correctness is not traded for the larger take: the same bit-identity
+    // the incremental path owes everywhere else still holds once converged.
+    dt.viewFor(gpu, od);  // no viewport: absorb whatever is left
+    check(dt.pendingTiles() == 0, "adaptive: the backlog still converges to zero");
+    check(sameHalves(dt.uploadedHalves(), compositeDocumentStraightHalf(od.document)),
+          "adaptive: and the result is still bit-identical to the oracle");
   }
 
   return ok;
