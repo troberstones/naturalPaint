@@ -244,7 +244,7 @@ nowhere.
 
 ---
 
-## T5 — Closing every document leaves a canvas belonging to nothing · open
+## T5 — Closing every document leaves a canvas belonging to nothing · PARTLY CLOSED (short-term half landed 2026-09-02; the canvas-to-document bridge is still open)
 
 **Reported.** When you close all documents, there is still a document/canvas
 that does not belong to anything.
@@ -278,7 +278,29 @@ wrong about one of the three. T1 and T2 stand.)*
 * **Long term:** the canvas-to-document bridge PLAN.md describes, which needs
   a decision about which layer the solver deposits into and a
   texture-to-tile path with its own dirty tracking (PRD O6). Genuinely large;
-  not a bug fix.
+  not a bug fix. **Still open.**
+
+**The short-term half landed in `8140912`.** `app/ToolSurface` adds one
+predicate for "can this tool act on what is in front of the user", and it
+decides nothing itself — it asks `strokeRouteFor()`'s own `target == nullptr`
+row, `pixelOpRefusalFor(nullptr)`, `toolPansView`/`toolZoomsView` and
+`measureLineAppliesTo`. 6 of 21 built tools survive with no document, and
+painting the bare canvas — a supported workflow — is untouched, because the
+predicate adopts the engine's existing boundary rather than inventing one.
+
+**Why this could sit open behind a green suite and twenty green views:** the
+state was unreachable from any launch. `main.cpp` always creates a document,
+no flag closed one, and `--screenshot` cannot click File > Close. `--no-document`
+is the first half of the coverage; the three golden views are the second. That
+generalises — see the correction in `docs/ui.md` about what the golden blind
+spot actually is.
+
+An unrelated defect found in passing and **left open**: `strokeRouteFor()` has
+two consecutive `if (target == nullptr)` blocks, the second unreachable
+because the first returns in every case. Harmless today, but the dead block's
+condition is strictly narrower, so deleting or reordering the first would
+silently route the Pencil, Dodge, Burn and Clone Stamp into the watercolour
+solver — exactly what each of those tools' own headers argues against.
 
 ---
 
@@ -1222,15 +1244,42 @@ and are noted under T3 and T5 rather than renumbered here.
 
 ---
 
-## T19 — The smudge needs more work · open, unspecified
+## T19 — The smudge needs more work · closed 2026-09-02
 
 **Reported.** "that smudge needs more work."
 
 No detail was given, and none is invented here. `brush/Smudge` shipped in
 `540adf8`; its header records what it deliberately does not do (no Pigment
 smudge, alpha-locked RGB refuses), and any of those may be what this means, or
-it may be the feel of the result. **This entry needs one round of detail from
-the reporter before it is worth anything.**
+it may be the feel of the result.
+
+*(Detail supplied 2026-09-02: "It never fades, Need to reload with the areas
+been smeared across. May need a pickup parameter in the tool options for
+smudge, picking a dab shape as well or a brush to use for smudge is likely
+ideal.")*
+
+**Closed by `27c0ad5`, and the diagnosis in the report was right about the
+symptom and wrong about the cause — in a way that matters.** `brush/Smudge`
+was never a pick-once-and-stamp tool: `finger' = lerp(pick, finger, strength)`
+reloads from the canvas every dab, and §5 documents the `strength^n` fade with
+an assertion on it. What was missing was a control. `StrokeSession` passed
+`resolvedOpacity`, so the smudge's strength WAS the brush opacity slider,
+which defaults to 1.0 — and `std::lerp(a, b, 1)` returns `b`, so the finger
+loaded once at pen-down and never changed. The reported behaviour is that
+degenerate case exactly.
+
+`SmudgeParams` now carries strength (default 0.5) and a tip override. The
+control is STRENGTH rather than the proposed "pickup": inverting the slider
+puts the bit-exact no-op at the *top* of the track, so "maximum pickup" would
+be the setting that stops the tool — §3's own named failure, on the label a
+user chasing this report drags first.
+
+The assertion that would have caught this is new in kind: it builds the tip
+from an *unconfigured* `AppState` and requires the fade. Every pre-existing
+strength assertion sets a strength first, which is why a default of 1 stayed
+green for the tool's whole history and had to be reported by a user.
+
+A preset-level brush picker for the smudge is specified and not built.
 
 ---
 
@@ -1377,7 +1426,7 @@ field read 37.4.
 
 ---
 
-## T25 — The colour picker clamps a canvas that does not · open, a question
+## T25 — The colour picker clamps a canvas that does not · PARTLY CLOSED (T25a scene-referred landed 2026-09-02; T25b EDR display is its own project)
 
 **Reported.** "The canvas supports fp16 data, but the color picker only shows
 values clamped to 1, what can we do about it?"
@@ -1439,13 +1488,30 @@ them is a different job from this one.
 
 ---
 
-## T27 — Throttle the UI · open
+## T27 — Throttle the UI · closed 2026-09-02
 
 **Reported.** "lets throttle the UI unless drawing to 60fps, and when nothing
 is happening, throttle it further."
 
 Two tiers are asked for: a 60 fps ceiling when idle-but-interactive, and a
 lower one when nothing is happening at all — with drawing exempt from both.
+
+**Closed by `37af04e`.** Painting unthrottled, 60 fps awake, 6 fps after 2 s.
+Fifo presentation was already vsync-locked but that is not 60 here — 600
+measured frames of a `--screenshot` run ran at ~119 fps on a ProMotion panel.
+
+**The idle number is picked by the solver, not by taste.** The frame loop is
+also the physics loop, and `consumeFixedSteps()` caps a frame at 33.3 ms of
+simulated time. `kMaxCatchUpMs` bounds the per-call *add*, not the
+accumulator, so below 30 fps the solver banks debt without bound — 133 ms
+every frame at 6 fps — and discharges it as a fast-forward on wake. The period
+is clamped to a ceiling derived from `FixedStep.hpp`'s own constants whenever
+a solver is live.
+
+A stated gap: the wait's *placement* relative to `frameStartNs` has no
+headless coverage, because the pure function cannot see where its caller calls
+it. Sabotaging the placement produces 0 FAIL. It is instead visible in one
+line of `--frame-trace`, which is why that line now carries `pacing=`.
 
 ---
 
