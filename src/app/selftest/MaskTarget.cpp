@@ -911,8 +911,13 @@ bool runMaskTargetTest() {
       const LayerThumbnail b = layerContentThumbnail(big.document, 0);
       check(a.samples == b.samples && a.samples > 0,
             "vec cost: a 4096px document emits the same coverage texels as a 256px one");
-      check(a.samples <= static_cast<size_t>(kLayerThumbPx) * kLayerThumbPx,
-            "vec cost: and one shape never emits more texels than the cell has");
+      // **An exact count, not a bound.** "Fewer than the cell has" is a
+      // structural property of clipping to the cell and would stay true under
+      // any scale error at all; the shape is a quarter of a square document, so
+      // it is exactly the 12x12 corner of a 24x24 cell, and that number moves
+      // the moment the mapping does.
+      check(a.samples == static_cast<size_t>(kLayerThumbPx / 2) * (kLayerThumbPx / 2),
+            "vec cost: a quarter-document shape emits exactly the cell's quarter, 12x12");
       check(a.rgba == b.rgba, "vec cost: and the two pictures are identical, as they must be");
     }
   }
