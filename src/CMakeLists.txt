@@ -227,6 +227,7 @@ add_executable(naturalPaint
   app/selftest/WheelInput.cpp
   app/selftest/ZoomAndSize.cpp
   app/selftest/TextSerial.cpp
+  app/selftest/PathConsumers.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp
@@ -237,6 +238,7 @@ add_executable(naturalPaint
   app/QuitSequence.cpp
   app/Snapping.cpp
   app/StrokeBake.cpp
+  app/PathConsumers.cpp
   app/StrokePreview.cpp
   app/StrokeSession.cpp
   app/DocumentPresets.cpp

@@ -5530,4 +5530,18 @@ bool runTextContentTest();
 // decimal rendering would lose precision. See app/selftest/TextSerial.cpp.
 bool runTextSerialTest();
 
+// app/PathConsumers (PRD J1/J2/J3/J4): the three things a user does WITH a
+// path -- convert it to a selection, fill it, and stroke it with the current
+// brush. Headless, GPU-free, writes no files. Proves the path-to-selection
+// coverage against TWO independent rasterisers (core/SelectionShapes'
+// selectPolygon() and selectRectangle(), which also pins the texel
+// convention), the fill's stored alpha against pi*r^2 and w*h, the dab stream
+// against arc length rather than vertex count (including the implied closing
+// edge of a closed subpath), that a Text layer goes through all three and
+// answers texel-identically to a Vector layer built from its own shapes, that
+// an alpha-locked target refuses the fill but is HONOURED by the stroke, that
+// the active selection bounds both edits, and that every refusal names its own
+// cause. See app/selftest/PathConsumers.cpp.
+bool runPathConsumersTest();
+
 }  // namespace np
