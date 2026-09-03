@@ -1775,6 +1775,23 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
       // this document has no comps of its own to write in its place, so it goes
       // back out unchanged. The `doc.comps` test makes the two mutually
       // exclusive, so part 0 can never end up with two.
+      //
+      // **HALF OF A PAIR. The other half is the `if (!doc.comps.empty())`
+      // guarding the fresh `np:comps` push further down this function** (search
+      // `kAttrComps`). The two conditions are exact complements and must stay
+      // that way: this replays only when `doc.comps` is empty, that writes only
+      // when it is not.
+      //
+      // **Nothing can assert this, and that is why it is written down.** A
+      // doubled attribute is invisible to every reader -- OpenImageIO collapses
+      // it last-write-wins before any test could count the occurrences, and the
+      // raw attribute list never leaves this function. An audit of the whole
+      // `np:*` table (app/selftest/VectorLayer.cpp sections 12-17) closed the
+      // carry hazard for every other name and measured that this one alone
+      // cannot be made to fail. It is also, today, saved a second time by pure
+      // ORDER -- the fresh push happens after this replay, so it would win a
+      // collision anyway -- which is an accident of layout and not a guarantee;
+      // do not rely on it, and do not "tidy" that push above this loop.
       if (isDocumentAttributeRecognised(a.name) &&
           !(a.name == kAttrComps && doc.comps.empty()))
         continue;
@@ -1865,6 +1882,10 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
   //
   // No layer part is touched by any of this, in either direction, which is
   // what makes that regression boundary structural rather than careful.
+  // **The other half of the pair documented at the carry replay above** (search
+  // `kAttrComps` there). `!doc.comps.empty()` here and `doc.comps.empty()`
+  // there are exact complements, so part 0 gets exactly one `np:comps`; break
+  // the complement and it gets two, silently, with no assertion able to see it.
   if (!doc.comps.empty()) {
     LayerCompCarrier comps;
     comps.nextLayerId = doc.nextLayerId;
