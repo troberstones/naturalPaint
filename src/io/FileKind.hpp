@@ -60,6 +60,49 @@
 // **On-disk format unchanged.** Nothing in this track writes a byte of
 // `.npaint` differently from before; the marker used is one `saveNpaint()`
 // has always written. An existing `.npaint` that opened before opens now.
+//
+// --- What identifies an SVG, and why a substring search is not enough ------
+//
+// Every format above has a magic number: fixed bytes at a fixed offset, a
+// single `memcmp()`. SVG has none -- it is text, and valid SVG text can start
+// with a byte-order mark, whitespace, an XML declaration, a comment, or a
+// doctype before the first byte that is actually part of the picture. So
+// "does the first 4 KB contain `<svg`" is the tempting shortcut, and it is
+// wrong the same way this header's `np:version` shortcut above would have
+// been wrong: it false-positives on an HTML page with an inline SVG, on an
+// XSL stylesheet, and on a plain-text file that merely discusses SVG.
+//
+// The fix is the same shape as the OpenEXR one: read the format's own
+// grammar instead of searching for a string that grammar happens to contain.
+// `sniffFileKind()` (FileKind.cpp) runs a bounded **structural** scan:
+//
+//  1. Skip an optional UTF-8 BOM (`EF BB BF`).
+//  2. Skip XML whitespace.
+//  3. Repeatedly skip whole prologue constructs -- a `<?...?>` processing
+//     instruction (the XML declaration is one), a `<!--...-->` comment, or a
+//     `<!DOCTYPE ...>` -- and the whitespace between them.
+//  4. Whatever comes next must be an element start tag. It is SVG when that
+//     element's name is `svg` or ends in `:svg` (a namespace prefix, e.g.
+//     `<svg:svg>`). Anything else -- a different root element, or the buffer
+//     running out before step 4 is reached -- is not SVG.
+//
+// This is why an HTML file with an inline `<svg>` sniffs correctly as
+// `Unknown` (or as HTML, if this module ever learns HTML): its root element
+// is `html`, and the scan never looks inside it. A file that only *mentions*
+// `<svg` in running text fails at step 4 the same way, because its first
+// non-whitespace byte after the BOM is not `<` at all.
+//
+// The scan is bounded twice over, so a hostile or merely malformed file
+// cannot make it run long or read out of bounds: it examines at most
+// `kSvgMaxScanBytes` (FileKind.cpp), a few kilobytes from the front of the
+// buffer, and it gives up after `kSvgMaxPrologueConstructs` prologue
+// constructs even if every one of them was well-formed. Both are generous
+// for a real file -- the same kind of two-orders-of-magnitude headroom the
+// `.npaint` header walk above gives itself (a real part-0 header has under
+// twenty attributes, capped at 4096) -- and neither is a quality setting: an
+// SVG whose root tag sits further into the file than that has an
+// unreasonable prologue, and this module says `Unknown` about it rather than
+// searching indefinitely.
 namespace np {
 
 // What a file's own bytes say it is.
@@ -72,6 +115,13 @@ enum class FileKind {
   // decodes when OpenImageIO is linked in. Keeping the two apart is the whole
   // point -- see `FileSniff::format` below.
   Image,
+  // A vector image -- today, exclusively SVG. Recognised from a **structural**
+  // scan of the text, not a magic number: see `sniffFileKind()`'s comment
+  // below for why a substring search is not good enough and what the scan
+  // actually does. io/SvgImport, which would read one, does not exist yet
+  // (see FileKind.cpp) -- see app/OpenAnyFile.cpp and .hpp for how a `Vector`
+  // file is refused, by name, until it does.
+  Vector,
   // Nothing recognised. Not a refusal on its own; it is what turns a decode
   // failure into "this is not a format we read" rather than "your file is
   // damaged".
@@ -110,7 +160,7 @@ struct FileSniff {
 // A null `data`, a zero `size`, or a buffer too short to hold any signature
 // answers `Unknown` rather than guessing.
 //
-// **Two known limits, stated rather than left to be discovered:**
+// **Four known limits, stated rather than left to be discovered:**
 //
 //  * **TGA has no leading magic.** The format begins with a raw header whose
 //    every byte is a plausible value, so there is nothing to match. TGA 2.0
@@ -121,6 +171,19 @@ struct FileSniff {
 //    the TIFF signature and is reported as TIFF. When this build cannot decode
 //    it the refusal carries the decoder's own reason, which is the honest
 //    account; it does not claim the file is a damaged TIFF.
+//  * **UTF-16 SVG sniffs as `Unknown`.** A `FF FE` or `FE FF` byte-order mark
+//    means every ASCII character of `<svg` is followed by a `00` byte, so the
+//    structural scan above -- which reads UTF-8/ASCII bytes one at a time --
+//    never finds a `<`. Handling it means transcoding the buffer before the
+//    scan runs at all, which is a decoder's job, not a sniffer's: this module
+//    answers from the bytes it was given, and does not allocate a converted
+//    copy of them to answer a different question.
+//  * **An SVG whose `<!DOCTYPE` internal subset hides a `>` inside a quoted
+//    string is handled, not a gap** -- worth saying explicitly, because it is
+//    exactly the kind of edge a naive "scan for the next `>`" would get
+//    wrong. The doctype skip tracks bracket depth and quote state, the same
+//    two things a real XML parser tracks there, so a quoted `>` (or a `[`/`]`
+//    inside a quote) does not end the construct early.
 FileSniff sniffFileKind(const uint8_t* data, size_t size);
 
 // One word for `kind`, for messages and for --selftest output.

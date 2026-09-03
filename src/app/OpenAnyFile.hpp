@@ -149,7 +149,14 @@ struct OpenAnyResult {
 // `openNpaintDocument()`; a picture goes to `io/ImageIO`'s
 // `openImageAsDocument()`. There is no third path and no second copy of either.
 //
-// **Three distinguishable refusals**, because a user can act on the difference:
+// A `FileKind::Vector` file (an SVG, see io/FileKind.hpp) is a fourth,
+// temporary case: refused by name, naming SVG, because io/SvgImport --
+// the reader that would take this path -- does not exist yet. See the
+// `FileKind::Vector` branch in the .cpp, marked as a placeholder to remove
+// once that importer lands.
+//
+// **Three distinguishable refusals** for the two paths above, because a user
+// can act on the difference:
 //
 //  1. *"not a format naturalPaint reads"* -- the bytes match no signature this
 //     build knows (`FileKind::Unknown`) and no decoder accepted them either.
@@ -283,6 +290,9 @@ DropDestination dropDestinationForPoint(float x, float y, const DropBands& bands
 //   image, TabStrip                  -> always OpenAsDocument, document open or not
 //   image, ActiveDocument or         -> documentIsOpen ? ImportAsLayer : OpenAsDocument
 //     Unspecified
+//   vector (SVG)                     -> always Refuse, wherever it lands -- a placeholder
+//                                        until io/SvgImport exists to route it to; see
+//                                        openAnyFileAsDocument()'s own placeholder branch
 //   unrecognised                     -> Refuse, wherever it lands
 //
 // **`Unspecified` and `ActiveDocument` compute the same thing.** That is

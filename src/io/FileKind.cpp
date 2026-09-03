@@ -1,6 +1,8 @@
 #include "io/FileKind.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <optional>
 
 // io/FileKind -- implementation. Every decision is argued in FileKind.hpp;
 // this file holds the byte matching, and comments only where the bytes are not
@@ -111,12 +113,165 @@ FileSniff image(const char* signature, std::optional<ImageFormat> format) {
   return s;
 }
 
+// --- SVG: a structural scan, not a substring search -------------------------
+//
+// The full argument for why this is a scan of the grammar rather than a
+// search for the string `<svg` is in FileKind.hpp; this is the walk itself.
+
+// A few kilobytes -- generous for any real SVG's prologue (an XML
+// declaration, a handful of comments, a doctype), and small enough that a
+// file with an "unreasonable" prologue costs this function almost nothing to
+// give up on. Never reads past `min(size, kSvgMaxScanBytes)`, which is itself
+// never past `size`.
+constexpr size_t kSvgMaxScanBytes = 4096;
+
+// How many `<?...?>` / `<!--...-->` / `<!DOCTYPE ...>` constructs the scan
+// will skip before giving up. A real document has at most a few (one XML
+// declaration, maybe a comment, maybe a doctype); this is two orders of
+// magnitude of headroom so that only a pathological or hostile prologue ever
+// hits it, and hitting it answers `Unknown` rather than looping.
+constexpr int kSvgMaxPrologueConstructs = 64;
+
+bool isXmlSpace(uint8_t c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+// XML name characters this module actually needs to tell `svg` and `*:svg`
+// apart from every other element name. Not the full XML `Name` production
+// (which also admits a long tail of Unicode ranges) -- this only ever
+// compares the collected run against the fixed strings `"svg"` and `":svg"`,
+// so under-recognising a Unicode name character just means that name is
+// read as ending one byte earlier than XML would say, which cannot turn a
+// non-`svg` name into a match and therefore cannot manufacture a false
+// positive.
+bool isXmlNameChar(uint8_t c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+         c == '-' || c == '_' || c == '.' || c == ':';
+}
+
+// Skips one `<?...?>` processing instruction (the XML declaration is one:
+// `<?xml version="1.0"?>`) starting at `data[p]`. `p` must already point at
+// the leading `<`. Returns the offset just past the closing `?>`, or
+// `std::nullopt` if `data[p..limit)` is not `<?...?>` at all, or is but never
+// closes within `limit` -- the caller treats both the same way, as "this is
+// not SVG", which is correct: real SVG never emits an unterminated
+// processing instruction.
+std::optional<size_t> skipProcessingInstruction(const uint8_t* data, size_t limit,
+                                                size_t p) {
+  if (p + 1 >= limit || data[p] != '<' || data[p + 1] != '?') return std::nullopt;
+  size_t q = p + 2;
+  while (q + 1 < limit) {
+    if (data[q] == '?' && data[q + 1] == '>') return q + 2;
+    ++q;
+  }
+  return std::nullopt;
+}
+
+// Skips one `<!--...-->` comment. Same contract as the function above.
+std::optional<size_t> skipComment(const uint8_t* data, size_t limit, size_t p) {
+  if (p + 3 >= limit || data[p] != '<' || data[p + 1] != '!' || data[p + 2] != '-' ||
+      data[p + 3] != '-')
+    return std::nullopt;
+  size_t q = p + 4;
+  while (q + 2 < limit) {
+    if (data[q] == '-' && data[q + 1] == '-' && data[q + 2] == '>') return q + 3;
+    ++q;
+  }
+  return std::nullopt;
+}
+
+// Skips one `<!DOCTYPE ...>`, tracking bracket depth and quote state so a
+// `>` (or a `[`/`]`) inside a quoted string in the internal subset, or inside
+// the subset's own `[...]` brackets, does not end the construct early --
+// FileKind.hpp's fourth stated limit says this is handled rather than
+// assumed away, and this is the handling. Same not-SVG-either-way contract on
+// failure as the two functions above.
+std::optional<size_t> skipDoctype(const uint8_t* data, size_t limit, size_t p) {
+  static constexpr char kDoctype[] = "<!DOCTYPE";
+  constexpr size_t kDoctypeLen = sizeof(kDoctype) - 1;
+  if (p + kDoctypeLen > limit || std::memcmp(data + p, kDoctype, kDoctypeLen) != 0)
+    return std::nullopt;
+
+  size_t q = p + kDoctypeLen;
+  int bracketDepth = 0;
+  char quote = 0;
+  while (q < limit) {
+    const uint8_t c = data[q];
+    if (quote != 0) {
+      if (c == static_cast<uint8_t>(quote)) quote = 0;
+    } else if (c == '\'' || c == '"') {
+      quote = static_cast<char>(c);
+    } else if (c == '[') {
+      ++bracketDepth;
+    } else if (c == ']') {
+      if (bracketDepth > 0) --bracketDepth;
+    } else if (c == '>' && bracketDepth == 0) {
+      return q + 1;
+    }
+    ++q;
+  }
+  return std::nullopt;
+}
+
+// The whole scan FileKind.hpp describes. `data` is not null and `size > 0` --
+// checked once, by `sniffFileKind()`, before either signature test runs.
+bool sniffIsSvg(const uint8_t* data, size_t size) {
+  const size_t limit = std::min(size, kSvgMaxScanBytes);
+  size_t p = 0;
+
+  // 1. An optional UTF-8 BOM.
+  if (limit >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) p = 3;
+
+  auto skipSpace = [&]() {
+    while (p < limit && isXmlSpace(data[p])) ++p;
+  };
+
+  // 2. Leading whitespace, then 3. every complete prologue construct and the
+  // whitespace between them.
+  skipSpace();
+  for (int construct = 0; construct < kSvgMaxPrologueConstructs; ++construct) {
+    if (p >= limit || data[p] != '<') break;  // nothing more to skip
+    std::optional<size_t> next = skipProcessingInstruction(data, limit, p);
+    if (!next) next = skipComment(data, limit, p);
+    if (!next) next = skipDoctype(data, limit, p);
+    if (!next) {
+      // Starts with `<` but is none of the three known prologue constructs --
+      // either the root element (handled below) or some other `<!...`
+      // construct this scan does not recognise. Either way, stop skipping;
+      // the element-tag check that follows is the only thing that can still
+      // say SVG.
+      break;
+    }
+    p = *next;
+    skipSpace();
+  }
+
+  // 4. What is left must be an element start tag, and it must be `svg` or
+  // end in `:svg`. Reaching the end of the buffer here, or finding `<!` or
+  // `<?` or `</` instead of a name, is "not SVG" -- never a crash and never a
+  // read past `limit`.
+  if (p >= limit || data[p] != '<') return false;
+  ++p;
+  if (p >= limit || data[p] == '?' || data[p] == '!' || data[p] == '/') return false;
+
+  const size_t nameStart = p;
+  while (p < limit && isXmlNameChar(data[p])) ++p;
+  const size_t nameLen = p - nameStart;
+  if (nameLen == 0) return false;
+
+  if (nameLen == 3 && std::memcmp(data + nameStart, "svg", 3) == 0) return true;
+  if (nameLen > 4 && std::memcmp(data + nameStart + nameLen - 4, ":svg", 4) == 0)
+    return true;
+  return false;
+}
+
 }  // namespace
 
 const char* fileKindName(FileKind kind) {
   switch (kind) {
     case FileKind::NpaintDocument: return "naturalPaint document";
     case FileKind::Image: return "image";
+    case FileKind::Vector: return "vector image";
     case FileKind::Unknown: return "unrecognised";
   }
   return "unrecognised";
@@ -201,6 +356,24 @@ FileSniff sniffFileKind(const uint8_t* data, size_t size) {
     if (size >= kTgaFooterLen &&
         std::memcmp(data + size - kTgaFooterLen, kTgaFooter, kTgaFooterLen) == 0)
       return image("TGA", ImageFormat::Tga);
+  }
+
+  // --- SVG, last: a structural scan rather than a magic number --------------
+  //
+  // Tried after every fixed-byte signature above, not before -- none of them
+  // can collide with it (a magic number starts with a high bit or a
+  // non-printable byte; SVG starts with a BOM, whitespace, or `<`), so the
+  // order is purely "cheapest checks first". See FileKind.hpp for what the
+  // scan does and why a substring search on `<svg` is not good enough.
+  if (sniffIsSvg(data, size)) {
+    FileSniff s;
+    s.kind = FileKind::Vector;
+    s.signature = "SVG";
+    // No `ImageFormat`: io/Capabilities' enum names the raster formats this
+    // application draws in its UI, and SVG is not one of them -- exactly the
+    // case `FileSniff::format` being optional exists for (FileKind.hpp).
+    s.format = std::nullopt;
+    return s;
   }
 
   return unknown;

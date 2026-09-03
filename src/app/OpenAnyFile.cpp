@@ -129,6 +129,26 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     return r;
   }
 
+  // --- SVG: recognised, not yet importable ----------------------------------
+  //
+  // Placeholder for io/SvgImport, which does not exist yet -- it is built
+  // from this track and two others, in parallel. Refused here, by name,
+  // rather than falling through to the picture path below: `sniff.format` is
+  // `std::nullopt` for a `Vector` file (io/FileKind.hpp), so letting it reach
+  // the image decoder would produce "matches no image format this build
+  // reads", which is a worse answer than the true one -- the file WAS
+  // recognised, and the reader for it has not landed. Remove this branch
+  // once io/SvgImport exists; everything below it already handles "a
+  // recognised signature this build cannot yet turn into a document" for
+  // every raster format, so this is the one case with no decoder to try at
+  // all rather than one that tried and failed.
+  if (sniff.kind == FileKind::Vector) {
+    return refuse("Open refused: '" + fileNameOf(path) +
+                      "' is an SVG (vector) file, and this build does not import vector "
+                      "artwork yet.",
+                  FileKind::Vector);
+  }
+
   // --- A picture -----------------------------------------------------------
   //
   // Routed through io/ImageIO's `openImageAsDocument()` -- the function whose
@@ -335,6 +355,14 @@ DropAction dropActionFor(FileKind kind, bool documentIsOpen, DropDestination des
       // the same thing" for why that is one branch and not two.
       if (destination == DropDestination::TabStrip) return DropAction::OpenAsDocument;
       return documentIsOpen ? DropAction::ImportAsLayer : DropAction::OpenAsDocument;
+    // Placeholder until io/SvgImport exists: refused rather than routed
+    // anywhere, wherever it lands. See openAnyFileAsDocument()'s own
+    // FileKind::Vector branch for the same placeholder on the File > Open
+    // path, and this file's header for why a `.npaint` (the other kind that
+    // is never a layer) gets a real destination-aware rule while this one
+    // does not need one yet -- there is nowhere to route it until an SVG
+    // importer lands.
+    case FileKind::Vector: return DropAction::Refuse;
     case FileKind::Unknown: return DropAction::Refuse;
   }
   return DropAction::Refuse;
@@ -463,11 +491,21 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
         break;
       }
       case DropAction::Refuse:
-        // The bytes matched nothing. Said here rather than by letting the file
-        // fall through to a decoder that will also decline, so the sentence can
-        // name the gesture ("dropped") and the file together.
-        note("'" + fileNameOf(path) +
-             "' was not opened: its contents match no format this build reads.");
+        // Two different reasons share this case, and the message says which:
+        // `Vector` (SVG) bytes WERE recognised -- there is just no importer
+        // for them yet, the same placeholder openAnyFileAsDocument() states
+        // for File > Open -- while everything else here matched no format
+        // this build knows at all. Said here rather than by letting the file
+        // fall through to a decoder that will also decline, so the sentence
+        // can name the gesture ("dropped") and the file together.
+        if (kind == FileKind::Vector) {
+          note("'" + fileNameOf(path) +
+               "' was not opened: it is an SVG (vector) file, and this build does not "
+               "import vector artwork yet.");
+        } else {
+          note("'" + fileNameOf(path) +
+               "' was not opened: its contents match no format this build reads.");
+        }
         break;
     }
   }
