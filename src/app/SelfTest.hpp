@@ -1102,8 +1102,8 @@ bool runEllipseMarqueePreviewTest();
 // The panel is mostly string assembly and table lookup, so this is where the
 // design's own example rows are asserted character for character: the kind rail
 // (seven distinct colours, none of them the colour of the row it marks), the
-// `NEW` popup (all seven kinds, exactly the three `core/LayerOps` can make
-// wired to their own commands), the `LINKED+n` badge, the `KIND: ALL` chip and
+// `NEW` popup (2a's seven kinds plus the appended Vector, exactly the four
+// `core/LayerOps` can make wired to their own commands), the `LINKED+n` badge, the `KIND: ALL` chip and
 // the header count.
 //
 // **The other half is the omissions**, which is what makes it worth a section

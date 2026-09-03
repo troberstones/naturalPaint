@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <vector>
 
-#include "app/AppState.hpp"  // Tool
 #include "core/SelectionOps.hpp"  // SelectionCombine
 #include "core/VectorShape.hpp"
 #include "ops/Transform.hpp"  // Mat3, Point2, mat3MapPoint
@@ -24,19 +23,16 @@
 //
 // **Not here, on purpose:**
 //
-//   * `PathEditState` -- the interactive session (which drag is live, the
-//     component pivot and its "user placed" flag) lives on `AppState` beside
-//     `gradientDrag`, per docs/vector-editing.md section 6. This header
-//     declares `PathDragKind`, the enum that state is built from, because
-//     the six-way distinction is part of the model this file defines and a
-//     caller needs the type to hold a `PathDragKind` field at all -- but it
+//   * The `PathEditState` MEMBER. The struct is declared at the bottom of
+//     this header, because its transitions are defined here and a caller
+//     needs the type; the member itself lives on `AppState` beside
+//     `gradientDrag`, per docs/vector-editing.md section 6. This file
 //     declares no `AppState` member and touches no file under `ui/`.
-//   * `Tool::Pen`'s `implemented` flag in `ui/AtelierChrome.cpp`, and a term
-//     for `toolEditsPath()` in that file's `toolHasCanvasHandler()`. Both
-//     happen in the commit that wires an actual canvas gesture to this
-//     model, which lands in `ui/MacPaintUI.cpp` and is the integrator's,
-//     serialised -- see `toolEditsPath()`'s own comment below for why wiring
-//     the gate now would turn `--selftest` red.
+//   * Drawing, hit-test-to-cursor mapping, and the options bar. The canvas
+//     gesture block in `ui/MacPaintUI.cpp` is a thin caller of the four
+//     transitions at the bottom of this header and of `hitTestPath()`; it
+//     computes the pick radius from its own zoom and does nothing else this
+//     file could have done for it.
 //
 // ==========================================================================
 // 2. THE GATE
@@ -49,22 +45,27 @@
 // structural") and does not go through anchor-level editing at all, so it is
 // not one of these two.
 //
-// **This is declared and defined, but deliberately NOT yet a term in
-// `toolHasCanvasHandler()`.** `Tool::Pen`'s `kToolMeta` row still reads
-// `implemented = false`, and `app/selftest/Eyedropper.cpp`'s tripwire
-// (section 6 of that file) asserts `toolImplemented(t) == toolHasCanvasHandler(t)`
-// for every `Tool`, with a *second* assertion that `toolNoHandlerException()`
-// holds zero rows. Wiring `toolEditsPath()` into the gate now, with Pen still
-// marked unbuilt, would make those two disagree -- and the tempting repair,
-// an exception-table row, is exactly the row that second assertion exists to
-// keep empty (see that file's own comment: "the one that existed was
-// `Tool::Zoom`, and scrubby zoom landing paid it off... NO recorded
-// exceptions remain"). So the predicate exists, headless and tested here,
-// and stays unreferenced by `ui/` until the commit that flips the flag and
-// wires the gesture in the same breath -- the discipline `app/MoveTool.hpp`
-// section 5 and the eraser/pencil/dodge/burn/clone-stamp/smudge rows before
-// it all followed.
+// **This is a term in `toolHasCanvasHandler()`, and both halves flipped in
+// one commit.** `app/selftest/Eyedropper.cpp`'s tripwire (section 6 of that
+// file) asserts `toolImplemented(t) == toolHasCanvasHandler(t)` for every
+// `Tool`, with a *second* assertion that `toolNoHandlerException()` holds
+// zero rows. So `Tool::Pen`'s `kToolMeta` row going `implemented = true`, a
+// `toolEditsPath()` term in the gate, and a canvas gesture block that
+// actually does something had to land together: flipping either half alone
+// turns the suite red, and the tempting repair is an exception-table row --
+// exactly the row that second assertion exists to keep empty (see that
+// file's own comment: "the one that existed was `Tool::Zoom`, and scrubby
+// zoom landing paid it off... NO recorded exceptions remain"). That is the
+// discipline `app/MoveTool.hpp` section 5 and the eraser/pencil/dodge/burn/
+// clone-stamp/smudge rows before it all followed.
 namespace np {
+
+// This header is included BY `AppState.hpp` (which owns the `PathEditState`
+// member below), so including it back would be a cycle -- the same
+// arrangement `app/CropTool.hpp`, `app/GradientTool.hpp` and
+// `app/MeasureLine.hpp` already sit in. An opaque declaration is all
+// `toolEditsPath()` needs; `PenTool.cpp` includes the real definition.
+enum class Tool;
 
 bool toolEditsPath(Tool t) noexcept;
 
@@ -331,5 +332,121 @@ enum class PathDragKind {
   TangentDrag,  // drag one tangent handle
   PenExtend,    // the Pen tool laying down a new anchor
 };
+
+// ==========================================================================
+// The interactive session
+// ==========================================================================
+//
+// Stored on `AppState` (beside `gradientDrag`), but **mutated only through the
+// four transitions below, which live in app/PenTool.cpp.** `ui/` reads these
+// fields and never assigns to them.
+//
+// That is the single-writer rule docs/vector-editing.md section 6 asks for,
+// made checkable: `grep -rnP 'pathEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` must find nothing.
+// Storage on AppState and mutation in ui/ is exactly how `marqueeDragging`
+// acquired three writers and an unconditional clear in a sibling tool's else
+// arm, which made the gradient tool inert for its entire history.
+//
+// **`shapesAtDragStart` is why a drag is not an accumulation.** Each frame
+// applies one affine to the geometry as it was at pen-down, rather than a
+// small delta to the geometry as it was last frame. Accumulating would make
+// the result depend on frame rate and would drift under rounding -- the same
+// reason app/TransformSession keeps a `pending_` matrix against a base rather
+// than composing per-frame.
+struct PathEditState {
+  PathDragKind drag = PathDragKind::None;
+
+  // The selection, which OUTLIVES any one drag. Not a document edit:
+  // app/DocumentLifecycle.hpp is explicit that a selection change does not go
+  // through `recordEdit()`, and this one lives on AppState for that reason.
+  PathSelection selection;
+
+  // Which document the live gesture belongs to. A drag begun on another tab
+  // means nothing here and is dropped rather than applied to the wrong
+  // picture -- `measureLineAppliesTo()`'s rule, and `CropSession::doc`'s.
+  uint64_t documentId = 0;
+
+  // Pen-down and current pointer, both in document coordinates.
+  PathPoint dragStart{};
+  PathPoint dragNow{};
+
+  // What is being dragged, for AnchorDrag / TangentDrag.
+  ComponentRef dragComponent;
+
+  // Geometry as it was at pen-down. See this struct's own comment.
+  std::vector<VectorShape> shapesAtDragStart;
+
+  // Whether this drag has already opened an undo entry. Owned here so the
+  // caller never has to hold a second copy of the same fact; see
+  // `PathEditChange`.
+  bool geometryEditOpened = false;
+
+  // The transient component pivot (docs/vector-editing.md section 1). Follows
+  // the selection's centroid UNLESS the user has placed it -- without that
+  // flag, placing a pivot and then extending the selection by one anchor
+  // throws the placement away silently.
+  PathPoint componentPivot{};
+  bool componentPivotIsUserPlaced = false;
+};
+
+// Abandon any live gesture, keeping the selection. Called when the tool
+// changes, the document changes, or Escape is pressed.
+void pathEditCancel(PathEditState* state) noexcept;
+
+// Pen-down at `at`. Hit-tests, updates the selection per `how`, and starts
+// whichever drag the hit implies. Returns true when a drag began that will
+// CHANGE GEOMETRY -- the caller uses that to decide whether to open an undo
+// entry, and a selection-only click deliberately returns false.
+bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
+                   PathPoint at, float pickRadiusPx, bool gnomonSuppressed,
+                   SelectionCombine how, uint64_t documentId);
+
+// What one `pathEditUpdate()` did, which is exactly what the caller needs to
+// decide between `recordEdit()` and `amendEdit()`.
+//
+// The distinction lives HERE rather than as a bool on the caller because a
+// click that never moves must not open an empty undo entry: `EditBegan` is
+// returned by the first update that actually changes geometry, not by
+// `pathEditBegin()`. A caller holding its own "have I recorded yet" flag is
+// the same class of duplicated state the single-writer rule above exists to
+// prevent.
+enum class PathEditChange {
+  None,           // nothing moved (a held-still pointer, or a marquee frame)
+  EditBegan,      // geometry changed for the first time this drag -> recordEdit()
+  EditContinued,  // geometry changed again -> amendEdit(), so the drag is ONE undo step
+};
+
+// Pointer moved to `at` during a live drag. Rewrites `*shapes` from
+// `shapesAtDragStart`.
+PathEditChange pathEditUpdate(PathEditState* state, std::vector<VectorShape>* shapes,
+                              PathPoint at);
+
+// Pen-up. Commits the marquee's selection if that is the live drag, clears the
+// drag, and releases `shapesAtDragStart`.
+void pathEditEnd(PathEditState* state, const std::vector<VectorShape>& shapes);
+
+// The transient pivot, recomputed from the selection unless the user placed
+// it. Called after any selection change.
+void pathEditRefreshPivot(PathEditState* state, const std::vector<VectorShape>& shapes);
+
+// Switch between Shape and Component mode -- the options bar's mode segment,
+// and the ONLY way `PathSelection::mode` is ever written (the single-writer
+// rule above covers the mode exactly as it covers the drag).
+//
+// **The switch carries the selection across rather than dropping it**, which
+// is both editors' behaviour and the difference between a mode toggle and a
+// deselect: Shape -> Component selects every anchor of the shapes that were
+// selected (Photoshop's black-arrow-to-white-arrow), and Component -> Shape
+// selects the shapes those anchors belong to (Maya's component-to-object).
+// Dropping the selection instead would make "switch mode to adjust one point"
+// -- the reason a user reaches for the segment at all -- cost a re-selection
+// every time.
+//
+// Any live drag is abandoned: a drag begun under the other mode's meaning is
+// not a drag under this one. The transient component pivot's "user placed"
+// flag is released for the same reason `pathEditRefreshPivot()` documents --
+// the selection it was placed against no longer exists.
+void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
+                           const std::vector<VectorShape>& shapes);
 
 }  // namespace np

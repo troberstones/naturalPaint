@@ -62,9 +62,9 @@ dispatched today without a design pass first.
 
 ## 2. The tool palette
 
-`docs/ui.md` §2 specifies 28 palette cells. **21 carry real behaviour and 7 are
+`docs/ui.md` §2 specifies 28 palette cells. **24 carry real behaviour and 4 are
 name/icon/slot only** — honestly greyed out, and pinned there by the
-`--selftest` assertion *"`toolImplemented()` is true for exactly the twenty-one
+`--selftest` assertion *"`toolImplemented()` is true for exactly the twenty-four
 tools with real behaviour"* plus the stronger structural one,
 `toolImplemented(t) == toolHasCanvasHandler(t)` for every `Tool`
 (`ui/AtelierChrome.cpp`). That pair is why this half of the palette cannot
@@ -73,15 +73,15 @@ cannot acquire a handler while still marked unbuilt.
 
 **Seven shipped on 2026-09-02** — Move, Measure, Pencil, Dodge, Burn, Clone
 Stamp and Smudge — built as six parallel tracks off `3b067ac` and merged
-together.
+together. **Crop shipped after them, and Pen and Curve on 2026-09-03** with
+PLAN Phase 13's path model behind them (§3).
 
-The remaining seven are not seven instances of one gap:
+The remaining four are not four instances of one gap:
 
 | Tool | Blocked on | Notes |
 |---|---|---|
-| Crop, Shape | nothing structural | document geometry and raster primitives; the natural next wave |
-| Pen, Curve | **PLAN Phase 13 (Paths)** | no path model exists: no bezier storage, no stroke-or-fill-from-path |
-| Text | **PLAN Phase 14** | no font rasteriser, and `LayerKind::Text` is inert |
+| Shape | nothing structural | and no longer on geometry either: `core/Path`, `core/PathRaster` and `core/VectorShape` are built, so this is a gesture that emits a `VectorShape` into the layer the Pen already edits |
+| Text | **PLAN Phase 14's back half** | the path model, rasteriser and `LayerKind::Vector` a glyph outline would land in all exist; the shaper (`src/text/`) and `LayerKind::Text`'s content do not |
 | Frame, Slice | **no receiving model** | both name a document-level *region* concept that does not exist; the gesture without it draws a rectangle and forgets it |
 
 ### Built tools with specced halves still missing
@@ -144,8 +144,8 @@ create, not by reading the phase text.
 |---|---|
 | 9 — Tile it | no code |
 | 11 — Media layers | `LayerKind::Media` enum value only |
-| 13 — Paths | no code (`ls src/ops/ src/core/` finds no path/bezier file) |
-| 14 — Text | no code |
+| 13 — Paths | **partly built.** `core/Path`, `core/PathFlatten`, `core/PathRaster`, `core/PathStroke`, `core/VectorShape`, `LayerKind::Vector`, `io/PathSerial`, `io/SvgImport` and `app/PenTool` all exist, and Pen/Curve have a canvas gesture and an on-canvas overlay. **Not built, by name:** the options bar's Shape/Component mode segment (so Component mode is unreachable from the UI), the gnomon's drawn scale/rotate handles, the PATHS dock tab, and the three PRD J consumers — path-to-selection, fill path, stroke path with the brush. |
+| 14 — Text | **partly built, by inheritance.** Phase 13 supplied everything a glyph outline would be rasterised through; `src/text/`, a shaper and `LayerKind::Text`'s content do not exist, and `Tool::Text` is still marked unbuilt. |
 | 15 — PSD export | no code — `src/io/` holds `PsdImport.{cpp,hpp}` and nothing else PSD-shaped. **Import is done and oracle-verified** against psd-tools 1.18.0 across three real Photoshop files; export is untouched. |
 | 19 — Automate it | no code |
 

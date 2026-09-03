@@ -193,16 +193,17 @@ where you are standing**, which is worth knowing before writing the rule down:
   `src/app/ToolSwitch.cpp`, and that was done because four sites each
   overwrote the field without reading it, so nothing could answer "what was the
   previous tool".
-- On **this branch** that commit is not yet an ancestor — the vector work forked
-  at `af9368a`, twelve commits back — so here the field still has five writers
-  across three files (`main.cpp` ×2, `ui/MacPaintUI.cpp` ×3; `BrushSheet.cpp`
-  writes a *local* `BrushState`, not `st.brush`, and is not one of them).
+- On **this branch** that was not true when this section was written — the
+  vector work forked at `af9368a`, twelve commits before `21f3374` — so the
+  field then had five writers across three files. **The merge has since
+  happened**, and `grep -rn 'brush\.tool = ' src/` now finds exactly the three
+  writes in `src/app/ToolSwitch.cpp`.
 
-So the precedent is real but arrives with the merge, and the merge is the exact
-moment the rule is most likely to be broken: a track branched before `21f3374`
-writes the field directly and merges clean. The enforcement is therefore a grep
-re-run after every merge touching `main.cpp` or `ui/MacPaintUI.cpp`, plus a
-selftest that fails if a second writer of `PathEditState` appears.
+The merge was the exact moment the rule was most likely to be broken: a track
+branched before `21f3374` writes the field directly and merges clean. The
+enforcement is therefore a grep re-run after every merge touching `main.cpp` or
+`ui/MacPaintUI.cpp`, plus a selftest that fails if a second writer of
+`PathEditState` appears.
 
 Regression-test it the way `app/selftest/GradientTool.cpp:207-245` does — that
 test exists because the defect it guards against shipped.
@@ -228,3 +229,41 @@ One case the free answer does **not** cover: an anchor that is selected while it
 neighbour is not. The neighbour's handle points *at* the selected anchor and does
 not move — correct, and what Photoshop and Maya both do, but it is a case a test
 should pin rather than leave to look like a bug.
+
+---
+
+## 8. What of this design is on screen, as of 2026-09-03
+
+This file was written before the code, so the honest closing section is which of
+its decisions a user can actually reach. **Built and photographed** (three
+golden views — `vector_shape`, `vector_components`, `vector_marquee`):
+
+- §1's pivot frame, drawn as a crosshair at a selected shape's pivot.
+- §3's hit-test priority, driving the canvas gesture in `ui/MacPaintUI.cpp`.
+- §4's modifier grammar, via `selectionCombineFromModifiers()`.
+- §6's six drag kinds and the single-writer rule — `PathEditState` is mutated
+  only in `app/PenTool.cpp`, and `grep -rnP 'pathEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` finds
+  nothing.
+- The overlay: outlines, anchors as squares, tangent handles as discs **for
+  selected anchors only**, and the marquee — deliberately not marching ants.
+
+**Not on screen yet, by name:**
+
+- **The mode segment.** `pathEditSetSelectMode()` is built and tested, and has
+  no caller under `ui/`. So §3's Component mode — half of this document — is
+  unreachable from the UI, and the shipped Pen only ever selects whole shapes.
+  It is one options-bar row (`docs/ui.md` §4b names it).
+- **The gnomon's own handles.** `gnomonHandlePositions()` is *hit-tested*
+  (a press inside the ring starts a `Manipulator` drag) but never *drawn*, so
+  §2's world-axis-aligned gnomon is currently an invisible target. Scale and
+  rotate reach nothing: `pathEditUpdate()` applies a translate for every drag
+  kind that is not a `TangentDrag`.
+- **The PATHS panel**, and the three PRD J consumers.
+
+§6's own warning came true in a small way and is worth recording: the canvas
+block originally ended a drag on `IsMouseReleased` alone, which is what every
+sibling gesture does. That is fine for a preview and wrong for a gesture that
+*writes the document* — a release ImGui never saw (one that happened outside the
+window) leaves the drag live, and every later frame then rewrites geometry and
+amends the undo entry from a pointer with no button held. It ends on
+`!IsMouseDown` instead.
