@@ -6,6 +6,7 @@
 
 #include "color/Space.hpp"
 #include "core/Path.hpp"
+#include "core/TextContent.hpp"
 #include "core/VectorShape.hpp"
 #include "io/SvgImport.hpp"
 
@@ -61,6 +62,46 @@ int runSvgReport(const char* path) {
     std::printf("%-4zu %-24.24s %-8zu %-6zu %-5s %-40s %s\n", i,
                 s.name.empty() ? "(unnamed)" : s.name.c_str(), s.path.subpaths.size(), anchors,
                 s.clip.has_value() ? "Y" : "n", fillBuf, strokeBuf);
+  }
+
+  // The `<text>` elements that stayed editable (io/SvgImport.hpp section 7).
+  // `below` is the field section 7a exists for: it is what says where in the
+  // painting order this block sits, and reading it against the shape table
+  // above is how "the label should be UNDER that rectangle" gets checked
+  // against the same file open in the exporting application.
+  std::printf("\n-- text blocks (%zu) --\n", r.texts.size());
+  if (r.texts.empty()) {
+    std::printf("  (none)\n");
+  } else {
+    std::printf("  %-4s %-16s %-6s %-22s %-7s %-20s %s\n", "#", "name", "below", "font", "size",
+                "origin (top-left)", "text");
+    for (size_t i = 0; i < r.texts.size(); ++i) {
+      const SvgTextBlock& t = r.texts[i];
+      char origin[48];
+      std::snprintf(origin, sizeof(origin), "(%.2f, %.2f)",
+                    static_cast<double>(t.content.origin.x),
+                    static_cast<double>(t.content.origin.y));
+      std::string flags;
+      if (t.content.style.bold) flags += " bold";
+      if (t.content.style.italic) flags += " italic";
+      std::printf("  %-4zu %-16.16s %-6zu %-22.22s %-7.2f %-20s \"%s\"%s\n", i,
+                  t.name.empty() ? "(unnamed)" : t.name.c_str(), t.shapesBefore,
+                  t.content.style.fontFamily.c_str(),
+                  static_cast<double>(t.content.style.sizePx), origin, t.content.utf8.c_str(),
+                  flags.c_str());
+      // The PAINTED extent, not the layout box -- core/TextContent.hpp is
+      // explicit about the difference, and this is the number to compare
+      // against a selection rectangle drawn round the same label in the
+      // exporting application.
+      const PathBounds tb = textContentBounds(t.content);
+      if (tb.valid) {
+        std::printf("       painted extent (%.3f, %.3f) - (%.3f, %.3f)\n",
+                    static_cast<double>(tb.minX), static_cast<double>(tb.minY),
+                    static_cast<double>(tb.maxX), static_cast<double>(tb.maxY));
+      } else {
+        std::printf("       painted extent: -- EMPTY (nothing shaped) --\n");
+      }
+    }
   }
 
   const PathBounds bounds = vectorShapesBounds(r.shapes);

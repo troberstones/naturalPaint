@@ -5383,13 +5383,24 @@ bool runSvgStyleTest();
 // `transparent`, `currentColor`); `fill="none"` genuinely distinct from a
 // real zero-alpha paint; `clip-path` attaching a clip, including the
 // multi-shape union case; every refused construct named (filters, patterns,
-// masks, `<switch>`, `<foreignObject>`, `<image>`, `<text>`, scripts,
+// masks, `<switch>`, `<foreignObject>`, `<image>`, scripts,
 // animation elements, an external `<use>` reference, a `url(#id)` paint
 // pointing at a gradient); every security cap firing, including the
 // self-referencing `<use>` bomb returning promptly rather than hanging; and
-// two on-disk fixtures written to carry real Inkscape/Illustrator exporter
+// four on-disk fixtures written to carry real Inkscape/Illustrator exporter
 // boilerplate (tests/svg/*.svg), each still producing the geometry and
-// paint their visible shapes call for. Headless, GPU-free; writes no files.
+// paint their visible shapes call for.
+//
+// **`<text>` (io/SvgImport.hpp section 7) is section 13**, and three of its
+// assertions cannot be made anywhere else in this build: that SVG's BASELINE
+// `y` becomes `TextContent`'s TOP-LEFT `origin` by the shaper's own ascent
+// rather than a guessed fraction of `font-size`; that `text-anchor` becomes
+// an ORIGIN SHIFT rather than a `TextAlign` that provably does nothing at
+// `frame.width == 0`; and that the flat shape list plus each block's
+// `shapesBefore` still re-interleave into the document's PAINTING order, so
+// that a shape drawn over a label does not come back under it. Each of those
+// compares against `shapeText()` asked independently, not against the
+// importer's own arithmetic. Headless, GPU-free; writes no files.
 // See app/selftest/SvgImport.cpp.
 bool runSvgImportTest();
 

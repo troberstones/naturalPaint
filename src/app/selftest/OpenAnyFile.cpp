@@ -5,6 +5,7 @@
 
 #include "core/CanvasLimits.hpp"
 #include "io/FileKind.hpp"
+#include "text/Shaper.hpp"
 
 namespace np {
 
@@ -545,6 +546,59 @@ bool runOpenAnyFileTest() {
     }
     check(contains(svg.status, "picture.svg") && contains(svg.status, "SVG"),
           "...and the status names both the file and SVG");
+
+    // **An SVG carrying `<text>` opens as an INTERLEAVED stack, and this is
+    // the assertion io/SvgImport.hpp section 7a exists to make checkable.**
+    //
+    // `SvgImportResult` hands back one flat shape vector in document order
+    // plus a separate list of text blocks, each recording how many shapes are
+    // painted BELOW it. Building "one Vector layer, then the text on top"
+    // would compile, open, and quietly lift the label above the rectangle
+    // drawn to knock it out -- a wrong picture with no error anywhere. So the
+    // three elements below must come back as three layers in that order, and
+    // the shape ids must restart per layer (they are unique WITHIN a layer,
+    // and one import now produces several).
+    {
+      const std::string labelled = writeText(
+          "labelled.svg",
+          "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\">"
+          "<rect id=\"under\" x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"#ff0000\"/>"
+          "<text id=\"label\" x=\"20\" y=\"60\" font-family=\"Helvetica\" font-size=\"24\">"
+          "Studio</text>"
+          "<rect id=\"over\" x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"#0000ff\"/>"
+          "</svg>\n");
+      const OpenAnyResult t = openAnyFileAsDocument(labelled);
+      check(t.ok, "an SVG with <text> opens");
+      const std::vector<Layer>& ls = t.document.document.layers;
+      if (!shaperAvailable()) {
+        // text/StubShaper.cpp build: the importer refuses the <text> by name
+        // and the two rects still merge into one Vector layer.
+        check(ls.size() == 1 && ls[0].kind == LayerKind::Vector && ls[0].shapes.size() == 2,
+              "...(no shaper) the two rects still open as one Vector layer");
+      } else {
+        check(ls.size() == 3, "...as THREE layers, not one Vector layer with the text on top");
+        if (ls.size() == 3) {
+          check(ls[0].kind == LayerKind::Vector && ls[0].shapes.size() == 1 &&
+                    ls[0].shapes[0].name == "under",
+                "...layer 0 (the bottom) is the rect painted BELOW the label");
+          check(ls[1].kind == LayerKind::Text && ls[1].text.utf8 == "Studio" &&
+                    ls[1].name == "label",
+                "...layer 1 is a real Text layer carrying the string and the element's id");
+          check(ls[2].kind == LayerKind::Vector && ls[2].shapes.size() == 1 &&
+                    ls[2].shapes[0].name == "over",
+                "...layer 2 (the top) is the rect painted ABOVE it -- painting order preserved");
+          check(ls[0].shapes[0].id == 1 && ls[2].shapes[0].id == 1 && ls[0].nextShapeId == 2 &&
+                    ls[2].nextShapeId == 2,
+                "...and each Vector layer's shape ids restart at 1, since ids are unique within "
+                "a layer, not within an import");
+          check(ls[1].shapes.empty(),
+                "...with the Text layer holding no shapes: its glyphs are DERIVED, not stored "
+                "(core/TextContent.hpp section 1)");
+        }
+        check(contains(t.status, "1 text layer"),
+              "...and the status says a text layer was made, not just a shape count");
+      }
+    }
 
     // **An SVG bigger than the adapter can draw is refused, not opened.**
     //
