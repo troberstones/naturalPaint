@@ -81,7 +81,7 @@ for TRACK in $([ "$VERIFY_ONLY" -eq 1 ] || printf '%s ' "$@"); do
   # this tree legitimately uses the word SABOTAGE in selftest comments
   # recording sabotages that were run and reverted. Only lines the track ADDS
   # are the track's doing.
-  if git -C "$WT" diff "$RANGE" -- src third_party tools | grep -n '^+.*SABOTAGE'; then
+  if git -C "$WT" diff "$RANGE" -- src third_party | grep -n '^+.*SABOTAGE'; then
     fail "track '$TRACK' ADDS lines containing SABOTAGE (shown above)"
   fi
   echo "gather: track '$TRACK' clean and sabotage-free"
@@ -111,7 +111,11 @@ echo
 # were run and reverted (app/selftest/TransformSession.cpp's "SABOTAGE PROOF"
 # sections, and others). A gate that fires every time is a gate you learn to
 # ignore, which is worse than no gate at all.
-if git -C "$HERE" diff "$BASE_HEAD"..HEAD -- src third_party tools \
+#
+# tools/ is excluded for a second, sillier reason found the same way: this
+# script's own source names the marker it greps for, so scanning tools/ made
+# every edit to this file fail its own gate.
+if git -C "$HERE" diff "$BASE_HEAD"..HEAD -- src third_party \
      | grep -n '^+.*SABOTAGE'; then
   fail "this gather ADDS lines containing SABOTAGE (shown above)"
 fi

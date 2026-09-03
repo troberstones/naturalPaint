@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <unordered_map>
 #include <utility>
 
 namespace np {
@@ -11,6 +12,11 @@ namespace {
 // A selector this long is not something a hand-written or exported document
 // produces; capping it bounds both the memory one selector can hold and the
 // cost of matching it (matching recurses once per compound).
+//
+// **64 specifically, because `matchChain()`'s failure memo packs the compound
+// index into a `uint64_t` bitmask.** That is the cap being spent deliberately
+// rather than a round number -- see the memo's own comment for why matching
+// needs one at all.
 constexpr size_t kMaxCompoundsPerSelector = 64;
 
 // A style="" block or a <style> rule's body with more declarations than this
@@ -256,29 +262,65 @@ bool matchesCompound(const SvgCompoundSelector& c, const SvgElementView& e) {
   return true;
 }
 
-// Right-to-left backtracking match: `compounds[idx]` must match `element`;
-// `compounds[idx].combinator` describes how `compounds[idx]` relates to
-// `compounds[idx - 1]`, which must then match some ancestor (kDescendant,
-// tried outward until one works) or exactly the parent (kChild). Recursion
-// depth is bounded by `idx`, itself bounded by `kMaxCompoundsPerSelector`.
+// The failure memo, and why matching cannot do without one.
+//
+// `matchChain()` below is a right-to-left backtracking match, and the naive
+// form of it is **exponential**, not merely slow. Each descendant combinator
+// loops over every ancestor and recurses, so a selector with `k` descendant
+// combinators against a document `d` levels deep costs O(d^k). With the cap
+// above that is 64 nested loops, and `g g g g g g g g rect` against a
+// thousand nested `<g>` elements does not finish. Selector text and document
+// depth both come from a file this build did not write, so that is a hang on
+// hostile input -- the same class of denial the XML parser was chosen to make
+// impossible, reintroduced one layer up.
+//
+// `matchChain(idx, element)` is a pure function of its two arguments, so
+// remembering which pairs have already failed collapses it to O(compounds x
+// depth). The memo maps an element to a bitmask of the `idx` values known to
+// fail against it; `kMaxCompoundsPerSelector` is 64 precisely so that mask is
+// one `uint64_t` and the lookup is a hash plus a bit test.
+//
+// Only failures are recorded. A success returns immediately and never asks
+// again, so memoising it would cost a write for no read.
+using MatchMemo = std::unordered_map<const SvgElementView*, uint64_t>;
+
+// `compounds[idx]` must match `element`; `compounds[idx].combinator` describes
+// how `compounds[idx]` relates to `compounds[idx - 1]`, which must then match
+// some ancestor (kDescendant, tried outward until one works) or exactly the
+// parent (kChild). Recursion depth is bounded by `idx`, itself bounded by
+// `kMaxCompoundsPerSelector`.
 bool matchChain(const std::vector<SvgCompoundSelector>& compounds, size_t idx,
-                const SvgElementView& element) {
-  if (!matchesCompound(compounds[idx], element)) return false;
+                const SvgElementView& element, MatchMemo& failed) {
+  const uint64_t bit = uint64_t{1} << idx;
+  const auto it = failed.find(&element);
+  if (it != failed.end() && (it->second & bit) != 0) return false;
+
+  auto rememberFailure = [&]() -> bool {
+    failed[&element] |= bit;
+    return false;
+  };
+
+  if (!matchesCompound(compounds[idx], element)) return rememberFailure();
   if (idx == 0) return true;
   if (compounds[idx].combinator == SvgCombinator::kChild) {
-    if (!element.parent) return false;
-    return matchChain(compounds, idx - 1, *element.parent);
+    if (!element.parent) return rememberFailure();
+    if (matchChain(compounds, idx - 1, *element.parent, failed)) return true;
+    return rememberFailure();
   }
   for (const SvgElementView* p = element.parent; p != nullptr; p = p->parent) {
-    if (matchChain(compounds, idx - 1, *p)) return true;
+    if (matchChain(compounds, idx - 1, *p, failed)) return true;
   }
-  return false;
+  return rememberFailure();
 }
 
 bool svgSelectorMatchesElement(const SvgSelector& selector,
                                const SvgElementView& element) {
   if (selector.compounds.empty()) return false;
-  return matchChain(selector.compounds, selector.compounds.size() - 1, element);
+  // One memo per selector-against-element query. It cannot outlive the call:
+  // the keys are borrowed `SvgElementView*`, and the caller owns that tree.
+  MatchMemo failed;
+  return matchChain(selector.compounds, selector.compounds.size() - 1, element,
+                    failed);
 }
 
 }  // namespace

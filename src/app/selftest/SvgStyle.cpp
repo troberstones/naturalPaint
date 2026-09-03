@@ -450,6 +450,71 @@ bool runSvgStyleTest() {
     check(sheet.rules.size() == 10000,
          "malformed: all 10 000 rules were kept (under the cap)");
   }
+  {
+    // ---------------------------------------------------------------------
+    // A deep tree against a many-combinator selector: bounded, not
+    // exponential
+    // ---------------------------------------------------------------------
+    //
+    // `matchChain()`'s backtracking blows up without its failure memo, and
+    // both the selector text and the document depth come from a file this
+    // build did not write -- so this is the assertion that pins the memo.
+    //
+    // **Getting the shape right took a sabotage.** The first version of this
+    // case ended the selector in `circle` against a `rect` leaf, and passed
+    // with the memo deliberately disabled: `matchChain()` tests the RIGHTMOST
+    // compound first, so it rejected on the leaf and never recursed once. The
+    // search only explores when the right-hand end MATCHES and the failure is
+    // at the far left.
+    //
+    // The cost is also not `depth ^ combinators`. Ancestors strictly decrease,
+    // so a k-combinator selector picks an ordered subset of the chain:
+    // C(depth, k), which peaks at k = depth/2. Hence 30 levels and 15 `g`
+    // combinators -- C(30, 15) = 155 117 520 explorations unmemoised, a
+    // second or two, against 30 x 17 = 510 memoised states. Deliberately sized
+    // to be SLOW rather than hung when the memo is removed, so the sabotage
+    // stays practical to re-run.
+    constexpr size_t kDepth = 30;
+    constexpr int kCombinators = 15;
+    std::vector<SvgElementView> chain(kDepth);
+    for (size_t i = 0; i < kDepth; ++i) {
+      chain[i].tag = "g";
+      chain[i].parent = (i == 0) ? nullptr : &chain[i - 1];
+    }
+    // The leaf matches the selector's rightmost compound, so the walk starts.
+    SvgElementView leaf;
+    leaf.tag = "rect";
+    leaf.parent = &chain[kDepth - 1];
+
+    // "nomatch g g ... g rect": every `g` matches somewhere, and `nomatch`
+    // matches nothing, so every ordered choice of ancestors is tried and all
+    // of them fail.
+    std::string css = "nomatch";
+    for (int i = 0; i < kCombinators; ++i) css += " g";
+    css += " rect { fill: red; }";
+
+    SvgStyleSheet sheet;
+    std::vector<std::string> refusals;
+    check(parseSvgStyleSheet(css, &sheet, &refusals),
+         "deep tree: the 15-combinator selector parses");
+    check(sheet.rules.size() == 1,
+         "deep tree: and produced exactly one rule to match against");
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::map<std::string, std::string> computed =
+        svgComputeStyle(leaf, {}, {}, sheet, {});
+    const double ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0)
+            .count();
+
+    check(computed.find("fill") == computed.end(),
+         "deep tree: the non-matching selector does not apply its declaration");
+    std::printf("    [measured] 30-deep chain x 15 descendant combinators: %.3f ms\n",
+                ms);
+    check(ms < 100.0,
+         "deep tree: matching is bounded, not exponential (memo is present)");
+  }
 
   return ok;
 }
