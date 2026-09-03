@@ -4976,6 +4976,34 @@ bool runPathRasterTest();
 // See app/selftest/SvgPath.cpp.
 bool runSvgPathTest();
 
+// io/SvgStyle: the CSS cascade for SVG presentation -- which declaration
+// wins among a presentation attribute, a matching `<style>` sheet rule and a
+// `style=""` attribute, in the order SVG 1.1 section 6.4 actually specifies.
+// Headless, GPU-free, writes no files, and depends on no XML parser --
+// selectors match a plain `SvgElementView` the caller fills in, not a live
+// DOM node.
+//
+// The load-bearing assertion is the counter-intuitive step in that order:
+// a matching sheet rule outranks a presentation attribute even at the
+// sheet rule's lowest possible specificity, because presentation attributes
+// are specificity-zero author rules that precede the sheet, not attributes
+// compared against it. Also proves: specificity ordering across id / class /
+// type and the source-order tiebreak at equal specificity; `!important`
+// beating a more specific ordinary rule; `style=""` beating a matching sheet
+// rule; an inheriting property reaching a child while a non-inheriting one
+// does not; the literal `inherit` keyword forcing the parent's value onto a
+// property that does not normally inherit; every supported selector form
+// (type, class, id, universal, compound, comma lists, descendant and child
+// combinators, the last two distinguished over a two-level parent chain);
+// every refused construct (attribute selectors, pseudo-classes/elements,
+// sibling combinators, at-rules) named in `*refusals` with the rest of the
+// sheet still parsing; CSS comments stripped in every position, including
+// between a selector and its `{`; and that malformed input -- no colon, an
+// unterminated comment or string, an unmatched `{`, an empty selector, a
+// dangling combinator, braces nested inside a declaration block, and a
+// 10 000-rule sheet -- never crashes or hangs. See app/selftest/SvgStyle.cpp.
+bool runSvgStyleTest();
+
 // `LayerKind::Vector` (PLAN.md phase 13): the layer that holds Bezier geometry
 // instead of pixels, its raster cache, and the materialised view through which
 // it reaches core/Composite without that file gaining a Vector branch.

@@ -195,6 +195,7 @@ add_executable(naturalPaint
   app/selftest/MoveTool.cpp
   app/selftest/PathRaster.cpp
   app/selftest/SvgPath.cpp
+  app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
@@ -284,9 +285,10 @@ add_executable(naturalPaint
   io/OpSerial.cpp
   io/PackBits.cpp
   io/PathSerial.cpp
-  io/SvgPath.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
+  io/SvgPath.cpp
+  io/SvgStyle.cpp
   io/TileResidency.cpp
   ops/AutoLevels.cpp
   ops/Blur.cpp
