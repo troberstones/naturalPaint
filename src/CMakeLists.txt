@@ -412,10 +412,53 @@ target_include_directories(naturalPaint SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party
 )
 
+# ---- pugixml (vendored, third_party/pugixml) --------------------------------
+#
+# The XML parser for io/SvgImport. Vendored rather than fetched, at v1.14, with
+# the three upstream files byte-identical to the tag (third_party/pugixml/
+# VERSION.md records the hashes, so "is this really upstream?" is a one-command
+# question rather than a matter of trust).
+#
+# **Why this parser and not a smaller hand-rolled one.** An SVG is a file this
+# build did not write, and the two classic XML attacks are both *parser
+# features* being abused: XXE needs external entity resolution, and the
+# billion-laughs expansion needs a DTD-declared entity table. pugixml has
+# neither -- `strconv_escape()` expands exactly `&#...;`, `&amp;`, `&apos;`,
+# `&gt;`, `&lt;` and `&quot;` and nothing else, and the string `SYSTEM` does not
+# appear in its source at all. So both attacks are impossible by construction
+# rather than by hardening we would have to keep correct ourselves. That is the
+# decisive argument; being MIT and three files is only why it is cheap.
+#
+# It is its own target, not source files added to `naturalPaint`, so that the
+# `-Werror=unused-*` guard below judges only code this project owns -- the same
+# reason third_party headers are included SYSTEM. The two hardening flags are
+# repeated here deliberately: this target is the one that touches the untrusted
+# bytes first, so it is the last place that should miss them.
+#
+# XPath is compiled out. Nothing here queries by XPath -- the importer walks the
+# tree directly -- and it is a large fraction of pugixml.cpp.
+add_library(pugixml STATIC
+  ${CMAKE_SOURCE_DIR}/third_party/pugixml/pugixml.cpp
+)
+target_include_directories(pugixml SYSTEM PUBLIC
+  ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(pugixml PUBLIC PUGIXML_NO_XPATH)
+target_compile_options(pugixml PRIVATE
+  -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST
+  -fstack-protector-strong
+)
+set_target_properties(pugixml PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  POSITION_INDEPENDENT_CODE ON
+)
+
 target_link_libraries(naturalPaint PRIVATE
   SDL3::SDL3-static
   wgpu_native
   imgui
+  pugixml
 )
 
 # Shaders, the pigment LUT, the keymap and the Lucide icon font are read from
