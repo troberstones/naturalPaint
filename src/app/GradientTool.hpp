@@ -61,6 +61,16 @@ namespace np {
 // toggle, a dither flag) should widen a struct that already exists rather
 // than scatter a second loose field beside the first.
 struct GradientToolState {
+  // Which function from a document position to the ramp parameter -- the
+  // shape of the gradient. `ops/Gradient` has implemented all three since it
+  // was written; until 2026-09-02 the tool hard-coded `Linear` and there was
+  // no way to reach the other two, which is the plain kind of gap this
+  // field closes: engine capability with no control.
+  //
+  // Linear is the default because it is the one a drag most obviously means,
+  // and because it is what every gradient tool opens on.
+  GradientKind kind = GradientKind::Linear;
+
   // What happens OUTSIDE the drag -- behind the start handle and past the end
   // one. `Pad` (the ramp's end colours, held) is `ops/Gradient`'s own
   // documented default and stays this build's, because it is the only one of
@@ -128,6 +138,44 @@ struct GradientSpreadRow {
 };
 inline constexpr size_t kGradientSpreadCount = 3;
 extern const GradientSpreadRow kGradientSpreads[kGradientSpreadCount];
+
+// The kinds get the same treatment for the same reason. Here the two
+// vocabularies happen to agree -- Linear, Radial and Angular are what the
+// enum calls them and what a painter would call them -- so the table exists
+// for the OTHER half of § 4's argument: it is the one list the combo walks,
+// so a kind added to `ops/Gradient` and not to this table is caught by
+// `--selftest` rather than by a picker that silently offers three of four.
+struct GradientKindRow {
+  GradientKind kind;
+  const char* label;
+  const char* tip;
+};
+inline constexpr size_t kGradientKindCount = 3;
+extern const GradientKindRow kGradientKinds[kGradientKindCount];
+
+const char* gradientKindLabel(GradientKind kind);
+
+// **Whether SPREAD means anything for this kind.** False for `Angular` only:
+// that kind wraps its parameter into [0, 1) by construction, so there is
+// nothing outside the range for a spread mode to pad, tile or mirror.
+//
+// Precisely: on [0, 1) all three modes are the identity -- `Pad` clamps
+// nothing, `Repeat`'s `t - floor(t)` is `t`, and `Reflect`'s triangle wave
+// has not turned yet. `gradientParameterAt()` also returns before reaching
+// the spread switch, but that early return is not what makes this true; it
+// pins the one boundary where the modes would disagree (a `t` that rounds to
+// exactly 1.0, where `Repeat` answers 0 and the other two answer 1).
+// Recorded because a sabotage removing the early return changed no rendered
+// texel, and it would be easy to read that as the guard being pointless.
+//
+// This exists as a function rather than as an `if (kind == Angular)` in the
+// options bar because that would be the chrome RESTATING a fact about the op
+// -- and a restatement is a second copy that can fall out of step with the
+// first. `--selftest` asserts the two agree by rendering: for `Angular`, all
+// three spreads must produce identical pixels. The options bar draws the
+// SPREAD combo disabled, with the reason, on the kinds this answers false
+// for; `docs/ui.md`'s rule is that no dead control looks live.
+bool gradientKindUsesSpread(GradientKind kind);
 
 // The label for a spread, by lookup in the table above rather than by a
 // second switch. Returns "Clamp" for anything unrecognised -- unreachable

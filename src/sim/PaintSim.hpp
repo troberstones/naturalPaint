@@ -160,6 +160,54 @@ class PaintSim {
   bool inkFieldsAllocated() const { return inkAllocated_; }
   bool oilFieldsAllocated() const { return oilAllocated_; }
 
+  // --- what this solver actually costs on the GPU, in bytes ---------------
+  //
+  // The sum of every field texture this object currently owns, asked of the
+  // textures themselves (`wgpuTextureGetFormat/Width/Height`) rather than
+  // recomputed from a second copy of the field list. That distinction is the
+  // whole point of the function: docs/testing-issues.md T7 records an entry
+  // that was wrong precisely because it *counted textures in a header* and
+  // presented the arithmetic as a measurement, and the per-texel figure in
+  // `app/ZoomAndSize.hpp` was 21 B/texel low for the same reason -- it
+  // counted the seven ping-pongs and forgot the five singles.
+  //
+  // It walks exactly the containers `releaseFields()` walks, and that is
+  // deliberate: a new field that is not added to `releaseFields()` leaks, so
+  // that list already has a forcing function keeping it complete, and hanging
+  // this off the same list means a new field cannot be invisible here either.
+  //
+  // Buffers are NOT counted -- `uniform_`, the two occupancy buffers and the
+  // pigment readback are kilobytes against hundreds of megabytes of texture.
+  // Measured 2026-09-02 via `MTLDevice.currentAllocatedSize`: a 1024x1024
+  // construction moves the device's total allocation by 198.13 MiB against
+  // the 197.00 MiB this function reports, and the 1.13 MiB difference is
+  // those buffers, the samplers and the compiled pipeline objects.
+  uint64_t fieldTextureBytes() const;
+
+  // --- the same number, before the object exists ---------------------------
+  //
+  // `fieldTextureBytes()` above can only answer for a solver that has already
+  // been built, and the question that matters -- "can this document's first
+  // brush-down be afforded?" -- has to be answered before it is. These are
+  // that answer, and `app/selftest/SolverFootprint.cpp` asserts a live
+  // solver's own report against them so the two cannot drift apart.
+  //
+  // **Measured, not derived.** 2026-09-02, `MTLDevice.currentAllocatedSize`
+  // across `allocFields()` at 1024x1024: +198.13 MiB, of which 197.00 MiB is
+  // texture; across `allocInkFields()`: +96.00 MiB, exactly.
+  //
+  //   base  2 x (water 8 + pigC 16 + pigR 16 + depC 16 + depR 16 + sat 8
+  //              + aux 8)                                        = 176
+  //         + paper 8 + selection 1 + canvas 4 + grayscale 4 + graded 4 = 21
+  //                                                              -> 197 B/texel
+  //   ink   2 x 3 x 16 (lbmA, lbmB, lbmC, all RGBA32Float)        ->  96 B/texel
+  //
+  // Oil's brush grid is deliberately absent: it is `kBrushGrid` x
+  // `kBrushGrid` (64x64 = 1.5 MiB total), not canvas-sized, so it does not
+  // belong in a per-texel figure and rounds to nothing beside these.
+  static constexpr uint64_t kFieldBytesPerTexel = 197;
+  static constexpr uint64_t kInkFieldBytesPerTexel = 96;
+
   // Advance the solver and resolve to the canvas texture.
   //
   // `selectionMask`: phase-2 seam reservation (PLAN.md Phase 2 step 7, PRD

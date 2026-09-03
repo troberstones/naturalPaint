@@ -616,7 +616,7 @@ filing them somewhere unrelated to painting.
 
 Section 2 gives the options bar the job of showing "the active tool and its options".
 Most tools take the default — the brush's SIZE / HARD / LOAD / WET — because they all
-put down a tip. Three take an early return instead and draw their own row, and the test
+put down a tip. Six take an early return instead and draw their own row, and the test
 for whether a tool belongs here is not "does it have settings" but **would the four brush
 sliders be live controls over something this tool provably never reads**:
 
@@ -624,7 +624,10 @@ sliders be live controls over something this tool provably never reads**:
 | --- | --- | --- |
 | Eyedropper | SAMPLE (the `kProbeSampleSizes` ladder), SOURCE (Current Layer / Current & Below / All Layers), and a sentence saying what the last pick did | It samples; it has no tip. |
 | Measure | W, H, L, A — the ruler's readout in monospace | No tip at all, so SIZE would control nothing. |
-| Gradient | RAMP (the live ramp drawn over a transparency checkerboard) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
+| Gradient | RAMP (the live ramp drawn over a transparency checkerboard), KIND (Linear / Radial / Angular) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
+| Magic Wand | TOLERANCE (0..255), REACH (Contiguous / All Similar), ANTI-ALIAS | It selects; nothing it does deposits a texel. |
+| Paint Bucket | The same three, over its **own** parameter block | It fills a region found by a predicate, not a shape walked by a tip. |
+| Crop | MODE (Rectangle / Perspective), SIZE (the extent that will result), CROP and CANCEL, and the refusal sentence when there is one | It has no tip, no stroke and no deposit; nothing in `app/CropTool` or in the two engines behind it reads a `BrushTip`. |
 
 The gradient's RAMP cell is the only place in this build whose content is a colour ramp
 rather than a number or a glyph, and it is drawn from the same `gradientToolStops()` the
@@ -634,11 +637,145 @@ checkerboard for the layer panel's alpha-lock chip's reason: the default ramp fa
 transparent, and over a flat band fill a fade-to-transparent and a fade-to-band-colour are
 the same picture.
 
-Both halves of the gradient are under golden coverage — `gradient` for the swatch,
-`gradient_drag` for a held drag showing the live preview and the rubber-band line. The
-second view exists because the defect that made this tool useless for its whole history
-(T3) was invisible to `--selftest` by construction: it lived in a canvas block, in a
-mutable flag two unrelated gestures shared.
+**SPREAD goes dead on Angular**, greyed with the reason in a tooltip rather than hidden.
+A sweep wraps into [0, 1) and every spread mode is the identity on that range, so a live
+control would sit over something that provably changes no texel — §4a's "no dead button
+looks live", applied to a control instead of to a palette cell. Disabled rather than
+removed, because a control that vanishes makes the band reflow and leaves the user hunting
+for a setting they used a moment ago; the choice is remembered and applies again on the
+other two kinds.
+
+**The wand and the bucket draw one row and read two blocks.** They share
+`floodFillSelection()` and they share the drawing code, but each holds its own
+`FloodFillParams`, because the band is per-tool by construction: every other row here
+belongs to the tool named at its left end, and one shared block under two tool names would
+mean nudging TOLERANCE with the wand selected silently changed the bucket's next click.
+That is a control moving something the user cannot see, which is the defect class this
+document keeps naming. The cost is the "wand to see the region, bucket to fill it"
+workflow, where two tolerances give two regions; both blocks start at the same defaults,
+so the two tools disagree only after the user has deliberately made them.
+
+TOLERANCE is drawn in Photoshop's 0..255 and stored in the engine's 0..1 — a conversion,
+not a second field, so there is nothing to fall out of step. REACH's engine word is
+`Global`; the band says **All Similar**, which is PRD D25's own phrase and the one a
+painter reads without knowing that "global" is about traversal rather than about colour.
+
+**Option no longer forces All Similar.** It used to be the only way to reach half of D25,
+and with REACH visible it would be a second source of truth that made the band wrong
+whenever the key was down. On the wand it was also double-booked — Option is Subtract for
+every selection tool — so "subtract a contiguous region" was a gesture this build could not
+express at all. Un-overloading it added a capability rather than removing one.
+
+**The rubber band is not one shape for three kinds.** What the two handles mean differs —
+start-and-end, centre-and-rim, centre-and-zero-angle — so a Radial drag draws its rim
+circle and an Angular drag draws a clockwise arc with an arrowhead. A bare line says "from
+here to there", which is true only of Linear, and one preview standing in for gestures
+that differ is precisely the mistake that had a gradient drag drawing a stale lasso
+outline.
+
+Five golden views cover what `--selftest` cannot reach: `gradient` and
+`gradient_spread_off` for the options bar (the second showing the disabled SPREAD), and
+`gradient_drag` / `gradient_radial` / `gradient_angular` for the three geometries under one
+identical held drag. The canvas views exist because the defect that made this tool useless
+for its whole history (T3) was invisible to `--selftest` by construction: it lived in a
+canvas block, in a mutable flag two unrelated gestures shared.
+
+**The crop is the sixth, and §4b's test settles it without argument.** Unlike the smudge
+below — which was a genuinely marginal call, and stayed out of the table because
+`smudgeDab()` really does read three of the four sliders — the crop reads none of them.
+It walks no shape with a tip: `cropDocument()` copies tile indices and
+`transformDocument()` runs one resample, and neither has ever been handed a `BrushTip`.
+So it takes the early return, and the four sliders are not drawn for it.
+
+**The MODE combo is where the user asked for it, and it is also where this document's own
+rules put it.** Rectangle Marquee and Elliptical Marquee are two palette *cells* because
+`docs/shortcuts.md` §1 reserves a key for each; Rectangle and Perspective crop are one
+gesture with one commit path and one refusal ladder, so two cells would have meant two
+`kToolMeta` rows, two cursors and two canvas blocks for a difference of four draggable
+corners. The tooltip on the Perspective row carries the one thing a user cannot discover
+by trying it: the output is as wide as the **longer** of the two horizontal edges and as
+tall as the longer of the two verticals, and the tool does **not** claim to recover the
+scene's true aspect ratio — no rule can, from four image points, without knowing the
+camera. `app/CropTool.hpp` §3 is the full argument.
+
+**SIZE reads `--` when no crop is pending, not `0 x 0`.** A pair of zeroes reads as a crop
+that has collapsed rather than as one that has not been drawn — the same distinction
+`core::LayerBounds::empty` exists to keep, applied to a readout.
+
+**CROP and CANCEL are visible verbs, not only Enter and Escape.** Every other row in this
+band is settings; this is the one row that commits something, and a tool whose entire
+interaction is dragging cannot have its only commit on a key or half the users never find
+it. Both set request flags read by the canvas block, so the button and the key are one
+commit path rather than two that agree until one of them is edited. A refused quad greys
+CROP **and** prints the reason in the band in the accent colour, because §4a's "no dead
+button looks live" has a second half here: a greyed button whose tooltip is the only
+explanation is a tooltip nobody hovers when they are looking at the canvas.
+
+Five golden views cover what `--selftest` cannot reach: `crop_options` and
+`crop_options_perspective` for the row in each of its two modes, `crop_drag` and
+`crop_perspective` for the two canvas gestures with their darkened surround, and
+`crop_refused` for the bow-tie — the dashed outline, the greyed button and the whole
+sentence. That last one is the negative half and it is the one this feature most needs: a
+build whose refusal predicate was perfectly correct and whose UI said nothing about it
+would pass every assertion in `app/selftest/CropTool.cpp`.
+
+### The smudge brings a row and **keeps** the brush sliders
+
+The smudge is the first tool in the band to draw its own controls *without* taking an early
+return, and it is deliberately **not** in the table above. Apply §4b's own test rather than
+the loose one and the answer is plain: the four sliders would have to be live over something
+the tool provably never reads, and `smudgeDab()` (`brush/Smudge.hpp`) reads three of them —
+`dabCoverage()` is SIZE and HARD (and the roundness and angle behind them), and every texel's
+weight is multiplied by `tip.flow`, which is LOAD. Only WET is dead here, and WET is already
+disabled on its own by `wetnessReachesSolver()`. A tool that walks a shape with a tip belongs
+with the brush sliders; the eyedropper and the measure have no tip, the gradient has no
+stroke, the two flood tools find their region with a predicate instead of a shape, and the
+crop has none of the four. So the smudge did not join the table — it appends **STRENGTH**
+and **TIP** to the row it already had — and the table's growth from five to six came from
+the crop instead, which is the difference between a tool the test admits and a tool it
+does not.
+
+**STRENGTH exists because it used to be OPACITY, and that was the defect.**
+`brush/Smudge.hpp` §3b carries the whole account; the short form is that the smudge latched
+`BrushTip::opacity`, whose default is 1, and 1 is the single strength at which the fade the
+tool is built around is exactly the identity — `lerp(pick, finger, 1)` returns `finger`, so
+the colour picked up at pen-down was dragged to the far edge of the canvas and the finger
+never reloaded. It shipped that way and was reported that way ("It never fades"). The only
+control over it was the BRUSH panel's OPACITY slider, which means "the fraction of the
+maximum effect one stroke may reach" on five other routes, so moving it for the smudge moved
+it for the eraser too. STRENGTH is `st.brush.smudge.strength` now, defaults to 0.5, and
+OPACITY is drawn **disabled** while the smudge is selected — the same
+disabled-rather-than-hidden treatment §4a requires of any control a tool provably never
+reads, applied here to a slider that until now looked live and meant something else.
+
+The control is called STRENGTH and not PICKUP, which is the word the report used, because
+naming it for the pick-up inverts the slider, and inverting the slider puts the bit-exact
+**no-op** at the top of the track: strength 0 writes nothing at all, so "maximum pickup"
+would be the setting that stops the tool — §4a's dead control wearing the most inviting
+label on the row. The report's vocabulary is answered in the tooltip instead.
+
+**TIP** is the second half of the same report ("picking a dab shape as well … for smudge is
+likely ideal"), scoped to the dab-shape half: it offers `app/DabLibrary`'s own entries through
+the same `resolve()` the BRUSH panel's picker grid calls, and stores the same `(id, bitmap)`
+pair. "Brush's tip" is the default and is what this tool has dragged for its whole history. An
+override applies to smudge strokes and to nothing else, so choosing a smear shape is not an
+edit to the brush. **A second brush engine — its own size, spacing, dynamics and preset — is
+deliberately not built**: every field but the bitmap would be a copy of a field the smudge
+already reads off the brush, which is the drift the wand and bucket blocks are shaped to
+avoid. What is left specified and unbuilt is a *preset* picker for the smudge (choose a whole
+brush, not a tip), which needs a second `BrushState`-shaped block and is its own job.
+
+`smudge_options` is the golden view. `--selftest` has no window and no ImGui frame, so it is
+the only coverage the two controls have; `app/selftest/SmudgeOptions.cpp` covers the block
+behind them, including the assertion the old suite did not have — that at the **default**
+nobody sets, the smear actually fades.
+
+`wand_options` and `bucket_options` cover the flood-fill row the same way, and the pair is
+the point: one block of drawing code read by two tools looks identical to two blocks until
+the values differ, so the bucket view sits at the opposite state of every control. The
+first capture taken for these found a real defect of the class they exist for — the REACH
+combo's width was measured with the band's proportional face and drawn in the mono one, so
+"Contiguous" was clipped under its own arrow. Headless, that combo was perfect.
 
 ### Paths compose better than expected
 

@@ -28,6 +28,7 @@
 #include "app/StrokePreview.hpp"
 #include "app/AppState.hpp"
 #include "app/FixedStep.hpp"
+#include "app/FramePacing.hpp"
 #include "app/Keymap.hpp"
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
@@ -37,6 +38,8 @@
 #include "app/SelfTest.hpp"
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
+#include "app/CropTool.hpp"
+#include "app/ToolSwitch.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
 #include "color/Space.hpp"
@@ -344,6 +347,91 @@ void runUiLayerDemo(np::OpenDocument& od, bool clip) {
                 np::layerRowTitle(od.document.layers[i], i).c_str(),
                 np::layerRowSubLine(od.document.layers[i]).c_str());
   }
+}
+
+// --mask-demo [content] (docs/testing-issues.md T16): aims the pen at a layer
+// MASK and paints one real stroke into it.
+//
+// **It exists because the state it photographs cannot be reached from a launch
+// argument any other way, and `--selftest` can never see it.** The mask
+// thumbnail IS the target control, so selecting a mask is a click on a 24 px
+// square in a panel -- and `--screenshot` cannot click. That is exactly the
+// reachability gap `docs/reachability-audit.md` T5 sat open behind, and the
+// `--wand-demo` / `--no-document` pattern is the answer to it: make the state
+// reachable by argument, then the golden view is the coverage.
+//
+// It runs on top of `--demo-document`, deliberately, and no fixture of its own
+// was written -- that document's layer 2 ("Yellow, masked ramp") already has
+// asymmetric content in the lower right AND a mask that ramps left to right
+// across it, which is what a thumbnail drawn flipped, mirrored or with red and
+// blue swapped has to fail against. A second fixture would have been a second
+// thing to keep in step for no new coverage.
+//
+// The `content` argument runs the identical script with the target left on the
+// layer's own pixels, which is the comparison shot: the two pictures differ in
+// which square is ringed and in which store the stroke landed, and in nothing
+// else.
+void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
+  // The topmost layer that has a mask -- named by search rather than by index,
+  // so this does not silently aim at the wrong layer if `--demo-document`'s
+  // stack ever changes.
+  size_t target = od.document.layers.size();
+  for (size_t i = od.document.layers.size(); i-- > 0;)
+    if (od.document.layers[i].mask.has_value()) {
+      target = i;
+      break;
+    }
+  if (target >= od.document.layers.size()) {
+    std::fprintf(stderr, "[mask-demo] no layer in this document has a mask -- run it with "
+                         "--demo-document, whose layer 2 does\n");
+    return;
+  }
+  np::setActiveLayer(od, target);
+  np::setLayersPanelSelection(od, target);
+  od.maskIsEditTarget = maskTarget;
+
+  const np::Layer& layer = od.document.layers[target];
+  const np::LayerEditTarget resolved = np::resolveLayerEditTarget(od.maskIsEditTarget, &layer);
+  std::printf("[mask-demo] layer %zu of %zu: '%s', target %s, route %s\n", target,
+              od.document.layers.size(), layer.name.c_str(), np::layerEditTargetName(resolved),
+              np::strokeRouteName(np::strokeRouteFor(np::Tool::Brush, &layer, resolved)));
+
+  // One stroke, through a real `app::StrokeSession` -- the same class the pen
+  // drives -- so the picture is of the route rather than of a fixture that
+  // wrote texels. Black ink, so a mask stroke HIDES and the difference between
+  // the two shots is legible in the canvas as well as in the thumbnail.
+  np::BrushTip tip;
+  tip.radius = 60.0f;
+  tip.hardness = 0.8f;
+  tip.flow = 1.0f;
+  tip.opacity = 1.0f;
+  tip.linearRgb = {0.0f, 0.0f, 0.0f};
+
+  np::StrokeSession session;
+  std::string error;
+  if (!session.begin(od, target, tip, np::Tool::Brush, &error)) {
+    std::fprintf(stderr, "[mask-demo] %s\n", error.c_str());
+    return;
+  }
+  // A diagonal through the masked rectangle (x 480..928, y 512..928 in
+  // `buildDemoDocument()`), so the stroke crosses the ramp rather than running
+  // along one value of it.
+  constexpr int kSamples = 40;
+  for (int i = 0; i <= kSamples; ++i) {
+    const float u = static_cast<float>(i) / static_cast<float>(kSamples);
+    session.addPoint(540.0f + 340.0f * u, 580.0f + 280.0f * u);
+  }
+  session.end();
+  std::printf("[mask-demo] %zu dabs, %zu texels, %zu tiles, history '%s', revision %llu\n",
+              session.dabCount(), session.texelsWritten(), session.strokeTiles().size(),
+              od.history.entries().empty() ? "(none)"
+                                           : od.history.entries().back().label.c_str(),
+              static_cast<unsigned long long>(od.revision));
+  std::printf("[mask-demo] mask store now holds %zu tiles; layer store %zu\n",
+              od.document.layers[target].mask->occupiedTileCount(),
+              od.document.layers[target].rgbTiles.has_value()
+                  ? od.document.layers[target].rgbTiles->occupiedTileCount()
+                  : 0);
 }
 
 // --ui-merge-demo <command> (PLAN.md Phase 5 step 10): press exactly one of
@@ -1082,9 +1170,25 @@ int main(int argc, char** argv) {
   bool compsDemoDrop = false;
   bool uiLayerDemo = false;
   bool marqueeDemo = false;
+  // --clone-demo [anchor]: see the argument-parsing block for what this
+  // covers and why a flag is the only way to photograph it.
+  bool cloneDemo = false;
+  bool cloneDemoOffset = true;
   bool gradientDemo = false;
   bool gradientDemoDrag = false;
+  np::GradientKind gradientDemoKind = np::GradientKind::Linear;
+  bool cropDemo = false;
+  int cropDemoShape = 0;  // 0 = rectangle, 1 = perspective, 2 = the refused bow-tie
+  bool wandDemo = false;
+  bool wandDemoBucket = false;
+  bool smudgeDemo = false;
+  bool maskDemo = false;
+  bool maskDemoTarget = true;
+  bool overRangeDemo = false;
   bool flyoutDemo = false;
+  // --no-document: see the argument-parsing block, and the "A session always
+  // has a document" comment this flag is the deliberate exception to.
+  bool noDocumentDemo = false;
   bool panelStackDemo = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
@@ -1096,6 +1200,8 @@ int main(int argc, char** argv) {
   bool openLayerMenu = false;
   bool openExportStates = false;
   const char* exportStatesFolder = nullptr;
+  bool openExportAs = false;
+  const char* exportAsPath = nullptr;
   bool openLayerProperties = false;
   bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
@@ -1327,10 +1433,156 @@ int main(int argc, char** argv) {
       // shape as `--ui-layer-demo noclip`: an optional word after the flag
       // rather than a second flag, because it is a variant of this fixture
       // and not an independent one.
+      // Two optional words, either or both, in that order:
+      // `--gradient-demo [drag] [linear|radial|angular]`.
+      //
+      // The kind is parsed independently of `drag` because the two cover
+      // different chrome. WITHOUT a drag it selects the tool so the options
+      // bar can be photographed -- and on `angular` that bar draws its SPREAD
+      // combo DISABLED, which is a state no other view reaches. WITH a drag
+      // it also aims the preview and the canvas mark, and each kind draws its
+      // own: Radial a rim circle, Angular a clockwise arc. One photograph
+      // cannot stand in for the others.
       if (i + 1 < argc && std::string_view(argv[i + 1]) == "drag") {
         gradientDemoDrag = true;
         ++i;
       }
+      if (i + 1 < argc) {
+        const std::string_view k(argv[i + 1]);
+        if (k == "linear") { gradientDemoKind = np::GradientKind::Linear; ++i; }
+        else if (k == "radial") { gradientDemoKind = np::GradientKind::Radial; ++i; }
+        else if (k == "angular") { gradientDemoKind = np::GradientKind::Angular; ++i; }
+      }
+    } else if (a == "--clone-demo") {
+      // `--clone-demo [anchor]`: the Clone Stamp's source marker
+      // (ui/MacPaintUI.cpp's `Tool::CloneStamp source marker` block), which is
+      // three things `--screenshot` cannot otherwise reach at once.
+      //
+      // The tool, because a palette cell cannot be clicked from a screenshot
+      // run -- the same gap `--gradient-demo` and `--marquee-demo` cover. The
+      // SOURCE, because it is set by an Option+click and this run has no
+      // clicks. And the POINTER, because the live half of the marker sits at
+      // `pointer + offset` and a screenshot run's mouse is wherever the human
+      // left it -- exactly the nondeterminism `--gradient-demo drag` pins for
+      // the gradient's far handle, arriving here through the pointer rather
+      // than through a stored endpoint.
+      //
+      // **The pointer is injected as a real ImGui mouse position, not pinned
+      // as extra AppState.** `--pen-demo` already does this and the frame loop
+      // already has the injection window for it, so the marker under test is
+      // reached by the same `hovered`/`tx`/`ty` a hand reaches it by; a
+      // screenshot-only field on `AppState` would have been a second, quieter
+      // path into the block, and the one thing a golden view of chrome must
+      // not do is photograph a path no user takes. It also keeps this feature
+      // out of `app/AppState.hpp` entirely: this revision adds no state.
+      //
+      // `anchor` runs the identical fixture WITHOUT latching the offset. That
+      // is the negative half and it is not decoration: the live ring is gated
+      // on `haveOffset`, so a build that dropped that gate would draw a ring
+      // at `pointer + (0,0)` -- under the pointer, where it is easy to mistake
+      // for the brush cursor -- and every positive view would still pass.
+      cloneDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "anchor") {
+        cloneDemoOffset = false;
+        ++i;
+      }
+    } else if (a == "--crop-demo") {
+      // `--crop-demo [perspective|bowtie]`: `Tool::Crop` with a crop already
+      // laid down and HELD, which is three things `--screenshot` cannot
+      // otherwise reach at once.
+      //
+      // The tool, because a palette cell cannot be clicked from a screenshot
+      // run -- the gap `--gradient-demo` and `--marquee-demo` already cover.
+      // The options row, which is a per-tool block and draws for exactly one
+      // tool. And the SHAPE, because the shield, the handles, the thirds
+      // guides and the outline exist only while a crop is pending, and a
+      // pending crop is the product of a drag a screenshot run has no pointer
+      // to make.
+      //
+      // `demoHeld` is what pins it: exactly as `--gradient-demo drag` pins the
+      // gradient's far handle, the canvas block skips its own pointer reads so
+      // the shape does not follow wherever the human left the mouse. One skip,
+      // and no second path into the block -- what is photographed is the state
+      // a real drag produces, reached through the same fields a real drag
+      // writes.
+      //
+      // **`bowtie` is the negative half and is not decoration.** The refusal
+      // is drawn as a dashed outline and a sentence in the band, and both are
+      // invisible to `--selftest` by construction -- it has no window. A build
+      // that refused correctly in `cropQuadRefusal()` and said nothing on
+      // screen would pass every assertion in `app/selftest/CropTool.cpp` and
+      // ship a tool that silently does nothing when Enter is pressed, which is
+      // precisely the failure class this project keeps finding.
+      cropDemo = true;
+      if (i + 1 < argc) {
+        const std::string_view k(argv[i + 1]);
+        if (k == "perspective") { cropDemoShape = 1; ++i; }
+        else if (k == "bowtie") { cropDemoShape = 2; ++i; }
+      }
+    } else if (a == "--wand-demo") {
+      // Selects `Tool::MagicWand`, or `Tool::PaintBucket` with the optional
+      // word `bucket`. The same gap `--gradient-demo` and `--marquee-demo`
+      // cover: the options bar's flood-fill row is a per-tool block, so it
+      // draws for exactly these two tools and for no other, and `--screenshot`
+      // has no way to click a palette cell.
+      //
+      // Two tools rather than one, and the second is deliberately NOT at the
+      // defaults. The row is drawn once and read twice, and the fact worth
+      // photographing is that those two reads land on **different blocks**
+      // (app/AppState.hpp) -- which one view of one tool cannot show, because a
+      // shared block and two blocks look identical until their values differ.
+      // So the bucket view carries the other state of every control in the row:
+      // All Similar rather than Contiguous, anti-alias off rather than on, and
+      // a tolerance that is not the default. That also puts both states of the
+      // combo and both states of the checkbox under coverage, which is the
+      // argument `gradient_spread_off` makes for existing beside `gradient`.
+      wandDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "bucket") {
+        wandDemoBucket = true;
+        ++i;
+      }
+    } else if (a == "--mask-demo") {
+      // T16's paint target, made reachable from the command line. See
+      // `runMaskDemo()` for why this has no fixture of its own and why
+      // `content` is the comparison shot rather than a second view of the same
+      // thing.
+      maskDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "content") {
+        maskDemoTarget = false;
+        ++i;
+      }
+    } else if (a == "--smudge-demo") {
+      // Selects `Tool::Smudge`, and changes nothing else -- which is the whole
+      // point of this one, unlike `--wand-demo bucket` above.
+      //
+      // The options bar's smudge row is a per-tool block and `--screenshot` has
+      // no way to click a palette cell, so this is the only way to photograph
+      // it at all (`--selftest` has no window and no ImGui frame). And what it
+      // must photograph is the row **at its defaults**: `brush/Smudge.hpp` §3b's
+      // defect was a default, not a control -- the STRENGTH slider reading 0.50
+      // rather than 1.00 is the fix, and a demo that set a value first would
+      // photograph the setter instead of the shipped state. The row also has to
+      // be seen sitting BESIDE the four brush sliders rather than replacing
+      // them, which is this tool's departure from every other per-tool block in
+      // that function (`docs/ui.md` §4b).
+      smudgeDemo = true;
+    } else if (a == "--overrange-demo") {
+      // T25a. Puts the COLOR panel in RGB mode holding a **scene-referred**
+      // foreground -- one channel above what the swatch beside it can draw --
+      // so `--screenshot` can photograph the over-range readout and its badge.
+      //
+      // The same gap `--gradient-demo` and `--wand-demo` cover, and this one
+      // is the sharpest case of it in the build: `--selftest` has no window
+      // and no ImGui frame, so it can prove that `BrushState::rgb` holds 1.516
+      // and that every consumer agrees about it, and it cannot see a single
+      // pixel of the thing the report was actually about -- a picker that only
+      // shows values clamped to 1. Without a golden view the entire *visible*
+      // half of T25a would have no coverage at all.
+      //
+      // No sub-word, unlike the two flags above: the in-range state of this
+      // panel is what every other view of the app already shows, so a second
+      // spelling would only photograph the status quo.
+      overRangeDemo = true;
     } else if (a == "--flyout-demo") {
       // sidequest/lucide-toolbox, the nested-flyout revision: holds the
       // Brush group's flyout open (four members, Brush/Pencil implemented-
@@ -1339,6 +1591,27 @@ int main(int argc, char** argv) {
       // a flyout opens on right-click or a ~350ms press-and-hold, and the
       // screenshot path has neither. See AppState::openToolFlyoutDemo.
       flyoutDemo = true;
+    } else if (a == "--no-document") {
+      // docs/testing-issues.md T5: leaves `st.documents` EMPTY, which is the
+      // state the report is about -- "when you close all documents, there is
+      // still a document/canvas that does not belong to anything."
+      //
+      // **A flag is the only way to photograph it, and that fact is itself
+      // worth recording.** A session always starts with a document (see the
+      // "A session always has a document" block further down), and no CLI flag
+      // closed it, so the whole no-document state -- the dimmed palette, the
+      // title band's statement, the tool menu's disabled rows -- was outside
+      // the golden harness's reach entirely. Reaching it needs a File > Close
+      // on a document the user did not open, and `--screenshot` cannot click a
+      // menu. This is the same gap `--flyout-demo` covers for a press-and-hold
+      // and `--marquee-demo` for a drag.
+      //
+      // It SKIPS the creation rather than closing the document afterwards, so
+      // nothing downstream ever sees a document that then disappeared -- there
+      // is no history entry, no journal record and no tab to have been
+      // removed. What is on screen is exactly what a user who closed their last
+      // document is looking at.
+      noDocumentDemo = true;
     } else if (a == "--panel-stack-demo") {
       // The dockable-panel revision's tab stacks: puts HISTOGRAM and GRADE
       // into COLOR's slot as tabs, and COMPS into the collapsed HISTORY's, so
@@ -1405,6 +1678,15 @@ int main(int argc, char** argv) {
       // --screenshot can photograph it. See AppState::openExportStatesDialog.
       openExportStates = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') exportStatesFolder = argv[++i];
+    } else if (a == "--open-export-as") {
+      // The other export dialog, and the one that had NO way to be reached
+      // from a launch at all: File > Export As... is opened by a menu click,
+      // --screenshot has no input, and so every pixel of it was uncovered.
+      // See AppState::openExportAsDialog. The optional path fills the Output
+      // file field; without one the dialog sits in its own -- also
+      // photographable -- "no output file yet" state.
+      openExportAs = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') exportAsPath = argv[++i];
     } else if (a == "--open-layer-properties") {
       // The LAYERS panel's own gear-button modal, same justification as
       // --open-export-states one dialog over: it too is opened by a click and
@@ -1525,6 +1807,13 @@ int main(int argc, char** argv) {
   // rather than one taken after a sim it constructs eagerly for its own
   // purposes.
   const size_t idleRssBytes = np::currentResidentBytes();
+  // Captured in the same breath as the RSS above and for the same reason --
+  // this is the last moment at which "idle" means anything. It is the number
+  // Activity Monitor would show for this process right now, and
+  // docs/testing-issues.md T6 exists because it and `idleRssBytes` differ by
+  // roughly a factor of four with nothing in the build saying so.
+  // app/selftest/IdleMemory.cpp prints it beside the assertion.
+  const size_t idleFootprintBytes = np::currentFootprintBytes();
 
   // Null until something actually needs the solver. --selftest/--diag/
   // --modes exist specifically to exercise it, so they construct it via
@@ -1563,6 +1852,15 @@ int main(int argc, char** argv) {
     // and confirms each outgoing medium's fields actually get freed, not
     // just the incoming one's allocated.
     const bool fieldAllocOk = np::runFieldAllocationTest(gpu, *s);
+    // docs/testing-issues.md T6: the same solver, priced in bytes. Placed
+    // here, and the ordering is load-bearing in both directions -- the
+    // section above must run first because its own premise is a sim that has
+    // never changed mode, and this one must run before any later section
+    // resizes the solver, because it reads the live field textures and prices
+    // them against `sim->width()`/`height()`. The section above leaves the
+    // mode back in Watercolour, which is what this one's first assertion
+    // checks rather than assumes.
+    const bool solverFootprintOk = np::runSolverFootprintTest(gpu, *s);
     const bool pigmentOk = np::runSelfTest(gpu, *s, lut,
                                     selfTestOut ? selfTestOut : "selftest.png");
     // Headless, GPU-free — doesn't need sim/gpu at all, but runs from the
@@ -1655,12 +1953,36 @@ int main(int argc, char** argv) {
     // phases in which `Tool::Eyedropper` claimed to be built and was not.
     // Headless and GPU-free -- pure CPU, no PaintSim involvement.
     const bool eyedropperOk = np::runEyedropperTest();
+    // T25a: the scene-referred foreground -- an eyedropper pick above white
+    // surviving into `BrushState::rgb` instead of being clamped away, the two
+    // decoders still agreeing in that range, the named display-range clamp and
+    // the destinations that call it, the pigment route clamping deliberately
+    // on a real LUT, and an RGB stroke that does not. Runs straight after the
+    // eyedropper's own section because it extends that section's foreground
+    // assertions into the range they never covered. Headless and GPU-free.
+    const bool sceneReferredColourOk = np::runSceneReferredColourTest();
     // app/MeasureLine: the Measure tool, the one palette cell whose gesture
     // writes nothing at all -- length and heading off a two-point drag, the
     // angle convention pinned geometrically through dabCoverage() rather than
     // restated, the zero-length click, and the seventh canvas gate that had to
     // be added rather than folded into the eyedropper's. Headless and GPU-free.
     const bool measureOk = np::runMeasureTest();
+    // app/ToolSwitch (T20 + T24): the single writer of `brush.tool`, the
+    // previous-tool ledger it keeps, the spring-loaded Hand's borrow-and-give-
+    // back (which deliberately leaves no ledger entry), and the angle
+    // `Image > Transform...` opens with -- both directions of that
+    // conditional, walked over the whole `Tool` enum rather than sampled.
+    // Headless and GPU-free.
+    const bool toolSwitchOk = np::runToolSwitchTest();
+    // app/ToolSurface (docs/testing-issues.md T5, short-term half): the SECOND
+    // axis of "is this palette cell live". `toolImplemented()` and
+    // `toolHasCanvasHandler()` both ask whether a tool is BUILT; neither can
+    // ask whether there is anything in front of the user for it to act on, and
+    // with no document open there very often is not. Walks every `Tool` in
+    // both surface states, and asserts first of all that the new predicate is
+    // a PROPER subset of the old ones -- a synonym would make every other
+    // assertion here unfalsifiable. Headless and GPU-free.
+    const bool toolSurfaceOk = np::runToolSurfaceTest();
     // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
     // transform's round-trip identity, one hand-worked known-point check,
     // and the view-only proof that mirror/rotation/grayscale never mutate
@@ -1766,6 +2088,13 @@ int main(int argc, char** argv) {
     // tile store, and the fill that goes through the selection the wand
     // produces. Also headless and GPU-free.
     const bool floodFillOk = np::runFloodFillTest();
+    // app/AppState's two FloodFillParams blocks and the options-bar row that
+    // edits them (PRD D25, E3): the tool -> block mapping, the REACH table,
+    // TOLERANCE's 0..255 display units, and what each of the three controls
+    // does to real texels. The engine above was already complete; this is the
+    // binding, and the trap a binding carries is a control wired to a field
+    // nothing reads. Headless and GPU-free.
+    const bool floodFillOptionsOk = np::runFloodFillOptionsTest();
     // core/SelectionShapes (PRD E3): the ellipse, lasso and polygon lasso, and
     // the exact-area claim behind all three. Headless, pure CPU.
     const bool selectionShapesOk = np::runSelectionShapesTest();
@@ -1817,6 +2146,23 @@ int main(int argc, char** argv) {
     // move), the refusals, the arrow-key nudge, and the bit-identity of an
     // integer translate there and back. Headless and GPU-free.
     const bool moveToolOk = np::runMoveToolTest();
+    // app/CropTool: Tool::Crop in both modes -- the rectangle rule (outward,
+    // unclamped), the perspective output extent and why it is the longer of
+    // each pair of opposite edges, the refusal ladder including the bow-tie
+    // the engine does not refuse, and the two Image-menu items. Headless and
+    // GPU-free.
+    const bool cropToolOk = np::runCropToolTest();
+    // app/LayerThumbnail + brush/MaskPaint + StrokeSession's mask target:
+    // testing-issues T16 -- the target concept, the mask stroke route, the two
+    // thumbnails' two different transfer functions, and the thumbnail cache's
+    // invalidation rule. Headless and GPU-free.
+    const bool maskTargetOk = np::runMaskTargetTest();
+    // app/FramePacing: T27's three frame-budget tiers, the --screenshot
+    // exemption the golden harness depends on, and the fixed-timestep ceiling
+    // that decides how slow the idle tier is allowed to be. Headless and
+    // GPU-free -- and the only place this decision is observable at all, since
+    // --selftest never reaches the frame loop it was lifted out of.
+    const bool framePacingOk = np::runFramePacingTest();
     // app/GradientTool: Tool::Gradient -- the ramp, the aim, the shared
     // degeneracy test, and that the options bar swatch and the committed
     // pixels are one computation rather than two that agree. Headless and
@@ -1962,6 +2308,10 @@ int main(int argc, char** argv) {
     // Phase C Part 1: Scatter Count, resolved per dab and dispatched as N
     // sub-dabs per nominal position. Headless and GPU-free.
     const bool scatterCountOk = np::runScatterCountTest();
+    // brush/StrokePath itself: a single click lays exactly one dab at its own
+    // position, and a drag's dab coordinates are unchanged by that. Headless
+    // and GPU-free.
+    const bool strokePathOk = np::runStrokePathTest();
     // io/AbrBrushes' `samp` block: sampled bitmap tips decoded and stamped by
     // brush/Deposit.hpp §2c in place of the procedural tip. Headless and
     // GPU-free.
@@ -2351,6 +2701,17 @@ int main(int argc, char** argv) {
     // before the first byte in OFF rather than skipped. Headless and
     // GPU-free; writes and removes a selftest_exportstates/ directory.
     const bool exportStatesOk = np::runExportStatesTest();
+    // app/ExportDialog: the decisions BOTH export dialogs make -- which
+    // control is live, what sentence goes beside a greyed Export button, and
+    // which rows a Format menu has. Lifted out of ui/MacPaintUI.cpp in answer
+    // to "the export dialog seems a little confusing", and asserted against
+    // io/ExportAs' and io/ExportStates' own answers rather than against
+    // literals repeated from the implementation. Headless, GPU-free and
+    // filesystem-free; the widgets these answers drive are photographed by
+    // the golden harness's new `export_as` / `export_as_blocked` /
+    // `export_states` views, which are the first coverage either dialog has
+    // ever had.
+    const bool exportDialogOk = np::runExportDialogTest();
     // Phase 5 -- the CPU Pigment deposit (brush/Deposit + app/StrokeSession):
     // what one dab does to one texel, that a stroke's tile set is complete and
     // tight, that N dabs are one undo step, and `Mix` witnessed from a stroke.
@@ -2398,6 +2759,15 @@ int main(int argc, char** argv) {
     // strength are exact: 0 is a byte-identical no-op with the rejected blur
     // measured beside it, 1 carries one colour the whole length of the stroke.
     const bool smudgeOk = np::runSmudgeTest();
+    // brush/Smudge §3b -- the smudge's own parameter block, and the section
+    // that exists because the one directly above it was green while the tool
+    // was unusable. Strength was the OPACITY slider, which defaults to 1, and 1
+    // is the one strength at which a smear provably never fades; every
+    // assertion above sets a strength first, so none of them ever asked what
+    // the default does. This one runs the tip the app itself builds out of an
+    // unconfigured AppState and requires the fade, with the identical drag at
+    // strength 1 measured beside it as the negative.
+    const bool smudgeOptionsOk = np::runSmudgeOptionsTest();
     // PRD E1 (P0) on the layer kind that never had it, and ADR-0007's Pigment
     // eraser row that gate unblocked. brush/Deposit.hpp did not contain the word
     // "Selection", so a natural-media stroke on a Pigment layer painted straight
@@ -2538,7 +2908,7 @@ int main(int argc, char** argv) {
     const bool strokeSpeedOk = np::runStrokeSpeedTest(gpu, *s, lut);
     // 1.4 / ADR-0001 bullet 5: idle RSS, measured before this branch (or
     // any other) ever constructed a PaintSim.
-    const bool idleMemOk = np::runIdleMemoryTest(idleRssBytes);
+    const bool idleMemOk = np::runIdleMemoryTest(idleRssBytes, idleFootprintBytes);
     // track8/zoom (PRD Q1, R5): the Zoom tool's click/Alt-click/scrubby-drag
     // anchor math and the brush-size gesture/bracket-key range, both as pure
     // functions -- app/ZoomAndSize.hpp. Headless and GPU-free.
@@ -2639,20 +3009,21 @@ int main(int argc, char** argv) {
     // a parked backlog, prompt catch-up on scroll-into-view, and a printed
     // (not asserted) per-tile cost measurement.
     const bool viewportDeferredCompositeOk = np::runViewportDeferredCompositeTest(gpu);
-    const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
+    const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
-                    eyedropperOk && measureOk &&
+                    eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk && toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
                     gradientOk && selectionOk && channelsOk &&
                     selectionShapesOk && selectionRefineOk && selectionToolsOk && selectionDragOk &&
                     ellipseMarqueePreviewOk &&
-                    selectionBoundaryOk && floodFillOk &&
+                    selectionBoundaryOk && floodFillOk && floodFillOptionsOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
-                    documentTransformOk && transformSessionOk && moveToolOk &&
+                    documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk &&
+                    framePacingOk &&
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
                     textShaperOk && vectorLayerOk &&
                     transformPreviewTextureOk &&
@@ -2660,10 +3031,10 @@ int main(int argc, char** argv) {
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
                     multiplyFloorOk && scatterOk && abrSampledTipsOk && abrDualBrushOk && brushLibraryFileOk &&
                     userBrushLibraryOk && exportOk && formatSupportOk && npaintOk && tileResidencyOk &&
-                    shelvedLinksOk && scatterCountOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
+                    shelvedLinksOk && scatterCountOk && strokePathOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
-                    exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
@@ -2674,6 +3045,7 @@ int main(int argc, char** argv) {
                     pencilDepositOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && tonalBrushOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk && smudgeOk &&
+                    smudgeOptionsOk &&
                     pigmentSelectionOk && bucketRefusalOk &&
                     pigmentSelectionOk && cloneStampOk && bucketRefusalOk &&
                     layerMultiSelectOk && layerPanel2aOk && toolCursorOk &&
@@ -2879,8 +3251,17 @@ int main(int argc, char** argv) {
   // already returned, so none of them sees a document they did not ask for --
   // in particular `--selftest`'s idle-RSS assertion, whose whole point is a
   // measurement taken before any subsystem exists.
-  st.documents.add(np::makeBlankOpenDocument(static_cast<int32_t>(kCanvasW),
-                                             static_cast<int32_t>(kCanvasH), np::WorkingSpace{}));
+  //
+  // **`--no-document` is the one deliberate exception** (docs/testing-issues.md
+  // T5). The rule above is about a *session a user is working in*; the state
+  // the T5 report describes is the one after they close their last document,
+  // and there was no way to reach it from a launch at all -- so the palette
+  // dimming, the title band's statement and the Goodies menu's disabled rows
+  // had no photograph anywhere. See that flag's own comment.
+  if (!noDocumentDemo)
+    st.documents.add(np::makeBlankOpenDocument(static_cast<int32_t>(kCanvasW),
+                                               static_cast<int32_t>(kCanvasH),
+                                               np::WorkingSpace{}));
   if (demoDocument) {
     if (np::OpenDocument* od = st.documents.active()) {
       buildDemoDocument(*od);
@@ -2910,12 +3291,18 @@ int main(int argc, char** argv) {
     st.brushSettingsDemoTab = brushSettingsDemoTab;
   }
   st.openExportStatesDialog = openExportStates;
+  st.openExportAsDialog = openExportAs;
   st.openLayerProperties = openLayerProperties;
   st.showAdvancedDynamics = advancedDynamics;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
+  if (exportAsPath != nullptr) st.exportAsPath = exportAsPath;
   if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
   if (uiLayerDemo) {
     if (np::OpenDocument* od = st.documents.active()) runUiLayerDemo(*od, uiLayerDemoClip);
+  }
+  // After --demo-document, which is the fixture it aims at.
+  if (maskDemo) {
+    if (np::OpenDocument* od = st.documents.active()) runMaskDemo(*od, maskDemoTarget);
   }
   if (marqueeDemo) {
     if (np::OpenDocument* od = st.documents.active()) {
@@ -2925,13 +3312,15 @@ int main(int argc, char** argv) {
       // the selection's true bounds rather than a tile grid.
       od->selection = np::selectRectangle(180.0f, 150.0f, 700.0f, 560.0f);
       ++od->selectionRevision;
-      st.brush.tool = np::Tool::Marquee;
+      np::setActiveTool(st, np::Tool::Marquee);
       std::printf("[marquee-demo] selection installed: 180,150 -> 700,560\n");
     }
   }
   if (gradientDemo) {
-    st.brush.tool = np::Tool::Gradient;
-    std::printf("[gradient-demo] Tool::Gradient selected -- the options bar shows its ramp\n");
+    np::setActiveTool(st, np::Tool::Gradient);
+    std::printf("[gradient-demo] Tool::Gradient selected, kind=%s -- the options bar shows its ramp\n",
+                np::gradientKindLabel(gradientDemoKind));
+    st.gradient.kind = gradientDemoKind;
     if (gradientDemoDrag) {
       // A drag across the middle of the 1024-px demo canvas, deliberately
       // diagonal and deliberately not axis-aligned: a horizontal ramp would
@@ -2943,8 +3332,142 @@ int main(int argc, char** argv) {
       st.gradientDrag.x1 = 620.0f;
       st.gradientDrag.y1 = 480.0f;
       st.gradientDragDemo = true;
-      std::printf("[gradient-demo] drag held open: 220,240 -> 620,480 (preview + rubber band)\n");
+      std::printf("[gradient-demo] drag held open: 220,240 -> 620,480, kind=%s (preview + rubber band)\n",
+                  np::gradientKindLabel(gradientDemoKind));
     }
+  }
+  if (cropDemo) {
+    if (np::OpenDocument* od = st.documents.active()) {
+      np::setActiveTool(st, np::Tool::Crop);
+      st.crop.active = true;
+      st.crop.demoHeld = true;
+      st.crop.doc = od->id;
+      // Document texels on the 1024x1024 demo document, inside the part of it
+      // that is actually on screen at the screenshot window size -- roughly
+      // x 0..899, y 0..675, which `--clone-demo`'s own comment measured off a
+      // capture rather than deriving from the document extent.
+      //
+      // Every number is chosen rather than convenient. The rectangle is
+      // off-centre and not square, so a shield drawn from a swapped or dropped
+      // coordinate lands somewhere obviously wrong rather than somewhere
+      // plausible; the quad's four corners are pairwise different distances
+      // from the edges for the same reason, and its two horizontal edges are
+      // nearly equal while its two verticals are not, so a view of it would
+      // change if the extent rule started reading the wrong pair.
+      if (cropDemoShape == 0) {
+        st.crop.mode = np::CropMode::Rectangle;
+        st.crop.quad = np::cropQuadFromRegion(np::DocumentRegion{150, 120, 470u, 350u});
+        std::printf("[crop-demo] Tool::Crop, Rectangle: (150,120)+470x350 held -- shield, "
+                    "eight handles, thirds guides\n");
+      } else if (cropDemoShape == 1) {
+        st.crop.mode = np::CropMode::Perspective;
+        st.crop.quad = np::CropQuad{{np::Point2{180.0f, 140.0f}, np::Point2{700.0f, 200.0f},
+                                     np::Point2{640.0f, 520.0f}, np::Point2{120.0f, 430.0f}}};
+        const np::DocumentRegion e = np::perspectiveCropExtent(st.crop.quad);
+        std::printf("[crop-demo] Tool::Crop, Perspective: four corners off-axis, output "
+                    "%ux%u (longer of each pair of opposite edges)\n", e.width, e.height);
+      } else {
+        // The bow-tie: corners 0 and 1 of the quad above swapped, which is
+        // exactly what dragging one corner past its neighbour produces.
+        st.crop.mode = np::CropMode::Perspective;
+        st.crop.quad = np::CropQuad{{np::Point2{700.0f, 200.0f}, np::Point2{180.0f, 140.0f},
+                                     np::Point2{640.0f, 520.0f}, np::Point2{120.0f, 430.0f}}};
+        std::printf("[crop-demo] Tool::Crop, Perspective (bow-tie): %s\n",
+                    np::cropQuadRefusal(st.crop.quad).c_str());
+      }
+    }
+  }
+  if (cloneDemo) {
+    np::setActiveTool(st, np::Tool::CloneStamp);
+    // Document texels, and every one of the four numbers is chosen rather than
+    // convenient. Both marks are off-centre and off-axis so a marker drawn
+    // from a swapped or dropped coordinate lands somewhere obviously wrong
+    // rather than somewhere plausible -- the same argument
+    // `--gradient-demo drag`'s deliberately-not-45-degree drag makes about
+    // its own endpoints.
+    //
+    // The three points -- anchor, live source, pointer -- are deliberately
+    // spread into three different quadrants of the visible document. Two of
+    // them coinciding would leave the view unable to tell "two marks" from
+    // "one mark drawn twice", which is the one thing this feature's design
+    // rests on.
+    //
+    // **They also have to be inside the part of the document that is on
+    // screen, which is neither the whole document nor centred on it.**
+    // `--demo-document` is 1024x1024 and this build opens it at 100% with the
+    // origin at the canvas band's top-left corner, so at the screenshot window
+    // size the band shows roughly x 0..899, y 0..675 -- and the band's centre,
+    // where the pointer parks, is document (450, 338) rather than the (512,
+    // 512) the arithmetic suggests. Both facts were measured off a capture,
+    // and both had to be: the first numbers tried here put the live ring off
+    // the top edge and the crosshair off the bottom, and each was a perfectly
+    // correct mark that no photograph contained.
+    //
+    // `offset = anchor - penDown` = (-280, -210), so the live ring lands at
+    // document (170, 128), the crosshair stays at (660, 300), and the pointer
+    // sits between them.
+    //
+    // The crosshair is deliberately NOT on the ray the leader line runs along
+    // (that ray reaches y = 465 by x = 660, and this is at 300) and
+    // deliberately NOT over the navigator thumbnail in the canvas's
+    // bottom-right corner. Collinear marks and a mark on top of another piece
+    // of chrome are both states a reviewer cannot read a photograph of.
+    np::setCloneAnchor(st.clone, np::Vec2{660.0f, 300.0f});
+    if (cloneDemoOffset) np::latchCloneOffset(st.clone, np::Vec2{940.0f, 510.0f});
+    std::printf("[clone-demo] Tool::CloneStamp, anchor 660,300%s -- pointer injected at the "
+                "canvas band's centre\n",
+                cloneDemoOffset ? ", offset latched from pen-down 940,510 (-280,-210)"
+                                : ", offset NOT latched (the negative: no live ring)");
+  }
+  if (wandDemo) {
+    if (wandDemoBucket) {
+      np::setActiveTool(st, np::Tool::PaintBucket);
+      // Every control in the row at its OTHER state, on purpose -- see the
+      // flag's own comment above. The tolerance is 96/255 rather than a round
+      // float so the slider's readout is unmistakably not the 32 the wand view
+      // shows, and `edgeBand = 0` is the ANTI-ALIAS checkbox unticked (the
+      // hard-edge setting `ops/FloodFill.hpp` § 2 documents as legitimate, not
+      // a disabled feature).
+      st.paintBucket.tolerance = np::floodToleranceFromUi(96);
+      st.paintBucket.edgeBand = 0.0f;
+      st.paintBucket.reach = np::FloodFillReach::Global;
+      std::printf(
+          "[wand-demo] Tool::PaintBucket selected, tolerance=96 reach=%s anti-alias=off -- the "
+          "options bar shows ITS block, not the wand's\n",
+          np::floodReachLabel(st.paintBucket.reach));
+    } else {
+      np::setActiveTool(st, np::Tool::MagicWand);
+      std::printf(
+          "[wand-demo] Tool::MagicWand selected, tolerance=%d reach=%s anti-alias=on -- the "
+          "options bar shows its flood-fill row\n",
+          np::floodToleranceToUi(st.magicWand.tolerance), np::floodReachLabel(st.magicWand.reach));
+    }
+  }
+  if (smudgeDemo) {
+    np::setActiveTool(st, np::Tool::Smudge);
+    std::printf("[smudge-demo] Tool::Smudge selected, strength=%.2f tip=%s -- the options bar "
+                "shows its STRENGTH/TIP row AND keeps the brush sliders\n",
+                st.brush.smudge.strength,
+                st.brush.smudge.dabId.empty() ? "the brush's" : st.brush.smudge.dabId.c_str());
+  }
+  if (overRangeDemo) {
+    // A warm highlight, the sort of thing an eyedropper lands on: linear
+    // 2.6 / 0.45 / 0.18, which encodes to about 1.516 / 0.702 / 0.472. One
+    // channel over and two comfortably in range, deliberately -- a triple
+    // that was over on all three would photograph identically whether the
+    // readout printed per-channel values or one number three times.
+    //
+    // Set through `srgbEncode()` of stated linear values rather than as three
+    // encoded literals, so the number in this file is the *measurement* the
+    // foreground is standing for and the encoding stays the one boundary
+    // `app/AppState.hpp` says it is.
+    st.brush.colorMode = np::ColorMode::Rgb;
+    st.brush.rgb = {np::srgbEncode(2.6f), np::srgbEncode(0.45f), np::srgbEncode(0.18f)};
+    std::printf("[overrange-demo] COLOR in RGB mode, foreground linear 2.600 0.450 0.180 = "
+                "sRGB %.3f %.3f %.3f -- red is above the display range, so the panel shows "
+                "the readout and the OVER RANGE badge and the swatch is clamped\n",
+                static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
+                static_cast<double>(st.brush.rgb[2]));
   }
   if (flyoutDemo)
     std::printf("[flyout-demo] Brush group's flyout held open (right-click/press-hold demo)\n");
@@ -3148,13 +3671,77 @@ int main(int argc, char** argv) {
   uint64_t clickMarkerUntilNs = 0;
   ImVec2 clickMarkerPos{};
 
+  // T27 frame pacing (app/FramePacing.hpp). Two carried values: when the
+  // previous frame started, which is what a frame period is measured from,
+  // and when something last happened, which is what picks the tier.
+  //
+  // `pacingLastActivityNs` starts at "now" rather than at 0 so that the
+  // window's first two seconds are never spent in the idle tier -- the app is
+  // laying out docked panels, sizing the canvas and settling ImGui's first
+  // frames in exactly that window, and none of it is input-driven.
+  uint64_t pacingPrevFrameNs = 0;
+  uint64_t pacingLastActivityNs = SDL_GetTicksNS();
+  np::FramePacingTier pacingTier = np::FramePacingTier::Unthrottled;
+
   while (!st.quit) {
+    // The wait goes here: FIRST, before frameStartNs is sampled and before
+    // the event queue is drained. app/FramePacing.hpp §4 -- doing it after
+    // the poll would fold the wait into every app/Latency pen-to-photon
+    // sample and into --frame-trace's total_ms, so the throttle would be
+    // measuring itself.
+    {
+      np::FramePacingInputs pacing;
+      // AppState::screenshotCliActive is true for the whole life of a
+      // --screenshot run, which is every capture tools/golden/run_golden.sh
+      // takes. `st.requestScreenshot` is deliberately NOT tested alongside
+      // it: that flag is set from the action dispatch below and cleared by
+      // the capture further down the same iteration, so it is always false at
+      // this point, and an `|| st.requestScreenshot` here would be an inert
+      // term that reads like coverage. The in-session capture needs none
+      // anyway -- the menu click that asks for it is itself input, so that
+      // frame is at worst tier 2.
+      pacing.exempt = st.screenshotCliActive;
+      // Both, not either: paintingThisFrame covers the frames between dabs
+      // where the pen is down but has not moved (it is gated on the button
+      // state, not on a motion event), and strokeActive covers a stroke whose
+      // pointer has wandered off the canvas mid-gesture, which drops
+      // paintingThisFrame but must not stutter the stroke.
+      pacing.painting = st.paintingThisFrame || st.strokeActive;
+      pacing.simLive = sim != nullptr && !st.paused;
+      const uint64_t pacingNowNs = SDL_GetTicksNS();
+      pacing.nsSinceActivity =
+          pacingNowNs > pacingLastActivityNs ? pacingNowNs - pacingLastActivityNs : 0;
+      const np::FramePacingPlan plan = np::planFramePacing(pacing);
+      pacingTier = plan.tier;
+      const uint64_t waitNs = np::framePacingWaitNs(plan.periodNs, pacingPrevFrameNs, pacingNowNs);
+      if (waitNs > 0) {
+        if (plan.waitOnEvents) {
+          // A null event pointer leaves whatever arrived in the queue for the
+          // SDL_PollEvent drain below to handle normally; all this call is
+          // used for is the blocking. Rounded up so a sub-millisecond
+          // remainder cannot become a zero-timeout spin.
+          SDL_WaitEventTimeout(nullptr,
+                               static_cast<Sint32>((waitNs + 999'999ull) / 1'000'000ull));
+        } else {
+          SDL_DelayNS(waitNs);
+        }
+      }
+    }
     const uint64_t frameStartNs = SDL_GetTicksNS();
+    pacingPrevFrameNs = frameStartNs;
     st.lastInputEventNs = 0;
+    // Any SDL event at all, not just the pointer samples isPointerSampleEvent()
+    // admits: a keystroke, a wheel notch, a button release, a drop, a window
+    // resize are all "something is happening" for pacing purposes even though
+    // none of them is a pen-to-photon sample. st.lastInputEventNs deliberately
+    // stays the narrower signal it has always been -- app/Latency's meaning of
+    // it must not change.
+    bool pacingSawEvent = false;
     bool clickedThisFrame = false;
     bool releasedThisFrame = false;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+      pacingSawEvent = true;
       ImGui_ImplSDL3_ProcessEvent(&e);
       handlePenEvent(st, e);
       // e.common.timestamp is when SDL generated the event, not when we
@@ -3543,6 +4130,35 @@ int main(int argc, char** argv) {
       }
     }
 
+    // --clone-demo: park a synthetic pointer over the canvas, and leave the
+    // button UP.
+    //
+    // The pointer is the whole of what this injection is for. The Clone
+    // Stamp's live source marker sits at `pointer + offset`, so without a
+    // pointer there is nothing to photograph -- and with the operator's real
+    // one there is nothing REPRODUCIBLE to photograph, which is worse.
+    //
+    // **Button up, deliberately.** The marker is drawn between strokes as well
+    // as during them (this build clones aligned, so the offset showing is the
+    // offset the next stroke will use -- see the marker block's own note), so
+    // a held button would prove less, not more: it would also start a stroke,
+    // whose refusal-or-deposit depends on the active layer's kind and would
+    // put a moving subject in a byte-equality view. A hovering pointer is the
+    // state the marker has to be right in anyway.
+    //
+    // The band centre rather than a hard-coded screen point, for `--pen-demo`'s
+    // own reason directly above: `ui/AtelierLayout` is where the canvas
+    // actually is, and a literal would stop being over it the first time a
+    // band's height changed.
+    if (cloneDemo) {
+      ImGuiIO& io = ImGui::GetIO();
+      const np::AtelierBands bands =
+          np::atelierLayout(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y,
+                            /*showTabStrip=*/true);
+      io.AddMousePosEvent(bands.canvas.x + bands.canvas.w * 0.5f,
+                          bands.canvas.y + bands.canvas.h * 0.5f);
+    }
+
     // --- the screenshot path takes no mouse ---------------------------------
     //
     // **`--screenshot` photographs a real window, and a real window is under
@@ -3571,7 +4187,12 @@ int main(int argc, char** argv) {
     // mouse after it queued one would erase the input under test. The guard is
     // the flag rather than "did anything call AddMousePosEvent this frame",
     // because the former is checkable and the latter is not.
-    if (screenshotPath != nullptr && !penDemo) {
+    //
+    // `--clone-demo` is in the list for the same reason and not by analogy:
+    // its subject is a mark whose position is READ from the pointer, so
+    // suppressing the pointer does not merely remove a hover tint from the
+    // capture, it removes the feature.
+    if (screenshotPath != nullptr && !penDemo && !cloneDemo) {
       ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
 
@@ -3824,6 +4445,22 @@ int main(int argc, char** argv) {
     if (strokeWasActive && !st.strokeActive) latency.endStroke();
     strokeWasActive = st.strokeActive;
 
+    // T27: what "something is happening" means, evaluated here at the end of
+    // the frame because two of its three terms are only true after drawUI has
+    // run. Stamped with frameStartNs rather than the clock now, so the idle
+    // interval measures from the start of the last busy frame -- a long frame
+    // must not shorten the interval by its own duration.
+    //
+    // ImGui::IsAnyItemActive() is the term that keeps a *held* widget out of
+    // the idle tier: a grabbed slider, an open combo, a text field with the
+    // caret in it. None of those necessarily produces an event while the
+    // pointer is still, and all of them are live gestures. It is safe to call
+    // outside a NewFrame/EndFrame pair -- it reads the persisted ActiveId, not
+    // per-frame layout state -- and here it reports the frame just ended,
+    // which is precisely what a pacing decision wants.
+    if (pacingSawEvent || st.paintingThisFrame || st.strokeActive || ImGui::IsAnyItemActive())
+      pacingLastActivityNs = frameStartNs;
+
     // The recovery journal's timer (PLAN.md Phase 4 step 9, PRD O5, O6, O10).
     //
     // Here, at the very end of the frame, rather than beside the simulation:
@@ -3899,7 +4536,7 @@ int main(int argc, char** argv) {
                     "journal_ms=%.2f journal_write_ms=%.2f journal_docs=%zu loop_total_ms=%.2f "
                     "reason=%s dirty_tiles=%zu uploaded_texels=%llu upload_total_ms=%.2f "
                     "composite_ms=%.2f pack_ms=%.2f upload_calls_ms=%.2f pending_tiles=%zu "
-                    "deferred_updates=%llu\n",
+                    "deferred_updates=%llu pacing=%s\n",
                     static_cast<unsigned long long>(frameIndex - 1), clickedThisFrame ? " CLICK" : "",
                     releasedThisFrame ? " UP" : "",
                     static_cast<unsigned long long>(revisionBeforeUI),
@@ -3914,7 +4551,8 @@ int main(int argc, char** argv) {
                     static_cast<double>(journalEndNs - frameStartNs) / 1e6, fullReasonName, dirtyTiles,
                     static_cast<unsigned long long>(uploadedTexels), lastUploadMs, compositeMs, packMs,
                     lastUploadMs - compositeMs - packMs, pendingTiles,
-                    static_cast<unsigned long long>(deferredUpdates));
+                    static_cast<unsigned long long>(deferredUpdates),
+                    np::framePacingTierName(pacingTier));
     }
 
     wgpuTextureViewRelease(backbuffer);

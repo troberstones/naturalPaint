@@ -214,6 +214,17 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // while `toolButton()` (ui/AtelierChrome.cpp) correctly gated the same list
 // one panel over. `toolImplemented()` is the single predicate both now share.
 //
+// **`documentOpen` is the second axis (app/ToolSurface, docs/testing-issues.md
+// T5), and it is here because A4 is the precedent for it.** With no document
+// open, fifteen of the twenty-one built tools have nothing to act on --
+// `sim::PaintSim`'s canvas is a real, paintable surface and is not a document
+// -- and `MenuAction::ToolItem`'s handler calls `setActiveTool()`
+// unconditionally, relying entirely on the `enabled` flag this function sets.
+// So a Goodies menu that ignored the surface would be A4's own defect wearing
+// the other axis: a third live route to a tool the palette and the flyout both
+// correctly disable. It stays a parameter rather than an `AppState&` for the
+// reason the next paragraph gives.
+//
 // **Exposed for --selftest, and that is the whole reason it is in this
 // header.** `menuContextFromState()` itself is not: its first call loads
 // `st.recentDocuments` from the user's real preferences file
@@ -222,8 +233,9 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // nothing and touches no disk, so `app/selftest/MenuBasics.cpp` can call it
 // directly to prove the Goodies menu enables exactly the implemented tools --
 // counted against `toolImplemented()`, never a literal number, so the
-// assertion stays true as tools ship.
-std::vector<MenuFamilyEntry> toolMenuFamily(Tool current);
+// assertion stays true as tools ship -- and `app/selftest/ToolSurface.cpp` can
+// call it with `documentOpen = false` to prove the same of the second axis.
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen);
 
 // The foreground colour as STRAIGHT LINEAR RGBA -- what the paint bucket (PRD
 // D25/D26) and the gradient (D24) both need, and what neither can be handed
@@ -258,6 +270,30 @@ std::array<float, 4> foregroundLinearRgba(int pigmentIndex);
 // is the one every call site in the running application wants. Collapsing them
 // into one would have made the palette test un-writable without a BrushState.
 std::array<float, 4> foregroundLinearRgba(const BrushState& brush);
+
+// The exact `ImGuiColorEditFlags` the COLOR panel's RGB picker is drawn with.
+//
+// **A function rather than a literal at the call site, so `--selftest` can
+// reach one bit of it.** `ImGuiColorEditFlags_HDR` is what stops the picker's
+// numeric row clamping `BrushState::rgb` back into `[0,1]` on the first drag
+// after an over-range pick (`ColorEdit4()`: `DragFloat(..., 0.0f, hdr ? 0.0f
+// : 1.0f, ...)`, and a DragFloat whose min equals its max is unbounded). That
+// makes it load-bearing for T25a's whole contract -- and invisible to both
+// harnesses this project has: `--selftest` has no ImGui frame, and the clamp
+// only fires while `g.ActiveId` is the drag (`DragBehavior()`'s own guard), so
+// a golden screenshot with no input is byte-identical with the flag and
+// without it. Measured, not assumed: removing the flag was sabotaged and the
+// `color_overrange` view passed unchanged.
+//
+// So the flag set is named here and `--selftest` asserts the bit is in it.
+// That is a weak assertion by construction -- it can only fail if someone
+// edits this line -- and editing this line is exactly the regression, which
+// nothing else in the project would notice.
+//
+// Returned as `int` rather than `ImGuiColorEditFlags` so this header does not
+// have to include `imgui.h`; the two are the same type (imgui.h typedefs it),
+// and the one caller and the one test both include imgui themselves.
+int rgbColorPickerFlags() noexcept;
 
 // ------------------------------------------------------- the gradient tool
 //
@@ -294,9 +330,21 @@ struct EyedropperPick {
   // True when the pick moved the COLOR panel from PIGMENT mode to RGB mode.
   // See `report` for why it is allowed to.
   bool switchedToRgbMode = false;
+  // True when the sampled texel was brighter than white (or, through the
+  // mirrored transfer curves, darker than black) and the foreground therefore
+  // now holds a value no swatch in this build can draw --
+  // `color/Space.hpp`'s `exceedsDisplayRange()`, asked of what was stored.
+  //
+  // A field rather than something the caller re-derives, for the same reason
+  // `switchedToRgbMode` is one: this is a *state this pick entered*, the
+  // options bar has to report it, and a second site recomputing the predicate
+  // off `st.brush.rgb` later would be describing whatever the foreground is
+  // by then rather than what this pick did to it.
+  bool overRange = false;
   // One sentence for the options bar, in `app/StrokeSession`'s refusal voice:
-  // what was picked, and -- the case that needs saying -- that PIGMENT mode
-  // was left behind because a sampled triple has no physical constants.
+  // what was picked, and -- the cases that need saying -- that PIGMENT mode
+  // was left behind because a sampled triple has no physical constants, and
+  // that the value is above what the swatch beside it can draw.
   std::string report;
 };
 

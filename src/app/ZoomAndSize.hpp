@@ -315,24 +315,48 @@ CanvasDimensions canvasDimensionsFor(const OpenDocument* doc, uint32_t fallbackW
 // solver should I allocate" -- and that answer is not cheap at all, so the
 // two do not share one function even though the fix above made it tempting.
 //
-// **The arithmetic, read off `sim/PaintSim.cpp`'s `allocFields()` rather
-// than estimated.** Seven ping-pong fields are allocated unconditionally,
-// each of them TWO full-resolution textures (`makePingPong()` builds
-// `tex[0]` and `tex[1]`), at `kWaterFormat = RGBA16Float` (8 B/texel) or
-// `kPigmentFormat = RGBA32Float` (16 B/texel):
+// **The arithmetic, MEASURED 2026-09-02 and asserted, not read off a
+// header.** This paragraph used to say 176 and 272 B/texel, and both were
+// low: it counted `allocFields()`'s seven ping-pongs and quietly omitted the
+// five single textures allocated in the same function. The corrected figures
+// are held against a live solver by `app/selftest/SolverFootprint.cpp` and
+// published as `PaintSim::kFieldBytesPerTexel` /
+// `PaintSim::kInkFieldBytesPerTexel`, so this can no longer drift silently.
+//
+// Seven ping-pong fields are allocated unconditionally, each of them TWO
+// full-resolution textures (`makePingPong()` builds `tex[0]` and `tex[1]`),
+// at `kWaterFormat = RGBA16Float` (8 B/texel) or `kPigmentFormat =
+// RGBA32Float` (16 B/texel):
 //
 //   water_ 8   pigC_ 16   pigR_ 16   depC_ 16   depR_ 16   sat_ 8   aux_ 8
-//   -> 2 x (8 + 16 + 16 + 16 + 16 + 8 + 8) = **176 bytes per texel**
+//   -> 2 x (8 + 16 + 16 + 16 + 16 + 8 + 8) = 176 bytes per texel
 //
-// and `allocInkFields()` adds three more RGBA32Float ping-pongs (lbmA_,
-// lbmB_, lbmC_) the moment the Ink medium is used: 2 x 3 x 16 = 96 B/texel,
-// for **272 bytes per texel** in the worst case.
+// and then five singles in the same function, which the old figure missed:
 //
-// At the 1024x1024 this build has always allocated, that is 184.5 MB, or
-// 285.2 MB once ink is in play -- already 55.7% of the design's 512 MB
-// memory budget (`app/Memory`, asserted by `app/selftest/AtelierChrome.cpp`
-// as "the budget is the design's 512 MB"). Doubling the texel count puts
-// the solver alone over that entire budget.
+//   paper_ 8 (RGBA16Float)  selection_ 1 (R8Unorm)  canvas_ 4, grayscale_ 4,
+//   graded_ 4 (RGBA8Unorm)  -> another 21 B/texel
+//
+//   => **197 bytes per texel**, unconditionally.
+//
+// `allocInkFields()` adds three more RGBA32Float ping-pongs (lbmA_, lbmB_,
+// lbmC_) the moment the Ink medium is used: 2 x 3 x 16 = **96 B/texel**
+// exactly, measured, for **293 bytes per texel** in the worst case.
+//
+// (`allocOilFields()` is deliberately absent from these figures: its three
+// ping-pongs are `kBrushGrid` x `kBrushGrid` = 64x64, a fixed 1.5 MiB, not
+// canvas-sized. `app/selftest/SolverFootprint.cpp` asserts that too, because
+// the day it becomes canvas-sized these numbers stop describing the worst
+// case.)
+//
+// At the 1024x1024 this build has always allocated, that is **207.7 MB**
+// (197 MiB), or **308.4 MB** (293 MiB) once ink is in play -- 60.2% of the
+// design's 512 MB memory budget (`app/Memory`, asserted by
+// `app/selftest/AtelierChrome.cpp` as "the budget is the design's 512 MB").
+// Doubling the texel count puts the solver alone over that entire budget.
+// Verified against `MTLDevice.currentAllocatedSize`: constructing the solver
+// at 1024x1024 moves the device's total allocation by 198.13 MiB, of which
+// 197.00 MiB is these textures and the remaining 1.13 MiB is the uniform,
+// occupancy and readback buffers, the samplers, and the compiled pipelines.
 //
 // **Why this function has to exist at all.** The canvasdim fix routes the
 // active document's size into the `ensurePaintSim()` call, which is right
@@ -341,9 +365,9 @@ CanvasDimensions canvasDimensionsFor(const OpenDocument* doc, uint32_t fallbackW
 // bounded only by `app/DocumentPresets.hpp`'s
 // `kMaxDocumentPresetDimension = 32768`. Passed through unclamped, a
 // 32768x32768 document's first Watercolour stroke asks the driver for
-// 1.07 Gtexel x 272 B = **292 GB**, and even an ordinary 4000x3000 photo
-// import asks for 3.3 GB where this build has never allocated more than
-// 285 MB. That is not a slow path or a large number to keep an eye on; it
+// 1.07 Gtexel x 293 B = **315 GB**, and even an ordinary 4000x3000 photo
+// import asks for 3.5 GB where this build has never allocated more than
+// 308 MB. That is not a slow path or a large number to keep an eye on; it
 // is a hard allocation failure on the first brush-down, in a call that used
 // to be a fixed, shipped, measured 1024x1024.
 //

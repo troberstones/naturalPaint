@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 
 namespace np {
 
@@ -63,6 +64,59 @@ float srgbDecode(float encoded);
 float rec709Encode(float linear);
 // Rec.709-encoded -> linear (the BT.709 EOTF).
 float rec709Decode(float encoded);
+
+// --- The display range, and the one operation that leaves it ------------
+//
+// The four transfer functions above are deliberately unclamped, and the
+// paragraph over them says why: "whether to clamp is a display/export policy
+// decision, not something the colour math itself should silently impose."
+// This is that policy decision, **given a name so it stops being silent.**
+//
+// `[0, 1]` is not a property of colour; it is the range a *destination*
+// accepts. Three of them exist in this build and every one of them is a
+// dead end for a value above white:
+//
+//   1. **An 8-bit swatch.** `IM_COL32` takes an int per channel and shifts
+//      it into a byte lane -- so `(int)(1.4f * 255)` is 357, which is 0x165,
+//      and the high bits land in the *neighbouring channel*. An over-range
+//      colour drawn without this call is not clipped, it is corrupted, and
+//      it comes out a different hue rather than a brighter one.
+//   2. **`ImGui::ColorPicker3`'s saturation/value square.** Its geometry is
+//      a unit square; `S` and `V` are `ImSaturate`d before they become
+//      coordinates. (Its *numeric* row is not a third clamp -- see
+//      `ImGuiColorEditFlags_HDR` at the call site in `ui/MacPaintUI.cpp`,
+//      which is exactly the flag that removes the 0..1 bound from those
+//      DragFloats.)
+//   3. **`MixboxLut::rgbToLatent()`.** Pigment is a physical model of paint
+//      on paper; there is no reflectance above total reflectance, so there
+//      is nothing above the gamut for it to mean. That clamp is *correct*,
+//      and the only thing wrong with it was that it was mute.
+//
+// So: every site that cannot carry a scene-referred value calls
+// `clampToDisplayRange()` rather than clamping in place, and
+// `grep -rn clampToDisplayRange src/` therefore enumerates the whole set.
+// That is the point of the function existing at all -- it does nothing a
+// `std::clamp` would not, and the three characters it saves are not worth a
+// header entry. What is worth one is that the list of places where a
+// scene-referred value dies is greppable instead of anecdotal.
+//
+// `exceedsDisplayRange()` is the other half, and is what the UI asks so it
+// can *say* that a clamp is about to happen (`ui/MacPaintUI.cpp`'s COLOR
+// panel and the eyedropper's own report). A swatch that cannot draw the
+// colour it is standing for is a lie by necessity; a swatch that does not
+// admit it is just a lie.
+//
+// Both are stated in **encoded** values, not linear, because that is where
+// the destinations are: a swatch, a picker widget and an sRGB-in LUT all
+// take encoded triples. `srgbEncode()` is monotonic and fixes 1.0, so
+// "linear > 1" and "encoded > 1" are the same question asked either side of
+// the curve.
+inline constexpr float kDisplayFloor = 0.0f;
+inline constexpr float kDisplayCeiling = 1.0f;
+
+bool exceedsDisplayRange(float encoded) noexcept;
+bool exceedsDisplayRange(const std::array<float, 3>& encoded) noexcept;
+std::array<float, 3> clampToDisplayRange(const std::array<float, 3>& encoded) noexcept;
 
 // The Document-level colour policy (DESIGN-imaging.md §2; CONTEXT.md's
 // "Working space" glossary entry: "Linear-light RGBA, sRGB/Rec.709

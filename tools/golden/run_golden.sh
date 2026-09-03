@@ -5,7 +5,9 @@
 # screen-recording permission, exact rendered pixels -- see that header for
 # why). This script is the missing other half: it drives the app through a
 # handful of known, scripted UI states via its existing --demo-document /
-# --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo
+# --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo /
+# --gradient-demo / --clone-demo / --smudge-demo / --mask-demo / --no-document
+# / --overrange-demo
 # CLI flags, crops each capture down
 # to one small region, and compares it against a reference image committed
 # under tests/golden/ with src/tools/GoldenTool.cpp.
@@ -45,6 +47,12 @@
 #     same consequence.
 #   * `dabs/` and `dabs-imported/` (app/DabLibrary) size the tip grid.
 #   * `document-presets.txt` sizes the New Document dialog's list.
+#   * `export-presets.json` (io/ExportAs) is read on the first open of either
+#     export dialog, and a file that exists but does not parse -- or that
+#     holds a preset naming a token this build does not know -- puts a status
+#     line inside the modal. The two `export_*` views photograph that modal,
+#     so this file joins the list; it is the same argument as the four above,
+#     made before the view was written rather than after it flaked.
 #
 # This was found the way these things are found: `layers` failed with a
 # diffuse 3046-pixel shift that was neither noise nor a code change -- it was
@@ -292,6 +300,38 @@ measure_n="${2:-10}"
 #     between them. A ramp is a picture, and a picture is what a photograph
 #     tests.
 #
+#   gradient_spread_off / gradient_radial / gradient_angular  -- the two kinds
+#     added on 2026-09-02, and the one chrome state they brought with them.
+#
+#     `ops/Gradient` had implemented Linear, Radial and Angular since it was
+#     written; the tool reached only Linear. Wiring the other two is a KIND
+#     combo and one field, and `--selftest` can prove all of that headlessly:
+#     that the kind reaches `renderGradient()`, that a radial is rotationally
+#     symmetric about its centre, that the angular sweep runs clockwise on
+#     screen. What it cannot reach is the three things a photograph is for:
+#
+#       * `gradient_spread_off` -- the options bar with Angular selected,
+#         where the SPREAD combo is drawn DISABLED. A sweep wraps into [0, 1)
+#         and every spread mode is the identity there, so a live control would
+#         sit over something that provably changes no texel. That the control
+#         is greyed rather than merely inert is a fact about pixels only.
+#       * `gradient_radial` -- the rim circle on the rubber band. A Radial
+#         drag is a RADIUS, not a span, and a bare line says otherwise.
+#       * `gradient_angular` -- the clockwise arc and its arrowhead. The sweep
+#         direction is a consequence of document space being y-down, and is
+#         exactly the sort of fact that is invisible until someone "fixes" it
+#         to match the maths textbook.
+#
+#     The three canvas views share `gradient_drag`'s crop deliberately, so the
+#     references for Linear, Radial and Angular are directly diffable against
+#     one another: same drag, same frame, three geometries.
+#
+#     All measured at exact (0, 0) over 8 launches each, like the two views
+#     before them. `gradient`'s own crop widened from 820 to 1090 px in the
+#     same change -- the KIND combo pushed SPREAD off the right edge of the
+#     old one, which the harness caught as a FAIL rather than as a silently
+#     truncated view.
+#
 #   gradient_drag  -- the same tool with a drag HELD OPEN
 #     (--gradient-demo drag): the live ramp preview composited into the
 #     document, and the rubber-band line over it -- hollow ring at the
@@ -324,8 +364,366 @@ measure_n="${2:-10}"
 #     here; `tools` and `canvas` are exact for the same reason, and
 #     `toolbar`'s own 4-pixel bimodality is documented above as a specific
 #     finding rather than a property of text in general.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag")
+#
+#   clone_anchor / clone_source  -- the Clone Stamp's source marker
+#     (--clone-demo), the chrome answering "clone needs to show an indicator of
+#     where it is cloning from".
+#
+#     **These two views are the whole of this feature's test coverage, and that
+#     is a statement about `--selftest` rather than about effort.** The state
+#     underneath (`AppState::CloneSourceState`, `setCloneAnchor()`,
+#     `latchCloneOffset()`) was already asserted headlessly and was already
+#     right; what was missing was every pixel of it. A marker drawn under the
+#     document quad, clipped to nothing, at `anchor` when it should be at
+#     `pointer + offset`, or in an accent with no halo over a same-hue
+#     painting, is a marker that ships broken with a green suite -- and the
+#     revision immediately before this one closed a defect that made a whole
+#     tool useless for its entire history for exactly that reason, inside a
+#     canvas block `--selftest` cannot reach.
+#
+#     They share a crop deliberately, the way the three gradient canvas views
+#     do, so the positive and the negative are directly diffable: the ONLY
+#     difference between the two captures should be the live ring, its centre
+#     dot and the leader line.
+#
+#     `clone_source` is the positive -- anchor crosshair at document (660,
+#     300), live ring at (170, 128), pointer parked at the canvas band's centre
+#     with the leader line between the last two. Three marks in three places,
+#     none of them collinear and none of them on top of another piece of
+#     chrome, so a photograph can be read.
+#
+#     `clone_anchor` is the negative and is not decoration. `--clone-demo
+#     anchor` runs the identical fixture with the offset NOT latched, and the
+#     live ring is gated on `haveOffset` precisely because before the first
+#     pen-down the source IS the anchor. A build that dropped that gate would
+#     draw the ring at `pointer + (0,0)` -- concentric with the brush cursor
+#     ring, which is where it is least likely to be noticed -- and
+#     `clone_source` would still pass. This view is what fails.
+#   wand_options / bucket_options  -- the options bar with `Tool::MagicWand`
+#     and with `Tool::PaintBucket` selected (`--wand-demo` and `--wand-demo
+#     bucket`): the flood-fill row that gave those two tools their TOLERANCE,
+#     REACH and ANTI-ALIAS controls, plus the trailing route indicator that
+#     follows it.
+#
+#     **Two views, and the pair is the point.** The row is one block of drawing
+#     code read by two tools, and the fact it exists to establish -- that each
+#     tool holds its OWN `FloodFillParams` (app/AppState.hpp) rather than
+#     sharing one -- is invisible in any single photograph, because a shared
+#     block and two blocks look identical until their values differ. So the
+#     demo flag puts the bucket at the opposite state of every control (All
+#     Similar rather than Contiguous, anti-alias unticked rather than ticked, a
+#     tolerance of 96 rather than the default 32) and the two references
+#     disagree, control for control. A regression that collapsed the two blocks
+#     into one would make one of these two views show the other's values.
+#
+#     It also puts BOTH states of the combo and BOTH states of the checkbox
+#     under coverage, which is the argument `gradient_spread_off` makes for
+#     existing beside `gradient`: a control has more than one appearance and
+#     only one of them is the default.
+#
+#     `--selftest`'s own section (app/selftest/FloodFillOptions.cpp) proves
+#     every one of these parameters against real texels, and provably cannot
+#     reach any of the following, each of which ships a green suite and a
+#     visibly wrong toolbar: the row drawn for the wrong tool or for no tool;
+#     the REACH combo reading the wrong row of `kFloodReaches`; the ANTI-ALIAS
+#     checkbox drawn ticked whatever `edgeBand` holds; the TOLERANCE slider
+#     showing the engine's 0.125 instead of Photoshop's 32. The first capture
+#     taken for this view found a real one of exactly that class: the REACH
+#     combo's width was measured with the band's proportional face and drawn in
+#     the mono one, so "Contiguous" was clipped under its own arrow. Headless,
+#     that combo was perfect.
+#
+#     **The crop deliberately runs past the row, to x=1440**, so the trailing
+#     "-> none" / "-> rgb-fill" indicator is in frame. That is not decoration:
+#     the three blocks above this one in the options bar take an early return
+#     and never reach that indicator, and these two must NOT -- it is the one
+#     place in the chrome that answers a refused bucket click, and its own
+#     comment records that the bucket used to be missing from it. A view that
+#     stopped at the checkbox would pass just as happily with the indicator
+#     dropped.
+#
+#     Both measured at exact **(0, 0)**, and measured rather than reasoned
+#     about -- these crops hold five pieces of antialiased text each, which by
+#     `toolbar`'s own history is the profile that flakes. 8 separately launched
+#     captures per view, each diffed against that batch's first (106 400 px
+#     crop): 14 comparisons total, every one 0 mismatched px at max channel
+#     diff 0. So they are blessed exact, like `gradient` and `gradient_drag`
+#     before them, rather than handed `toolbar`'s (48, 16) by analogy -- the
+#     mistake `gradient_drag`'s own entry above records making and correcting.
+#   smudge_options  -- the options bar with `Tool::Smudge` selected
+#     (`--smudge-demo`): the STRENGTH slider and the TIP combo the smudge got
+#     when its strength stopped being the OPACITY slider (brush/Smudge.hpp
+#     §3b), the four brush sliders it KEEPS, and the trailing route indicator.
+#
+#     **One view rather than a pair, unlike the two above, and for the reason
+#     that pair exists**: there they are two tools reading one block of drawing
+#     code, and only two photographs at different values can show the blocks are
+#     separate. Here there is one tool and one block, so a second view would
+#     photograph the same fact twice.
+#
+#     **What it is actually for is a DEFAULT, which is unusual for a view here
+#     and is the whole point.** The defect this row answers was not a missing
+#     control, it was `strength` being `BrushTip::opacity`, whose default is 1
+#     -- and 1 is the single strength at which the fade brush/Smudge §5 derives
+#     is exactly the identity, so the shipped tool smeared one colour to the far
+#     edge of the canvas and never reloaded. The user reported it; the suite did
+#     not, because every strength assertion in `app/selftest/Smudge.cpp` sets a
+#     strength before measuring. So the thing this capture must hold is the
+#     characters **0.50** in the STRENGTH track, and `--smudge-demo`
+#     deliberately sets nothing at all: a demo that configured the row first
+#     would photograph the demo instead of the shipped state.
+#     `app/selftest/SmudgeOptions.cpp` asserts the same number headlessly and
+#     asserts the fade it buys. **What that section provably cannot reach is
+#     whether anything DRAWS it**, and that is measured rather than assumed:
+#     gating the row on the wrong tool, so it is drawn for none, left
+#     `--selftest` at 0 FAIL and exit 0 while moving 10 176 of this crop's
+#     170 240 px at max channel diff 223. A row bound to the right struct and
+#     shown to nobody is a green suite and an empty band.
+#
+#     **The crop is 2240 wide, the widest in this table, and every part of it
+#     is load-bearing.** It starts at the band's left end so the tool NAME is in
+#     frame (a row drawn under the wrong tool name is the failure
+#     `floodToolParamsFor()`'s sibling exists to prevent), runs through SIZE,
+#     HARD, LOAD and WET because this is the first tool in the band to bring a
+#     row and KEEP the brush sliders -- `docs/ui.md` §4b's test is whether those
+#     four are live, and `smudgeDab()` reads three of them -- and ends past
+#     `-> smudge` so the trailing route indicator is included, for the reason
+#     the two entries above give for running to x=1440.
+#
+#     Measured at exact **(0, 0)**, and measured rather than reasoned about:
+#     8 separately launched captures, each cropped identically and diffed
+#     against the batch's first (170 240 px crop). 7 comparisons, every one
+#     0 mismatched px at max channel diff 0. Blessed exact rather than handed
+#     `toolbar`'s (48, 16) by analogy, which is the mistake `gradient_drag`'s
+#     entry records making and correcting -- this crop holds more antialiased
+#     text than any other in the table and still did not move a bit.
+#
+#   `no_document` / `no_document_title` (--no-document)
+#     docs/testing-issues.md **T5**: "when you close all documents, there is
+#     still a document/canvas that does not belong to anything."
+#
+#     **This is the state nobody had ever photographed, and it was not
+#     reachable at all.** A session always starts with a document
+#     (src/main.cpp, "A session always has a document"), no CLI flag closed it,
+#     and `--screenshot` cannot click File > Close. So every pixel of the
+#     no-document chrome -- the palette, the title band, the tool menu -- was
+#     outside this harness's reach, which is exactly why T5 could sit open as
+#     "the oldest known structural gap in the build" with a green suite and
+#     twenty green views. `--no-document` skips the startup document; these two
+#     views are the photograph.
+#
+#     `no_document` is the WHOLE tool palette column, top to bottom, and the
+#     height is the point rather than an accident: the claim under test is not
+#     "cells are dimmed", it is **which** cells. Fifteen of the twenty-one
+#     built tools go dim because they need a document; Hand and Zoom stay lit
+#     because they move the view; the Brush group's cell stays on the accent
+#     because it is the active tool and painting the bare canvas is a supported
+#     workflow this change must not break. A crop stopping at the fifth cell
+#     (which is where `tools`' own 402 px would stop) would photograph the
+#     dimming and miss every one of those distinctions -- it would pass equally
+#     happily on a change that disabled the entire palette, which is the one
+#     regression this view exists to catch.
+#
+#     `no_document_title` is the title band's statement, and it needs its own
+#     view because the band is not in `no_document`'s column and `titlebar`
+#     photographs the same band WITH a document (where the tab strip owns that
+#     space and the statement is deliberately not drawn). Cropped to x<900:
+#     everything to the right of that is the PANELS/Undo/Redo/fps group
+#     `titlebar` already covers, and repeating it here would be a second copy
+#     of somebody else's coverage.
+#
+#     `no_document_flyout` (--no-document --flyout-demo) is the third, and it
+#     exists for one specific regression the other two cannot see. **The
+#     judgement call of this whole change is that the bare canvas stays
+#     paintable** -- File > "New" is called "New Canvas" precisely so it cannot
+#     be read as "New Document", and a change that made the document-scoped
+#     tools legible by also switching the paint tools off would have destroyed
+#     the thing it was meant to protect. In `no_document` the Brush group's
+#     cell is the ACTIVE tool, so it draws on the accent whether or not it can
+#     act, and a regression that disabled it would move no pixel in that crop.
+#     The flyout has no such cover: it lists all four members of the paint
+#     group side by side, and with no document open exactly one of them
+#     (Pencil, which `strokeRouteFor()` sends nowhere without a target) is
+#     dimmed while Brush, Water and Dry Brush stay lit. Four sibling tools, one
+#     picture, and the line drawn between them is visible in it -- so switching
+#     the paint tools off moves three rows here and is caught.
+#
+#     **All three are blessed exact (0, 0), and all three were MEASURED rather than
+#     reasoned about.** That matters here more than usual for two of them:
+#     `no_document_title` is 900x77 of nothing but antialiased text, and
+#     `no_document_flyout` is the SAME popup, with the same four member names,
+#     that made `flyout` above widen to (48, 16) -- "a text view wearing a
+#     palette view's threshold ... passing on luck", in that entry's own words.
+#     So the expectation going in was that neither could hold an exact
+#     threshold, and copying `flyout`'s numbers across by analogy would have
+#     been the obvious move and the wrong one.
+#
+#     8 separately launched captures per view, each diffed against that batch's
+#     first: 7 comparisons per view, 21 in all, **every one 0 mismatched px at
+#     max channel diff 0** -- over 124 000 px per `no_document` crop, 69 300
+#     per `no_document_title` and 140 000 per `no_document_flyout`. They get 0
+#     on evidence, not on resemblance. (`flyout`'s own bimodal glyph-edge
+#     flake is not being contradicted here: that view is captured over a
+#     document and this one is not, and 7 clean comparisons is 7 clean
+#     comparisons, not a proof that the flake is impossible. If this view ever
+#     does start flaking the widening will be a measurement too.)
+#
+#   color_overrange -- T25a's visible half: the COLOR panel in RGB mode
+#     holding a **scene-referred** foreground under `--overrange-demo`
+#     (linear 2.600/0.450/0.180, i.e. sRGB 1.516/0.701/0.461). Four things
+#     are in frame and each is load-bearing:
+#
+#       * the PIGMENT/RGB toggle with RGB accented, which is the mode this
+#         whole branch draws in;
+#       * the **OVER RANGE badge**, in the warning yellow -- the state, named,
+#         which is the difference between "a big number" and "the square
+#         below you is not this colour";
+#       * the saturation/value square itself, showing the CLAMPED colour --
+#         the lie by necessity the badge is admitting to;
+#       * the picker's numeric row reading **1.516**, not 1.000. That single
+#         glyph is the whole of the report this track answers ("the colour
+#         picker only shows values clamped to 1"), and it is what
+#         `ImGuiColorEditFlags_HDR` at the `ColorPicker3` call site buys.
+#
+#     `--selftest` has no window and no ImGui frame, so it can prove that
+#     `BrushState::rgb` holds 1.516 and that every consumer agrees -- and it
+#     cannot see one pixel of any of the above. Without this view the visible
+#     half of the change has no coverage at all.
+#
+#     **The crop position is measured, not reasoned.** A throwaway
+#     instrumented build reported this section's
+#     content region as 119 px tall against a block that already asks for
+#     191, so the RGB branch overflows its slot in the default dock and
+#     anything drawn at the BOTTOM of it is clipped -- which is what the
+#     first capture of this view showed, with the badge cut in half. The
+#     badge moved above the picker as a result. This crop starts inside the
+#     panel (x=1920, not the 1900 the `tabs` views use) and stops at x=2520
+#     so the column's own scrollbar at x~2540 is out of frame: that
+#     scrollbar is the exact artifact this file's header records costing the
+#     `layers` view a diffuse 3046-pixel false failure.
+#
+#   fg_well_overrange -- the tool palette's FG well under the same
+#     `--overrange-demo`, and it exists because a sabotage said it had to.
+#     Removing `clampToDisplayRange()` from that well's `IM_COL32` pack (a
+#     one-line edit that turns the foreground into a *different hue*, not a
+#     dimmer one -- 1.516 * 255 = 386 = 0x182, and the 0x1 shifts into the
+#     green lane) produced **no failure anywhere**: all 20 views of the day
+#     passed and `--selftest` cannot draw. The well sits below the palette's
+#     scrolling grid and no existing crop reached it.
+#
+#     40x40 of flat swatch plus the "FG" label. Small on purpose: the claim
+#     is "this square is the CLAMPED colour", one flat RGB triple, and a
+#     bigger crop would only add unrelated chrome that could move for
+#     unrelated reasons. Under the sabotage the same square draws (130, 179,
+#     117) instead of (255, 179, 118) -- a third of the crop, at magnitude
+#     125, which no plausible tolerance would admit.
+#
+#   gradient_overrange -- the options bar's live gradient RAMP under
+#     `--gradient-demo --overrange-demo`, at the identical crop the
+#     `gradient` view above uses. The fourth named clamp site
+#     (`ui/AtelierChrome.cpp`): the ramp is built from the foreground, so a
+#     scene-referred foreground makes an encoded channel exceed 1.0 right at
+#     an `IM_COL32` pack -- the same byte-lane spill `fg_well_overrange`
+#     covers, on a different widget, and equally invisible to `--selftest`.
+#
+#     A second view rather than changing `gradient`'s own arguments: that
+#     view's job is the ramp's *geometry and stop list* in the ordinary case,
+#     and re-aiming it at an unusual colour would have traded one coverage
+#     for another rather than adding any.
+#   crop_options / crop_options_perspective -- the options bar's crop row
+#     under `--crop-demo` and `--crop-demo perspective`. `Tool::Crop`'s row is
+#     a per-tool block, so it draws for exactly one tool and `--screenshot`
+#     cannot click a palette cell -- the gap `--gradient-demo` and
+#     `--wand-demo` already cover. Two views rather than one because the whole
+#     of the user's request was a MODE selectable here, and one photograph
+#     cannot show a combo in both of its states. The Perspective view is also
+#     where the SIZE readout earns its place: it reads 528 x 326, which is
+#     `perspectiveCropExtent()`'s longer-of-opposite-edges rule (the quad's two
+#     horizontal edges are 523 and 528, its verticals 296 and 326), so a build
+#     that switched to the mean would draw 526 x 311 here and this view would
+#     redden. `--selftest` proves that rule's arithmetic and cannot prove that
+#     the number reaches the band.
+#
+#   crop_drag -- the rectangle gesture held open: the darkened shield outside
+#     the crop, the eight handles, the thirds guides and the accent outline.
+#     Every one of those exists only while a crop is pending, and a pending
+#     crop is the product of a drag a screenshot run has no pointer to make --
+#     which is why `--crop-demo` pins one, exactly as `--gradient-demo drag`
+#     pins the gradient's far handle.
+#
+#     The shield is the piece worth photographing rather than asserting: it is
+#     four alpha-blended quads tiling the frame between the canvas band and
+#     the crop, drawn with the anti-aliased fill flag off so their shared
+#     edges rasterise watertight. A regression that put the fringe back would
+#     draw a faint bright seam across the picture at each shared edge --
+#     visible to a person, invisible to every assertion in
+#     app/selftest/CropTool.cpp, and it is a picture, so a picture is what
+#     covers it.
+#
+#   crop_perspective -- the four-corner gesture, with the corners deliberately
+#     NOT symmetric (180,140 / 700,200 / 640,520 / 120,430) so a dropped or
+#     swapped coordinate lands somewhere obviously wrong rather than somewhere
+#     plausible, the argument `--clone-demo`'s three marks already make. It
+#     also shows what the mode changes: four handles instead of eight, and
+#     thirds guides that follow the quad's own edges rather than a bounding
+#     box.
+#
+#   crop_refused -- the bow-tie. **The negative half, and the one this feature
+#     most needs**, because the refusal is drawn in two places and
+#     `--selftest` can see neither: the outline goes dashed on the canvas and
+#     the sentence goes into the band, with the CROP button greyed beside it.
+#     A build whose `cropQuadRefusal()` was perfectly correct and whose UI said
+#     nothing would pass every assertion in app/selftest/CropTool.cpp and ship
+#     a tool that silently does nothing when Enter is pressed. The crop is
+#     2400 px wide because the sentence is long and the point is that the
+#     WHOLE sentence is on screen -- a band view cropped to the button would
+#     have proved the button greys and nothing about whether the user is ever
+#     told why.
+#   layer_thumbs / mask_target / mask_content -- the LAYERS panel's two
+#     per-row thumbnails, and the mask one acting as the paint target
+#     (`docs/testing-issues.md` T16).
+#
+#     **The three views are one claim in three states, and dropping any of
+#     them drops half of it.** `layer_thumbs` is `--demo-document` alone: three
+#     rows, each with a layer thumbnail, and the masked row with a mask
+#     thumbnail beside it, with the accent ring on the ACTIVE layer's content
+#     thumbnail. `mask_target` adds `--mask-demo`, which aims the pen at that
+#     layer's mask and paints one real stroke into it through
+#     `app::StrokeSession`. `mask_content` runs the identical script with the
+#     target left on the layer's own pixels.
+#
+#     The last two are what make this coverage rather than decoration: they
+#     differ by 2 709 px (1.97 % of the crop, max channel diff 246) in exactly
+#     two places -- which square carries the accent ring, and which of the two
+#     thumbnails grew a black diagonal. A build in which the mask thumbnail
+#     were a status light rather than a control, or in which the target were
+#     selectable but the stroke still went to the layer, makes those two
+#     pictures identical. That is the "live control over nothing" failure this
+#     project has shipped before, and it is the one thing `--selftest` cannot
+#     see: it has no window, and the control is a 24 px square in a panel.
+#
+#     **The fixture is `--demo-document`'s own layer 2 and NOT a new one.**
+#     That layer is a yellow rectangle in the lower right under a mask that
+#     ramps left to right across it -- asymmetric in both axes, in both the
+#     layer and the mask -- so a thumbnail drawn flipped, mirrored, transposed
+#     or with red and blue swapped fails these views. `--ui-layer-demo` also
+#     carries a mask but an EMPTY one on an EMPTY Pigment layer, so both of
+#     its thumbnails would be uniform and neither would catch an orientation
+#     bug; that is why the `layers` view is not simply re-aimed.
+#
+#     640x240 at (1916, 940): the three rows and nothing else. Measured, not
+#     reasoned: 8 launches each, 7 comparisons per view against the batch's
+#     first (137 600 px crop), **0 mismatched px at max channel diff 0 every
+#     time**, so both thresholds are 0. The `layers` view was re-measured in
+#     the same batch and came out at 0/0 as well; its own 96/64 budget is left
+#     alone rather than tightened on one batch's evidence.
+#
+#     `layers` itself changed with this task and its reference was
+#     regenerated: the rows carry thumbnails now, and the trailing half-filled
+#     mask chip is gone -- the mask thumbnail at the leading edge is the same
+#     marker doing the same job, and also the control.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -531,11 +929,25 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #    of secondary effect, not a mistake in this revision's own arithmetic, is
 #    the more likely explanation than a bug in a shift that six other views
 #    confirm cleanly.
-view_crop_x=(0    1916 920  0   0   0    900 1000 1830 1900 1900 40  480)
-view_crop_y=(5    927  965  148 664 0    628 1000 158  166  1462 76  560)
-view_crop_w=(1400 640  384  100 400 2560 700 900  100  660  660  820 1100)
-view_crop_h=(166  190  192  402 350 77   500 400  500  64   64   76  800)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90)
+#
+# `clone_anchor`/`clone_source`'s (390, 370, 1110, 550) has no genealogy yet --
+# it is the first revision of these views -- but it was derived rather than
+# framed by eye, and the derivation is worth recording because it is not the
+# one the arithmetic suggests. `--demo-document` opens 1024x1024 at 100% with
+# the document's origin at the canvas band's TOP-LEFT, not centred in it, so
+# the band shows only document x 0..899, y 0..675 and its centre -- where
+# `--clone-demo` parks the pointer -- is document (450, 338). The three marks
+# therefore land at device (448, 428) [live ring], (1008, 848) [pointer] and
+# (1428, 772) [anchor crosshair]; this crop is their bounding box plus a
+# margin wider than the largest mark's own radius. Two earlier guesses at the
+# demo's document coordinates, both made from the centred-document assumption,
+# put one mark or the other outside the window entirely -- a correct marker
+# that no photograph contained.
+view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672  40   40   350  320  40   1916 1916 1916)
+view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32   76   76   350  420  76   940  940  940)
+view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204 1000 1000 1060 1220 2400 640  640  640)
+view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512 76   76   830  830  76   240  240  240)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -568,7 +980,97 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90)
 # than a second number invented for it. `canvas` and `tools` stay exact
 # because they genuinely contain no text, and `tools` was re-measured at
 # exactly 0 after the palette grew to 28 cells.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0)
+#
+# **`clone_anchor` / `clone_source` are exact (0, 0), and the number was
+# measured before it was written down rather than copied from the view above
+# them.** These two hold a synthetic pointer parked over the canvas, which is
+# the single thing that cost `toolbar` its exact threshold (a hover tint) and
+# `canvas` its first one (a cursor ring), so the guess going in was that they
+# would need a budget. They do not: 8 separately-launched captures per view,
+# each diffed against its own batch's first launch (610 500 px crop), gave 14
+# comparisons at 0 mismatched px and max channel diff 0 -- every one. The
+# pointer is parked over the canvas rather than over a widget, so there is no
+# hover lerp to settle and no glyph in frame at all, and the brush cursor ring
+# it does produce is drawn at a fixed position rather than chased across the
+# frame. Giving these a text budget by analogy would have cost the sensitivity
+# `gradient_drag`'s own entry above records losing for exactly that reason.
+#
+# **`color_overrange` is exact (0, 0), and it was measured before it was
+# written down.** The guess going in was that it would need `toolbar`'s
+# (48, 16): this crop is almost entirely TEXT -- "PIGMENT", "RGB", the
+# OVER RANGE badge and three mono numbers -- and text is the one profile
+# this file's history records flaking (`toolbar`'s single glyph stem,
+# `flyout`'s member names, both coin flips). It does not. 8 separately
+# launched captures, each diffed against that batch's first (168 000 px
+# crop): 7 comparisons, every one **0 mismatched px at max channel diff
+# 0**. So it is blessed exact like `titlebar` and `wand_options` -- both of
+# which are also text views measured rather than handed a budget by
+# analogy, which is the mistake `gradient_drag`'s entry above records
+# making and correcting.
+#
+# **`fg_well_overrange` is exact (0, 0), measured the same way.** 8 launches,
+# 7 comparisons against the batch's first (10 800 px crop): 0 mismatched px
+# at max channel diff 0, every one. It holds one two-letter label and is
+# otherwise a flat swatch on flat chrome, which is the profile `canvas` and
+# `tools` hold exact -- and unlike `toolbar`'s tab-strip glyph, that label is
+# static disabled text with no hover, no animation and no per-frame state.
+#
+# **`gradient_overrange` is exact (0, 0), and NOT because `gradient` above
+# is.** It shares that view's crop, which makes borrowing its threshold the
+# obvious shortcut and the exact mistake this file records `gradient_drag`
+# making. Measured on its own: 8 launches, 7 comparisons against the batch's
+# first (82 840 px crop), 0 mismatched px at max channel diff 0 every time.
+# **`export_as`, `export_as_blocked` and `export_states` are exact (0, 0), and
+# the number was measured before it was written down.** These are the first
+# golden views either export dialog has EVER had: both are opened by a File
+# menu click, `--screenshot` has no input, and no launch argument reached
+# File > Export As... at all -- so `--open-export-as` had to exist before a
+# crop region was even a meaningful question. That reachability gap, not any
+# particular rectangle, is what left every pixel of two modals uncovered
+# behind a green suite and twenty-seven green views; it is the same gap
+# `--no-document` was added to close for T5.
+#
+# The guess going in was `toolbar`'s (48, 16). These crops are almost entirely
+# TEXT -- four combo labels, a wrapped warning paragraph, a filename table --
+# and text is the one profile this file's history records flaking (`toolbar`'s
+# single glyph stem, `flyout`'s member names, both coin flips). They do not
+# flake. 8 separately-launched captures per view, each diffed against that
+# batch's first: 21 comparisons across the three, every one **0 mismatched px
+# at max channel diff 0**. Blessed exact, like `titlebar`, `wand_options` and
+# `color_overrange` -- all of which are also text views measured rather than
+# handed a budget by analogy, which is the mistake `gradient_drag`'s entry
+# above records making.
+#
+# Two things about the crops are deliberate rather than framed by eye:
+#
+#   * **Nothing in frame carries an absolute path.** The Export As presets
+#     file lives under the user's Application Support directory and its path
+#     used to be printed, unconditionally, as a line in the dialog; it is
+#     behind the "Manage +" toggle now, which starts closed. `export_states`
+#     is launched with `.` as its output folder for the same reason -- a real
+#     directory, so the plan table renders, spelled in a way that is the same
+#     on any machine.
+#   * **`export_states`' crop is the whole modal, 1204x1512 of a 1580-tall
+#     window.** It only just fits, and only because this revision stopped both
+#     of that dialog's scrolling lists reserving a fixed height whatever they
+#     held -- before that the Export and Close buttons were below the bottom
+#     of the screen. A future edit that adds a row to that dialog will push
+#     them off again, and this view is what will say so.
+# **The five `crop_*` views are exact (0, 0), measured, not borrowed.** Three
+# of them are text-and-chrome band crops (`crop_options`,
+# `crop_options_perspective`, `crop_refused`) and two are canvas crops full of
+# translucent shield, an accent outline and eight small handles
+# (`crop_drag`, `crop_perspective`) -- profiles that this file's own history
+# says can flake, which is exactly why they were measured rather than handed
+# `gradient_drag`'s numbers by analogy. 8 separately launched captures each,
+# 7 comparisons apiece against that batch's first, on crops of 76 000 /
+# 76 000 / 182 400 / 879 800 / 1 012 600 px: **every one 0 mismatched px at
+# max channel diff 0.** The canvas pair being exact is the more interesting
+# result of the two -- the shield is four alpha-blended quads with the
+# anti-aliased fill flag off, and the reason that comes out bit-stable is the
+# same reason it comes out seamless: adjacent quads sharing exact vertices
+# rasterise watertight, with no fringe geometry to round differently.
+view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -584,7 +1086,10 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0)
+# note in cmd_measure on what that mode is for. The five `crop_*` views are 0
+# here because their magnitude threshold is 0 too -- see the paragraph above
+# `view_threshold` for the measurement.
+view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on
@@ -603,6 +1108,7 @@ run_view_capture() {
       NP_BRUSH_LIBRARIES="$jdir/brush-libraries.txt" \
       NP_DAB_DIR="$jdir/dabs-root" \
       NP_DOCUMENT_PRESETS="$jdir/document-presets.txt" \
+      NP_EXPORT_PRESETS="$jdir/export-presets.json" \
       "$BIN" ${view_args[$idx]} --screenshot "$fullPng" "${view_frames[$idx]}" \
       > "$WORK_DIR/${name}.stdout.log" 2> "$WORK_DIR/${name}.stderr.log"; then
     echo "run_golden.sh: $name: naturalPaint exited nonzero -- see $WORK_DIR/${name}.stderr.log" >&2

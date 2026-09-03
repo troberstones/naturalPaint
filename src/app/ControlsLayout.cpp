@@ -22,7 +22,15 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        "RGB->latent decomposition, but the three constants shown below are "
        "NOT derived from an RGB triple, which has none; they stay whatever "
        "pigment was last selected in PIGMENT mode. Switch to PIGMENT to "
-       "change them."},
+       "change them.\n\n"
+       "The colour is scene-referred (T25a): an eyedropper pick off a "
+       "highlight brighter than white keeps its real value, and the panel "
+       "shows OVER RANGE when it holds one. Two routes cannot carry such a "
+       "value and clamp it to 1.000 -- the swatch, because it is 8-bit, and "
+       "PIGMENT mode, because paint cannot reflect more light than falls on "
+       "it. RGB strokes, the bucket and the gradient all keep it. Dragging "
+       "in the saturation/value square brings the colour back into range; "
+       "the numeric row under it does not."},
       {ControlsSection::BrushLibrary, R::Tool, "BRUSH LIBRARY", false},
       {ControlsSection::Brush, R::Tool, "BRUSH EDITOR", false},
       {ControlsSection::Layers, R::Document, "LAYERS", true},

@@ -12,6 +12,7 @@
 #include "app/DabLibrary.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
+#include "app/CropTool.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
@@ -27,9 +28,11 @@
 #include "core/SelectionBoundary.hpp"
 #include "core/SelectionOps.hpp"
 #include "core/SelectionShapes.hpp"
+#include "brush/Smudge.hpp"
 #include "brush/StrokePath.hpp"
 #include "core/OpStack.hpp"
 #include "core/Probe.hpp"
+#include "ops/FloodFill.hpp"
 #include "paint/Palette.hpp"
 #include "sim/PaintSim.hpp"
 
@@ -218,8 +221,63 @@ struct BrushState {
   // `brushTipFor()`'s `tip.linearRgb` are the two places that decode, and
   // `--selftest` asserts they agree.
   //
+  // **The range is `(-inf, +inf)`, not `[0, 1]`, and that is the second
+  // half of this field's contract.** T25a: "the canvas supports fp16 data,
+  // but the colour picker only shows values clamped to 1." A document texel
+  // is scene-referred linear light (`color/Space.hpp`: "Working-space values
+  // are linear light and can legitimately exceed 1.0"), stored as HALF, and
+  // a lit highlight above white is a real measurement rather than an
+  // overflow. The eyedropper is the tool whose whole job is to answer "what
+  // is *that* pixel", so a foreground that cannot hold what it read is a
+  // foreground that answers the question wrongly by construction. It holds
+  // it now.
+  //
+  // **Over-range and sRGB-encoded are not in tension**, which is the thing
+  // that makes one field enough. `srgbEncode`/`srgbDecode` are unclamped and
+  // monotonic (`color/Space.cpp` -- the power segment is evaluated for any
+  // magnitude, and negatives mirror rather than going NaN), so an encoded
+  // 1.31 decodes to a linear 2.0 and back again, bit-stably, through the
+  // very same two functions an in-range colour uses. Nothing about the
+  // encoding needed relaxing; only the clamp that was standing in front of
+  // it did.
+  //
+  // **Why this is one field and not two.** The alternative -- keep `rgb`
+  // pinned to `[0, 1]` and park the true value in a sibling -- was
+  // considered and rejected, because it *institutionalises* the exact
+  // failure `ui/MacPaintUI.cpp`'s eyedropper comment named when it argued
+  // for clamping at the source: "a fourth value only the clamps know about."
+  // Two fields means two answers to "what colour is the foreground", one of
+  // which every existing consumer would keep reading and none of which the
+  // user could tell apart. So there is one value, it is the true one, and
+  // the clamps move to the destinations that genuinely cannot carry it --
+  // where they are **named** rather than incidental. That is
+  // `color/Space.hpp`'s `clampToDisplayRange()`, and grepping it lists the
+  // whole set: `MixboxLut::rgbToLatent()` (both bases), `brushTipFor()`'s
+  // no-LUT fallback, the FG well's `IM_COL32` pack, and the options bar's
+  // gradient ramp. `ImGui::ColorPicker3`'s saturation/value square is a
+  // fifth that clamps in ImGui's own geometry rather than through that call;
+  // its numeric row is given `ImGuiColorEditFlags_HDR` so that it is not a
+  // sixth.
+  //
+  // **The clamps that stayed are the ones with an argument behind them.**
+  // The pigment route is the load-bearing example: `rgbToLatent()` inverts a
+  // reflectance model, there is no reflectance above total reflectance, and
+  // a latent for "brighter than white paper" is not a dimmer answer, it is
+  // not an answer. Clamping there is correct. What was wrong was that it was
+  // silent -- so the COLOR panel now says, on the frame the foreground goes
+  // over range, that the swatch beside it and the PIGMENT route are both
+  // showing something the field no longer contains.
+  //
+  // **Out of scope, deliberately: making the monitor brighter.** The
+  // vendored `third_party/wgpu/include/webgpu/webgpu.h` has no colour-space,
+  // tone-mapping or extended-range field on `WGPUSurfaceConfiguration` at
+  // all, and the surface resolves to `BGRA8Unorm`. Nothing here is an EDR
+  // path and nothing here tone-maps; over-range values *survive and are
+  // legible*, which is a different and much smaller claim.
+  //
   // The initial value is `ui/MacPaintUI.cpp`'s retired `g_colorRgb` default,
-  // carried over unchanged so the RGB picker opens where it always did.
+  // carried over unchanged so the RGB picker opens where it always did --
+  // in range, because that is where a picker should open.
   std::array<float, 3> rgb = {0.10f, 0.12f, 0.45f};
 
   // **`radius`/`hardness`/`roundness`/`angle` (and `spacing`, further down
@@ -342,17 +400,49 @@ struct BrushState {
   // pass.
   //
   // 1.0 rather than a lower default because a brush that does not reach the
-  // colour it is loaded with is the surprising one, and because it makes this
-  // field invisible to every existing behaviour until someone moves it. **No UI
-  // control yet** -- exposing it is a later step's job, exactly as `spacing`
-  // above still says of itself; this is the constant default and the place the
+  // colour it is loaded with is the surprising one. This is also the place the
   // DYNAMICS matrix would multiply if a `DynamicTarget::Opacity` is ever added
   // (there is none today, which is why `brushTipFor()` copies this straight
   // through rather than scaling it).
   //
-  // Read only by the RGB deposit route. The pigment route caps at `kMaxMass`,
-  // a property of the paper rather than of the stroke.
+  // **Two stale claims used to sit here and both mattered**, so they are
+  // corrected rather than deleted. It said "No UI control yet": the BRUSH
+  // panel's OPACITY slider (`ui/MacPaintUI.cpp`'s `drawBrushPaintGroup()`) has
+  // written this field for some time. And it said "Read only by the RGB deposit
+  // route": the RGB erase, the pigment erase, the tonal brushes and the clone
+  // stamp each latch it too, as their own headers say -- one slider, one
+  // meaning, "the fraction of the maximum effect one stroke may reach".
+  //
+  // **The SMUDGE used to be a sixth reader and no longer is.** It read this
+  // field as its `strength`, which is a different quantity in different units,
+  // and inherited the 1.0 above as a default under which a smear provably never
+  // fades -- `brush/Smudge.hpp` §3b is the whole account. `smudge.strength`
+  // below is where that lives now, and the OPACITY slider is drawn disabled
+  // while the smudge is selected.
   float opacity = 1.0f;
+
+  // **The smudge's own settings** (`brush/Smudge.hpp` §3b): the strength that
+  // used to be `opacity` directly above, and the dab this tool drags if the
+  // user has picked one.
+  //
+  // On `BrushState` rather than beside `magicWand`/`paintBucket` on `AppState`
+  // proper, and the reason is `brushTipFor()`. That function already takes a
+  // `BrushState` and already knows `brush.tool`, so it is a site that can apply
+  // BOTH halves of this block -- the strength into `BrushTip::smudgeStrength`
+  // and the tip into `BrushTip::bitmap` -- with no signature change and, more
+  // to the point, in exactly ONE place. The flood tools' blocks live on
+  // `AppState` because nothing builds a `BrushTip` for a bucket click; a smudge
+  // is a stroke, so its parameters belong where a stroke's parameters are
+  // resolved. `smudgeToolParamsFor()` below is still the single tool->block
+  // mapping, for `floodToolParamsFor()`'s stated reason.
+  //
+  // Session state that survives a tool switch and **not persisted**, the same
+  // caveat `EyedropperState`, `GradientToolState` and the two `FloodFillParams`
+  // blocks all carry and for the same reason: there is still no preferences
+  // file that is not the brush-library file. `dabId` is the half that COULD
+  // survive a save if there ever is one -- it is an id, not a bitmap, exactly
+  // as `BrushState::dabId` above is.
+  SmudgeParams smudge;
 
   // Paper tooth (brush/Deposit.hpp §2e, brush/Grain.hpp) -- OFF by default,
   // `GrainParams`'s own default. The BRUSH EDITOR's PAPER GRAIN section
@@ -460,6 +550,52 @@ enum class AdjustmentRequest {
   Equalize,
 };
 
+// Which tool the user was in before this one, and whether the Hand is being
+// borrowed for a Space-pan right now. **Every field here is written by
+// `app/ToolSwitch.cpp` and by nothing else** -- see that header for the whole
+// argument, which is short: `brush.tool` had four independent assignment sites
+// and the fact "what was it before?" cannot be reconstructed from any of them
+// after the fact.
+//
+// It is a struct of its own rather than three loose `AppState` members
+// because the three are only ever meaningful together -- `previous` says
+// nothing without `hasPrevious`, and `springReturn` says nothing without
+// `springHeld` -- and a loose set of three invites the next reader to write
+// one of them from the UI "just this once", which is exactly the defect this
+// whole change exists to prevent.
+//
+// Not persisted, and that is deliberate rather than an omission: the previous
+// tool is an answer to "what were you just doing", which a relaunched
+// application has no honest answer to. `app/BrushLibraryFile.cpp` freezes
+// positional keys forever, and freezing one for a session fact would be a
+// permanent cost for a value that is wrong the moment it is read back.
+struct ToolSwitchState {
+  // The tool the user was in before the current one. Only meaningful when
+  // `hasPrevious` is true; the initialiser is a value and not a sentinel on
+  // purpose -- `Tool::Count` reads as a Tool everywhere it is passed, and
+  // `ui/AtelierChrome.cpp`'s `kToolMeta` is indexed by `static_cast<size_t>(t)`
+  // with a `static_assert` that checks only the COUNT, so a sentinel Tool
+  // escaping into a table lookup is an out-of-bounds read that no assertion in
+  // this build would catch.
+  Tool previous = Tool::Brush;
+  // Whether `previous` has ever been written. False at launch, and the reason
+  // it exists is that the first tool switch of a session has no predecessor
+  // and must be able to say so rather than claiming the default.
+  bool hasPrevious = false;
+
+  // --- the spring-loaded Hand (T20) ---------------------------------------
+  //
+  // Space held pans the canvas and lets go back to whatever the user was
+  // holding. That is a *borrow*, not a tool switch, so it deliberately does
+  // NOT move `previous`/`hasPrevious`: a Space press that recorded
+  // "previous = Hand" and then restored the Hand on release would erase the
+  // very fact this struct exists to keep.
+  bool springHeld = false;
+  // The tool to hand back on release. Written only by `beginSpringHand()`,
+  // and read only by `endSpringHand()` and `effectiveTool()`.
+  Tool springReturn = Tool::Brush;
+};
+
 struct AppState {
   PaintMode mode = PaintMode::Watercolor;
   // The stroke bridge's per-frame cycle. It lives here rather than as a local
@@ -473,6 +609,14 @@ struct AppState {
   // absorption together via setWorkingTime(); 15 matches the shipped defaults.
   float workingTime = 15.0f;
   BrushState brush;
+  // The ledger behind `brush.tool` -- app/ToolSwitch.hpp owns every write to
+  // both. Here rather than on `BrushState` because `BrushState` is copied
+  // wholesale by the brush presets (`applyPresetToBrush()`, and
+  // `app/BrushSheet.cpp` builds throwaway `BrushState`s by value): a preset
+  // that carried a previous-tool ledger with it would restore some other
+  // session's tool on load, and a stack `BrushState` would silently answer
+  // questions about a tool history it has none of.
+  ToolSwitchState tools;
   CanvasView view;
   SimParams sim;
 
@@ -523,6 +667,56 @@ struct AppState {
   // a restart because this build still has no preferences file to put it in.
   GradientToolState gradient;
 
+  // ------------------------------------------------------------------------
+  // The magic wand's and the paint bucket's flood-fill parameters (PRD D25,
+  // E3; `ops/FloodFill.hpp`).
+  // ------------------------------------------------------------------------
+  //
+  // **`FloodFillParams` itself, not a parallel struct that mirrors it.** The
+  // engine's block is already exactly the three settings a user has -- a
+  // tolerance, a ramp width and a reach -- so a UI-side copy would be three
+  // fields that must be kept equal to three other fields, and the failure mode
+  // of that is silent: a field added to `FloodFillParams` gets a default here
+  // that nobody notices is a *second* default, and the two disagree the day one
+  // of them changes. Holding the engine's own type means the call sites below
+  // are a copy, not a translation, and there is nothing to fall out of step.
+  //
+  // **Two blocks, not one shared block, and that is the decision this pair is
+  // making out loud.** `ops/FloodFill.hpp`'s opening argument is that the wand
+  // and the bucket are ONE ALGORITHM -- and that is an argument about the
+  // implementation, which these two fields do not touch: both still run the
+  // identical `floodFillSelection()`. What differs is the *value*, and the
+  // reasons to split it are:
+  //
+  //   * The options bar is per-tool by construction. Every other row in that
+  //     band belongs to the tool named at its left end, so one shared block
+  //     drawn under two different tool names would be a hidden coupling --
+  //     nudge TOLERANCE with the wand selected and the bucket's next click
+  //     silently changed too, with nothing on screen saying so. A control that
+  //     moves something the user cannot see is the defect class this file keeps
+  //     naming.
+  //   * They are different gestures with genuinely different tuning. A wand is
+  //     usually run loose and then refined (`core/SelectionRefine`'s grow and
+  //     shrink exist for exactly that); a bucket lays ink that cannot be
+  //     refined afterwards without an undo, so it is usually run tight.
+  //   * Photoshop, GIMP and Krita all keep them separate, and §1 of
+  //     `ops/FloodFill.hpp` already argues that this number should mean what a
+  //     user arriving from another editor believes it means.
+  //
+  // The cost of the split is the workflow "wand to see the region, bucket to
+  // fill it", where two tolerances give two regions. That is real, and it is
+  // the price paid; the mitigation is that both blocks start at the same
+  // defaults, so the two tools disagree only after the user has deliberately
+  // made them.
+  //
+  // Session state that survives a tool switch, and **not persisted** -- the
+  // same caveat and the same reason as `EyedropperState` and
+  // `GradientToolState` directly above: there is still no preferences file that
+  // is not the brush-library file, and freezing a positional key there for
+  // three floats is a format commitment bought for a convenience.
+  FloodFillParams magicWand;
+  FloodFillParams paintBucket;
+
   // `--gradient-demo drag`: a gradient drag HELD OPEN, the way
   // `openToolFlyoutDemo` holds a flyout open and `panelStackDemo` holds a
   // tab stack made.
@@ -547,6 +741,19 @@ struct AppState {
   GradientDrag gradientDrag;
 
   bool gradientDragDemo = false;
+
+  // `Tool::Crop`'s pending crop -- the rectangle or the four corners, the mode
+  // toggle, and which handle is under the pointer (app/CropTool.hpp section 5).
+  //
+  // Here rather than on `OpenDocument` for the marquee's reason -- it is an
+  // on-canvas gesture in document texel space and no document may carry it --
+  // and it carries its own `DocumentId` for `MeasureLine`'s reason: unlike the
+  // marquee's rubber band it deliberately OUTLIVES its own drag, because the
+  // user drags a rectangle out, adjusts it by its handles, and only then
+  // commits. A rectangle in one document's texels means nothing in another's,
+  // and `applyCropSession()` refuses on that id rather than cropping the wrong
+  // picture to plausible numbers.
+  CropSession crop;
 
   // What the last eyedropper click did, in one sentence, or empty when there
   // has not been one. Shown in the options bar.
@@ -677,6 +884,14 @@ struct AppState {
   bool requestCut = false;
   bool requestPaste = false;
   bool requestDeleteSelection = false;
+
+  // Image > Crop to Selection and Image > Trim to Content
+  // (`app/CropTool.hpp` §7). Request flags for the reason above and for one
+  // more: both are `cropDocument()` on a rectangle they derive, and a native
+  // menu's AppKit callback has neither the active `OpenDocument` nor a frame
+  // in which to report a refusal.
+  bool requestCropToSelection = false;
+  bool requestTrimToContent = false;
 
   // Undo / redo (PRD O1, R2). Same request-flag reasoning as the block
   // above -- ⌘Z/⇧⌘Z resolve in main.cpp's keymap dispatch, which has no
@@ -888,6 +1103,19 @@ struct AppState {
   // photographing and which stays empty without a folder to resolve against.
   // `controlsScrollTo`'s pattern, one dialog over.
   std::string exportStatesFolder;
+  // --open-export-as: holds the File > Export As... modal open, so a
+  // `--screenshot` can photograph it. Exactly `openExportStatesDialog`'s
+  // justification, one dialog over -- and added for exactly the reason
+  // `--no-document` was: **neither export dialog had a single golden view**,
+  // because both are opened by a menu click and `--screenshot` cannot click a
+  // menu. That reachability gap, not any particular crop, is how a feature in
+  // this build ships visibly broken behind a green suite.
+  bool openExportAsDialog = false;
+  // --open-export-as <PATH>: prefills that dialog's Output file field. Without
+  // one the Export button is correctly disabled ("No output file yet: ..."),
+  // which is itself a state worth photographing -- so this is optional and
+  // both states are golden views. `exportStatesFolder`'s pattern.
+  std::string exportAsPath;
   // --open-layer-properties: holds the LAYERS panel's own gear-button modal
   // open, so a `--screenshot` can photograph it -- `openExportStatesDialog`'s
   // justification exactly, one dialog over: it too is opened by a click and
@@ -1290,5 +1518,133 @@ struct AppState {
   // a different string run to run rather than stable glyph-edge noise.
   bool screenshotCliActive = false;
 };
+
+// ---------------------------------------------------------------------------
+// The flood-fill tools' options: the tool -> parameter-block mapping, the
+// REACH vocabulary table, and the TOLERANCE unit conversion.
+// ---------------------------------------------------------------------------
+
+// **The one mapping from a tool to the block its click reads.**
+//
+// Two readers need it and they must never disagree: the options bar
+// (`ui/AtelierChrome.cpp`) edits a block, and the canvas click
+// (`ui/MacPaintUI.cpp`) consumes one. Spelling `st.magicWand` at one site and
+// `st.paintBucket` at the other is two copies of the same fact, and the failure
+// it produces is the worst kind this band can have -- a row of live controls
+// wired to a struct the click does not read, which looks exactly like a working
+// toolbar and changes nothing. `--selftest` walks every `Tool` value against
+// this function, so a third flood-fill tool cannot be added without either
+// appearing here or failing the suite.
+//
+// `nullptr` for every tool that does not flood -- which is also how the options
+// bar asks "does this tool get the row", so the row and the click are gated by
+// the identical predicate rather than by two lists.
+inline FloodFillParams* floodToolParamsFor(AppState& st, Tool tool) noexcept {
+  switch (tool) {
+    case Tool::MagicWand:
+      return &st.magicWand;
+    case Tool::PaintBucket:
+      return &st.paintBucket;
+    default:
+      return nullptr;
+  }
+}
+
+// **The one mapping from a tool to the smudge's settings block**, the same
+// shape and for the same reason as `floodToolParamsFor()` directly above.
+//
+// Two readers, and they must never disagree: the options bar
+// (`ui/AtelierChrome.cpp`) edits the block, and `brushTipFor()`
+// (`app/StrokeSession.cpp`) resolves it into the `BrushTip` a stroke is begun
+// with. `brush/Smudge.hpp` §3b's defect was one narrower than the one this
+// function prevents -- there the row and the stroke agreed perfectly, on a
+// field that meant something else -- but the shape of the fix is the same:
+// one predicate, so the row is drawn for exactly the tools whose strokes read
+// it.
+//
+// **It takes a `BrushState`, not an `AppState`**, unlike its flood-fill
+// sibling, and that is the whole of why the block lives on `BrushState` (see
+// `BrushState::smudge`'s own comment): `brushTipFor()` is handed a
+// `BrushState` and nothing else, so this signature is what lets the consumer
+// side of the mapping be the same function the UI side calls rather than a
+// second spelling of the same condition.
+//
+// `nullptr` for every tool that does not smudge, which is also how the options
+// bar asks "does this tool get the row". `--selftest` walks every `Tool` value
+// against it, so a second smudging tool cannot be added without either
+// appearing here or failing the suite.
+inline SmudgeParams* smudgeToolParamsFor(BrushState& brush, Tool tool) noexcept {
+  switch (tool) {
+    case Tool::Smudge:
+      return &brush.smudge;
+    default:
+      return nullptr;
+  }
+}
+inline const SmudgeParams* smudgeToolParamsFor(const BrushState& brush, Tool tool) noexcept {
+  return smudgeToolParamsFor(const_cast<BrushState&>(brush), tool);
+}
+
+// The REACH combo's vocabulary, the same shape and for the same reason as
+// `kGradientKinds` (`app/GradientTool.hpp` § 4): one table where the engine's
+// enum and the toolbar's words meet, so a reach added to `FloodFillReach`
+// without a row here is caught by `--selftest` rather than by a combo that
+// silently offers one of two modes.
+//
+// The two vocabularies do NOT agree here, unlike the gradient kinds. The engine
+// says `Global`, which is the right word for a whole-document predicate pass;
+// the toolbar says **All Similar**, which is PRD D25's own phrase ("contiguous
+// fill with tolerance, and fill-all-similar") and the one a painter reads
+// without having to know that "global" is about traversal rather than about
+// colour.
+struct FloodReachRow {
+  FloodFillReach reach;
+  const char* label;
+  const char* tip;
+};
+inline constexpr size_t kFloodReachCount = 2;
+inline constexpr FloodReachRow kFloodReaches[kFloodReachCount] = {
+    {FloodFillReach::Contiguous, "Contiguous",
+     "Only the region connected to the texel you click, walked 4-connected -- so a diagonal "
+     "hairline stops the fill and an enclosed shape holds it in."},
+    {FloodFillReach::Global, "All Similar",
+     "Every texel in the layer within the tolerance, connected to your click or not. Costs a "
+     "pass over the whole document rather than over the region found."},
+};
+
+inline const char* floodReachLabel(FloodFillReach reach) noexcept {
+  for (size_t i = 0; i < kFloodReachCount; ++i)
+    if (kFloodReaches[i].reach == reach) return kFloodReaches[i].label;
+  // Unreachable while the table covers the enum, which `--selftest` asserts.
+  // Contiguous is the safe answer because it is the default the rest of this
+  // build assumes.
+  return kFloodReaches[0].label;
+}
+
+// TOLERANCE is shown in **Photoshop's units, 0..255**, and stored in the
+// engine's 0..1.
+//
+// This is a display conversion and not a second field, so it is two functions
+// rather than a second member: `ops/FloodFill.hpp` § 1's whole argument is that
+// this number should mean what a user coming from another editor already
+// believes it means, and `kFloodDefaultTolerance` is literally Photoshop's
+// default *converted* (32/255). Showing 0.125 would throw that away at the last
+// step, after the file went to the trouble of measuring distance in the domain
+// that makes 32 meaningful.
+//
+// Integer, because Photoshop's is: a slider that could sit at 32.4 offers a
+// precision the reference does not have and that no user wants, and the
+// round trip through an int is what makes the default reproduce EXACTLY --
+// `--selftest` asserts all 256 steps round-trip to themselves and that the
+// shipped default lands on 32.
+inline constexpr int kFloodToleranceUiMax = 255;
+inline int floodToleranceToUi(float tolerance) noexcept {
+  const int v = static_cast<int>(tolerance * 255.0f + 0.5f);
+  return v < 0 ? 0 : (v > kFloodToleranceUiMax ? kFloodToleranceUiMax : v);
+}
+inline float floodToleranceFromUi(int ui) noexcept {
+  const int v = ui < 0 ? 0 : (ui > kFloodToleranceUiMax ? kFloodToleranceUiMax : ui);
+  return static_cast<float>(v) / 255.0f;
+}
 
 }  // namespace np

@@ -362,6 +362,218 @@ bool runGradientToolTest() {
           "gradient/spread: the setting reaches the pixels at all");
   }
 
+  // -----------------------------------------------------------------------
+  // § 8. The kinds: covered, carried, and each a different picture
+  // -----------------------------------------------------------------------
+  {
+    const GradientKind kAllKinds[] = {GradientKind::Linear, GradientKind::Radial,
+                                      GradientKind::Angular};
+    static_assert(sizeof(kAllKinds) / sizeof(kAllKinds[0]) == kGradientKindCount,
+                  "this list must name every GradientKind");
+    bool onceEach = true, labelsOk = true;
+    for (GradientKind want : kAllKinds) {
+      size_t seen = 0;
+      for (size_t i = 0; i < kGradientKindCount; ++i)
+        if (kGradientKinds[i].kind == want) ++seen;
+      if (seen != 1) onceEach = false;
+    }
+    for (size_t i = 0; i < kGradientKindCount; ++i) {
+      if (std::strcmp(gradientKindLabel(kGradientKinds[i].kind), kGradientKinds[i].label) != 0)
+        labelsOk = false;
+      if (kGradientKinds[i].label == nullptr || kGradientKinds[i].label[0] == '\0')
+        labelsOk = false;
+      if (kGradientKinds[i].tip == nullptr || kGradientKinds[i].tip[0] == '\0') labelsOk = false;
+      for (size_t j = i + 1; j < kGradientKindCount; ++j)
+        if (std::strcmp(kGradientKinds[i].label, kGradientKinds[j].label) == 0) labelsOk = false;
+    }
+    check(onceEach, "gradient/kind: every GradientKind appears exactly once");
+    check(labelsOk, "gradient/kind: labels are distinct, non-empty and match the table");
+
+    const GradientToolState fresh;
+    check(fresh.kind == GradientKind::Linear, "gradient/kind: a fresh tool is Linear");
+
+    bool carried = true;
+    for (GradientKind want : kAllKinds) {
+      GradientToolState tool;
+      tool.kind = want;
+      if (gradientToolGeometry(tool, 1.0f, 2.0f, 3.0f, 4.0f).kind != want) carried = false;
+    }
+    check(carried, "gradient/kind: gradientToolGeometry() carries the kind");
+
+    // Reachability, the same way § 7 asks it of SPREAD: a picker wired to a
+    // field nothing reads changes the state, passes every assertion about the
+    // state, and leaves the canvas identical. So this renders the same drag
+    // three times, changing only the kind, and requires three pictures.
+    // **Not § 5's 64x4 strip.** The probe has to sit well off the drag's own
+    // axis, because on the axis Linear and Radial agree by construction and a
+    // probe there proves nothing -- and 4 rows leaves nowhere to go. Written
+    // against the strip first, this section reported "Radial is not Linear"
+    // FAIL: at 1.5 texels off a 32-texel drag the two parameters differ by
+    // 0.0076, under this file's own 0.01 threshold. The assertion was right
+    // and the probe was wrong. 22 rows off the axis, the three parameters are
+    // 0.141 / 0.686 / 0.783 and nothing is marginal.
+    const GradientRegion square{0, 0, 64, 64};
+    auto renderKind = [&](GradientKind kind) {
+      GradientToolState tool;
+      tool.kind = kind;
+      TileStore tiles;
+      renderGradient(tiles, square,
+                     gradientToolGeometry(tool, 16.0f, 32.0f, 48.0f, 32.0f), stops, nullptr);
+      const PixelCoord p{20, 10};
+      return tiles.getOrCreate(tileCoordAt(p)).readPixel(tileLocalOffset(p));
+    };
+    const std::array<float, 4> lin = renderKind(GradientKind::Linear);
+    const std::array<float, 4> rad = renderKind(GradientKind::Radial);
+    const std::array<float, 4> ang = renderKind(GradientKind::Angular);
+    check(std::fabs(lin[3] - rad[3]) > 0.01f, "gradient/kind: Radial is not Linear");
+    check(std::fabs(lin[3] - ang[3]) > 0.01f, "gradient/kind: Angular is not Linear");
+    check(std::fabs(rad[3] - ang[3]) > 0.01f, "gradient/kind: Angular is not Radial");
+  }
+
+  // -----------------------------------------------------------------------
+  // § 9. Radial really is radial
+  // -----------------------------------------------------------------------
+  //
+  // "Different from Linear" is a weak claim -- a kind that got the maths
+  // wrong would satisfy it too. The property that makes a radial a radial is
+  // **rotational symmetry about the centre**: two texels the same distance
+  // out are the same colour, whatever direction they lie in. A linear ramp
+  // fails that at the first probe, and so does anything that has mixed up an
+  // axis or dropped a squared term.
+  //
+  // The centre is put on a texel CORNER (32.0, 32.0) so the four probes are
+  // exactly equidistant: their centres sit at (32 +/- 9.5, 32 +/- 0.5) and
+  // (32 +/- 0.5, 32 +/- 9.5), all sqrt(9.5^2 + 0.5^2) from it.
+  {
+    constexpr int32_t kBigW = 64, kBigH = 64;
+    // **The rim must land INSIDE the region.** With a radius of 40 about
+    // (32, 32) it did not -- the t=1 circle sat at x=72 in a 64-wide region,
+    // so the "clear at the rim" probe below was reading a tile
+    // `renderGradient()` had never created and passing on transparent black
+    // for free. It stayed green under a sabotage that rendered the radial
+    // inside out, which is how it was caught. An assertion whose probe is
+    // outside the data is not a weak assertion; it is no assertion.
+    constexpr float kCx = 32.0f, kCy = 32.0f, kRimR = 24.0f;
+    GradientToolState tool;
+    tool.kind = GradientKind::Radial;
+    TileStore tiles;
+    const GradientRegion big{0, 0, kBigW, kBigH};
+    renderGradient(tiles, big,
+                   gradientToolGeometry(tool, kCx, kCy, kCx + kRimR, kCy), stops, nullptr);
+
+    auto at = [&](int32_t x, int32_t y) {
+      const PixelCoord p{x, y};
+      return tiles.getOrCreate(tileCoordAt(p)).readPixel(tileLocalOffset(p));
+    };
+    const std::array<float, 4> east = at(41, 31);
+    const std::array<float, 4> west = at(22, 31);
+    const std::array<float, 4> south = at(31, 41);
+    const std::array<float, 4> north = at(31, 22);
+    bool symmetric = true;
+    for (int c = 0; c < 4; ++c) {
+      const float m = std::max(std::max(std::fabs(east[c] - west[c]),
+                                        std::fabs(east[c] - south[c])),
+                               std::fabs(east[c] - north[c]));
+      if (m > 1.0f / 2048.0f) symmetric = false;
+    }
+    check(symmetric,
+          "gradient/radial: four equidistant texels, four quadrants, one colour");
+
+    // And the distance is the parameter, not merely a monotone function of
+    // it: the texel's own |p - centre| / |rim - centre| must land on the
+    // swatch's sample at that same t. This is § 6's swatch-equals-canvas
+    // claim restated for the kind whose parameter is a length.
+    const float dx = 41.5f - kCx, dy = 31.5f - kCy;
+    const float t = std::sqrt(dx * dx + dy * dy) / kRimR;
+    const std::array<float, 4> straight = gradientSampleStraight(stops, t);
+    bool matches = true;
+    for (int c = 0; c < 3; ++c)
+      if (std::fabs(east[c] - straight[c] * straight[3]) > 1.0f / 2048.0f) matches = false;
+    if (std::fabs(east[3] - straight[3]) > 1.0f / 2048.0f) matches = false;
+    check(matches, "gradient/radial: t is the distance ratio, sampled from the swatch");
+
+    // The centre is t=0 and the rim is t=1. Stated because a radial rendered
+    // inside out passes both assertions above.
+    check(at(32, 32)[3] > 0.95f, "gradient/radial: opaque at the centre");
+    check(at(static_cast<int32_t>(kCx + kRimR) - 1, 31)[3] < 0.05f,
+          "gradient/radial: clear just inside the rim");
+  }
+
+  // -----------------------------------------------------------------------
+  // § 10. Angular sweeps CLOCKWISE ON SCREEN, and ignores SPREAD
+  // -----------------------------------------------------------------------
+  //
+  // Both facts are `ops/Gradient.hpp`'s, and both are the kind that is
+  // invisible until a user's first gradient comes out wrong.
+  //
+  // The direction is a *consequence*, not a preference: document space is
+  // y-down, so an `atan2` that increases counter-clockwise in maths
+  // convention increases clockwise once y points down. A well-meaning
+  // negation "to match the textbook" would make the sweep disagree with the
+  // direction the handle was dragged, and nothing else in the suite would
+  // notice.
+  {
+    constexpr int32_t kBigW = 64, kBigH = 64;
+    constexpr float kCx = 32.0f, kCy = 32.0f;
+    const GradientRegion big{0, 0, kBigW, kBigH};
+    auto renderAngular = [&](GradientSpread spread) {
+      GradientToolState tool;
+      tool.kind = GradientKind::Angular;
+      tool.spread = spread;
+      TileStore tiles;
+      renderGradient(tiles, big, gradientToolGeometry(tool, kCx, kCy, kCx + 10.0f, kCy),
+                     stops, nullptr);
+      return tiles;
+    };
+    TileStore tiles = renderAngular(GradientSpread::Pad);
+    auto at = [&](TileStore& ts, int32_t x, int32_t y) {
+      const PixelCoord p{x, y};
+      return ts.getOrCreate(tileCoordAt(p)).readPixel(tileLocalOffset(p));
+    };
+
+    // The ray points along +x. Screen-clockwise from it is +y, because y is
+    // down. Just clockwise of the ray the sweep has barely begun (t near 0,
+    // so alpha near 1); just counter-clockwise it is nearly all the way round
+    // (t near 1, alpha near 0). A negated angle swaps these two numbers.
+    const std::array<float, 4> justClockwise = at(tiles, 40, 33);
+    const std::array<float, 4> justAnti = at(tiles, 40, 31);
+    check(justClockwise[3] > 0.9f && justAnti[3] < 0.1f,
+          "gradient/angular: the sweep runs clockwise on screen (y is down)");
+
+    // SPREAD is inert here, and `gradientKindUsesSpread()` says so. This
+    // proves the two agree by RENDERING rather than by restating the rule --
+    // which is the whole reason the options bar asks that function instead of
+    // testing the enum itself.
+    //
+    // What the render assertion below does NOT prove, stated so nobody reads
+    // more into it than it says: it cannot tell "Angular returns before the
+    // spread switch" from "Angular falls into it", because on [0, 1) all
+    // three modes are the identity. Removing the early return was tried as a
+    // sabotage and moved no texel. The user-visible claim -- SPREAD changes
+    // nothing here, so the control is drawn disabled -- is what is being
+    // asserted, and that is the claim the options bar depends on.
+    check(!gradientKindUsesSpread(GradientKind::Angular),
+          "gradient/angular: gradientKindUsesSpread() reports SPREAD inert");
+    check(gradientKindUsesSpread(GradientKind::Linear) &&
+              gradientKindUsesSpread(GradientKind::Radial),
+          "gradient/angular: ... and live for the other two kinds");
+
+    TileStore repeatTiles = renderAngular(GradientSpread::Repeat);
+    TileStore reflectTiles = renderAngular(GradientSpread::Reflect);
+    bool spreadInert = true;
+    for (int32_t y = 0; y < kBigH; y += 7) {
+      for (int32_t x = 0; x < kBigW; x += 7) {
+        const std::array<float, 4> a = at(tiles, x, y);
+        const std::array<float, 4> b = at(repeatTiles, x, y);
+        const std::array<float, 4> c = at(reflectTiles, x, y);
+        for (int k = 0; k < 4; ++k)
+          if (a[k] != b[k] || a[k] != c[k]) spreadInert = false;
+      }
+    }
+    check(spreadInert,
+          "gradient/angular: all three spreads render the identical picture");
+  }
+
   return ok;
 }
 

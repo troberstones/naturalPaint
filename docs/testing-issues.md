@@ -165,18 +165,53 @@ entry that still carries open work is how work gets lost:
   blocked on PRD D25/D26 for the reasons above, and now built by one shared
   `gradientToolStops()` that the options-bar swatch and the commit both read,
   so a future editor changes one function rather than three call sites;
-* `GradientKind` is still hard-coded to `Linear`, now in
-  `gradientToolGeometry()` with a note on what wiring Radial and angular
-  costs;
+* ~~`GradientKind` is still hard-coded to `Linear`~~ — **no longer true as of
+  later the same day; see the note below**, left struck through rather than
+  deleted because a closed entry whose text quietly changes is how a reader
+  loses track of what was true when;
 * **spread is no longer missing**: Clamp / Repeat / Reflect is a combo in the
   options bar, and `--selftest` proves the setting reaches the pixels rather
   than moving a field nothing reads.
 
-Coverage added with the fix: 24 assertions in `app/selftest/GradientTool.cpp`
-(18 sabotage-proven, including that the canvas texels are bit-for-bit the
-options-bar swatch's own samples), and two golden views — `gradient` for the
-swatch, `gradient_drag` for a held drag. **`gradient_drag` is the artifact
-that fails when this regresses**; nothing headless can cover it.
+**Amended later on 2026-09-02 — the kinds landed too.** Radial and Angular are
+now a KIND combo beside SPREAD; `gradientToolGeometry()` carries
+`GradientToolState::kind` instead of hard-coding `Linear`. So of the three
+gaps above, only the stop editor survives, and it is recorded in
+`docs/spec-vs-implementation.md` § 2 rather than here.
+
+Two things came with the kinds that are worth naming, because neither is
+"wire an enum through":
+
+* **SPREAD is drawn disabled on Angular**, with the reason in a tooltip. A
+  sweep wraps into [0, 1) and every spread mode is the identity on that
+  range, so a live control there would sit over something that provably moves
+  no texel — `docs/ui.md` §4a's "no dead button looks live", applied to a
+  control rather than to a palette cell. The predicate is
+  `gradientKindUsesSpread()`, and `--selftest` proves it agrees with the op by
+  rendering the same sweep under all three modes rather than by restating the
+  rule.
+* **The rubber band is no longer one shape for three geometries.** A Radial
+  drag is a radius, so it draws its rim circle; an Angular drag is a
+  zero-angle ray, so it draws a clockwise arc and arrowhead. A bare line means
+  "from here to there", which is true only of Linear — and one preview
+  standing in for gestures that differ is the exact mistake this entry's own
+  fix was about.
+
+Coverage: 39 assertions in `app/selftest/GradientTool.cpp`, sabotage-proven,
+including that the canvas texels are bit-for-bit the options-bar swatch's own
+samples, that a radial is rotationally symmetric about its centre, and that
+the angular sweep runs clockwise on screen. Five golden views — `gradient` and
+`gradient_spread_off` for the options bar, `gradient_drag` / `gradient_radial`
+/ `gradient_angular` for the three geometries under one identical held drag.
+**Those canvas views are the artifacts that fail when this regresses**;
+nothing headless can cover them.
+
+One assertion in that file was found to be inert while its own sabotage was
+being run: the radial's "clear at the rim" probe sat outside the rendered
+region and was passing on transparent black for free. It stayed green under a
+sabotage that rendered the radial inside out, which is how it was caught. An
+assertion whose probe is outside the data is not a weak assertion; it is no
+assertion — and only the sabotage step distinguishes the two.
 
 ---
 
@@ -209,7 +244,7 @@ nowhere.
 
 ---
 
-## T5 — Closing every document leaves a canvas belonging to nothing · open
+## T5 — Closing every document leaves a canvas belonging to nothing · PARTLY CLOSED (short-term half landed 2026-09-02; the canvas-to-document bridge is still open)
 
 **Reported.** When you close all documents, there is still a document/canvas
 that does not belong to anything.
@@ -243,138 +278,232 @@ wrong about one of the three. T1 and T2 stand.)*
 * **Long term:** the canvas-to-document bridge PLAN.md describes, which needs
   a decision about which layer the solver deposits into and a
   texture-to-tile path with its own dirty tracking (PRD O6). Genuinely large;
-  not a bug fix.
+  not a bug fix. **Still open.**
+
+**The short-term half landed in `8140912`.** `app/ToolSurface` adds one
+predicate for "can this tool act on what is in front of the user", and it
+decides nothing itself — it asks `strokeRouteFor()`'s own `target == nullptr`
+row, `pixelOpRefusalFor(nullptr)`, `toolPansView`/`toolZoomsView` and
+`measureLineAppliesTo`. 6 of 21 built tools survive with no document, and
+painting the bare canvas — a supported workflow — is untouched, because the
+predicate adopts the engine's existing boundary rather than inventing one.
+
+**Why this could sit open behind a green suite and twenty green views:** the
+state was unreachable from any launch. `main.cpp` always creates a document,
+no flag closed one, and `--screenshot` cannot click File > Close. `--no-document`
+is the first half of the coverage; the three golden views are the second. That
+generalises — see the correction in `docs/ui.md` about what the golden blind
+spot actually is.
+
+An unrelated defect found in passing and **left open**: `strokeRouteFor()` has
+two consecutive `if (target == nullptr)` blocks, the second unreachable
+because the first returns in every case. Harmless today, but the dead block's
+condition is strictly narrower, so deleting or reordering the first would
+silently route the Pencil, Dodge, Burn and Clone Stamp into the watercolour
+solver — exactly what each of those tools' own headers argues against.
 
 ---
 
-## T6 — 500+ MB of memory at startup, against a documented <100 MB · open
+## T6 — 500+ MB of memory at startup, against a documented <100 MB · RESOLVED as documentation
 
 **Reported.** naturalPaint shows 500+ MB of RAM on open; it was supposed to
 be under 100 MB.
 
-**Verified — both figures are right, and they are measuring different
-processes.** Measured on this machine, 2026-08-26, idle, **no document
-opened**:
+**Answered, 2026-09-02.** Both figures are right, they measure different
+quantities, and **384 MiB of the difference is allocated by the graphics
+driver, not by this build.** Nothing in naturalPaint's own allocation can be
+reduced to move it; what was missing was anything in the application saying
+so, and that has been fixed rather than the number. The measurement that
+settles it — `MTLDevice.currentAllocatedSize`, the sum of every Metal resource
+this build, wgpu-native, Dear ImGui and SDL have between them created — reads
+**34.8 MB at the instant the footprint jumps by 414 MB.**
 
-| Measurement | Value |
+The corrections and the new coverage are in
+`app/Memory.hpp`, `app/selftest/IdleMemory.cpp`,
+`app/selftest/SolverFootprint.cpp` (new), `sim/PaintSim` and the status bar's
+tooltip. The rest of this entry is the measurement.
+
+### 1. Re-measured, 2026-09-02 (the 2026-08-26 figures had not moved)
+
+Idle windowed launch, no document, sampled after 10 s:
+
+| Measurement | 2026-08-26 | 2026-09-02 |
+|---|---|---|
+| `--selftest`'s `idle RSS` assertion | 92.6 MB | **91.2 MB** |
+| GUI process, `ps` RSS | 155.5 MB | **143.5 MB** |
+| GUI process, `footprint` total | 577 MB | **551 MB** |
+| of which `IOAccelerator (graphics)` | 404 MB | **401 MB** |
+| `vmmap` regions of exactly 8192 K | 48 | **48** |
+
+Unchanged across a week and several waves, including
+`docs/architecture-review.md`'s P0-1/P0-2. The 48 × 8 MiB signature is exact
+and reproducible.
+
+### 2. Where it happens: the first command buffer to execute
+
+A temporary `phys_footprint` probe at every startup milestone and at eight
+points inside each of the first three frames (reverted; the tree is clean):
+
+```
+after RequestDevice        rss= 87.5 MB  footprint= 35.1 MB
+after configureSurface     rss= 87.6 MB  footprint= 35.1 MB
+after ImGui_ImplWGPU_Init  rss=102.8 MB  footprint= 44.6 MB
+f0 pre-drawUI              rss=113.4 MB  footprint= 48.3 MB   metal= 1.0 MB
+f0 pre-Submit              rss=137.1 MB  footprint= 68.6 MB   metal=34.8 MB
+after frame 1 (present)    rss=137.4 MB  footprint= 84.8 MB   metal=34.8 MB
+f1 pre-NewFrameWGPU        rss=138.0 MB  footprint=498.7 MB   metal=34.8 MB   <-- +414 MB
+after frame 12             rss=139.9 MB  footprint=549.7 MB
+after frame 120            rss=136.5 MB  footprint=548.1 MB
+```
+
+It is **one step, in the gap between `wgpuSurfacePresent()` of frame 1 and the
+top of frame 2** — a gap that contains no application allocation at all. RSS
+moves 0.6 MB across it. So it is the GPU asynchronously executing the first
+submitted command buffer, and the cost is charged to our ledger when it does.
+
+Device creation is not it (`RequestDevice` costs 1.1 MB). Surface
+configuration is not it. ImGui's backend is not it.
+
+### 3. What it is not: nobody allocated it
+
+`metal=` above is `[MTLDevice currentAllocatedSize]`, read through the
+`CAMetalLayer`'s device — every texture, buffer and heap any code in this
+process has asked Metal for. **It is 34.8 MB when the footprint jumps by
+414 MB, and never exceeds 57 MB at idle.**
+
+The probe is not blind; it was validated against a known allocation before it
+was trusted. Constructing `PaintSim` at 1024×1024 moves it by **+198.13 MiB**,
+and `allocInkFields()` by **+96.00 MiB exactly** — the right order of
+magnitude, at the right moment, from the right call.
+
+So the 384 MiB is not a texture, not a buffer, not the swapchain, not
+wgpu-native suballocating Metal resources (those would count), and not
+naturalPaint's. It is the AGX driver's own arena, mapped `SM=SHM` into our
+address space and charged to `phys_footprint`.
+
+### 4. It is invariant to everything we control
+
+| Varied | Result |
 |---|---|
-| `--selftest`'s own `idle RSS` assertion | **92.6 MB** (ceiling 80 MB core + 32 MB OpenImageIO allowance) |
-| GUI process, `ps` RSS | **155.5 MB** |
-| GUI process, `footprint` (what Activity Monitor shows) | **577 MB** |
+| Window 400×300 vs 1480×940 vs 2400×1500 (36× area) | **48 regions** in all three |
+| `--no-document` | **48** |
+| `--pen-demo` | **48** |
+| `ImGui_ImplWGPU` `NumFramesInFlight` = 1 / 3 / 6 | **48 / 48 / 39** |
+| `--selftest` (no ImGui frame at all) | **48** |
 
-`footprint -p` breaks the 577 MB down, and it is not the heap:
+Window area changes the footprint by ~42 MB — and that ~42 MB *does* show up
+in `currentAllocatedSize` (16.4 MB at 400×300, 57.0 MB at 2400×1500), which is
+the swapchain behaving exactly as it should. The 384 MiB does not move.
 
-| Category | Dirty |
-|---|---|
-| IOAccelerator (graphics) | **404 MB** |
-| IOSurface | 46 MB |
-| IOAccelerator | 32 MB |
-| MALLOC_SMALL + MEDIUM + LARGE + TINY | 74 MB combined |
+The last row is the important one. **`--selftest` is not the "headless" process
+this entry used to call it.** `main()` gives it a real `SDL_Window` and a real
+WebGPU adapter — it prints `[gpu] adapter: Apple M4 Max` — and it carries the
+same 48 regions. It simply never runs an ImGui frame. The earlier text
+("no window, no GPU adapter and no ImGui") was wrong about the mechanism while
+being right that the assertion does not cover the windowed application.
 
-**482 MB of the 577 MB is GPU allocation.** So the "<100 MB" figure was never
-violated — it is asserted by a **headless** selftest section that has no
-window, no GPU adapter and no ImGui, and it therefore **has never covered the
-windowed application at all**. This is the pattern
-`docs/reachability-audit.md` already names: a green suite describing a
-property nobody checked.
+### 5. Why the two numbers could never agree, and what now says so
 
-**Work.** Give the windowed process a measured budget of its own, the way
-`--selftest` has one for the headless path, so this cannot drift again
-unnoticed.
+`app::currentResidentBytes()` is `MACH_TASK_BASIC_INFO`'s `resident_size`.
+Activity Monitor shows `phys_footprint`. **Neither contains the other:**
 
-**Reconciled 2026-09-02 — the work above is still not done, and one figure in
-this entry needs restating so it is not misread.** `--selftest` prints
-`[measured] resident 357.0 MB of a 512 MB budget`
-(`app/selftest/AtelierChrome.cpp:321`, PRD L7). That number is easy to mistake
-for an answer to this entry and is not one:
+* `phys_footprint` adds the driver's SM=SHM regions, which are not this task's
+  resident pages;
+* `phys_footprint` omits clean file-backed pages, which `resident_size`
+  counts.
 
-* It is the **headless selftest process**, the same process this entry already
-  showed has no window, no GPU adapter and no ImGui. The 482 MB of GPU
-  allocation that *is* the reported symptom cannot appear in it.
-* The 512 MB is the **status bar's** design budget — what PRD L7 puts in front
-  of the user — not a ceiling anything fails against. `mem.bytes > 0` is the
-  only assertion on the numerator; the printed megabytes are asserted by
-  nothing.
-* It drifts between runs of the same binary (357.0 MB here, 349.5 MB in an
-  earlier run) — this suite's documented RSS noise class.
+Both directions are observable in one run:
 
-So the gap this entry names is unchanged: **there is still no measured budget
-covering the windowed process**, and the 577 MB `footprint` figure has not been
-re-measured since 2026-08-26, which now predates
-`docs/architecture-review.md`'s P0-1/P0-2. A re-measure is cheap and should
-come before any work, since it may well have moved.
+```
+idle capture (main.cpp, before the GPU has executed anything):
+    resident  91.2 MB   >   footprint  38.5 MB
+the same process after a WebGPU submission:
+    resident 143.7 MB   <   footprint 622.3 MB
+```
 
-**Where the 482 MB comes from is OPEN, and the obvious answer is wrong.** This
-entry originally ended "see T7, which is where it comes from". It is not.
-`sim::PaintSim` is never constructed at idle — proved by a temporary
-`fprintf` at the top of `PaintSim::init()`, which fires once under
-`--diag 1` (`[PROBE] PaintSim::init 1024x1024`) and **zero** times across ten
-seconds of idle GUI, while `footprint` on that same process still reads
-404 MB IOAccelerator. See T7 for why the solver was never the suspect it
-looked like.
+The first line is the OpenImageIO dylib chain — the same 29.5 MB of clean
+mapped pages that forced `--selftest`'s idle ceiling up by 32 MB, and which
+`phys_footprint` does not charge us for at all.
 
-### Narrowed 2026-08-27 — three measurements, and two of the old leads are dead
+**Work done.**
 
-**1. It does not scale with the window.** A temporary `NP_PROBE_WINDOW` hook
-on `SDL_CreateWindow` (reverted; the tree is clean) ran the GUI at three
-sizes, each sampled after 9 s idle:
+* `app::currentFootprintBytes()` (`app/Memory.*`), `TASK_VM_INFO` /
+  `phys_footprint`, with the whole of the above in its header comment.
+* `--selftest` now prints `idle phys_footprint` on the line after `idle RSS`,
+  **printed and not asserted** — there is no ceiling it could be held against
+  that would mean anything. The 80 + 32 MB RSS ceiling is unchanged; what it
+  gained is a comment saying what it structurally cannot see.
+* The status bar's readout keeps its glyphs and gains a tooltip naming both
+  numbers, computing both live, and saying where the difference goes. A user
+  who sees `145 MB / 512 MB` here and `551 MB` in Activity Monitor now has the
+  reconciliation under the cursor.
 
-| Window | Device pixels @2× | IOAccelerator (graphics) |
+### 6. The status-bar note in the old entry was wrong
+
+This entry previously said the status bar's `402 MB / 512 MB` was "the
+**History** byte budget (`ui/AtelierChrome.cpp:828`), not memory in use …
+Worth relabelling". It is not. `atelierResident()`
+(`ui/AtelierChrome.cpp:109`) returns `currentResidentBytes()` against
+`kResidentBudgetBytes` — it is a real RAM meter, of real RSS, and line 828 is
+in the gradient tool's ramp swatch. The readout is honest about what it
+measures. Its actual defect was the one now fixed: it measures a different
+quantity from the one the user is comparing it against, and never said so.
+
+### 7. The solver's cost was documented 12% low
+
+Chasing the above turned up a real arithmetic error in the code, of exactly
+the kind T7's postmortem warns about. `app/ZoomAndSize.hpp`'s budget rationale
+said the solver costs **176 B/texel, 272 with ink**. Measured:
+
+| | documented | measured |
 |---|---|---|
-| 640×480 | 1280×960 | **399 MB** |
-| 1480×940 (shipping) | 2960×1880 | **401 MB** |
-| 2400×1500 | 4800×3000 | **404 MB** |
+| base field set | 176 B/texel | **197 B/texel** (198.13 MiB at 1024², of which 197.00 MiB texture) |
+| ink increment | 96 B/texel | **96 B/texel** exactly |
+| worst case | 272 B/texel | **293 B/texel** |
 
-An 11.7× change in area moves the figure by **1.25%**. A triple-buffered
-swapchain across that range would differ by ~158 MB on its own, so **the
-surface is not in this number** — the HIGH_PIXEL_DENSITY-surface lead is
-refuted, not merely unproven.
+The 176 counted `allocFields()`'s seven ping-pong fields and omitted the five
+singles allocated in the same function — `paper_` 8, `selection_` 1,
+`canvas_` 4, `grayscale_` 4, `graded_` 4 — another 21 B/texel. The "3.3 GB"
+and "292 GB" figures in `app/selftest/CanvasDimensions.cpp`'s assertion prose
+were 12% low for the same reason; both are corrected.
 
-**2. It is one-shot at startup, not accumulation.** Sampled at ~1, 2, 4, 8
-and 16 s in a single run: 407, 404, 404, 406, 404 MB. Flat from the first
-second. That also disposes of the `ui/CanvasQuad` per-frame-churn lead —
-there is nothing left for churn to explain.
+**This is now asserted rather than written down.** `PaintSim::
+fieldTextureBytes()` interrogates the live textures (walking the same lists
+`releaseFields()` walks, which already has a forcing function keeping it
+complete), `PaintSim::kFieldBytesPerTexel` / `kInkFieldBytesPerTexel` are what
+the budget reasons from, and `app/selftest/SolverFootprint.cpp` holds one
+against the other. A field added to `allocFields()` now fails the suite
+instead of silently shifting the documented cost.
 
-**3. It is 48 identical 8 MiB allocations.** `vmmap`, resident-size histogram
-of the 154 `IOAccelerator (graphics)` regions:
+### 8. And the solver was never sized to the window
 
-| Count | Size | Subtotal |
-|---|---|---|
-| **48** | **8192 K** | **384 MiB** |
-| 1 | 8224 K | 8 MiB |
-| 48 | 32 K | 1.5 MiB |
-| 23 | 16 K | 0.4 MiB |
-| rest | ≤2 MiB each | ~10 MiB |
+The hypothesis that opened this round — a solver that grows when the user
+maximises — is **false, and was already engineered against**.
+`ui/MacPaintUI.cpp:14364` sizes the first (and only) construction from
+`paintSimDimensionsFor()`, which takes the *document* and a caller fallback
+and has no window, display, zoom or DPI parameter at all; it caps at
+`kPaintSimMaxTexels = 1024²`, the status-quo size. `app/ZoomAndSize.hpp`
+§4 argues the whole design at length. `SolverFootprint.cpp` adds the assertion
+that was missing: an in-budget document sizes the solver identically whatever
+fallback it is handed, and no document size a user can reach — up to the
+32768² preset maximum — puts base + ink over the 512 MB budget.
 
-**95% of the total is 48 allocations of exactly 8 MiB**, all
-`SM=SHM PURGE=N`, all non-volatile.
+### 9. Still open, and deliberately not concluded
 
-**What this rules out on our side.** 8 MiB is exactly a 1024×1024
-RGBA16Float texture, which is suggestive — but the interactive path has only
-four `wgpuDeviceCreateTexture` call sites outside `sim/PaintSim` (proven
-unconstructed, above), and none can produce 48 of them:
+**Whether the 384 MiB can be influenced at all.** Everything measured says no:
+it is invariant to window size, document, frames-in-flight and the presence of
+an ImGui frame, and it does not appear in the Metal allocation the process
+made. But "an AGX per-process GPU arena" is a *story*, not a measurement — it
+is the same shape of plausible-sounding explanation that made T7 wrong, and
+the honest statement is the negative one: **nothing this build allocates
+accounts for it, and no change to what this build allocates moves it.**
+Anyone wanting more should instrument below the wgpu boundary (Metal System
+Trace, or `MTLHeap`-level accounting), not reason from here.
 
-| Site | Size | Ceiling |
-|---|---|---|
-| `ui/DocumentTexture.cpp:98` "document composite" | RGBA16F, doc-sized | **`kVisibleDocumentCap` = 2** slots (`DocumentTexture.hpp:452`) |
-| `ui/NaturalPaintUI.cpp:114` tile mip chain | `kTileSize` = **128** → 128 KiB | wrong order of magnitude |
-| `ui/MacPaintUI.cpp:2890`, `:2954` brush previews | RGBA8, `app/DabPreview` constants | kilobytes |
-| `color/LutBake.cpp:59` 3-D LUT | size³ RGBA16F | ~2 MiB at 64³ |
-
-So 384 MiB in 8 MiB units is **not accounted for by naturalPaint's own
-textures**, and the remaining suspect is wgpu-native's / Metal's allocator
-behaviour.
-
-**Deliberately NOT concluded.** "8 MiB is a common suballocator block size"
-is a plausible story and it is *exactly* the kind of header-derived
-arithmetic that made T7 wrong. The next person should prove it — instrument
-allocation at the wgpu boundary, or vary our own texture demand and see
-whether the count of 8 MiB regions moves — rather than inherit this
-paragraph as a finding.
-
-**Note the third number.** The status bar's "402 MB / 512 MB" is the
-**History** byte budget (`ui/AtelierChrome.cpp:828`), not memory in use. It
-is easy to read as a RAM meter and it is not one. Worth relabelling.
+**PRD A1's "<100 MB" is a heap figure and should say so.** This entry has now
+made that explicit in three places in the code; the PRD itself still reads as
+though it bounds what the user sees. Left alone rather than edited from this
+track.
 
 ---
 
@@ -423,7 +552,12 @@ fluid engine is not stranded — but the *default* brush on the *default*
 document does not touch it, which is the same canvas-versus-document split
 **T5** is about, seen from the routing table.
 
-**No work.** The 482 MB question moves to **T6**, where it started.
+**No work.** The 482 MB question moved to **T6**, where it started, and was
+answered there on 2026-09-02: it is the graphics driver's, not ours. This
+entry's header arithmetic was wrong about *whether the object existed*; it was
+also, as it turns out, wrong about *what the fields cost* — 13 ping-pongs at
+1024x1024 is not 248 MiB and the real base field set is 197 B/texel, measured.
+Both errors have the same cause and T6 §7 has the corrected arithmetic.
 
 ---
 
@@ -925,56 +1059,83 @@ preview at view resolution, or on a downsampled proxy. Not built.
 
 ---
 
-## T16 — The mask chip is not a control, and no mask can be painted · open
+## T16 — The mask chip is not a control, and no mask can be painted · PARTLY BUILT
 
 **Reported.** When a layer has a layer mask, paint into it when the layer mask
 icon is active; disable it if you shift-click it; and show its result when you
 use the Photoshop command that shows the mask (⌥-click).
 
-**Verified — all three are absent, and they are absent for one shared reason
-plus one deeper one.**
+**Built: gesture 1 (paint into the mask), plus the two thumbnails the panel
+needed to make it a gesture at all. Gestures 2 and 3 are still open**, and the
+"Remaining work" section below says what each costs.
 
-*The shared reason.* The mask chip is **drawn, not clickable**.
-`ui/MacPaintUI.cpp:2512-2514` computes its rectangle and fills it; there is no
-`InvisibleButton`, so no click of any modifier reaches it. Every one of the
-three gestures needs that control to exist first.
+### What was wrong with this entry's own analysis
 
-*The deeper one, and it is the expensive part.* There is **no concept of an
-active mask anywhere in the tree** — `maskActive`, `editingMask`,
-`maskSelected`, `MaskTarget` all return nothing — and, more to the point,
-**nothing in this build can paint a mask at all**. `core/Layer.hpp:281` says
-so outright: "the content of a mask can only come from a `.npaint` or from a
-test writing texels", with `addLayerMask()`/`removeLayerMask()` being "the
-whole of the lifecycle a user can reach". `StrokeRoute`
-(`app/StrokeSession.hpp:300`) confirms it from the other side: its six values
-are `None`, `CpuDeposit`, `RgbDeposit`, `RgbErase`, `PigmentErase`, `PaintSim`
-— there is no mask route, and the parametric kinds "already refuse for having
-no writable store".
+Three of its claims were stale or incorrect by the time they were acted on, and
+they are corrected here rather than deleted, because two of them were the
+reason the job looked bigger than it was.
 
-So "paint into it when the mask icon is active" is not a wiring job. It is a
-seventh `StrokeRoute` writing a `MaskTileStore`, plus the target concept to
-select it.
+* **"Its six values are ..."** — `StrokeRoute` had **ten** values, not six
+  (`None`, `CpuDeposit`, `RgbDeposit`, `RgbErase`, `PigmentErase`,
+  `PencilDeposit`, `TonalBrush`, `CloneStamp`, `Smudge`, `PaintSim`), and
+  `strokeRouteWritesLayer()` already named eight of them as layer writers. So
+  the mask route is the **eleventh**, not the seventh, and it joined a
+  predicate that already had a documented contract for admitting new members.
+* **`app/StrokeSession.hpp:300`** — the enum was at `:539`.
+* **`ui/MacPaintUI.cpp:2512-2514`** — the chip was at ~`:2772`.
+* **The entry never mentions that the compositor already reads masks.**
+  `core/Composite.cpp` composites through `Layer::mask` in the main walk and in
+  both opaque-floor shortcuts, and `layerMaskCoverageAt()` is exported for it.
+  So "a mask can be stored and composited but not painted" was the real
+  starting position, and only the write end was missing.
 
-*And a third thing the report implies but does not name.* Shift-click
-**disables** a mask, which means a mask can be off without being removed —
-there is no such flag on `Layer` (no `maskEnabled`, checked). That is a new
-model field, and therefore a `docs/document-format.md` decision about whether
-it round-trips through `.npaint` or is session-only. It should round-trip: a
-disabled mask that silently re-enables on reload is a data-shaped surprise,
-unlike the group-collapse state (PRD C7) which is genuinely view-only.
+### What is built
 
-**Work**, smallest first, and the first is independently useful:
+* **`StrokeRoute::MaskPaint` and `brush/MaskPaint`** — the deposit this entry
+  called "the real cost". One route rather than a paint/erase pair, because a
+  mask sample is a scalar coverage with no privileged end: painting black hides
+  and painting white reveals, and both are one lerp toward the ink's coverage.
+  The ink becomes a coverage through Rec.709 luma in linear light, sRGB-encoded
+  (`core/SelectionRefine.hpp`'s order), so a 50 % display grey paints coverage
+  0.5 rather than 0.214.
+* **The target concept** — `LayerEditTarget`, `OpenDocument::maskIsEditTarget`
+  and `resolveLayerEditTarget()`. The last of those is the load-bearing one:
+  "the mask is selected" over a layer that has none resolves to `Content`, so
+  the control is never live over nothing.
+* **A layer thumbnail and a mask thumbnail in every row** (`app/LayerThumbnail`),
+  cached on `(DocumentId, revision, layerIndex)`. Sampling is O(thumbnail), not
+  O(document): 9 216 samples per picture whatever the canvas size.
+* **The mask thumbnail IS the control.** Clicking it selects the layer and
+  aims the pen at its mask; clicking the layer thumbnail aims it back at the
+  pixels. The trailing half-filled chip is gone — the thumbnail at the leading
+  edge does the same job (and survives a clipped row better, since clipping
+  eats the trailing end) while also being clickable.
 
-1. Make the chip a control (`InvisibleButton` on the rect already computed at
-   `:2512`), with plain click selecting the mask as the paint target.
-2. `Layer::maskEnabled`, its `.npaint` attribute, its reader/writer, and its
-   place in the format table. Shift-click toggles it; the chip draws the
-   disabled state so it is visible without hovering.
-3. ⌥-click shows the mask alone in the canvas — a view mode, not a document
-   change, so it belongs beside the grayscale check in
+Covered by `app/selftest/MaskTarget.cpp` and by three golden views
+(`layer_thumbs`, `mask_target`, `mask_content`) reachable through the new
+`--mask-demo` flag.
+
+### Remaining work
+
+1. **Shift-click disables the mask.** Unchanged from this entry's original
+   analysis and still the expensive half: `Layer::maskEnabled`, its `.npaint`
+   attribute, its reader/writer, its row in the format table, and — the part
+   that is easy to underestimate — gating **every leaf** that reads
+   `Layer::mask` in `core/Composite.cpp` rather than one derived predicate.
+   That file reads the mask in the main walk and in both opaque-floor
+   shortcuts, and a gate applied to only some of them composites a disabled
+   mask as enabled in exactly the cases the shortcuts fire.
+   It should round-trip: a disabled mask that silently re-enables on reload is
+   a data-shaped surprise, unlike the group-collapse state (PRD C7) which is
+   genuinely view-only.
+2. **⌥-click shows the mask alone in the canvas** — a view mode, not a
+   document change, so it belongs beside the grayscale check in
    `docs/operations.md §7` rather than in the layer model.
-4. `StrokeRoute::MaskPaint` and the deposit that backs it. This is the real
-   cost of the entry and should not be scheduled as if it were part of 1.
+3. **The other tools on a mask.** Only Brush and DryBrush take the mask route;
+   every other tool refuses by name. Eraser, Pencil, Dodge/Burn, Clone Stamp
+   and Smudge each need their own answer about what that operation means on a
+   scalar coverage field — `app/StrokeSession.cpp`'s mask arm lists the
+   question for each.
 
 ---
 
@@ -1187,26 +1348,76 @@ and are noted under T3 and T5 rather than renumbered here.
 
 ---
 
-## T19 — The smudge needs more work · open, unspecified
+## T19 — The smudge needs more work · closed 2026-09-02
 
 **Reported.** "that smudge needs more work."
 
 No detail was given, and none is invented here. `brush/Smudge` shipped in
 `540adf8`; its header records what it deliberately does not do (no Pigment
 smudge, alpha-locked RGB refuses), and any of those may be what this means, or
-it may be the feel of the result. **This entry needs one round of detail from
-the reporter before it is worth anything.**
+it may be the feel of the result.
+
+*(Detail supplied 2026-09-02: "It never fades, Need to reload with the areas
+been smeared across. May need a pickup parameter in the tool options for
+smudge, picking a dab shape as well or a brush to use for smudge is likely
+ideal.")*
+
+**Closed by `27c0ad5`, and the diagnosis in the report was right about the
+symptom and wrong about the cause — in a way that matters.** `brush/Smudge`
+was never a pick-once-and-stamp tool: `finger' = lerp(pick, finger, strength)`
+reloads from the canvas every dab, and §5 documents the `strength^n` fade with
+an assertion on it. What was missing was a control. `StrokeSession` passed
+`resolvedOpacity`, so the smudge's strength WAS the brush opacity slider,
+which defaults to 1.0 — and `std::lerp(a, b, 1)` returns `b`, so the finger
+loaded once at pen-down and never changed. The reported behaviour is that
+degenerate case exactly.
+
+`SmudgeParams` now carries strength (default 0.5) and a tip override. The
+control is STRENGTH rather than the proposed "pickup": inverting the slider
+puts the bit-exact no-op at the *top* of the track, so "maximum pickup" would
+be the setting that stops the tool — §3's own named failure, on the label a
+user chasing this report drags first.
+
+The assertion that would have caught this is new in kind: it builds the tip
+from an *unconfigured* `AppState` and requires the fade. Every pre-existing
+strength assertion sets a strength first, which is why a default of 1 stayed
+green for the tool's whole history and had to be reported by a user.
+
+A preset-level brush picker for the smudge is specified and not built.
 
 ---
 
-## T20 — Space should be a spring-loaded Hand · open
+## T20 — Space should be a spring-loaded Hand · closed 2026-09-02
 
 **Reported.** "space bar should switch to the hand tool while held down and go
 back to the previous tool when released."
 
+**Closed by `21f3374`,** which had to build the thing the request presumes:
+nothing in the build recorded which tool the user was in. Four sites assigned
+`st.brush.tool` directly, each overwriting without reading. `app/ToolSwitch` is
+now the only writer.
+
+The borrow is deliberately **not** `setActiveTool(Hand)` followed by
+`setActiveTool(previous)` — that pair records "previous = Hand" and erases the
+fact the feature exists to keep. `beginSpringHand()`/`endSpringHand()` install
+the Hand without touching the ledger.
+
+Three guards, each naming a gesture Space already belongs to: text input (Space
+is a space, and the layer-rename box is one panel over), any mouse button down
+(a marquee drag reads Space as its *move* modifier, and swapping the tool
+mid-gesture would abandon the rectangle), and the polygon lasso (the one canvas
+gesture that spans frames with the button up). The release asks `!IsKeyDown`
+rather than `IsKeyReleased`, so Cmd-Tabbing away with Space held cannot strand
+the user in the Hand.
+
+One non-obvious consequence: the Measure handler's clear arm needed
+`!springHandHeld()`. Its gate reads `toolMeasuresCanvas(st.brush.tool)`, which
+IS false during the borrow, so without it panning to look at the far end of a
+measurement would have deleted the measurement.
+
 ---
 
-## T21 — The tool settings do not follow the active tool · open
+## T21 — The tool settings do not follow the active tool · closed 2026-09-02 for the wand and the bucket
 
 **Reported.** "the tool settings need to be updated to reflect the setting for
 the active tool, such as magic wand should have options for tolerance,
@@ -1216,9 +1427,34 @@ Note that this is a general complaint with one example, not a request for two
 magic-wand controls: the options bar is expected to be *per tool*, and the wand
 is the case that made it obvious.
 
+**Closed by `a1294ff` for those two tools; the general complaint stays open**
+as the `docs/ui.md` §4b inventory of which tools bring their own options bar.
+
+Each tool holds its OWN `FloodFillParams`. One shared block drawn under two
+tool names would be a hidden coupling — nudge TOLERANCE with the wand selected
+and the bucket's next click changes too, with nothing on screen saying so.
+`floodToolParamsFor()` is the single mapping from tool to block, so the row the
+user edits and the click that consumes it cannot look at different structs.
+
+TOLERANCE is shown in Photoshop's 0..255 and stored in the engine's 0..1, as a
+conversion rather than a second field. REACH's engine word is `Global`; the
+band says "All Similar", PRD D25's own phrase.
+
+**Option no longer forces Global on either tool.** With REACH visible, the
+modifier was a second source of truth that made the band wrong whenever the key
+was down — and on the wand it was double-booked, since Option is Subtract for
+every selection tool, which meant "subtract a contiguous region" was a gesture
+this build could not express. The shortcut became a visible control and the
+modifier went back to meaning one thing.
+
+The first capture taken for the `wand_options` golden view found a defect of
+exactly the class the view exists for: the REACH combo's width was measured
+with the band's proportional face and drawn in the mono one, so "Contiguous"
+was clipped under its own arrow. Headless, that combo was perfect.
+
 ---
 
-## T22 — A single click lays no dab · open
+## T22 — A single click lays no dab · closed 2026-09-02
 
 **Reported.** "the brush engine right now won't start stamping until the brush
 moves after being clicked, but we need to support single click dabs, so adjust
@@ -1228,9 +1464,20 @@ The desired behaviour is stated exactly: **click deposits one dab; a drag
 behaves as it does today.** This plausibly applies to every route that begins a
 stroke, not only the brush — there are nine as of `540adf8`.
 
+**Closed by `87e1eaf`,** and the nine routes were the reason it was one fix
+rather than nine: `brush/StrokePath` is the sole dab emitter for all of them.
+`leftover_` starts at 0, so a moving stroke's first dab lands one full spacing
+along the path and the origin is never stamped; a click, having no path at all,
+emitted nothing.
+
+`flush()` now emits the pending point when the accumulated chord distance never
+exceeded 1e-3 px. Distance, not "was there one point" — a click that jitters by
+a texel under the pen is still a click, and a two-point path that has genuinely
+moved must still go down the spacing walk.
+
 ---
 
-## T23 — The clone stamp shows no source · open
+## T23 — The clone stamp shows no source · closed 2026-09-02
 
 **Reported.** "clone needs to show an indicator of where it is cloning from,
 Opt click should set that anchor with an indicator of where it was put and
@@ -1241,9 +1488,21 @@ Three separate pieces of feedback are being asked for: the anchor at the moment
 it is set, a persistent marker for where the source is, and a *live* marker
 that tracks the sampled point during a stroke.
 
+**Closed by `71c14f4`.** All three pieces: the anchor crosshair where Option
+put it, the persistent marker, and the live ring at `pointer + offset` with a
+leader line between them.
+
+The state underneath was already asserted headlessly and was already right;
+what was missing was every pixel of it. So the coverage is two golden views
+sharing one crop, and the negative is not decoration: `clone_anchor` runs the
+same fixture with the offset **not** latched, because before the first pen-down
+the source IS the anchor. A build that dropped that gate would draw the ring
+concentric with the brush cursor — where it is least likely to be noticed — and
+`clone_source` would still pass.
+
 ---
 
-## T24 — The measure angle should reach the transform panel · open
+## T24 — The measure angle should reach the transform panel · closed 2026-09-02
 
 **Reported.** "The measure tool's angle should be remembered so that when the
 transform panel is open, and the measure was the last tool the angle from the
@@ -1253,9 +1512,25 @@ angle should be zero."
 The conditional is the whole feature and is easy to drop: the handoff happens
 **only when Measure was the last tool**, and the field is zero otherwise.
 
+**Closed by `21f3374`,** alongside T20 — both needed the same missing record of
+which tool the user was in.
+
+Two corrections to the framing above, both found while building it. The angle
+goes in the **Numeric Transform modal** (`Image > Transform…`), which is where
+this build's rotate field actually lives; there is no transform *panel*. And
+the predicate is the tool the user is **in**, not the previous one: the ruler
+is destroyed the frame the tool changes, so keying the handoff off `previous`
+would be a branch no running state can reach.
+
+The zero is the half that matters and the half that is easy to drop — a ruler
+measured on another document, a dismissed ruler, and every non-Measure tool all
+seed exactly 0.0. The seeded angle is also pushed through `setPending()`:
+otherwise Apply-without-touching-anything would commit the identity while the
+field read 37.4.
+
 ---
 
-## T25 — The colour picker clamps a canvas that does not · open, a question
+## T25 — The colour picker clamps a canvas that does not · PARTLY CLOSED (T25a scene-referred landed 2026-09-02; T25b EDR display is its own project)
 
 **Reported.** "The canvas supports fp16 data, but the color picker only shows
 values clamped to 1, what can we do about it?"
@@ -1268,7 +1543,7 @@ unlikely to be the whole answer.
 
 ---
 
-## T26 — The layers panel opens with a document-name row · open
+## T26 — The layers panel opens with a document-name row · closed 2026-09-02
 
 **Reported.** "with the layers panel, what is the first UI item, it seems to
 show the document name. remove it."
@@ -1277,15 +1552,70 @@ Half question, half instruction. The question deserves an answer before the
 removal: if that row is load-bearing for anything, that should be said out loud
 rather than discovered by deleting it.
 
+**Answered, then done.** The row is the LAYERS *header band*
+(`ui/MacPaintUI.cpp`, the `--- The header band ---` block): the document name
+on the left, and on the right the layer count in monospace. It is the design's
+tab strip with the tabs removed — that section's own doc comment argues at
+length why there are no tabs — so what survived was the strip's right-hand
+slot plus a name nobody asked for.
+
+**The name is gone. The count stays, and they are not the same question.** The
+name was redundant three ways over: the tab strip above the canvas names every
+open document and marks the active one, the title band names it again, and this
+panel is unambiguously about whatever document is active. The count is the only
+place the name filter's effect is visible — with five rows hidden it reads
+`3/8`, which is what separates "this document has three layers" from "this box
+is hiding five of them". Removing it would delete feedback rather than a
+duplicate.
+
+**A stale claim found next to it, and fixed.** That band's tooltip ended with
+"a stroke reaches no layer and nothing painted appears here." That was true
+when written and has been false since the RGB stroke routes landed:
+`strokeRouteWritesLayer()` now answers true for **eight of the nine** routes,
+and only `PaintSim` — the solver route a Pigment layer takes — still paints
+somewhere this panel cannot show. Rewritten as the narrower true statement
+rather than deleted, because the surprise it exists to prevent is real; it is
+just no longer the general case.
+
+**A coverage gap, recorded not closed.** Golden passed 16/16 across this
+change, which means the LAYERS header band sits outside every crop — the
+`layers` view starts at y=927, below it. Same shape as the finding that every
+crop starts at y=77 and so the title band has never been covered. Not worth a
+17th view for a row that now holds one number, but worth knowing before someone
+reads a green harness as coverage of this panel's top.
+
+**Left undone, deliberately.** The row now holds a single right-aligned number
+and reads sparse. Folding the count up into the `LAYERS` collapsing header
+would remove the row outright — which may be what the reporter meant — but that
+header is shared machinery for all fifteen panels, and changing it for one of
+them is a different job from this one.
+
 ---
 
-## T27 — Throttle the UI · open
+## T27 — Throttle the UI · closed 2026-09-02
 
 **Reported.** "lets throttle the UI unless drawing to 60fps, and when nothing
 is happening, throttle it further."
 
 Two tiers are asked for: a 60 fps ceiling when idle-but-interactive, and a
 lower one when nothing is happening at all — with drawing exempt from both.
+
+**Closed by `37af04e`.** Painting unthrottled, 60 fps awake, 6 fps after 2 s.
+Fifo presentation was already vsync-locked but that is not 60 here — 600
+measured frames of a `--screenshot` run ran at ~119 fps on a ProMotion panel.
+
+**The idle number is picked by the solver, not by taste.** The frame loop is
+also the physics loop, and `consumeFixedSteps()` caps a frame at 33.3 ms of
+simulated time. `kMaxCatchUpMs` bounds the per-call *add*, not the
+accumulator, so below 30 fps the solver banks debt without bound — 133 ms
+every frame at 6 fps — and discharges it as a fast-forward on wake. The period
+is clamped to a ceiling derived from `FixedStep.hpp`'s own constants whenever
+a solver is live.
+
+A stated gap: the wait's *placement* relative to `frameStartNs` has no
+headless coverage, because the pure function cannot see where its caller calls
+it. Sabotaging the placement produces 0 FAIL. It is instead visible in one
+line of `--frame-trace`, which is why that line now carries `pacing=`.
 
 ---
 

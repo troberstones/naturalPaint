@@ -10,6 +10,7 @@
 #include "brush/BrushModel.hpp"
 #include "brush/CloneStamp.hpp"
 #include "brush/Deposit.hpp"
+#include "brush/MaskPaint.hpp"
 #include "brush/PencilDeposit.hpp"
 #include "brush/PigmentErase.hpp"
 #include "brush/RgbDeposit.hpp"
@@ -571,9 +572,61 @@ enum class StrokeRoute {
                  // other (that header's §1)
   PaintSim,      // sim::PaintSim's dense canvas texture, and only when there is
                  // no document layer to have aimed at -- see §1's last paragraph
+  MaskPaint,     // brush/MaskPaint, into the target layer's MASK tiles rather
+                 // than into any of its content stores -- the first route in
+                 // this table whose destination is not decided by the (tool,
+                 // layer) pair alone, because a layer that HAS a mask has two
+                 // writable stores and only the user can say which one is meant
+                 // (`LayerEditTarget` below). A route of its own and not a flag
+                 // on `RgbDeposit`, because a mask sample is a scalar coverage
+                 // with no privileged end (brush/MaskPaint §1): "paint" and
+                 // "erase" are two directions of one lerp there rather than two
+                 // arithmetics, so a flag would have to select a different
+                 // value type and a different store as well as a sign
 };
 
-// The five routes that write a `Layer`, as one predicate, because four call
+// Which of a layer's two writable stores a stroke is aimed at.
+//
+// **This is the third input to the routing table, and the first one that is
+// not a property of the document.** `strokeRouteFor(tool, target)` is pure in a
+// tool and a layer and stays that way; a layer that has a mask has two places a
+// brush could legitimately write, and nothing about the layer or the tool says
+// which. The user says, by clicking a thumbnail in the layer row, and that
+// choice lives on `OpenDocument::maskIsEditTarget` beside `activeLayer` --
+// session state rather than document content, for exactly the reason that
+// member's own comment gives about `activeLayer`.
+//
+// `docs/testing-issues.md` T16 called this "the target concept" and named its
+// absence as the deeper of the two reasons all three of its gestures were
+// missing.
+enum class LayerEditTarget {
+  Content,  // the layer's own rgb or pigment tiles -- what every route above
+            // `MaskPaint` writes, and the answer this build gave to every
+            // stroke before that route existed
+  Mask,     // the layer's `MaskTileStore`
+};
+
+const char* layerEditTargetName(LayerEditTarget target) noexcept;
+
+// The target a stroke actually gets, given what the user asked for and what the
+// layer can offer.
+//
+// **The whole reason this is a function is that the answer must be unambiguous
+// when the layer has no mask.** "The mask is selected" plus a layer whose
+// `mask` is `std::nullopt` is a state reachable in one gesture -- select the
+// mask on one row, then click a different row -- and the wrong answer there is
+// not a refusal, it is a live control over nothing: a brush that leaves no
+// mark, with a chip lit, and nothing anywhere saying why. That is the defect
+// class this codebase keeps naming; §6's last paragraph tells the same story
+// about the paint bucket, which discarded a click on a Pigment layer with "no
+// message, no history entry and no mark on the canvas".
+//
+// So **`Mask` comes back only when the layer really has one.** The panel
+// resolves through this same function, so a chip cannot be lit over a store
+// that is not being written.
+LayerEditTarget resolveLayerEditTarget(bool maskRequested, const Layer* layer) noexcept;
+
+// The routes that write a `Layer`, as one predicate, because four call
 // sites ask the same question -- `begin()`'s refusal, `depositPending()`'s
 // per-frame re-validation, `ui/MacPaintUI`'s canvas branch, and the options
 // bar's route indicator, which accents a route that reaches the user's layer
@@ -613,11 +666,33 @@ enum class StrokeRoute {
 // incremental composite and owes exactly one history entry, and it can allocate
 // tiles a stroke passes over, which the erase deliberately cannot
 // (brush/Smudge §§5-6).
+//
+// **`MaskPaint` is in here, and it is the first entry that writes a store the
+// word "layer" does not obviously cover.** It writes `Layer::mask`, not
+// `Layer::rgbTiles` or `Layer::pigmentTiles` -- but every one of the four call
+// sites is asking about the mechanics of the write and gets the same answer:
+// it unshares a copy-on-write tile, moves the revision, dirties tiles for the
+// incremental composite (a mask tile changing changes the composite over
+// exactly that tile) and owes exactly one history entry. Saying no here would
+// make `begin()` refuse every mask stroke and the options bar grey a live one
+// as though it went to the solver -- which is the specific drift this
+// predicate was extracted to stop, arriving through a store rather than
+// through a tool.
+//
+// **Two other predicates delegate to this one and both were re-asked rather
+// than inherited**, because this one's own comment and `grainReachesRoute()`'s
+// both warn that a route added without answering their questions leaves them
+// correct and their call sites wrong. `grainReachesRoute()`: yes -- a mask dab
+// computes a CPU coverage and `brush/MaskPaint.cpp` calls `grainCoverageAt()`
+// on the same line of its per-texel loop every other layer-writing route does.
+// `wetnessReachesSolver()`: no, and unchanged -- it names `PaintSim` alone, and
+// a mask stroke does not touch the solver.
 inline bool strokeRouteWritesLayer(StrokeRoute route) noexcept {
   return route == StrokeRoute::CpuDeposit || route == StrokeRoute::RgbDeposit ||
          route == StrokeRoute::RgbErase || route == StrokeRoute::PigmentErase ||
          route == StrokeRoute::PencilDeposit || route == StrokeRoute::TonalBrush ||
-         route == StrokeRoute::CloneStamp || route == StrokeRoute::Smudge;
+         route == StrokeRoute::CloneStamp || route == StrokeRoute::Smudge ||
+         route == StrokeRoute::MaskPaint;
 }
 
 // Reachability audit B2: `BrushState::wetness` (the WET slider, drawn in both
@@ -675,7 +750,31 @@ const char* strokeRouteName(StrokeRoute route) noexcept;
 // `target` is the layer the stroke is aimed at, or nullptr when there is none.
 // Pure and total: every (tool, target) pair has an answer and §1's table is
 // the whole of it.
+//
+// **This form means "aimed at the layer's content"**, which is what every call
+// site meant before masks were writable and what all but three of them still
+// mean: the cursor's refusal shape, the options bar's route indicator,
+// `toolBeginsStroke()`'s probe and `toolSurfaceFor()` are all asking about the
+// tool, not about which of a layer's stores a particular document currently has
+// selected.
 StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept;
+
+// The same table with the edit target as its third input (`LayerEditTarget`
+// above).
+//
+// **`Content` DELEGATES to the two-argument form rather than repeating it.**
+// That is the whole reason this is an overload and not a second table: §1
+// exists to stop one question being answered in more than one place, and a
+// three-argument copy of the same rows would be exactly the drift this file's
+// own comments describe -- "the options bar's route indicator read 'goes to the
+// solver' grey for a live RGB stroke for exactly as long as it had its own copy
+// of the test". `app/selftest/LayerMask.cpp` asserts the delegation over every
+// tool, so a row added to one and not the other fails rather than diverging.
+//
+// A `Mask` target on a layer with no mask cannot reach here: callers resolve
+// through `resolveLayerEditTarget()` first, and this function answers `None`
+// for that combination anyway rather than trusting them to.
+StrokeRoute strokeRouteFor(Tool tool, const Layer* target, LayerEditTarget editTarget) noexcept;
 
 // The history label for a stroke made with `tool`, in the same noun form
 // `core/LayerOps`' `editLabel` uses ("duplicate", not "Duplicated") so PRD
@@ -1383,6 +1482,23 @@ class StrokeSession {
   // file-static in `brush/Smudge.cpp` would have been small enough to look
   // harmless and would have leaked one document's colour into another's stroke.
   SmudgeStroke smudge_;
+  // The mask route's per-stroke fraction accumulator, latched target coverage
+  // and latched ceiling (brush/MaskPaint §3). A seventh member for the reason
+  // there are six above -- exactly one of them is ever live, and each
+  // `begin()`'s `else` branch is what leaves the others holding nothing after
+  // an interrupted drag. The one thing this one holds that none of the others
+  // does is a *destination* that is not a content store, which is why it is
+  // the member `editTarget_` below has to agree with.
+  MaskPaintStroke maskPaint_;
+  // Which store this stroke was aimed at, latched at `begin()` alongside
+  // `route_` and `tool_` and for the identical reason (§5): a target that moved
+  // half way through a drag would leave the dabs already spent in one store and
+  // the rest in another, under one history entry that names neither. It is
+  // latched rather than re-read because `route_` alone does not pin it down --
+  // `MaskPaint` implies `Mask`, but that is an implication a future route could
+  // break, and the per-frame re-validation compares the target it was begun
+  // with.
+  LayerEditTarget editTarget_ = LayerEditTarget::Content;
 
   StrokePath path_;
   std::vector<Vec2> pending_;

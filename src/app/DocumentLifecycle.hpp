@@ -340,6 +340,33 @@ struct OpenDocument {
   // clamp, and it is the accessor to use rather than this member directly.
   size_t activeLayer = 0;
 
+  // **Whether the user has asked for the active layer's MASK rather than its
+  // content** (`docs/testing-issues.md` T16's "target concept"). Set by clicking
+  // the mask thumbnail in a layer row; read through
+  // `np::resolveLayerEditTarget()` and never directly.
+  //
+  // Here, beside `activeLayer`, and the two halves of that placement are that
+  // member's own two halves, unchanged:
+  //
+  //  * **On the open document, not on `AppState`.** One flag for the whole
+  //    application would carry one document's choice into another's panel the
+  //    moment two documents have different stacks -- silently, because the
+  //    control it drives is a 24 px square.
+  //  * **On the session record, not on `Document`.** `core::History` entries
+  //    hold a whole `Document`, so a choice stored there would be *undone*:
+  //    pressing Cmd+Z after a mask stroke would move the edit target as a side
+  //    effect of undoing the stroke. Which store you are working on is not part
+  //    of the picture, and it is not saved to a file for the same reason.
+  //    (`Layer::maskEnabled`, T16's second gesture, is the opposite case -- that
+  //    one IS document content and must round-trip -- and it is not built here.)
+  //
+  // **A request, not a resolved answer.** It stays true across a click onto a
+  // layer that has no mask, so clicking back restores the choice rather than
+  // silently forgetting it; `resolveLayerEditTarget()` is what turns the pair
+  // (this flag, that layer) into the store a stroke actually writes, and it
+  // answers `Content` whenever there is no mask to answer otherwise about.
+  bool maskIsEditTarget = false;
+
   // Monotonic change counter. Bumped by `recordEdit()`; a save sets
   // `savedRevision = revision`; a revert bumps it *and* marks clean, because
   // the document changed (back) and anything caching a derived product must

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "app/CloseDecision.hpp"
+#include "app/CropTool.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/GradientTool.hpp"
 #include "app/Memory.hpp"
@@ -171,7 +172,17 @@ constexpr ToolMeta kToolMeta[] = {
     {"Lasso", "lasso", 57806u, "L", true},
     {"Polygon Lasso", "pentagon", 58667u, "Shift+L", true},
     {"Magic Wand", "wand-sparkles", 58199u, "W", true},
-    {"Crop", "crop", 57515u, "C", false},
+    // **Built**: app/CropTool, gated by `toolCropsCanvas()` -- the eighth
+    // canvas gate, and a new predicate rather than a name added to an existing
+    // one for `toolMeasuresCanvas()`'s reason, which is concrete here:
+    // `toolDrawsSelection()` is the gate on the selection tools' canvas block,
+    // so a Crop widened into it would have every crop drag handed to
+    // `commitDrawnSelection()`. Two modes, chosen in this band's own row
+    // below -- a rectangle through `cropDocument()` and a four-corner
+    // perspective through `transformFromQuad()` + `transformDocument()`.
+    // `Tool::Slice`, which shares its palette group and its cursor, is still
+    // one of the not-built cells and stays false.
+    {"Crop", "crop", 57515u, "C", true},
     // **Built**: app/MeasureLine, gated by `toolMeasuresCanvas()` -- the one
     // tool in this palette whose gesture writes no texel at all. Same
     // arrangement as the eraser row below: the rows are in `Tool` declaration
@@ -277,9 +288,16 @@ bool toolHasCanvasHandler(Tool t) noexcept {
   // and cursor Move does not share) or `toolPansView()` (which moves the VIEW,
   // not the content). Placed before the allocating `toolBeginsStroke()` for
   // the ordering reason stated above: it is cheap and `noexcept`.
+  // `toolCropsCanvas()` is the eighth, and it lives in `app/CropTool` rather
+  // than in `app/StrokeSession` beside the other predicates for the reason
+  // that header's section 6 states: it is one tool's own module's answer about
+  // its own tool, and widening `toolDrawsSelection()` instead -- the one-line
+  // way to make this go true for Crop -- would hand every crop drag to
+  // `commitDrawnSelection()`. Placed before the allocating `toolBeginsStroke()`
+  // for the ordering reason stated above: it is cheap and `noexcept`.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
          toolMeasuresCanvas(t) || toolPansView(t) || toolMovesPixels(t) ||
-         toolBeginsStroke(t) || toolZoomsView(t);
+         toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t);
 }
 
 const char* toolNoHandlerException(Tool) noexcept {
@@ -893,9 +911,18 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       // invisible on a fade and obvious on a ramp with a hard last stop.
       const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(columns);
       const std::array<float, 4> c = gradientSampleStraight(stops, t);
-      const ImU32 col = IM_COL32(static_cast<int>(srgbEncode(c[0]) * 255.0f + 0.5f),
-                                 static_cast<int>(srgbEncode(c[1]) * 255.0f + 0.5f),
-                                 static_cast<int>(srgbEncode(c[2]) * 255.0f + 0.5f),
+      // **`clampToDisplayRange()` after the encode, one of the named set in
+      // `color/Space.hpp`.** The stops come from the foreground, which is
+      // scene-referred since T25a (app/AppState.hpp's `BrushState::rgb`), so
+      // an encoded channel here can exceed 1.0 -- and `IM_COL32` shifts each
+      // int into its own byte lane, which turns 334 into 0x14E and spills the
+      // 0x1 into the neighbouring channel. Unclamped this ramp would not read
+      // "too bright to draw", it would read as the wrong hue.
+      const std::array<float, 3> enc =
+          clampToDisplayRange({srgbEncode(c[0]), srgbEncode(c[1]), srgbEncode(c[2])});
+      const ImU32 col = IM_COL32(static_cast<int>(enc[0] * 255.0f + 0.5f),
+                                 static_cast<int>(enc[1] * 255.0f + 0.5f),
+                                 static_cast<int>(enc[2] * 255.0f + 0.5f),
                                  static_cast<int>(c[3] * 255.0f + 0.5f));
       dl->AddRectFilled(ImVec2(r0.x + static_cast<float>(i), r0.y),
                         ImVec2(r0.x + static_cast<float>(i) + 1.0f, r1.y), col);
@@ -913,6 +940,43 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
         "start to its end.");
 
     bandSeparator();
+    capsLabel("KIND");
+    ImGui::SameLine();
+    int kindIndex = 0;
+    for (size_t i = 0; i < kGradientKindCount; ++i)
+      if (kGradientKinds[i].kind == st.gradient.kind) kindIndex = static_cast<int>(i);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Angular").x + ImGui::GetFrameHeight() + 16.0f);
+    pushAtelierMono();
+    if (ImGui::BeginCombo("##gradientKind", kGradientKinds[kindIndex].label)) {
+      for (size_t i = 0; i < kGradientKindCount; ++i) {
+        if (ImGui::Selectable(kGradientKinds[i].label, static_cast<int>(i) == kindIndex))
+          st.gradient.kind = kGradientKinds[i].kind;
+        // What the two handles MEAN changes per kind -- start-and-end,
+        // centre-and-rim, centre-and-zero-angle -- and that is not guessable
+        // from one word. A user who drags a Radial expecting a span and gets
+        // a radius has been misled by the label, not by the tool.
+        ImGui::SetItemTooltip("%s", kGradientKinds[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // **SPREAD goes dead for Angular, visibly and with the reason.** A sweep
+    // wraps into [0, 1) by construction, and on that range all three spread
+    // modes are the identity -- so the control would be live over something
+    // that provably changes no texel, which is the same defect as a palette
+    // cell for a tool that does not exist. `docs/ui.md` §4a settles it: no
+    // dead button looks live. `--selftest` proves the inertness by rendering
+    // the same sweep under all three modes.
+    //
+    // Disabled rather than hidden: a control that vanishes makes the band
+    // reflow and leaves the user hunting for a setting they used a moment
+    // ago. Greyed with a tooltip says where it went and why.
+    //
+    // The predicate is `gradientKindUsesSpread()`, not `kind == Angular`
+    // spelled again here (`app/GradientTool.hpp` § 4).
+    const bool spreadLive = gradientKindUsesSpread(st.gradient.kind);
     capsLabel("SPREAD");
     ImGui::SameLine();
     int spreadIndex = 0;
@@ -923,6 +987,7 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // cannot silently start clipping.
     ImGui::SetNextItemWidth(ImGui::CalcTextSize("Reflect").x + ImGui::GetFrameHeight() + 16.0f);
     pushAtelierMono();
+    ImGui::BeginDisabled(!spreadLive);
     if (ImGui::BeginCombo("##gradientSpread", kGradientSpreads[spreadIndex].label)) {
       for (size_t i = 0; i < kGradientSpreadCount; ++i) {
         if (ImGui::Selectable(kGradientSpreads[i].label, static_cast<int>(i) == spreadIndex))
@@ -934,82 +999,493 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       }
       ImGui::EndCombo();
     }
+    ImGui::EndDisabled();
+    // Outside the BeginDisabled pair on purpose: a disabled item does not
+    // report hover, so a tooltip set inside it is exactly the tooltip nobody
+    // can ever read -- which would leave the greyed control saying nothing at
+    // all, the failure this whole branch exists to avoid.
+    if (!spreadLive)
+      ImGui::SetItemTooltip(
+          "%s sweeps once around and wraps, so there is no outside for a spread mode to fill. "
+          "Your choice is remembered and applies again on Linear and Radial.",
+          gradientKindLabel(st.gradient.kind));
     popAtelierMono();
     return;
   }
 
-  bandSeparator();
-  capsLabel("SIZE");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(140.0f);
-  // The value inside the slider is a live numeric, so it is monospace: it
-  // changes every frame of a drag, and a proportional face makes the track's
-  // text jump about as the digits change width.
-  pushAtelierMono();
-  // kBrushRadiusMin/Max (app/AppState.hpp) -- the one range for this field,
-  // also read by the BRUSH panel's Radius slider. See that constant's own
-  // comment: this bar used to hardcode 2..90, a narrower range than the
-  // panel's 1..200, so a value the panel set above 90 clamped back down the
-  // moment this widget was touched (reachability audit B3).
-  // `st.brush.radius` is gone (Part 5) -- read/written through
-  // `model.tip.diameterPx` now, via a local half-diameter view of it since
-  // `SliderFloat()` needs a `float*` it can write through directly every
-  // frame.
-  {
-    float sizeRadius = st.brush.model.tip.diameterPx / 2.0f;
-    ImGui::SliderFloat("##size", &sizeRadius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
-    st.brush.model.tip.diameterPx = sizeRadius * 2.0f;
-  }
-  popAtelierMono();
+  // --- the crop tool's MODE, its extent readout and its two verbs ---------
+  //
+  // **The fourth early return in this band, and `docs/ui.md` §4b's test settles
+  // it without argument.** That test is not "does this tool have settings" but
+  // *would the four brush sliders be live controls over something this tool
+  // provably never reads*, and the crop reads none of them: nothing in
+  // `app/CropTool` or in the two engines behind it (`cropDocument()`,
+  // `transformDocument()`) touches a `BrushTip`. It is not the smudge's case --
+  // the smudge keeps the sliders because `smudgeDab()` genuinely reads three of
+  // the four -- and it is not a marginal call the way the smudge's was: the
+  // crop has no tip, no stroke and no deposit at all. Six rows in §4b now.
+  //
+  // The user asked for the mode HERE specifically, rather than as a second
+  // palette cell beside `Tool::Crop`, and that is also the right answer by this
+  // build's own rules: `Tool::Marquee` and `Tool::EllipseMarquee` are two cells
+  // because `docs/shortcuts.md` reserves a key for each, while Rectangle and
+  // Perspective crop are one gesture with one commit and one refusal ladder --
+  // two cells would be two `kToolMeta` rows, two cursors and two canvas blocks
+  // for a difference of four draggable corners.
+  if (st.brush.tool == Tool::Crop) {
+    CropSession& crop = st.crop;
+    bandSeparator();
+    capsLabel("MODE");
+    ImGui::SameLine();
+    int modeIndex = 0;
+    for (size_t i = 0; i < kCropModeCount; ++i)
+      if (kCropModes[i].mode == crop.mode) modeIndex = static_cast<int>(i);
+    // Measured INSIDE the mono push, unlike the gradient's combos above. Those
+    // measure with the default font and get away with it because "Angular" is
+    // short; "Perspective" is not, and the mono face is wider -- measuring
+    // outside clipped the label to "Perspectiv" with the arrow over the "e".
+    pushAtelierMono();
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Perspective").x + ImGui::GetFrameHeight() +
+                            16.0f);
+    if (ImGui::BeginCombo("##cropMode", kCropModes[modeIndex].label)) {
+      for (size_t i = 0; i < kCropModeCount; ++i) {
+        if (ImGui::Selectable(kCropModes[i].label, static_cast<int>(i) == modeIndex)) {
+          // `cropSetMode()`, never a bare assignment. Switching to Rectangle
+          // has to snap four dragged corners to their bounding box, and a
+          // combo that only wrote the enum would leave a perspective quad on
+          // screen being committed as its own bounding box -- a shape that is
+          // not the shape the user is looking at.
+          cropSetMode(crop, kCropModes[i].mode);
+        }
+        // What the mode changes is four handles versus eight and one resample
+        // versus none, which is not guessable from one word -- the same
+        // argument the gradient's KIND rows make for carrying theirs. The
+        // Perspective row also carries the aspect-ratio honesty
+        // (`app/CropTool.hpp` §3): the tool does not claim to recover the
+        // scene's true proportions, and the only place a user can learn that
+        // is here.
+        ImGui::SetItemTooltip("%s", kCropModes[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
 
-  bandSeparator();
-  capsLabel("HARD");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(110.0f);
-  pushAtelierMono();
-  // kBrushHardnessMin/Max (app/AppState.hpp) -- the one range for this
-  // field, also read by the BRUSH panel's Hardness slider.
-  ImGui::SliderFloat("##hard", &st.brush.model.tip.hardness, kBrushHardnessMin, kBrushHardnessMax,
-                     "%.2f");
-  popAtelierMono();
+    bandSeparator();
+    // **The extent that will result, not the extent of the gesture**, and for
+    // Perspective those are different numbers -- `perspectiveCropExtent()`'s
+    // longer-of-opposite-edges rule (`app/CropTool.hpp` §3) is the whole
+    // decision this feature turns on, and a user who cannot see the answer
+    // before committing has to commit to find out. Drawn from the same function
+    // the commit calls, so it cannot become a picture of a rule the tool no
+    // longer follows.
+    capsLabel("SIZE");
+    ImGui::SameLine();
+    pushAtelierMono();
+    if (crop.active) {
+      const DocumentRegion extent = crop.mode == CropMode::Rectangle
+                                        ? cropRegionOf(crop)
+                                        : perspectiveCropExtent(crop.quad);
+      ImGui::Text("%u x %u", extent.width, extent.height);
+    } else {
+      // Not "0 x 0": there is no crop, and a pair of zeroes reads as a crop
+      // that has collapsed rather than as one that has not been drawn.
+      ImGui::TextUnformatted("--");
+    }
+    popAtelierMono();
 
-  bandSeparator();
-  // kBrushLoadMin/Max (app/AppState.hpp) -- the same range drawBrushSection()
-  // uses, not a second one invented here: one field behind two widgets with
-  // two ranges is two clamps, and the narrower one silently truncates what
-  // the other set.
-  capsLabel("LOAD");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(110.0f);
-  pushAtelierMono();
-  ImGui::SliderFloat("##load", &st.brush.load, kBrushLoadMin, kBrushLoadMax, "%.2f");
-  popAtelierMono();
-
-  bandSeparator();
-  capsLabel("WET");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(110.0f);
-  pushAtelierMono();
-  // **Same honest-refusal treatment MacPaintUI.cpp's drawBrushSection() gives
-  // this same field** (see that comment for the full argument):
-  // `st.brush.wetness` reaches `sim::PaintSim`'s `brushWater` only, through
-  // `applyToolToBrush()`, and that is called only when `strokeRouteFor()`
-  // answers `StrokeRoute::PaintSim` -- Water always, or Brush/DryBrush with
-  // no document layer to aim at. A locally-scoped `route`, not the band's own
-  // one three separators down: that one is computed after this slider and
-  // reusing it here would mean drawing WET's disabled state off a value this
-  // control has not reached yet on the very frame the tool or layer changes.
-  {
-    const OpenDocument* wetOd = st.documents.active();
-    const Layer* wetTarget = wetOd != nullptr ? activeLayerOf(*wetOd) : nullptr;
-    const bool wetHonoured = wetnessReachesSolver(strokeRouteFor(st.brush.tool, wetTarget));
-    ImGui::BeginDisabled(!wetHonoured);
-    // kBrushWetnessMin/Max (app/AppState.hpp) -- the one range for this
-    // field, also read by the BRUSH panel's Water slider.
-    ImGui::SliderFloat("##wet", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax, "%.2f");
+    bandSeparator();
+    // **Both verbs are visible, and that is the point.** Enter and Escape are
+    // the shortcuts a user who knows them reaches for; a tool whose entire
+    // interaction is dragging cannot have its only commit on a key, or half the
+    // users never find it. These two set request flags read by the canvas
+    // block, so the button and the key are one commit path
+    // (`app/CropTool.hpp` §5).
+    const std::string quadWhy =
+        crop.mode == CropMode::Perspective ? cropQuadRefusal(crop.quad) : std::string{};
+    const DocumentRegion rectRegion = cropRegionOf(crop);
+    const bool rectUsable = crop.mode != CropMode::Rectangle || !rectRegion.empty();
+    const bool committable = crop.active && quadWhy.empty() && rectUsable;
+    ImGui::BeginDisabled(!committable);
+    if (ImGui::Button("Crop")) crop.commitRequested = true;
     ImGui::EndDisabled();
+    // Outside the disabled pair, for the SPREAD combo's stated reason: a
+    // disabled item reports no hover, so a tooltip set inside one is the
+    // tooltip nobody can read -- and this is precisely the case where the user
+    // most needs to be told why the button is grey.
+    if (!crop.active) {
+      ImGui::SetItemTooltip("Drag a rectangle on the canvas first.");
+    } else if (!quadWhy.empty()) {
+      ImGui::SetItemTooltip("%s", quadWhy.c_str());
+    } else if (!rectUsable) {
+      ImGui::SetItemTooltip("The rectangle is less than one texel wide or tall.");
+    } else {
+      ImGui::SetItemTooltip("Crop the document to this rectangle. Enter does the same. Undo "
+                            "gives back everything it hid -- the crop moves the pixels, it "
+                            "does not delete them.");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!crop.active);
+    if (ImGui::Button("Cancel")) crop.cancelRequested = true;
+    ImGui::EndDisabled();
+    if (crop.active)
+      ImGui::SetItemTooltip("Discard the crop rectangle. Escape does the same, and so does "
+                            "choosing another tool.");
+
+    // The refusal, or the steep-quad warning, in the band itself rather than
+    // only in a tooltip -- a bow-tie is one careless drag away and the reason
+    // has to be readable without hunting for the control that is greyed.
+    if (!quadWhy.empty()) {
+      bandSeparator();
+      ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(kAccent));
+      ImGui::TextUnformatted(quadWhy.c_str());
+      ImGui::PopStyleColor();
+    } else if (crop.active && crop.mode == CropMode::Perspective &&
+               cropQuadIsSteep(crop.quad)) {
+      // **Not a refusal.** `ops/Transform.hpp` §3 says the resampler takes its
+      // filter factor from the Jacobian at the destination CENTRE, so a strong
+      // perspective is correctly filtered in the middle and progressively less
+      // so at the far edge. That limitation is named there rather than fixed,
+      // and this band is where it stops being silent -- the crop is still
+      // correct, it is just soft where it is most magnified.
+      bandSeparator();
+      ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(kTextSecondary));
+      ImGui::TextUnformatted(
+          "Steep quad: the far edge will be soft. The resampler picks its filter from the "
+          "middle of the result.");
+      ImGui::PopStyleColor();
+    }
+    return;
   }
-  popAtelierMono();
+
+  // --- the magic wand's and the paint bucket's flood-fill options ---------
+  //
+  // **Six engine parameters across two tools, with zero visible controls until
+  // this row existed.** `ops/FloodFill.hpp` has shipped `tolerance`, `edgeBand`
+  // and `reach` fully implemented since it was written; both call sites in
+  // `ui/MacPaintUI.cpp` default-constructed a `FloodFillParams` and set at most
+  // one of them, from an undocumented Option-click. That is the same
+  // engine-capability-with-no-control gap the KIND combo three blocks up closed
+  // for the gradient, and this closes it for the other two tools.
+  //
+  // **Not an early return, unlike the three blocks above.** Eyedropper, Measure
+  // and Gradient each `return` before the band's trailing "what will this tool
+  // do to this layer" line; these two must not. That line is the one place in
+  // the chrome that answers the bucket's refusals (a Pigment layer, a locked
+  // layer), and its own comment records that the bucket used to be missing from
+  // it and read a grey "-> none" about a tool that was about to fill. So the
+  // row is drawn here, the four brush sliders below are skipped instead, and
+  // the trailing block is reached exactly as before.
+  //
+  // The gate is `floodToolParamsFor()` -- `app/AppState.hpp`'s single mapping
+  // from a tool to the block its click actually reads -- and not a
+  // `tool == MagicWand || tool == PaintBucket` spelled again here. Those two
+  // spellings agree until the day they do not, and the way they stop agreeing
+  // is a row of live controls bound to a struct the canvas never looks at: a
+  // toolbar that responds perfectly and changes nothing.
+  FloodFillParams* flood = floodToolParamsFor(st, st.brush.tool);
+  if (flood != nullptr) {
+    bandSeparator();
+    // Photoshop's units, 0..255, converted at the widget rather than stored --
+    // `floodToleranceToUi()` carries the argument for why the number a painter
+    // reads is not the number the engine holds. A local int, the same shape as
+    // the SIZE slider's local half-diameter view of `diameterPx` below:
+    // `SliderInt()` needs an `int*` it can write through every frame.
+    capsLabel("TOLERANCE");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    pushAtelierMono();
+    {
+      int toleranceUi = floodToleranceToUi(flood->tolerance);
+      // Written back only on an actual edit. An unconditional write-back would
+      // push the field through the integer grid on every frame this tool is
+      // selected, quantising a tolerance some other writer had set -- a widget
+      // that silently rounds a value it is not being used to change.
+      if (ImGui::SliderInt("##floodTolerance", &toleranceUi, 0, kFloodToleranceUiMax))
+        flood->tolerance = floodToleranceFromUi(toleranceUi);
+    }
+    popAtelierMono();
+    ImGui::SetItemTooltip(
+        "How far from the texel you click a texel may be and still be taken: the largest "
+        "per-channel difference, on the colours as DISPLAYED (0-255, Photoshop's units and "
+        "Photoshop's default of 32). Measured on screen values rather than on stored light, so "
+        "one number means the same thing in a sky and in a shadow.");
+
+    bandSeparator();
+    capsLabel("REACH");
+    ImGui::SameLine();
+    int reachIndex = 0;
+    for (size_t i = 0; i < kFloodReachCount; ++i)
+      if (kFloodReaches[i].reach == flood->reach) reachIndex = static_cast<int>(i);
+    // Width measured from the longest label rather than guessed, the same rule
+    // the eyedropper's two combos and the gradient's two state at their own
+    // call sites: a label added to `kFloodReaches` cannot silently start
+    // clipping.
+    //
+    // **Measured over the table, and INSIDE the mono push** -- on both counts
+    // unlike those four. Each of them measures one hand-copied string with the
+    // band's proportional face active and then draws it in the mono one, which
+    // is a different metric; that over- or under-reserves by a little and has
+    // been harmless only because their labels are short. This row's are not:
+    // measured the old way, "Contiguous" reserved less than it draws and the
+    // combo clipped it under its own arrow, which the first capture of the
+    // `wand_options` golden view showed directly. Walking the table also means
+    // the widest label wins whether or not whoever adds one notices that "All
+    // Similar" is a character longer than "Contiguous".
+    pushAtelierMono();
+    float widestReachLabel = 0.0f;
+    for (size_t i = 0; i < kFloodReachCount; ++i)
+      widestReachLabel = std::max(widestReachLabel, ImGui::CalcTextSize(kFloodReaches[i].label).x);
+    ImGui::SetNextItemWidth(widestReachLabel + ImGui::GetFrameHeight() + 16.0f);
+    if (ImGui::BeginCombo("##floodReach", kFloodReaches[reachIndex].label)) {
+      for (size_t i = 0; i < kFloodReachCount; ++i) {
+        if (ImGui::Selectable(kFloodReaches[i].label, static_cast<int>(i) == reachIndex))
+          flood->reach = kFloodReaches[i].reach;
+        // Two words cannot carry "4-connected, so a diagonal hairline holds it
+        // in" or "costs a pass over the whole document" -- the same argument
+        // the eyedropper's SOURCE rows make for carrying theirs.
+        ImGui::SetItemTooltip("%s", kFloodReaches[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // **A checkbox and not a slider, and the engine's own derivation is what
+    // settles that.** `edgeBand` is a float, so a slider is the obvious
+    // binding -- and it would be a track almost none of whose interior is
+    // defensible. `ops/FloodFill.hpp` § 2 derives `kFloodEdgeBandFloor` as the
+    // NARROWEST ramp that is not a lie (anything narrower cannot reach all 256
+    // coverage levels the store holds, whatever the picture contains), and
+    // `FloodFillParams` clamps the band to `tolerance` internally. So below the
+    // floor the control claims precision the pipeline provably cannot deliver,
+    // and above the tolerance it is clamped and moves no texel: at the shipped
+    // default that is a slider whose left half lies and whose right half is
+    // dead, which is the control `docs/ui.md` §4a forbids.
+    //
+    // What is left is two defensible values -- 0 and the floor -- and a
+    // two-value field deserves a two-state control. Photoshop ships this same
+    // field as an "Anti-alias" checkbox; that is corroboration here rather than
+    // the reason, because the reason is above and is this build's own.
+    //
+    // The LABEL is Photoshop's word rather than the implementation's. "Edge
+    // band" is what the code calls the ramp; ANTI-ALIAS is what the setting
+    // does, and `ops/FloodFill.hpp` § 2 already equates the two in its own
+    // prose ("`edgeBand == 0` ... is Photoshop's Anti-alias checkbox,
+    // unticked").
+    //
+    // The field stays a float and the checkbox is a VIEW of it -- read as
+    // `> 0`, written as one of the two values -- rather than `AppState` holding
+    // a bool the call site expands. A bool there would be a second spelling of
+    // the engine's own field, which is exactly the drift `app/AppState.hpp`
+    // holds `FloodFillParams` itself in order to avoid.
+    capsLabel("ANTI-ALIAS");
+    ImGui::SameLine();
+    {
+      bool antiAlias = flood->edgeBand > 0.0f;
+      if (ImGui::Checkbox("##floodAntiAlias", &antiAlias))
+        flood->edgeBand = antiAlias ? kFloodDefaultEdgeBand : 0.0f;
+    }
+    ImGui::SetItemTooltip(
+        "Soft edges. On, the outermost sliver of the accepted band is partially selected "
+        "instead of in-or-out; off, every texel is fully in or fully out. It never changes "
+        "WHICH texels are taken, only how much of the boundary ones -- so turning it off "
+        "cannot move the region you are about to select or fill.");
+  }
+
+  // The brush's own four parameters, for the tools that actually carry a tip.
+  // Skipped for the two flood tools above, for the reason the eyedropper's and
+  // the gradient's early returns give: SIZE, HARD, LOAD and WET are read by no
+  // code path a click on the wand or the bucket can reach, and a live control
+  // over something the tool provably never reads is the same defect as a
+  // palette cell for a tool that does not exist.
+  if (flood == nullptr) {
+    bandSeparator();
+    capsLabel("SIZE");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140.0f);
+    // The value inside the slider is a live numeric, so it is monospace: it
+    // changes every frame of a drag, and a proportional face makes the track's
+    // text jump about as the digits change width.
+    pushAtelierMono();
+    // kBrushRadiusMin/Max (app/AppState.hpp) -- the one range for this field,
+    // also read by the BRUSH panel's Radius slider. See that constant's own
+    // comment: this bar used to hardcode 2..90, a narrower range than the
+    // panel's 1..200, so a value the panel set above 90 clamped back down the
+    // moment this widget was touched (reachability audit B3).
+    // `st.brush.radius` is gone (Part 5) -- read/written through
+    // `model.tip.diameterPx` now, via a local half-diameter view of it since
+    // `SliderFloat()` needs a `float*` it can write through directly every
+    // frame.
+    {
+      float sizeRadius = st.brush.model.tip.diameterPx / 2.0f;
+      ImGui::SliderFloat("##size", &sizeRadius, kBrushRadiusMin, kBrushRadiusMax, "%.0f px");
+      st.brush.model.tip.diameterPx = sizeRadius * 2.0f;
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    capsLabel("HARD");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    pushAtelierMono();
+    // kBrushHardnessMin/Max (app/AppState.hpp) -- the one range for this
+    // field, also read by the BRUSH panel's Hardness slider.
+    ImGui::SliderFloat("##hard", &st.brush.model.tip.hardness, kBrushHardnessMin, kBrushHardnessMax,
+                       "%.2f");
+    popAtelierMono();
+
+    bandSeparator();
+    // kBrushLoadMin/Max (app/AppState.hpp) -- the same range drawBrushSection()
+    // uses, not a second one invented here: one field behind two widgets with
+    // two ranges is two clamps, and the narrower one silently truncates what
+    // the other set.
+    capsLabel("LOAD");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    pushAtelierMono();
+    ImGui::SliderFloat("##load", &st.brush.load, kBrushLoadMin, kBrushLoadMax, "%.2f");
+    popAtelierMono();
+
+    bandSeparator();
+    capsLabel("WET");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    pushAtelierMono();
+    // **Same honest-refusal treatment MacPaintUI.cpp's drawBrushSection() gives
+    // this same field** (see that comment for the full argument):
+    // `st.brush.wetness` reaches `sim::PaintSim`'s `brushWater` only, through
+    // `applyToolToBrush()`, and that is called only when `strokeRouteFor()`
+    // answers `StrokeRoute::PaintSim` -- Water always, or Brush/DryBrush with
+    // no document layer to aim at. A locally-scoped `route`, not the band's own
+    // one three separators down: that one is computed after this slider and
+    // reusing it here would mean drawing WET's disabled state off a value this
+    // control has not reached yet on the very frame the tool or layer changes.
+    {
+      const OpenDocument* wetOd = st.documents.active();
+      const Layer* wetTarget = wetOd != nullptr ? activeLayerOf(*wetOd) : nullptr;
+      const bool wetHonoured = wetnessReachesSolver(strokeRouteFor(st.brush.tool, wetTarget));
+      ImGui::BeginDisabled(!wetHonoured);
+      // kBrushWetnessMin/Max (app/AppState.hpp) -- the one range for this
+      // field, also read by the BRUSH panel's Water slider.
+      ImGui::SliderFloat("##wet", &st.brush.wetness, kBrushWetnessMin, kBrushWetnessMax, "%.2f");
+      ImGui::EndDisabled();
+    }
+    popAtelierMono();
+  }
+
+  // --- the smudge's own controls -------------------------------------------
+  //
+  // **In ADDITION to the four brush sliders above, not instead of them, and
+  // that is a deliberate departure from every other per-tool block in this
+  // function.** `docs/ui.md` §4b's test for taking an early return is not "does
+  // this tool have settings" but *would the four brush sliders be live controls
+  // over something this tool provably never reads*, and the smudge fails that
+  // test three ways: `smudgeDab()` calls `dabCoverage()` (SIZE, HARD, and the
+  // roundness/angle behind them) and multiplies every texel's weight by
+  // `tip.flow` (LOAD). Only WET is dead here, and WET is already disabled by
+  // `wetnessReachesSolver()` on its own. So this is the first tool in the band
+  // to bring a row and keep the sliders -- the eyedropper, the measure and the
+  // gradient have no tip at all, and the two flood tools walk a predicate
+  // rather than a shape.
+  //
+  // The gate is `smudgeToolParamsFor()` -- `app/AppState.hpp`'s single mapping
+  // from a tool to the block a stroke actually reads -- and not a
+  // `tool == Smudge` spelled again here, for `floodToolParamsFor()`'s stated
+  // reason one block up.
+  if (SmudgeParams* smudge = smudgeToolParamsFor(st.brush, st.brush.tool)) {
+    bandSeparator();
+    // **STRENGTH, and it is a new field rather than the OPACITY slider it used
+    // to be** -- `brush/Smudge.hpp` §3b. That sharing is what shipped the tool
+    // at strength 1, the one value at which a smear provably never fades, with
+    // its only control in the BRUSH panel under a name that means something
+    // else on five other routes.
+    capsLabel("STRENGTH");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    pushAtelierMono();
+    ImGui::SliderFloat("##smudgeStrength", &smudge->strength, 0.0f, 1.0f, "%.2f");
+    popAtelierMono();
+    ImGui::SetItemTooltip(
+        "How far the colour you picked up is carried before the canvas takes it back. Lower "
+        "picks up more of what it crosses, so the smear fades sooner; 1 drags the colour "
+        "under the pen at pen-down to the far end of the stroke with no fade at all, and 0 "
+        "leaves the layer untouched byte for byte.");
+
+    bandSeparator();
+    // **TIP: the smudge's own dab, or the brush's.** The report's second half
+    // ("picking a dab shape as well ... for smudge is likely ideal"), scoped to
+    // the half that reuses machinery that exists: this offers `app/DabLibrary`'s
+    // own entries, resolved through the same `resolve()` the BRUSH panel's
+    // picker grid calls, and stores the same `(id, bitmap)` pair
+    // `BrushState::dabId`/`tipBitmap` stores. **A full second brush -- its own
+    // size, spacing, dynamics and preset -- is deliberately not here**; see
+    // `brush/Smudge.hpp` §3b's last paragraph for why every field but the
+    // bitmap would be a copy of a field the smudge already reads off the brush.
+    capsLabel("TIP");
+    ImGui::SameLine();
+    // The label a cell shows, capped so the preview can never be clipped under
+    // its own arrow. Dab names come from FILENAMES, so unlike every other combo
+    // in this band their length is unbounded and measuring the true widest one
+    // would let a folder full of long names push the trailing route indicator
+    // out of the band. Truncating and then measuring over the TRUNCATED forms
+    // is what keeps the measurement and the drawing the same string -- the
+    // REACH combo's own history two blocks up is what happens when they are
+    // not. The back-off loop is because a name is UTF-8 and a byte cut through
+    // a continuation byte draws as a replacement glyph.
+    constexpr size_t kTipLabelMax = 18;
+    auto shortLabel = [](const std::string& s) -> std::string {
+      if (s.size() <= kTipLabelMax) return s;
+      size_t cut = kTipLabelMax - 1;
+      while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
+      return s.substr(0, cut) + "\xE2\x80\xA6";  // U+2026 HORIZONTAL ELLIPSIS
+    };
+    // "Brush's tip" rather than "None" or "Default": the empty state is not the
+    // absence of a tip, it is the tip the brush is on, which is what this tool
+    // has used for its whole history and what a user who never opens this combo
+    // keeps getting.
+    static const char* kBrushTipLabel = "Brush's tip";
+    const DabEntry* chosen =
+        smudge->dabId.empty() ? nullptr : st.dabLibrary.find(smudge->dabId);
+    // A set id the library cannot resolve falls back to the brush's tip in
+    // `brushTipFor()`, so it says so here too rather than showing a name for a
+    // dab that is not going to paint.
+    const std::string preview =
+        chosen != nullptr ? shortLabel(chosen->name) : std::string(kBrushTipLabel);
+    pushAtelierMono();
+    float widest = ImGui::CalcTextSize(kBrushTipLabel).x;
+    for (const DabEntry& e : st.dabLibrary.entries())
+      widest = std::max(widest, ImGui::CalcTextSize(shortLabel(e.name).c_str()).x);
+    ImGui::SetNextItemWidth(widest + ImGui::GetFrameHeight() + 16.0f);
+    if (ImGui::BeginCombo("##smudgeTip", preview.c_str())) {
+      if (ImGui::Selectable(kBrushTipLabel, smudge->dabId.empty())) {
+        // Both halves cleared together, always -- `SmudgeParams`' own contract
+        // and `BrushState::dabId`'s before it. An id cleared without its bitmap
+        // leaves a tip that paints from a dab the UI says is not selected.
+        smudge->dabId.clear();
+        smudge->tipBitmap.reset();
+      }
+      for (const DabEntry& e : st.dabLibrary.entries()) {
+        if (ImGui::Selectable(shortLabel(e.name).c_str(), e.id == smudge->dabId)) {
+          smudge->dabId = e.id;
+          // `resolve()` decodes on first use and caches -- the same call the
+          // BRUSH panel's picker makes, so a dab chosen in either place costs
+          // one decode between them rather than one each.
+          smudge->tipBitmap = st.dabLibrary.resolve(e.id);
+        }
+        // The full name, since the row above may be the truncated one. The
+        // tooltip is the only place the whole name is readable at all.
+        ImGui::SetItemTooltip("%s", e.name.c_str());
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+    ImGui::SetItemTooltip(
+        "Which dab this tool drags. \"%s\" follows whatever tip the brush is on, which is what "
+        "the smudge has always used; anything else overrides it for smudge strokes and for "
+        "nothing else, so picking a smear shape does not repaint your next brush stroke with "
+        "it. SIZE, HARD and LOAD above are still the brush's and are still live here.",
+        kBrushTipLabel);
+  }
 
   // --- what the next gesture will actually hit -----------------------------
   //
@@ -1114,6 +1590,29 @@ void drawAtelierStatusBar(AppState& st, const AtelierBands& bands, uint32_t canv
   if (over) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
   ImGui::Text("%s / %s", formatMiB(mem.bytes).c_str(), formatMiB(mem.budget).c_str());
   if (over) ImGui::PopStyleColor();
+  // docs/testing-issues.md T6, and the one place a user will actually look
+  // for the answer. This readout is honest -- it is the real `resident_size`
+  // against the design's 512 MB -- but Activity Monitor's "Memory" column is
+  // `phys_footprint`, a different quantity, and on this application it reads
+  // about four times higher. A user who sees "145 MB / 512 MB" here and
+  // "551 MB" there has no way to reconcile them, and re-reports it; that is
+  // literally how T6 was filed.
+  //
+  // A tooltip rather than a longer label, deliberately: the band is dense,
+  // the visible glyphs stay exactly as `docs/ui.md` section 2 draws them, and
+  // both numbers are computed here rather than one of them being narrated
+  // from a comment that could go stale.
+  ImGui::SetItemTooltip(
+      "Resident memory: %s of a %s budget.\n\n"
+      "Activity Monitor will show a larger number (%s right now). It reports "
+      "phys_footprint, which also charges this process for memory the graphics "
+      "driver maps in on its behalf -- around 400 MB of it, allocated once when "
+      "the GPU starts work and independent of window size, document size and "
+      "whether the fluid solver exists.\n\n"
+      "This meter tracks the memory naturalPaint itself holds, which is the part "
+      "the budget is about.",
+      formatMiB(mem.bytes).c_str(), formatMiB(mem.budget).c_str(),
+      formatMiB(currentFootprintBytes()).c_str());
 
   const std::string markers = atelierViewStateMarkers(st.view);
   if (!markers.empty()) {

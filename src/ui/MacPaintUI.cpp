@@ -1,5 +1,6 @@
 #include "ui/MacPaintUI.hpp"
 
+#include "app/LayerThumbnail.hpp"
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
 #include "ui/DabPicker.hpp"
@@ -32,12 +33,14 @@
 #include "app/BrushRowIcon.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CompPanel.hpp"
+#include "app/CropTool.hpp"  // Tool::Crop, both modes
 #include "app/PanelLayout.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
 #include "app/DabPreview.hpp"
 #include "app/StrokePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "app/ExportDialog.hpp"  // the two export dialogs' decisions, lifted
 #include "app/AdjustmentOps.hpp"
 #include "app/FilterOps.hpp"
 #include "app/HistoryPanel.hpp"
@@ -50,6 +53,8 @@
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/Snapping.hpp"
+#include "app/ToolSurface.hpp"  // T5's second axis: can this tool act on THIS surface
+#include "app/ToolSwitch.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "app/ViewTransform.hpp"
 #include "app/WheelInput.hpp"
@@ -499,30 +504,61 @@ bool drawToolGlyph(ImDrawList* dl, uint32_t codepoint, ImVec2 c, ImU32 col) {
 // than degree -- toolTooltip() appends "Not built yet." -- so a user who
 // hovers finds out why the cell did nothing, rather than assuming it is
 // broken.
+//
+// **A second axis, on exactly the same terms (`app/ToolSurface`, T5).**
+// `toolImplemented()` asks whether the tool is BUILT; it cannot ask whether
+// there is anything in front of the user for it to act on. With no document
+// open there very often is not -- `sim::PaintSim`'s canvas is a real,
+// paintable surface and is not a document -- so a Marquee cell used to draw
+// live, take the click, take the accent fill, and then hand the gesture to a
+// handler that read `st.documents.active()`, got nullptr and installed
+// nothing. That is the eyedropper's own defect one axis over, and it gets the
+// same four-part treatment the first axis already has: no click, no hover
+// tint, dimmed glyph, and a tooltip that says why.
+//
+// **`selected` is deliberately NOT gated on the new axis**, and this is the
+// one place the two axes must be treated differently rather than uniformly.
+// The first axis can suppress selection for free because `st.brush.tool` can
+// never hold an unimplemented tool -- nothing ever assigns one -- so the rule
+// costs nothing. That invariant does not hold here: the active tool is
+// perfectly able to be a document-scoped one at the instant the last document
+// closes. Dropping the accent fill then would leave the palette claiming NO
+// tool is active while the options bar, the cursor and the status band all go
+// on naming one, which is four tiers of chrome disagreeing -- precisely the
+// failure this whole discipline exists to prevent. The cell stays lit, stays
+// unclickable, and says why on hover.
 bool toolButton(AppState& st, Tool t, float cellSize) {
   ImGui::PushID(static_cast<int>(t));
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(cellSize, cellSize);
   const bool implemented = toolImplemented(t);
+  // The surface axis. `documents.active()` rather than `!documents.empty()`:
+  // the handlers this predicate speaks for are every one of them written
+  // against `st.documents.active()`, so this asks the identical question they
+  // do rather than a neighbouring one that could differ.
+  const bool documentOpen = st.documents.active() != nullptr;
+  const bool onSurface = toolActsWithoutDocument(t) || documentOpen;
+  // Both axes, and a cell is live only if it clears both.
+  const bool live = implemented && onSurface;
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
-  const bool clicked = clickedRaw && implemented;
+  const bool clicked = clickedRaw && live;
   const bool selected = implemented && st.brush.tool == t;
   const bool hovered = ImGui::IsItemHovered();
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImU32 bg = selected                    ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
-                    : (hovered && implemented)  ? ImGui::GetColorU32(ImGuiCol_ButtonHovered)
-                                                : ImGui::GetColorU32(ImGuiCol_Button);
+  const ImU32 bg = selected             ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
+                    : (hovered && live) ? ImGui::GetColorU32(ImGuiCol_ButtonHovered)
+                                        : ImGui::GetColorU32(ImGuiCol_Button);
   dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), bg);
   dl->AddRect(p, ImVec2(p.x + size.x, p.y + size.y),
               ImGui::GetColorU32(ImGuiCol_Border));
 
-  // Selected tools invert, the way MacPaint's did. A not-built-yet tool is
-  // never selected (see above), so its icon is always the dimmed, halved-
-  // alpha secondary-text colour -- the one visual cue that survives even a
+  // Selected tools invert, the way MacPaint's did. A cell that fails EITHER
+  // axis and is not the active tool draws the dimmed, halved-alpha
+  // secondary-text colour -- the one visual cue that survives even a
   // screenshot with no cursor in it: "this cell is present but off."
   const ImU32 fg = selected ? IM_COL32(20, 22, 24, 255)
-                   : implemented
+                   : live
                        ? ImGui::GetColorU32(ImGuiCol_Text)
                        : (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110);
   const ImVec2 c(p.x + size.x * 0.5f, p.y + size.y * 0.5f);
@@ -533,10 +569,19 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   // gating that on the tooltip's own stationary+delay timer would make the
   // cell itself feel laggy to hover, not just its tooltip.
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    const std::string tip = toolTooltip(t);
+    std::string tip = toolTooltip(t);
+    // Appended here rather than inside `toolTooltip()` because that function
+    // is pure metadata over `kToolMeta` and takes no `AppState` -- the surface
+    // is session state, not a property of the tool. `toolSurfaceRefusal()`
+    // answers nullptr for the not-built cells, so this never stacks a second
+    // reason under "Not built yet."
+    if (const char* why = toolSurfaceRefusal(t, documentOpen)) {
+      tip += "\n";
+      tip += why;
+    }
     ImGui::SetTooltip("%s", tip.c_str());
   }
-  if (clicked) st.brush.tool = t;
+  if (clicked) setActiveTool(st, t);
   ImGui::PopID();
   return clicked;
 }
@@ -603,9 +648,15 @@ constexpr float kFlyoutPadX = 10.0f;
 //
 // Returns true on click regardless of toolImplemented() -- toolButton()'s
 // own clickedRaw/clicked split, so the caller (not this function) decides
-// what a click on a not-yet-built member means.
-bool toolFlyoutRow(Tool member, bool isCurrent, float rowW) {
+// what a click on a not-yet-built member means. `documentOpen` is the second
+// axis (app/ToolSurface, T5), passed in rather than read here for the same
+// reason: this function draws, the caller decides. A flyout row is the only
+// place a document-scoped tool can be SEEN while the palette cell above it
+// shows a different member of the group, so leaving the axis out here would
+// have left one live-looking route to every tool it disables.
+bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, float rowW) {
   const bool implemented = toolImplemented(member);
+  const bool live = implemented && (toolActsWithoutDocument(member) || documentOpen);
   ImGui::PushID(static_cast<int>(member));
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(rowW, kFlyoutRowH);
@@ -613,19 +664,34 @@ bool toolFlyoutRow(Tool member, bool isCurrent, float rowW) {
   const bool hovered = ImGui::IsItemHovered();
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  if (isCurrent || hovered) {
+  // `live &&`: a dead row takes neither fill. The hover half matches
+  // toolButton()'s own suppressed hover tint; the `isCurrent` half is there so
+  // a dimmed glyph is never drawn over the accent, which would read as low
+  // contrast rather than as "off" and would be the one state in the palette
+  // where the disabled cue is weaker than it is everywhere else.
+  if (live && (isCurrent || hovered)) {
     dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y),
                       isCurrent ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
                                 : ImGui::GetColorU32(ImGuiCol_ButtonHovered));
   }
 
-  // The exact fg-colour rule toolButton() uses -- dimmed for a not-built
-  // tool, inverted for the current pick, plain text otherwise -- repeated
-  // here rather than factored out, because toolButton() computes it inline
-  // from state (selected/hovered/implemented) this function does not share
+  // The exact fg-colour rule toolButton() uses -- dimmed for a tool that
+  // fails either axis, inverted for the current pick, plain text otherwise --
+  // repeated here rather than factored out, because toolButton() computes it
+  // inline from state (selected/hovered/live) this function does not share
   // (a flyout row is never "selected" in toolButton()'s sense; `isCurrent`
   // is a different, group-local idea).
-  const ImU32 fg = !implemented
+  //
+  // **`!live` is tested BEFORE `isCurrent` here, and that is not the order
+  // toolButton() uses.** The two are answering different questions and the
+  // difference is deliberate: `selected` up there means "this is the active
+  // tool", and the argument for keeping the active tool lit through a closed
+  // document is written at that function. `isCurrent` here means only "this
+  // is the member the group's cell is showing", which is display state a user
+  // never chose, so there is nothing to preserve by lighting it -- and a group
+  // whose remembered member is document-scoped would otherwise open its flyout
+  // with that row drawn live over a document that is not there.
+  const ImU32 fg = !live
                        ? (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110)
                    : isCurrent ? IM_COL32(20, 22, 24, 255)
                                : ImGui::GetColorU32(ImGuiCol_Text);
@@ -641,7 +707,12 @@ bool toolFlyoutRow(Tool member, bool isCurrent, float rowW) {
   // that on the tooltip's own stationary+delay timer would make the row
   // itself feel laggy to hover, not just its tooltip.
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    const std::string tip = toolTooltip(member);
+    std::string tip = toolTooltip(member);
+    // The same append toolButton() makes, and for the same reason -- see there.
+    if (const char* why = toolSurfaceRefusal(member, documentOpen)) {
+      tip += "\n";
+      tip += why;
+    }
     ImGui::SetTooltip("%s", tip.c_str());
   }
   ImGui::PopID();
@@ -725,11 +796,20 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
         rowW = std::max(rowW, ImGui::CalcTextSize(toolName(group.members[m])).x);
       rowW += kFlyoutIconGutter + kFlyoutPadX;
 
+      const bool documentOpen = st.documents.active() != nullptr;
       for (int m = 0; m < group.memberCount; ++m) {
         const Tool member = group.members[m];
-        if (toolFlyoutRow(member, member == current, rowW)) {
-          current = member;                                     // display state always updates
-          if (toolImplemented(member)) st.brush.tool = member;  // selection only if real
+        if (toolFlyoutRow(member, member == current, documentOpen, rowW)) {
+          current = member;  // display state always updates
+          // Selection only if the member clears BOTH axes -- built, and able
+          // to act on the surface that is actually in front of the user
+          // (app/ToolSurface, T5). `current` above is deliberately outside the
+          // gate: which member a group is showing is display state, and a user
+          // who picks the Marquee with no document open should still find the
+          // group on the Marquee once they open one.
+          if (toolImplemented(member) &&
+              (toolActsWithoutDocument(member) || documentOpen))
+            setActiveTool(st, member);
           ImGui::CloseCurrentPopup();
         }
       }
@@ -1987,7 +2067,11 @@ constexpr float kLayerRowGap     = 5.0f;   // between the leading controls
 constexpr float kLayerLineGap    = 1.0f;   // name -> metadata line
 constexpr float kLayerEyeW       = 14.0f;
 constexpr float kLayerLockW      = 12.0f;
-constexpr float kLayerMaskChipW  = 12.0f;
+// **`kLayerMaskChipW` is gone with the chip it sized.** The trailing half-filled
+// square that said "this layer has a mask" is now the mask THUMBNAIL at the
+// leading edge, which is a control rather than a status light -- see the row's
+// own comment where the chip used to be drawn for why the position moved and
+// how that answers the chip's own 322 px argument.
 // The alpha-lock indicator's own chip -- a checkerboard, not a second padlock.
 // `kLayerLockW` above already owns the padlock glyph two slots to the left of
 // the name column, and drawing a SECOND padlock here for a different flag
@@ -2173,7 +2257,137 @@ ImVec2 newLayerKindMenuMetrics() {
   return ImVec2(kLayerRailW + 6.0f + glyphCol + 8.0f + nameCol + 10.0f, glyphCol);
 }
 
-void drawLayersSection(AppState& st) {
+// --- the row's two thumbnails -----------------------------------------------
+//
+// **One shared atlas page, and `AddImage()` for both**, which is `ui/DabPicker`
+// §2's arrangement -- and its two reasons need restating, because only one of
+// them carries over unchanged.
+//
+//  * **The atlas.** Twenty rows would otherwise be forty texture binds and
+//    forty draw calls in a panel that redraws every frame. Every thumbnail
+//    lives in one 256x256 RGBA8 page, so the whole panel is one bind however
+//    many rows are showing.
+//  * **The transfer function is the part that does NOT carry over.**
+//    `ui/DabPicker` may use `AddImage()` because a tip's coverage is an
+//    opacity, never gamma-encoded. That argument covers the MASK thumbnail
+//    here exactly -- a mask sample is the same kind of quantity -- and it does
+//    **not** cover the layer thumbnail, whose source is linear light. What
+//    makes `AddImage()` correct for that one is that `app/LayerThumbnail` has
+//    already done the sRGB encode on the CPU, so what reaches this atlas is
+//    display bytes of the same kind every `atelierToken()` colour is, and Dear
+//    ImGui's gamma-1.0 pipeline on this application's non-sRGB surface passes
+//    them through unchanged (ui/CanvasQuad.hpp records why that surface is
+//    non-sRGB). Uploading the linear values here and letting `AddImage()` have
+//    them would be `app/selftest/PresentTransfer.cpp`'s defect, one row at a
+//    time -- right at black and at white, and byte 61 where 137 belonged in
+//    between. `app/selftest/MaskTarget.cpp` §9 asserts both bytes.
+//
+// Never released, which is `DabAtlas`'s and `DabPreviewTexture`'s convention
+// and for their stated reason: ImGui's WebGPU backend rebuilds its bind group
+// from the view pointer every frame, so a view created once and kept has no
+// stale-bind-group hazard. That hazard comes from REPLACING a view, and this
+// never does -- a rebuild rewrites cell CONTENTS through
+// `wgpuQueueWriteTexture()`.
+constexpr int kLayerThumbAtlasPx = 256;
+constexpr int kLayerThumbCols = kLayerThumbAtlasPx / kLayerThumbPx;  // 10
+
+class LayerThumbAtlas {
+ public:
+  // Uploads `thumb` into cell `slot` unless what is already there is keyed on
+  // `key`, and returns the page's view (null when there is no adapter).
+  //
+  // The key is the caller's `(documentId, revision, layerIndex, which)` folded
+  // into one word, and it exists for `DabAtlas`'s reason -- sharper here,
+  // because slots are assigned by ROW and every reorder re-assigns rows to
+  // different layers. A cell keyed on its index alone would leave row 7 showing
+  // row 3's layer after a drag: exactly the stale picture
+  // `app/LayerThumbnail` §4 exists to prevent, reintroduced one level down.
+  WGPUTextureView viewFor(GpuContext& gpu, int slot, uint64_t key, const LayerThumbnail& thumb) {
+    if (slot < 0 || slot >= kLayerThumbCols * kLayerThumbCols) return nullptr;
+    if (texture_ == nullptr) {
+      WGPUTextureDescriptor td = {};
+      td.label = sv("layer thumbnail atlas");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(kLayerThumbAtlasPx),
+                 static_cast<uint32_t>(kLayerThumbAtlasPx), 1};
+      td.format = WGPUTextureFormat_RGBA8Unorm;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      if (texture_ == nullptr) return nullptr;
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+    }
+    const auto found = uploaded_.find(slot);
+    if (found != uploaded_.end() && found->second == key) return view_;
+
+    WGPUTexelCopyTextureInfo dst = {};
+    dst.texture = texture_;
+    dst.mipLevel = 0;
+    dst.origin = {static_cast<uint32_t>((slot % kLayerThumbCols) * kLayerThumbPx),
+                  static_cast<uint32_t>((slot / kLayerThumbCols) * kLayerThumbPx), 0};
+    dst.aspect = WGPUTextureAspect_All;
+    WGPUTexelCopyBufferLayout layout = {};
+    layout.bytesPerRow = static_cast<uint32_t>(kLayerThumbPx) * 4u;
+    layout.rowsPerImage = static_cast<uint32_t>(kLayerThumbPx);
+    const WGPUExtent3D extent = {static_cast<uint32_t>(kLayerThumbPx),
+                                 static_cast<uint32_t>(kLayerThumbPx), 1};
+    wgpuQueueWriteTexture(gpu.queue, &dst, thumb.rgba.data(), thumb.rgba.size(), &layout,
+                          &extent);
+    uploaded_[slot] = key;
+    return view_;
+  }
+
+  // The cell's texel rect as UVs.
+  void uvFor(int slot, ImVec2& uv0, ImVec2& uv1) const noexcept {
+    const float x = static_cast<float>((slot % kLayerThumbCols) * kLayerThumbPx);
+    const float y = static_cast<float>((slot / kLayerThumbCols) * kLayerThumbPx);
+    const float n = static_cast<float>(kLayerThumbAtlasPx);
+    uv0 = ImVec2(x / n, y / n);
+    uv1 = ImVec2((x + kLayerThumbPx) / n, (y + kLayerThumbPx) / n);
+  }
+
+ private:
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  std::unordered_map<int, uint64_t> uploaded_;
+};
+
+LayerThumbAtlas g_layerThumbAtlas;
+LayerThumbnailCache g_layerThumbs;
+
+// The checkerboard a layer thumbnail sits on, so "transparent here" reads as
+// transparent rather than as the row's own background -- which on a selected
+// row is a different colour, and would otherwise make one layer look like two
+// depending on whether its row happened to be selected.
+//
+// Two theme tokens rather than two literals, so the square is legible on a light
+// and a dark canvas alike.
+//
+// **`kChromeDeep` and `kChromeMid`, and NOT `kChromeDeep` and `kRule`.** The
+// alpha-lock chip further down draws its own 2x2 checkerboard in that second
+// pair, and `ui/AtelierTheme.hpp` carries a `static_assert` saying in as many
+// words that `kRule == kChromeDeep` -- so that chip draws four squares in one
+// colour, and its comment describes a checkerboard nobody has ever seen. It is a
+// pre-existing defect and not this task's to fix, but copying its token pair by
+// analogy would have reproduced it here silently, which is why this pair is
+// stated rather than borrowed. `kChromeMid` is #444141 against #201e1d: visible,
+// and quiet enough not to compete with the picture drawn over it.
+void drawThumbCheckerboard(ImDrawList* dl, const ImVec2& lo, const ImVec2& hi) {
+  const float step = (hi.x - lo.x) * 0.25f;
+  dl->AddRectFilled(lo, hi, atelierToken(kChromeDeep));
+  int row = 0;
+  for (float y = lo.y; y < hi.y - 0.5f; y += step, ++row) {
+    int col = 0;
+    for (float x = lo.x; x < hi.x - 0.5f; x += step, ++col) {
+      if (((row + col) & 1) == 0) continue;
+      dl->AddRectFilled(ImVec2(x, y), ImVec2(std::min(x + step, hi.x), std::min(y + step, hi.y)),
+                        atelierToken(kChromeMid));
+    }
+  }
+}
+
+void drawLayersSection(AppState& st, GpuContext& gpu) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
     ImGui::TextDisabled("No document open.");
@@ -2232,21 +2446,46 @@ void drawLayersSection(AppState& st) {
   // count, monospace and right-aligned like every numeric in this chrome
   // (docs/ui.md section 1), reading `3/8` when the filter is hiding five rows
   // so that neither number can be mistaken for the other.
+  //
+  // **The document name used to lead this band and no longer does**
+  // (`docs/testing-issues.md` T26, reported as "what is the first UI item, it
+  // seems to show the document name -- remove it"). It was redundant three
+  // ways over: the tab strip above the canvas names every open document and
+  // marks the active one, the title band names it again, and this panel is
+  // unambiguously about whatever document is active. A third copy in the
+  // panel's first row bought nothing and cost the row its only real job.
+  //
+  // **The count stays, and that is not the same question.** It is the slot the
+  // design actually specifies here, and it is the ONLY place the filter's
+  // effect is visible -- with five rows hidden, `3/8` is what distinguishes
+  // "this document has three layers" from "this box is hiding five of them".
+  // Removing it would delete feedback rather than a duplicate.
   {
     const float h = ImGui::GetTextLineHeight() + 4.0f;
     const ImVec2 at = ImGui::GetCursorScreenPos();
-    const std::string name = documentDisplayName(*od);
-    drawClippedText(dl, ImVec2(at.x, at.y + 2.0f), panelW - 60.0f, mutedCol, name.c_str());
     pushAtelierMono();
     const std::string countText = layerPanelCountLabel(visibleRows.size(), count);
     const ImVec2 sz = ImGui::CalcTextSize(countText.c_str());
     dl->AddText(ImVec2(at.x + panelW - sz.x, at.y + 2.0f), mutedCol, countText.c_str());
     popAtelierMono();
     ImGui::Dummy(ImVec2(panelW, h));
+    // **This tooltip used to end with a claim that has been false since the RGB
+    // stroke routes landed**: "a stroke reaches no layer and nothing painted
+    // appears here." `strokeRouteWritesLayer()` (app/StrokeSession.hpp) now
+    // answers true for eight of the nine routes -- CpuDeposit, RgbDeposit,
+    // RgbErase, PigmentErase, PencilDeposit, TonalBrush, CloneStamp and
+    // Smudge. Only `PaintSim`, the solver route a Pigment layer takes, still
+    // paints somewhere this panel cannot show.
+    //
+    // Left as a narrower, true statement rather than deleted, because the
+    // surprise it was written to prevent is real and still happens -- it is
+    // just no longer the general case. The predicate is named here rather than
+    // the route list being retyped, so the next route to arrive updates this
+    // sentence's meaning without anyone having to remember to edit it.
     ImGui::SetItemTooltip("%d x %d, %zu layer(s).\n"
-                        "Painting is still separate: sim::PaintSim owns one dense\n"
-                        "texture with no layer awareness, so a stroke reaches no\n"
-                        "layer and nothing painted appears here.",
+                        "A stroke on a Pigment layer paints sim::PaintSim's own canvas,\n"
+                        "which has no layer awareness -- so that one route alone leaves\n"
+                        "nothing here. Every other route writes the layer.",
                         doc.width, doc.height, doc.layers.size());
     // docs/ui.md section 1's 2px rule, closing the header against the controls.
     dl->AddLine(ImVec2(at.x, at.y + h), ImVec2(at.x + panelW, at.y + h), ruleCol,
@@ -2624,6 +2863,100 @@ void drawLayersSection(AppState& st) {
                        layer.locked);
       x += kLayerLockW + kLayerRowGap;
 
+      // ---- the two thumbnails, and the mask one is the paint TARGET --------
+      //
+      // **At the LEADING edge, which is where the mask chip's own argument
+      // points once the chip becomes a control.** That chip (removed below)
+      // was "deliberately not a thumbnail", on two stated grounds: the panel is
+      // about 322 px wide so the row is often clipped, and "there is no way to
+      // paint one yet, and a thumbnail that was always uniform would be worse
+      // than none". Both grounds are engaged with rather than deleted:
+      //
+      //   * **The uniformity ground is gone, and it is gone because of this
+      //     task.** `StrokeRoute::MaskPaint` (app/StrokeSession §1,
+      //     brush/MaskPaint) is the route the chip's comment said did not
+      //     exist, so a mask now has contents worth a picture. The chip was
+      //     right at the time it was written.
+      //   * **The width ground is still real, and the answer is the position.**
+      //     Clipping eats the row's TRAILING end -- `trailingX` is measured
+      //     back from the panel's right edge and `drawClippedText()` truncates
+      //     the name toward it -- so a marker at the leading edge survives a
+      //     narrow panel strictly better than the chip did at the trailing one.
+      //     What it costs is 53 px of the text column, which
+      //     `drawClippedText()` already handles by truncating rather than
+      //     overflowing.
+      //
+      // Drawn 1:1 at `kLayerThumbPx`: upscaling a 24 px picture to fill a
+      // ~37 px row would be blurrier and no more informative, and the design
+      // pass that is expected after this one is where a bigger cell would be
+      // decided together with the row height it needs.
+      const std::optional<size_t> activeIdx = activeLayerIndex(*od);
+      const bool rowIsActive = activeIdx.has_value() && *activeIdx == i;
+      const LayerEditTarget rowTarget =
+          resolveLayerEditTarget(od->maskIsEditTarget, &layer);
+      const float thumbY = o.y + (rowH - kLayerThumbPx) * 0.5f;
+      const ImVec2 contentThumbAt(x, thumbY);
+      ImVec2 maskThumbAt(x, thumbY);
+      {
+        // The atlas SLOT is the panel row -- cheap, and it is why the KEY has to
+        // carry the identity: rows are re-assigned to different layers by every
+        // reorder, and two documents' rows collide outright.
+        //
+        // FNV-1a over the four words rather than a hand-packed bit layout, for
+        // one reason: a packed key needs a field-width argument per component
+        // ("20 layers cannot reach 4096", "a session cannot open 128
+        // documents") and each of those is a claim that ages. A mix has no
+        // budget to overrun, and the cost of a collision here is one stale
+        // 24 px picture rather than anything a user could lose.
+        const LayerThumbnailCache::Row& thumbs =
+            g_layerThumbs.rowFor(doc, i, od->id, od->revision);
+        auto cellKey = [&](uint64_t which) {
+          uint64_t k = 1469598103934665603ULL;
+          for (const uint64_t v : {static_cast<uint64_t>(od->id), od->revision,
+                                   static_cast<uint64_t>(i), which})
+            k = (k ^ v) * 1099511628211ULL;
+          return k;
+        };
+        // `which` is 0 for the layer's own pixels and 1 for its mask -- a
+        // separate argument from `checkered` even though the two agree today,
+        // because one names WHICH PICTURE this is (and so belongs in the cache
+        // key) and the other names how it is drawn. Folding them would make a
+        // future mask thumbnail that wanted a checkerboard silently share the
+        // layer thumbnail's cell key.
+        auto drawThumb = [&](const ImVec2& at, int slot, uint64_t which,
+                             const LayerThumbnail& thumb, bool checkered, bool selected) {
+          const ImVec2 lo = at;
+          const ImVec2 hi(at.x + kLayerThumbPx, at.y + kLayerThumbPx);
+          if (checkered) drawThumbCheckerboard(dl, lo, hi);
+          const WGPUTextureView view = g_layerThumbAtlas.viewFor(gpu, slot, cellKey(which), thumb);
+          if (view != nullptr) {
+            ImVec2 uv0, uv1;
+            g_layerThumbAtlas.uvFor(slot, uv0, uv1);
+            dl->AddImage(reinterpret_cast<ImTextureID>(view), lo, hi, uv0, uv1);
+          }
+          // **The target ring is the accent, and the frame is the hairline.**
+          // A selected cell is drawn with a colour rather than only with a
+          // thicker line, because "which of these two squares is the paint
+          // target" is the one question this pair has to answer at a glance,
+          // and a 1 px width difference at 24 px is not an answer.
+          dl->AddRect(ImVec2(lo.x - 1.0f, lo.y - 1.0f), ImVec2(hi.x + 1.0f, hi.y + 1.0f),
+                      selected ? atelierToken(kAccent) : atelierToken(kHairline), 0.0f, 0,
+                      selected ? 2.0f : 1.0f);
+        };
+
+        const int contentSlot = static_cast<int>((vr * 2) % (kLayerThumbCols * kLayerThumbCols));
+        drawThumb(contentThumbAt, contentSlot, /*which=*/0, thumbs.content, /*checkered=*/true,
+                  rowIsActive && rowTarget == LayerEditTarget::Content);
+        x += kLayerThumbPx + 2.0f;
+        if (layer.mask.has_value()) {
+          maskThumbAt = ImVec2(x, thumbY);
+          drawThumb(maskThumbAt, contentSlot + 1, /*which=*/1, thumbs.mask, /*checkered=*/false,
+                    rowIsActive && rowTarget == LayerEditTarget::Mask);
+          x += kLayerThumbPx;
+        }
+        x += kLayerRowGap;
+      }
+
       // The collapse/expand triangle -- Group rows only. An ordinary row
       // reserves no slot for one and no gap either: indentation is what this
       // panel spends on "you are one level in", not a blank triangle on
@@ -2668,21 +3001,19 @@ void drawLayersSection(AppState& st) {
         popAtelierMono();
         trailingX -= kLayerRowGap;
       }
-      if (layer.mask.has_value()) {
-        // A half-filled square: the mask indicator, and deliberately not a
-        // thumbnail. `layerRowSubLine()` already says `MASK` in the metadata
-        // line; what this adds is that the marker survives the line being
-        // clipped, which at 322 px it often is. It says nothing about the mask's
-        // *contents* -- there is no way to paint one yet, and a thumbnail that
-        // was always uniform would be worse than none.
-        trailingX -= kLayerMaskChipW;
-        const ImVec2 lo(trailingX, o.y + (rowH - kLayerMaskChipW) * 0.5f);
-        const ImVec2 hi(lo.x + kLayerMaskChipW, lo.y + kLayerMaskChipW);
-        dl->AddRectFilled(lo, ImVec2(hi.x, (lo.y + hi.y) * 0.5f), atelierToken(kRule));
-        dl->AddRectFilled(ImVec2(lo.x, (lo.y + hi.y) * 0.5f), hi, atelierToken(kChromeDeep));
-        dl->AddRect(lo, hi, atelierToken(kHairline));
-        trailingX -= kLayerRowGap;
-      }
+      // **The trailing mask chip used to be here, and it is gone rather than
+      // kept beside the thumbnail.** It was a half-filled square that said "this
+      // layer has a mask", explicitly "not a thumbnail", on two stated grounds --
+      // that the row is often clipped at 322 px, and that "there is no way to
+      // paint one yet, and a thumbnail that was always uniform would be worse
+      // than none". The mask thumbnail drawn at the leading edge above answers
+      // both (see its own comment for the argument, which is that clipping eats
+      // the trailing end, not the leading one), and it answers them while ALSO
+      // being the control T16 asked for. Two markers for one fact, one of which
+      // is clickable and one of which is not, is the state in which a user
+      // learns that clicking the wrong one does nothing.
+      //
+      // `layerRowSubLine()` still says `MASK` in the metadata line, unchanged.
       if (layer.alphaLocked) {
         // Alpha lock's own status chip (this task's requirement 6): a 2x2
         // checkerboard in the same two theme tokens the mask chip just above
@@ -2777,6 +3108,51 @@ void drawLayersSection(AppState& st) {
                           "this padlock itself still work.",
                           layer.locked ? "Locked -- click to unlock"
                                        : "Unlocked -- click to lock");
+
+      // **The two thumbnails are controls, and this is T16's first gesture.**
+      // Issued here with the eye and the padlock, for their stated
+      // overlap-ordering reason -- a click on a thumbnail must not also select
+      // or drag the row through the hit target underneath it.
+      //
+      // Each click does two things and both are needed: it makes this row the
+      // active layer, and it sets which of that layer's stores the pen writes.
+      // Selecting without setting the store would make the pair a display; the
+      // reverse would let a user aim at a mask on a layer they are not editing,
+      // which `resolveLayerEditTarget()` would then quietly answer `Content`
+      // for -- a click that appears to work and does not.
+      ImGui::SetCursorScreenPos(contentThumbAt);
+      if (ImGui::InvisibleButton("##contentthumb", ImVec2(kLayerThumbPx, kLayerThumbPx))) {
+        g_layers.selection = makeLayerSelection({i});
+        g_layers.shiftAnchor = i;
+        selected = i;
+        setActiveLayer(*od, i);
+        od->maskIsEditTarget = false;
+      }
+      ImGui::SetItemTooltip("The layer's own pixels. Click to paint here.\n"
+                          "%s",
+                          rowTarget == LayerEditTarget::Content && rowIsActive
+                              ? "This is the current paint target."
+                              : "Not the current paint target.");
+      if (layer.mask.has_value()) {
+        ImGui::SetCursorScreenPos(maskThumbAt);
+        if (ImGui::InvisibleButton("##maskthumb", ImVec2(kLayerThumbPx, kLayerThumbPx))) {
+          g_layers.selection = makeLayerSelection({i});
+          g_layers.shiftAnchor = i;
+          selected = i;
+          setActiveLayer(*od, i);
+          od->maskIsEditTarget = true;
+        }
+        // The tooltip says what the mask IS as well as what the click does,
+        // because the two thumbnails are the same size and the same shape and
+        // one of them is white for a reason a new user has no way to guess.
+        ImGui::SetItemTooltip("The layer mask: white reveals, black hides.\n"
+                            "Click to paint into it -- the brush paints the\n"
+                            "foreground colour's grey as coverage.\n"
+                            "%s",
+                            rowTarget == LayerEditTarget::Mask && rowIsActive
+                                ? "This is the current paint target."
+                                : "Not the current paint target.");
+      }
       if (isGroupRow) {
         ImGui::SetCursorScreenPos(discAt);
         if (ImGui::InvisibleButton("##disclosure", ImVec2(kLayerDisclosureW, kLayerDisclosureW))) {
@@ -3353,6 +3729,43 @@ void drawColorSection(AppState& st) {
     ImGui::TextDisabled("rgb         %.3f %.3f %.3f", sel.rgb[0], sel.rgb[1], sel.rgb[2]);
     popAtelierMono();
   } else {
+    // **The over-range badge, drawn FIRST -- above the picker, not under the
+    // readouts -- and the position is measured rather than a matter of
+    // taste.** T25a: `BrushState::rgb` is scene-referred and may hold a value
+    // no swatch in this build can draw (app/AppState.hpp), and the user has
+    // to be able to tell that the square below is a lie by necessity.
+    //
+    // It was under the readouts first, and a throwaway instrumented build
+    // dumping this branch's own numbers said why that could not work (reading
+    // the code gave three wrong guesses first): in the default
+    // dock this section's content region is **119 px tall** and the block
+    // below already asks for 191, so the RGB branch overflows its slot by
+    // ~72 px before this line exists at all. Anything appended at the bottom
+    // is clipped -- which is exactly what the first golden capture of this
+    // view showed. A banner that only appears when it fits is not a warning.
+    //
+    // Above the `GetContentRegionAvail()` read below, deliberately: the
+    // reserve arithmetic there is counted in lines, and drawing this first
+    // means the space it takes is already out of `avail` rather than being a
+    // seventh line that has to be remembered in two places.
+    //
+    // One short line, `TextUnformatted` rather than `TextWrapped`: a wrapped
+    // banner is 1, 2 or 3 lines depending on dock width, which is the input
+    // that arithmetic cannot see. The rest of the explanation -- which routes
+    // clamp, which keep the value, why pigment is one of the clampers -- is
+    // behind this panel's "?" button (app/ControlsLayout.cpp's `Color`
+    // entry), where this file's own precedent already puts standing context.
+    //
+    // The same yellow the LAYERS and HISTORY panels use for "this is true and
+    // you need to know it", not the accent -- the accent means "this is the
+    // selected thing", and the foreground being over range is not a selection.
+    if (exceedsDisplayRange(st.brush.rgb)) {
+      pushAtelierMono();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.78f, 0.35f, 1.0f));
+      ImGui::TextUnformatted("OVER RANGE  swatch is clamped");
+      ImGui::PopStyleColor();
+      popAtelierMono();
+    }
     // `ColorPicker4()` (which `ColorPicker3` forwards to) sizes its
     // saturation/value square from `CalcItemWidth()` alone -- `sv_picker_size
     // = width - (bars_width + spacing)` (imgui_widgets.cpp) -- and that square
@@ -3400,9 +3813,27 @@ void drawColorSection(AppState& st) {
     // `std::array<float,3>` and ImGui wants a `float*`, so `.data()`; the
     // storage is contiguous by the standard, so this is the same pointer the
     // retired `float g_colorRgb[3]` handed over.
-    ImGui::ColorPicker3("##rgb", st.brush.rgb.data(),
-                        ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview |
-                            ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_Float);
+    //
+    // **`ImGuiColorEditFlags_HDR`, and the name is about float range rather
+    // than about the monitor.** In `ColorEdit4()` the flag is read exactly
+    // once (`imgui_widgets.cpp`): `DragFloat(..., 0.0f, hdr ? 0.0f : 1.0f,
+    // ...)`, and a DragFloat whose min equals its max is unbounded. So this
+    // is the one line that stops the picker's own numeric row being a clamp
+    // on `BrushState::rgb` -- without it, dragging any channel while the
+    // foreground held 1.31 would silently pull the whole triple back into
+    // `[0,1]`, and the eyedropper's preserved value would die the first time
+    // the user touched the panel. It buys nothing about *display*: nothing
+    // here tone-maps and the surface is `BGRA8Unorm` either way
+    // (app/AppState.hpp's `BrushState::rgb`, last paragraph).
+    //
+    // The saturation/value square is still a clamp, and deliberately left as
+    // one: its geometry is a unit square, `S` and `V` are `ImSaturate`d into
+    // coordinates, and there is no position inside it that means 1.31.
+    // Dragging in the square is therefore an edit that brings the foreground
+    // back into range -- which is the honest behaviour for a widget whose
+    // whole surface area is the in-range gamut, and is why the badge below
+    // says which controls clamp rather than pretending none of them do.
+    ImGui::ColorPicker3("##rgb", st.brush.rgb.data(), rgbColorPickerFlags());
     // **This paragraph used to say "Not yet connected: no tool reads this
     // colour", and it was true.** It is now connected -- `foregroundSrgb()`
     // returns this triple in RGB mode, and every route reads it -- so what is
@@ -3412,6 +3843,16 @@ void drawColorSection(AppState& st) {
     // maps through RGB->latent, with the caveat ... that the decomposition is
     // plausible rather than true"); it says nothing about the constants,
     // because there is nothing to say: three floats cannot produce them.
+    //
+    // **No `rgb` readout line here, and its absence is deliberate.** The
+    // PIGMENT branch above prints one because its swatches are a palette and
+    // the resulting triple is not otherwise on screen; here the picker's own
+    // numeric row *is* that readout, and since `ImGuiColorEditFlags_HDR` it
+    // prints the true over-range value (1.516, not 1.000) rather than a
+    // clamped one. A second copy of the same three floats would cost a line
+    // in a section whose content region measures 119 px against a block that
+    // already asks for 191 -- i.e. it would be paid for by clipping the three
+    // physical constants below.
     pushAtelierMono();
     ImGui::TextDisabled("density     %.2f", sel.density);
     ImGui::TextDisabled("staining    %.2f", sel.staining);
@@ -4596,21 +5037,23 @@ void drawBrushPaintGroup(AppState& st) {
     // dimmed and inert whenever a tonal tool was selected -- the exact complaint
     // this disabled-rather-than-hidden treatment exists to answer.
     const bool toning = route == StrokeRoute::TonalBrush;
+    // **The smudge USED to read this slider as its STRENGTH, and no longer
+    // does** -- brush/Smudge.hpp §3b. That reading is what shipped the tool at
+    // `BrushState::opacity`'s default of 1, which is the one strength at which a
+    // smear provably never fades and never reloads; the user report that
+    // section quotes is what it cost. STRENGTH is `st.brush.smudge.strength`
+    // now, with its own default and its own control in the options bar, so this
+    // slider is **dead** on the smudge route and is dimmed accordingly -- the
+    // same disabled-rather-than-hidden treatment the pigment deposit gets, and
+    // the treatment this block exists to apply.
     const bool smudging = route == StrokeRoute::Smudge;
     // The clone reads it as its per-stroke ceiling too -- the same slider and
     // the same meaning, "the fraction of the maximum effect one stroke may
     // reach" (brush/CloneStamp §1's accumulator is brush/RgbDeposit §2's). Left
     // out of `honoured`, this control would have been dimmed over a sentence
     // saying it did nothing while it in fact set how opaque the copy came out.
-    const bool honoured = erasing || toning || smudging ||
-                          route == StrokeRoute::RgbDeposit ||
-                          route == StrokeRoute::CloneStamp;
-    // **And the smudge reads it as its STRENGTH** (brush/Smudge.hpp §3) -- one
-    // more reading of the same slider, so it is live on that route too. Its
-    // sentence is its own rather than the eraser's, because the number does
-    // something visibly different: at 0 the tool is a bit-exact no-op and at 1
-    // it carries the colour it picked up at pen-down for the whole stroke with
-    // no decay at all, which is not what "how much it takes" describes.
+    const bool honoured =
+        erasing || toning || route == StrokeRoute::RgbDeposit || route == StrokeRoute::CloneStamp;
     ImGui::BeginDisabled(!honoured);
     ctlSlider("Opacity", &st.brush.opacity, 0.0f, 1.0f);
     ImGui::EndDisabled();
@@ -4619,7 +5062,11 @@ void drawBrushPaintGroup(AppState& st) {
     else if (toning)
       ImGui::TextDisabled("Flow is how fast the tone moves; opacity is how far it goes.");
     else if (smudging)
-      ImGui::TextDisabled("Opacity is how far the colour is carried; 0 does nothing.");
+      // Named rather than left to the generic sentence below, because this is
+      // the one route whose answer changed: a user who learnt that this slider
+      // was the smudge's strength has to be told where it went, not merely that
+      // it is inert.
+      ImGui::TextDisabled("The smudge reads STRENGTH in the options bar, not this.");
     else if (honoured)
       ImGui::TextDisabled("Flow is how fast paint builds; opacity is where it stops.");
     else
@@ -5303,6 +5750,14 @@ std::array<float, 4> foregroundLinearRgba(int pigmentIndex) {
   return {srgbDecode(pig.rgb[0]), srgbDecode(pig.rgb[1]), srgbDecode(pig.rgb[2]), 1.0f};
 }
 
+int rgbColorPickerFlags() noexcept {
+  // See ui/MacPaintUI.hpp for why this is a named function rather than four
+  // enumerators at the one call site, and for what `ImGuiColorEditFlags_HDR`
+  // is doing among them.
+  return ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview |
+         ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR;
+}
+
 std::array<float, 4> foregroundLinearRgba(const BrushState& brush) {
   // One decode, of `app/StrokeSession`'s one answer to "what colour is the
   // foreground". Alpha is 1.0 for the reason the index overload's header
@@ -5357,20 +5812,45 @@ EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
   // every picked colour would repaint far too dark -- the sort of wrong nobody
   // notices until they hold the result against the pixel they picked it from.
   //
-  // Clamped to [0,1]. Working-space values legitimately exceed 1.0
-  // (color/Space.hpp: "Working-space values are linear light and can
-  // legitimately exceed 1.0"), and so therefore can their sRGB encoding -- but
-  // `ImGui::ColorPicker3` cannot show such a value, an 8-bit swatch cannot draw
-  // it, and `MixboxLut::rgbToLatent()` clamps it away regardless. Clamping here
-  // rather than at those three places means the number the picker shows is the
-  // number the next stroke uses, instead of a fourth value only the clamps know
-  // about.
-  for (int c = 0; c < 3; ++c) st.brush.rgb[c] = std::clamp(out.sample.display[c], 0.0f, 1.0f);
+  // **Not clamped, and this line used to be.** T25a. Working-space values
+  // legitimately exceed 1.0 (color/Space.hpp: "Working-space values are linear
+  // light and can legitimately exceed 1.0"), and so therefore can their sRGB
+  // encoding; a texel brighter than white is what an eyedropper on a lit
+  // highlight is *for*. `std::clamp(..., 0.0f, 1.0f)` stood here and threw
+  // that away at the one point in the program where the information still
+  // existed -- pick a 2.5 and get a 1.0, with nothing anywhere saying a
+  // number had been destroyed.
+  //
+  // **The argument that clamp was standing on was real, and it is answered
+  // rather than ignored.** It ran: `ImGui::ColorPicker3` cannot show such a
+  // value, an 8-bit swatch cannot draw it, `MixboxLut::rgbToLatent()` clamps
+  // it away regardless -- so clamping here means "the number the picker shows
+  // is the number the next stroke uses, instead of a fourth value only the
+  // clamps know about." Every clause of that is true, and deleting the clamp
+  // without doing anything else would have recreated exactly the fourth value
+  // it warns of.
+  //
+  // What changed is the three places, not the argument. They are now *named*
+  // clamps (`color/Space.hpp`'s `clampToDisplayRange()`, which is greppable
+  // and lists them), the picker's numeric row is no longer one of them
+  // (`ImGuiColorEditFlags_HDR` at its call site), and the COLOR panel and the
+  // sentence built below both **say** when the swatch has stopped agreeing
+  // with the field. So there is still no value only the clamps know about --
+  // there is one value, the true one, and every place that cannot carry it
+  // admits so out loud. See `app/AppState.hpp`'s `BrushState::rgb` for the
+  // whole contract; `--selftest`'s scene-referred-colour section pins it.
+  for (int c = 0; c < 3; ++c) st.brush.rgb[c] = out.sample.display[c];
 
   out.switchedToRgbMode = st.brush.colorMode == ColorMode::Pigment;
   st.brush.colorMode = ColorMode::Rgb;
 
-  char buf[256];
+  // Asked of what was **stored**, not of `out.sample.display`. They are the
+  // same triple today, and the assignment above is the only reason they are;
+  // asking the field is what keeps this bool describing the foreground rather
+  // than the probe if that ever stops being true.
+  out.overRange = exceedsDisplayRange(st.brush.rgb);
+
+  char buf[512];
   if (out.switchedToRgbMode) {
     std::snprintf(buf, sizeof(buf),
                   "Picked %.3f %.3f %.3f -- COLOR switched to RGB mode: a sampled colour has "
@@ -5384,6 +5864,25 @@ EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
                   static_cast<double>(st.brush.rgb[2]));
   }
   out.report = buf;
+  // **The over-range sentence is appended rather than replacing either of the
+  // two above**, because it is orthogonal to both: a pick can be over range
+  // whether or not it also changed the panel's mode, and a message that had
+  // to choose between saying "PIGMENT constants still come from Ultramarine"
+  // and "this is brighter than the swatch can draw" would drop one true thing
+  // to fit another in.
+  //
+  // Said here as well as in the COLOR panel because the two answer different
+  // questions. The panel's badge is a *standing* statement about the
+  // foreground as it currently is; this is the moment's -- "the number you
+  // just picked is bigger than the square you are looking at", at the instant
+  // the surprise happens, in the bar the user's eye is already in after a
+  // click. Neither one alone covers the other's case: the panel may not even
+  // be open, and the bar's line is replaced by the next thing that reports.
+  if (out.overRange) {
+    out.report +=
+        " Above the display range: the swatch and PIGMENT mode clamp to 1.000, the stroke and "
+        "the document do not.";
+  }
   st.lastPickReport = out.report;
   out.applied = true;
   return out;
@@ -5816,52 +6315,356 @@ void drawCompsSection(AppState& st) {
   }
 }
 
+// ------------------------------------------------------- The two export dialogs
+//
+// PLAN.md Phase 4 step 7 / PRD I15 (File > Export As...: "target format,
+// colour space, bit depth **and resize**, with saveable presets") and Phase 5
+// step 13 / PRD I16 + I17 (File > Export Comps / Layers To Files...: one file
+// per comp or per layer, "with a name template, a choice of which comps, and
+// I15's format/space/depth/resize options").
+//
+// Both keep the split app/CurveEdit + drawCurveWidget() established and
+// app/FramePacing and app/ToolSurface repeated: everything that can be wrong
+// here without a screenshot showing it lives in a testable module and is
+// exercised headlessly by --selftest. io/ExportAs owns the request, the
+// validation and the presets; io/ExportStates owns the plan, the name
+// template and the per-file report; **app/ExportDialog owns the decisions
+// these two functions used to make inline** -- which control is live, what
+// sentence goes beside it when it is not, and which rows a Format menu has.
+// What is below is widgets.
+//
+// ==========================================================================
+// Why this section was rewritten: "the export dialog seems a little confusing"
+// ==========================================================================
+//
+// Six things were true at once, and they are recorded here rather than in a
+// commit message because four of them are the kind that grow back:
+//
+//  1. **The two dialogs disagreed about the Format menu.** Export As showed
+//     every format and greyed the ones this build cannot write, with the
+//     capability query's own reason as the tooltip -- on the stated argument
+//     that "a menu that silently omits EXR cannot answer 'why can't I export
+//     EXR?'". The batch dialog, one function down, built the same menu from
+//     `offerableExportFormats()` and silently omitted exactly those formats.
+//     Same question, two answers, and the worse one was in the dialog where a
+//     wrong format costs a folder of files rather than one. Both now call
+//     `exportFormatChoices()`; see app/ExportDialog.hpp §1.
+//
+//  2. **The batch dialog showed no output size and no warnings.** Export As
+//     ran `validateExportRequest()` and printed "Output: WxH" plus PRD I11's
+//     cost warnings ("8-bit quantisation is 256 levels", "JPEG is lossy",
+//     how many pixels a downscale discards). The batch dialog ran the
+//     identical settings over N files and printed none of it. It does now,
+//     from the same call, over the document's own dimensions.
+//
+//  3. **Internal spec identifiers were user-facing control labels.** The
+//     radio buttons literally read "Comps (PRD I17)" and "Layers (PRD I16)",
+//     and the overwrite hint ended "(PRD P4)". This codebase does cite PRD
+//     rows in user-visible *prose* all over (core/Merge.cpp's refusals, this
+//     file's own tooltips) and that is deliberate -- a refusal that names the
+//     requirement it is enforcing is more useful, not less. But a citation
+//     inside a sentence is not the same thing as a citation inside a *control
+//     name*, and a grep for `ImGui::RadioButton("...PRD` found exactly these
+//     two in the whole build. The citations moved into the comments beside
+//     the controls, which is where every other one in this function already
+//     was.
+//
+//  4. **The preset block was five controls in the middle of a six-control
+//     dialog**, and the one control whose job is to say which preset you are
+//     on -- the combo -- showed the fixed literal "Load a preset..." forever,
+//     even immediately after loading one. Presets are now Photoshop-shaped:
+//     one combo at the top that names the loaded preset (and says
+//     "(modified)" once the controls no longer match it), with the name
+//     field, Save, Delete and the file path behind a "Manage" toggle that
+//     starts closed. Nothing was removed -- every preset operation that
+//     worked before still works, one click further in.
+//
+//  5. **The Export button was greyed with no reason on screen.** Its
+//     predicate was `activeDoc != nullptr && validation.ok &&
+//     exportPathBuf[0] != '\0'`, and the third term had no message anywhere:
+//     open the dialog, set everything correctly, type nothing in Output file,
+//     and the button is dead with the only nearby text reading "Exports the
+//     open document, not the painting canvas." A dialog that greys a control
+//     and says nothing is worse than one that refuses on click.
+//     `exportAsBlockedReason()` / `exportStatesBlockedReason()` now answer it
+//     in one place each, and --selftest asserts each branch.
+//
+//  6. **"Export..." carried an ellipsis.** ui/MenuModel.cpp's own rule, in
+//     its own words, is that "..." marks something that "opens a dialog
+//     rather than acting on the spot". This button writes the file. The
+//     ellipsis is gone from it and kept on "Choose...", which really does
+//     raise an OS panel, and on both menu items, which really do open these
+//     dialogs.
+//
+// ==========================================================================
+// Two dialogs, not one dialog with a mode -- and why
+// ==========================================================================
+//
+// The near-identical control blocks are a real invitation to merge these
+// into one modal with a "one file / many files" switch, and it was the first
+// shape tried. It is worse, for a reason that is structural rather than
+// aesthetic: **the halves that are not shared are the destination and the
+// pre-flight, and those are the two biggest things on screen.** One file
+// needs a path, a file panel and a single "Output: WxH" line; many files need
+// a folder, a name template, an overwrite rule, a which-ones list and a table
+// of every filename that would be written. A merged dialog is therefore a
+// dialog whose top third is stable and whose bottom two thirds swap wholesale
+// -- which is exactly the "which half of this applies to me?" the report is
+// about, moved rather than fixed.
+//
+// What genuinely wanted sharing is the **settings** -- the four PRD I15
+// controls -- and those are now literally one function
+// (`drawExportSettingsControls()`) called from both, so they cannot drift
+// again the way item 1 above records them drifting. Each dialog additionally
+// opens with one line saying what it produces, because the menu names alone
+// ("Export As...", "Export Comps / Layers To Files...") do not tell a user
+// which of the two they want until after they have opened one.
+//
+// ==========================================================================
+// What was deliberately NOT simplified
+// ==========================================================================
+//
+// The controls that look like noise and are not:
+//
+//   * **The colour-space names** ("Rec709Srgb (Rec.709 primaries, sRGB
+//     transfer)") read like leaked enum identifiers and are not. All three
+//     targets share primaries and differ only in transfer function, a
+//     mismatch in primaries is a refusal this build really produces
+//     (io/Export.cpp's first branch), and `exportTargetSpaceName()` is the
+//     same string the refusal interpolates. Trimming these to "sRGB / Linear
+//     / BT.709" would hide the axis the refusal is about. Left at their
+//     source, unshadowed.
+//   * **Unwritable formats stay in the menu**, greyed, with their reason.
+//     See item 1.
+//   * **The "not the painting canvas" line stays**, in one place per dialog
+//     rather than two. It is T5's canvas-versus-document split, it is true,
+//     and a user who has been painting is entitled to be told that this
+//     dialog is not looking at what is on screen. What changed is that the
+//     dialog no longer says it *twice* (once in the Source line and once
+//     under the button) and no longer re-explains the whole split in a
+//     three-line paragraph the title band already carries -- the title band's
+//     own "No document is open. File > New Document makes one." plus its
+//     tooltip ("nothing on it is saved, undone or exported") landed in
+//     `8140912` and is the canonical statement now.
+bool g_exportAsRequested = false;
+bool g_exportStatesRequested = false;
+
+namespace {
+
+// The four settings PRD I15 names, drawn identically for both dialogs.
+//
+// One function rather than two copies because the copies had already drifted
+// three ways -- the format list, the FitWithin hint and the depth
+// legalisation -- and every one of those drifts was invisible to the suite.
+void drawExportSettingsControls(ExportRequest& request) {
+  // Wide enough for the longest name any of these four combos can show, which
+  // is `exportTargetSpaceName()`'s "Rec709Srgb (Rec.709 primaries, sRGB
+  // transfer)". Measured against the rendered frame, not guessed: at the
+  // default combo width that string clipped at "...primaries, sR", which turns
+  // the one control whose parenthetical carries the actual distinction between
+  // the three targets into a control that shows only the enum identifier --
+  // the exact opposite of what that parenthetical is for. "Fit within
+  // (preserves aspect, never enlarges)" is the runner-up and fits in the same
+  // width.
+  ImGui::PushItemWidth(400.0f);
+  if (ImGui::BeginCombo("Format", imageFormatName(request.format))) {
+    // Every format, including the ones this build cannot write. See
+    // app/ExportDialog.hpp §1 for the argument and for why the batch dialog
+    // used to disagree.
+    for (const ExportFormatChoice& choice :
+         exportFormatChoices(request.targetSpace, request.bitDepth)) {
+      if (!choice.writable) ImGui::BeginDisabled();
+      if (ImGui::Selectable(imageFormatName(choice.format), choice.format == request.format) &&
+          choice.writable) {
+        request.format = choice.format;
+        // Keep the depth legal for the new format rather than leaving an
+        // impossible pair on screen and refusing it a line later.
+        request.bitDepth = legaliseExportDepth(request.format, request.bitDepth);
+      }
+      if (!choice.writable) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled |
+                                 ImGuiHoveredFlags_DelayNormal))
+          ImGui::SetTooltip("%s", choice.refusal.c_str());
+      }
+    }
+    ImGui::EndCombo();
+  }
+
+  // Target colour space (PRD I5). Three, and the names are io/Export's own --
+  // see this section's "not simplified" note on why they are as long as they
+  // are.
+  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.targetSpace))) {
+    for (int i = 0; i < 3; ++i) {
+      const auto s = static_cast<ExportTargetSpace>(i);
+      if (ImGui::Selectable(exportTargetSpaceName(s), s == request.targetSpace))
+        request.targetSpace = s;
+    }
+    ImGui::EndCombo();
+  }
+
+  // Bit depth (PRD B6, I5): only the depths this build can write this format
+  // at, which is why EXR offers half and float but not 8-bit.
+  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.bitDepth))) {
+    for (ExportBitDepth d : offerableExportDepths(request.format)) {
+      if (ImGui::Selectable(exportBitDepthName(d), d == request.bitDepth)) request.bitDepth = d;
+    }
+    ImGui::EndCombo();
+  }
+
+  // Resize (PRD I15's "and resize").
+  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.resize.mode))) {
+    for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
+      const auto m = static_cast<ExportResizeMode>(i);
+      if (ImGui::Selectable(exportResizeModeName(m), m == request.resize.mode))
+        request.resize.mode = m;
+    }
+    ImGui::EndCombo();
+  }
+  // Which sub-control is live is app/ExportDialog's answer, not a second
+  // `switch` on the mode kept in step by hand.
+  switch (exportResizeField(request.resize.mode)) {
+    case ExportResizeField::None:
+      break;
+    case ExportResizeField::Percent:
+      ImGui::SetNextItemWidth(160.0f);
+      ImGui::SliderFloat("Percent", &request.resize.percent, 1.0f, 100.0f, "%.1f%%");
+      ImGui::TextDisabled("Above 100%% is refused: this build downscales only.");
+      break;
+    case ExportResizeField::FitBox: {
+      int box[2] = {static_cast<int>(request.resize.maxWidth),
+                    static_cast<int>(request.resize.maxHeight)};
+      ImGui::SetNextItemWidth(200.0f);
+      if (ImGui::InputInt2("Fit within (px)", box)) {
+        request.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
+        request.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
+      }
+      // Both dialogs offered this mode; only one of them said what it does.
+      ImGui::TextDisabled("Aspect preserved; a smaller document is never enlarged.");
+      break;
+    }
+  }
+  ImGui::PopItemWidth();
+}
+
+// `validateExportRequest()`'s answer, drawn identically for both dialogs: the
+// resolved output size and PRD I11's cost warnings, or the refusal in
+// io/Export's own words.
+//
+// The batch dialog had none of this and ran the same settings over N files.
+void drawExportValidation(const ExportValidation& validation, const ImVec4& warnColour,
+                          const ImVec4& errorColour) {
+  if (validation.ok) {
+    ImGui::Text("Output: %ux%u", validation.outWidth, validation.outHeight);
+    for (const std::string& w : validation.warnings) {
+      ImGui::PushStyleColor(ImGuiCol_Text, warnColour);
+      ImGui::TextWrapped("! %s", w.c_str());
+      ImGui::PopStyleColor();
+    }
+  } else {
+    ImGui::PushStyleColor(ImGuiCol_Text, errorColour);
+    ImGui::TextWrapped("%s", validation.error.c_str());
+    ImGui::PopStyleColor();
+  }
+}
+
+// The preset combo both dialogs open with: one control, naming what is
+// loaded.
+//
+// A preset this build cannot honour is shown, greyed, with the reason --
+// never silently dropped and never silently substituted. See io/ExportAs.hpp:
+// this is exactly what an NP_USE_OIIO=ON preset looks like in an OFF build.
+//
+// Touches nothing but `request`, `loadedName` and `status`: the batch
+// dialog's own derived state (its picked-list) is deliberately NOT cleared by
+// a preset, because a preset carries the four PRD I15 settings and says
+// nothing about which comps or layers were chosen.
+void drawExportPresetCombo(const char* label, ExportPresetStore& presets, ExportRequest& request,
+                           std::string& loadedName, std::string& status) {
+  const ExportPreset* loaded = loadedName.empty() ? nullptr : presets.find(loadedName);
+  // The same width as the settings block below it, so the top of the dialog is
+  // one column rather than two.
+  ImGui::SetNextItemWidth(400.0f);
+  if (ImGui::BeginCombo(label, exportPresetMenuLabel(loaded, request).c_str())) {
+    if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
+    for (const ExportPreset& p : presets.presets()) {
+      const std::string why = exportRequestAvailability(p.request);
+      if (!why.empty()) ImGui::BeginDisabled();
+      if (ImGui::Selectable(p.name.c_str(), loaded == &p) && why.empty()) {
+        request = p.request;
+        loadedName = p.name;
+        status = "Loaded preset '" + p.name + "'.";
+      }
+      if (!why.empty()) {
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("%s", why.c_str());
+      }
+    }
+    ImGui::EndCombo();
+  }
+}
+
+// The height a scrolling list of `rows` should get: exactly what it holds, up
+// to `maxRows`, and never less than one row (an empty box a user can see is
+// how an empty list says it is empty).
+//
+// `framed` picks the row metric: a column of `Checkbox()`es steps by
+// `GetFrameHeightWithSpacing()`, a column of `TextUnformatted()` by
+// `GetTextLineHeightWithSpacing()`. Asked of ImGui rather than hard-coded, so
+// this follows the font the chrome is actually using.
+float exportListHeight(std::size_t rows, std::size_t maxRows, bool framed) {
+  const float row =
+      framed ? ImGui::GetFrameHeightWithSpacing() : ImGui::GetTextLineHeightWithSpacing();
+  const std::size_t n = std::max<std::size_t>(1, std::min(rows, maxRows));
+  return static_cast<float>(n) * row + ImGui::GetStyle().WindowPadding.y * 2.0f;
+}
+
+// Why an Export button is off, drawn where a user looks when a button will not
+// press: immediately beside it. Empty means the button is live and nothing is
+// drawn at all.
+void drawExportBlockedReason(const std::string& reason, const ImVec4& warnColour) {
+  if (reason.empty()) return;
+  ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_Text, warnColour);
+  ImGui::TextWrapped("%s", reason.c_str());
+  ImGui::PopStyleColor();
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------- Export As
 //
-// PLAN.md Phase 4 step 7 / PRD I15 ("Export As: target format, colour space,
-// bit depth **and resize**, with saveable presets"). Everything that can be
-// wrong here without a screenshot showing it -- what may be offered, what a
-// combination costs, how a preset is stored and what happens to one this
-// build cannot honour -- lives in io/ExportAs.hpp and is exercised headlessly
-// by --selftest. This function is the widgets and nothing else, the same
-// split app/CurveEdit + drawCurveWidget() already has.
+// One file, out of the active document.
 //
-// Two properties are structural rather than careful:
+// Two properties are structural rather than careful, and both survive the
+// rewrite above:
 //
-//  1. **It cannot offer a combination io/Export would refuse.** The format
-//     list is offerableExportFormats() and the depth list is
-//     offerableExportDepths(format), both computed from io/Capabilities'
-//     runtime query -- so in an NP_USE_OIIO=OFF build EXR is not in the menu
-//     at all, and in an ON build EXR offers half and 32-bit float but not
-//     8-bit, because that is what this OpenImageIO actually writes. The
-//     formats this build cannot write are still *shown*, greyed, with the
-//     capability query's own reason as their tooltip: a menu that silently
-//     omits EXR cannot answer "why can't I export EXR?".
+//  1. **It cannot offer a combination io/Export would refuse.** The depth
+//     list is `offerableExportDepths(format)` and the format rows carry
+//     `canWrite`, both computed from io/Capabilities' runtime query -- so in
+//     an NP_USE_OIIO=OFF build EXR is greyed with the build option named, and
+//     in an ON build EXR offers half and 32-bit float but not 8-bit, because
+//     that is what this OpenImageIO actually writes.
 //  2. **Every message it shows is io/Export's own.** The red line under the
-//     controls is exportRefusalReason()'s string verbatim, not a reworded
-//     one, so there is no second vocabulary here to drift from the encoder's.
+//     controls is `exportRefusalReason()`'s string verbatim, so there is no
+//     second vocabulary here to drift from the encoder's.
 //
-// **Updated by PLAN.md Phase 4 step 8.** When step 7 landed, the Export
-// button was disabled and said so, because there was no `core::Document`
-// anywhere in the running application to export from. There is now:
-// `AppState::documents` holds them, and File > New Document / Open... puts
-// one there. So the button is live whenever a document is open, exporting the
-// *active document* -- and still disabled, with the accurate reason, when
-// none is. What has NOT changed is the honest half: the painting canvas is
-// still not a document (sim::PaintSim owns one dense texture with no layer
-// awareness), so this exports what was opened, never what is on screen. The
-// dialog says which of the two it is looking at rather than leaving it to be
-// inferred.
-bool g_exportAsRequested = false;
-
+// What is exported is the **active document**, never the painting canvas:
+// sim::PaintSim owns one dense texture with no layer awareness, so this
+// exports what was opened, not what is on screen. The Source line says which
+// of the two it is looking at rather than leaving it to be inferred.
 void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   // Session state. Function-local statics, exactly like drawGradeSection()'s
   // newOpKindIdx and the Add Guide popup's fields -- this is UI state, not
-  // app state, and app/AppState's ownership is PLAN.md Phase 4 step 8's
-  // decision to make rather than this step's to pre-empt.
+  // app state.
   static ExportRequest request;
   static ExportPresetStore presets;
   static bool presetsLoaded = false;
+  // Which preset the controls came from, for the combo's own label. Empty
+  // means "Custom"; a name that is still in the store but no longer matches
+  // the controls reads as "<name> (modified)".
+  static std::string loadedPresetName;
+  static bool managePresets = false;
   static char presetNameBuf[96] = "";
   static char exportPathBuf[512] = "";
   static std::string status;
@@ -5884,10 +6687,29 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     }
   }
 
-  if (g_exportAsRequested) {
+  // `--open-export-as`: the same id BeginPopupModal() opens on a click, so the
+  // dialog can be photographed. See AppState::openExportAsDialog.
+  //
+  // **The request flag is latched on a rising edge**, not tested every frame,
+  // for the reason the batch dialog one function down records at length: an
+  // AppState flag stays true for the life of the session, so a per-frame test
+  // re-runs the on-open work every frame and freezes the dialog in its opening
+  // state.
+  static bool exportAsOpenLatched = false;
+  const bool wantOpen = g_exportAsRequested || st.openExportAsDialog;
+  if (wantOpen && !exportAsOpenLatched) {
+    exportAsOpenLatched = true;
     g_exportAsRequested = false;
+    if (!st.exportAsPath.empty() && exportPathBuf[0] == '\0')
+      std::snprintf(exportPathBuf, sizeof(exportPathBuf), "%s", st.exportAsPath.c_str());
+    // Re-read the file on every open. The batch dialog can be opened after a
+    // preset was saved here (and vice versa), and a store loaded once per
+    // process meant the second dialog showed a list that was already stale.
+    presetsLoaded = false;
     ImGui::OpenPopup("Export As");
   }
+  if (!wantOpen) exportAsOpenLatched = false;
+  g_exportAsRequested = false;
   if (!ImGui::BeginPopupModal("Export As", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
 
   // Loaded on first open, never at startup: a preset file nobody asked for
@@ -5905,164 +6727,84 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
   const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
 
+  // What this dialog produces, said before anything else. The two File menu
+  // items are distinguishable only by reading both of them carefully; this
+  // line is where a user who guessed wrong finds out in one glance.
+  ImGui::TextDisabled("One image file, from the active document.");
+
   // What is being exported, named rather than assumed. These are two
   // genuinely different things in this build and conflating them on screen
-  // would be the dishonest option.
+  // would be the dishonest option. The noun leads and the numbers follow --
+  // the size is not the subject of this sentence.
   const OpenDocument* activeDoc = st.documents.active();
   const uint32_t srcW = activeDoc ? static_cast<uint32_t>(activeDoc->document.width) : canvasW;
   const uint32_t srcH = activeDoc ? static_cast<uint32_t>(activeDoc->document.height) : canvasH;
   if (activeDoc)
-    ImGui::TextDisabled("Source: %ux%u (document '%s')", srcW, srcH,
-                        documentDisplayName(*activeDoc).c_str());
+    ImGui::TextDisabled("Source: document '%s' (%ux%u) -- not the painting canvas.",
+                        documentDisplayName(*activeDoc).c_str(), srcW, srcH);
   else
-    ImGui::TextDisabled("Source: %ux%u (the live canvas -- not a document; nothing to export)",
+    // The whole canvas-versus-document explanation is the title band's, as of
+    // `8140912`; this says only which of the two this dialog is looking at.
+    ImGui::TextDisabled("Source: none. The %ux%u painting canvas is a solver texture, not a "
+                        "document, and cannot be exported.",
                         srcW, srcH);
   ImGui::Separator();
 
-  // --- Format -------------------------------------------------------------
-  if (ImGui::BeginCombo("Format", imageFormatName(request.format))) {
-    for (const FormatCapability& caps : allFormatCapabilities()) {
-      const bool writable = caps.canWrite;
-      if (!writable) ImGui::BeginDisabled();
-      if (ImGui::Selectable(imageFormatName(caps.format), caps.format == request.format) &&
-          writable) {
-        request.format = caps.format;
-        // Keep the depth legal for the new format rather than leaving an
-        // impossible pair on screen and refusing it a line later.
-        const std::vector<ExportBitDepth> depths = offerableExportDepths(request.format);
-        if (!depths.empty() &&
-            std::find(depths.begin(), depths.end(), request.bitDepth) == depths.end())
-          request.bitDepth = depths.front();
+  // --- Presets (PRD I15's "with saveable presets") ------------------------
+  //
+  // One control, at the top, with the management behind it -- Photoshop's
+  // shape. This block used to be five controls plus a raw path line, sitting
+  // between the validation and the Export button, which put the preset
+  // machinery physically between the result and the act it described.
+  drawExportPresetCombo("Preset", presets, request, loadedPresetName, status);
+  ImGui::SameLine();
+  if (ImGui::SmallButton(managePresets ? "Manage -" : "Manage +")) managePresets = !managePresets;
+  if (managePresets) {
+    ImGui::Indent();
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputText("Preset name", presetNameBuf, sizeof(presetNameBuf));
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+      ExportPreset p;
+      p.name = presetNameBuf;
+      p.request = request;
+      std::string err;
+      if (!presets.savePreset(p, &err)) {
+        status = err;
+      } else if (!presets.saveToFile(presetsPath, &err)) {
+        status = err;
+      } else {
+        loadedPresetName = p.name;
+        status = "Saved preset '" + p.name + "' to " + presetsPath;
       }
-      if (!writable) {
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled |
-                                 ImGuiHoveredFlags_DelayNormal)) {
-          const std::string why =
-              exportRefusalReason(caps.format, request.targetSpace, request.bitDepth, nullptr,
-                                  nullptr);
-          ImGui::SetTooltip("%s", why.c_str());
-        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+      std::string err;
+      if (!presets.removePreset(presetNameBuf)) {
+        status = std::string("No preset named '") + presetNameBuf + "' to delete.";
+      } else if (!presets.saveToFile(presetsPath, &err)) {
+        status = err;
+      } else {
+        if (loadedPresetName == presetNameBuf) loadedPresetName.clear();
+        status = std::string("Deleted preset '") + presetNameBuf + "'.";
       }
     }
-    ImGui::EndCombo();
+    ImGui::TextDisabled("Presets file: %s", presetsPath.c_str());
+    ImGui::Unindent();
   }
 
-  // --- Target colour space (PRD I5) ---------------------------------------
-  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.targetSpace))) {
-    for (int i = 0; i < 3; ++i) {
-      const auto s = static_cast<ExportTargetSpace>(i);
-      if (ImGui::Selectable(exportTargetSpaceName(s), s == request.targetSpace))
-        request.targetSpace = s;
-    }
-    ImGui::EndCombo();
-  }
-
-  // --- Bit depth (PRD B6, I5) ---------------------------------------------
-  const std::vector<ExportBitDepth> depths = offerableExportDepths(request.format);
-  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.bitDepth))) {
-    for (ExportBitDepth d : depths) {
-      if (ImGui::Selectable(exportBitDepthName(d), d == request.bitDepth)) request.bitDepth = d;
-    }
-    ImGui::EndCombo();
-  }
-
-  // --- Resize (PRD I15's "and resize") ------------------------------------
+  // --- The four settings, shared with the batch dialog --------------------
   ImGui::Separator();
-  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.resize.mode))) {
-    for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
-      const auto m = static_cast<ExportResizeMode>(i);
-      if (ImGui::Selectable(exportResizeModeName(m), m == request.resize.mode))
-        request.resize.mode = m;
-    }
-    ImGui::EndCombo();
-  }
-  if (request.resize.mode == ExportResizeMode::Percent) {
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::SliderFloat("Percent", &request.resize.percent, 1.0f, 100.0f, "%.1f%%");
-  } else if (request.resize.mode == ExportResizeMode::FitWithin) {
-    int box[2] = {static_cast<int>(request.resize.maxWidth),
-                  static_cast<int>(request.resize.maxHeight)};
-    ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::InputInt2("Fit within (px)", box)) {
-      request.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
-      request.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
-    }
-    ImGui::TextDisabled("Aspect preserved; a smaller document is never enlarged.");
-  }
+  drawExportSettingsControls(request);
 
   // --- Validation, in io/Export's own words -------------------------------
   const ExportValidation validation = validateExportRequest(
       request, srcW, srcH, activeDoc ? &activeDoc->document.workingSpace : nullptr, nullptr);
   ImGui::Separator();
-  if (validation.ok) {
-    ImGui::Text("Output: %ux%u", validation.outWidth, validation.outHeight);
-    for (const std::string& w : validation.warnings) {
-      ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-      ImGui::TextWrapped("! %s", w.c_str());
-      ImGui::PopStyleColor();
-    }
-  } else {
-    ImGui::PushStyleColor(ImGuiCol_Text, kError);
-    ImGui::TextWrapped("%s", validation.error.c_str());
-    ImGui::PopStyleColor();
-  }
+  drawExportValidation(validation, kWarn, kError);
 
-  // --- Presets (PRD I15's "with saveable presets") ------------------------
-  ImGui::Separator();
-  ImGui::TextUnformatted("Presets");
-  if (ImGui::BeginCombo("##presets", "Load a preset...")) {
-    if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
-    for (const ExportPreset& p : presets.presets()) {
-      // A preset this build cannot honour is shown, greyed, with the reason
-      // -- never silently dropped and never silently substituted. See
-      // io/ExportAs.hpp: this is exactly what an NP_USE_OIIO=ON preset looks
-      // like in an OFF build.
-      const std::string why = exportRequestAvailability(p.request);
-      if (!why.empty()) ImGui::BeginDisabled();
-      if (ImGui::Selectable(p.name.c_str()) && why.empty()) {
-        request = p.request;
-        std::snprintf(presetNameBuf, sizeof(presetNameBuf), "%s", p.name.c_str());
-        status = "Loaded preset '" + p.name + "'.";
-      }
-      if (!why.empty()) {
-        ImGui::EndDisabled();
-        ImGui::SetItemTooltip("%s", why.c_str());
-      }
-    }
-    ImGui::EndCombo();
-  }
-  ImGui::SetNextItemWidth(220.0f);
-  ImGui::InputText("##presetName", presetNameBuf, sizeof(presetNameBuf));
-  ImGui::SameLine();
-  if (ImGui::Button("Save preset")) {
-    ExportPreset p;
-    p.name = presetNameBuf;
-    p.request = request;
-    std::string err;
-    if (!presets.savePreset(p, &err)) {
-      status = err;
-    } else if (!presets.saveToFile(presetsPath, &err)) {
-      status = err;
-    } else {
-      status = "Saved preset '" + p.name + "' to " + presetsPath;
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Delete preset")) {
-    std::string err;
-    if (!presets.removePreset(presetNameBuf)) {
-      status = std::string("No preset named '") + presetNameBuf + "' to delete.";
-    } else if (!presets.saveToFile(presetsPath, &err)) {
-      status = err;
-    } else {
-      status = std::string("Deleted preset '") + presetNameBuf + "'.";
-    }
-  }
-  if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
-  ImGui::TextDisabled("Presets file: %s", presetsPath.c_str());
-
-  // --- Export, and the honest part ----------------------------------------
+  // --- Where it goes ------------------------------------------------------
   ImGui::Separator();
   ImGui::SetNextItemWidth(360.0f);
   ImGui::InputText("Output file", exportPathBuf, sizeof(exportPathBuf));
@@ -6077,6 +6819,10 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     //
     // The field stays: this fills it in rather than replacing it, because an
     // export path is often typed as a variation on the last one.
+    //
+    // The ellipsis is right here and wrong on Export below: ui/MenuModel.cpp's
+    // own rule is that "..." marks something that opens a dialog rather than
+    // acting on the spot, and this raises an NSSavePanel.
     const FileDialogFilterRow row{imageFormatName(request.format),
                                   imageFormatExtension(request.format)};
     if (requestFileDialogWithFilter(FileDialogPurpose::ExportImage,
@@ -6085,38 +6831,35 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     else
       status = "A file panel is already open; finish or cancel it first.";
   }
-  const bool canExport = activeDoc != nullptr && validation.ok && exportPathBuf[0] != '\0';
-  if (!canExport) ImGui::BeginDisabled();
-  if (ImGui::Button("Export...")) {
+
+  // --- Export -------------------------------------------------------------
+  ImGui::Separator();
+  const std::string blocked =
+      exportAsBlockedReason(activeDoc != nullptr, validation, exportPathBuf);
+  if (!blocked.empty()) ImGui::BeginDisabled();
+  if (ImGui::Button("Export")) {
     std::string err;
     if (exportDocumentWithRequestToFile(activeDoc->document, exportPathBuf, request, &err))
       status = std::string("Exported ") + exportPathBuf;
     else
       status = err;
   }
-  if (!canExport) ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (!activeDoc) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("No document is open, so there is nothing to export. Use File > New "
-                       "Document or File > Open... -- the painting canvas is a solver texture, "
-                       "not a document, and still has no bridge into one.");
-    ImGui::PopStyleColor();
-  } else {
-    ImGui::TextDisabled("Exports the open document, not the painting canvas.");
+  if (!blocked.empty()) ImGui::EndDisabled();
+  // The reason lives beside the button it explains. It used to live nowhere
+  // at all for the empty-path case -- see this section's item 5.
+  drawExportBlockedReason(blocked, kWarn);
+
+  if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
+  if (ImGui::Button("Close")) {
+    st.openExportAsDialog = false;
+    ImGui::CloseCurrentPopup();
   }
-  if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
   ImGui::EndPopup();
 }
 
 // ------------------------------------------- Export Comps / Layers To Files
 //
-// PLAN.md Phase 5 step 13 / PRD I16 + I17. The same split
-// drawExportAsDialog() has, and for the same reason: everything that can be
-// wrong without a screenshot showing it -- the name template and its path
-// refusals, the collision rule, the overwrite rule, the state-set, the
-// per-file report -- lives in io/ExportStates.hpp and is exercised headlessly
-// by --selftest. This function is widgets.
+// Many files, one per comp or per layer, into a folder.
 //
 // The one property worth naming here, because it is what the dialog is shaped
 // around: **`planStateExport()` writes nothing**, so the table of filenames
@@ -6125,12 +6868,11 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
 // filenames, the exact skips and the exact refusal before committing, which is
 // the whole reason the refusals are a pre-flight rather than a surprise at
 // file 3.
-bool g_exportStatesRequested = false;
-
 void drawExportStatesDialog(AppState& st) {
   static ExportStatesRequest request;
   static ExportPresetStore presets;
   static bool presetsLoaded = false;
+  static std::string loadedPresetName;
   static char dirBuf[512] = "";
   static char templateBuf[256] = "{name}";
   static std::vector<bool> picked;
@@ -6141,13 +6883,28 @@ void drawExportStatesDialog(AppState& st) {
 
   // --open-export-states: the same id BeginPopupModal() opens on a click, so
   // the dialog can be photographed. See AppState::openExportStatesDialog.
-  if (g_exportStatesRequested || st.openExportStatesDialog) {
-    g_exportStatesRequested = false;
+  //
+  // **Latched on the rising edge**, and that is a fix rather than a
+  // restatement. `st.openExportStatesDialog` stays true until the Close
+  // button clears it, so the previous `if (g_exportStatesRequested ||
+  // st.openExportStatesDialog)` was true on *every* frame of an
+  // `--open-export-states` run: `justOpened` was re-armed each frame, which
+  // re-ran the on-open work each frame, which cleared `picked` each frame and
+  // forced the source back to Layers each frame. Under that flag no checkbox
+  // could be unticked and the Comps radio could not be chosen -- a
+  // demo-only path, but the demo path is the one the golden views photograph.
+  static bool statesOpenLatched = false;
+  const bool wantOpen = g_exportStatesRequested || st.openExportStatesDialog;
+  if (wantOpen && !statesOpenLatched) {
+    statesOpenLatched = true;
     if (!st.exportStatesFolder.empty() && dirBuf[0] == '\0')
       std::snprintf(dirBuf, sizeof(dirBuf), "%s", st.exportStatesFolder.c_str());
     justOpened = true;
+    presetsLoaded = false;  // see drawExportAsDialog(): the two share a file
     ImGui::OpenPopup("Export Comps / Layers To Files");
   }
+  if (!wantOpen) statesOpenLatched = false;
+  g_exportStatesRequested = false;
   if (!ImGui::BeginPopupModal("Export Comps / Layers To Files", nullptr,
                               ImGuiWindowFlags_AlwaysAutoResize))
     return;
@@ -6161,14 +6918,21 @@ void drawExportStatesDialog(AppState& st) {
   const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
   const ImVec4 kGood(0.55f, 0.85f, 0.55f, 1.0f);
 
+  ImGui::TextDisabled("One image file per comp or per layer, into a folder.");
+
   const OpenDocument* activeDoc = st.documents.active();
   if (activeDoc == nullptr) {
+    // The same sentence the Export button would carry, from the same
+    // function, so the two cannot come to disagree.
     ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("No document is open, so there are no comps or layers to export. Use "
-                       "File > New Document or File > Open... -- the painting canvas is a "
-                       "solver texture, not a document.");
+    ImGui::TextWrapped("%s", exportStatesBlockedReason(false, 0, ExportStatesReport{}).c_str());
     ImGui::PopStyleColor();
-    if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+    ImGui::TextDisabled("The painting canvas is a solver texture, not a document: it has no "
+                        "comps and no layers.");
+    if (ImGui::Button("Close")) {
+      st.openExportStatesDialog = false;
+      ImGui::CloseCurrentPopup();
+    }
     ImGui::EndPopup();
     return;
   }
@@ -6180,91 +6944,59 @@ void drawExportStatesDialog(AppState& st) {
   if (dot != std::string::npos && dot > 0) request.documentName.resize(dot);
 
   // A dialog that opens on an empty list is a dialog that looks broken. A
-  // document with no comps has nothing for PRD I17 to enumerate, and PRD I16
-  // is the same loop over a list it certainly does have, so that is where it
-  // opens. Only on open, so switching back is never fought.
+  // document with no comps has nothing for I17 to enumerate, and I16 is the
+  // same loop over a list it certainly does have, so that is where it opens.
+  // Only on open, so switching back is never fought.
   if (justOpened) {
     justOpened = false;
     if (doc.comps.empty()) request.source = ExportStateSource::Layers;
     picked.clear();
   }
 
-  ImGui::TextDisabled("Source: document '%s', %zu comps, %zu layers",
-                      request.documentName.c_str(), doc.comps.size(), doc.layers.size());
+  ImGui::TextDisabled("Source: document '%s' -- %zu comp%s, %zu layer%s.",
+                      request.documentName.c_str(), doc.comps.size(),
+                      doc.comps.size() == 1 ? "" : "s", doc.layers.size(),
+                      doc.layers.size() == 1 ? "" : "s");
   ImGui::Separator();
 
-  // --- What is enumerated: PRD I17 or PRD I16 -----------------------------
+  // --- What is enumerated -------------------------------------------------
+  //
+  // PRD I17 (comps) and PRD I16 (layers). Those two citations used to be
+  // *inside the radio button labels* -- "Comps (PRD I17)" -- which is a spec
+  // identifier presented as the name of a control. They live here now, which
+  // is where the rest of this file keeps its citations.
   int sourceIdx = request.source == ExportStateSource::Comps ? 0 : 1;
-  const bool sourceChanged = ImGui::RadioButton("Comps (PRD I17)", &sourceIdx, 0);
+  ImGui::TextUnformatted("Export one file per:");
   ImGui::SameLine();
-  const bool sourceChanged2 = ImGui::RadioButton("Layers (PRD I16)", &sourceIdx, 1);
+  const bool sourceChanged = ImGui::RadioButton("Comp", &sourceIdx, 0);
+  ImGui::SameLine();
+  const bool sourceChanged2 = ImGui::RadioButton("Layer", &sourceIdx, 1);
   if (sourceChanged || sourceChanged2) picked.clear();
   request.source = sourceIdx == 0 ? ExportStateSource::Comps : ExportStateSource::Layers;
 
-  // --- The four Export As settings, and a preset that carries them --------
-  if (ImGui::BeginCombo("Preset", "Load an Export As preset...")) {
-    if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
-    for (const ExportPreset& p : presets.presets()) {
-      const std::string why = exportRequestAvailability(p.request);
-      if (!why.empty()) ImGui::BeginDisabled();
-      if (ImGui::Selectable(p.name.c_str()) && why.empty()) {
-        request.format = p.request;
-        status = "Loaded preset '" + p.name + "'.";
-      }
-      if (!why.empty()) {
-        ImGui::EndDisabled();
-        ImGui::SetItemTooltip("%s", why.c_str());
-      }
-    }
-    ImGui::EndCombo();
-  }
-  if (ImGui::BeginCombo("Format", imageFormatName(request.format.format))) {
-    for (ImageFormat f : offerableExportFormats()) {
-      if (ImGui::Selectable(imageFormatName(f), f == request.format.format)) {
-        request.format.format = f;
-        const std::vector<ExportBitDepth> depths = offerableExportDepths(f);
-        if (!depths.empty() && std::find(depths.begin(), depths.end(), request.format.bitDepth) ==
-                                   depths.end())
-          request.format.bitDepth = depths.front();
-      }
-    }
-    ImGui::EndCombo();
-  }
-  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.format.targetSpace))) {
-    for (int i = 0; i < 3; ++i) {
-      const auto s = static_cast<ExportTargetSpace>(i);
-      if (ImGui::Selectable(exportTargetSpaceName(s), s == request.format.targetSpace))
-        request.format.targetSpace = s;
-    }
-    ImGui::EndCombo();
-  }
-  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.format.bitDepth))) {
-    for (ExportBitDepth d : offerableExportDepths(request.format.format)) {
-      if (ImGui::Selectable(exportBitDepthName(d), d == request.format.bitDepth))
-        request.format.bitDepth = d;
-    }
-    ImGui::EndCombo();
-  }
-  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.format.resize.mode))) {
-    for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
-      const auto m = static_cast<ExportResizeMode>(i);
-      if (ImGui::Selectable(exportResizeModeName(m), m == request.format.resize.mode))
-        request.format.resize.mode = m;
-    }
-    ImGui::EndCombo();
-  }
-  if (request.format.resize.mode == ExportResizeMode::Percent) {
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::SliderFloat("Percent", &request.format.resize.percent, 1.0f, 100.0f, "%.1f%%");
-  } else if (request.format.resize.mode == ExportResizeMode::FitWithin) {
-    int box[2] = {static_cast<int>(request.format.resize.maxWidth),
-                  static_cast<int>(request.format.resize.maxHeight)};
-    ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::InputInt2("Fit within (px)", box)) {
-      request.format.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
-      request.format.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
-    }
-  }
+  // --- Presets, then the four settings, both shared with Export As --------
+  //
+  // Load-only here, on purpose: a preset is authored where it is authored
+  // (File > Export As...), and offering a second Save from a dialog whose
+  // extra controls -- folder, template, overwrite, selection -- are NOT part
+  // of an `ExportPreset` would imply they were being saved too.
+  ImGui::Separator();
+  drawExportPresetCombo("Preset", presets, request.format, loadedPresetName, status);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(saved in File > Export As...)");
+  drawExportSettingsControls(request.format);
+
+  // --- Validation, over this document's dimensions ------------------------
+  //
+  // New here. The batch dialog offered every one of Export As's settings and
+  // showed none of Export As's answers about them -- no output size, and none
+  // of PRD I11's cost warnings -- while applying them to N files instead of
+  // one. Same call, same strings.
+  const ExportValidation validation =
+      validateExportRequest(request.format, static_cast<uint32_t>(doc.width),
+                            static_cast<uint32_t>(doc.height), &doc.workingSpace, nullptr);
+  ImGui::Separator();
+  drawExportValidation(validation, kWarn, kError);
 
   // --- Where, and under what names (PRD I17's "with a name template") -----
   ImGui::Separator();
@@ -6272,14 +7004,34 @@ void drawExportStatesDialog(AppState& st) {
   ImGui::InputText("Output folder", dirBuf, sizeof(dirBuf));
   ImGui::SetNextItemWidth(420.0f);
   ImGui::InputText("Name template", templateBuf, sizeof(templateBuf));
-  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 560.0f);
-  ImGui::TextWrapped("%s", exportNameTemplateHelp().c_str());
-  ImGui::PopTextWrapPos();
-  ImGui::PopStyleColor();
+  // The token list on one line, with the paragraph explaining each of them --
+  // and explaining the deliberate absence of a date token -- one hover away.
+  //
+  // Three wrapped lines of reference prose sat here permanently, in the middle
+  // of a form that is already taller than the window, and they pushed the
+  // Export button below the fold. **Both strings come from io/ExportStates'
+  // own single list** (`exportNameTemplateTokens()` and
+  // `exportNameTemplateHelp()`, which that header keeps in step by
+  // construction: "There is one list, so the two cannot disagree"), so this is
+  // a shorter view of one vocabulary rather than a second one.
+  {
+    std::string tokenLine = "Tokens:";
+    for (const std::string& t : exportNameTemplateTokens()) tokenLine += " " + t;
+    tokenLine += "   (hover for what each does)";
+    ImGui::TextDisabled("%s", tokenLine.c_str());
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::BeginTooltip();
+      ImGui::PushTextWrapPos(560.0f);
+      ImGui::TextUnformatted(exportNameTemplateHelp().c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::EndTooltip();
+    }
+  }
   ImGui::Checkbox("Overwrite files that already exist", &request.overwriteExisting);
+  // PRD P4's all-or-nothing rule. The citation used to be in this sentence,
+  // on screen; it is a comment now for the reason the radio buttons' were.
   if (!request.overwriteExisting)
-    ImGui::TextDisabled("Off: an existing output path refuses the whole batch (PRD P4).");
+    ImGui::TextDisabled("Off: an existing output path refuses the whole batch.");
   request.outputDirectory = dirBuf;
   request.nameTemplate = templateBuf;
 
@@ -6293,7 +7045,12 @@ void drawExportStatesDialog(AppState& st) {
   if (ImGui::SmallButton("All")) picked.assign(total, true);
   ImGui::SameLine();
   if (ImGui::SmallButton("None")) picked.assign(total, false);
-  if (ImGui::BeginChild("##pick", ImVec2(420.0f, 96.0f), true)) {
+  // Sized to its contents, capped, rather than a fixed 96px. Both this list
+  // and the plan below it used to reserve a fixed height whatever they held,
+  // which on a three-layer document is a screenful of empty box in a dialog
+  // that is already taller than the window -- and it was pushing the Export
+  // button and the Close button off the bottom of the screen.
+  if (ImGui::BeginChild("##pick", ImVec2(420.0f, exportListHeight(total, 6, true)), true)) {
     for (size_t i = 0; i < total; ++i) {
       const std::string label =
           (request.source == ExportStateSource::Comps
@@ -6310,8 +7067,7 @@ void drawExportStatesDialog(AppState& st) {
   for (size_t i = 0; i < total; ++i)
     if (picked[i]) request.selection.push_back(i);
   // An empty `selection` means "all" to io/ExportStates, which is not what an
-  // empty set of checkboxes means here. Said rather than silently exporting
-  // everything.
+  // empty set of checkboxes means here.
   const bool noneChosen = request.selection.empty();
 
   // --- The plan: exactly what a click would write, computed for free ------
@@ -6326,18 +7082,16 @@ void drawExportStatesDialog(AppState& st) {
   // check.
   ExportStatesReport plan;
   if (!noneChosen) plan = planStateExport(doc, request);
-  if (noneChosen) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("Nothing is selected, so there is nothing to export.");
-    ImGui::PopStyleColor();
-  } else if (!plan.error.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kError);
-    ImGui::TextWrapped("%s", plan.error.c_str());
+  const std::string blocked = exportStatesBlockedReason(true, request.selection.size(), plan);
+  if (!blocked.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, noneChosen ? kWarn : kError);
+    ImGui::TextWrapped("%s", blocked.c_str());
     ImGui::PopStyleColor();
   } else {
     ImGui::Text("Will write %zu file%s (%zu skipped):", plan.items.size() - plan.skipped(),
                 plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
-    if (ImGui::BeginChild("##plan", ImVec2(560.0f, 120.0f), true)) {
+    if (ImGui::BeginChild("##plan", ImVec2(560.0f, exportListHeight(plan.items.size(), 6, false)),
+                          true)) {
       for (const ExportStateItem& item : plan.items) {
         if (item.filename.empty()) {
           ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
@@ -6353,14 +7107,14 @@ void drawExportStatesDialog(AppState& st) {
 
   // --- Export, and the per-file report (PRD P4) ---------------------------
   ImGui::Separator();
-  const bool canExport = !noneChosen && plan.error.empty();
-  if (!canExport) ImGui::BeginDisabled();
+  if (!blocked.empty()) ImGui::BeginDisabled();
+  // No ellipsis: this writes the files. See this section's item 6.
   if (ImGui::Button("Export")) {
     lastRun = exportDocumentStates(doc, request);
     hasRun = true;
     status = exportStatesSummary(lastRun);
   }
-  if (!canExport) ImGui::EndDisabled();
+  if (!blocked.empty()) ImGui::EndDisabled();
   ImGui::SameLine();
   ImGui::TextDisabled("Exports the open document's %s, never the painting canvas.",
                       exportStateSourcePlural(request.source));
@@ -6372,7 +7126,8 @@ void drawExportStatesDialog(AppState& st) {
   }
   if (hasRun && !lastRun.items.empty()) {
     // Per file, always -- never one line claiming a count. PRD P4.
-    if (ImGui::BeginChild("##report", ImVec2(560.0f, 120.0f), true)) {
+    if (ImGui::BeginChild("##report", ImVec2(560.0f, exportListHeight(lastRun.items.size(), 6, false)),
+                          true)) {
       for (const ExportStateItem& item : lastRun.items) {
         const bool bad = item.outcome == ExportItemOutcome::Failed ||
                          item.outcome == ExportItemOutcome::NotAttempted;
@@ -8954,6 +9709,16 @@ void drawCanvasSizeDialog(AppState& st) {
   ImGui::EndPopup();
 }
 
+// The centre that both the seeded angle below and every live edit rotate and
+// scale about. One function rather than the expression twice, so a seeded
+// rotation and a dragged one cannot end up about different pivots -- which
+// would show as the preview jumping the first time the user touched a field.
+Point2 numericTransformPivot(const TransformSession& session) noexcept {
+  const DocumentRegion& b = session.sourceBounds();
+  return Point2{static_cast<float>(b.x) + static_cast<float>(b.width) * 0.5f,
+                static_cast<float>(b.y) + static_cast<float>(b.height) * 0.5f};
+}
+
 // PRD item 10: a Photoshop-style numeric Transform dialog -- typed rotate/
 // scale/translate fields instead of dragging the Free Transform gizmo's
 // handles. Begins the identical `app/TransformSession` a Cmd+T gizmo would
@@ -8998,12 +9763,31 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
         if (!began.ok) {
           status = began.error;
         } else {
-          rotateDeg = 0.0f;
+          // T24: "when the transform panel is open, and the measure was the
+          // last tool, the angle from the measure is put into the transform
+          // angle field; if it wasn't the last tool the angle should be
+          // zero." Both halves are `transformSeedAngleDeg()`'s -- including
+          // the zero, which is the easy half of this feature to drop and the
+          // only half the user notices when it is wrong. Its header's §3
+          // carries why the predicate is the tool the user is IN rather than
+          // the previous one.
+          rotateDeg = transformSeedAngleDeg(st, od->id);
           scaleXPercent = 100.0f;
           scaleYPercent = 100.0f;
           translateX = 0.0f;
           translateY = 0.0f;
           beginTransformPreview(st, gpu);
+          // A seeded angle that Apply ignored would be a lie the dialog tells
+          // in its own field: `setPending()` is otherwise only reached from
+          // the `edited` branch below, so a user who read 37.4 off the field
+          // and pressed Apply without touching anything would commit the
+          // identity. Composed through the same `composeNumericTransform()`
+          // and the same pivot the edits use, so the seed is a starting point
+          // in that function's terms rather than a second transform path.
+          if (rotateDeg != 0.0f) {
+            st.transform.setPending(composeNumericTransform(
+                rotateDeg, 1.0f, 1.0f, 0.0f, 0.0f, numericTransformPivot(st.transform)));
+          }
         }
       }
       ImGui::OpenPopup("Numeric Transform");
@@ -9024,9 +9808,7 @@ void drawNumericTransformDialog(AppState& st, GpuContext& gpu) {
     return;
   }
 
-  const DocumentRegion& bounds = st.transform.sourceBounds();
-  const Point2 pivot{static_cast<float>(bounds.x) + static_cast<float>(bounds.width) * 0.5f,
-                     static_cast<float>(bounds.y) + static_cast<float>(bounds.height) * 0.5f};
+  const Point2 pivot = numericTransformPivot(st.transform);
 
   bool edited = false;
   ImGui::SetNextItemWidth(200.0f);
@@ -9472,7 +10254,7 @@ MenuContext menuContextFromState(AppState& st) {
   // so `--selftest` can call the exact predicate the menu uses without
   // needing an `AppState` or touching the recent-documents file this
   // function's own first line reads.
-  ctx.tools = toolMenuFamily(st.brush.tool);
+  ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr);
   ctx.paused = st.paused;
 
   // --- View ---------------------------------------------------------------
@@ -9583,13 +10365,30 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // external linkage `menuContextFromState()` and `app/selftest/MenuBasics.cpp`
 // both need -- the former to assign `ctx.tools`, the latter to assert the
 // A4 fix directly.
-std::vector<MenuFamilyEntry> toolMenuFamily(Tool current) {
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
   std::vector<MenuFamilyEntry> tools;
   for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
     const Tool t = static_cast<Tool>(i);
     const bool implemented = toolImplemented(t);
-    tools.push_back(familyEntry(toolName(t), implemented, current == t, false,
-                                implemented ? std::string() : toolTooltip(t)));
+    // The surface axis (app/ToolSurface, T5), applied here for the reason A4
+    // is the precedent for: `MenuAction::ToolItem`'s handler calls
+    // `setActiveTool()` unconditionally and relies entirely on this `enabled`
+    // flag, so a menu that offered a document-scoped tool with no document
+    // open would be a THIRD live route to a tool the palette and the flyout
+    // both correctly disable -- which is A4's own defect ("all 27 tools were
+    // selectable from this menu while toolButton() correctly gated the same
+    // list one panel over") arriving through the second axis instead of the
+    // first.
+    const char* surfaceWhy = toolSurfaceRefusal(t, documentOpen);
+    const bool live = implemented && (toolActsWithoutDocument(t) || documentOpen);
+    // A disabled entry always carries its reason, and never two: the two
+    // predicates are disjoint by construction -- `toolSurfaceRefusal()`
+    // answers nullptr for every not-built cell -- so this is a choice between
+    // one sentence and the other, never a concatenation.
+    std::string why;
+    if (!implemented) why = toolTooltip(t);          // "... Not built yet."
+    else if (surfaceWhy != nullptr) why = surfaceWhy;  // "... no document is open."
+    tools.push_back(familyEntry(toolName(t), live, current == t, false, std::move(why)));
   }
   return tools;
 }
@@ -9905,7 +10704,7 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
 
     case MenuAction::ToolItem:
       if (param < 0 || param >= static_cast<int>(Tool::Count)) break;
-      st.brush.tool = static_cast<Tool>(param);
+      setActiveTool(st, static_cast<Tool>(param));
       break;
 
     case MenuAction::PauseSolver:
@@ -9970,6 +10769,13 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
     case MenuAction::CanvasSize: g_canvasSizeRequested = true; break;
+    // Into `AppState` rather than into a file-static, unlike the two above:
+    // those two open a modal and a modal is this file's business, while these
+    // two act on the active document and are consumed in the same request
+    // block as Deselect and Paste. Neither takes a dialog, so neither needs
+    // the "a native menu callback has no ImGui frame" detour.
+    case MenuAction::CropToSelection: st.requestCropToSelection = true; break;
+    case MenuAction::TrimToContent:   st.requestTrimToContent = true;   break;
 
     // --- Image > Adjustments ---------------------------------------------
     //
@@ -10281,14 +11087,35 @@ void drawToolsPanelBody(AppState& st, float availW, float availH, bool vertical)
   // the well PRD Q10 says the eyedropper picks *into*, so it has to show the
   // colour that was picked.
   const std::array<float, 3> fg = foregroundSrgb(st.brush);
-  dl->AddRectFilled(p, ImVec2(p.x + swatchSide, p.y + swatchSide),
-                    IM_COL32((int)(fg[0] * 255), (int)(fg[1] * 255), (int)(fg[2] * 255), 255));
+  // **Clamp site 1 of the set `color/Space.hpp` names**, and it is a
+  // correctness fix rather than a tidy-up: `IM_COL32` shifts each int into
+  // its own byte lane, so a foreground of 1.4 gives `(int)(1.4f * 255)` =
+  // 357 = 0x165, and the 0x1 lands in the *next channel up*. Since
+  // `BrushState::rgb` became scene-referred (app/AppState.hpp) an unclamped
+  // pack here would not draw an over-range colour too bright, it would draw
+  // a different hue -- the failure mode where the well silently lies about
+  // which colour is loaded, rather than visibly failing to be bright enough.
+  const std::array<float, 3> wellRgb = clampToDisplayRange(fg);
+  dl->AddRectFilled(
+      p, ImVec2(p.x + swatchSide, p.y + swatchSide),
+      IM_COL32((int)(wellRgb[0] * 255), (int)(wellRgb[1] * 255), (int)(wellRgb[2] * 255), 255));
   dl->AddRect(p, ImVec2(p.x + swatchSide, p.y + swatchSide), atelierToken(kRule), 0.0f, 0,
               kRuleThickness);
   ImGui::Dummy(ImVec2(swatchSide, swatchSide));
-  ImGui::SetItemTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
-                      "or picked with the eyedropper (PRD Q10)",
-                      foregroundName(st.brush));
+  // And the clamp is *said*, on the hover of the square that is doing the
+  // lying. This is the one place the well can admit it without gaining
+  // chrome: the COLOR panel carries the standing badge, but this well is
+  // visible in layouts where that panel is collapsed or not docked at all.
+  if (exceedsDisplayRange(fg))
+    ImGui::SetItemTooltip("Foreground: %s (%.3f %.3f %.3f)\nAbove the display range -- this "
+                          "square is clamped to 1.000 and the colour above it is not.\n"
+                          "Chosen in the COLOR panel (docs/ui.md section 3.3), or picked with "
+                          "the eyedropper (PRD Q10)",
+                          foregroundName(st.brush), (double)fg[0], (double)fg[1], (double)fg[2]);
+  else
+    ImGui::SetItemTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
+                          "or picked with the eyedropper (PRD Q10)",
+                          foregroundName(st.brush));
   ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
   ImGui::TextUnformatted("FG");
   ImGui::PopStyleColor();
@@ -10329,7 +11156,7 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
       break;
     // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
     // visibility, lock, opacity"; PRD C4).
-    case ControlsSection::Layers:       drawLayersSection(st); break;
+    case ControlsSection::Layers:       drawLayersSection(st, gpu); break;
     // PLAN.md Phase 5 step 8 ("History panel ...", PRD O2/O3).
     case ControlsSection::History:      drawHistorySection(st, sim, gpu); break;
     // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14).
@@ -11560,6 +12387,51 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           firstLine == std::string::npos ? g_docStatus : g_docStatus.substr(0, firstLine);
       ImGui::TextDisabled("| %s", oneLine.c_str());
       ImGui::SetItemTooltip("%s", g_docStatus.c_str());
+    } else if (st.documents.empty()) {
+      // **docs/testing-issues.md T5, third requirement: say what the surface
+      // is.** "When you close all documents, there is still a document/canvas
+      // that does not belong to anything" -- and until now nothing on screen
+      // said so. The canvas draws, the palette drew live, and the only place
+      // the distinction appeared at all was the status band's terse
+      // "2560 x 1440 - canvas" and the Export dialog's own source line, neither
+      // of which a user reads as an answer to "why did that tool do nothing?"
+      //
+      // Here, and in the same slot as the transient status line above, because
+      // this is the one spot in the chrome that is ALREADY reserved for the
+      // no-documents case: the tab strip owns the middle of this row whenever
+      // there are documents, so a line drawn here can never compete with it,
+      // and the `else` makes a real transient message (a drop report, a failed
+      // open) win the space while it is up. It is not in the status band
+      // (ui/AtelierChrome.cpp) because that band is monospaced numerics with no
+      // prose in it by design, and not on the canvas because a legend painted
+      // over the paper is the one place a painter must not be interrupted.
+      //
+      // The wording is `ui/MacPaintUI.cpp:350` and `:5352`'s clause verbatim --
+      // "no document is open. File > New Document makes one." -- because those
+      // two are the voice this build already refuses in, and a third phrasing
+      // of one fact is a third thing to keep in step.
+      ImGui::TextDisabled("| No document is open. File > New Document makes one.");
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        // The six tools that still work are LISTED BY WALKING THE ENUM, never
+        // typed out: `toolActsWithoutDocument()` is the same predicate the
+        // palette dims by, so this sentence cannot come to disagree with the
+        // cells it is explaining. A tool that gains or loses a no-document
+        // route changes both at once or neither.
+        std::string live;
+        for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+          const Tool t = static_cast<Tool>(i);
+          if (!toolImplemented(t) || !toolActsWithoutDocument(t)) continue;
+          if (!live.empty()) live += ", ";
+          live += toolName(t);
+        }
+        ImGui::SetTooltip(
+            "The canvas below is the live painting surface (sim::PaintSim), not a document:\n"
+            "painting it writes a GPU texture and touches no layer, so nothing on it is\n"
+            "saved, undone or exported.\n\n"
+            "Works on it: %s.\n"
+            "Every other tool is dimmed in the palette until a document is open.",
+            live.c_str());
+      }
     }
 
     // Right-aligned: undo / redo, where docs/ui.md section 2 draws them.
@@ -12517,6 +13389,62 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // --- the spring-loaded Hand (T20): Space held pans, release gives the
+    // tool back -------------------------------------------------------------
+    //
+    // Read live rather than through app/Keymap's resolve(), for the reason
+    // `rotateHeld` just below already states: that dispatcher fires once per
+    // discrete SDL_EVENT_KEY_DOWN and has no way to express "held". Resolved
+    // HERE, above `panning`, so the borrow is in effect for the same frame's
+    // drag -- `panning` reads `toolPansView(st.brush.tool)`, and installing
+    // the Hand after it would cost a dead frame at the start of every pan.
+    //
+    // The borrow itself is app/ToolSwitch's, not an assignment here: §1 of
+    // that header is why the spring is NOT `setActiveTool(st, Tool::Hand)`
+    // followed by `setActiveTool(st, previous)` (that pair records "previous
+    // = Hand" and erases the fact the feature exists to keep), and §0 is why
+    // `st.brush.tool` is not written from this file at all.
+    //
+    // Three guards, and each names a gesture the Space key already belongs to:
+    //
+    //   * `!io.WantTextInput` -- Space is a space. The transform block above
+    //     states the rule this obeys ("an unmodified key must not be claimed
+    //     globally, because it would be swallowed out of every text field in
+    //     the application"), and the layer-rename box is one panel over.
+    //   * no mouse button down -- **this is the guard that keeps the existing
+    //     Space-move working.** A marquee drag reads
+    //     `IsKeyDown(ImGuiKey_Space)` as its move modifier (the
+    //     `updateSelectionMove()` call in the selection block below), and
+    //     swapping the tool out from under it would take that block's own
+    //     `toolDrawsSelection()` gate false mid-gesture and abandon the
+    //     rectangle. The button is down for the whole of that gesture, so
+    //     "is a button down" IS the question "is Space already spoken for".
+    //     Spelled as three `IsMouseDown()` calls rather than
+    //     `IsAnyMouseDown()`, which imgui.h marks `[WILL OBSOLETE]`.
+    //   * `!st.polygonLassoActive` -- the one canvas gesture that spans
+    //     frames with the button UP. It accumulates clicks, so the guard
+    //     above cannot see it, and a tool swap between two clicks of a path
+    //     would strand the half-built polygon.
+    //
+    // The release is `!IsKeyDown`, not `IsKeyReleased`, for the reason the
+    // Measure handler below gives about `!IsMouseDown`: a released edge can
+    // be missed -- Cmd-Tab away with Space held and the key-up lands in
+    // another application -- after which `IsKeyReleased` is false forever and
+    // the user is stranded in the Hand with no way out but the palette.
+    // Asking whether the key is still down cannot miss an edge, because it is
+    // not an edge.
+    {
+      const bool anyMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                                ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+                                ImGui::IsMouseDown(ImGuiMouseButton_Right);
+      if (ImGui::IsKeyPressed(ImGuiKey_Space, /*repeat=*/false) &&
+          !ImGui::GetIO().WantTextInput && !anyMouseDown && !st.polygonLassoActive) {
+        beginSpringHand(st);
+      } else if (springHandHeld(st) && !ImGui::IsKeyDown(ImGuiKey_Space)) {
+        endSpringHand(st);
+      }
+    }
+
     // --- rotate view on drag (PRD Q4: "R" held + drag) -- resolved before
     // the pan/zoom blocks below since, like Hand-tool panning, it claims
     // the left-mouse-drag gesture; the two must agree on who wins. Not
@@ -12869,6 +13797,30 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.requestCopyMerged = false;
       st.requestCut = false;
       st.requestPaste = false;
+      // --- Image > Crop to Selection / Trim to Content (app/CropTool §7) ---
+      //
+      // Below the selection commands rather than above them on purpose: a
+      // Select All followed by a Crop to Selection in the same frame should
+      // crop to the selection the user just made, not to the one before it.
+      // Both refuse in prose rather than in silence -- `g_strokeRefusal` is
+      // the same channel the bucket's and the gradient's refusals already use,
+      // so "why did nothing happen" has one answer and one place to read it.
+      if (od != nullptr && (st.requestCropToSelection || st.requestTrimToContent)) {
+        const DocumentTransformResult r = st.requestCropToSelection
+                                              ? applyCropToSelection(*od)
+                                              : applyTrimToContent(*od);
+        if (!r.ok) {
+          g_strokeRefusal = r.error;
+        } else {
+          std::printf("[crop] %s: %dx%d -> %ux%u\n",
+                      st.requestCropToSelection ? "crop to selection" : "trim to content",
+                      r.previousWidth, r.previousHeight, od->document.width,
+                      od->document.height);
+        }
+      }
+      st.requestCropToSelection = false;
+      st.requestTrimToContent = false;
+
       st.requestDeleteSelection = false;
 
       // --- keep the GPU coverage in step -----------------------------------
@@ -13080,20 +14032,39 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // RGB neighbourhood and ops/FloodFill says so in its own header;
             // rather than flood something that is not there, the click is
             // refused and the selection is left exactly as it was.
-            if (target != nullptr && target->rgbTiles.has_value()) {
-              FloodFillParams params;
-              // Global mode on Option -- "fill all similar" (PRD D25) is the
-              // same predicate without the connectivity walk. It shares the
-              // modifier with Subtract deliberately: the wand's Option-click
-              // subtracts a GLOBAL region, which is the combination a user
-              // reaching for either one actually wants.
-              params.reach = mods.KeyAlt ? FloodFillReach::Global : FloodFillReach::Contiguous;
+            // The wand's own parameter block, as the options bar left it, and
+            // **read rather than rebuilt** -- `floodToolParamsFor()` is the one
+            // mapping from a tool to its block (app/AppState.hpp), so the row
+            // the user just edited and the click that consumes it cannot be
+            // looking at two different structs.
+            const FloodFillParams* params = floodToolParamsFor(st, st.brush.tool);
+            // **Option no longer forces Global here, and that removal is the
+            // point of the row rather than a casualty of it.** It used to:
+            // `params.reach = mods.KeyAlt ? Global : Contiguous`, an
+            // undocumented modifier that was the only way to reach half of PRD
+            // D25. With REACH visible in the options bar, keeping the modifier
+            // would leave two sources of truth for one question -- the combo
+            // says Contiguous, the held key says All Similar, and the band that
+            // exists to say what the next click will do would be wrong every
+            // time Option was down.
+            //
+            // The modifier is not lost, it is **un-overloaded**. Option is
+            // already Subtract for every selection tool
+            // (`selectionCombineFromModifiers()`, latched into
+            // `st.marqueeCombine` a few hundred lines up), and the wand was the
+            // one tool where it silently meant two things at once -- which also
+            // meant "subtract a CONTIGUOUS region" was a gesture this build
+            // could not express at all. So this deletion adds a capability
+            // rather than removing one: Global moved from a hidden key to a
+            // visible combo, and Option went back to meaning exactly what the
+            // user's hands already know it means everywhere else.
+            if (target != nullptr && target->rgbTiles.has_value() && params != nullptr) {
               commitDrawnSelection(
                   st, *od,
                   floodFillSelection(*target->rgbTiles,
                                      PixelCoord{static_cast<int32_t>(tx),
                                                 static_cast<int32_t>(ty)},
-                                     od->document.width, od->document.height, params));
+                                     od->document.width, od->document.height, *params));
             }
           }
           break;
@@ -13112,6 +14083,115 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         st.lassoPoints.clear();
       }
     }
+
+    // ===== Tool::Crop -- BEGIN: the gesture (app/CropTool.hpp) ============
+    //
+    // Three phases, and the third is the one the tool exists for: rubber-band a
+    // shape out, adjust it by its handles for as long as you like, then commit
+    // or cancel. Unlike every marquee gesture above, this one deliberately
+    // OUTLIVES its own drag -- `app/MeasureLine`'s argument, and the reason
+    // `CropSession` carries a `DocumentId`.
+    //
+    // Gated on `toolCropsCanvas()` -- the eighth canvas gate, and the
+    // expression `toolHasCanvasHandler()` reads, not a copy of it
+    // (`app/StrokeSession.hpp` §6b's rule). `!transformActive` for the
+    // selection tools' reason: while a Free Transform gizmo owns the canvas a
+    // drag on the box must not also start a crop.
+    if (toolCropsCanvas(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      CropSession& crop = st.crop;
+      OpenDocument* cropDoc = st.documents.active();
+      const DocumentId cropDocId = cropDoc != nullptr ? cropDoc->id : 0u;
+
+      // A shape drawn on another tab means nothing here, so it is dropped
+      // rather than drawn over the wrong picture -- `measureLineAppliesTo()`'s
+      // rule, applied to a gesture that can actually destroy pixels.
+      if (crop.active && crop.doc != cropDocId) cropCancel(crop);
+
+      // The options bar's two buttons and the two keys are ONE commit path:
+      // the band sets a request flag and this block is the only committer
+      // (`app/CropTool.hpp` §5).
+      const bool commitKey = ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+      const bool cancelKey = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+      const bool wantCommit = crop.commitRequested || (crop.active && commitKey);
+      const bool wantCancel = crop.cancelRequested || (crop.active && cancelKey);
+      crop.commitRequested = false;
+      crop.cancelRequested = false;
+
+      if (wantCancel) {
+        cropCancel(crop);
+      } else if (wantCommit && cropDoc != nullptr) {
+        const DocumentTransformResult r = applyCropSession(crop, *cropDoc);
+        if (!r.ok) {
+          // **Said, not swallowed.** A refused commit that did nothing visible
+          // is the exact failure `pixelOpRefusalMessage()` exists to prevent
+          // one tool group over, and a bow-tie quad is one careless drag away.
+          g_strokeRefusal = r.error;
+        } else {
+          std::printf("[crop] %s: %dx%d -> %ux%u, %zu layers, %d reconstruction pass(es)\n",
+                      r.editLabel.c_str(), r.previousWidth, r.previousHeight,
+                      cropDoc->document.width, cropDoc->document.height, r.layersTouched,
+                      r.reconstructionPasses);
+        }
+      }
+
+      // `--crop-demo` pins the gesture open across frames, exactly as
+      // `--gradient-demo drag` pins the gradient's far handle: a held drag's
+      // moving corner is the live mouse and a screenshot run's mouse is
+      // wherever the human left it. That one skip is the whole mechanism.
+      if (!crop.demoHeld) {
+        // Handle radius in DOCUMENT texels, derived from a fixed screen size
+        // so the grab target stays the same physical size at every zoom -- the
+        // transform gizmo's own rule. Floored so a hugely zoomed-out view
+        // still offers something grabbable.
+        const float grabTexels = std::max(4.0f, 9.0f / std::max(0.05f, st.view.zoom));
+
+        if (hovered && !transformActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          const int handle =
+              crop.active ? cropHandleAt(crop.quad, crop.mode, tx, ty, grabTexels) : -1;
+          if (handle >= 0) {
+            crop.dragHandle = handle;
+          } else {
+            // **A click outside starts a new rectangle. It does NOT commit.**
+            // Photoshop commits on a click outside and that is the one
+            // Photoshop behaviour deliberately not copied (`app/CropTool.hpp`
+            // §5): this is a destructive op with no dialog, and "the user
+            // clicked somewhere else" is not evidence they meant to destroy
+            // pixels. Starting a fresh drag is what the same click already
+            // does in every marquee tool here, so the gesture is learned.
+            cropBeginDefine(crop, cropDocId, crop.mode, tx, ty);
+          }
+        }
+
+        if (crop.dragHandle >= 0) {
+          cropDragHandle(crop, crop.dragHandle, tx, ty);
+          if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) crop.dragHandle = -1;
+        } else if (crop.defining) {
+          // The rubber band goes through `computeSelectionDragBox()`, the
+          // marquee's own box math, so Shift-constrain, Option-from-centre and
+          // Space-move behave identically here and cannot drift from there --
+          // one function, two tools, `app/SelectionDrag.hpp`'s reason for being
+          // a pure function of this frame's modifiers.
+          const ImGuiIO& cropMods = ImGui::GetIO();
+          updateSelectionMove(crop.move, ImGui::IsKeyDown(ImGuiKey_Space), tx, ty);
+          const SelectionDragBox box = computeSelectionDragBox(
+              crop.anchorX, crop.anchorY, tx, ty, crop.move.offsetX, crop.move.offsetY,
+              cropMods.KeyShift, cropMods.KeyAlt);
+          crop.quad = cropQuadFromRegion(cropRegionFromDrag(box.x0, box.y0, box.x1, box.y1));
+          if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            crop.defining = false;
+            // A click with no drag leaves nothing -- the same "an empty gesture
+            // is not a gesture" rule `commitDrawnSelection()` applies to a
+            // zero-area marquee. Without this, a stray click would leave a
+            // 1x1 crop armed and Enter would destroy the document.
+            crop.active = !cropRegionOf(crop).empty();
+            if (!crop.active) cropCancel(crop);
+          }
+        }
+      }
+    }
+    // ===== Tool::Crop -- END ==============================================
 
     // ===== Tool::Move -- BEGIN: the drag (app/MoveTool.hpp) ===============
     //
@@ -13246,10 +14326,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) endMeasureLine(st.measure);
         else if (!blocked) updateMeasureLine(st.measure, tx, ty);
       }
-    } else if (st.measure.active) {
+    } else if (st.measure.active && !springHandHeld(st)) {
       // Leaving the tool throws the ruler away (app/MeasureLine.hpp's
       // `clearMeasureLine()`): a line drawn with Measure means nothing under
       // the brush, and there would be no gesture left to dismiss it with.
+      //
+      // `!springHandHeld()`: borrowing the Hand for a Space-pan is not
+      // leaving the tool. Without it, T20 would delete the ruler of anyone
+      // who panned the canvas to see the far end of their own measurement --
+      // the gate above reads `st.brush.tool`, which IS the Hand for the
+      // duration of the borrow -- and it would take T24's seed down with it,
+      // since a cleared line fails `measureLineAppliesTo()`. Spelled as a
+      // second condition on the clear rather than by widening the gate above
+      // to `effectiveTool()`, deliberately: the ruler must survive the pan,
+      // but a click while Space is held is a pan and must not also start a
+      // new measurement, which is exactly what an `effectiveTool()` gate
+      // would have allowed on the frames where the pointer has not moved far
+      // enough for `panning` to be true yet.
       clearMeasureLine(st.measure);
     }
     // === END Tool::Measure handler =========================================
@@ -13350,19 +14443,34 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // refusals below -- and cleared on the next click that lands, so
             // the sentence describes this click rather than an older one.
             g_strokeRefusal = pixelOpRefusalMessage(refusal, target, "paint bucket");
-          } else {
+            // **The bucket's own parameter block**, bound in the condition
+            // below, from the same single mapping the wand's click and the
+            // options-bar row both use (app/AppState.hpp's
+            // `floodToolParamsFor()`) -- a second block, not the wand's, and
+            // that header carries the argument for why these two tools hold
+            // separate values while sharing one algorithm.
+            //
+            // Bound in the condition rather than dereferenced: the enclosing
+            // `if` already pins the tool to `PaintBucket`, so the null arm is
+            // unreachable -- writing it this way costs nothing and leaves no
+            // raw deref for a later edit to that enclosing `if` to turn into a
+            // crash. `--selftest` walks every `Tool` value against the mapping,
+            // so the arm that is reachable is the proven one.
+            //
+            // Option's Global override is gone here too, for the wand's reason
+            // one tool over: with REACH drawn in the band, a modifier that
+            // silently disagreed with it would make the visible control a lie
+            // whenever the key was down. Unlike the wand, Option had no second
+            // meaning to fall back to on the bucket -- it was a pure shortcut,
+            // and a shortcut that contradicts a visible control is worth less
+            // than the control.
+          } else if (const FloodFillParams* params = floodToolParamsFor(st, st.brush.tool)) {
             // No clear here: the block head already cleared it this frame, and
             // a second one would suggest the refusal's lifetime is per click.
-            FloodFillParams params;
-            // Same modifier meaning the wand gives it: Option is "fill all
-            // similar" (PRD D25's second half), the global predicate pass
-            // rather than the connectivity walk.
-            params.reach = ImGui::GetIO().KeyAlt ? FloodFillReach::Global
-                                                 : FloodFillReach::Contiguous;
             Selection region = floodFillSelection(
                 *target->rgbTiles,
                 PixelCoord{static_cast<int32_t>(tx), static_cast<int32_t>(ty)},
-                od->document.width, od->document.height, params);
+                od->document.width, od->document.height, *params);
             // **The active selection still bounds the bucket.** PRD E1 is P0 --
             // "every deposit and every op respects the active selection" -- and
             // a bucket that ignored it would be the one op in the build that
@@ -14257,6 +15365,63 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       dl->AddCircle(ImVec2(a.x, a.y), 4.0f, atelierToken(kAccent), 0, 1.5f);
       dl->AddCircleFilled(ImVec2(b.x, b.y), 4.0f, IM_COL32(0, 0, 0, 160));
       dl->AddCircleFilled(ImVec2(b.x, b.y), 3.0f, atelierToken(kAccent));
+
+      // **What the two handles mean is not the same for all three kinds, so
+      // neither is the band.** A bare line says "from here to there", which is
+      // true for Linear and misleading for the other two: a Radial drag is a
+      // RADIUS and an Angular drag is a zero-angle RAY whose length means
+      // nothing at all. Drawing one shape for three geometries would be the
+      // marquee/lasso mistake again -- one preview standing in for gestures
+      // that differ -- so each kind gets the mark that states its own rule.
+      const float rimR = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+      if (st.gradient.kind == GradientKind::Radial && rimR > 1.0f) {
+        // The t=1 circle. Screen-space radius is the screen-space handle
+        // distance because `xform` is uniform zoom plus rotation plus mirror
+        // -- all conformal, so a circle stays a circle and there is no ellipse
+        // to construct. A non-uniform scale would break that, and this build
+        // has none (ui/ViewTransform).
+        //
+        // The segment count is given explicitly rather than left at 0.
+        // ImGui's auto-tessellation is bounded by `CircleTessellationMaxError`
+        // in LOGICAL pixels, and on a 2x display that error is doubled on the
+        // way to the framebuffer -- a large rim came out visibly faceted,
+        // straight-edged enough to read as a polygon someone drew on purpose.
+        // Scaled with the radius and capped, so a rim larger than the window
+        // does not cost a thousand segments for arcs nobody can see.
+        const int rimSegs = std::clamp(static_cast<int>(rimR * 0.5f), 32, 256);
+        dl->AddCircle(ImVec2(a.x, a.y), rimR, IM_COL32(0, 0, 0, 160), rimSegs, 3.0f);
+        dl->AddCircle(ImVec2(a.x, a.y), rimR, atelierToken(kAccent), rimSegs, 1.5f);
+      } else if (st.gradient.kind == GradientKind::Angular && rimR > 1.0f) {
+        // A short arc leaving the ray, showing which way the sweep goes.
+        //
+        // Worth the twelve lines: the direction is CLOCKWISE ON SCREEN, and
+        // `ops/Gradient.hpp` is explicit that this is a consequence of
+        // document space being y-down rather than a preference -- which is
+        // precisely the kind of fact that is invisible until the first
+        // gradient comes out mirrored. Drawn at a fixed screen radius, not a
+        // fraction of the drag: the drag's length means nothing to this kind,
+        // so scaling the hint by it would imply otherwise.
+        const float a0 = std::atan2(b.y - a.y, b.x - a.x);
+        constexpr float kHintR = 26.0f;
+        constexpr float kHintSweep = 1.0f;  // radians, ~57 degrees
+        if (rimR > kHintR * 1.25f) {
+          dl->PathArcTo(ImVec2(a.x, a.y), kHintR, a0, a0 + kHintSweep, 24);
+          dl->PathStroke(IM_COL32(0, 0, 0, 160), 0, 3.5f);
+          dl->PathArcTo(ImVec2(a.x, a.y), kHintR, a0, a0 + kHintSweep, 24);
+          dl->PathStroke(atelierToken(kAccent), 0, 1.5f);
+          // The arrowhead, so the arc reads as a direction rather than as a
+          // decorative tick. Two short strokes back from the arc's far end.
+          const float ae = a0 + kHintSweep;
+          const ImVec2 tip(a.x + std::cos(ae) * kHintR, a.y + std::sin(ae) * kHintR);
+          const float back = ae - 0.30f;
+          const ImVec2 inner(a.x + std::cos(back) * (kHintR - 5.0f),
+                             a.y + std::sin(back) * (kHintR - 5.0f));
+          const ImVec2 outer(a.x + std::cos(back) * (kHintR + 5.0f),
+                             a.y + std::sin(back) * (kHintR + 5.0f));
+          dl->AddLine(tip, inner, atelierToken(kAccent), 1.5f);
+          dl->AddLine(tip, outer, atelierToken(kAccent), 1.5f);
+        }
+      }
     } else if (st.marqueeDragging || st.polygonLassoActive) {
       // The lasso path as it is being drawn.
       //
@@ -14282,6 +15447,163 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       float lassoPhase = marchingAntPhase();
       drawAntPolyline(dl, xform, pts, /*closed=*/false, lassoPhase);
     }
+
+    // === BEGIN Tool::Crop overlay (app/CropTool) ===========================
+    //
+    // **The shield -- the darkened surround -- is the one piece of chrome that
+    // makes a crop tool legible.** Without it the outline is one more rectangle
+    // on a picture already full of them, and "what am I keeping" is a question
+    // the user answers by committing. It is also the only on-canvas signal that
+    // a crop is pending at all.
+    //
+    // Drawn as FOUR trapezoids tiling the frame between the canvas band and the
+    // crop quad, rather than as one polygon with a hole: `AddConcavePolyFilled`
+    // ear-clips, and the keyhole cut a rect-with-a-quad-hole needs is a
+    // degenerate zero-width bridge -- a shape ear-clipping is entitled to get
+    // wrong. The four share their edges exactly, so with the anti-aliased fill
+    // flag off for the duration they rasterise watertight; leaving AA on would
+    // put a faint bright seam across the picture at each shared edge, which on
+    // a 60% shield is plainly visible.
+    //
+    // The shield's corners are CLAMPED into the band while the outline's are
+    // not. A crop rectangle dragged past the edge of the view is legal (§2's
+    // unclamped rule -- it grows the canvas), and an unclamped shield corner
+    // would fold two of the trapezoids through each other and stack their
+    // alpha into a dark wedge. The outline and the handles are drawn from the
+    // true corners, so nothing the user is aiming is ever moved by this.
+    if (toolCropsCanvas(st.brush.tool) && st.crop.active) {
+      const OpenDocument* shieldDoc = st.documents.active();
+      if (shieldDoc != nullptr && st.crop.doc == shieldDoc->id) {
+        const CropQuad& cq = st.crop.quad;
+        std::array<ImVec2, 4> qs{};
+        for (size_t i = 0; i < 4; ++i) {
+          const Vec2 p = xform.toScreen(Vec2{cq.c[i].x, cq.c[i].y});
+          qs[i] = ImVec2(p.x, p.y);
+        }
+        // The view can be rotated or mirrored, either of which reverses the
+        // quad's winding on screen -- and a reversed inner ring turns the four
+        // trapezoids inside out. Detected from the signed area rather than
+        // from `st.view.mirror`/`rotation`, because it is the composed
+        // transform that decides and reading the two flags would be a second
+        // derivation of something `ViewTransform` already answers.
+        float signedArea = 0.0f;
+        for (size_t i = 0; i < 4; ++i) {
+          const ImVec2& a = qs[i];
+          const ImVec2& b = qs[(i + 1) & 3];
+          signedArea += a.x * b.y - b.x * a.y;
+        }
+        if (signedArea < 0.0f) std::swap(qs[1], qs[3]);
+
+        const ImVec2 bandMin(paintOrigin.x, paintOrigin.y);
+        const ImVec2 bandMax(paintOrigin.x + avail.x, paintOrigin.y + avail.y);
+        std::array<ImVec2, 4> shield = qs;
+        for (ImVec2& p : shield) {
+          p.x = std::clamp(p.x, bandMin.x, bandMax.x);
+          p.y = std::clamp(p.y, bandMin.y, bandMax.y);
+        }
+        const ImVec2 r0(bandMin.x, bandMin.y), r1(bandMax.x, bandMin.y);
+        const ImVec2 r2(bandMax.x, bandMax.y), r3(bandMin.x, bandMax.y);
+        const std::array<ImVec2, 4> rect{r0, r1, r2, r3};
+
+        const std::string shieldWhy =
+            st.crop.mode == CropMode::Perspective ? cropQuadRefusal(st.crop.quad)
+                                                  : std::string{};
+
+        // **No shield on a refused quad**, and this is a correctness point
+        // rather than a taste one. The shield's whole claim is "this is what
+        // you would keep", and a refused quad keeps nothing -- so on a bow-tie
+        // it is claiming something false. It is also unreadable: a
+        // self-intersecting inner ring turns two of the four trapezoids inside
+        // out, and their alpha stacks into black wedges across the picture the
+        // user is trying to fix. The dashed outline below is the whole signal
+        // in that state, and the sentence is in the options bar.
+        if (shieldWhy.empty()) {
+          constexpr ImU32 kCropShield = IM_COL32(0, 0, 0, 153);  // 60%
+          dl->PushClipRect(bandMin, bandMax, true);
+          const ImDrawListFlags savedFlags = dl->Flags;
+          dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+          for (size_t i = 0; i < 4; ++i) {
+            dl->AddQuadFilled(rect[i], rect[(i + 1) & 3], shield[(i + 1) & 3], shield[i],
+                              kCropShield);
+          }
+          dl->Flags = savedFlags;
+          dl->PopClipRect();
+        }
+        dl->PushClipRect(bandMin, bandMax, true);
+
+        // The outline: a dark casing under a bright core, the gradient band's
+        // own treatment and for its stated reason -- this line sits on top of
+        // the user's picture at whatever colour that happens to be, and inside
+        // the crop there is no shield to darken it against. Accent when the
+        // quad is committable; the same accent when it is refused, because
+        // this build has one attention colour and a second red would say
+        // "error" in a palette where red already means "this is on" -- the
+        // refusal's WORDS are in the options bar, and what the outline has to
+        // do is stay visible.
+        const std::string& quadWhy = shieldWhy;
+        const ImU32 outline = atelierToken(kAccent);
+        for (size_t i = 0; i < 4; ++i) {
+          const ImVec2& a = qs[i];
+          const ImVec2& b = qs[(i + 1) & 3];
+          dl->AddLine(a, b, IM_COL32(0, 0, 0, 160), 3.0f);
+          // A refused quad is drawn DASHED. A bow-tie already looks like a
+          // bow-tie, but a near-collinear quad and a mirrored one both look
+          // perfectly ordinary, and the outline is where the user is looking
+          // -- so the state has to be visible there and not only in the band.
+          if (quadWhy.empty()) {
+            dl->AddLine(a, b, outline, 1.5f);
+          } else {
+            const float len = std::hypot(b.x - a.x, b.y - a.y);
+            const int steps = std::max(1, static_cast<int>(len / 8.0f));
+            for (int k = 0; k < steps; k += 2) {
+              const float t0 = static_cast<float>(k) / static_cast<float>(steps);
+              const float t1 = std::min(1.0f, static_cast<float>(k + 1) /
+                                                  static_cast<float>(steps));
+              dl->AddLine(ImVec2(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0),
+                          ImVec2(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1), outline,
+                          1.5f);
+            }
+          }
+        }
+
+        // The rule-of-thirds guides, inside the shape only. Two lines each way,
+        // at a third of the way along each pair of opposite edges rather than
+        // at a third of a bounding box -- so in Perspective mode they follow
+        // the quad and read as the composition the crop will produce, which is
+        // the only reason to draw them at all.
+        for (int k = 1; k <= 2; ++k) {
+          const float t = static_cast<float>(k) / 3.0f;
+          auto lerp2 = [](const ImVec2& a, const ImVec2& b, float u) {
+            return ImVec2(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u);
+          };
+          dl->AddLine(lerp2(qs[0], qs[1], t), lerp2(qs[3], qs[2], t),
+                      IM_COL32(255, 255, 255, 46), 1.0f);
+          dl->AddLine(lerp2(qs[0], qs[3], t), lerp2(qs[1], qs[2], t),
+                      IM_COL32(255, 255, 255, 46), 1.0f);
+        }
+
+        // The handles, from `cropHandlePoints()` -- the same function the
+        // hit-test walks, so a handle can never be drawn somewhere the pointer
+        // cannot grab it. Paper-filled and outlined rather than solid accent,
+        // the transform gizmo's own argument: a solid accent square on a dark
+        // picture and on a light one are different amounts of visible, and the
+        // outline is what makes it read on both.
+        const std::array<Point2, kCropHandleCount> handles = cropHandlePoints(cq);
+        const int handleCount =
+            st.crop.mode == CropMode::Rectangle ? kCropHandleCount : kCropCornerCount;
+        for (int i = 0; i < handleCount; ++i) {
+          const Vec2 hp = xform.toScreen(Vec2{handles[static_cast<size_t>(i)].x,
+                                              handles[static_cast<size_t>(i)].y});
+          const float hr = i < kCropCornerCount ? 4.5f : 3.5f;
+          dl->AddRectFilled(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr),
+                            atelierToken(kCanvasPaper));
+          dl->AddRect(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr), outline,
+                      0.0f, 0, 1.0f);
+        }
+        dl->PopClipRect();
+      }
+    }
+    // === END Tool::Crop overlay ============================================
 
     // === BEGIN Tool::Measure ruler (app/MeasureLine) =======================
     //
@@ -14311,6 +15633,133 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
     // === END Tool::Measure ruler ===========================================
+
+    // === BEGIN Tool::CloneStamp source marker ==============================
+    //
+    // The report this answers, verbatim: "clone needs to show an indicator of
+    // where it is cloning from, Opt click should set that anchor with an
+    // indicator of where it was put and drawing with the clone tool should
+    // move that indicator to show what is currently being cloned."
+    //
+    // **Two marks, not one, because they are two different points.** Until a
+    // stroke has fixed the offset the source IS the anchor; from the first
+    // pen-down onward the source is `pointer + offset` and the anchor is only
+    // where the copy started. Drawing one shape for both would be the
+    // marquee/lasso mistake the gradient's own rubber band records a few
+    // hundred lines above: one preview standing in for gestures that differ.
+    //
+    // Everything read here is already correct and already session state
+    // (`AppState::CloneSourceState`); this block adds no state and changes no
+    // behaviour. `--selftest` cannot reach it -- it is a canvas draw block --
+    // so it is covered by `tools/golden/run_golden.sh`'s `clone_anchor` and
+    // `clone_source` views instead, and by nothing else.
+    //
+    // **Drawn only while the Clone Stamp is the selected tool**, the same rule
+    // `toolMeasuresCanvas()` gives the ruler directly above and the same rule
+    // every other tool-owned mark on this canvas follows. The alternative --
+    // always showing it, on the grounds that the source survives a tool switch
+    // and hiding live state is a lie -- was rejected because the thing being
+    // hidden is not lost and is one palette click from being back, while the
+    // cost of the other choice is a crosshair sitting permanently on someone's
+    // painting with no control anywhere in this build to dismiss it. A mark a
+    // user cannot turn off had better be about the tool in their hand.
+    //
+    // `transformActive` is folded in through `cloneTool` itself: a transform
+    // owns the canvas while it runs, and its wireframe is what the pointer is
+    // acting on.
+    if (cloneTool && st.clone.haveAnchor) {
+      // Halo-under-accent, the gradient rubber band's own vocabulary. A single
+      // accent stroke is invisible over paint the same hue, and the clone's
+      // whole subject is the picture underneath -- so the mark carries its own
+      // contrast rather than assuming the document will supply it.
+      const ImU32 haloCol = IM_COL32(0, 0, 0, 160);
+      const ImU32 markCol = atelierToken(kAccent);
+
+      // --- the anchor: a fixed-size crosshair ------------------------------
+      //
+      // Fixed in SCREEN px, not scaled by zoom, and that is the distinction
+      // being drawn rather than a shortcut. An anchor is a POINT -- it has no
+      // extent, so a mark that grew with the zoom would be claiming one. The
+      // gap in the middle is what keeps the texel it names visible; a solid
+      // cross would cover the one pixel the user clicked to choose.
+      const Vec2 anchorScr = xform.toScreen(st.clone.anchor);
+      const ImVec2 ac(anchorScr.x, anchorScr.y);
+      constexpr float kTickGap = 3.5f;
+      constexpr float kTickLen = 10.0f;
+      for (int pass = 0; pass < 2; ++pass) {
+        const ImU32 col = pass == 0 ? haloCol : markCol;
+        const float w = pass == 0 ? 3.0f : 1.5f;
+        dl->AddLine(ImVec2(ac.x - kTickLen, ac.y), ImVec2(ac.x - kTickGap, ac.y), col, w);
+        dl->AddLine(ImVec2(ac.x + kTickGap, ac.y), ImVec2(ac.x + kTickLen, ac.y), col, w);
+        dl->AddLine(ImVec2(ac.x, ac.y - kTickLen), ImVec2(ac.x, ac.y - kTickGap), col, w);
+        dl->AddLine(ImVec2(ac.x, ac.y + kTickGap), ImVec2(ac.x, ac.y + kTickLen), col, w);
+      }
+
+      // --- the live source: a ring the size of what is actually read -------
+      //
+      // **Gated on `haveOffset`, not on `g_stroke.active()`, and the choice is
+      // load-bearing in both directions.**
+      //
+      // Not on a live stroke: `source = pointer + offset` is as true between
+      // strokes as during one -- this build clones ALIGNED, so the offset that
+      // is showing is exactly the offset the next stroke will use. Hiding the
+      // mark on pen-up would make the indicator disappear at precisely the
+      // moment a retoucher lifts off to check their aim.
+      //
+      // But on `haveOffset`: before the first pen-down the offset is (0, 0)
+      // and means nothing, and the source for a stroke started under the
+      // current pointer would be the ANCHOR (`latchCloneOffset()` derives
+      // `anchor - penDown` for exactly that reason). So the crosshair above is
+      // already the whole truth in that state, and a second ring drawn on top
+      // of it would be a duplicate that starts lying the instant the pointer
+      // moves.
+      //
+      // Radius is the brush tip's, in canvas space, so this ring is the region
+      // that will actually be sampled rather than a decorative dot -- the same
+      // number and the same reasoning as the brush cursor ring further down,
+      // which says the same thing about the destination. The pair reads as
+      // "this disc goes there", which is what a clone is.
+      if (st.clone.haveOffset && hovered && inside) {
+        const Vec2 srcDoc{tx + st.clone.offset.x, ty + st.clone.offset.y};
+        const Vec2 srcScr = xform.toScreen(srcDoc);
+        const Vec2 ptrScr = xform.toScreen(Vec2{tx, ty});
+        const ImVec2 sc(srcScr.x, srcScr.y);
+        const ImVec2 pc(ptrScr.x, ptrScr.y);
+        const float srcR = std::max(4.0f, (st.brush.model.tip.diameterPx * 0.5f) * st.view.zoom);
+
+        // The offset itself, drawn once. Dim and hairline deliberately: it is
+        // the least important of the three things here (the two ends are what
+        // the eye needs) and a full-weight line across the middle of the
+        // picture would be chrome competing with the painting for attention.
+        // Worth its two lines anyway -- without it the ring is an unexplained
+        // circle somewhere else on the canvas, and the report's own words are
+        // about the RELATIONSHIP ("where it is cloning FROM").
+        dl->AddLine(sc, pc, IM_COL32(0, 0, 0, 70), 2.0f);
+        // The accent at reduced alpha, DERIVED from the token rather than
+        // retyped as a literal. `IM_COL32(255, 86, 60, 90)` is the same colour
+        // today and is a hand-copy of `kAccent`'s 0xff563c, which is the drift
+        // this file already avoids the same way two hundred lines up
+        // (`kTextSecondary` masked and re-alpha'd for the overflow glyph): the
+        // day the theme's accent moves, a literal keeps the old one and
+        // nothing says so.
+        dl->AddLine(sc, pc, (markCol & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 90), 1.0f);
+
+        // Segment count given explicitly for the reason the gradient's rim
+        // circle gives: ImGui's auto-tessellation error budget is in LOGICAL
+        // px and doubles on the way to a 2x framebuffer, so a large ring comes
+        // out visibly faceted. Scaled and capped the same way.
+        const int srcSegs = std::clamp(static_cast<int>(srcR * 0.5f), 24, 128);
+        dl->AddCircle(sc, srcR, haloCol, srcSegs, 3.0f);
+        dl->AddCircle(sc, srcR, markCol, srcSegs, 1.5f);
+        // A filled centre dot, which the crosshair deliberately does not have:
+        // at a glance the two marks differ by whether the middle is solid, and
+        // that reads even when the ring is small enough to be nearly a dot
+        // itself.
+        dl->AddCircleFilled(sc, 2.5f, haloCol);
+        dl->AddCircleFilled(sc, 1.5f, markCol);
+      }
+    }
+    // === END Tool::CloneStamp source marker ================================
 
     if (st.showGuides) {
       constexpr ImU32 kGuideCol = IM_COL32(70, 190, 230, 200);

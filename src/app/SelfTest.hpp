@@ -95,7 +95,7 @@ bool runStrokeSpeedTest(GpuContext& gpu, PaintSim& sim, const MixboxLut& lut);
 // so that configuration gets a separate, additive, separately-*printed*
 // 32 MB allowance rather than a raised single number. SelfTest.cpp carries
 // the full measurement and why PLAN.md step 6's lazy init cannot recover it.
-bool runIdleMemoryTest(size_t idleRssBytes);
+bool runIdleMemoryTest(size_t idleRssBytes, size_t idleFootprintBytes);
 
 // 1.4 / ADR-0001 bullets 2 and 3. Two things, both about the same invariant:
 // (a) right after PaintSim::init(), still the default Watercolour mode, the
@@ -107,6 +107,17 @@ bool runIdleMemoryTest(size_t idleRssBytes);
 // residency table. Mutates `sim`'s mode via setMode() and leaves it back in
 // Watercolour when done.
 bool runFieldAllocationTest(GpuContext& gpu, PaintSim& sim);
+
+// docs/testing-issues.md T6. The solver's field set priced in real bytes --
+// `PaintSim::fieldTextureBytes()` asked of the live textures -- held against
+// the `kFieldBytesPerTexel` / `kInkFieldBytesPerTexel` constants the budget
+// check in app/ZoomAndSize.hpp reasons from, so a field added to
+// allocFields() cannot leave the documented cost behind. Also asserts that
+// the solver's size follows the DOCUMENT and not the window, that no document
+// size a user can reach puts base+ink over the 512 MB budget, and that
+// app/Memory's two quantities (resident_size and phys_footprint) really are
+// two quantities. Mutates `sim`'s mode and leaves it in Watercolour.
+bool runSolverFootprintTest(GpuContext& gpu, PaintSim& sim);
 
 // Headless, GPU-free check on app/Keymap (Phase 2 step 15, PRD R7/R8).
 // Loads the real shipped keymaps/default.json and confirms it has no
@@ -338,6 +349,55 @@ bool runProbeTest();
 // deleted the day it does.
 bool runEyedropperTest();
 
+// T25a -- the **scene-referred foreground colour**, and the named clamps that
+// let one field be both display-encoded and over-range.
+//
+// The report: "the canvas supports fp16 data, but the colour picker only shows
+// values clamped to 1." The clamp that did it (`ui/MacPaintUI.cpp`'s
+// eyedropper) was documented and its argument was correct -- three places
+// downstream clamp anyway, so clamping at the source stopped there being "a
+// fourth value only the clamps know about". Deleting it alone would have
+// created exactly that value. So `BrushState::rgb` became over-range-capable
+// (its contract in app/AppState.hpp carries the whole argument), the clamps
+// moved to the destinations that genuinely cannot carry a scene-referred
+// value, and they are named there -- `color/Space.hpp`'s
+// `clampToDisplayRange()`, whose grep is the list.
+//
+// **EDR output is not in scope and is not attempted**: the vendored
+// `webgpu.h` has no colour-space field on `WGPUSurfaceConfiguration`, so
+// nothing here tone-maps or reconfigures the surface. Values survive and are
+// legible; the monitor is unchanged.
+//
+// Confirms: that `srgbEncode`/`srgbDecode` round-trip 0.25 through 12.0, are
+// strictly increasing, hold 1.0 as an EXACT fixed point (so plain white can
+// never be one ulp over range and light the badge) and mirror rather than clip
+// below zero -- the property that makes one field enough; that
+// `exceedsDisplayRange()` treats a value AT either bound as in range and fires
+// on any single channel a ten-thousandth past one, and that
+// `clampToDisplayRange()` clips per channel, idempotently, rather than scaling
+// to fit (it is not a tone-mapper and must not become one); that
+// `rgbColorPickerFlags()` still carries `ImGuiColorEditFlags_HDR` -- a
+// deliberately weak assertion over a hole both harnesses have, since the flag
+// only changes drag-time clamping and a screenshot with no input is
+// byte-identical either way (measured, by sabotage); that **a pick on a
+// texel of linear 2.5/0.5/4.0 lands unclamped in `BrushState::rgb`**, with two
+// over-range channels that differ from each other so no single-constant clamp
+// can pass, reports the over-range state as a state, and says so in the
+// options bar's sentence; that `foregroundLinearRgba()` and `brushTipFor()`'s
+// `tip.linearRgb` are still bit-identical **above 1.0** -- the long-standing
+// agreement assertion, moved into the range where a stray clamp in either one
+// could actually hide; that `MixboxLut::rgbToLatent()` answers an over-range
+// triple exactly as it answers the clamped one, asserted on a **real 512x512
+// LUT** rather than an unloaded one (which returns the same zero `Latent` for
+// every input and would make the equality inert), together with a second
+// assertion that this LUT does distinguish colours at all; that
+// `brushTipFor()`'s no-LUT arm clamps its latent too, so the two arms of one
+// branch agree that pigment is bounded; and -- the other half of what the
+// COLOR panel promises -- that an RGB-layer deposit of an over-range
+// foreground actually writes 3.0 into the HALF texel, so this cannot pass on a
+// build that clamped everything.
+bool runSceneReferredColourTest();
+
 // app/MeasureLine (docs/ui.md section 2's ruler cell): the Measure tool -- the
 // only cell in the palette whose gesture writes no texel at all. Six things:
 // that a 3-4-5 drag reports a length of exactly 5 document texels and that the
@@ -358,6 +418,145 @@ bool runEyedropperTest();
 // the eyedropper's `toolSamplesCanvas()`, which would have handed ruler drags
 // to `applyEyedropperPick()`. Headless and GPU-free.
 bool runMeasureTest();
+
+// app/ToolSwitch (T20 "space bar should switch to the hand tool while held
+// down and go back to the previous tool when released" and T24 "the measure
+// tool's angle should be remembered ... if it wasn't the last tool the angle
+// should be zero"). Both reports needed the same fact -- which tool was
+// active before this one -- which nothing in the build recorded, because
+// `brush.tool` had four independent assignment sites and none of them looked
+// at what they were overwriting.
+//
+// The suite cannot press a key or open a modal, so this asserts the decisions
+// that were lifted out of `ui/MacPaintUI.cpp`'s canvas block in order to be
+// assertable:
+//
+//   * `setActiveTool()` records the outgoing tool, and a switch to the tool
+//     that is ALREADY active does not overwrite the ledger with itself --
+//     walked over every value of `Tool`, not sampled, because a Hand -> Hand
+//     pick losing the real previous is the concrete loss and the palette, the
+//     flyout and the menu can each deliver one.
+//   * the spring-loaded Hand borrows and gives back, and leaves NO ledger
+//     entry: a Space press that recorded "previous = Hand" and then restored
+//     the Hand on release would be a self-erasing feature, so the assertion
+//     is that `previousTool()` is untouched across a whole borrow, that
+//     auto-repeat does not overwrite what is owed back, and that a release
+//     with no press is a no-op rather than an install of a stale field.
+//   * a deliberate tool pick made WHILE Space is held wins, ends the borrow,
+//     and records the tool the user was actually in rather than the Hand that
+//     happened to be installed at that instant.
+//   * a borrow survives a document switch (two real `OpenDocument`s, made and
+//     activated through `DocumentSession`), because the tool is application
+//     state and not a property of a document.
+//   * `transformSeedAngleDeg()` in BOTH directions: `measureReadout()`'s own
+//     angle -- non-zero, and equal to it rather than to a second `atan2` --
+//     when Measure is the tool the user is in and the ruler belongs to the
+//     document in front of them; and exactly `0.0f` for every other value of
+//     `Tool` (the enum walked again), for a ruler measured on a different
+//     document, for no ruler at all, and for a state where Measure is merely
+//     the PREVIOUS tool -- which is a recorded decision and not an oversight,
+//     since `ui/MacPaintUI.cpp` destroys the ruler on every frame Measure is
+//     not active. It also holds through a spring-loaded borrow, which is the
+//     one place the previous-tool machinery genuinely earns its keep here.
+//
+// Headless and GPU-free: app/ToolSwitch, app/MeasureLine and
+// app/DocumentLifecycle only.
+bool runToolSwitchTest();
+
+// app/ToolSurface -- docs/testing-issues.md **T5**'s short-term half: "closing
+// every document leaves a canvas belonging to nothing."
+//
+// **The point of this section is that it asserts a SECOND AXIS and not a
+// synonym for the first one.** `runEyedropperTest()` above already pins
+// `toolImplemented(t) == toolHasCanvasHandler(t)` for every `Tool` -- both of
+// which are properties of the BUILD, fixed at compile time. Neither can ask
+// whether there is anything in front of the user for the handler to act on,
+// and with no document open there very often is not: `sim::PaintSim`'s canvas
+// is a real, paintable surface and is not a document. So a Marquee cell used
+// to draw live, take the click and take the accent fill over a handler that
+// read `st.documents.active()`, got nullptr and installed nothing -- the
+// eyedropper's own defect, one axis over.
+//
+// Confirms, over the whole `Tool` enum walked rather than sampled:
+//
+//   * `toolActsWithoutDocument()` is a **strict, proper subset** of
+//     `toolImplemented()`, in both directions -- every tool that survives with
+//     no document is built, and at least one built tool does not survive. If a
+//     future edit collapsed the new predicate into either of the two existing
+//     ones this assertion reddens, which is what stops a synonym being shipped
+//     as an axis. The counts are derived from the predicates, never literals,
+//     so the claim stays true as tools ship.
+//   * the six that survive are **each traced to their own gate**, not to a
+//     list: Hand and Zoom through `toolPansView()`/`toolZoomsView()` (which
+//     take no document at all), Measure through `toolMeasuresCanvas()` (whose
+//     `MeasureLine::documentId` is 0 on both sides of the question), and
+//     Brush/Water/Dry Brush through `strokeRouteFor(t, nullptr) ==
+//     StrokeRoute::PaintSim` -- the route table's own "no target at all is the
+//     one case the solver canvas is right for" row.
+//   * **the bare canvas still paints**, asserted as its own claim rather than
+//     inferred: `strokeRouteFor()` sends the three paint tools to the solver
+//     with a null target, and this is the supported workflow the whole track
+//     must not break ("New" is called "New Canvas" for exactly this reason).
+//   * the stroke tools that refuse with no document -- Eraser, Pencil, Smudge,
+//     Clone Stamp, Dodge and Burn -- refuse **through the route table**, so
+//     the predicate cannot disagree with what the canvas block does; and the
+//     bucket and the gradient refuse through
+//     `pixelOpRefusalFor(nullptr) == PixelOpRefusal::NoLayer`.
+//   * `toolSurfaceRefusal()` says something for every built, document-scoped
+//     tool and `nullptr` for all three of its no-answer cases, including the
+//     one that matters: a cell with no canvas handler gets `nullptr`, so
+//     "Not built yet." is never stacked with a second reason. Every sentence
+//     it returns carries the build's existing clause verbatim
+//     ("no document is open. File > New Document makes one.") rather than a
+//     third phrasing of one fact.
+//   * `toolMenuFamily()` -- the Goodies menu, A4's own function -- enables
+//     exactly the tools that clear BOTH axes with no document open, and every
+//     disabled entry carries exactly one reason. A4's original defect was a
+//     menu offering 27 tools the palette correctly gated one panel over; this
+//     is that same defect measured on the second axis.
+//
+// Headless and GPU-free. The palette's own drawing (`toolButton()`,
+// `toolFlyoutRow()`) is out of reach here for the reason every canvas and
+// chrome block is -- there is no window and no ImGui frame -- which is why
+// the predicate was lifted into `app/ToolSurface` in the first place, and why
+// the golden harness carries a `no_document` view that photographs the dimmed
+// palette this section can only assert the inputs to.
+bool runToolSurfaceTest();
+
+// app/ExportDialog -- the decisions the two export dialogs make, lifted out of
+// ui/MacPaintUI.cpp in answer to the report "the export dialog seems a little
+// confusing".
+//
+// Both dialogs had **no coverage of any kind** before this section: no
+// assertion here, and no golden view either, because File > Export As... and
+// File > Export Comps / Layers To Files... are opened by a menu click and
+// `--screenshot` has no input. That is the same reachability gap that let T5
+// sit open behind a green suite, and it is why this step adds `--open-export-as`
+// alongside the assertions below.
+//
+// Five things, none of which a screenshot could have shown either:
+//
+//  (a) **The format menu is one menu.** The two dialogs disagreed -- Export As
+//      showed unwritable formats greyed with io/Export's own reason, the batch
+//      dialog silently omitted them -- so `exportFormatChoices()` is asserted
+//      against BOTH `allFormatCapabilities()` and `offerableExportFormats()`:
+//      every format has a row, and the writable rows are exactly the offerable
+//      set. PSD and camera raw pin the greying in both build configurations,
+//      being read-only in each.
+//  (b) **Depth legalisation**, over every (format, depth) pair the build has
+//      rather than a hand-picked one.
+//  (c) **Request equality is mode-aware.** A dialog keeps the unused resize
+//      mode's numbers alive on purpose (`ExportResize`'s own comment), so a
+//      memberwise compare would report a preset "modified" over a value the
+//      export never reads. Both halves are asserted.
+//  (d) **The preset combo names what is loaded**, including the
+//      "(modified)" case. It used to read "Load a preset..." forever.
+//  (e) **Why the Export button is off**, every branch and the ordering
+//      between them -- including the empty-output-path case, which used to
+//      grey the button with no message anywhere on screen.
+//
+// Headless, GPU-free and filesystem-free. See app/selftest/ExportDialog.cpp.
+bool runExportDialogTest();
 
 // Headless check on the unified view transform (PLAN.md Phase 2 step 11,
 // "View controls" -- PRD Q1-Q4; docs/shortcuts.md section 3's own mandate
@@ -775,6 +974,27 @@ bool runChannelsTest();
 // selected, which is what fails if a second tolerance implementation ever grows
 // inside the fill.
 bool runFloodFillTest();
+
+// The wand's and the bucket's OPTIONS -- `app/AppState.hpp`'s two
+// `FloodFillParams` blocks, the `floodToolParamsFor()` mapping, the REACH
+// vocabulary table and TOLERANCE's 0..255 display units. Headless and GPU-free.
+//
+// Not a second test of `ops/FloodFill`: that engine was already complete and is
+// untouched by the work this section covers. What is new is the BINDING, and
+// the trap a binding carries is a control wired to a field nothing reads -- so
+// every claim here that could have been made about a field is made about
+// pixels instead. Changing tolerance moves which texels are selected (asserted
+// as a subset relation on the texel SETS, not as two counts, so a region that
+// merely moved sideways cannot pass); the anti-alias setting's two values leave
+// the reached set identical and the seed at exactly 1.0 while changing the
+// boundary's coverage from binary to ramped; the two reaches disagree on a
+// fixture built with a disconnected same-coloured block, which is the only
+// picture that can tell them apart; and the bucket's fill writes exactly the
+// region ITS OWN block produces, which is strictly larger than the wand's under
+// the two states `--wand-demo` also photographs. See
+// app/selftest/FloodFillOptions.cpp.
+bool runFloodFillOptionsTest();
+
 // core/SelectionShapes (PRD E3's ellipse, lasso and polygon lasso). Headless
 // and GPU-free.
 //
@@ -1008,6 +1228,64 @@ bool runTransformSessionTest();
 // layer with no selection does not. Headless and GPU-free.
 bool runMoveToolTest();
 
+// app/CropTool: `Tool::Crop` in both modes, and the two Image-menu items that
+// fall out of the same machinery. Proves the three judgements that header
+// records rather than the geometry underneath it (ops/Transform and
+// ops/DocumentTransform each have their own section, and app/CropTool adds no
+// second copy of either): the drag's rectangle is sorted, rounded OUTWARD and
+// deliberately NOT clamped, so a negative origin grows the canvas; a rectangle
+// crop takes the exact path (`reconstructionPasses == 0`) and undo gives back
+// every texel it hid, which is `cropDocument()`'s non-clipping contract made
+// assertable; the perspective output extent is the LONGER of each pair of
+// opposite edges, which agrees with the rectangle rule on a rectangle, is never
+// smaller than the mean over a family of keystones, and is monotone under the
+// gesture; and every refusal is by name -- collapsed, near-collinear, bow-tie,
+// reversed winding -- including the one the engine does NOT make, with
+// `transformFromQuad()` shown accepting the same bow-tie in the adjacent line
+// so the tool's convexity test cannot be mistaken for a duplicate of the
+// engine's. Also the eighth canvas gate, the two menu items' region rules
+// (Trim never grows the document), and the gesture's handle mechanics. Headless
+// and GPU-free; five golden views cover what this cannot see, including the
+// bow-tie refusal, which is drawn in two places and asserted in neither. See
+// app/selftest/CropTool.cpp.
+bool runCropToolTest();
+// app/LayerThumbnail, app/StrokeSession's mask target, and brush/MaskPaint --
+// the three halves of `docs/testing-issues.md` T16 that a picture cannot
+// check. Proves: the edit target resolves to `Content` on a layer with no mask
+// however the flag is set, and survives a switch onto a maskless layer and
+// back; the three-argument `strokeRouteFor()` DELEGATES for `Content` rather
+// than carrying a second copy of the table, over every tool; the mask route
+// changes coverage and leaves every content texel bit-identical; the
+// per-stroke ceiling's closed form holds at zero tolerance; an absent mask
+// tile is 1.0 and is allocated rather than skipped when painted dark (the one
+// place copying brush/RgbErase would have been silently wrong); the two
+// thumbnails take DIFFERENT transfer functions -- linear 0.5 encodes to byte
+// 188 in a layer thumbnail and coverage 0.5 stays byte 128 in a mask one; and
+// the thumbnail cache rebuilds when, and only when, the revision it claims to
+// key on moves. Headless and GPU-free.
+bool runMaskTargetTest();
+
+// app/FramePacing (T27, "throttle the UI unless drawing to 60fps, and when
+// nothing is happening, throttle it further"): the three-tier frame budget,
+// lifted out of `main.cpp`'s frame loop so it can be asserted at all --
+// `--selftest` never enters that loop, and pacing is a property of *when*
+// frames happen, which no golden reference can hold. Proves: a painting frame
+// is unthrottled at every idle age and with or without a live solver (the
+// frames BETWEEN dabs, where the pen is down and still, are the ones that
+// matter); a `--screenshot` run is exempt even though a settled golden view
+// is the most idle-looking state in the build, which is what keeps
+// `run_golden.sh`'s 1800 frames from taking minutes; the idle tier begins
+// exactly at `kFramePacingIdleAfterNs` and not a nanosecond earlier; one
+// frame of activity leaves it with no ramp; only the idle tier blocks on the
+// event queue, because a 60 fps cap that waited on events would be defeated
+// by the pointer's own sample rate; and the solver ceiling -- a live PaintSim
+// clamps the idle period to the longest frame `consumeFixedSteps()` can keep
+// real time at, asserted by running the real accumulator on both sides of it
+// and showing the debt is bounded at the ceiling and unbounded past it.
+// Headless and GPU-free -- the decision takes no clock and no SDL handle.
+// See app/selftest/FramePacing.cpp.
+bool runFramePacingTest();
+
 // app/GradientTool (`Tool::Gradient`, the palette's `G` cell): the gradient
 // tool's own three answers on top of ops/Gradient -- which ramp
 // (foreground-to-transparent, faded by the OPACITY stops so it cannot darken
@@ -1022,8 +1300,17 @@ bool runMoveToolTest();
 // against the swatch's own `gradientSampleStraight()` call. Also that the
 // spread table covers `GradientSpread` exactly once per value (the kToolMeta
 // lesson: a count check passes on any permutation) and that the SPREAD combo
-// reaches the pixels rather than moving a field nothing reads. Headless and
-// GPU-free.
+// reaches the pixels rather than moving a field nothing reads.
+//
+// Also the three KINDS, added the same day: that each reaches the pixels as a
+// different picture, that a Radial is rotationally symmetric about its centre
+// and its parameter is the distance ratio (not merely something monotone in
+// it), and that the Angular sweep runs CLOCKWISE ON SCREEN -- a consequence of
+// document space being y-down, and the fact a well-meaning negation "to match
+// the maths textbook" would silently invert. Plus that SPREAD is genuinely
+// inert for Angular, proven by rendering the same sweep under all three modes,
+// which is what licenses the options bar to draw that control disabled.
+// Headless and GPU-free.
 bool runGradientToolTest();
 
 // ui/TransformPreviewTexture (docs/testing-issues.md T14): the CPU half of a
@@ -1354,6 +1641,20 @@ bool runScatterTest();
 // all) and the measured claim that count == 3 writes exactly 3x the texels
 // of count == 1. Pure CPU, no document window, no GPU.
 bool runScatterCountTest();
+
+// brush/StrokePath driven directly -- the arc-length dab emitter as pure
+// geometry, with no StrokeSession, document, PaintSim or GPU under it, which
+// is why it can assert the emitted dab COORDINATES and not merely their
+// effect. The claim it exists for is that **a single click lays exactly one
+// dab at its own position**: neither a one-sample stroke (which used to return
+// out of `flush()` before emitting) nor a click held for several frames (which
+// arrives as several coincident samples and walks a zero-length curve) put any
+// paint down at all before this. Its load-bearing half is the opposite
+// direction -- a real drag's six dab positions are asserted against values
+// derived by hand, so the section fails if the click case ever leaks into a
+// moving stroke, which counting dabs alone could not detect. Headless and
+// GPU-free.
+bool runStrokePathTest();
 
 // io/AbrBrushes' `samp` block and brush/Deposit.hpp §2c: a sampled bitmap tip
 // decoded (raw and PackBits, both subversions' header skip), matched to a
@@ -3581,6 +3882,55 @@ bool runTonalBrushTest();
 // Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
 // it reads no file at all. Headless and GPU-free; writes no files.
 bool runSmudgeTest();
+// **The smudge's own parameter block** (brush/Smudge §3b): the strength that
+// used to be the OPACITY slider, the default it now ships at, the single
+// tool->block mapping, and the tip override.
+//
+// **This section exists because the section directly above it was green while
+// the tool was unusable.** `strength` was `BrushTip::opacity`, whose default is
+// 1, and 1 is the one strength at which the fade `brush/Smudge` §5 derives is
+// exactly the identity -- so out of the box the finger loaded at pen-down was
+// carried to the far edge of the canvas and never reloaded. `runSmudgeTest()`
+// missed it by construction: every one of its strength assertions *sets* a
+// strength first, so not one of them ever asked what a user who had never found
+// the control would get. The user asked instead ("It never fades, Need to
+// reload with the areas been smeared across").
+//
+// What this section proves:
+//
+//  - **The default is 0.5 and is strictly inside (0,1)**, on a
+//    default-constructed `SmudgeParams`, on a bare `BrushTip` (whose literal
+//    `brush/Deposit.hpp` cannot name and must still match), and on a freshly
+//    built `AppState` -- a default nothing reaches is not a default.
+//  - **At that default the smear FADES**, measured on the tip the app itself
+//    builds out of an unconfigured `AppState`: colour is carried past the
+//    boundary and is over 100x weaker 220 texels further along. **With the
+//    identical drag at strength 1 measured beside it** and still over half
+//    opaque out there, so the claim is about the default rather than about the
+//    fixture.
+//  - **The decoupling, stated as a negative and twice in opposite
+//    directions**: dragging OPACITY from 1.00 to 0.02 does not move the
+//    strength by a bit; a stroke at opacity 0 and strength 0.9 smudges
+//    normally; and strength 0 at opacity 1 is still a **bit-exact** no-op that
+//    writes no texel, allocates no tile, moves no revision and records no undo
+//    step.
+//  - **`smudgeToolParamsFor()` answers non-null for exactly `Tool::Smudge`**,
+//    walked over every `Tool` value, and the pointer it returns *is*
+//    `&brush.smudge` -- the options row and the stroke read one struct, not two
+//    that agree today.
+//  - **The tip override is applied for the smudge and for no other tool**, so
+//    choosing a smear shape is not an edit to the brush; and an id whose bitmap
+//    no longer resolves falls back to the brush's tip rather than to an empty
+//    one, which would be a tip with no coverage anywhere.
+//
+// What it deliberately cannot reach: the options bar row itself. `--selftest`
+// has no window and no ImGui frame, so the golden view `smudge_options`
+// (tools/golden/run_golden.sh) is the only coverage the STRENGTH slider and the
+// TIP combo have.
+//
+// Runs, and asserts the correct answers, in BOTH NP_USE_OIIO configurations --
+// it reads no file at all. Headless and GPU-free; writes no files.
+bool runSmudgeOptionsTest();
 // **The active selection on a Pigment layer** (brush/Deposit §4; PRD E1, **P0**)
 // and **the eraser that gate unblocked** (brush/PigmentErase; PRD F9/F10, both
 // **P0**; ADR-0007's Pigment row).

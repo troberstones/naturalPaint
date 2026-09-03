@@ -3,6 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "brush/Deposit.hpp"
@@ -200,6 +202,8 @@
 // changes again: the stroke lays the colour it picked up at pen-down along its
 // entire length, however long, with no decay at all. That is not a degenerate
 // case, it is the setting a user picks to drag one colour across a canvas.
+// **It is, however, the wrong thing to hand a user who has never opened the
+// control** -- §3b.
 //
 // **The first dab LOADS the finger outright; it does not blend into it.**
 // There is nothing to retain yet. Starting the finger at `(0,0,0,0)` and
@@ -210,19 +214,105 @@
 // `StrokeSession`'s `seedLatched_` and `initialDirectionLatched_` use for the
 // same reason.
 //
-// **`strength` is `BrushTip::opacity`**, and the argument is `brush/RgbErase`
-// §2's word for word: it is the same slider, latched at pen-down by the same
-// `StrokeSession::begin()`, meaning the same thing in the same units -- the
-// fraction of the maximum effect one stroke may reach. A second "strength"
-// number on `BrushState` would leave the OPACITY control inert while the
-// smudge was selected, which is the failure the options bar's
-// disabled-rather-than-hidden treatment exists to prevent.
+// **`strength` used to be `BrushTip::opacity`. It is its own field now, and
+// §3b is the whole account of why that was wrong and what it cost.**
 //
 // **`flow` is how fast one dab bites and is deliberately not clamped**, for
 // `brush/Deposit`'s stated reason; `a` is clamped to [0,1] instead, because
 // unlike the deposit and the erase there is no accumulator whose `min` would
 // have capped it, and a mix fraction above 1 would extrapolate past the finger
 // -- overshooting into negative alpha on the far side of a soft rim.
+//
+// ==========================================================================
+// 3b. Why strength is its own number now, why it is not called "pickup",
+//     and why its default moved off 1
+// ==========================================================================
+//
+// The report this section answers, verbatim: *"It never fades, Need to reload
+// with the areas been smeared across. May need a pickup parameter in the tool
+// options for smudge."*
+//
+// **Everything §5 says about fading was true, and the user was still right.**
+// The finger does reload from the canvas on every dab and the smear does decay
+// geometrically -- *at every strength below 1*. `strength` was
+// `BrushTip::opacity`, which `brushTipFor()` copies from
+// `BrushState::opacity` (`app/AppState.hpp`), and that field's default is
+// **1.0**. So the value this tool shipped with was exactly the one value at
+// which §5's mechanism is the identity: `lerp(pick, finger, 1)` returns
+// `finger`, the finger is loaded once at pen-down and never again, and the
+// tool drags one colour to the far edge of the canvas. A user who had never
+// found the control was, by construction, using the only setting under which
+// the smear provably never fades and provably never reloads.
+//
+// **And the control was not where a smudge's control would be.** The one
+// widget bound to that field is the BRUSH panel's OPACITY slider
+// (`ui/MacPaintUI.cpp`'s `drawBrushPaintGroup()`), shared with the RGB
+// deposit, both erase routes, the clone and the tonal brushes -- five other
+// meanings, each with its own sentence under the slider. Moving it for the
+// smudge moved it for the eraser. Nothing in the options bar mentioned the
+// smudge at all. So the defect was two defects stacked: a wrong default, and a
+// default nobody could change without also changing something else.
+//
+// **`SmudgeParams::strength` below is the fix, and its default is 0.5** --
+// Photoshop's own Smudge Strength default, arrived at here for the reason
+// stated above rather than by imitation: any value strictly inside (0,1) makes
+// §5's decay real, and 0.5 is the one that halves the finger per dab, which is
+// the fastest fade a user can still see the direction of.
+//
+// **This changes what existing strokes do, and that is the point of the
+// change rather than a cost of it.** A drag that used to carry one colour
+// forever now fades over roughly a dozen dabs. `BrushState::opacity` is
+// untouched and still means what it means on the other five routes; it is
+// simply no longer read here, and the OPACITY slider is drawn disabled while
+// the smudge is selected for the same reason it is disabled for the pigment
+// deposit -- a live control over something the tool provably never reads.
+//
+// **Why it is not called "pickup", which is the word the report used.** The
+// name was tried and the arithmetic refuses it. "Pickup" reads as *how much of
+// the canvas the finger reloads with*, which is `1 - strength`; naming the
+// control that way inverts the slider, and inverting the slider puts §3's
+// bit-exact NO-OP at the TOP of the track. A control whose maximum setting
+// stops the tool is the exact failure §3's own last paragraph names one line
+// over ("the slider at maximum is the slider that stops working"), and it
+// would be worse here than there, because the top of a slider labelled PICKUP
+// is precisely where a user chasing this report would drag it first.
+//
+// The deeper reason is that "pickup" is only half a quantity and this is one
+// whole one. §3 derives `strength` as a single coupling with two signs: the
+// canvas's hold on the finger and the finger's hold on the canvas are the two
+// ends of one number. Splitting them into a pickup and a deposit would be a
+// second, unproven model -- it is expressible (`finger' = lerp(pick, finger,
+// 1 - p)` with `a = flow * cov * sel * d`), and what it buys is the
+// combination `p = 1, d = 1`: a tool that fully reloads every dab and fully
+// writes it, which is a **blur** -- §3's named near-miss, rejected there and
+// rejected here. So the control is STRENGTH, the word §3 already uses and the
+// word Photoshop's own smudge uses, and the report's vocabulary is answered in
+// the options bar's sentence instead ("lower picks up more of what it crosses")
+// rather than by renaming the arithmetic.
+//
+// **`SmudgeParams` also carries the tip**, for the report's second half
+// ("picking a dab shape as well ... for smudge is likely ideal"). It is a dab
+// id and the bitmap it resolved to -- `BrushState::dabId`/`tipBitmap`'s pair
+// exactly, and deliberately the same pair rather than a new representation, so
+// `app/DabLibrary`'s id->bitmap lookup and `ui/DabPicker`'s grid serve both
+// with no second code path. Empty means "whatever tip the brush has", which is
+// what this tool did for its whole history and is still the default; a set id
+// replaces `BrushTip::bitmap` for smudge strokes and for nothing else.
+// `brushTipFor()` is the single site that applies both halves of this struct,
+// which is why it lives beside the brush rather than beside the flood tools'
+// blocks -- see `smudgeToolParamsFor()` (`app/AppState.hpp`) for that
+// argument.
+//
+// **What is deliberately NOT in this struct: size, hardness, spacing,
+// roundness or flow.** The smudge reads all five off the brush and always has
+// (`smudgeDab()` calls `dabCoverage()` and multiplies by `tip.flow`, below), so
+// a second copy of any of them here would be a field that must be kept equal to
+// a field -- `app/AppState.hpp`'s own argument for holding `FloodFillParams`
+// itself rather than mirroring it, applied in the other direction. The tip
+// BITMAP is the one exception and earns it: swapping which shape a smudge
+// drags is a different choice from swapping the brush you paint with, and
+// making them one field means picking a smear shape silently repaints your
+// next brush stroke with it.
 //
 // ==========================================================================
 // 4. The selection bounds the write, and the honest limit of that
@@ -375,6 +465,37 @@
 // nothing else. Sampling the composite would need `core/Composite` in `brush/`,
 // which is the include edge §7's first paragraph refuses.
 namespace np {
+
+// §3b. The smudge's own settings: the one number §3 is about, and the one tip
+// override the report asked for.
+//
+// **A struct rather than two loose fields**, for `FloodFillParams`' reason
+// (`ops/FloodFill.hpp`): the options row edits a block and `brushTipFor()`
+// consumes one, and those two spellings agreeing is what keeps the band from
+// being a row of live controls wired to something no stroke reads.
+// `smudgeToolParamsFor()` (`app/AppState.hpp`) is the one mapping from a tool
+// to this block, and `--selftest` walks every `Tool` value against it.
+struct SmudgeParams {
+  // §3's `strength`, in [0,1], and §3b's whole argument for the default.
+  // Clamped again at `SmudgeStroke::begin()`, so a value out of range is a
+  // legitimate setting rather than undefined behaviour.
+  float strength = 0.5f;
+
+  // The dab this smudge drags, or empty for "whatever tip the brush has".
+  //
+  // The pair moves together always -- `app/DabLibrary`'s id is what survives a
+  // save and the bitmap is what paints, `BrushState::dabId`/`tipBitmap`'s own
+  // contract. An id with no bitmap (a dab folder that has moved) falls back to
+  // the brush's tip rather than to an empty one: a smudge with no coverage
+  // anywhere is indistinguishable from a broken tool.
+  std::string dabId;
+  std::shared_ptr<const BrushTipBitmap> tipBitmap;
+};
+
+// §3b's default, named so the options row's reset, `--selftest`'s
+// "a freshly launched app is not edited" check and this struct cannot each
+// carry their own copy of the number.
+inline constexpr float kSmudgeDefaultStrength = 0.5f;
 
 // §3's rule, as a pure function of one texel, for the one reason a pure
 // function earns its keep in this family: the invariants are about *this

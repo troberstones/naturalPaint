@@ -26,6 +26,10 @@ add_executable(naturalPaint
   app/LayerEditor.cpp
   app/TransformSession.cpp
   app/MoveTool.cpp
+  app/ToolSwitch.cpp
+  app/FramePacing.cpp
+  app/ToolSurface.cpp
+  app/ExportDialog.cpp
   app/LayerPanel.cpp
   app/Latency.cpp
   app/Memory.cpp
@@ -100,11 +104,13 @@ add_executable(naturalPaint
   app/selftest/ExportStates.cpp
   app/selftest/Eyedropper.cpp
   app/selftest/FieldAllocation.cpp
+  app/selftest/SolverFootprint.cpp
   app/selftest/FileDialog.cpp
   app/selftest/FilterMenu.cpp
   app/selftest/Filters.cpp
   app/selftest/FiltersExt.cpp
   app/selftest/FloodFill.cpp
+  app/selftest/FloodFillOptions.cpp
   app/selftest/Fonts.cpp
   app/selftest/AutoLevels.cpp
   app/selftest/AtelierChrome.cpp
@@ -163,9 +169,11 @@ add_executable(naturalPaint
   app/selftest/RgbDeposit.cpp
   app/selftest/RgbErase.cpp
   app/selftest/Smudge.cpp
+  app/selftest/SmudgeOptions.cpp
   app/selftest/SaveReadback.cpp
   app/selftest/Scatter.cpp
   app/selftest/ScatterCount.cpp
+  app/selftest/SceneReferredColour.cpp
   app/selftest/Selection.cpp
   app/selftest/SelectionBoundary.cpp
   app/selftest/SelectionDrag.cpp
@@ -176,6 +184,7 @@ add_executable(naturalPaint
   app/selftest/Shaper.cpp
   app/selftest/ShelvedLinks.cpp
   app/selftest/SolverPersistence.cpp
+  app/selftest/StrokePath.cpp
   app/selftest/StrokePreview.cpp
   app/selftest/StrokeBridge.cpp
   app/selftest/StrokeSpeed.cpp
@@ -184,6 +193,9 @@ add_executable(naturalPaint
   app/selftest/TileStore.cpp
   app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
+  app/selftest/ToolSurface.cpp
+  app/selftest/ExportDialog.cpp
+  app/selftest/ToolSwitch.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp
   app/selftest/TouchGesture.cpp
@@ -193,8 +205,11 @@ add_executable(naturalPaint
   app/selftest/TransformCompositeSplit.cpp
   app/selftest/TransformPreviewTexture.cpp
   app/selftest/TransformSession.cpp
+  app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
+  app/selftest/MaskTarget.cpp
   app/selftest/MoveTool.cpp
+  app/selftest/CropTool.cpp
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
   app/selftest/PenTool.cpp
@@ -208,8 +223,10 @@ add_executable(naturalPaint
   app/selftest/ZoomAndSize.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
+  app/LayerThumbnail.cpp
   app/MeasureLine.cpp
   app/GradientTool.cpp
+  app/CropTool.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp
@@ -232,6 +249,7 @@ add_executable(naturalPaint
   brush/Dynamics.cpp
   brush/Grain.cpp
   brush/Library.cpp
+  brush/MaskPaint.cpp
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/RgbDeposit.cpp
