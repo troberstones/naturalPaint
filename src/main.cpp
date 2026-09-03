@@ -1110,6 +1110,8 @@ int main(int argc, char** argv) {
   bool openLayerMenu = false;
   bool openExportStates = false;
   const char* exportStatesFolder = nullptr;
+  bool openExportAs = false;
+  const char* exportAsPath = nullptr;
   bool openLayerProperties = false;
   bool advancedDynamics = false;
   // D4 (docs/reachability-audit.md): `naturalPaint foo.npaint` used to open
@@ -1543,6 +1545,15 @@ int main(int argc, char** argv) {
       // --screenshot can photograph it. See AppState::openExportStatesDialog.
       openExportStates = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') exportStatesFolder = argv[++i];
+    } else if (a == "--open-export-as") {
+      // The other export dialog, and the one that had NO way to be reached
+      // from a launch at all: File > Export As... is opened by a menu click,
+      // --screenshot has no input, and so every pixel of it was uncovered.
+      // See AppState::openExportAsDialog. The optional path fills the Output
+      // file field; without one the dialog sits in its own -- also
+      // photographable -- "no output file yet" state.
+      openExportAs = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') exportAsPath = argv[++i];
     } else if (a == "--open-layer-properties") {
       // The LAYERS panel's own gear-button modal, same justification as
       // --open-export-states one dialog over: it too is opened by a click and
@@ -2486,6 +2497,17 @@ int main(int argc, char** argv) {
     // before the first byte in OFF rather than skipped. Headless and
     // GPU-free; writes and removes a selftest_exportstates/ directory.
     const bool exportStatesOk = np::runExportStatesTest();
+    // app/ExportDialog: the decisions BOTH export dialogs make -- which
+    // control is live, what sentence goes beside a greyed Export button, and
+    // which rows a Format menu has. Lifted out of ui/MacPaintUI.cpp in answer
+    // to "the export dialog seems a little confusing", and asserted against
+    // io/ExportAs' and io/ExportStates' own answers rather than against
+    // literals repeated from the implementation. Headless, GPU-free and
+    // filesystem-free; the widgets these answers drive are photographed by
+    // the golden harness's new `export_as` / `export_as_blocked` /
+    // `export_states` views, which are the first coverage either dialog has
+    // ever had.
+    const bool exportDialogOk = np::runExportDialogTest();
     // Phase 5 -- the CPU Pigment deposit (brush/Deposit + app/StrokeSession):
     // what one dab does to one texel, that a stroke's tile set is complete and
     // tight, that N dabs are one undo step, and `Mix` witnessed from a stroke.
@@ -2806,7 +2828,7 @@ int main(int argc, char** argv) {
                     shelvedLinksOk && scatterCountOk && strokePathOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
-                    exportAsOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
@@ -3062,9 +3084,11 @@ int main(int argc, char** argv) {
     st.brushSettingsDemoTab = brushSettingsDemoTab;
   }
   st.openExportStatesDialog = openExportStates;
+  st.openExportAsDialog = openExportAs;
   st.openLayerProperties = openLayerProperties;
   st.showAdvancedDynamics = advancedDynamics;
   if (exportStatesFolder != nullptr) st.exportStatesFolder = exportStatesFolder;
+  if (exportAsPath != nullptr) st.exportAsPath = exportAsPath;
   if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
   if (uiLayerDemo) {
     if (np::OpenDocument* od = st.documents.active()) runUiLayerDemo(*od, uiLayerDemoClip);

@@ -38,6 +38,7 @@
 #include "app/DabPreview.hpp"
 #include "app/StrokePreview.hpp"
 #include "app/DocumentLifecycle.hpp"
+#include "app/ExportDialog.hpp"  // the two export dialogs' decisions, lifted
 #include "app/AdjustmentOps.hpp"
 #include "app/FilterOps.hpp"
 #include "app/HistoryPanel.hpp"
@@ -6040,52 +6041,356 @@ void drawCompsSection(AppState& st) {
   }
 }
 
+// ------------------------------------------------------- The two export dialogs
+//
+// PLAN.md Phase 4 step 7 / PRD I15 (File > Export As...: "target format,
+// colour space, bit depth **and resize**, with saveable presets") and Phase 5
+// step 13 / PRD I16 + I17 (File > Export Comps / Layers To Files...: one file
+// per comp or per layer, "with a name template, a choice of which comps, and
+// I15's format/space/depth/resize options").
+//
+// Both keep the split app/CurveEdit + drawCurveWidget() established and
+// app/FramePacing and app/ToolSurface repeated: everything that can be wrong
+// here without a screenshot showing it lives in a testable module and is
+// exercised headlessly by --selftest. io/ExportAs owns the request, the
+// validation and the presets; io/ExportStates owns the plan, the name
+// template and the per-file report; **app/ExportDialog owns the decisions
+// these two functions used to make inline** -- which control is live, what
+// sentence goes beside it when it is not, and which rows a Format menu has.
+// What is below is widgets.
+//
+// ==========================================================================
+// Why this section was rewritten: "the export dialog seems a little confusing"
+// ==========================================================================
+//
+// Six things were true at once, and they are recorded here rather than in a
+// commit message because four of them are the kind that grow back:
+//
+//  1. **The two dialogs disagreed about the Format menu.** Export As showed
+//     every format and greyed the ones this build cannot write, with the
+//     capability query's own reason as the tooltip -- on the stated argument
+//     that "a menu that silently omits EXR cannot answer 'why can't I export
+//     EXR?'". The batch dialog, one function down, built the same menu from
+//     `offerableExportFormats()` and silently omitted exactly those formats.
+//     Same question, two answers, and the worse one was in the dialog where a
+//     wrong format costs a folder of files rather than one. Both now call
+//     `exportFormatChoices()`; see app/ExportDialog.hpp §1.
+//
+//  2. **The batch dialog showed no output size and no warnings.** Export As
+//     ran `validateExportRequest()` and printed "Output: WxH" plus PRD I11's
+//     cost warnings ("8-bit quantisation is 256 levels", "JPEG is lossy",
+//     how many pixels a downscale discards). The batch dialog ran the
+//     identical settings over N files and printed none of it. It does now,
+//     from the same call, over the document's own dimensions.
+//
+//  3. **Internal spec identifiers were user-facing control labels.** The
+//     radio buttons literally read "Comps (PRD I17)" and "Layers (PRD I16)",
+//     and the overwrite hint ended "(PRD P4)". This codebase does cite PRD
+//     rows in user-visible *prose* all over (core/Merge.cpp's refusals, this
+//     file's own tooltips) and that is deliberate -- a refusal that names the
+//     requirement it is enforcing is more useful, not less. But a citation
+//     inside a sentence is not the same thing as a citation inside a *control
+//     name*, and a grep for `ImGui::RadioButton("...PRD` found exactly these
+//     two in the whole build. The citations moved into the comments beside
+//     the controls, which is where every other one in this function already
+//     was.
+//
+//  4. **The preset block was five controls in the middle of a six-control
+//     dialog**, and the one control whose job is to say which preset you are
+//     on -- the combo -- showed the fixed literal "Load a preset..." forever,
+//     even immediately after loading one. Presets are now Photoshop-shaped:
+//     one combo at the top that names the loaded preset (and says
+//     "(modified)" once the controls no longer match it), with the name
+//     field, Save, Delete and the file path behind a "Manage" toggle that
+//     starts closed. Nothing was removed -- every preset operation that
+//     worked before still works, one click further in.
+//
+//  5. **The Export button was greyed with no reason on screen.** Its
+//     predicate was `activeDoc != nullptr && validation.ok &&
+//     exportPathBuf[0] != '\0'`, and the third term had no message anywhere:
+//     open the dialog, set everything correctly, type nothing in Output file,
+//     and the button is dead with the only nearby text reading "Exports the
+//     open document, not the painting canvas." A dialog that greys a control
+//     and says nothing is worse than one that refuses on click.
+//     `exportAsBlockedReason()` / `exportStatesBlockedReason()` now answer it
+//     in one place each, and --selftest asserts each branch.
+//
+//  6. **"Export..." carried an ellipsis.** ui/MenuModel.cpp's own rule, in
+//     its own words, is that "..." marks something that "opens a dialog
+//     rather than acting on the spot". This button writes the file. The
+//     ellipsis is gone from it and kept on "Choose...", which really does
+//     raise an OS panel, and on both menu items, which really do open these
+//     dialogs.
+//
+// ==========================================================================
+// Two dialogs, not one dialog with a mode -- and why
+// ==========================================================================
+//
+// The near-identical control blocks are a real invitation to merge these
+// into one modal with a "one file / many files" switch, and it was the first
+// shape tried. It is worse, for a reason that is structural rather than
+// aesthetic: **the halves that are not shared are the destination and the
+// pre-flight, and those are the two biggest things on screen.** One file
+// needs a path, a file panel and a single "Output: WxH" line; many files need
+// a folder, a name template, an overwrite rule, a which-ones list and a table
+// of every filename that would be written. A merged dialog is therefore a
+// dialog whose top third is stable and whose bottom two thirds swap wholesale
+// -- which is exactly the "which half of this applies to me?" the report is
+// about, moved rather than fixed.
+//
+// What genuinely wanted sharing is the **settings** -- the four PRD I15
+// controls -- and those are now literally one function
+// (`drawExportSettingsControls()`) called from both, so they cannot drift
+// again the way item 1 above records them drifting. Each dialog additionally
+// opens with one line saying what it produces, because the menu names alone
+// ("Export As...", "Export Comps / Layers To Files...") do not tell a user
+// which of the two they want until after they have opened one.
+//
+// ==========================================================================
+// What was deliberately NOT simplified
+// ==========================================================================
+//
+// The controls that look like noise and are not:
+//
+//   * **The colour-space names** ("Rec709Srgb (Rec.709 primaries, sRGB
+//     transfer)") read like leaked enum identifiers and are not. All three
+//     targets share primaries and differ only in transfer function, a
+//     mismatch in primaries is a refusal this build really produces
+//     (io/Export.cpp's first branch), and `exportTargetSpaceName()` is the
+//     same string the refusal interpolates. Trimming these to "sRGB / Linear
+//     / BT.709" would hide the axis the refusal is about. Left at their
+//     source, unshadowed.
+//   * **Unwritable formats stay in the menu**, greyed, with their reason.
+//     See item 1.
+//   * **The "not the painting canvas" line stays**, in one place per dialog
+//     rather than two. It is T5's canvas-versus-document split, it is true,
+//     and a user who has been painting is entitled to be told that this
+//     dialog is not looking at what is on screen. What changed is that the
+//     dialog no longer says it *twice* (once in the Source line and once
+//     under the button) and no longer re-explains the whole split in a
+//     three-line paragraph the title band already carries -- the title band's
+//     own "No document is open. File > New Document makes one." plus its
+//     tooltip ("nothing on it is saved, undone or exported") landed in
+//     `8140912` and is the canonical statement now.
+bool g_exportAsRequested = false;
+bool g_exportStatesRequested = false;
+
+namespace {
+
+// The four settings PRD I15 names, drawn identically for both dialogs.
+//
+// One function rather than two copies because the copies had already drifted
+// three ways -- the format list, the FitWithin hint and the depth
+// legalisation -- and every one of those drifts was invisible to the suite.
+void drawExportSettingsControls(ExportRequest& request) {
+  // Wide enough for the longest name any of these four combos can show, which
+  // is `exportTargetSpaceName()`'s "Rec709Srgb (Rec.709 primaries, sRGB
+  // transfer)". Measured against the rendered frame, not guessed: at the
+  // default combo width that string clipped at "...primaries, sR", which turns
+  // the one control whose parenthetical carries the actual distinction between
+  // the three targets into a control that shows only the enum identifier --
+  // the exact opposite of what that parenthetical is for. "Fit within
+  // (preserves aspect, never enlarges)" is the runner-up and fits in the same
+  // width.
+  ImGui::PushItemWidth(400.0f);
+  if (ImGui::BeginCombo("Format", imageFormatName(request.format))) {
+    // Every format, including the ones this build cannot write. See
+    // app/ExportDialog.hpp §1 for the argument and for why the batch dialog
+    // used to disagree.
+    for (const ExportFormatChoice& choice :
+         exportFormatChoices(request.targetSpace, request.bitDepth)) {
+      if (!choice.writable) ImGui::BeginDisabled();
+      if (ImGui::Selectable(imageFormatName(choice.format), choice.format == request.format) &&
+          choice.writable) {
+        request.format = choice.format;
+        // Keep the depth legal for the new format rather than leaving an
+        // impossible pair on screen and refusing it a line later.
+        request.bitDepth = legaliseExportDepth(request.format, request.bitDepth);
+      }
+      if (!choice.writable) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled |
+                                 ImGuiHoveredFlags_DelayNormal))
+          ImGui::SetTooltip("%s", choice.refusal.c_str());
+      }
+    }
+    ImGui::EndCombo();
+  }
+
+  // Target colour space (PRD I5). Three, and the names are io/Export's own --
+  // see this section's "not simplified" note on why they are as long as they
+  // are.
+  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.targetSpace))) {
+    for (int i = 0; i < 3; ++i) {
+      const auto s = static_cast<ExportTargetSpace>(i);
+      if (ImGui::Selectable(exportTargetSpaceName(s), s == request.targetSpace))
+        request.targetSpace = s;
+    }
+    ImGui::EndCombo();
+  }
+
+  // Bit depth (PRD B6, I5): only the depths this build can write this format
+  // at, which is why EXR offers half and float but not 8-bit.
+  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.bitDepth))) {
+    for (ExportBitDepth d : offerableExportDepths(request.format)) {
+      if (ImGui::Selectable(exportBitDepthName(d), d == request.bitDepth)) request.bitDepth = d;
+    }
+    ImGui::EndCombo();
+  }
+
+  // Resize (PRD I15's "and resize").
+  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.resize.mode))) {
+    for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
+      const auto m = static_cast<ExportResizeMode>(i);
+      if (ImGui::Selectable(exportResizeModeName(m), m == request.resize.mode))
+        request.resize.mode = m;
+    }
+    ImGui::EndCombo();
+  }
+  // Which sub-control is live is app/ExportDialog's answer, not a second
+  // `switch` on the mode kept in step by hand.
+  switch (exportResizeField(request.resize.mode)) {
+    case ExportResizeField::None:
+      break;
+    case ExportResizeField::Percent:
+      ImGui::SetNextItemWidth(160.0f);
+      ImGui::SliderFloat("Percent", &request.resize.percent, 1.0f, 100.0f, "%.1f%%");
+      ImGui::TextDisabled("Above 100%% is refused: this build downscales only.");
+      break;
+    case ExportResizeField::FitBox: {
+      int box[2] = {static_cast<int>(request.resize.maxWidth),
+                    static_cast<int>(request.resize.maxHeight)};
+      ImGui::SetNextItemWidth(200.0f);
+      if (ImGui::InputInt2("Fit within (px)", box)) {
+        request.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
+        request.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
+      }
+      // Both dialogs offered this mode; only one of them said what it does.
+      ImGui::TextDisabled("Aspect preserved; a smaller document is never enlarged.");
+      break;
+    }
+  }
+  ImGui::PopItemWidth();
+}
+
+// `validateExportRequest()`'s answer, drawn identically for both dialogs: the
+// resolved output size and PRD I11's cost warnings, or the refusal in
+// io/Export's own words.
+//
+// The batch dialog had none of this and ran the same settings over N files.
+void drawExportValidation(const ExportValidation& validation, const ImVec4& warnColour,
+                          const ImVec4& errorColour) {
+  if (validation.ok) {
+    ImGui::Text("Output: %ux%u", validation.outWidth, validation.outHeight);
+    for (const std::string& w : validation.warnings) {
+      ImGui::PushStyleColor(ImGuiCol_Text, warnColour);
+      ImGui::TextWrapped("! %s", w.c_str());
+      ImGui::PopStyleColor();
+    }
+  } else {
+    ImGui::PushStyleColor(ImGuiCol_Text, errorColour);
+    ImGui::TextWrapped("%s", validation.error.c_str());
+    ImGui::PopStyleColor();
+  }
+}
+
+// The preset combo both dialogs open with: one control, naming what is
+// loaded.
+//
+// A preset this build cannot honour is shown, greyed, with the reason --
+// never silently dropped and never silently substituted. See io/ExportAs.hpp:
+// this is exactly what an NP_USE_OIIO=ON preset looks like in an OFF build.
+//
+// Touches nothing but `request`, `loadedName` and `status`: the batch
+// dialog's own derived state (its picked-list) is deliberately NOT cleared by
+// a preset, because a preset carries the four PRD I15 settings and says
+// nothing about which comps or layers were chosen.
+void drawExportPresetCombo(const char* label, ExportPresetStore& presets, ExportRequest& request,
+                           std::string& loadedName, std::string& status) {
+  const ExportPreset* loaded = loadedName.empty() ? nullptr : presets.find(loadedName);
+  // The same width as the settings block below it, so the top of the dialog is
+  // one column rather than two.
+  ImGui::SetNextItemWidth(400.0f);
+  if (ImGui::BeginCombo(label, exportPresetMenuLabel(loaded, request).c_str())) {
+    if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
+    for (const ExportPreset& p : presets.presets()) {
+      const std::string why = exportRequestAvailability(p.request);
+      if (!why.empty()) ImGui::BeginDisabled();
+      if (ImGui::Selectable(p.name.c_str(), loaded == &p) && why.empty()) {
+        request = p.request;
+        loadedName = p.name;
+        status = "Loaded preset '" + p.name + "'.";
+      }
+      if (!why.empty()) {
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("%s", why.c_str());
+      }
+    }
+    ImGui::EndCombo();
+  }
+}
+
+// The height a scrolling list of `rows` should get: exactly what it holds, up
+// to `maxRows`, and never less than one row (an empty box a user can see is
+// how an empty list says it is empty).
+//
+// `framed` picks the row metric: a column of `Checkbox()`es steps by
+// `GetFrameHeightWithSpacing()`, a column of `TextUnformatted()` by
+// `GetTextLineHeightWithSpacing()`. Asked of ImGui rather than hard-coded, so
+// this follows the font the chrome is actually using.
+float exportListHeight(std::size_t rows, std::size_t maxRows, bool framed) {
+  const float row =
+      framed ? ImGui::GetFrameHeightWithSpacing() : ImGui::GetTextLineHeightWithSpacing();
+  const std::size_t n = std::max<std::size_t>(1, std::min(rows, maxRows));
+  return static_cast<float>(n) * row + ImGui::GetStyle().WindowPadding.y * 2.0f;
+}
+
+// Why an Export button is off, drawn where a user looks when a button will not
+// press: immediately beside it. Empty means the button is live and nothing is
+// drawn at all.
+void drawExportBlockedReason(const std::string& reason, const ImVec4& warnColour) {
+  if (reason.empty()) return;
+  ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_Text, warnColour);
+  ImGui::TextWrapped("%s", reason.c_str());
+  ImGui::PopStyleColor();
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------- Export As
 //
-// PLAN.md Phase 4 step 7 / PRD I15 ("Export As: target format, colour space,
-// bit depth **and resize**, with saveable presets"). Everything that can be
-// wrong here without a screenshot showing it -- what may be offered, what a
-// combination costs, how a preset is stored and what happens to one this
-// build cannot honour -- lives in io/ExportAs.hpp and is exercised headlessly
-// by --selftest. This function is the widgets and nothing else, the same
-// split app/CurveEdit + drawCurveWidget() already has.
+// One file, out of the active document.
 //
-// Two properties are structural rather than careful:
+// Two properties are structural rather than careful, and both survive the
+// rewrite above:
 //
-//  1. **It cannot offer a combination io/Export would refuse.** The format
-//     list is offerableExportFormats() and the depth list is
-//     offerableExportDepths(format), both computed from io/Capabilities'
-//     runtime query -- so in an NP_USE_OIIO=OFF build EXR is not in the menu
-//     at all, and in an ON build EXR offers half and 32-bit float but not
-//     8-bit, because that is what this OpenImageIO actually writes. The
-//     formats this build cannot write are still *shown*, greyed, with the
-//     capability query's own reason as their tooltip: a menu that silently
-//     omits EXR cannot answer "why can't I export EXR?".
+//  1. **It cannot offer a combination io/Export would refuse.** The depth
+//     list is `offerableExportDepths(format)` and the format rows carry
+//     `canWrite`, both computed from io/Capabilities' runtime query -- so in
+//     an NP_USE_OIIO=OFF build EXR is greyed with the build option named, and
+//     in an ON build EXR offers half and 32-bit float but not 8-bit, because
+//     that is what this OpenImageIO actually writes.
 //  2. **Every message it shows is io/Export's own.** The red line under the
-//     controls is exportRefusalReason()'s string verbatim, not a reworded
-//     one, so there is no second vocabulary here to drift from the encoder's.
+//     controls is `exportRefusalReason()`'s string verbatim, so there is no
+//     second vocabulary here to drift from the encoder's.
 //
-// **Updated by PLAN.md Phase 4 step 8.** When step 7 landed, the Export
-// button was disabled and said so, because there was no `core::Document`
-// anywhere in the running application to export from. There is now:
-// `AppState::documents` holds them, and File > New Document / Open... puts
-// one there. So the button is live whenever a document is open, exporting the
-// *active document* -- and still disabled, with the accurate reason, when
-// none is. What has NOT changed is the honest half: the painting canvas is
-// still not a document (sim::PaintSim owns one dense texture with no layer
-// awareness), so this exports what was opened, never what is on screen. The
-// dialog says which of the two it is looking at rather than leaving it to be
-// inferred.
-bool g_exportAsRequested = false;
-
+// What is exported is the **active document**, never the painting canvas:
+// sim::PaintSim owns one dense texture with no layer awareness, so this
+// exports what was opened, not what is on screen. The Source line says which
+// of the two it is looking at rather than leaving it to be inferred.
 void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   // Session state. Function-local statics, exactly like drawGradeSection()'s
   // newOpKindIdx and the Add Guide popup's fields -- this is UI state, not
-  // app state, and app/AppState's ownership is PLAN.md Phase 4 step 8's
-  // decision to make rather than this step's to pre-empt.
+  // app state.
   static ExportRequest request;
   static ExportPresetStore presets;
   static bool presetsLoaded = false;
+  // Which preset the controls came from, for the combo's own label. Empty
+  // means "Custom"; a name that is still in the store but no longer matches
+  // the controls reads as "<name> (modified)".
+  static std::string loadedPresetName;
+  static bool managePresets = false;
   static char presetNameBuf[96] = "";
   static char exportPathBuf[512] = "";
   static std::string status;
@@ -6108,10 +6413,29 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     }
   }
 
-  if (g_exportAsRequested) {
+  // `--open-export-as`: the same id BeginPopupModal() opens on a click, so the
+  // dialog can be photographed. See AppState::openExportAsDialog.
+  //
+  // **The request flag is latched on a rising edge**, not tested every frame,
+  // for the reason the batch dialog one function down records at length: an
+  // AppState flag stays true for the life of the session, so a per-frame test
+  // re-runs the on-open work every frame and freezes the dialog in its opening
+  // state.
+  static bool exportAsOpenLatched = false;
+  const bool wantOpen = g_exportAsRequested || st.openExportAsDialog;
+  if (wantOpen && !exportAsOpenLatched) {
+    exportAsOpenLatched = true;
     g_exportAsRequested = false;
+    if (!st.exportAsPath.empty() && exportPathBuf[0] == '\0')
+      std::snprintf(exportPathBuf, sizeof(exportPathBuf), "%s", st.exportAsPath.c_str());
+    // Re-read the file on every open. The batch dialog can be opened after a
+    // preset was saved here (and vice versa), and a store loaded once per
+    // process meant the second dialog showed a list that was already stale.
+    presetsLoaded = false;
     ImGui::OpenPopup("Export As");
   }
+  if (!wantOpen) exportAsOpenLatched = false;
+  g_exportAsRequested = false;
   if (!ImGui::BeginPopupModal("Export As", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
 
   // Loaded on first open, never at startup: a preset file nobody asked for
@@ -6129,164 +6453,84 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
   const ImVec4 kError(0.95f, 0.45f, 0.40f, 1.0f);
   const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
 
+  // What this dialog produces, said before anything else. The two File menu
+  // items are distinguishable only by reading both of them carefully; this
+  // line is where a user who guessed wrong finds out in one glance.
+  ImGui::TextDisabled("One image file, from the active document.");
+
   // What is being exported, named rather than assumed. These are two
   // genuinely different things in this build and conflating them on screen
-  // would be the dishonest option.
+  // would be the dishonest option. The noun leads and the numbers follow --
+  // the size is not the subject of this sentence.
   const OpenDocument* activeDoc = st.documents.active();
   const uint32_t srcW = activeDoc ? static_cast<uint32_t>(activeDoc->document.width) : canvasW;
   const uint32_t srcH = activeDoc ? static_cast<uint32_t>(activeDoc->document.height) : canvasH;
   if (activeDoc)
-    ImGui::TextDisabled("Source: %ux%u (document '%s')", srcW, srcH,
-                        documentDisplayName(*activeDoc).c_str());
+    ImGui::TextDisabled("Source: document '%s' (%ux%u) -- not the painting canvas.",
+                        documentDisplayName(*activeDoc).c_str(), srcW, srcH);
   else
-    ImGui::TextDisabled("Source: %ux%u (the live canvas -- not a document; nothing to export)",
+    // The whole canvas-versus-document explanation is the title band's, as of
+    // `8140912`; this says only which of the two this dialog is looking at.
+    ImGui::TextDisabled("Source: none. The %ux%u painting canvas is a solver texture, not a "
+                        "document, and cannot be exported.",
                         srcW, srcH);
   ImGui::Separator();
 
-  // --- Format -------------------------------------------------------------
-  if (ImGui::BeginCombo("Format", imageFormatName(request.format))) {
-    for (const FormatCapability& caps : allFormatCapabilities()) {
-      const bool writable = caps.canWrite;
-      if (!writable) ImGui::BeginDisabled();
-      if (ImGui::Selectable(imageFormatName(caps.format), caps.format == request.format) &&
-          writable) {
-        request.format = caps.format;
-        // Keep the depth legal for the new format rather than leaving an
-        // impossible pair on screen and refusing it a line later.
-        const std::vector<ExportBitDepth> depths = offerableExportDepths(request.format);
-        if (!depths.empty() &&
-            std::find(depths.begin(), depths.end(), request.bitDepth) == depths.end())
-          request.bitDepth = depths.front();
+  // --- Presets (PRD I15's "with saveable presets") ------------------------
+  //
+  // One control, at the top, with the management behind it -- Photoshop's
+  // shape. This block used to be five controls plus a raw path line, sitting
+  // between the validation and the Export button, which put the preset
+  // machinery physically between the result and the act it described.
+  drawExportPresetCombo("Preset", presets, request, loadedPresetName, status);
+  ImGui::SameLine();
+  if (ImGui::SmallButton(managePresets ? "Manage -" : "Manage +")) managePresets = !managePresets;
+  if (managePresets) {
+    ImGui::Indent();
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputText("Preset name", presetNameBuf, sizeof(presetNameBuf));
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+      ExportPreset p;
+      p.name = presetNameBuf;
+      p.request = request;
+      std::string err;
+      if (!presets.savePreset(p, &err)) {
+        status = err;
+      } else if (!presets.saveToFile(presetsPath, &err)) {
+        status = err;
+      } else {
+        loadedPresetName = p.name;
+        status = "Saved preset '" + p.name + "' to " + presetsPath;
       }
-      if (!writable) {
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled |
-                                 ImGuiHoveredFlags_DelayNormal)) {
-          const std::string why =
-              exportRefusalReason(caps.format, request.targetSpace, request.bitDepth, nullptr,
-                                  nullptr);
-          ImGui::SetTooltip("%s", why.c_str());
-        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+      std::string err;
+      if (!presets.removePreset(presetNameBuf)) {
+        status = std::string("No preset named '") + presetNameBuf + "' to delete.";
+      } else if (!presets.saveToFile(presetsPath, &err)) {
+        status = err;
+      } else {
+        if (loadedPresetName == presetNameBuf) loadedPresetName.clear();
+        status = std::string("Deleted preset '") + presetNameBuf + "'.";
       }
     }
-    ImGui::EndCombo();
+    ImGui::TextDisabled("Presets file: %s", presetsPath.c_str());
+    ImGui::Unindent();
   }
 
-  // --- Target colour space (PRD I5) ---------------------------------------
-  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.targetSpace))) {
-    for (int i = 0; i < 3; ++i) {
-      const auto s = static_cast<ExportTargetSpace>(i);
-      if (ImGui::Selectable(exportTargetSpaceName(s), s == request.targetSpace))
-        request.targetSpace = s;
-    }
-    ImGui::EndCombo();
-  }
-
-  // --- Bit depth (PRD B6, I5) ---------------------------------------------
-  const std::vector<ExportBitDepth> depths = offerableExportDepths(request.format);
-  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.bitDepth))) {
-    for (ExportBitDepth d : depths) {
-      if (ImGui::Selectable(exportBitDepthName(d), d == request.bitDepth)) request.bitDepth = d;
-    }
-    ImGui::EndCombo();
-  }
-
-  // --- Resize (PRD I15's "and resize") ------------------------------------
+  // --- The four settings, shared with the batch dialog --------------------
   ImGui::Separator();
-  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.resize.mode))) {
-    for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
-      const auto m = static_cast<ExportResizeMode>(i);
-      if (ImGui::Selectable(exportResizeModeName(m), m == request.resize.mode))
-        request.resize.mode = m;
-    }
-    ImGui::EndCombo();
-  }
-  if (request.resize.mode == ExportResizeMode::Percent) {
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::SliderFloat("Percent", &request.resize.percent, 1.0f, 100.0f, "%.1f%%");
-  } else if (request.resize.mode == ExportResizeMode::FitWithin) {
-    int box[2] = {static_cast<int>(request.resize.maxWidth),
-                  static_cast<int>(request.resize.maxHeight)};
-    ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::InputInt2("Fit within (px)", box)) {
-      request.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
-      request.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
-    }
-    ImGui::TextDisabled("Aspect preserved; a smaller document is never enlarged.");
-  }
+  drawExportSettingsControls(request);
 
   // --- Validation, in io/Export's own words -------------------------------
   const ExportValidation validation = validateExportRequest(
       request, srcW, srcH, activeDoc ? &activeDoc->document.workingSpace : nullptr, nullptr);
   ImGui::Separator();
-  if (validation.ok) {
-    ImGui::Text("Output: %ux%u", validation.outWidth, validation.outHeight);
-    for (const std::string& w : validation.warnings) {
-      ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-      ImGui::TextWrapped("! %s", w.c_str());
-      ImGui::PopStyleColor();
-    }
-  } else {
-    ImGui::PushStyleColor(ImGuiCol_Text, kError);
-    ImGui::TextWrapped("%s", validation.error.c_str());
-    ImGui::PopStyleColor();
-  }
+  drawExportValidation(validation, kWarn, kError);
 
-  // --- Presets (PRD I15's "with saveable presets") ------------------------
-  ImGui::Separator();
-  ImGui::TextUnformatted("Presets");
-  if (ImGui::BeginCombo("##presets", "Load a preset...")) {
-    if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
-    for (const ExportPreset& p : presets.presets()) {
-      // A preset this build cannot honour is shown, greyed, with the reason
-      // -- never silently dropped and never silently substituted. See
-      // io/ExportAs.hpp: this is exactly what an NP_USE_OIIO=ON preset looks
-      // like in an OFF build.
-      const std::string why = exportRequestAvailability(p.request);
-      if (!why.empty()) ImGui::BeginDisabled();
-      if (ImGui::Selectable(p.name.c_str()) && why.empty()) {
-        request = p.request;
-        std::snprintf(presetNameBuf, sizeof(presetNameBuf), "%s", p.name.c_str());
-        status = "Loaded preset '" + p.name + "'.";
-      }
-      if (!why.empty()) {
-        ImGui::EndDisabled();
-        ImGui::SetItemTooltip("%s", why.c_str());
-      }
-    }
-    ImGui::EndCombo();
-  }
-  ImGui::SetNextItemWidth(220.0f);
-  ImGui::InputText("##presetName", presetNameBuf, sizeof(presetNameBuf));
-  ImGui::SameLine();
-  if (ImGui::Button("Save preset")) {
-    ExportPreset p;
-    p.name = presetNameBuf;
-    p.request = request;
-    std::string err;
-    if (!presets.savePreset(p, &err)) {
-      status = err;
-    } else if (!presets.saveToFile(presetsPath, &err)) {
-      status = err;
-    } else {
-      status = "Saved preset '" + p.name + "' to " + presetsPath;
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Delete preset")) {
-    std::string err;
-    if (!presets.removePreset(presetNameBuf)) {
-      status = std::string("No preset named '") + presetNameBuf + "' to delete.";
-    } else if (!presets.saveToFile(presetsPath, &err)) {
-      status = err;
-    } else {
-      status = std::string("Deleted preset '") + presetNameBuf + "'.";
-    }
-  }
-  if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
-  ImGui::TextDisabled("Presets file: %s", presetsPath.c_str());
-
-  // --- Export, and the honest part ----------------------------------------
+  // --- Where it goes ------------------------------------------------------
   ImGui::Separator();
   ImGui::SetNextItemWidth(360.0f);
   ImGui::InputText("Output file", exportPathBuf, sizeof(exportPathBuf));
@@ -6301,6 +6545,10 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     //
     // The field stays: this fills it in rather than replacing it, because an
     // export path is often typed as a variation on the last one.
+    //
+    // The ellipsis is right here and wrong on Export below: ui/MenuModel.cpp's
+    // own rule is that "..." marks something that opens a dialog rather than
+    // acting on the spot, and this raises an NSSavePanel.
     const FileDialogFilterRow row{imageFormatName(request.format),
                                   imageFormatExtension(request.format)};
     if (requestFileDialogWithFilter(FileDialogPurpose::ExportImage,
@@ -6309,38 +6557,35 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
     else
       status = "A file panel is already open; finish or cancel it first.";
   }
-  const bool canExport = activeDoc != nullptr && validation.ok && exportPathBuf[0] != '\0';
-  if (!canExport) ImGui::BeginDisabled();
-  if (ImGui::Button("Export...")) {
+
+  // --- Export -------------------------------------------------------------
+  ImGui::Separator();
+  const std::string blocked =
+      exportAsBlockedReason(activeDoc != nullptr, validation, exportPathBuf);
+  if (!blocked.empty()) ImGui::BeginDisabled();
+  if (ImGui::Button("Export")) {
     std::string err;
     if (exportDocumentWithRequestToFile(activeDoc->document, exportPathBuf, request, &err))
       status = std::string("Exported ") + exportPathBuf;
     else
       status = err;
   }
-  if (!canExport) ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (!activeDoc) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("No document is open, so there is nothing to export. Use File > New "
-                       "Document or File > Open... -- the painting canvas is a solver texture, "
-                       "not a document, and still has no bridge into one.");
-    ImGui::PopStyleColor();
-  } else {
-    ImGui::TextDisabled("Exports the open document, not the painting canvas.");
+  if (!blocked.empty()) ImGui::EndDisabled();
+  // The reason lives beside the button it explains. It used to live nowhere
+  // at all for the empty-path case -- see this section's item 5.
+  drawExportBlockedReason(blocked, kWarn);
+
+  if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
+  if (ImGui::Button("Close")) {
+    st.openExportAsDialog = false;
+    ImGui::CloseCurrentPopup();
   }
-  if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
   ImGui::EndPopup();
 }
 
 // ------------------------------------------- Export Comps / Layers To Files
 //
-// PLAN.md Phase 5 step 13 / PRD I16 + I17. The same split
-// drawExportAsDialog() has, and for the same reason: everything that can be
-// wrong without a screenshot showing it -- the name template and its path
-// refusals, the collision rule, the overwrite rule, the state-set, the
-// per-file report -- lives in io/ExportStates.hpp and is exercised headlessly
-// by --selftest. This function is widgets.
+// Many files, one per comp or per layer, into a folder.
 //
 // The one property worth naming here, because it is what the dialog is shaped
 // around: **`planStateExport()` writes nothing**, so the table of filenames
@@ -6349,12 +6594,11 @@ void drawExportAsDialog(AppState& st, uint32_t canvasW, uint32_t canvasH) {
 // filenames, the exact skips and the exact refusal before committing, which is
 // the whole reason the refusals are a pre-flight rather than a surprise at
 // file 3.
-bool g_exportStatesRequested = false;
-
 void drawExportStatesDialog(AppState& st) {
   static ExportStatesRequest request;
   static ExportPresetStore presets;
   static bool presetsLoaded = false;
+  static std::string loadedPresetName;
   static char dirBuf[512] = "";
   static char templateBuf[256] = "{name}";
   static std::vector<bool> picked;
@@ -6365,13 +6609,28 @@ void drawExportStatesDialog(AppState& st) {
 
   // --open-export-states: the same id BeginPopupModal() opens on a click, so
   // the dialog can be photographed. See AppState::openExportStatesDialog.
-  if (g_exportStatesRequested || st.openExportStatesDialog) {
-    g_exportStatesRequested = false;
+  //
+  // **Latched on the rising edge**, and that is a fix rather than a
+  // restatement. `st.openExportStatesDialog` stays true until the Close
+  // button clears it, so the previous `if (g_exportStatesRequested ||
+  // st.openExportStatesDialog)` was true on *every* frame of an
+  // `--open-export-states` run: `justOpened` was re-armed each frame, which
+  // re-ran the on-open work each frame, which cleared `picked` each frame and
+  // forced the source back to Layers each frame. Under that flag no checkbox
+  // could be unticked and the Comps radio could not be chosen -- a
+  // demo-only path, but the demo path is the one the golden views photograph.
+  static bool statesOpenLatched = false;
+  const bool wantOpen = g_exportStatesRequested || st.openExportStatesDialog;
+  if (wantOpen && !statesOpenLatched) {
+    statesOpenLatched = true;
     if (!st.exportStatesFolder.empty() && dirBuf[0] == '\0')
       std::snprintf(dirBuf, sizeof(dirBuf), "%s", st.exportStatesFolder.c_str());
     justOpened = true;
+    presetsLoaded = false;  // see drawExportAsDialog(): the two share a file
     ImGui::OpenPopup("Export Comps / Layers To Files");
   }
+  if (!wantOpen) statesOpenLatched = false;
+  g_exportStatesRequested = false;
   if (!ImGui::BeginPopupModal("Export Comps / Layers To Files", nullptr,
                               ImGuiWindowFlags_AlwaysAutoResize))
     return;
@@ -6385,14 +6644,21 @@ void drawExportStatesDialog(AppState& st) {
   const ImVec4 kWarn(0.92f, 0.78f, 0.35f, 1.0f);
   const ImVec4 kGood(0.55f, 0.85f, 0.55f, 1.0f);
 
+  ImGui::TextDisabled("One image file per comp or per layer, into a folder.");
+
   const OpenDocument* activeDoc = st.documents.active();
   if (activeDoc == nullptr) {
+    // The same sentence the Export button would carry, from the same
+    // function, so the two cannot come to disagree.
     ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("No document is open, so there are no comps or layers to export. Use "
-                       "File > New Document or File > Open... -- the painting canvas is a "
-                       "solver texture, not a document.");
+    ImGui::TextWrapped("%s", exportStatesBlockedReason(false, 0, ExportStatesReport{}).c_str());
     ImGui::PopStyleColor();
-    if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+    ImGui::TextDisabled("The painting canvas is a solver texture, not a document: it has no "
+                        "comps and no layers.");
+    if (ImGui::Button("Close")) {
+      st.openExportStatesDialog = false;
+      ImGui::CloseCurrentPopup();
+    }
     ImGui::EndPopup();
     return;
   }
@@ -6404,91 +6670,59 @@ void drawExportStatesDialog(AppState& st) {
   if (dot != std::string::npos && dot > 0) request.documentName.resize(dot);
 
   // A dialog that opens on an empty list is a dialog that looks broken. A
-  // document with no comps has nothing for PRD I17 to enumerate, and PRD I16
-  // is the same loop over a list it certainly does have, so that is where it
-  // opens. Only on open, so switching back is never fought.
+  // document with no comps has nothing for I17 to enumerate, and I16 is the
+  // same loop over a list it certainly does have, so that is where it opens.
+  // Only on open, so switching back is never fought.
   if (justOpened) {
     justOpened = false;
     if (doc.comps.empty()) request.source = ExportStateSource::Layers;
     picked.clear();
   }
 
-  ImGui::TextDisabled("Source: document '%s', %zu comps, %zu layers",
-                      request.documentName.c_str(), doc.comps.size(), doc.layers.size());
+  ImGui::TextDisabled("Source: document '%s' -- %zu comp%s, %zu layer%s.",
+                      request.documentName.c_str(), doc.comps.size(),
+                      doc.comps.size() == 1 ? "" : "s", doc.layers.size(),
+                      doc.layers.size() == 1 ? "" : "s");
   ImGui::Separator();
 
-  // --- What is enumerated: PRD I17 or PRD I16 -----------------------------
+  // --- What is enumerated -------------------------------------------------
+  //
+  // PRD I17 (comps) and PRD I16 (layers). Those two citations used to be
+  // *inside the radio button labels* -- "Comps (PRD I17)" -- which is a spec
+  // identifier presented as the name of a control. They live here now, which
+  // is where the rest of this file keeps its citations.
   int sourceIdx = request.source == ExportStateSource::Comps ? 0 : 1;
-  const bool sourceChanged = ImGui::RadioButton("Comps (PRD I17)", &sourceIdx, 0);
+  ImGui::TextUnformatted("Export one file per:");
   ImGui::SameLine();
-  const bool sourceChanged2 = ImGui::RadioButton("Layers (PRD I16)", &sourceIdx, 1);
+  const bool sourceChanged = ImGui::RadioButton("Comp", &sourceIdx, 0);
+  ImGui::SameLine();
+  const bool sourceChanged2 = ImGui::RadioButton("Layer", &sourceIdx, 1);
   if (sourceChanged || sourceChanged2) picked.clear();
   request.source = sourceIdx == 0 ? ExportStateSource::Comps : ExportStateSource::Layers;
 
-  // --- The four Export As settings, and a preset that carries them --------
-  if (ImGui::BeginCombo("Preset", "Load an Export As preset...")) {
-    if (presets.presets().empty()) ImGui::TextDisabled("(none saved yet)");
-    for (const ExportPreset& p : presets.presets()) {
-      const std::string why = exportRequestAvailability(p.request);
-      if (!why.empty()) ImGui::BeginDisabled();
-      if (ImGui::Selectable(p.name.c_str()) && why.empty()) {
-        request.format = p.request;
-        status = "Loaded preset '" + p.name + "'.";
-      }
-      if (!why.empty()) {
-        ImGui::EndDisabled();
-        ImGui::SetItemTooltip("%s", why.c_str());
-      }
-    }
-    ImGui::EndCombo();
-  }
-  if (ImGui::BeginCombo("Format", imageFormatName(request.format.format))) {
-    for (ImageFormat f : offerableExportFormats()) {
-      if (ImGui::Selectable(imageFormatName(f), f == request.format.format)) {
-        request.format.format = f;
-        const std::vector<ExportBitDepth> depths = offerableExportDepths(f);
-        if (!depths.empty() && std::find(depths.begin(), depths.end(), request.format.bitDepth) ==
-                                   depths.end())
-          request.format.bitDepth = depths.front();
-      }
-    }
-    ImGui::EndCombo();
-  }
-  if (ImGui::BeginCombo("Colour space", exportTargetSpaceName(request.format.targetSpace))) {
-    for (int i = 0; i < 3; ++i) {
-      const auto s = static_cast<ExportTargetSpace>(i);
-      if (ImGui::Selectable(exportTargetSpaceName(s), s == request.format.targetSpace))
-        request.format.targetSpace = s;
-    }
-    ImGui::EndCombo();
-  }
-  if (ImGui::BeginCombo("Bit depth", exportBitDepthName(request.format.bitDepth))) {
-    for (ExportBitDepth d : offerableExportDepths(request.format.format)) {
-      if (ImGui::Selectable(exportBitDepthName(d), d == request.format.bitDepth))
-        request.format.bitDepth = d;
-    }
-    ImGui::EndCombo();
-  }
-  if (ImGui::BeginCombo("Resize", exportResizeModeName(request.format.resize.mode))) {
-    for (std::size_t i = 0; i < kExportResizeModeCount; ++i) {
-      const auto m = static_cast<ExportResizeMode>(i);
-      if (ImGui::Selectable(exportResizeModeName(m), m == request.format.resize.mode))
-        request.format.resize.mode = m;
-    }
-    ImGui::EndCombo();
-  }
-  if (request.format.resize.mode == ExportResizeMode::Percent) {
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::SliderFloat("Percent", &request.format.resize.percent, 1.0f, 100.0f, "%.1f%%");
-  } else if (request.format.resize.mode == ExportResizeMode::FitWithin) {
-    int box[2] = {static_cast<int>(request.format.resize.maxWidth),
-                  static_cast<int>(request.format.resize.maxHeight)};
-    ImGui::SetNextItemWidth(200.0f);
-    if (ImGui::InputInt2("Fit within (px)", box)) {
-      request.format.resize.maxWidth = static_cast<uint32_t>(box[0] > 0 ? box[0] : 0);
-      request.format.resize.maxHeight = static_cast<uint32_t>(box[1] > 0 ? box[1] : 0);
-    }
-  }
+  // --- Presets, then the four settings, both shared with Export As --------
+  //
+  // Load-only here, on purpose: a preset is authored where it is authored
+  // (File > Export As...), and offering a second Save from a dialog whose
+  // extra controls -- folder, template, overwrite, selection -- are NOT part
+  // of an `ExportPreset` would imply they were being saved too.
+  ImGui::Separator();
+  drawExportPresetCombo("Preset", presets, request.format, loadedPresetName, status);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(saved in File > Export As...)");
+  drawExportSettingsControls(request.format);
+
+  // --- Validation, over this document's dimensions ------------------------
+  //
+  // New here. The batch dialog offered every one of Export As's settings and
+  // showed none of Export As's answers about them -- no output size, and none
+  // of PRD I11's cost warnings -- while applying them to N files instead of
+  // one. Same call, same strings.
+  const ExportValidation validation =
+      validateExportRequest(request.format, static_cast<uint32_t>(doc.width),
+                            static_cast<uint32_t>(doc.height), &doc.workingSpace, nullptr);
+  ImGui::Separator();
+  drawExportValidation(validation, kWarn, kError);
 
   // --- Where, and under what names (PRD I17's "with a name template") -----
   ImGui::Separator();
@@ -6496,14 +6730,34 @@ void drawExportStatesDialog(AppState& st) {
   ImGui::InputText("Output folder", dirBuf, sizeof(dirBuf));
   ImGui::SetNextItemWidth(420.0f);
   ImGui::InputText("Name template", templateBuf, sizeof(templateBuf));
-  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 560.0f);
-  ImGui::TextWrapped("%s", exportNameTemplateHelp().c_str());
-  ImGui::PopTextWrapPos();
-  ImGui::PopStyleColor();
+  // The token list on one line, with the paragraph explaining each of them --
+  // and explaining the deliberate absence of a date token -- one hover away.
+  //
+  // Three wrapped lines of reference prose sat here permanently, in the middle
+  // of a form that is already taller than the window, and they pushed the
+  // Export button below the fold. **Both strings come from io/ExportStates'
+  // own single list** (`exportNameTemplateTokens()` and
+  // `exportNameTemplateHelp()`, which that header keeps in step by
+  // construction: "There is one list, so the two cannot disagree"), so this is
+  // a shorter view of one vocabulary rather than a second one.
+  {
+    std::string tokenLine = "Tokens:";
+    for (const std::string& t : exportNameTemplateTokens()) tokenLine += " " + t;
+    tokenLine += "   (hover for what each does)";
+    ImGui::TextDisabled("%s", tokenLine.c_str());
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::BeginTooltip();
+      ImGui::PushTextWrapPos(560.0f);
+      ImGui::TextUnformatted(exportNameTemplateHelp().c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::EndTooltip();
+    }
+  }
   ImGui::Checkbox("Overwrite files that already exist", &request.overwriteExisting);
+  // PRD P4's all-or-nothing rule. The citation used to be in this sentence,
+  // on screen; it is a comment now for the reason the radio buttons' were.
   if (!request.overwriteExisting)
-    ImGui::TextDisabled("Off: an existing output path refuses the whole batch (PRD P4).");
+    ImGui::TextDisabled("Off: an existing output path refuses the whole batch.");
   request.outputDirectory = dirBuf;
   request.nameTemplate = templateBuf;
 
@@ -6517,7 +6771,12 @@ void drawExportStatesDialog(AppState& st) {
   if (ImGui::SmallButton("All")) picked.assign(total, true);
   ImGui::SameLine();
   if (ImGui::SmallButton("None")) picked.assign(total, false);
-  if (ImGui::BeginChild("##pick", ImVec2(420.0f, 96.0f), true)) {
+  // Sized to its contents, capped, rather than a fixed 96px. Both this list
+  // and the plan below it used to reserve a fixed height whatever they held,
+  // which on a three-layer document is a screenful of empty box in a dialog
+  // that is already taller than the window -- and it was pushing the Export
+  // button and the Close button off the bottom of the screen.
+  if (ImGui::BeginChild("##pick", ImVec2(420.0f, exportListHeight(total, 6, true)), true)) {
     for (size_t i = 0; i < total; ++i) {
       const std::string label =
           (request.source == ExportStateSource::Comps
@@ -6534,8 +6793,7 @@ void drawExportStatesDialog(AppState& st) {
   for (size_t i = 0; i < total; ++i)
     if (picked[i]) request.selection.push_back(i);
   // An empty `selection` means "all" to io/ExportStates, which is not what an
-  // empty set of checkboxes means here. Said rather than silently exporting
-  // everything.
+  // empty set of checkboxes means here.
   const bool noneChosen = request.selection.empty();
 
   // --- The plan: exactly what a click would write, computed for free ------
@@ -6550,18 +6808,16 @@ void drawExportStatesDialog(AppState& st) {
   // check.
   ExportStatesReport plan;
   if (!noneChosen) plan = planStateExport(doc, request);
-  if (noneChosen) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("Nothing is selected, so there is nothing to export.");
-    ImGui::PopStyleColor();
-  } else if (!plan.error.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, kError);
-    ImGui::TextWrapped("%s", plan.error.c_str());
+  const std::string blocked = exportStatesBlockedReason(true, request.selection.size(), plan);
+  if (!blocked.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, noneChosen ? kWarn : kError);
+    ImGui::TextWrapped("%s", blocked.c_str());
     ImGui::PopStyleColor();
   } else {
     ImGui::Text("Will write %zu file%s (%zu skipped):", plan.items.size() - plan.skipped(),
                 plan.items.size() - plan.skipped() == 1 ? "" : "s", plan.skipped());
-    if (ImGui::BeginChild("##plan", ImVec2(560.0f, 120.0f), true)) {
+    if (ImGui::BeginChild("##plan", ImVec2(560.0f, exportListHeight(plan.items.size(), 6, false)),
+                          true)) {
       for (const ExportStateItem& item : plan.items) {
         if (item.filename.empty()) {
           ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
@@ -6577,14 +6833,14 @@ void drawExportStatesDialog(AppState& st) {
 
   // --- Export, and the per-file report (PRD P4) ---------------------------
   ImGui::Separator();
-  const bool canExport = !noneChosen && plan.error.empty();
-  if (!canExport) ImGui::BeginDisabled();
+  if (!blocked.empty()) ImGui::BeginDisabled();
+  // No ellipsis: this writes the files. See this section's item 6.
   if (ImGui::Button("Export")) {
     lastRun = exportDocumentStates(doc, request);
     hasRun = true;
     status = exportStatesSummary(lastRun);
   }
-  if (!canExport) ImGui::EndDisabled();
+  if (!blocked.empty()) ImGui::EndDisabled();
   ImGui::SameLine();
   ImGui::TextDisabled("Exports the open document's %s, never the painting canvas.",
                       exportStateSourcePlural(request.source));
@@ -6596,7 +6852,8 @@ void drawExportStatesDialog(AppState& st) {
   }
   if (hasRun && !lastRun.items.empty()) {
     // Per file, always -- never one line claiming a count. PRD P4.
-    if (ImGui::BeginChild("##report", ImVec2(560.0f, 120.0f), true)) {
+    if (ImGui::BeginChild("##report", ImVec2(560.0f, exportListHeight(lastRun.items.size(), 6, false)),
+                          true)) {
       for (const ExportStateItem& item : lastRun.items) {
         const bool bad = item.outcome == ExportItemOutcome::Failed ||
                          item.outcome == ExportItemOutcome::NotAttempted;

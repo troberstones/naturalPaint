@@ -1081,6 +1081,19 @@ struct AppState {
   // photographing and which stays empty without a folder to resolve against.
   // `controlsScrollTo`'s pattern, one dialog over.
   std::string exportStatesFolder;
+  // --open-export-as: holds the File > Export As... modal open, so a
+  // `--screenshot` can photograph it. Exactly `openExportStatesDialog`'s
+  // justification, one dialog over -- and added for exactly the reason
+  // `--no-document` was: **neither export dialog had a single golden view**,
+  // because both are opened by a menu click and `--screenshot` cannot click a
+  // menu. That reachability gap, not any particular crop, is how a feature in
+  // this build ships visibly broken behind a green suite.
+  bool openExportAsDialog = false;
+  // --open-export-as <PATH>: prefills that dialog's Output file field. Without
+  // one the Export button is correctly disabled ("No output file yet: ..."),
+  // which is itself a state worth photographing -- so this is optional and
+  // both states are golden views. `exportStatesFolder`'s pattern.
+  std::string exportAsPath;
   // --open-layer-properties: holds the LAYERS panel's own gear-button modal
   // open, so a `--screenshot` can photograph it -- `openExportStatesDialog`'s
   // justification exactly, one dialog over: it too is opened by a click and

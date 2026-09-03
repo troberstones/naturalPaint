@@ -46,6 +46,12 @@
 #     same consequence.
 #   * `dabs/` and `dabs-imported/` (app/DabLibrary) size the tip grid.
 #   * `document-presets.txt` sizes the New Document dialog's list.
+#   * `export-presets.json` (io/ExportAs) is read on the first open of either
+#     export dialog, and a file that exists but does not parse -- or that
+#     holds a preset naming a token this build does not know -- puts a status
+#     line inside the modal. The two `export_*` views photograph that modal,
+#     so this file joins the list; it is the same argument as the four above,
+#     made before the view was written rather than after it flaked.
 #
 # This was found the way these things are found: `layers` failed with a
 # diffuse 3046-pixel shift that was neither noise nor a code change -- it was
@@ -623,8 +629,8 @@ measure_n="${2:-10}"
 #     view's job is the ramp's *geometry and stop list* in the ordinary case,
 #     and re-aiming it at an unusual colour would have traded one coverage
 #     for another rather than adding any.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo")
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states .")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -844,11 +850,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40)
-view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76)
-view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090)
-view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672)
+view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32)
+view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204)
+view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -921,7 +927,43 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # obvious shortcut and the exact mistake this file records `gradient_drag`
 # making. Measured on its own: 8 launches, 7 comparisons against the batch's
 # first (82 840 px crop), 0 mismatched px at max channel diff 0 every time.
-view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
+# **`export_as`, `export_as_blocked` and `export_states` are exact (0, 0), and
+# the number was measured before it was written down.** These are the first
+# golden views either export dialog has EVER had: both are opened by a File
+# menu click, `--screenshot` has no input, and no launch argument reached
+# File > Export As... at all -- so `--open-export-as` had to exist before a
+# crop region was even a meaningful question. That reachability gap, not any
+# particular rectangle, is what left every pixel of two modals uncovered
+# behind a green suite and twenty-seven green views; it is the same gap
+# `--no-document` was added to close for T5.
+#
+# The guess going in was `toolbar`'s (48, 16). These crops are almost entirely
+# TEXT -- four combo labels, a wrapped warning paragraph, a filename table --
+# and text is the one profile this file's history records flaking (`toolbar`'s
+# single glyph stem, `flyout`'s member names, both coin flips). They do not
+# flake. 8 separately-launched captures per view, each diffed against that
+# batch's first: 21 comparisons across the three, every one **0 mismatched px
+# at max channel diff 0**. Blessed exact, like `titlebar`, `wand_options` and
+# `color_overrange` -- all of which are also text views measured rather than
+# handed a budget by analogy, which is the mistake `gradient_drag`'s entry
+# above records making.
+#
+# Two things about the crops are deliberate rather than framed by eye:
+#
+#   * **Nothing in frame carries an absolute path.** The Export As presets
+#     file lives under the user's Application Support directory and its path
+#     used to be printed, unconditionally, as a line in the dialog; it is
+#     behind the "Manage +" toggle now, which starts closed. `export_states`
+#     is launched with `.` as its output folder for the same reason -- a real
+#     directory, so the plan table renders, spelled in a way that is the same
+#     on any machine.
+#   * **`export_states`' crop is the whole modal, 1204x1512 of a 1580-tall
+#     window.** It only just fits, and only because this revision stopped both
+#     of that dialog's scrolling lists reserving a fixed height whatever they
+#     held -- before that the Export and Close buttons were below the bottom
+#     of the screen. A future edit that adds a row to that dialog will push
+#     them off again, and this view is what will say so.
+view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -937,7 +979,7 @@ view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
+view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on
@@ -956,6 +998,7 @@ run_view_capture() {
       NP_BRUSH_LIBRARIES="$jdir/brush-libraries.txt" \
       NP_DAB_DIR="$jdir/dabs-root" \
       NP_DOCUMENT_PRESETS="$jdir/document-presets.txt" \
+      NP_EXPORT_PRESETS="$jdir/export-presets.json" \
       "$BIN" ${view_args[$idx]} --screenshot "$fullPng" "${view_frames[$idx]}" \
       > "$WORK_DIR/${name}.stdout.log" 2> "$WORK_DIR/${name}.stderr.log"; then
     echo "run_golden.sh: $name: naturalPaint exited nonzero -- see $WORK_DIR/${name}.stderr.log" >&2

@@ -512,6 +512,41 @@ bool runToolSwitchTest();
 // palette this section can only assert the inputs to.
 bool runToolSurfaceTest();
 
+// app/ExportDialog -- the decisions the two export dialogs make, lifted out of
+// ui/MacPaintUI.cpp in answer to the report "the export dialog seems a little
+// confusing".
+//
+// Both dialogs had **no coverage of any kind** before this section: no
+// assertion here, and no golden view either, because File > Export As... and
+// File > Export Comps / Layers To Files... are opened by a menu click and
+// `--screenshot` has no input. That is the same reachability gap that let T5
+// sit open behind a green suite, and it is why this step adds `--open-export-as`
+// alongside the assertions below.
+//
+// Five things, none of which a screenshot could have shown either:
+//
+//  (a) **The format menu is one menu.** The two dialogs disagreed -- Export As
+//      showed unwritable formats greyed with io/Export's own reason, the batch
+//      dialog silently omitted them -- so `exportFormatChoices()` is asserted
+//      against BOTH `allFormatCapabilities()` and `offerableExportFormats()`:
+//      every format has a row, and the writable rows are exactly the offerable
+//      set. PSD and camera raw pin the greying in both build configurations,
+//      being read-only in each.
+//  (b) **Depth legalisation**, over every (format, depth) pair the build has
+//      rather than a hand-picked one.
+//  (c) **Request equality is mode-aware.** A dialog keeps the unused resize
+//      mode's numbers alive on purpose (`ExportResize`'s own comment), so a
+//      memberwise compare would report a preset "modified" over a value the
+//      export never reads. Both halves are asserted.
+//  (d) **The preset combo names what is loaded**, including the
+//      "(modified)" case. It used to read "Load a preset..." forever.
+//  (e) **Why the Export button is off**, every branch and the ordering
+//      between them -- including the empty-output-path case, which used to
+//      grey the button with no message anywhere on screen.
+//
+// Headless, GPU-free and filesystem-free. See app/selftest/ExportDialog.cpp.
+bool runExportDialogTest();
+
 // Headless check on the unified view transform (PLAN.md Phase 2 step 11,
 // "View controls" -- PRD Q1-Q4; docs/shortcuts.md section 3's own mandate
 // that mirror and rotation compose into one matrix and pen input maps back
