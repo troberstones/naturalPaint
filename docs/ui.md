@@ -604,11 +604,13 @@ kind has a tile store.
 **Pen and Curve** shipped on 2026-09-03 with PLAN Phase 13's path model: `core/Path`,
 `core/PathRaster`, `core/PathStroke`, a `LayerKind::Vector` layer, `io/SvgImport`, and the
 canvas gesture and overlay in `ui/MacPaintUI.cpp` driving `app/PenTool`'s six drag kinds
-(docs/vector-editing.md). What is NOT built for them yet, by name: the options bar's
-shape/component mode segment (`pathEditSetSelectMode()` exists and has no caller in `ui/`),
-the gnomon's own scale and rotate handles (`gnomonHandlePositions()` is hit-tested but not
-drawn), the PATHS dock tab (§5 reserves it), and the three consumers — path-to-selection,
-fill path and stroke path with the current brush.
+(docs/vector-editing.md). The options bar's **MODE segment** and the **drawn gnomon**
+followed later the same day, closing two gaps this paragraph used to name:
+`pathEditSetSelectMode()` had no caller outside a screenshot fixture, so Component mode
+shipped unreachable, and `gnomonHandlePositions()` was hit-tested but never painted, so five
+handles were grabbable with nothing on screen at any of them. What is NOT built for them
+yet, by name: the PATHS dock tab (§5 reserves it), and the three consumers —
+path-to-selection, fill path and stroke path with the current brush.
 
 `docs/spec-vs-implementation.md` §2 carries the same table with the file-and-line evidence.
 
@@ -661,16 +663,22 @@ the moment the block gets a frame. The golden pair `text_options` / `text_option
 photographs both states over one crop, because a disabled control is a visual claim and
 `--selftest` can assert the predicate but not the pixel.
 
-**Pen and Curve belong in that table and are not in it yet.** They shipped on 2026-09-03
-without an options row, so they currently take the default and the band shows SIZE / HARD /
-LOAD / WET over a tool that reads none of them — precisely the "live controls over
-something this tool provably never reads" this section exists to rule out. The row they
-need is a **MODE segment, Shape / Component**, which is the whole of docs/vector-editing.md
-§3's two selection modes and the only one of the Pen's behaviours a user cannot reach any
-other way: `pathEditSetSelectMode()` is built and tested and has no caller under `ui/`, so
-the build ships with Component mode unreachable. This entry is here rather than in a
-tracker because the gap is invisible from the canvas — the Pen works, it just only ever
-selects whole shapes.
+**The Pen's and Curve's MODE segment** is docs/vector-editing.md §3's two selection modes,
+and it landed because it was the only one of the Pen's behaviours a user could not reach any
+other way: `pathEditSetSelectMode()` shipped built, tested and documented with its only
+caller in the tree being `--vector-demo components`, a screenshot fixture — so Component
+mode was unreachable by anyone actually using the program. The gap was invisible from the
+canvas: the Pen worked, it just only ever selected whole shapes.
+
+Beside it, **SELECTED** reads back the count, and it is not decoration. In Component mode
+the picture is a scatter of small squares that is genuinely hard to count, and "4 anchors"
+versus "1 anchor" is the difference between a transform that does what you meant and one
+that shears a corner off. It is also the only feedback that a click MISSED — an empty
+selection and a one-shape selection draw almost the same frame at a glance.
+
+Before this row existed both tools took the band's default and showed SIZE / HARD / LOAD /
+WET over a tool that reads none of them, which is exactly the "live controls over something
+this tool provably never reads" this section exists to rule out.
 
 The gradient's RAMP cell is the only place in this build whose content is a colour ramp
 rather than a number or a glyph, and it is drawn from the same `gradientToolStops()` the

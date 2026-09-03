@@ -288,6 +288,131 @@ bool runPenToolTest() {
   }
 
   // =======================================================================
+  // 5b. EVERY position the gnomon is DRAWN at is a position it can be HIT
+  //     at -- the drawn/hit contract, and the reason `gnomonReachPx` is
+  //     threaded through `pathEditBegin()` rather than defaulted.
+  // =======================================================================
+  //
+  // `gnomonHandlePositions()`' own header says it is "what the caller should
+  // read to draw the gnomon rather than a second, independently derived
+  // geometry", and `ui/MacPaintUI.cpp`'s overlay now does exactly that. But
+  // the overlay and the hit test are two separate call sites passing two
+  // separate `reachPx` arguments, and until the overlay existed nothing in
+  // the tree could tell whether they agreed: the gnomon was hit-tested and
+  // never drawn, so a mismatch had no symptom.
+  //
+  // It has one now, and it is a bad one: a handle painted where nothing is
+  // grabbable, or worse, a grab that starts a transform from a point with no
+  // handle on it. So this asserts the contract directly.
+  {
+    std::vector<VectorShape> shapes(1);
+    shapes[0].id = 31;
+    SubPath sub;
+    sub.closed = true;
+    // A real box, not a degenerate point: the corners must be four DISTINCT
+    // positions or "every corner is hittable" is one assertion wearing four
+    // hats.
+    sub.anchors = {anchor({0, 0}, {0, 0}, {0, 0}), anchor({100, 0}, {100, 0}, {100, 0}),
+                   anchor({100, 80}, {100, 80}, {100, 80}), anchor({0, 80}, {0, 80}, {0, 80})};
+    shapes[0].path.subpaths.push_back(sub);
+
+    PathSelection sel;
+    sel.mode = PathSelectMode::Shape;
+    sel.shapes = {31};
+
+    // Deliberately NOT `kDefaultGnomonReachPx`. The bug this section guards
+    // against is one call site using the default while the other zoom-corrects,
+    // and a test written at the default is green under exactly that bug.
+    const float reach = 17.0f;
+    const GnomonHandlePositions g = gnomonHandlePositions(shapes, sel, reach);
+    check(g.valid, "gnomonHandlePositions(): a shape-mode selection of one shape has a gnomon");
+
+    struct Spot { const char* name; PathPoint at; };
+    const Spot spots[] = {
+        {"free-move centre", g.center},   {"+X axis tip", g.axisXTip},
+        {"+Y axis tip", g.axisYTip},      {"corner 0", g.corners[0]},
+        {"corner 1", g.corners[1]},       {"corner 2", g.corners[2]},
+        {"corner 3", g.corners[3]},
+    };
+    bool everySpotHits = true;
+    const char* missed = "";
+    for (const Spot& sp : spots) {
+      // `pickRadiusPx` deliberately tiny: this must pass because the GNOMON
+      // is there, not because a generous pick radius swept up the shape
+      // underneath it.
+      const PathHit h = hitTestPath(shapes, sel, sp.at, /*pickRadiusPx=*/0.5f,
+                                    /*gnomonSuppressed=*/false,
+                                    /*pivotMoveModeActive=*/false, reach);
+      if (h.kind != PathHitKind::GnomonHandle) {
+        everySpotHits = false;
+        missed = sp.name;
+      }
+    }
+    check(everySpotHits,
+          "REQUIRED -- every position gnomonHandlePositions() reports is a GnomonHandle hit at "
+          "the same reach, so the overlay cannot draw a handle nothing can grab");
+    if (!everySpotHits) std::printf("    [selftest] first miss: %s\n", missed);
+
+    // --- SABOTAGE PROOF: the assertion above is about the reach AGREEING,
+    // not merely about the gnomon being large ---------------------------
+    //
+    // Run the identical loop with the hit test given a DIFFERENT reach --
+    // which is precisely the defect (one call site zoom-corrects, the other
+    // takes the default) -- and require that at least one drawn position now
+    // misses. Without this, the check above would still pass if
+    // `gnomonReachPx` were ignored entirely.
+    {
+      bool someSpotMissesAtWrongReach = false;
+      for (const Spot& sp : spots) {
+        const PathHit h = hitTestPath(shapes, sel, sp.at, 0.5f, false, false,
+                                      /*a different reach=*/reach * 4.0f);
+        if (h.kind != PathHitKind::GnomonHandle) someSpotMissesAtWrongReach = true;
+      }
+      check(someSpotMissesAtWrongReach,
+            "SABOTAGE PROOF: with the hit test given a reach the positions were NOT computed "
+            "at, at least one drawn handle stops being grabbable -- so the check above is "
+            "testing the agreement and not just the gnomon's size");
+    }
+
+    // --- and the same contract through `pathEditBegin()`, which is the
+    // function `ui/` actually calls -------------------------------------
+    //
+    // **This case exists because the two above did not catch the defect.**
+    // They test `hitTestPath()` directly; the plumbing the overlay depends on
+    // is `pathEditBegin()` FORWARDING its `gnomonReachPx` to it, and that
+    // parameter was added in the same change as the overlay. Making
+    // `pathEditBegin()` drop the argument and pass `kDefaultGnomonReachPx`
+    // -- the exact defect, and the state this function was in before the
+    // overlay existed -- left the suite entirely green. The sabotage found
+    // that, reading the test did not, and the fix was to the ASSERTION.
+    //
+    // Asserted through `state.drag` rather than a return value: a gnomon hit
+    // is `PathDragKind::Manipulator`, and no other tier produces it, so this
+    // cannot pass by landing on the shape underneath.
+    {
+      PathEditState st{};
+      st.selection = sel;
+      const bool geometryDrag =
+          pathEditBegin(&st, shapes, g.axisXTip, /*pickRadiusPx=*/0.5f,
+                        /*gnomonSuppressed=*/false, SelectionCombine::Replace,
+                        /*documentId=*/1, reach);
+      check(geometryDrag && st.drag == PathDragKind::Manipulator,
+            "REQUIRED -- pathEditBegin() FORWARDS gnomonReachPx: a pen-down on the +X axis tip "
+            "computed at that reach starts a Manipulator drag, which is the only tier a gnomon "
+            "hit produces");
+
+      PathEditState wrong{};
+      wrong.selection = sel;
+      pathEditBegin(&wrong, shapes, g.axisXTip, 0.5f, false, SelectionCombine::Replace, 1,
+                    /*a different reach=*/reach * 4.0f);
+      check(wrong.drag != PathDragKind::Manipulator,
+            "SABOTAGE PROOF: the same pen-down at a reach the tip was NOT computed at does NOT "
+            "start a Manipulator drag -- so the check above proves the argument is read, not "
+            "merely accepted");
+    }
+  }
+
+  // =======================================================================
   // 6. Hit-test priority -- REQUIRED: exactly docs/vector-editing.md section
   //    3's order, and gnomonSuppressed makes the next tier reachable.
   // =======================================================================

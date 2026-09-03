@@ -495,6 +495,22 @@ bool drawToolGlyph(ImDrawList* dl, uint32_t codepoint, ImVec2 c, ImU32 col) {
   return true;
 }
 
+// The Pen's gnomon reach, in DOCUMENT units, for a constant on-screen size.
+//
+// **One definition, two readers**, and that is the whole reason it is a
+// function: the canvas block forwards it to `pathEditBegin()` (which
+// hit-tests with it) and the overlay draws with it. Two hand-written copies
+// of `40.0f / zoom` is the defect class this codebase keeps recording -- a
+// drawn handle and a hit handle that agree at 1:1 and drift apart everywhere
+// else, which reads as "the gnomon is fiddly" rather than as a bug.
+//
+// `app/PenTool.hpp`'s `kDefaultGnomonReachPx` is the size, stated once there;
+// this only converts it. The zoom floor is the `pickTexels` line's own, so a
+// pathological zoom cannot divide by ~0.
+float pathGnomonReachTexels(float zoom) {
+  return kDefaultGnomonReachPx / std::max(0.05f, zoom);
+}
+
 // One cell of docs/ui.md section 2's single-column palette. `t` is always
 // drawn -- the ~20 cells toolImplemented() says are not built yet are not
 // skipped, they are drawn **inert**: dimmed, un-clickable (InvisibleButton
@@ -14453,7 +14469,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           const SelectionCombine how = selectionCombineFromModifiers(
               ImGui::GetIO().KeyShift, ImGui::GetIO().KeyAlt);
           pathEditBegin(&st.pathEdit, pathLayer->shapes, PathPoint{tx, ty}, pickTexels,
-                        gnomonSuppressed, how, pathDocId);
+                        gnomonSuppressed, how, pathDocId,
+                        pathGnomonReachTexels(st.view.zoom));
         }
 
         // `--vector-demo marquee` pins a held-open drag for the camera
@@ -15882,6 +15899,139 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                         1.5f);
             dl->AddLine(ImVec2(c.x, c.y - r - 3.0f), ImVec2(c.x, c.y + r + 3.0f), kPathCore,
                         1.5f);
+          }
+        }
+
+        // --- the gnomon ---
+        //
+        // **It was hit-tested and never drawn.** `PathHitKind::GnomonHandle`,
+        // Alt-to-suppress and `gnomonHandlePositions()` all shipped at
+        // PLAN.md phase 13; nothing under `src/ui/` called that last one, so
+        // this build has had five grabbable handles with nothing on screen at
+        // any of them. A handle you can only find by accident is worse than
+        // no handle, because a stray click on one silently starts a
+        // transform.
+        //
+        // Drawn from `gnomonHandlePositions()` and NOT from a second,
+        // independently derived box -- that function's own header says it is
+        // "what the caller should read to draw the gnomon", and it is the
+        // same call `hitTestPath()` makes, so the drawn geometry and the hit
+        // geometry cannot disagree by construction. The reach comes from
+        // `pathGnomonReachTexels()`, the one the pen-down above passed.
+        //
+        // Suppressed while a drag is live, `TransformHandlePositions`'
+        // `!g_moveDragging` rule exactly: handles drawn over their own
+        // in-progress transform chase the pointer and read as jitter.
+        if (st.pathEdit.drag == PathDragKind::None) {
+          const GnomonHandlePositions g = gnomonHandlePositions(
+              pl->shapes, st.pathEdit.selection, pathGnomonReachTexels(overlayZoom));
+          if (g.valid) {
+            const ImU32 kAxisX = IM_COL32(226, 96, 74, 255);   // +X, warm
+            const ImU32 kAxisY = IM_COL32(110, 186, 132, 255);  // +Y, cool
+            const ImU32 kCasing = IM_COL32(0, 0, 0, 165);
+            const Vec2 c = xform.toScreen(Vec2{g.center.x, g.center.y});
+
+            // The rotate ring first, so the axis arrows and the scale boxes
+            // sit ON it rather than under it -- the ring is the largest thing
+            // here and the one most easily mistaken for a selection outline,
+            // which is why it is drawn thin and unaccented.
+            {
+              // Radius through `toScreen` rather than scaled by zoom, because
+              // the view can be rotated and mirrored: a radius multiplied by
+              // `zoom` would be right only while the canvas is upright.
+              const Vec2 rim =
+                  xform.toScreen(Vec2{g.center.x + g.rotateRingRadius, g.center.y});
+              const float rPx = std::hypot(rim.x - c.x, rim.y - c.y);
+              dl->AddCircle(ImVec2(c.x, c.y), rPx, kCasing, 0, 3.0f);
+              dl->AddCircle(ImVec2(c.x, c.y), rPx, IM_COL32(255, 255, 255, 210), 0, 1.2f);
+            }
+
+            // The selection bounds and its four scale corners.
+            //
+            // **The BOX is drawn, not only its corners**, and the first
+            // version of this omitted it: four loose squares floating near a
+            // shape read as stray anchors, not as the corners of anything.
+            // The box is what makes them corners.
+            //
+            // **And they are HOLLOW squares while an anchor is a filled
+            // one.** This overlay's own rule two blocks up is that a square
+            // means an anchor and a disc means a tangent handle, told apart
+            // by SHAPE and not only by colour because they sit a few pixels
+            // apart. A scale corner is a third thing -- dragging it resizes
+            // the selection, where dragging an anchor moves one point -- and
+            // giving it the anchor's exact glyph is the same collision that
+            // rule exists to prevent. The demo blob makes this concrete: its
+            // four anchors sit at the compass points and the bounds corners
+            // sit at the diagonals, eight near-identical white squares in one
+            // frame until the fill told them apart.
+            {
+              float minX = g.corners[0].x, maxX = g.corners[0].x;
+              float minY = g.corners[0].y, maxY = g.corners[0].y;
+              for (const PathPoint& corner : g.corners) {
+                minX = std::min(minX, corner.x);
+                maxX = std::max(maxX, corner.x);
+                minY = std::min(minY, corner.y);
+                maxY = std::max(maxY, corner.y);
+              }
+              // Through `toScreen` per corner rather than as one screen-space
+              // rect, so the box stays on the selection under a rotated or
+              // mirrored view instead of becoming an axis-aligned lie.
+              const PathPoint box[4] = {
+                  {minX, minY}, {maxX, minY}, {maxX, maxY}, {minX, maxY}};
+              for (int i = 0; i < 4; ++i) {
+                const Vec2 a0 = xform.toScreen(Vec2{box[i].x, box[i].y});
+                const Vec2 b0 = xform.toScreen(Vec2{box[(i + 1) % 4].x, box[(i + 1) % 4].y});
+                dl->AddLine(ImVec2(a0.x, a0.y), ImVec2(b0.x, b0.y), kCasing, 2.5f);
+                dl->AddLine(ImVec2(a0.x, a0.y), ImVec2(b0.x, b0.y),
+                            IM_COL32(255, 255, 255, 190), 1.0f);
+              }
+            }
+            for (const PathPoint& corner : g.corners) {
+              const Vec2 p = xform.toScreen(Vec2{corner.x, corner.y});
+              const ImVec2 tl(p.x - 4.5f, p.y - 4.5f);
+              const ImVec2 br(p.x + 4.5f, p.y + 4.5f);
+              // A dark fill rather than none: over a light picture an
+              // unfilled outline is legible, over a dark one it disappears,
+              // and this is drawn over whatever the user painted.
+              dl->AddRectFilled(tl, br, IM_COL32(0, 0, 0, 110));
+              dl->AddRect(tl, br, kCasing, 0.0f, 0, 3.0f);
+              dl->AddRect(tl, br, IM_COL32(255, 255, 255, 245), 0.0f, 0, 1.5f);
+            }
+
+            // The two axis arrows. Coloured by AXIS and not by the accent,
+            // because their whole content is which direction they constrain
+            // -- two identically accented arrows would be a manipulator you
+            // have to hover to read. Warm X, cool Y, the convention every
+            // 3D manipulator this is modelled on uses.
+            const struct {
+              PathPoint tip;
+              ImU32 col;
+            } kAxes[2] = {{g.axisXTip, kAxisX}, {g.axisYTip, kAxisY}};
+            for (const auto& ax : kAxes) {
+              const Vec2 t = xform.toScreen(Vec2{ax.tip.x, ax.tip.y});
+              dl->AddLine(ImVec2(c.x, c.y), ImVec2(t.x, t.y), kCasing, 4.0f);
+              dl->AddLine(ImVec2(c.x, c.y), ImVec2(t.x, t.y), ax.col, 2.0f);
+              // An arrowhead built from the axis's own screen direction, so
+              // it stays on the axis under a rotated or mirrored view rather
+              // than pointing at document +X forever.
+              const float dx = t.x - c.x, dy = t.y - c.y;
+              const float len = std::max(1e-3f, std::hypot(dx, dy));
+              const float ux = dx / len, uy = dy / len;
+              const float head = 9.0f;
+              const ImVec2 a1(t.x - ux * head - uy * head * 0.45f,
+                              t.y - uy * head + ux * head * 0.45f);
+              const ImVec2 a2(t.x - ux * head + uy * head * 0.45f,
+                              t.y - uy * head - ux * head * 0.45f);
+              dl->AddTriangleFilled(ImVec2(t.x, t.y), a1, a2, kCasing);
+              dl->AddTriangleFilled(ImVec2(t.x - ux * 1.2f, t.y - uy * 1.2f), a1, a2, ax.col);
+            }
+
+            // The free-move centre, last and on top: it is the handle a user
+            // reaches for most, and section 3's hit-test priority puts the
+            // gnomon above the anchors, so the drawing order should say the
+            // same thing.
+            dl->AddCircleFilled(ImVec2(c.x, c.y), 5.5f, kCasing);
+            dl->AddCircleFilled(ImVec2(c.x, c.y), 4.0f, IM_COL32(255, 255, 255, 245));
           }
         }
 

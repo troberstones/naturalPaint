@@ -600,7 +600,7 @@ void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
 
 bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
                    PathPoint at, float pickRadiusPx, bool gnomonSuppressed,
-                   SelectionCombine how, uint64_t documentId) {
+                   SelectionCombine how, uint64_t documentId, float gnomonReachPx) {
   if (state == nullptr) return false;
   state->documentId = documentId;
   state->dragStart = at;
@@ -609,7 +609,8 @@ bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
   state->geometryEditOpened = false;
 
   const PathHit hit =
-      hitTestPath(shapes, state->selection, at, pickRadiusPx, gnomonSuppressed);
+      hitTestPath(shapes, state->selection, at, pickRadiusPx, gnomonSuppressed,
+                  /*pivotMoveModeActive=*/false, gnomonReachPx);
 
   const bool component = state->selection.mode == PathSelectMode::Component;
 
