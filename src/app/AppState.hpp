@@ -14,6 +14,7 @@
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
 #include "app/PanelLayout.hpp"
+#include "app/PenTool.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
 #include "app/GradientTool.hpp"
@@ -741,6 +742,34 @@ struct AppState {
   GradientDrag gradientDrag;
 
   bool gradientDragDemo = false;
+
+  // `Tool::Pen` / `Tool::Curve`'s vector editing session -- which of the six
+  // drags is live, the shape/component selection, and the transient component
+  // pivot (app/PenTool.hpp, docs/vector-editing.md section 6).
+  //
+  // **Its own struct, and `ui/` never assigns to a field of it.** Every
+  // transition goes through app/PenTool.cpp's transitions, so a
+  // `grep -rnP 'pathEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` finding
+  // anything is the defect (the `[^=]` matters: without it the grep also
+  // reports every `== PathDragKind::...` comparison the overlay makes, which
+  // is how a rule stops being checked). That is the
+  // same rule `gradientDrag` above states, and for the same reason: borrowing
+  // `marqueeDragging` gave that flag three writers and an unconditional clear
+  // in a sibling tool's else arm, and the gradient tool committed nothing for
+  // its entire history.
+  PathEditState pathEdit;
+
+  // `--vector-demo marquee`'s pin, and `gradientDragDemo` above's exact twin:
+  // a held-open path drag is the one piece of this tool's chrome that exists
+  // ONLY while the pointer is down, and a screenshot run has no pointer down.
+  //
+  // When set, the canvas block runs neither `pathEditUpdate()` (which would
+  // drag `dragNow` to wherever the human left the mouse, making the view
+  // non-deterministic by construction) nor the end-of-drag transition (which
+  // fires the moment the button is not down -- i.e. immediately). That pair
+  // of skips is the whole mechanism. It is NOT a field of `PathEditState`:
+  // it says nothing about the gesture, only that this process is a camera.
+  bool pathEditDemo = false;
 
   // `Tool::Crop`'s pending crop -- the rectangle or the four corners, the mode
   // toggle, and which handle is under the pointer (app/CropTool.hpp section 5).

@@ -2,6 +2,7 @@
 
 #include "app/CropTool.hpp"       // toolCropsCanvas()
 #include "app/MoveTool.hpp"       // toolMovesPixels()
+#include "app/PenTool.hpp"        // toolEditsPath()
 #include "app/StrokeSession.hpp"  // the route table and five of the gates
 #include "app/ZoomAndSize.hpp"    // toolZoomsView()
 
@@ -63,8 +64,8 @@ const char* toolSurfaceRefusal(Tool tool, bool documentOpen) {
   // phrasing of the same fact would be a second thing to keep in step, and the
   // instruction a user has to carry out is identical in every row below.
   //
-  // The ladder is over GATES, not over `Tool` values, so it is six rows for
-  // twenty-two tools and a sixth tool in any family inherits its family's
+  // The ladder is over GATES, not over `Tool` values, so it is seven rows for
+  // twenty-four tools and a further tool in any family inherits its family's
   // sentence. Ordered cheapest-first for the reason `toolHasCanvasHandler()`
   // orders its own disjunction: `toolBeginsStroke()` builds two probe `Layer`s
   // and is last, so no tool that answers an earlier gate ever reaches it.
@@ -85,6 +86,13 @@ const char* toolSurfaceRefusal(Tool tool, bool documentOpen) {
   // and gets "Not built yet." instead, which is the one-reason rule holding.
   if (toolCropsCanvas(tool))
     return "Nothing to crop: no document is open. File > New Document makes one.";
+  // Its own lead-in rather than borrowing Move's or the stroke row's: the Pen
+  // does not paint and does not move pixels, it edits geometry -- and a user
+  // reading "Nothing to paint on" off a dimmed Pen cell would be told about
+  // the wrong operation. Placed before `toolBeginsStroke()` because that row
+  // builds two probe `Layer`s and this one is a table lookup.
+  if (toolEditsPath(tool))
+    return "Nothing to draw paths in: no document is open. File > New Document makes one.";
   if (toolBeginsStroke(tool))
     return "Nothing to paint on: no document is open. File > New Document makes one.";
 

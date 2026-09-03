@@ -5,6 +5,7 @@
 #include <iterator>
 #include <tuple>
 
+#include "app/AppState.hpp"  // the real `enum class Tool`, opaque in the header
 #include "core/PathFlatten.hpp"
 
 namespace np {
@@ -493,6 +494,305 @@ std::vector<uint64_t> shapesIntersectingRect(const std::vector<VectorShape>& sha
     if (rectsOverlap(rect, pathControlBounds(s.path))) result.push_back(s.id);
   }
   return result;
+}
+
+
+// ==========================================================================
+// The interactive session (app/PenTool.hpp's four transitions)
+// ==========================================================================
+//
+// `ui/` calls only these; it never assigns to a `PathEditState` field. Keeping
+// every transition in one place is what makes the state machine reviewable --
+// and it is the rule a sibling tool's shared drag flag broke, silently, for
+// its whole history.
+
+namespace {
+
+bool componentIsSelected(const std::vector<ComponentRef>& selection,
+                         const ComponentRef& ref) {
+  for (const ComponentRef& c : selection)
+    if (c.shapeId == ref.shapeId && c.subPath == ref.subPath && c.anchor == ref.anchor)
+      return true;
+  return false;
+}
+
+bool shapeIsSelected(const std::vector<uint64_t>& selection, uint64_t id) {
+  return std::find(selection.begin(), selection.end(), id) != selection.end();
+}
+
+// Every anchor of one shape, as components. Used when a click lands on a
+// segment in Component mode: Photoshop's Direct Selection shows a path's
+// anchors when you click its outline, without selecting any of them for
+// dragging, and this is the closest honest equivalent.
+std::vector<ComponentRef> allAnchorsOf(const std::vector<VectorShape>& shapes,
+                                       uint64_t shapeId) {
+  std::vector<ComponentRef> out;
+  for (const VectorShape& s : shapes) {
+    if (s.id != shapeId) continue;
+    for (size_t sp = 0; sp < s.path.subpaths.size(); ++sp)
+      for (size_t a = 0; a < s.path.subpaths[sp].anchors.size(); ++a)
+        out.push_back(ComponentRef{shapeId, static_cast<uint32_t>(sp),
+                                   static_cast<uint32_t>(a), AnchorPart::Point});
+  }
+  return out;
+}
+
+}  // namespace
+
+void pathEditCancel(PathEditState* state) noexcept {
+  if (state == nullptr) return;
+  state->drag = PathDragKind::None;
+  state->dragComponent = ComponentRef{};
+  state->geometryEditOpened = false;
+  // Released rather than merely cleared: this holds a full copy of the layer's
+  // geometry, and a cancelled drag has no reason to keep a document's worth of
+  // anchors alive until the next one.
+  state->shapesAtDragStart.clear();
+  state->shapesAtDragStart.shrink_to_fit();
+}
+
+void pathEditRefreshPivot(PathEditState* state, const std::vector<VectorShape>& shapes) {
+  if (state == nullptr) return;
+  // The user-placed flag is the whole point (docs/vector-editing.md section 1):
+  // without it, placing a pivot and then extending the selection by one anchor
+  // silently throws the placement away.
+  if (state->componentPivotIsUserPlaced) return;
+  state->componentPivot = componentPivot(shapes, state->selection.components);
+}
+
+void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
+                           const std::vector<VectorShape>& shapes) {
+  if (state == nullptr) return;
+  if (state->selection.mode == mode) return;
+
+  // Abandon the live gesture BEFORE the selection changes underneath it: a
+  // Manipulator drag holds `shapesAtDragStart` against the old selection, and
+  // letting the next `pathEditUpdate()` apply that affine to a selection the
+  // user did not have at pen-down is exactly the class of cross-gesture
+  // contamination `PathEditState`'s single-writer rule exists to prevent.
+  pathEditCancel(state);
+
+  if (mode == PathSelectMode::Component) {
+    std::vector<ComponentRef> carried;
+    for (uint64_t id : state->selection.shapes) {
+      std::vector<ComponentRef> anchors = allAnchorsOf(shapes, id);
+      carried.insert(carried.end(), anchors.begin(), anchors.end());
+    }
+    state->selection.shapes.clear();
+    state->selection.components.clear();
+    combineComponentSelection(&state->selection.components, carried,
+                              SelectionCombine::Replace);
+  } else {
+    std::vector<uint64_t> carried;
+    carried.reserve(state->selection.components.size());
+    for (const ComponentRef& c : state->selection.components) carried.push_back(c.shapeId);
+    state->selection.components.clear();
+    state->selection.shapes.clear();
+    // `Replace` de-duplicates and sorts, which is what turns "one id per
+    // selected anchor" into "one id per shape" without a second pass here.
+    combineShapeSelection(&state->selection.shapes, carried, SelectionCombine::Replace);
+  }
+
+  state->selection.mode = mode;
+  state->componentPivotIsUserPlaced = false;
+  pathEditRefreshPivot(state, shapes);
+}
+
+bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
+                   PathPoint at, float pickRadiusPx, bool gnomonSuppressed,
+                   SelectionCombine how, uint64_t documentId) {
+  if (state == nullptr) return false;
+  state->documentId = documentId;
+  state->dragStart = at;
+  state->dragNow = at;
+  state->dragComponent = ComponentRef{};
+  state->geometryEditOpened = false;
+
+  const PathHit hit =
+      hitTestPath(shapes, state->selection, at, pickRadiusPx, gnomonSuppressed);
+
+  const bool component = state->selection.mode == PathSelectMode::Component;
+
+  switch (hit.kind) {
+    case PathHitKind::Anchor:
+    case PathHitKind::Tangent: {
+      if (component) {
+        // **Dragging an already-selected anchor moves the whole selection;
+        // dragging an unselected one replaces the selection with it.** That is
+        // every direct-manipulation editor's rule, and getting it backwards
+        // makes a multi-anchor drag impossible: the first press would collapse
+        // the selection the user just built.
+        if (!componentIsSelected(state->selection.components, hit.component)) {
+          std::vector<ComponentRef> one{hit.component};
+          combineComponentSelection(&state->selection.components, one, how);
+          pathEditRefreshPivot(state, shapes);
+        }
+      } else {
+        if (!shapeIsSelected(state->selection.shapes, hit.shapeId)) {
+          std::vector<uint64_t> one{hit.shapeId};
+          combineShapeSelection(&state->selection.shapes, one, how);
+        }
+      }
+      state->dragComponent = hit.component;
+      state->drag = (hit.kind == PathHitKind::Anchor) ? PathDragKind::AnchorDrag
+                                                      : PathDragKind::TangentDrag;
+      state->shapesAtDragStart = shapes;
+      return true;
+    }
+
+    case PathHitKind::Segment: {
+      if (component) {
+        // Show the path's anchors without selecting any for dragging, then
+        // start no drag -- a segment is not a handle.
+        std::vector<ComponentRef> anchors = allAnchorsOf(shapes, hit.shapeId);
+        combineComponentSelection(&state->selection.components, anchors, how);
+        pathEditRefreshPivot(state, shapes);
+        state->drag = PathDragKind::None;
+        return false;
+      }
+      if (!shapeIsSelected(state->selection.shapes, hit.shapeId)) {
+        std::vector<uint64_t> one{hit.shapeId};
+        combineShapeSelection(&state->selection.shapes, one, how);
+      }
+      // A whole-shape move is the manipulator's translate, reached without
+      // touching the gnomon -- the same way Move commits on pen-up rather than
+      // on Return.
+      state->drag = PathDragKind::Manipulator;
+      state->shapesAtDragStart = shapes;
+      return true;
+    }
+
+    case PathHitKind::PivotMarker: {
+      state->drag = PathDragKind::PivotMove;
+      state->shapesAtDragStart = shapes;
+      // Editing no geometry, so this opens no undo entry until it actually
+      // moves a pivot -- which IS document data (core/VectorShape.hpp).
+      return true;
+    }
+
+    case PathHitKind::GnomonHandle: {
+      state->drag = PathDragKind::Manipulator;
+      state->shapesAtDragStart = shapes;
+      return true;
+    }
+
+    case PathHitKind::None: {
+      // Empty canvas: a marquee, and the modifier decides whether it replaces
+      // or extends. A bare click on nothing clears the selection, which is
+      // what every editor does and what makes "click away to deselect" work.
+      if (how == SelectionCombine::Replace) {
+        state->selection.shapes.clear();
+        state->selection.components.clear();
+        pathEditRefreshPivot(state, shapes);
+      }
+      state->drag = PathDragKind::Marquee;
+      return false;
+    }
+  }
+  return false;
+}
+
+PathEditChange pathEditUpdate(PathEditState* state, std::vector<VectorShape>* shapes,
+                              PathPoint at) {
+  if (state == nullptr || shapes == nullptr) return PathEditChange::None;
+  if (state->drag == PathDragKind::None) return PathEditChange::None;
+  state->dragNow = at;
+
+  const float dx = at.x - state->dragStart.x;
+  const float dy = at.y - state->dragStart.y;
+  // A held-still pointer is the common case during a drag, not the rare one.
+  // Doing nothing here keeps it out of the undo history entirely.
+  if (dx == 0.0f && dy == 0.0f) return PathEditChange::None;
+
+  switch (state->drag) {
+    case PathDragKind::Marquee:
+      // Selection is resolved at pen-up, against the finished rectangle.
+      return PathEditChange::None;
+
+    case PathDragKind::PivotMove: {
+      // Editing no geometry: the pivot moves and every anchor stays put. In
+      // Component mode the transient pivot moves and nothing in the document
+      // changes at all, so there is no edit to record.
+      if (state->selection.mode == PathSelectMode::Component) {
+        state->componentPivot = at;
+        state->componentPivotIsUserPlaced = true;
+        return PathEditChange::None;
+      }
+      bool moved = false;
+      for (VectorShape& s : *shapes) {
+        if (!shapeIsSelected(state->selection.shapes, s.id)) continue;
+        setShapePivot(&s, at);
+        moved = true;
+      }
+      if (!moved) return PathEditChange::None;
+      const bool first = !state->geometryEditOpened;
+      state->geometryEditOpened = true;
+      return first ? PathEditChange::EditBegan : PathEditChange::EditContinued;
+    }
+
+    case PathDragKind::AnchorDrag:
+    case PathDragKind::TangentDrag:
+    case PathDragKind::Manipulator:
+    case PathDragKind::PenExtend: {
+      // **Rebuilt from the pen-down snapshot, never accumulated.** One affine
+      // against the original geometry -- so the result depends on where the
+      // pointer IS, not on how many frames it took to get there.
+      *shapes = state->shapesAtDragStart;
+
+      if (state->drag == PathDragKind::TangentDrag) {
+        // One handle, alone: this is the gesture that BREAKS a smooth anchor,
+        // so it deliberately does not go through applyAffineToSelection().
+        for (VectorShape& s : *shapes) {
+          if (s.id != state->dragComponent.shapeId) continue;
+          if (state->dragComponent.subPath >= s.path.subpaths.size()) continue;
+          SubPath& sub = s.path.subpaths[state->dragComponent.subPath];
+          if (state->dragComponent.anchor >= sub.anchors.size()) continue;
+          Anchor& a = sub.anchors[state->dragComponent.anchor];
+          if (state->dragComponent.part == AnchorPart::InHandle) {
+            a.in = at;
+          } else if (state->dragComponent.part == AnchorPart::OutHandle) {
+            a.out = at;
+          }
+        }
+      } else {
+        applyAffineToSelection(shapes, state->selection, transformTranslate(dx, dy));
+      }
+
+      const bool first = !state->geometryEditOpened;
+      state->geometryEditOpened = true;
+      return first ? PathEditChange::EditBegan : PathEditChange::EditContinued;
+    }
+
+    case PathDragKind::None:
+      return PathEditChange::None;
+  }
+  return PathEditChange::None;
+}
+
+void pathEditEnd(PathEditState* state, const std::vector<VectorShape>& shapes) {
+  if (state == nullptr) return;
+
+  if (state->drag == PathDragKind::Marquee) {
+    PathBounds box;
+    box.valid = true;
+    box.minX = std::min(state->dragStart.x, state->dragNow.x);
+    box.maxX = std::max(state->dragStart.x, state->dragNow.x);
+    box.minY = std::min(state->dragStart.y, state->dragNow.y);
+    box.maxY = std::max(state->dragStart.y, state->dragNow.y);
+    if (state->selection.mode == PathSelectMode::Component) {
+      std::vector<ComponentRef> hits = componentsInRect(shapes, box);
+      combineComponentSelection(&state->selection.components, hits,
+                                SelectionCombine::Add);
+      pathEditRefreshPivot(state, shapes);
+    } else {
+      std::vector<uint64_t> hits = shapesIntersectingRect(shapes, box);
+      combineShapeSelection(&state->selection.shapes, hits, SelectionCombine::Add);
+    }
+  } else {
+    pathEditRefreshPivot(state, shapes);
+  }
+
+  pathEditCancel(state);
 }
 
 }  // namespace np

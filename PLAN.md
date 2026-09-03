@@ -574,14 +574,22 @@ Selection → path (contour extraction plus curve fitting) is a non-goal.
 > vendored), and the headless core of editing (`app/PenTool`) against the
 > design in `docs/vector-editing.md`.
 >
-> **Not built, by name:** every part of this phase a user can reach. `Tool::Pen`
-> and `Tool::Curve` are still `implemented=false`, there is no canvas gesture,
-> no PATHS panel, and `app/OpenAnyFile` still refuses an SVG by name rather
-> than importing it -- the importer exists and nothing calls it. Path ->
-> selection, fill path and stroke-path-with-brush are likewise unwired. That
-> work is deliberately serialised rather than parallelised: it all lands in
-> `ui/MacPaintUI.cpp`, which is ~14 900 lines with every tool's gesture block
-> inline in `drawUI()`.
+> **The UI landed 2026-09-03**, serialised rather than parallelised because it
+> all lands in `ui/MacPaintUI.cpp`, which is ~14 900 lines with every tool's
+> gesture block inline in `drawUI()`. `Tool::Pen` and `Tool::Curve` are
+> `implemented=true` with a `toolEditsPath()` gate, a canvas gesture block
+> driving `app/PenTool`'s six drag kinds, and an on-canvas overlay (outlines,
+> anchors, tangent handles for selected anchors, the per-shape pivot crosshair,
+> the marquee -- deliberately not marching ants). `File > Open` and drag-drop
+> import an SVG as a Vector document. Three golden views photograph the
+> overlay: `vector_shape`, `vector_components`, `vector_marquee`.
+>
+> **Not built, by name:** the options bar's Shape/Component mode segment, which
+> leaves `pathEditSetSelectMode()` built, tested and uncalled -- so Component
+> mode is unreachable from the UI; the gnomon's drawn scale and rotate handles
+> (`gnomonHandlePositions()` is hit-tested, never drawn); the PATHS panel; and
+> the three PRD J consumers -- path -> selection, fill path, and
+> stroke-path-with-brush.
 >
 > Also unbuilt: gradients. `io/SvgImport` refuses a gradient paint **by name**
 > rather than half-wiring one, because the intended design

@@ -9,12 +9,15 @@
 #include <span>
 #include <utility>
 
+#include "app/DocumentPresets.hpp"
 #include "app/ImportImage.hpp"
 #include "core/CanvasLimits.hpp"
 #include "core/Document.hpp"
 #include "io/Capabilities.hpp"
 #include "io/ImageIO.hpp"
+#include "core/LayerOps.hpp"
 #include "io/PsdImport.hpp"
+#include "io/SvgImport.hpp"
 
 // app/OpenAnyFile -- implementation. Every design decision is argued in
 // OpenAnyFile.hpp; this file holds the mechanics, and comments only where the
@@ -156,24 +159,108 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     return r;
   }
 
-  // --- SVG: recognised, not yet importable ----------------------------------
+  // --- SVG ------------------------------------------------------------------
   //
-  // Placeholder for io/SvgImport, which does not exist yet -- it is built
-  // from this track and two others, in parallel. Refused here, by name,
-  // rather than falling through to the picture path below: `sniff.format` is
-  // `std::nullopt` for a `Vector` file (io/FileKind.hpp), so letting it reach
-  // the image decoder would produce "matches no image format this build
-  // reads", which is a worse answer than the true one -- the file WAS
-  // recognised, and the reader for it has not landed. Remove this branch
-  // once io/SvgImport exists; everything below it already handles "a
-  // recognised signature this build cannot yet turn into a document" for
-  // every raster format, so this is the one case with no decoder to try at
-  // all rather than one that tried and failed.
+  // Its own branch rather than a fall-through to the picture path below,
+  // because `sniff.format` is `std::nullopt` for a `Vector` file
+  // (io/FileKind.hpp): an SVG reaching the image decoder would come back
+  // "matches no image format this build reads", which is false -- the file was
+  // recognised and there IS a reader for it.
+  //
+  // The result is a **one-layer Vector document**, not a rasterised picture.
+  // That is the point of the whole subsystem: the geometry stays editable, and
+  // the raster is a cache the compositor derives (core/VectorRaster). So this
+  // does not go through `openImageAsDocument()` at all -- there is nothing to
+  // decode -- and builds the document here, which is a dozen lines because
+  // every piece already exists.
   if (sniff.kind == FileKind::Vector) {
-    return refuse("Open refused: '" + fileNameOf(path) +
-                      "' is an SVG (vector) file, and this build does not import vector "
-                      "artwork yet.",
-                  FileKind::Vector);
+    SvgImportResult svg = importSvg(bytes.data(), bytes.size());
+    if (!svg.ok) {
+      return refuse("Open refused: '" + fileNameOf(path) + "' is an SVG, but it could not "
+                        "be read -- " + svg.error,
+                    FileKind::Vector);
+    }
+
+    // The viewport, rounded OUT: a 100.5px-wide drawing needs 101 columns, and
+    // rounding down would clip the last one. io/SvgImport guarantees these are
+    // non-zero when `ok`, and SVG's own UA default (300x150) covers a document
+    // that states no size at all, so the zero test below is a belt on a brace.
+    const double wD = std::ceil(static_cast<double>(svg.widthPx));
+    const double hD = std::ceil(static_cast<double>(svg.heightPx));
+    const double kMax = static_cast<double>(kMaxDocumentPresetDimension);
+    if (!(wD >= 1.0) || !(hD >= 1.0)) {
+      return refuse("Open refused: '" + fileNameOf(path) +
+                        "' is an SVG whose viewport is empty (" +
+                        std::to_string(svg.widthPx) + "x" + std::to_string(svg.heightPx) +
+                        "), so there is no canvas to open it into.",
+                    FileKind::Vector);
+    }
+    // Refused by name rather than clamped. A clamp would open the file and
+    // silently crop the artwork, and an SVG is resolution-independent -- the
+    // honest answer is that this build's canvas is not, and to say the limit.
+    if (wD > kMax || hD > kMax) {
+      return refuse("Open refused: '" + fileNameOf(path) + "' is an SVG whose viewport is " +
+                        std::to_string(static_cast<long long>(wD)) + "x" +
+                        std::to_string(static_cast<long long>(hD)) +
+                        " px, and this build's maximum canvas is " +
+                        std::to_string(kMaxDocumentPresetDimension) + "x" +
+                        std::to_string(kMaxDocumentPresetDimension) +
+                        ". Scale it down in the exporting application first.",
+                    FileKind::Vector);
+    }
+
+    Document built = Document::createBlank(static_cast<int32_t>(wD),
+                                           static_cast<int32_t>(hD), WorkingSpace{});
+    built.layers.clear();
+    Layer vec = makeVectorLayer(fileNameOf(path));
+    vec.shapes = std::move(svg.shapes);
+    // **io/SvgImport leaves every `id` at zero, and this is where they are
+    // assigned.** `core/VectorShape.hpp` says zero means "not yet assigned",
+    // and app/PenTool keys its selection on the id -- so importing without
+    // this step gives a layer whose shapes are individually unselectable, all
+    // of them answering to shape 0. Nothing in the importer could do it
+    // instead: ids are unique *within a layer*, and the importer does not know
+    // which layer its shapes are about to land in.
+    uint64_t nextId = 1;
+    for (VectorShape& shape : vec.shapes) shape.id = nextId++;
+    vec.nextShapeId = nextId;
+    const size_t shapeCount = vec.shapes.size();
+    addLayer(built, 0, std::move(vec));
+
+    OpenAnyResult r;
+    r.ok = true;
+    r.kind = FileKind::Vector;
+    r.document.id = allocateDocumentId();
+    r.document.document = std::move(built);
+    // Bound to nothing, for the same reason the picture path below is: a
+    // Cmd-S against `logo.svg` would write EXR bytes over the user's SVG.
+    r.document.path.clear();
+    r.document.title = fileNameOf(path);
+    r.document.residencyMode = TileResidencyMode::Eager;
+    r.document.revision = 0;
+    r.document.savedRevision = 0;
+    r.document.recordEdit("open SVG as document (" + fileNameOf(path) + ")",
+                          EditKind::Structural);
+
+    r.status = "Opened '" + fileNameOf(path) + "' (SVG, " +
+               std::to_string(static_cast<long long>(wD)) + "x" +
+               std::to_string(static_cast<long long>(hD)) + ") as a vector document with " +
+               std::to_string(shapeCount) +
+               (shapeCount == 1 ? " shape." : " shapes.");
+    // Every refusal io/SvgImport recorded, verbatim -- the same "say what was
+    // dropped" contract app/PsdReport established, and the reason the importer
+    // returns them as data rather than printing them.
+    for (std::string& why : svg.refusals) r.warnings.push_back("SVG: " + std::move(why));
+    if (shapeCount == 0) {
+      r.warnings.push_back(
+          "'" + fileNameOf(path) +
+          "' produced no shapes: the document opened, but it is empty. Any reason is "
+          "listed above.");
+    }
+    r.warnings.push_back("'" + fileNameOf(path) +
+                         "' was opened as a document but is not bound to a file: Save is "
+                         "unavailable until Save As gives it a .npaint of its own.");
+    return r;
   }
 
   // --- A picture -----------------------------------------------------------
@@ -390,14 +477,20 @@ DropAction dropActionFor(FileKind kind, bool documentIsOpen, DropDestination des
       // the same thing" for why that is one branch and not two.
       if (destination == DropDestination::TabStrip) return DropAction::OpenAsDocument;
       return documentIsOpen ? DropAction::ImportAsLayer : DropAction::OpenAsDocument;
-    // Placeholder until io/SvgImport exists: refused rather than routed
-    // anywhere, wherever it lands. See openAnyFileAsDocument()'s own
-    // FileKind::Vector branch for the same placeholder on the File > Open
-    // path, and this file's header for why a `.npaint` (the other kind that
-    // is never a layer) gets a real destination-aware rule while this one
-    // does not need one yet -- there is nowhere to route it until an SVG
-    // importer lands.
-    case FileKind::Vector: return DropAction::Refuse;
+    // An SVG opens as a document wherever it lands, exactly like a `.npaint`
+    // above and unlike a picture -- and the asymmetry is deliberate rather
+    // than unfinished.
+    //
+    // **Importing one as a layer is not a missing branch here, it is an
+    // unmade decision.** io/SvgImport returns shapes in the coordinates of
+    // the SVG's own viewport; dropping those into a document of a different
+    // size has at least three defensible answers -- place at 1:1 and let the
+    // artwork fall off the canvas, scale to fit, or centre -- and picking one
+    // silently is how an importer acquires a behaviour nobody chose. Until
+    // that is decided, opening the file is the answer that loses nothing:
+    // every shape arrives, at its own coordinates, on a canvas sized to hold
+    // them.
+    case FileKind::Vector: return DropAction::OpenAsDocument;
     case FileKind::Unknown: return DropAction::Refuse;
   }
   return DropAction::Refuse;
@@ -526,21 +619,15 @@ DropOutcome applyDroppedFiles(DocumentSession& session, RecentDocuments* recent,
         break;
       }
       case DropAction::Refuse:
-        // Two different reasons share this case, and the message says which:
-        // `Vector` (SVG) bytes WERE recognised -- there is just no importer
-        // for them yet, the same placeholder openAnyFileAsDocument() states
-        // for File > Open -- while everything else here matched no format
-        // this build knows at all. Said here rather than by letting the file
-        // fall through to a decoder that will also decline, so the sentence
-        // can name the gesture ("dropped") and the file together.
-        if (kind == FileKind::Vector) {
-          note("'" + fileNameOf(path) +
-               "' was not opened: it is an SVG (vector) file, and this build does not "
-               "import vector artwork yet.");
-        } else {
-          note("'" + fileNameOf(path) +
-               "' was not opened: its contents match no format this build reads.");
-        }
+        // One reason reaches this case now: the bytes matched no format this
+        // build knows. `Vector` used to arrive here too, when there was no SVG
+        // importer to route it to; it now routes to OpenAsDocument above, so
+        // an SVG that still fails does so inside openAnyFileAsDocument() with
+        // that function's own specific reason (a malformed document, an empty
+        // viewport, a canvas past this build's maximum) rather than under this
+        // generic sentence.
+        note("'" + fileNameOf(path) +
+             "' was not opened: its contents match no format this build reads.");
         break;
     }
   }

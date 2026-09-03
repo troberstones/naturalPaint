@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "app/PenTool.hpp"  // toolEditsPath
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
 #include "app/DocumentLifecycle.hpp"
@@ -231,8 +232,15 @@ constexpr ToolMeta kToolMeta[] = {
     // wires the drag, not in the one that writes the arithmetic, and until it
     // flips the palette cell is disabled and the route is unreachable however
     // complete the engine is.
-    {"Pen", "pen-tool", 57649u, "P", false},
-    {"Curve", "spline", 58251u, "Shift+P", false},
+    // Pen and Curve flip **here**, in the commit that adds their canvas block
+    // to `drawUI()` and `toolEditsPath()` to `toolHasCanvasHandler()` below.
+    // That pairing is not a style preference: `app/selftest/Eyedropper.cpp`
+    // asserts `toolImplemented(t) == toolHasCanvasHandler(t)` for every tool
+    // and separately asserts `toolNoHandlerException()` is empty, so flipping
+    // either half alone turns the suite red -- and the tempting repair is a
+    // row in the table that is asserted to have none.
+    {"Pen", "pen-tool", 57649u, "P", true},
+    {"Curve", "spline", 58251u, "Shift+P", true},
     {"Text", "type", 57752u, "T", false},
     {"Shape", "shapes", 58547u, "", false},
     {"Slice", "slice", 58096u, "", false},
@@ -256,7 +264,7 @@ const char* toolName(Tool t) { return metaFor(t).name; }
 bool toolImplemented(Tool t) noexcept { return metaFor(t).implemented; }
 
 bool toolHasCanvasHandler(Tool t) noexcept {
-  // Seven gates, each of them the expression the corresponding block in
+  // Nine gates, each of them the expression the corresponding block in
   // `ui/MacPaintUI.cpp`'s canvas is actually written with. Nothing here is a
   // restatement of "which tools work" -- see the header.
   //
@@ -297,7 +305,8 @@ bool toolHasCanvasHandler(Tool t) noexcept {
   // for the ordering reason stated above: it is cheap and `noexcept`.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
          toolMeasuresCanvas(t) || toolPansView(t) || toolMovesPixels(t) ||
-         toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t);
+         toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t) ||
+         toolEditsPath(t);
 }
 
 const char* toolNoHandlerException(Tool) noexcept {

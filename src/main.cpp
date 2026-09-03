@@ -435,6 +435,143 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
                   : 0);
 }
 
+// --vector-demo [components|marquee] (PLAN.md Phase 13; docs/vector-editing.md):
+// puts a `LayerKind::Vector` layer on the session's document, selects
+// `Tool::Pen`, and drives `app/PenTool`'s real pen-down/pen-up transitions so
+// the on-canvas path overlay can be photographed.
+//
+// It exists for the reason every other `--*-demo` flag in this file exists:
+// the overlay is per-tool chrome drawn over the picture, `--screenshot` has no
+// way to click a palette cell or drag a pointer, and a feature that can only
+// be checked by a human is one that silently rots. `--selftest` proves
+// app/PenTool's hit testing, its selection algebra and its affines; none of
+// that can prove the anchors are ON SCREEN, the right way up, under the
+// canvas's zoom/pan rather than in raw document coordinates, and not hidden
+// behind the layer they belong to.
+//
+// **Every state below is reached through `pathEditBegin()`/`pathEditUpdate()`/
+// `pathEditEnd()`, never by assigning to `st.pathEdit`.** A fixture that wrote
+// the selection directly would photograph a struct field and would keep
+// working after the hit test broke -- and it would be a second writer of the
+// state whose single-writer rule app/PenTool.hpp makes greppable.
+//
+//   (default)     Shape mode: a click on a segment, which selects the whole
+//                 shape -- so the picture carries a selected outline and the
+//                 persistent per-shape pivot crosshair.
+//   components    Component mode: the same click, which in that mode selects
+//                 every anchor of the shape -- so the picture carries the
+//                 tangent handles, which are drawn for selected anchors ONLY.
+//   marquee       A marquee held open mid-drag: pen-down on empty canvas and a
+//                 move, with no pen-up. The rubber band exists only while the
+//                 pointer is down, so it is unphotographable any other way --
+//                 `--gradient-demo drag`'s argument exactly.
+void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
+  // Two shapes, deliberately unalike. The blob's handles do not coincide with
+  // their anchors, so it draws tangent sticks; the triangle's do, so it draws
+  // none -- and the overlay's "a zero-length stick with a knob on it would
+  // claim a curve that is not there" branch is under the camera as well.
+  np::VectorShape blob;
+  {
+    np::SubPath sub;
+    sub.closed = true;
+    // A rounded quadrilateral around (400, 380), inset well clear of the
+    // 1024-px demo canvas's edges so no part of the overlay is clipped away by
+    // the canvas bounds rather than by anything this flag is testing.
+    const float cx = 400.0f, cy = 380.0f, r = 190.0f, k = 105.0f;
+    const np::PathPoint pts[4] = {{cx, cy - r}, {cx + r, cy}, {cx, cy + r}, {cx - r, cy}};
+    const np::PathPoint tan[4] = {{k, 0.0f}, {0.0f, k}, {-k, 0.0f}, {0.0f, -k}};
+    for (int i = 0; i < 4; ++i) {
+      np::Anchor a;
+      a.pt = pts[i];
+      a.in = np::PathPoint{pts[i].x - tan[i].x, pts[i].y - tan[i].y};
+      a.out = np::PathPoint{pts[i].x + tan[i].x, pts[i].y + tan[i].y};
+      a.smooth = true;
+      sub.anchors.push_back(a);
+    }
+    blob.path.subpaths.push_back(sub);
+    blob.fill.on = true;
+    blob.fill.rgba = {0.16f, 0.32f, 0.55f, 1.0f};
+  }
+
+  np::VectorShape tri;
+  {
+    np::SubPath sub;
+    sub.closed = true;
+    const np::PathPoint pts[3] = {{700.0f, 620.0f}, {900.0f, 860.0f}, {560.0f, 860.0f}};
+    for (const np::PathPoint& p : pts) {
+      np::Anchor a;
+      // Handles ON the anchor: core/Path's "no handle," i.e. a straight edge.
+      a.pt = p;
+      a.in = p;
+      a.out = p;
+      sub.anchors.push_back(a);
+    }
+    tri.path.subpaths.push_back(sub);
+    tri.fill.on = true;
+    tri.fill.rgba = {0.62f, 0.24f, 0.14f, 1.0f};
+  }
+
+  np::Layer vec = np::makeVectorLayer("Vector demo");
+  vec.shapes.push_back(std::move(blob));
+  vec.shapes.push_back(std::move(tri));
+  uint64_t nextId = 1;
+  for (np::VectorShape& s : vec.shapes) s.id = nextId++;
+  vec.nextShapeId = nextId;
+
+  const size_t at = od.document.layers.size();
+  np::addLayer(od.document, at, std::move(vec));
+  np::setActiveLayer(od, at);
+  np::setLayersPanelSelection(od, at);
+  np::setActiveTool(st, np::Tool::Pen);
+
+  std::vector<np::VectorShape>& shapes = od.document.layers[at].shapes;
+
+  // The pick radius the canvas block itself computes at zoom 1. Passing a
+  // different one here would make the demo hit things the real gesture would
+  // miss.
+  const float pickTexels = 8.0f;
+
+  if (mode == 2) {
+    // Empty canvas, well clear of both shapes, then a move and NO pen-up.
+    np::pathEditBegin(&st.pathEdit, shapes, np::PathPoint{140.0f, 120.0f}, pickTexels,
+                      false, np::SelectionCombine::Replace, od.id);
+    np::pathEditUpdate(&st.pathEdit, &shapes, np::PathPoint{760.0f, 540.0f});
+    // The pin, without which the canvas block ends this drag on frame 1 (the
+    // button is not down) and, before that, drags `dragNow` to wherever the
+    // human left the mouse. app/AppState.hpp states the mechanism.
+    st.pathEditDemo = true;
+    std::printf("[vector-demo] marquee held open: 140,120 -> 760,540, drag=%d\n",
+                static_cast<int>(st.pathEdit.drag));
+    return;
+  }
+
+  if (mode == 1) np::pathEditSetSelectMode(&st.pathEdit, np::PathSelectMode::Component, shapes);
+
+  // The midpoint (t = 0.5) of the blob's north-west arc, which is a SEGMENT
+  // and not an anchor -- the hit the two modes answer differently. The four
+  // anchors sit at the compass points, so this is ~145 px from the nearest
+  // two, well outside `pickTexels`. Aiming at a compass point instead is the
+  // trap: `{cx - r, cy}` reads like "the middle of the left edge" and is in
+  // fact the west ANCHOR exactly, which hits `PathHitKind::Anchor` and
+  // selects one component where the picture wants four.
+  const np::PathPoint onSegment{265.6f, 245.6f};
+  np::pathEditBegin(&st.pathEdit, shapes, onSegment, pickTexels, false,
+                    np::SelectionCombine::Replace, od.id);
+  np::pathEditEnd(&st.pathEdit, shapes);
+
+  std::printf("[vector-demo] %zu shapes, %s mode: %zu shapes / %zu components selected\n",
+              shapes.size(),
+              st.pathEdit.selection.mode == np::PathSelectMode::Component ? "component"
+                                                                          : "shape",
+              st.pathEdit.selection.shapes.size(),
+              st.pathEdit.selection.components.size());
+  if (st.pathEdit.selection.shapes.empty() && st.pathEdit.selection.components.empty())
+    std::fprintf(stderr,
+                 "[vector-demo] nothing selected -- the click at %.0f,%.0f missed the "
+                 "path, so this photograph shows an UNSELECTED overlay\n",
+                 static_cast<double>(onSegment.x), static_cast<double>(onSegment.y));
+}
+
 // --ui-merge-demo <command> (PLAN.md Phase 5 step 10): press exactly one of
 // core/Merge's five buttons on the session's document, through the same
 // `applyLayerCommand()` the `Layer` menu and the LAYERS panel call.
@@ -1185,6 +1322,9 @@ int main(int argc, char** argv) {
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
+  // --vector-demo [components|marquee]: see runVectorDemo().
+  bool vectorDemo = false;
+  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee
   bool overRangeDemo = false;
   bool flyoutDemo = false;
   // --no-document: see the argument-parsing block, and the "A session always
@@ -1551,6 +1691,24 @@ int main(int argc, char** argv) {
       if (i + 1 < argc && std::string_view(argv[i + 1]) == "content") {
         maskDemoTarget = false;
         ++i;
+      }
+    } else if (a == "--vector-demo") {
+      // Selects `Tool::Pen` and puts a Vector layer under it. See
+      // `runVectorDemo()` for what each argument photographs and why the flag
+      // drives app/PenTool's real transitions rather than writing the
+      // selection. **Not `--pen-demo`** -- that name is already taken, by the
+      // *transform* demo's synthetic pointer drag further up this file, and
+      // reusing it would silently change what an existing golden view shoots.
+      vectorDemo = true;
+      if (i + 1 < argc) {
+        const std::string_view arg(argv[i + 1]);
+        if (arg == "components") {
+          vectorDemoMode = 1;
+          ++i;
+        } else if (arg == "marquee") {
+          vectorDemoMode = 2;
+          ++i;
+        }
       }
     } else if (a == "--smudge-demo") {
       // Selects `Tool::Smudge`, and changes nothing else -- which is the whole
@@ -3321,6 +3479,12 @@ int main(int argc, char** argv) {
   // After --demo-document, which is the fixture it aims at.
   if (maskDemo) {
     if (np::OpenDocument* od = st.documents.active()) runMaskDemo(*od, maskDemoTarget);
+  }
+  if (vectorDemo) {
+    if (np::OpenDocument* od = st.documents.active()) runVectorDemo(st, *od, vectorDemoMode);
+    else
+      std::fprintf(stderr, "[vector-demo] no document open -- this flag needs one to put a "
+                           "Vector layer in\n");
   }
   if (marqueeDemo) {
     if (np::OpenDocument* od = st.documents.active()) {

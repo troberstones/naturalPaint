@@ -399,15 +399,103 @@ bool runPenToolTest() {
     check(!toolEditsPath(Tool::Shape) && !toolEditsPath(Tool::Text),
           "toolEditsPath(): Shape and Text are NOT path-editing tools, named explicitly since "
           "they are the two easiest to mistake for one");
-    // This predicate is deliberately NOT yet wired into
-    // toolHasCanvasHandler() -- see app/PenTool.hpp section 2. Both halves of
-    // that claim are checked here rather than trusted: Pen still reads
-    // unimplemented, and the eyedropper's own tripwire (its section 6) still
-    // finds toolImplemented() == toolHasCanvasHandler() for every tool,
-    // meaning wiring this predicate in has not silently happened elsewhere.
-    check(!toolImplemented(Tool::Pen) && !toolHasCanvasHandler(Tool::Pen),
-          "toolEditsPath(): Tool::Pen is still unimplemented with no canvas handler -- this "
-          "predicate exists without having been wired into the gate yet");
+    // **Wired, and the pairing is the assertion.** This predicate used to be
+    // pinned as deliberately NOT in `toolHasCanvasHandler()`, because the
+    // headless model landed before the canvas block that uses it. Both landed
+    // together in one commit, and they have to: the eyedropper's tripwire (its
+    // section 6) asserts `toolImplemented(t) == toolHasCanvasHandler(t)` for
+    // every tool and separately asserts `toolNoHandlerException()` is empty, so
+    // flipping either half alone turns the suite red -- and the tempting
+    // repair is a row in the table asserted to have none.
+    check(toolImplemented(Tool::Pen) && toolHasCanvasHandler(Tool::Pen),
+          "toolEditsPath(): Tool::Pen is implemented AND has a canvas handler -- the two "
+          "halves flipped together, which is the only way the tool tables stay consistent");
+    check(toolImplemented(Tool::Curve) && toolHasCanvasHandler(Tool::Curve),
+          "toolEditsPath(): so is Tool::Curve, which shares the gate and the flyout");
+  }
+
+  // =======================================================================
+  // 8. pathEditSetSelectMode() -- the mode switch CARRIES the selection
+  // =======================================================================
+  //
+  // The options bar's mode segment, and the only writer of
+  // `PathSelection::mode`. What is asserted here is the property that makes
+  // it a mode toggle rather than a deselect: switching does not throw the
+  // user's selection away. Dropping it would look like a rounding bug at the
+  // UI -- the shapes stay on screen, only their chrome vanishes -- which is
+  // exactly the class of silent behaviour this suite exists to pin.
+  {
+    // Two shapes, so "carries the selection across" is distinguishable from
+    // "selects everything": only shape 7 is ever selected below, and shape 8
+    // must stay out of the result at every step.
+    auto square = [&](uint64_t id, float x, float y) {
+      VectorShape s;
+      SubPath sub;
+      sub.closed = true;
+      const PathPoint pts[4] = {{x, y}, {x + 10, y}, {x + 10, y + 10}, {x, y + 10}};
+      for (const PathPoint& p : pts) sub.anchors.push_back(anchor(p, p, p));
+      s.path.subpaths.push_back(sub);
+      s.id = id;
+      return s;
+    };
+    const std::vector<VectorShape> shapes{square(7, 0, 0), square(8, 100, 100)};
+
+    PathEditState st;
+    st.selection.mode = PathSelectMode::Shape;
+    st.selection.shapes = {7};
+
+    pathEditSetSelectMode(&st, PathSelectMode::Component, shapes);
+    check(st.selection.mode == PathSelectMode::Component,
+          "pathEditSetSelectMode(): Shape -> Component switches the mode");
+    check(st.selection.shapes.empty() && st.selection.components.size() == 4,
+          "pathEditSetSelectMode(): ...carrying the selection across as every anchor of the "
+          "shapes that were selected -- four, for the one selected square, and NOT the eight "
+          "of both squares");
+    bool allFromSeven = true;
+    for (const ComponentRef& c : st.selection.components)
+      if (c.shapeId != 7 || c.part != AnchorPart::Point) allFromSeven = false;
+    check(allFromSeven,
+          "pathEditSetSelectMode(): ...every carried component is an anchor POINT of shape 7, "
+          "the shape that was selected -- not a handle, and not the unselected shape 8");
+    check(ptNear(st.componentPivot, PathPoint{5, 5}),
+          "pathEditSetSelectMode(): ...and the transient pivot is recomputed for the new "
+          "component selection rather than left where the old mode put it");
+
+    pathEditSetSelectMode(&st, PathSelectMode::Shape, shapes);
+    check(st.selection.mode == PathSelectMode::Shape && st.selection.components.empty() &&
+              st.selection.shapes.size() == 1 && st.selection.shapes[0] == 7,
+          "pathEditSetSelectMode(): Component -> Shape carries back to the ONE shape those "
+          "four anchors belong to -- de-duplicated, not one entry per anchor");
+
+    // A live drag is abandoned, and it has to be: `shapesAtDragStart` was
+    // captured against the OTHER mode's selection, so letting the next
+    // `pathEditUpdate()` run would apply that affine to a selection the user
+    // did not have at pen-down.
+    st.selection.mode = PathSelectMode::Shape;
+    st.selection.shapes = {7};
+    const bool began =
+        pathEditBegin(&st, shapes, PathPoint{5, 0}, 2.0f, /*gnomonSuppressed=*/true,
+                      SelectionCombine::Replace, /*documentId=*/1);
+    check(began && st.drag == PathDragKind::Manipulator,
+          "pathEditSetSelectMode(): (setup) a press on a selected shape's segment starts a "
+          "Manipulator drag");
+    pathEditSetSelectMode(&st, PathSelectMode::Component, shapes);
+    check(st.drag == PathDragKind::None && st.shapesAtDragStart.empty(),
+          "pathEditSetSelectMode(): ...and switching mode mid-drag abandons it, snapshot and "
+          "all -- the affine was captured against the other mode's selection");
+
+    // Idempotence: setting the mode it is already in is a no-op, not a
+    // selection round trip. Without this, an options bar that re-asserts the
+    // current mode every frame -- which is what an ImGui segmented control
+    // does -- would rebuild the selection on every frame of the session.
+    st.selection.mode = PathSelectMode::Component;
+    st.selection.components.clear();
+    st.selection.components.push_back(ComponentRef{7, 0, 2, AnchorPart::Point});
+    pathEditSetSelectMode(&st, PathSelectMode::Component, shapes);
+    check(st.selection.components.size() == 1 && st.selection.components[0].anchor == 2,
+          "pathEditSetSelectMode(): setting the mode already in effect leaves the selection "
+          "exactly as it was -- an options bar re-asserting it every frame must not rebuild "
+          "it every frame");
   }
 
   return ok;
