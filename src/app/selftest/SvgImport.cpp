@@ -6,8 +6,10 @@
 
 #include "color/Space.hpp"
 #include "core/Path.hpp"
+#include "core/TextContent.hpp"
 #include "core/VectorShape.hpp"
 #include "io/SvgImport.hpp"
+#include "text/Shaper.hpp"
 
 #ifndef NP_SVG_TEST_DIR
 #error "NP_SVG_TEST_DIR must be defined by CMake -- see src/CMakeLists.txt"
@@ -39,6 +41,43 @@ bool hasRefusalContaining(const SvgImportResult& r, const std::string& needle) {
 
 SvgImportResult importText(const std::string& xml) {
   return importSvg(reinterpret_cast<const uint8_t*>(xml.data()), xml.size());
+}
+
+// The shaper's OWN answers for a block, derived here without going anywhere
+// near io/SvgImport -- so an assertion comparing the importer's numbers to
+// these is the importer agreeing with CoreText, not with itself.
+struct ShaperTruth {
+  bool ok = false;
+  float baselineOffset = 0.0f;  // top of the shaped block -> first baseline
+  float width = 0.0f;
+};
+
+ShaperTruth shaperTruthFor(const TextContent& t) {
+  ShaperTruth out;
+  const ShapedText s = shapeText(t.utf8, t.style, TextFrame{}, TextAlign::Left);
+  if (!s.ok || s.glyphs.empty()) return out;
+  float minY = s.glyphs[0].y;
+  for (const ShapedGlyph& g : s.glyphs) minY = std::min(minY, g.y);
+  out.ok = true;
+  out.baselineOffset = minY;
+  out.width = s.widthPx;
+  return out;
+}
+
+PathBounds shapesBounds(const std::vector<VectorShape>& shapes) {
+  return vectorShapesBounds(shapes);
+}
+
+bool hasShapeNamed(const SvgImportResult& r, const std::string& name) {
+  for (const VectorShape& s : r.shapes)
+    if (s.name == name) return true;
+  return false;
+}
+
+size_t indexOfShapeNamed(const SvgImportResult& r, const std::string& name) {
+  for (size_t i = 0; i < r.shapes.size(); ++i)
+    if (r.shapes[i].name == name) return i;
+  return r.shapes.size();
 }
 
 }  // namespace
@@ -357,7 +396,15 @@ bool runSvgImportTest() {
     check(hasRefusalContaining(r, "switch"), "refusal: switch named");
     check(hasRefusalContaining(r, "foreignObject"), "refusal: foreignObject named");
     check(hasRefusalContaining(r, "image"), "refusal: image named");
-    check(hasRefusalContaining(r, "text"), "refusal: text named");
+    // `<text>` used to be on this list ("text rendering deferred to Stage 5").
+    // Stage 5 shipped, so the assertion is inverted rather than deleted: the
+    // same `<text x='0' y='0'>hi</text>` above must now come back as an
+    // editable block. See io/SvgImport.hpp section 7 and this file's own
+    // section 13. (On a build with no shaper it is still refused, and section
+    // 13 checks that spelling instead.)
+    check(shaperAvailable() ? (r.texts.size() == 1 && r.texts[0].content.utf8 == "hi")
+                            : hasRefusalContaining(r, "text not imported"),
+          "refusal: <text> is no longer refused -- it imports as an editable text block");
     check(hasRefusalContaining(r, "script"), "refusal: script named");
     check(hasRefusalContaining(r, "animate"), "refusal: animate named");
     check(hasRefusalContaining(r, "external"), "refusal: external <use> reference named");
@@ -486,6 +533,417 @@ bool runSvgImportTest() {
             "inkscape fixture: plate rect scaled from its mm viewBox correctly");
       check(!r.shapes[1].fill.on,
             "inkscape fixture: ribbon path's gradient fill drops to no-paint (no fallback given)");
+    }
+  }
+
+  // --- 13. <text> ----------------------------------------------------------
+  //
+  // io/SvgImport.hpp section 7. Three things are checked here that nothing
+  // else in this build can check for the importer: that a `<text>` becomes an
+  // editable `TextContent` rather than glyph soup, that the two silent
+  // conversions of section 7b are right (SVG's BASELINE -> `TextContent`'s
+  // TOP-LEFT, and `text-anchor` -> an ORIGIN SHIFT rather than a `TextAlign`
+  // that provably does nothing), and that the flat shape list and the text
+  // list still re-interleave into the document's own PAINTING order.
+  //
+  // Every assertion below that touches the shaper compares against
+  // `shaperTruthFor()`, which asks CoreText the same question independently.
+
+  if (!shaperAvailable()) {
+    // Not a failure: text/StubShaper.cpp builds are a supported configuration
+    // and the importer refuses `<text>` by name there. That refusal is what
+    // this section checks on such a build.
+    const auto r = importText(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+        "<text x='20' y='60'>Studio</text></svg>");
+    check(r.texts.empty() && r.shapes.empty(), "text (no shaper): nothing is imported");
+    check(hasRefusalContaining(r, "text not imported"),
+          "text (no shaper): the missing shaper is named, not silently dropped");
+  } else {
+    // --- 13a. the simplest <text>: an editable block, and the baseline ---
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          // **Georgia at 30px, and neither number is an accident.**
+          // `TextStyle`'s own defaults are Helvetica at 24px, so a fixture
+          // written with those would leave the two assertions below green
+          // even if nothing in the importer ever wrote either field -- which
+          // is exactly what a sabotage of buildTextNodeCtx proved when this
+          // case did use them.
+          "<text x='20' y='60' font-family='Georgia' font-size='30' fill='#ff0000'>Studio"
+          "</text></svg>");
+      check(r.ok && r.texts.size() == 1 && r.shapes.empty(),
+            "text: a plain <text> becomes ONE editable text block and no shapes");
+      check(r.refusals.empty(), "text: a plain <text> refuses nothing at all");
+      if (r.texts.size() == 1) {
+        const TextContent& t = r.texts[0].content;
+        check(t.utf8 == "Studio", "text: the string survives verbatim");
+        check(t.style.fontFamily == "Georgia" && nearf(t.style.sizePx, 30.0f),
+              "text: font-family and font-size reach TextStyle (neither is TextStyle's default)");
+        // A negative control: these ARE TextStyle's defaults, so this line
+        // only catches an importer that turns them on unasked. Section 13c
+        // is where bold and italic are pinned positively.
+        check(!t.style.bold && !t.style.italic, "text: no font-weight/style means neither");
+        check(t.fill.on && nearf(t.fill.rgba[0], 1.0f) && nearf(t.fill.rgba[1], 0.0f),
+              "text: fill decodes to linear like every other paint");
+        check(nearf(t.frame.width, 0.0f), "text: an SVG <text> is POINT text (frame.width == 0)");
+
+        const ShaperTruth truth = shaperTruthFor(t);
+        check(truth.ok, "text: the reference shaping succeeded (the rest of 13a rests on it)");
+        std::printf("    [measured] svg y=60, origin.y=%.4f, shaper ascent=%.4f\n",
+                    static_cast<double>(t.origin.y), static_cast<double>(truth.baselineOffset));
+        check(nearf(t.origin.x, 20.0f, 1e-3f), "text: x is the origin's x under text-anchor:start");
+        // THE trap-1 assertion. `origin` is the block's TOP-LEFT and SVG's
+        // `y` is the BASELINE; the distance between them is the font's own
+        // ascent at this size, which this test asks CoreText for separately.
+        check(nearf(t.origin.y, 60.0f - truth.baselineOffset, 1e-3f),
+              "text: origin.y is the SVG baseline MINUS the shaper's own ascent");
+        check(truth.baselineOffset > 0.5f * 30.0f,
+              "text: and that ascent is a real font metric, not zero or a token offset");
+        check(t.origin.y < 60.0f - 10.0f,
+              "text: so origin.y sits WELL above the baseline (a no-op conversion fails here)");
+
+        // The same fact stated without the shaper: "Studio" has no
+        // descender, so its painted bottom IS the baseline the file named.
+        // A conversion that skipped the ascent puts the whole block a line
+        // lower and this is where that shows up.
+        const PathBounds b = textContentBounds(t);
+        check(b.valid, "text: the block paints something");
+        if (b.valid) {
+          std::printf("    [measured] painted extent y: %.4f .. %.4f (svg baseline 60)\n",
+                      static_cast<double>(b.minY), static_cast<double>(b.maxY));
+          check(std::fabs(b.maxY - 60.0f) < 1.0f,
+                "text: a descender-free string's painted BOTTOM lands on the SVG baseline");
+          check(b.minY < 60.0f - 0.5f * 30.0f,
+                "text: and its painted TOP is a cap-height above that baseline");
+        }
+      }
+    }
+
+    // --- 13b. text-anchor is an ORIGIN SHIFT, never TextAlign ------------
+    {
+      auto anchored = [&](const char* anchor) {
+        return importText(std::string("<svg xmlns='http://www.w3.org/2000/svg' width='200' "
+                                      "height='100'><text x='100' y='50' text-anchor='") +
+                          anchor + "' font-family='Helvetica' font-size='20'>Center</text></svg>");
+      };
+      const auto rs = anchored("start");
+      const auto rm = anchored("middle");
+      const auto re = anchored("end");
+      check(rs.texts.size() == 1 && rm.texts.size() == 1 && re.texts.size() == 1,
+            "anchor: all three text-anchor values still import as editable text");
+      if (rs.texts.size() == 1 && rm.texts.size() == 1 && re.texts.size() == 1) {
+        const ShaperTruth truth = shaperTruthFor(rs.texts[0].content);
+        std::printf("    [measured] shaped width %.4f; origin.x start=%.4f middle=%.4f end=%.4f\n",
+                    static_cast<double>(truth.width),
+                    static_cast<double>(rs.texts[0].content.origin.x),
+                    static_cast<double>(rm.texts[0].content.origin.x),
+                    static_cast<double>(re.texts[0].content.origin.x));
+        check(truth.ok && truth.width > 20.0f,
+              "anchor: the reference string really does have a width to shift by");
+        check(nearf(rs.texts[0].content.origin.x, 100.0f, 1e-3f),
+              "anchor: text-anchor:start leaves the origin at x");
+        check(nearf(rm.texts[0].content.origin.x, 100.0f - 0.5f * truth.width, 1e-2f),
+              "anchor: text-anchor:middle shifts the ORIGIN left by half the shaped width");
+        check(nearf(re.texts[0].content.origin.x, 100.0f - truth.width, 1e-2f),
+              "anchor: text-anchor:end shifts the ORIGIN left by the whole shaped width");
+        check(rm.texts[0].content.origin.x < rs.texts[0].content.origin.x - 1.0f &&
+                  re.texts[0].content.origin.x < rm.texts[0].content.origin.x - 1.0f,
+              "anchor: the three origins are strictly ordered (a no-op shift fails here)");
+        // The other half of section 7b: `align` is a value nothing would
+        // read at frame.width == 0, so storing the anchor there would be a
+        // silent no-op. It must stay at its default.
+        check(rs.texts[0].content.align == TextAlign::Left &&
+                  rm.texts[0].content.align == TextAlign::Left &&
+                  re.texts[0].content.align == TextAlign::Left,
+              "anchor: TextAlign is left ALONE -- the anchor is not stored as an align value");
+      }
+    }
+
+    // --- 13c. the ordinary style machinery reaches text ------------------
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<g font-family='Georgia' font-size='30'>"
+          "<text x='0' y='40' font-weight='bold' font-style='italic'>B</text></g></svg>");
+      check(r.texts.size() == 1, "text style: inherited font properties import");
+      if (r.texts.size() == 1) {
+        const TextStyle& s = r.texts[0].content.style;
+        check(s.fontFamily == "Georgia" && nearf(s.sizePx, 30.0f),
+              "text style: font-family/font-size inherit from an ancestor <g>");
+        check(s.bold && s.italic, "text style: font-weight:bold and font-style:italic are read");
+      }
+    }
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg'><style>text{font-family:\"Times New Roman\", "
+          "serif;font-size:11pt}</style><text x='0' y='0' font-size='40'>x</text></svg>");
+      check(r.texts.size() == 1, "text style: a <style> rule reaches a <text>");
+      if (r.texts.size() == 1) {
+        const TextStyle& s = r.texts[0].content.style;
+        check(s.fontFamily == "Times New Roman",
+              "text style: the FIRST family of a quoted font-family list is taken, unquoted");
+        // io/SvgStyle.hpp's cascade: a sheet rule outranks a presentation
+        // attribute, so 11pt wins over font-size='40'. 11pt at 96dpi.
+        check(nearf(s.sizePx, 11.0f * 96.0f / 72.0f, 1e-2f),
+              "text style: the sheet rule outranks the presentation attribute, in pt at 96dpi");
+      }
+    }
+    {
+      const auto r600 = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg'><text x='0' y='0' font-weight='600'>x</text>"
+          "</svg>");
+      const auto r500 = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg'><text x='0' y='0' font-weight='500'>x</text>"
+          "</svg>");
+      check(r600.texts.size() == 1 && r600.texts[0].content.style.bold,
+            "text style: numeric font-weight 600 is bold");
+      check(r500.texts.size() == 1 && !r500.texts[0].content.style.bold,
+            "text style: numeric font-weight 500 is not");
+    }
+
+    // --- 13d. the transform stack: folded, or outlined ------------------
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<g transform='translate(10,20) scale(2)'>"
+          "<text x='5' y='40' font-family='Helvetica' font-size='10'>Hi</text></g></svg>");
+      check(r.texts.size() == 1 && r.shapes.empty(),
+            "text transform: a translate+uniform scale still yields an editable block");
+      if (r.texts.size() == 1) {
+        const TextContent& t = r.texts[0].content;
+        check(nearf(t.style.sizePx, 20.0f),
+              "text transform: the uniform scale folds into sizePx (10 -> 20)");
+        check(nearf(t.origin.x, 10.0f + 2.0f * 5.0f, 1e-3f),
+              "text transform: and the translate folds into the origin");
+        const ShaperTruth truth = shaperTruthFor(t);
+        check(truth.ok && nearf(t.origin.y, 20.0f + 2.0f * 40.0f - truth.baselineOffset, 1e-2f),
+              "text transform: the baseline is converted AFTER the scale, at the scaled size");
+      }
+    }
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<g transform='rotate(30)'>"
+          "<text x='5' y='40' font-family='Helvetica' font-size='10'>Hi</text></g></svg>");
+      check(r.texts.empty() && !r.shapes.empty(),
+            "text transform: a ROTATE cannot fold, so the text comes back as glyph outlines");
+      check(hasRefusalContaining(r, "OUTLINES") && hasRefusalContaining(r, "rotation"),
+            "text transform: and the fallback is named in the report, never silent");
+    }
+
+    // --- 13e/f. the <tspan> fallbacks, each named ------------------------
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<text x='10' y='40' font-family='Helvetica' font-size='12'>Hello "
+          "<tspan fill='red'>World</tspan></text></svg>");
+      check(r.texts.empty() && !r.shapes.empty(),
+            "tspan style: a styled run cannot be one TextContent, so it outlines");
+      check(hasRefusalContaining(r, "carries its own style"),
+            "tspan style: and the reason names the styled <tspan>");
+      bool sawRed = false, sawBlack = false;
+      for (const VectorShape& s : r.shapes) {
+        if (s.fill.on && s.fill.rgba[0] > 0.5f && s.fill.rgba[1] < 0.1f) sawRed = true;
+        if (s.fill.on && s.fill.rgba[0] < 0.1f) sawBlack = true;
+      }
+      check(sawRed && sawBlack,
+            "tspan style: BOTH runs are outlined, each keeping its own fill");
+    }
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<text x='10' y='20' font-family='Helvetica' font-size='12'>"
+          "<tspan x='10' y='20'>one</tspan><tspan x='10' y='60'>two</tspan></text></svg>");
+      check(r.texts.empty() && !r.shapes.empty(),
+            "tspan position: two positioned runs outline rather than being dropped");
+      check(hasRefusalContaining(r, "repositions"),
+            "tspan position: and the reason names the repositioning");
+      const PathBounds b = shapesBounds(r.shapes);
+      check(b.valid && b.minY < 20.0f && b.maxY > 55.0f,
+            "tspan position: each run really is drawn at ITS OWN baseline, 40px apart");
+    }
+    {
+      // The shape every Inkscape export emits: one <tspan> restating the
+      // <text>'s own x/y. It is one run, so it must NOT fall back.
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<text x='14' y='40' font-family='Helvetica' font-size='12' id='t'>"
+          "<tspan x='14' y='40' id='ts'>Fresh Pine</tspan></text></svg>");
+      check(r.texts.size() == 1 && r.shapes.empty(),
+            "tspan: a single <tspan> restating the <text>'s x/y is still ONE editable block");
+      check(!hasRefusalContaining(r, "OUTLINES"),
+            "tspan: and nothing is reported as a fallback, because nothing fell back");
+      if (r.texts.size() == 1) {
+        check(r.texts[0].content.utf8 == "Fresh Pine" && r.texts[0].name == "t",
+              "tspan: the run's text and the <text> element's id both survive");
+        check(nearf(r.texts[0].content.origin.x, 14.0f, 1e-3f),
+              "tspan: the restated x is the same x, so the origin does not move");
+      }
+    }
+    {
+      // A bare run and an unstyled <tspan> are ONE run: every field
+      // `TextContent` stores once agrees, so splitting them would force an
+      // outline fallback on a file that did not need one.
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<text x='10' y='40' font-family='Helvetica' font-size='12'>Hello "
+          "<tspan>World</tspan></text></svg>");
+      check(r.texts.size() == 1 && r.shapes.empty(),
+            "tspan: an UNSTYLED <tspan> merges with the text round it -- one editable block");
+      check(r.texts.size() == 1 && r.texts[0].content.utf8 == "Hello World",
+            "tspan: and the merged string keeps the space between the two runs");
+      check(!hasRefusalContaining(r, "OUTLINES"),
+            "tspan: with no fallback reported, because none was needed");
+    }
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<text x='10' y='40' font-size='12'>\n   <tspan>Hi</tspan>\n  </text></svg>");
+      check(r.texts.size() == 1 && r.texts[0].content.utf8 == "Hi",
+            "tspan: the whitespace a pretty-printed export puts round a run is collapsed away");
+    }
+    {
+      // The case that actually reaches the collapser. pugixml's
+      // `parse_default` DISCARDS whitespace-only PCDATA outright, so the
+      // indentation between two elements never becomes text at all -- what
+      // does reach it is a wrapped string, and SVG 1.1 10.15's default
+      // `xml:space` collapses the newline and its indentation to one space.
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<text x='10' y='40' font-family='Helvetica' font-size='12'>Hello\n"
+          "        World</text></svg>");
+      check(r.texts.size() == 1 && r.texts[0].content.utf8 == "Hello World",
+            "text: a wrapped, indented string collapses to single spaces (xml:space default)");
+    }
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<text x='10' y='40' font-family='Helvetica' font-size='12'>   Hello   </text></svg>");
+      check(r.texts.size() == 1 && r.texts[0].content.utf8 == "Hello",
+            "text: and leading/trailing whitespace is trimmed at the element's own edges");
+    }
+
+    // --- 13g. refused BY NAME, per element ------------------------------
+    {
+      struct Case { const char* xml; const char* needle; const char* what; };
+      const Case kCases[] = {
+          {"<svg xmlns='http://www.w3.org/2000/svg'>"
+           "<text x='0' y='0'><textPath href='#p'>curved</textPath></text></svg>",
+           "textPath", "refusal: <textPath> (text on a path) is refused by name"},
+          {"<svg xmlns='http://www.w3.org/2000/svg'>"
+           "<text x='0' y='0' writing-mode='tb'>vertical</text></svg>",
+           "writing-mode", "refusal: a vertical writing-mode is refused by name"},
+          {"<svg xmlns='http://www.w3.org/2000/svg'>"
+           "<text x='0' y='0' textLength='90'>stretched</text></svg>",
+           "textLength", "refusal: textLength is refused by name"},
+          {"<svg xmlns='http://www.w3.org/2000/svg'>"
+           "<text x='0' y='0' lengthAdjust='spacingAndGlyphs'>stretched</text></svg>",
+           "lengthAdjust", "refusal: lengthAdjust is refused by name"},
+          {"<svg xmlns='http://www.w3.org/2000/svg'>"
+           "<text x='0' y='0' rotate='15'>spun</text></svg>",
+           "rotate", "refusal: per-character rotate is refused by name"},
+          {"<svg xmlns='http://www.w3.org/2000/svg'>"
+           "<text x='0 10 20' y='0'>abc</text></svg>",
+           "per-character position list",
+           "refusal: a per-character x list is refused by name, not half-used"},
+          {"<svg xmlns='http://www.w3.org/2000/svg'>"
+           "<text x='0' y='0' font-size='120%'>relative</text></svg>",
+           "font-size", "refusal: a font-size relative to an unresolved basis is refused by name"},
+          {"<svg xmlns='http://www.w3.org/2000/svg'>"
+           "<text x='0' y='0'>a<tref/>b</text></svg>",
+           "<tref>", "refusal: an unhandled element inside <text> is refused by name"},
+      };
+      for (const Case& c : kCases) {
+        const auto r = importText(c.xml);
+        check(r.texts.empty() && r.shapes.empty() && hasRefusalContaining(r, c.needle), c.what);
+      }
+    }
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg'><tspan x='0' y='0'>orphan</tspan></svg>");
+      check(r.texts.empty() && r.shapes.empty() &&
+                hasRefusalContaining(r, "only renders inside a <text>"),
+            "refusal: a <tspan> outside any <text> is refused by name");
+    }
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg'><text x='0' y='0'>  </text></svg>");
+      check(r.texts.empty() && r.shapes.empty() && r.refusals.empty(),
+            "text: a <text> holding only whitespace draws nothing AND reports nothing");
+    }
+
+    // --- 13h. PAINTING ORDER (io/SvgImport.hpp section 7a) --------------
+    {
+      const auto r = importText(
+          "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'>"
+          "<rect id='under' x='0' y='0' width='10' height='10'/>"
+          "<text x='20' y='60' font-family='Helvetica' font-size='24'>Studio</text>"
+          "<rect id='over' x='0' y='0' width='10' height='10'/></svg>");
+      check(r.shapes.size() == 2 && r.texts.size() == 1,
+            "order: two shapes and one text block");
+      if (r.shapes.size() == 2 && r.texts.size() == 1) {
+        check(r.shapes[0].name == "under" && r.shapes[1].name == "over",
+              "order: the shape list is still plain document order");
+        // The one number section 7a exists for. Anything else -- 0, or 2 --
+        // reassembles the document with the label on the wrong side of a
+        // shape, which is invisible until something is drawn over a label.
+        check(r.texts[0].shapesBefore == 1,
+              "order: shapesBefore says ONE shape is painted below the text and one above");
+      }
+    }
+
+    // --- 13i. two <text>-carrying fixtures, exporter-shaped -------------
+    {
+      const auto r = importSvgFile(NP_SVG_TEST_DIR "/illustrator-caption.svg");
+      check(r.ok, "illustrator caption: imports without a structural error");
+      check(r.shapes.size() == 1 && r.texts.size() == 1,
+            "illustrator caption: one circle, and the caption stays editable text");
+      if (r.shapes.size() == 1 && r.texts.size() == 1) {
+        const TextContent& t = r.texts[0].content;
+        check(t.utf8 == "Studio", "illustrator caption: the caption's string survives");
+        check(t.style.fontFamily == "Helvetica" && nearf(t.style.sizePx, 18.0f),
+              "illustrator caption: the .st1/.st2 CSS classes supply the font and size");
+        check(t.fill.on && nearf(t.fill.rgba[0], srgbDecode(0x2B / 255.0f), 1e-3f),
+              "illustrator caption: the .st3 class supplies the fill");
+        // Illustrator writes the position as transform="matrix(1 0 0 1 80 58)"
+        // with x/y left at zero, which is a pure translate.
+        const ShaperTruth truth = shaperTruthFor(t);
+        check(truth.ok && nearf(t.origin.x, 80.0f, 1e-2f) &&
+                  nearf(t.origin.y, 58.0f - truth.baselineOffset, 1e-2f),
+              "illustrator caption: the matrix() translate IS the baseline, converted to top-left");
+      }
+    }
+    {
+      const auto r = importSvgFile(NP_SVG_TEST_DIR "/inkscape-label.svg");
+      constexpr float kMmToPx = 96.0f / 25.4f;  // io/SvgPath.hpp's own 96dpi basis
+      check(r.ok, "inkscape label: imports without a structural error");
+      check(r.texts.size() == 1,
+            "inkscape label: the single-line title stays editable; the two-line subtitle does not");
+      check(hasRefusalContaining(r, "repositions"),
+            "inkscape label: and the two-line subtitle's fallback to outlines is named");
+      if (r.texts.size() == 1) {
+        const TextContent& t = r.texts[0].content;
+        check(t.utf8 == "Fresh Pine" && r.texts[0].name == "title",
+              "inkscape label: the title's string and id survive its <tspan> wrapper");
+        check(nearf(t.style.sizePx, 6.35f * kMmToPx, 1e-2f),
+              "inkscape label: the mm viewBox scale folds into the font size (6.35 -> 24 px)");
+        check(nearf(t.origin.x, 14.0f * kMmToPx, 1e-2f),
+              "inkscape label: text-anchor:start leaves the origin at the scaled x");
+        // The plate rect is the only shape painted before the title.
+        check(r.texts[0].shapesBefore == 1,
+              "inkscape label: the title is painted directly above the plate rect");
+        check(hasShapeNamed(r, "subtitle") && r.shapes.size() > 3,
+              "inkscape label: the subtitle really did come back as many glyph outlines");
+        // Painting order through the OUTLINE path, which section 7a does not
+        // need `shapesBefore` for -- the glyphs go straight into `shapes` at
+        // the point the `<text>` was encountered, so the plate is below them
+        // and the cover rect is above them, exactly as the file draws it.
+        check(indexOfShapeNamed(r, "plate") == 0 && indexOfShapeNamed(r, "subtitle") == 1 &&
+                  indexOfShapeNamed(r, "cover") == r.shapes.size() - 1,
+              "inkscape label: the outlined subtitle glyphs sit BETWEEN the plate rect and the "
+              "cover rect, where the file draws them");
+      }
     }
   }
 

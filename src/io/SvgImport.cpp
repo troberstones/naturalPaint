@@ -15,10 +15,12 @@
 #include <vector>
 
 #include "color/Space.hpp"
+#include "core/TextContent.hpp"
 #include "io/SvgPath.hpp"
 #include "io/SvgStyle.hpp"
 #include "ops/Transform.hpp"
 #include "pugixml/pugixml.hpp"
+#include "text/Shaper.hpp"
 
 // See io/SvgImport.hpp for the design. This file is the walk: build the
 // SvgElementView chain io/SvgStyle.hpp wants, call io/SvgPath.hpp's grammars
@@ -398,6 +400,14 @@ bool isPresentationProp(const std::string& name) {
       "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit",
       "stroke-dasharray", "stroke-dashoffset", "color", "clip-path", "display",
       "mask", "filter",
+      // The text properties (io/SvgImport.hpp section 7). They are ordinary
+      // inheriting presentation attributes -- io/SvgStyle.cpp's own
+      // `svgPropertyInherits()` already lists every one -- so they belong in
+      // the cascade for every element, not only inside a <text>: a
+      // `font-size` on a <g> reaches the <text> inside it exactly the way a
+      // `fill` does.
+      "font-family", "font-size", "font-style", "font-weight", "text-anchor",
+      "letter-spacing", "writing-mode",
   };
   return kProps.count(name) != 0;
 }
@@ -701,6 +711,596 @@ void processShapeElement(Ctx& ctx, const pugi::xml_node& node, const std::string
 }
 
 // --------------------------------------------------------------------------
+// <text> -- see io/SvgImport.hpp section 7 for every decision below
+// --------------------------------------------------------------------------
+
+// SVG's own three values. Deliberately NOT `TextAlign`: text/Shaper.hpp is
+// explicit that alignment does nothing at `frame.width == 0`, and an SVG
+// `<text>` is point text (io/SvgImport.hpp section 7b). This becomes an
+// origin shift, never an align value.
+enum class TextAnchor { Start, Middle, End };
+
+// Nesting cap inside one `<text>`: `<tspan>`s wrap `<tspan>`s in real
+// exports, but never deeply. kMaxSvgNestingDepth already bounds the outer
+// walk; this bounds the inner one on its own terms.
+constexpr int kMaxTextNesting = 16;
+
+// XML whitespace collapsing, SVG 1.1 10.15's `xml:space="default"` minus the
+// leading/trailing trim, which the caller does once across the whole element
+// rather than per text node (a space BETWEEN two runs is significant; the
+// same space before the first run is not).
+std::string collapseWhitespace(std::string_view s) {
+  std::string out;
+  bool pendingSpace = false;
+  for (char c : s) {
+    if (std::isspace(static_cast<unsigned char>(c))) { pendingSpace = true; continue; }
+    if (pendingSpace) { out.push_back(' '); pendingSpace = false; }
+    out.push_back(c);
+  }
+  if (pendingSpace) out.push_back(' ');
+  return out;
+}
+
+void ltrimSpaces(std::string* s) {
+  size_t b = 0;
+  while (b < s->size() && (*s)[b] == ' ') ++b;
+  s->erase(0, b);
+}
+
+void rtrimSpaces(std::string* s) {
+  while (!s->empty() && s->back() == ' ') s->pop_back();
+}
+
+// The FIRST family of a CSS font-family list, unquoted. text/Shaper.hpp's
+// `shapeText()` takes one family and substitutes the platform default for a
+// name it does not have, so walking the rest of the list to find one that
+// exists would duplicate a fallback CoreText already performs -- and would
+// do it worse, because it cannot see per-glyph coverage.
+std::string firstFontFamily(const std::string& raw) {
+  std::string s = trimCopy(raw);
+  const auto comma = s.find(',');
+  if (comma != std::string::npos) s = trimCopy(s.substr(0, comma));
+  if (s.size() >= 2 && (s.front() == '\'' || s.front() == '"') && s.back() == s.front())
+    s = trimCopy(s.substr(1, s.size() - 2));
+  return s;
+}
+
+// CSS font-weight -> `TextStyle::bold`. `TextStyle` is one bit, so the whole
+// 100-900 axis collapses at 600 (CSS's own "bold" is 700; 600 is semibold and
+// reads bold in a two-state model). `bolder`/`lighter` are relative to an
+// inherited weight this walk does not track numerically, so `bolder` is taken
+// as bold and `lighter` as not -- the direction each one means.
+bool weightIsBold(const std::string& raw) {
+  const std::string v = toLowerCopy(trimCopy(raw));
+  if (v.empty() || v == "normal" || v == "lighter") return false;
+  if (v == "bold" || v == "bolder") return true;
+  char* end = nullptr;
+  const float n = std::strtof(v.c_str(), &end);
+  if (end != v.c_str() && *end == '\0') return n >= 600.0f;
+  return false;
+}
+
+// `font-size` in pixels. Returns false for a value in a unit relative to a
+// basis the caller says it does not have (`basisKnown == false`) -- on the
+// `<text>` element itself, where an `em`/`%` would resolve against an
+// ancestor font-size no element in this walk ever turned into a number.
+bool resolveFontSizePx(const std::string& raw, float basisPx, bool basisKnown, float* out) {
+  const std::string v = trimCopy(raw);
+  if (v.empty()) { *out = basisKnown ? basisPx : 16.0f; return true; }
+  const std::string vl = toLowerCopy(v);
+  // CSS's absolute-size keywords, at the ratios CSS 2.1 15.7 tabulates
+  // against a 16px medium. Real exporters rarely emit them; a hand-written
+  // or CSS-styled document does.
+  static const std::map<std::string, float> kKeywords = {
+      {"xx-small", 9.0f}, {"x-small", 10.0f}, {"small", 13.0f}, {"medium", 16.0f},
+      {"large", 18.0f},   {"x-large", 24.0f}, {"xx-large", 32.0f},
+  };
+  const auto kw = kKeywords.find(vl);
+  if (kw != kKeywords.end()) { *out = kw->second; return true; }
+
+  SvgLength len;
+  if (!parseSvgLength(v, &len)) return false;
+  SvgLengthContext lc;
+  if (len.unit == SvgUnit::Em || len.unit == SvgUnit::Ex || len.unit == SvgUnit::Percent) {
+    if (!basisKnown) return false;
+    lc.fontSizePx = basisPx;
+    lc.xHeightPx = basisPx * 0.5f;
+    lc.percentBasisPx = basisPx;
+  }
+  *out = resolveSvgLength(len, lc);
+  return std::isfinite(*out) && *out > 0.0f;
+}
+
+// The distance from a shaped block's TOP down to its FIRST BASELINE --
+// io/SvgImport.hpp section 7b, and the whole reason this is a function rather
+// than an inline `0.8f * sizePx`. `ShapedGlyph::y` is a pen position, i.e. ON
+// the baseline, and text-space's origin is the block's top-left
+// (text/Shaper.hpp), so the smallest y over the shaped glyphs IS that offset,
+// measured by the font this run actually shaped with.
+//
+// Zero when nothing shaped, which is the only defensible answer for a run
+// with no glyphs: there is no baseline to be below.
+float shapedBaselineOffset(const ShapedText& s) {
+  if (!s.ok || s.glyphs.empty()) return 0.0f;
+  float minY = s.glyphs[0].y;
+  for (const ShapedGlyph& g : s.glyphs) minY = std::min(minY, g.y);
+  return minY;
+}
+
+// A translation plus a POSITIVE UNIFORM scale, or nothing. `TextContent` has
+// no matrix (core/TextContent.hpp), so this is exactly the set of accumulated
+// transforms a text block can absorb: the scale folds into `sizePx` and the
+// translation into `origin`. Rotation, skew and mirroring cannot fold, and
+// the caller outlines instead.
+bool decomposeTranslateScale(const Mat3& m, float* s, float* tx, float* ty) {
+  if (std::fabs(m.m[6]) > 1e-6f || std::fabs(m.m[7]) > 1e-6f ||
+      std::fabs(m.m[8] - 1.0f) > 1e-6f)
+    return false;
+  const float a = m.m[0], c = m.m[1], b = m.m[3], d = m.m[4];
+  const float mag = std::max(std::max(std::fabs(a), std::fabs(d)),
+                             std::max(std::max(std::fabs(b), std::fabs(c)), 1.0f));
+  if (std::fabs(b) > 1e-4f * mag || std::fabs(c) > 1e-4f * mag) return false;
+  if (std::fabs(a - d) > 1e-4f * mag) return false;
+  if (!(a > 0.0f) || !std::isfinite(a)) return false;
+  *s = a;
+  *tx = m.m[2];
+  *ty = m.m[5];
+  return true;
+}
+
+// One shaped-alike stretch of text: everything between two style changes or
+// two position commands.
+struct TextRun {
+  std::string utf8;
+  TextStyle style;
+  Paint fill;
+  Paint stroke;
+  StrokeStyle strokeStyle;
+  TextAnchor anchor = TextAnchor::Start;
+
+  bool hasAbsX = false, hasAbsY = false;
+  float absX = 0.0f, absY = 0.0f;
+  float dx = 0.0f, dy = 0.0f;
+
+  // Filled in by layoutRuns().
+  size_t chunk = 0;
+  float penX = 0.0f, penY = 0.0f;  // the run's BASELINE start
+  float width = 0.0f;              // shaped advance
+  float baseline = 0.0f;           // top-of-block -> baseline, see above
+};
+
+// Everything about one element inside a `<text>` that a run inherits.
+struct TextNodeCtx {
+  ElemStyle es;
+  TextStyle style;
+  Paint fill;
+  Paint stroke;
+  StrokeStyle strokeStyle;
+  TextAnchor anchor = TextAnchor::Start;
+};
+
+struct TextCollect {
+  std::vector<TextRun> runs;
+  bool refused = false;
+  bool started = false;  // a non-empty run has been emitted (leading-trim gate)
+  bool pendAbsX = false, pendAbsY = false;
+  float pendX = 0.0f, pendY = 0.0f;
+  float pendDx = 0.0f, pendDy = 0.0f;
+};
+
+// A single-valued length attribute. `x`/`y`/`dx`/`dy` on `<text>`/`<tspan>`
+// are LISTS in SVG (one value per character); this importer lays out runs,
+// not characters, so a list of more than one is refused by name rather than
+// silently using its first entry and drawing the rest in the wrong place.
+bool singleLenAttr(Ctx& ctx, const pugi::xml_node& n, const char* name, char axis,
+                    const Viewport& vp, const std::string& label, bool* present, float* out) {
+  *present = false;
+  if (!n.attribute(name)) return true;
+  const std::string raw = attrStr(n, name);
+  if (splitTokens(raw, /*commaOrSpace=*/true).size() > 1) {
+    ctx.result->refusals.push_back(
+        label + ": " + name + "=\"" + raw +
+        "\" is a per-character position list; only a single value is supported, so the whole "
+        "element is dropped");
+    return false;
+  }
+  *present = true;
+  *out = resolveLenAxis(raw, axis, vp, 0.0f);
+  return true;
+}
+
+// The attributes inside a `<text>` this file refuses outright, on either
+// `<text>` or a `<tspan>` -- each one is layout this importer does not
+// perform, and performing it wrongly would look like a font problem.
+bool checkTextRefusedAttrs(Ctx& ctx, const pugi::xml_node& n, const std::string& elemLabel,
+                            const std::string& textLabel) {
+  struct Bad { const char* attr; const char* why; };
+  static const Bad kBad[] = {
+      {"rotate", "per-character rotation is not supported"},
+      {"textLength", "textLength/lengthAdjust (fitting text to a given length) is not supported"},
+      {"lengthAdjust",
+       "textLength/lengthAdjust (fitting text to a given length) is not supported"},
+  };
+  for (const Bad& b : kBad) {
+    if (n.attribute(b.attr)) {
+      ctx.result->refusals.push_back(textLabel + ": " + elemLabel + " has " + b.attr + " -- " +
+                                     b.why + "; the whole element is dropped");
+      return false;
+    }
+  }
+  return true;
+}
+
+bool buildTextNodeCtx(Ctx& ctx, const pugi::xml_node& node, const std::string& tag,
+                       const SvgElementView* parentView,
+                       const std::map<std::string, std::string>& inherited,
+                       const SvgStyleSheet& sheet, const Viewport& vp, float basisFontPx,
+                       bool basisKnown, const std::string& textLabel, TextNodeCtx* out) {
+  out->es = computeElemStyle(node, tag, parentView, inherited, sheet);
+  const std::map<std::string, std::string>& st = out->es.style;
+  auto get = [&](const char* k, const char* def) -> std::string {
+    auto it = st.find(k);
+    return it == st.end() ? std::string(def) : it->second;
+  };
+
+  // Vertical text is a different layout algorithm end to end -- glyph
+  // orientation, line progression, and what "advance" even means -- not a
+  // transform of the horizontal one.
+  const std::string wm = toLowerCopy(trimCopy(get("writing-mode", "horizontal-tb")));
+  if (!(wm.empty() || wm == "horizontal-tb" || wm == "lr" || wm == "lr-tb" || wm == "rl" ||
+        wm == "rl-tb")) {
+    ctx.result->refusals.push_back(textLabel + ": writing-mode=\"" + wm +
+                                   "\" -- vertical text is not supported; the whole element is "
+                                   "dropped");
+    return false;
+  }
+
+  const std::string fsText = trimCopy(get("font-size", ""));
+  float sizePx = 16.0f;
+  if (!resolveFontSizePx(fsText, basisFontPx, basisKnown, &sizePx)) {
+    ctx.result->refusals.push_back(
+        textLabel + ": font-size=\"" + fsText +
+        "\" is relative to an inherited size this importer never resolved to a number; the "
+        "whole element is dropped");
+    return false;
+  }
+  out->style.sizePx = sizePx;
+
+  const std::string fam = firstFontFamily(get("font-family", ""));
+  if (!fam.empty()) out->style.fontFamily = fam;  // else TextStyle's own default
+  out->style.bold = weightIsBold(get("font-weight", "normal"));
+  const std::string fstyle = toLowerCopy(trimCopy(get("font-style", "normal")));
+  out->style.italic = (fstyle == "italic" || fstyle == "oblique");
+  const std::string ls = trimCopy(get("letter-spacing", "normal"));
+  out->style.tracking =
+      (ls.empty() || toLowerCopy(ls) == "normal") ? 0.0f : resolveLenAxis(ls, 'd', vp, 0.0f);
+
+  const std::string anchor = toLowerCopy(trimCopy(get("text-anchor", "start")));
+  out->anchor = anchor == "middle" ? TextAnchor::Middle
+                : anchor == "end"  ? TextAnchor::End
+                                   : TextAnchor::Start;
+
+  const float elementOpacity = parseOpacityValue(get("opacity", "1"), 1.0f);
+  const float fillOpacity = parseOpacityValue(get("fill-opacity", "1"), 1.0f);
+  const float strokeOpacity = parseOpacityValue(get("stroke-opacity", "1"), 1.0f);
+  const SrgbColor currentColor = resolveCurrentColor(st);
+  const std::string label = labelFor(node, tag.c_str());
+  out->fill = resolvePaintProperty(ctx, st, "fill", "black", currentColor,
+                                   fillOpacity * elementOpacity, label, "fill");
+  out->stroke = resolvePaintProperty(ctx, st, "stroke", "none", currentColor,
+                                     strokeOpacity * elementOpacity, label, "stroke");
+  // Scale 1: layoutRuns() applies the accumulated scale to the stroke at the
+  // same moment it applies it to `sizePx`, so both come from one number.
+  out->strokeStyle = resolveStrokeStyle(st, vp, 1.0f);
+  return true;
+}
+
+void emitTextRun(TextCollect& tc, const TextNodeCtx& nc, std::string text) {
+  if (!tc.started) ltrimSpaces(&text);
+  if (text.empty()) return;  // pending position commands survive to the next run
+  TextRun r;
+  r.utf8 = std::move(text);
+  r.style = nc.style;
+  r.fill = nc.fill;
+  r.stroke = nc.stroke;
+  r.strokeStyle = nc.strokeStyle;
+  r.anchor = nc.anchor;
+  r.hasAbsX = tc.pendAbsX;
+  r.absX = tc.pendX;
+  r.hasAbsY = tc.pendAbsY;
+  r.absY = tc.pendY;
+  r.dx = tc.pendDx;
+  r.dy = tc.pendDy;
+  tc.pendAbsX = tc.pendAbsY = false;
+  tc.pendDx = tc.pendDy = 0.0f;
+  tc.started = true;
+  tc.runs.push_back(std::move(r));
+}
+
+void collectTextRuns(Ctx& ctx, const pugi::xml_node& node, const TextNodeCtx& nc, int depth,
+                      const Viewport& vp, const SvgStyleSheet& sheet, const std::string& textLabel,
+                      TextCollect& tc) {
+  if (tc.refused) return;
+  if (depth > kMaxTextNesting) {
+    ctx.result->refusals.push_back(textLabel + ": <tspan> nesting deeper than " +
+                                   std::to_string(kMaxTextNesting) +
+                                   "; the whole element is dropped");
+    tc.refused = true;
+    return;
+  }
+  for (pugi::xml_node child = node.first_child(); child; child = child.next_sibling()) {
+    if (tc.refused) return;
+    if (child.type() == pugi::node_pcdata || child.type() == pugi::node_cdata) {
+      emitTextRun(tc, nc, collapseWhitespace(child.value()));
+      continue;
+    }
+    if (child.type() != pugi::node_element) continue;
+    const std::string ctag = child.name();
+    if (ctag == "title" || ctag == "desc") continue;
+    if (ctag != "tspan") {
+      // `<textPath>` and `<tref>` land here by name, and so does anything
+      // else. Dropping only the child would silently lose part of a string
+      // while the rest imports, which reads as a truncation bug rather than
+      // an unsupported feature -- so the whole `<text>` goes.
+      ctx.result->refusals.push_back(
+          textLabel + ": <" + ctag + "> inside <text> is not supported" +
+          (ctag == "textPath" ? " (text on a path)" : "") + "; the whole element is dropped");
+      tc.refused = true;
+      return;
+    }
+
+    const std::string childLabel = labelFor(child, "tspan");
+    if (!checkTextRefusedAttrs(ctx, child, childLabel, textLabel)) { tc.refused = true; return; }
+
+    TextNodeCtx childCtx;
+    if (!buildTextNodeCtx(ctx, child, "tspan", &nc.es.view, nc.es.inheritedForChildren, sheet, vp,
+                          nc.style.sizePx, /*basisKnown=*/true, textLabel, &childCtx)) {
+      tc.refused = true;
+      return;
+    }
+
+    bool has = false;
+    float v = 0.0f;
+    if (!singleLenAttr(ctx, child, "x", 'x', vp, textLabel, &has, &v)) { tc.refused = true; return; }
+    if (has) { tc.pendAbsX = true; tc.pendX = v; }
+    if (!singleLenAttr(ctx, child, "y", 'y', vp, textLabel, &has, &v)) { tc.refused = true; return; }
+    if (has) { tc.pendAbsY = true; tc.pendY = v; }
+    if (!singleLenAttr(ctx, child, "dx", 'x', vp, textLabel, &has, &v)) { tc.refused = true; return; }
+    if (has) tc.pendDx += v;
+    if (!singleLenAttr(ctx, child, "dy", 'y', vp, textLabel, &has, &v)) { tc.refused = true; return; }
+    if (has) tc.pendDy += v;
+
+    collectTextRuns(ctx, child, childCtx, depth + 1, vp, sheet, textLabel, tc);
+  }
+}
+
+bool paintEq(const Paint& a, const Paint& b) {
+  return a.on == b.on && a.rgba == b.rgba;
+}
+
+// Whether two adjacent runs are one run. Every field here is a field
+// `TextContent` stores exactly once for a whole block, so two runs that agree
+// on all of them are indistinguishable from one run holding both strings --
+// which is what makes `<text x=.. y=..><tspan>Label</tspan></text>`, the shape
+// every Inkscape export emits, still reduce to a single editable Text layer.
+bool sameRunStyle(const TextRun& a, const TextRun& b) {
+  return a.style.fontFamily == b.style.fontFamily && a.style.sizePx == b.style.sizePx &&
+         a.style.tracking == b.style.tracking && a.style.leading == b.style.leading &&
+         a.style.bold == b.style.bold && a.style.italic == b.style.italic &&
+         paintEq(a.fill, b.fill) && paintEq(a.stroke, b.stroke) &&
+         a.strokeStyle.width == b.strokeStyle.width && a.anchor == b.anchor;
+}
+
+void mergeTextRuns(std::vector<TextRun>* runs) {
+  std::vector<TextRun> merged;
+  for (TextRun& r : *runs) {
+    if (!merged.empty() && !r.hasAbsX && !r.hasAbsY && r.dx == 0.0f && r.dy == 0.0f &&
+        sameRunStyle(merged.back(), r)) {
+      merged.back().utf8 += r.utf8;
+    } else {
+      merged.push_back(std::move(r));
+    }
+  }
+  *runs = std::move(merged);
+}
+
+// Places every run's BASELINE start, in the target space `(s, tx, ty)` maps
+// local SVG user units into -- `(1, 0, 0)` for the outline path, which lays
+// out in local units and transforms the glyph geometry afterwards.
+//
+// Then the anchor, per CHUNK: SVG starts a new text chunk at every absolute
+// position, and `text-anchor` applies to a chunk's total advance. This is an
+// ORIGIN SHIFT, not `TextAlign` -- io/SvgImport.hpp section 7b.
+void layoutRuns(std::vector<TextRun>* runs, float textX, float textY, float s, float tx,
+                 float ty) {
+  float penX = s * textX + tx;
+  float penY = s * textY + ty;
+  size_t chunk = 0;
+  for (size_t i = 0; i < runs->size(); ++i) {
+    TextRun& r = (*runs)[i];
+    r.style.sizePx *= s;
+    r.style.tracking *= s;
+    r.strokeStyle.width *= s;
+    for (float& d : r.strokeStyle.dashes) d *= s;
+    r.strokeStyle.dashOffset *= s;
+
+    if ((r.hasAbsX || r.hasAbsY) && i > 0) ++chunk;
+    if (r.hasAbsX) penX = s * r.absX + tx;
+    if (r.hasAbsY) penY = s * r.absY + ty;
+    penX += s * r.dx;
+    penY += s * r.dy;
+
+    r.chunk = chunk;
+    r.penX = penX;
+    r.penY = penY;
+
+    const ShapedText shaped = shapeText(r.utf8, r.style, TextFrame{}, TextAlign::Left);
+    r.width = shaped.ok ? shaped.widthPx : 0.0f;
+    r.baseline = shapedBaselineOffset(shaped);
+    penX += r.width;
+  }
+
+  size_t i = 0;
+  while (i < runs->size()) {
+    size_t j = i;
+    float total = 0.0f;
+    while (j < runs->size() && (*runs)[j].chunk == (*runs)[i].chunk) {
+      total += (*runs)[j].width;
+      ++j;
+    }
+    float shift = 0.0f;
+    if ((*runs)[i].anchor == TextAnchor::Middle) shift = -0.5f * total;
+    else if ((*runs)[i].anchor == TextAnchor::End) shift = -total;
+    if (shift != 0.0f)
+      for (size_t k = i; k < j; ++k) (*runs)[k].penX += shift;
+    i = j;
+  }
+}
+
+// One laid-out run as a point-text `TextContent`. **The baseline -> top-left
+// conversion happens here and nowhere else** (io/SvgImport.hpp section 7b):
+// `penY` is the baseline, `origin` is the block's top-left, and `baseline` is
+// the distance between them as the shaper measured it.
+TextContent runToTextContent(const TextRun& r) {
+  TextContent t;
+  t.utf8 = r.utf8;
+  t.style = r.style;
+  t.frame = TextFrame{};        // point text: no width, hence no alignment
+  t.align = TextAlign::Left;    // section 7b: the anchor is already in penX
+  t.origin = PathPoint{r.penX, r.penY - r.baseline};
+  t.fill = r.fill;
+  t.stroke = r.stroke;
+  t.strokeStyle = r.strokeStyle;
+  return t;
+}
+
+void processTextElement(Ctx& ctx, const pugi::xml_node& node, const Mat3& accum,
+                         const Viewport& vp, const SvgElementView* parentView,
+                         const std::map<std::string, std::string>& inherited,
+                         const SvgStyleSheet& sheet) {
+  const std::string label = labelFor(node, "text");
+
+  // No shaper, no text -- and no outline fallback either, since outlining
+  // needs the same `shapeText()` call. Named rather than dropped.
+  if (!shaperAvailable()) {
+    ctx.result->refusals.push_back(label + ": text not imported -- " +
+                                   std::string(shaperUnavailableReason()));
+    return;
+  }
+  if (!checkTextRefusedAttrs(ctx, node, "<text>", label)) return;
+
+  TextNodeCtx nc;
+  if (!buildTextNodeCtx(ctx, node, "text", parentView, inherited, sheet, vp, 16.0f,
+                        /*basisKnown=*/false, label, &nc))
+    return;
+  checkMaskFilter(ctx, nc.es.style, label);
+
+  Mat3 ownT = mat3Identity();
+  if (node.attribute("transform")) {
+    Mat3 t;
+    if (parseSvgTransform(node.attribute("transform").value(), &t)) ownT = t;
+  }
+  const Mat3 accumAtText = mat3Multiply(accum, ownT);
+
+  bool has = false;
+  float textX = 0.0f, textY = 0.0f;
+  if (!singleLenAttr(ctx, node, "x", 'x', vp, label, &has, &textX)) return;
+  if (!singleLenAttr(ctx, node, "y", 'y', vp, label, &has, &textY)) return;
+  float dxAttr = 0.0f, dyAttr = 0.0f;
+  if (!singleLenAttr(ctx, node, "dx", 'x', vp, label, &has, &dxAttr)) return;
+  if (has) textX += dxAttr;
+  if (!singleLenAttr(ctx, node, "dy", 'y', vp, label, &has, &dyAttr)) return;
+  if (has) textY += dyAttr;
+
+  TextCollect tc;
+  collectTextRuns(ctx, node, nc, 0, vp, sheet, label, tc);
+  if (tc.refused) return;
+  while (!tc.runs.empty()) {  // trailing whitespace, across however many runs it spans
+    rtrimSpaces(&tc.runs.back().utf8);
+    if (!tc.runs.back().utf8.empty()) break;
+    tc.runs.pop_back();
+  }
+  mergeTextRuns(&tc.runs);
+  if (tc.runs.empty()) return;  // `<text/>` with nothing in it: nothing drawn, nothing to say
+
+  // A clip-path cannot ride on a `TextContent` -- it is a `VectorShape` field
+  // -- so a clipped `<text>` takes the outline path, where every glyph is a
+  // shape that CAN carry one.
+  const bool hasClip = [&] {
+    auto it = nc.es.style.find("clip-path");
+    if (it == nc.es.style.end()) return false;
+    const std::string v = trimCopy(it->second);
+    return !v.empty() && toLowerCopy(v) != "none";
+  }();
+
+  float s = 1.0f, tx = 0.0f, ty = 0.0f;
+  const bool similarity = decomposeTranslateScale(accumAtText, &s, &tx, &ty);
+  const bool oneRun = tc.runs.size() == 1;
+
+  if (oneRun && similarity && !hasClip) {
+    layoutRuns(&tc.runs, textX, textY, s, tx, ty);
+    SvgTextBlock blk;
+    blk.shapesBefore = ctx.result->shapes.size();
+    blk.name = attrStr(node, "id");
+    blk.content = runToTextContent(tc.runs[0]);
+    ctx.result->texts.push_back(std::move(blk));
+    return;
+  }
+
+  // The fallback, named. io/SvgImport.hpp section 7: never silent.
+  std::string why;
+  if (!oneRun) {
+    bool reposition = false, delta = false;
+    for (size_t i = 1; i < tc.runs.size(); ++i) {
+      if (tc.runs[i].hasAbsX || tc.runs[i].hasAbsY) reposition = true;
+      if (tc.runs[i].dx != 0.0f || tc.runs[i].dy != 0.0f) delta = true;
+    }
+    why = reposition ? "a <tspan> repositions the text"
+          : delta    ? "a <tspan> offsets the text with dx/dy"
+                     : "a <tspan> carries its own style, and one TextContent holds one style";
+    why += " (" + std::to_string(tc.runs.size()) + " runs)";
+  }
+  if (!similarity) {
+    if (!why.empty()) why += "; and ";
+    why += "its transform has rotation, skew or a mirror in it, which a TextContent has no "
+           "matrix to carry";
+  }
+  if (hasClip) {
+    if (!why.empty()) why += "; and ";
+    why += "it carries a clip-path, which only a shape can hold";
+  }
+  ctx.result->refusals.push_back(
+      label + ": imported as glyph OUTLINES, not an editable Text layer -- " + why);
+
+  layoutRuns(&tc.runs, textX, textY, 1.0f, 0.0f, 0.0f);
+  const float sf = transformScaleFactor(accumAtText);
+  const std::string name = attrStr(node, "id");
+  std::optional<Path> clip;
+  resolveClipPath(ctx, nc.es.style, accumAtText, vp, label, &clip);
+  if (ctx.aborted) return;
+
+  for (const TextRun& r : tc.runs) {
+    std::string err;
+    std::vector<VectorShape> glyphs = textContentToShapes(runToTextContent(r), &err);
+    if (!err.empty()) {
+      ctx.result->refusals.push_back(label + ": " + err);
+      return;
+    }
+    for (VectorShape& g : glyphs) {
+      transformPathInPlace(g.path, accumAtText);
+      g.strokeStyle.width *= sf;
+      for (float& d : g.strokeStyle.dashes) d *= sf;
+      g.strokeStyle.dashOffset *= sf;
+      g.clip = clip;
+      g.id = 0;  // assigned by whoever puts these in a layer -- see OpenAnyFile
+      g.name = name;
+      if (!addAnchorsWithCap(ctx, countAnchors(g.path))) return;
+      ctx.result->shapes.push_back(std::move(g));
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
 // The recursive walk
 // --------------------------------------------------------------------------
 
@@ -749,7 +1349,6 @@ void visit(Ctx& ctx, pugi::xml_node node, int depth, int useDepth, const Mat3& a
       {"switch", "conditional rendering not supported"},
       {"foreignObject", "embedded foreign content not supported"},
       {"image", "raster/external image embedding not supported"},
-      {"text", "text rendering deferred to Stage 5"},
       {"script", "scripts are not evaluated by this importer"},
       {"animate", "animation elements are not supported"},
       {"animateTransform", "animation elements are not supported"},
@@ -916,6 +1515,22 @@ void visit(Ctx& ctx, pugi::xml_node node, int depth, int useDepth, const Mat3& a
     // can do (there is no way to address the shadow node from author CSS).
     visit(ctx, target, depth + 1, useDepth + 1, accumForTarget, &es.view, es.inheritedForChildren,
           sheet, vp);
+    return;
+  }
+
+  // <text> owns its own subtree: processTextElement() walks the `<tspan>`s
+  // itself, because a run's position depends on the runs before it and this
+  // generic walk has nowhere to keep a pen. See io/SvgImport.hpp section 7.
+  if (tag == "text") {
+    processTextElement(ctx, node, accum, vp, parentView, inheritedFromParent, sheet);
+    return;
+  }
+  if (tag == "tspan" || tag == "textPath" || tag == "tref") {
+    // Only reachable OUTSIDE a `<text>` -- inside one these never come back
+    // here. SVG defines no rendering for them there, so this is not a
+    // capability refusal but a malformed-document one, and it says so.
+    ctx.result->refusals.push_back(labelFor(node, tag.c_str()) +
+                                   ": only renders inside a <text> element");
     return;
   }
 

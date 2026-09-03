@@ -230,20 +230,53 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     Document built = Document::createBlank(static_cast<int32_t>(wD),
                                            static_cast<int32_t>(hD), WorkingSpace{});
     built.layers.clear();
-    Layer vec = makeVectorLayer(fileNameOf(path));
-    vec.shapes = std::move(svg.shapes);
+
+    // **The layer stack is INTERLEAVED, and that is io/SvgImport.hpp section
+    // 7a's decision arriving here.** `svg.shapes` is one flat vector in
+    // document order, which is painting order; `svg.texts` is the `<text>`
+    // elements that stayed editable, each recording how many shapes are
+    // painted BELOW it. Emitting all the shapes and then all the text would
+    // silently lift every label above whatever was drawn over it -- an
+    // ordinary badge knocks a caption out with a shape on top -- so this walks
+    // the two lists together and closes off a Vector layer at each text block.
+    //
+    // A file with no `<text>` therefore still opens as exactly one Vector
+    // layer, byte for byte what this branch produced before text existed.
+    const size_t shapeCount = svg.shapes.size();
+    const size_t textCount = svg.texts.size();
+    size_t emitted = 0;
     // **io/SvgImport leaves every `id` at zero, and this is where they are
     // assigned.** `core/VectorShape.hpp` says zero means "not yet assigned",
     // and app/PenTool keys its selection on the id -- so importing without
     // this step gives a layer whose shapes are individually unselectable, all
     // of them answering to shape 0. Nothing in the importer could do it
     // instead: ids are unique *within a layer*, and the importer does not know
-    // which layer its shapes are about to land in.
-    uint64_t nextId = 1;
-    for (VectorShape& shape : vec.shapes) shape.id = nextId++;
-    vec.nextShapeId = nextId;
-    const size_t shapeCount = vec.shapes.size();
-    addLayer(built, 0, std::move(vec));
+    // which layer its shapes are about to land in -- which is now literally
+    // true: one import can produce several.
+    auto addShapeRun = [&](size_t upto) {
+      if (upto <= emitted) return;
+      Layer vec = makeVectorLayer(fileNameOf(path));
+      uint64_t nextId = 1;
+      for (size_t i = emitted; i < upto; ++i) {
+        svg.shapes[i].id = nextId++;
+        vec.shapes.push_back(std::move(svg.shapes[i]));
+      }
+      vec.nextShapeId = nextId;
+      addLayer(built, built.layers.size(), std::move(vec));
+      emitted = upto;
+    };
+    for (SvgTextBlock& blk : svg.texts) {
+      addShapeRun(std::min(blk.shapesBefore, shapeCount));
+      Layer text = makeTextLayer(blk.name.empty() ? std::string("Text") : blk.name);
+      text.text = std::move(blk.content);
+      addLayer(built, built.layers.size(), std::move(text));
+    }
+    addShapeRun(shapeCount);
+    // An SVG that produced neither a shape nor a text block still has to open
+    // into a document with a layer in it -- `Document::createBlank()` is
+    // emptied above, and a zero-layer document is not a state the rest of this
+    // build has any use for. The warning below says the file was empty.
+    if (built.layers.empty()) addLayer(built, 0, makeVectorLayer(fileNameOf(path)));
 
     OpenAnyResult r;
     r.ok = true;
@@ -263,13 +296,15 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     r.status = "Opened '" + fileNameOf(path) + "' (SVG, " +
                std::to_string(static_cast<long long>(wD)) + "x" +
                std::to_string(static_cast<long long>(hD)) + ") as a vector document with " +
-               std::to_string(shapeCount) +
-               (shapeCount == 1 ? " shape." : " shapes.");
+               std::to_string(shapeCount) + (shapeCount == 1 ? " shape" : " shapes") +
+               (textCount == 0 ? std::string(".")
+                               : " and " + std::to_string(textCount) +
+                                     (textCount == 1 ? " text layer." : " text layers."));
     // Every refusal io/SvgImport recorded, verbatim -- the same "say what was
     // dropped" contract app/PsdReport established, and the reason the importer
     // returns them as data rather than printing them.
     for (std::string& why : svg.refusals) r.warnings.push_back("SVG: " + std::move(why));
-    if (shapeCount == 0) {
+    if (shapeCount == 0 && textCount == 0) {
       r.warnings.push_back(
           "'" + fileNameOf(path) +
           "' produced no shapes: the document opened, but it is empty. Any reason is "
