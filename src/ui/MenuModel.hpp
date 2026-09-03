@@ -282,6 +282,20 @@ enum class MenuAction : uint16_t {
   ImageSize,
   CanvasSize,
 
+  // **The two items `MenuAction::ImageSize`'s comment above said were left out
+  // rather than left dead, now wired.** That comment was right at the time and
+  // its rule is unchanged -- an unwired operation is ABSENT from the menu, not
+  // present and inert -- so what changed is that `app/CropTool` gives both of
+  // these a route to `ops/DocumentTransform::cropDocument()`. Each is that
+  // function on a rectangle it derives: the selection's bounds, or the union of
+  // every layer's content bounds. Neither takes a dialog and neither needs one,
+  // so both act immediately, the way `AdjustDesaturate` does.
+  //
+  // D17's rotate/flip canvas is still out, on the same rule, and stays out
+  // until something wires `transformDocument()` to a quarter-turn matrix.
+  CropToSelection,
+  TrimToContent,
+
   // --- Image > Adjustments ------------------------------------------------
   //
   // app/AdjustmentOps, through ops/PointOpTiles and ops/PointOps' six pure

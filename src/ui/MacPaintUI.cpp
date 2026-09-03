@@ -32,6 +32,7 @@
 #include "app/BrushRowIcon.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CompPanel.hpp"
+#include "app/CropTool.hpp"  // Tool::Crop, both modes
 #include "app/PanelLayout.hpp"
 #include "app/ControlsLayout.hpp"
 #include "app/CurveEdit.hpp"
@@ -10495,6 +10496,13 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     // --- Image ----------------------------------------------------------
     case MenuAction::ImageSize:  g_imageSizeRequested = true;  break;
     case MenuAction::CanvasSize: g_canvasSizeRequested = true; break;
+    // Into `AppState` rather than into a file-static, unlike the two above:
+    // those two open a modal and a modal is this file's business, while these
+    // two act on the active document and are consumed in the same request
+    // block as Deselect and Paste. Neither takes a dialog, so neither needs
+    // the "a native menu callback has no ImGui frame" detour.
+    case MenuAction::CropToSelection: st.requestCropToSelection = true; break;
+    case MenuAction::TrimToContent:   st.requestTrimToContent = true;   break;
 
     // --- Image > Adjustments ---------------------------------------------
     //
@@ -13516,6 +13524,30 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.requestCopyMerged = false;
       st.requestCut = false;
       st.requestPaste = false;
+      // --- Image > Crop to Selection / Trim to Content (app/CropTool §7) ---
+      //
+      // Below the selection commands rather than above them on purpose: a
+      // Select All followed by a Crop to Selection in the same frame should
+      // crop to the selection the user just made, not to the one before it.
+      // Both refuse in prose rather than in silence -- `g_strokeRefusal` is
+      // the same channel the bucket's and the gradient's refusals already use,
+      // so "why did nothing happen" has one answer and one place to read it.
+      if (od != nullptr && (st.requestCropToSelection || st.requestTrimToContent)) {
+        const DocumentTransformResult r = st.requestCropToSelection
+                                              ? applyCropToSelection(*od)
+                                              : applyTrimToContent(*od);
+        if (!r.ok) {
+          g_strokeRefusal = r.error;
+        } else {
+          std::printf("[crop] %s: %dx%d -> %ux%u\n",
+                      st.requestCropToSelection ? "crop to selection" : "trim to content",
+                      r.previousWidth, r.previousHeight, od->document.width,
+                      od->document.height);
+        }
+      }
+      st.requestCropToSelection = false;
+      st.requestTrimToContent = false;
+
       st.requestDeleteSelection = false;
 
       // --- keep the GPU coverage in step -----------------------------------
@@ -13778,6 +13810,115 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         st.lassoPoints.clear();
       }
     }
+
+    // ===== Tool::Crop -- BEGIN: the gesture (app/CropTool.hpp) ============
+    //
+    // Three phases, and the third is the one the tool exists for: rubber-band a
+    // shape out, adjust it by its handles for as long as you like, then commit
+    // or cancel. Unlike every marquee gesture above, this one deliberately
+    // OUTLIVES its own drag -- `app/MeasureLine`'s argument, and the reason
+    // `CropSession` carries a `DocumentId`.
+    //
+    // Gated on `toolCropsCanvas()` -- the eighth canvas gate, and the
+    // expression `toolHasCanvasHandler()` reads, not a copy of it
+    // (`app/StrokeSession.hpp` §6b's rule). `!transformActive` for the
+    // selection tools' reason: while a Free Transform gizmo owns the canvas a
+    // drag on the box must not also start a crop.
+    if (toolCropsCanvas(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+        !st.pendingGuide.has_value()) {
+      CropSession& crop = st.crop;
+      OpenDocument* cropDoc = st.documents.active();
+      const DocumentId cropDocId = cropDoc != nullptr ? cropDoc->id : 0u;
+
+      // A shape drawn on another tab means nothing here, so it is dropped
+      // rather than drawn over the wrong picture -- `measureLineAppliesTo()`'s
+      // rule, applied to a gesture that can actually destroy pixels.
+      if (crop.active && crop.doc != cropDocId) cropCancel(crop);
+
+      // The options bar's two buttons and the two keys are ONE commit path:
+      // the band sets a request flag and this block is the only committer
+      // (`app/CropTool.hpp` §5).
+      const bool commitKey = ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+      const bool cancelKey = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+      const bool wantCommit = crop.commitRequested || (crop.active && commitKey);
+      const bool wantCancel = crop.cancelRequested || (crop.active && cancelKey);
+      crop.commitRequested = false;
+      crop.cancelRequested = false;
+
+      if (wantCancel) {
+        cropCancel(crop);
+      } else if (wantCommit && cropDoc != nullptr) {
+        const DocumentTransformResult r = applyCropSession(crop, *cropDoc);
+        if (!r.ok) {
+          // **Said, not swallowed.** A refused commit that did nothing visible
+          // is the exact failure `pixelOpRefusalMessage()` exists to prevent
+          // one tool group over, and a bow-tie quad is one careless drag away.
+          g_strokeRefusal = r.error;
+        } else {
+          std::printf("[crop] %s: %dx%d -> %ux%u, %zu layers, %d reconstruction pass(es)\n",
+                      r.editLabel.c_str(), r.previousWidth, r.previousHeight,
+                      cropDoc->document.width, cropDoc->document.height, r.layersTouched,
+                      r.reconstructionPasses);
+        }
+      }
+
+      // `--crop-demo` pins the gesture open across frames, exactly as
+      // `--gradient-demo drag` pins the gradient's far handle: a held drag's
+      // moving corner is the live mouse and a screenshot run's mouse is
+      // wherever the human left it. That one skip is the whole mechanism.
+      if (!crop.demoHeld) {
+        // Handle radius in DOCUMENT texels, derived from a fixed screen size
+        // so the grab target stays the same physical size at every zoom -- the
+        // transform gizmo's own rule. Floored so a hugely zoomed-out view
+        // still offers something grabbable.
+        const float grabTexels = std::max(4.0f, 9.0f / std::max(0.05f, st.view.zoom));
+
+        if (hovered && !transformActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          const int handle =
+              crop.active ? cropHandleAt(crop.quad, crop.mode, tx, ty, grabTexels) : -1;
+          if (handle >= 0) {
+            crop.dragHandle = handle;
+          } else {
+            // **A click outside starts a new rectangle. It does NOT commit.**
+            // Photoshop commits on a click outside and that is the one
+            // Photoshop behaviour deliberately not copied (`app/CropTool.hpp`
+            // §5): this is a destructive op with no dialog, and "the user
+            // clicked somewhere else" is not evidence they meant to destroy
+            // pixels. Starting a fresh drag is what the same click already
+            // does in every marquee tool here, so the gesture is learned.
+            cropBeginDefine(crop, cropDocId, crop.mode, tx, ty);
+          }
+        }
+
+        if (crop.dragHandle >= 0) {
+          cropDragHandle(crop, crop.dragHandle, tx, ty);
+          if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) crop.dragHandle = -1;
+        } else if (crop.defining) {
+          // The rubber band goes through `computeSelectionDragBox()`, the
+          // marquee's own box math, so Shift-constrain, Option-from-centre and
+          // Space-move behave identically here and cannot drift from there --
+          // one function, two tools, `app/SelectionDrag.hpp`'s reason for being
+          // a pure function of this frame's modifiers.
+          const ImGuiIO& cropMods = ImGui::GetIO();
+          updateSelectionMove(crop.move, ImGui::IsKeyDown(ImGuiKey_Space), tx, ty);
+          const SelectionDragBox box = computeSelectionDragBox(
+              crop.anchorX, crop.anchorY, tx, ty, crop.move.offsetX, crop.move.offsetY,
+              cropMods.KeyShift, cropMods.KeyAlt);
+          crop.quad = cropQuadFromRegion(cropRegionFromDrag(box.x0, box.y0, box.x1, box.y1));
+          if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            crop.defining = false;
+            // A click with no drag leaves nothing -- the same "an empty gesture
+            // is not a gesture" rule `commitDrawnSelection()` applies to a
+            // zero-area marquee. Without this, a stray click would leave a
+            // 1x1 crop armed and Enter would destroy the document.
+            crop.active = !cropRegionOf(crop).empty();
+            if (!crop.active) cropCancel(crop);
+          }
+        }
+      }
+    }
+    // ===== Tool::Crop -- END ==============================================
 
     // ===== Tool::Move -- BEGIN: the drag (app/MoveTool.hpp) ===============
     //
@@ -15033,6 +15174,163 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       float lassoPhase = marchingAntPhase();
       drawAntPolyline(dl, xform, pts, /*closed=*/false, lassoPhase);
     }
+
+    // === BEGIN Tool::Crop overlay (app/CropTool) ===========================
+    //
+    // **The shield -- the darkened surround -- is the one piece of chrome that
+    // makes a crop tool legible.** Without it the outline is one more rectangle
+    // on a picture already full of them, and "what am I keeping" is a question
+    // the user answers by committing. It is also the only on-canvas signal that
+    // a crop is pending at all.
+    //
+    // Drawn as FOUR trapezoids tiling the frame between the canvas band and the
+    // crop quad, rather than as one polygon with a hole: `AddConcavePolyFilled`
+    // ear-clips, and the keyhole cut a rect-with-a-quad-hole needs is a
+    // degenerate zero-width bridge -- a shape ear-clipping is entitled to get
+    // wrong. The four share their edges exactly, so with the anti-aliased fill
+    // flag off for the duration they rasterise watertight; leaving AA on would
+    // put a faint bright seam across the picture at each shared edge, which on
+    // a 60% shield is plainly visible.
+    //
+    // The shield's corners are CLAMPED into the band while the outline's are
+    // not. A crop rectangle dragged past the edge of the view is legal (§2's
+    // unclamped rule -- it grows the canvas), and an unclamped shield corner
+    // would fold two of the trapezoids through each other and stack their
+    // alpha into a dark wedge. The outline and the handles are drawn from the
+    // true corners, so nothing the user is aiming is ever moved by this.
+    if (toolCropsCanvas(st.brush.tool) && st.crop.active) {
+      const OpenDocument* shieldDoc = st.documents.active();
+      if (shieldDoc != nullptr && st.crop.doc == shieldDoc->id) {
+        const CropQuad& cq = st.crop.quad;
+        std::array<ImVec2, 4> qs{};
+        for (size_t i = 0; i < 4; ++i) {
+          const Vec2 p = xform.toScreen(Vec2{cq.c[i].x, cq.c[i].y});
+          qs[i] = ImVec2(p.x, p.y);
+        }
+        // The view can be rotated or mirrored, either of which reverses the
+        // quad's winding on screen -- and a reversed inner ring turns the four
+        // trapezoids inside out. Detected from the signed area rather than
+        // from `st.view.mirror`/`rotation`, because it is the composed
+        // transform that decides and reading the two flags would be a second
+        // derivation of something `ViewTransform` already answers.
+        float signedArea = 0.0f;
+        for (size_t i = 0; i < 4; ++i) {
+          const ImVec2& a = qs[i];
+          const ImVec2& b = qs[(i + 1) & 3];
+          signedArea += a.x * b.y - b.x * a.y;
+        }
+        if (signedArea < 0.0f) std::swap(qs[1], qs[3]);
+
+        const ImVec2 bandMin(paintOrigin.x, paintOrigin.y);
+        const ImVec2 bandMax(paintOrigin.x + avail.x, paintOrigin.y + avail.y);
+        std::array<ImVec2, 4> shield = qs;
+        for (ImVec2& p : shield) {
+          p.x = std::clamp(p.x, bandMin.x, bandMax.x);
+          p.y = std::clamp(p.y, bandMin.y, bandMax.y);
+        }
+        const ImVec2 r0(bandMin.x, bandMin.y), r1(bandMax.x, bandMin.y);
+        const ImVec2 r2(bandMax.x, bandMax.y), r3(bandMin.x, bandMax.y);
+        const std::array<ImVec2, 4> rect{r0, r1, r2, r3};
+
+        const std::string shieldWhy =
+            st.crop.mode == CropMode::Perspective ? cropQuadRefusal(st.crop.quad)
+                                                  : std::string{};
+
+        // **No shield on a refused quad**, and this is a correctness point
+        // rather than a taste one. The shield's whole claim is "this is what
+        // you would keep", and a refused quad keeps nothing -- so on a bow-tie
+        // it is claiming something false. It is also unreadable: a
+        // self-intersecting inner ring turns two of the four trapezoids inside
+        // out, and their alpha stacks into black wedges across the picture the
+        // user is trying to fix. The dashed outline below is the whole signal
+        // in that state, and the sentence is in the options bar.
+        if (shieldWhy.empty()) {
+          constexpr ImU32 kCropShield = IM_COL32(0, 0, 0, 153);  // 60%
+          dl->PushClipRect(bandMin, bandMax, true);
+          const ImDrawListFlags savedFlags = dl->Flags;
+          dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+          for (size_t i = 0; i < 4; ++i) {
+            dl->AddQuadFilled(rect[i], rect[(i + 1) & 3], shield[(i + 1) & 3], shield[i],
+                              kCropShield);
+          }
+          dl->Flags = savedFlags;
+          dl->PopClipRect();
+        }
+        dl->PushClipRect(bandMin, bandMax, true);
+
+        // The outline: a dark casing under a bright core, the gradient band's
+        // own treatment and for its stated reason -- this line sits on top of
+        // the user's picture at whatever colour that happens to be, and inside
+        // the crop there is no shield to darken it against. Accent when the
+        // quad is committable; the same accent when it is refused, because
+        // this build has one attention colour and a second red would say
+        // "error" in a palette where red already means "this is on" -- the
+        // refusal's WORDS are in the options bar, and what the outline has to
+        // do is stay visible.
+        const std::string& quadWhy = shieldWhy;
+        const ImU32 outline = atelierToken(kAccent);
+        for (size_t i = 0; i < 4; ++i) {
+          const ImVec2& a = qs[i];
+          const ImVec2& b = qs[(i + 1) & 3];
+          dl->AddLine(a, b, IM_COL32(0, 0, 0, 160), 3.0f);
+          // A refused quad is drawn DASHED. A bow-tie already looks like a
+          // bow-tie, but a near-collinear quad and a mirrored one both look
+          // perfectly ordinary, and the outline is where the user is looking
+          // -- so the state has to be visible there and not only in the band.
+          if (quadWhy.empty()) {
+            dl->AddLine(a, b, outline, 1.5f);
+          } else {
+            const float len = std::hypot(b.x - a.x, b.y - a.y);
+            const int steps = std::max(1, static_cast<int>(len / 8.0f));
+            for (int k = 0; k < steps; k += 2) {
+              const float t0 = static_cast<float>(k) / static_cast<float>(steps);
+              const float t1 = std::min(1.0f, static_cast<float>(k + 1) /
+                                                  static_cast<float>(steps));
+              dl->AddLine(ImVec2(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0),
+                          ImVec2(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1), outline,
+                          1.5f);
+            }
+          }
+        }
+
+        // The rule-of-thirds guides, inside the shape only. Two lines each way,
+        // at a third of the way along each pair of opposite edges rather than
+        // at a third of a bounding box -- so in Perspective mode they follow
+        // the quad and read as the composition the crop will produce, which is
+        // the only reason to draw them at all.
+        for (int k = 1; k <= 2; ++k) {
+          const float t = static_cast<float>(k) / 3.0f;
+          auto lerp2 = [](const ImVec2& a, const ImVec2& b, float u) {
+            return ImVec2(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u);
+          };
+          dl->AddLine(lerp2(qs[0], qs[1], t), lerp2(qs[3], qs[2], t),
+                      IM_COL32(255, 255, 255, 46), 1.0f);
+          dl->AddLine(lerp2(qs[0], qs[3], t), lerp2(qs[1], qs[2], t),
+                      IM_COL32(255, 255, 255, 46), 1.0f);
+        }
+
+        // The handles, from `cropHandlePoints()` -- the same function the
+        // hit-test walks, so a handle can never be drawn somewhere the pointer
+        // cannot grab it. Paper-filled and outlined rather than solid accent,
+        // the transform gizmo's own argument: a solid accent square on a dark
+        // picture and on a light one are different amounts of visible, and the
+        // outline is what makes it read on both.
+        const std::array<Point2, kCropHandleCount> handles = cropHandlePoints(cq);
+        const int handleCount =
+            st.crop.mode == CropMode::Rectangle ? kCropHandleCount : kCropCornerCount;
+        for (int i = 0; i < handleCount; ++i) {
+          const Vec2 hp = xform.toScreen(Vec2{handles[static_cast<size_t>(i)].x,
+                                              handles[static_cast<size_t>(i)].y});
+          const float hr = i < kCropCornerCount ? 4.5f : 3.5f;
+          dl->AddRectFilled(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr),
+                            atelierToken(kCanvasPaper));
+          dl->AddRect(ImVec2(hp.x - hr, hp.y - hr), ImVec2(hp.x + hr, hp.y + hr), outline,
+                      0.0f, 0, 1.0f);
+        }
+        dl->PopClipRect();
+      }
+    }
+    // === END Tool::Crop overlay ============================================
 
     // === BEGIN Tool::Measure ruler (app/MeasureLine) =======================
     //

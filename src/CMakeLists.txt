@@ -206,6 +206,7 @@ add_executable(naturalPaint
   app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
   app/selftest/MoveTool.cpp
+  app/selftest/CropTool.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp
@@ -214,6 +215,7 @@ add_executable(naturalPaint
   app/FilterOps.cpp
   app/MeasureLine.cpp
   app/GradientTool.cpp
+  app/CropTool.cpp
   app/OpenAnyFile.cpp
   app/QuitSequence.cpp
   app/Snapping.cpp

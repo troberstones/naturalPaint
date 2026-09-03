@@ -616,7 +616,7 @@ filing them somewhere unrelated to painting.
 
 Section 2 gives the options bar the job of showing "the active tool and its options".
 Most tools take the default — the brush's SIZE / HARD / LOAD / WET — because they all
-put down a tip. Five take an early return instead and draw their own row, and the test
+put down a tip. Six take an early return instead and draw their own row, and the test
 for whether a tool belongs here is not "does it have settings" but **would the four brush
 sliders be live controls over something this tool provably never reads**:
 
@@ -627,6 +627,7 @@ sliders be live controls over something this tool provably never reads**:
 | Gradient | RAMP (the live ramp drawn over a transparency checkerboard), KIND (Linear / Radial / Angular) and SPREAD (Clamp / Repeat / Reflect) | It has no *stroke*, let alone a tip. |
 | Magic Wand | TOLERANCE (0..255), REACH (Contiguous / All Similar), ANTI-ALIAS | It selects; nothing it does deposits a texel. |
 | Paint Bucket | The same three, over its **own** parameter block | It fills a region found by a predicate, not a shape walked by a tip. |
+| Crop | MODE (Rectangle / Perspective), SIZE (the extent that will result), CROP and CANCEL, and the refusal sentence when there is one | It has no tip, no stroke and no deposit; nothing in `app/CropTool` or in the two engines behind it reads a `BrushTip`. |
 
 The gradient's RAMP cell is the only place in this build whose content is a colour ramp
 rather than a number or a glyph, and it is drawn from the same `gradientToolStops()` the
@@ -679,6 +680,45 @@ identical held drag. The canvas views exist because the defect that made this to
 for its whole history (T3) was invisible to `--selftest` by construction: it lived in a
 canvas block, in a mutable flag two unrelated gestures shared.
 
+**The crop is the sixth, and §4b's test settles it without argument.** Unlike the smudge
+below — which was a genuinely marginal call, and stayed out of the table because
+`smudgeDab()` really does read three of the four sliders — the crop reads none of them.
+It walks no shape with a tip: `cropDocument()` copies tile indices and
+`transformDocument()` runs one resample, and neither has ever been handed a `BrushTip`.
+So it takes the early return, and the four sliders are not drawn for it.
+
+**The MODE combo is where the user asked for it, and it is also where this document's own
+rules put it.** Rectangle Marquee and Elliptical Marquee are two palette *cells* because
+`docs/shortcuts.md` §1 reserves a key for each; Rectangle and Perspective crop are one
+gesture with one commit path and one refusal ladder, so two cells would have meant two
+`kToolMeta` rows, two cursors and two canvas blocks for a difference of four draggable
+corners. The tooltip on the Perspective row carries the one thing a user cannot discover
+by trying it: the output is as wide as the **longer** of the two horizontal edges and as
+tall as the longer of the two verticals, and the tool does **not** claim to recover the
+scene's true aspect ratio — no rule can, from four image points, without knowing the
+camera. `app/CropTool.hpp` §3 is the full argument.
+
+**SIZE reads `--` when no crop is pending, not `0 x 0`.** A pair of zeroes reads as a crop
+that has collapsed rather than as one that has not been drawn — the same distinction
+`core::LayerBounds::empty` exists to keep, applied to a readout.
+
+**CROP and CANCEL are visible verbs, not only Enter and Escape.** Every other row in this
+band is settings; this is the one row that commits something, and a tool whose entire
+interaction is dragging cannot have its only commit on a key or half the users never find
+it. Both set request flags read by the canvas block, so the button and the key are one
+commit path rather than two that agree until one of them is edited. A refused quad greys
+CROP **and** prints the reason in the band in the accent colour, because §4a's "no dead
+button looks live" has a second half here: a greyed button whose tooltip is the only
+explanation is a tooltip nobody hovers when they are looking at the canvas.
+
+Five golden views cover what `--selftest` cannot reach: `crop_options` and
+`crop_options_perspective` for the row in each of its two modes, `crop_drag` and
+`crop_perspective` for the two canvas gestures with their darkened surround, and
+`crop_refused` for the bow-tie — the dashed outline, the greyed button and the whole
+sentence. That last one is the negative half and it is the one this feature most needs: a
+build whose refusal predicate was perfectly correct and whose UI said nothing about it
+would pass every assertion in `app/selftest/CropTool.cpp`.
+
 ### The smudge brings a row and **keeps** the brush sliders
 
 The smudge is the first tool in the band to draw its own controls *without* taking an early
@@ -689,9 +729,11 @@ the tool provably never reads, and `smudgeDab()` (`brush/Smudge.hpp`) reads thre
 weight is multiplied by `tip.flow`, which is LOAD. Only WET is dead here, and WET is already
 disabled on its own by `wetnessReachesSolver()`. A tool that walks a shape with a tip belongs
 with the brush sliders; the eyedropper and the measure have no tip, the gradient has no
-stroke, and the two flood tools find their region with a predicate instead of a shape. So the
-table stays at five, and the smudge appends **STRENGTH** and **TIP** to the row it already
-had.
+stroke, the two flood tools find their region with a predicate instead of a shape, and the
+crop has none of the four. So the smudge did not join the table — it appends **STRENGTH**
+and **TIP** to the row it already had — and the table's growth from five to six came from
+the crop instead, which is the difference between a tool the test admits and a tool it
+does not.
 
 **STRENGTH exists because it used to be OPACITY, and that was the defect.**
 `brush/Smudge.hpp` §3b carries the whole account; the short form is that the smudge latched

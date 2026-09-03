@@ -38,6 +38,7 @@
 #include "app/SelfTest.hpp"
 #include "app/StrokeBake.hpp"
 #include "app/StrokeSession.hpp"
+#include "app/CropTool.hpp"
 #include "app/ToolSwitch.hpp"
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
@@ -1091,6 +1092,8 @@ int main(int argc, char** argv) {
   bool gradientDemo = false;
   bool gradientDemoDrag = false;
   np::GradientKind gradientDemoKind = np::GradientKind::Linear;
+  bool cropDemo = false;
+  int cropDemoShape = 0;  // 0 = rectangle, 1 = perspective, 2 = the refused bow-tie
   bool wandDemo = false;
   bool wandDemoBucket = false;
   bool smudgeDemo = false;
@@ -1395,6 +1398,39 @@ int main(int argc, char** argv) {
       if (i + 1 < argc && std::string_view(argv[i + 1]) == "anchor") {
         cloneDemoOffset = false;
         ++i;
+      }
+    } else if (a == "--crop-demo") {
+      // `--crop-demo [perspective|bowtie]`: `Tool::Crop` with a crop already
+      // laid down and HELD, which is three things `--screenshot` cannot
+      // otherwise reach at once.
+      //
+      // The tool, because a palette cell cannot be clicked from a screenshot
+      // run -- the gap `--gradient-demo` and `--marquee-demo` already cover.
+      // The options row, which is a per-tool block and draws for exactly one
+      // tool. And the SHAPE, because the shield, the handles, the thirds
+      // guides and the outline exist only while a crop is pending, and a
+      // pending crop is the product of a drag a screenshot run has no pointer
+      // to make.
+      //
+      // `demoHeld` is what pins it: exactly as `--gradient-demo drag` pins the
+      // gradient's far handle, the canvas block skips its own pointer reads so
+      // the shape does not follow wherever the human left the mouse. One skip,
+      // and no second path into the block -- what is photographed is the state
+      // a real drag produces, reached through the same fields a real drag
+      // writes.
+      //
+      // **`bowtie` is the negative half and is not decoration.** The refusal
+      // is drawn as a dashed outline and a sentence in the band, and both are
+      // invisible to `--selftest` by construction -- it has no window. A build
+      // that refused correctly in `cropQuadRefusal()` and said nothing on
+      // screen would pass every assertion in `app/selftest/CropTool.cpp` and
+      // ship a tool that silently does nothing when Enter is pressed, which is
+      // precisely the failure class this project keeps finding.
+      cropDemo = true;
+      if (i + 1 < argc) {
+        const std::string_view k(argv[i + 1]);
+        if (k == "perspective") { cropDemoShape = 1; ++i; }
+        else if (k == "bowtie") { cropDemoShape = 2; ++i; }
       }
     } else if (a == "--wand-demo") {
       // Selects `Tool::MagicWand`, or `Tool::PaintBucket` with the optional
@@ -2013,6 +2049,12 @@ int main(int argc, char** argv) {
     // move), the refusals, the arrow-key nudge, and the bit-identity of an
     // integer translate there and back. Headless and GPU-free.
     const bool moveToolOk = np::runMoveToolTest();
+    // app/CropTool: Tool::Crop in both modes -- the rectangle rule (outward,
+    // unclamped), the perspective output extent and why it is the longer of
+    // each pair of opposite edges, the refusal ladder including the bow-tie
+    // the engine does not refuse, and the two Image-menu items. Headless and
+    // GPU-free.
+    const bool cropToolOk = np::runCropToolTest();
     // app/FramePacing: T27's three frame-budget tiers, the --screenshot
     // exemption the golden harness depends on, and the fixed-timestep ceiling
     // that decides how slow the idle tier is allowed to be. Headless and
@@ -2834,7 +2876,8 @@ int main(int argc, char** argv) {
                     selectionBoundaryOk && floodFillOk && floodFillOptionsOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
-                    documentTransformOk && transformSessionOk && moveToolOk && framePacingOk &&
+                    documentTransformOk && transformSessionOk && moveToolOk && cropToolOk &&
+                    framePacingOk &&
                     gradientToolOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
@@ -3139,6 +3182,47 @@ int main(int argc, char** argv) {
       st.gradientDragDemo = true;
       std::printf("[gradient-demo] drag held open: 220,240 -> 620,480, kind=%s (preview + rubber band)\n",
                   np::gradientKindLabel(gradientDemoKind));
+    }
+  }
+  if (cropDemo) {
+    if (np::OpenDocument* od = st.documents.active()) {
+      np::setActiveTool(st, np::Tool::Crop);
+      st.crop.active = true;
+      st.crop.demoHeld = true;
+      st.crop.doc = od->id;
+      // Document texels on the 1024x1024 demo document, inside the part of it
+      // that is actually on screen at the screenshot window size -- roughly
+      // x 0..899, y 0..675, which `--clone-demo`'s own comment measured off a
+      // capture rather than deriving from the document extent.
+      //
+      // Every number is chosen rather than convenient. The rectangle is
+      // off-centre and not square, so a shield drawn from a swapped or dropped
+      // coordinate lands somewhere obviously wrong rather than somewhere
+      // plausible; the quad's four corners are pairwise different distances
+      // from the edges for the same reason, and its two horizontal edges are
+      // nearly equal while its two verticals are not, so a view of it would
+      // change if the extent rule started reading the wrong pair.
+      if (cropDemoShape == 0) {
+        st.crop.mode = np::CropMode::Rectangle;
+        st.crop.quad = np::cropQuadFromRegion(np::DocumentRegion{150, 120, 470u, 350u});
+        std::printf("[crop-demo] Tool::Crop, Rectangle: (150,120)+470x350 held -- shield, "
+                    "eight handles, thirds guides\n");
+      } else if (cropDemoShape == 1) {
+        st.crop.mode = np::CropMode::Perspective;
+        st.crop.quad = np::CropQuad{{np::Point2{180.0f, 140.0f}, np::Point2{700.0f, 200.0f},
+                                     np::Point2{640.0f, 520.0f}, np::Point2{120.0f, 430.0f}}};
+        const np::DocumentRegion e = np::perspectiveCropExtent(st.crop.quad);
+        std::printf("[crop-demo] Tool::Crop, Perspective: four corners off-axis, output "
+                    "%ux%u (longer of each pair of opposite edges)\n", e.width, e.height);
+      } else {
+        // The bow-tie: corners 0 and 1 of the quad above swapped, which is
+        // exactly what dragging one corner past its neighbour produces.
+        st.crop.mode = np::CropMode::Perspective;
+        st.crop.quad = np::CropQuad{{np::Point2{700.0f, 200.0f}, np::Point2{180.0f, 140.0f},
+                                     np::Point2{640.0f, 520.0f}, np::Point2{120.0f, 430.0f}}};
+        std::printf("[crop-demo] Tool::Crop, Perspective (bow-tie): %s\n",
+                    np::cropQuadRefusal(st.crop.quad).c_str());
+      }
     }
   }
   if (cloneDemo) {

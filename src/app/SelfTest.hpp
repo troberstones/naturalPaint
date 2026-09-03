@@ -1228,6 +1228,28 @@ bool runTransformSessionTest();
 // layer with no selection does not. Headless and GPU-free.
 bool runMoveToolTest();
 
+// app/CropTool: `Tool::Crop` in both modes, and the two Image-menu items that
+// fall out of the same machinery. Proves the three judgements that header
+// records rather than the geometry underneath it (ops/Transform and
+// ops/DocumentTransform each have their own section, and app/CropTool adds no
+// second copy of either): the drag's rectangle is sorted, rounded OUTWARD and
+// deliberately NOT clamped, so a negative origin grows the canvas; a rectangle
+// crop takes the exact path (`reconstructionPasses == 0`) and undo gives back
+// every texel it hid, which is `cropDocument()`'s non-clipping contract made
+// assertable; the perspective output extent is the LONGER of each pair of
+// opposite edges, which agrees with the rectangle rule on a rectangle, is never
+// smaller than the mean over a family of keystones, and is monotone under the
+// gesture; and every refusal is by name -- collapsed, near-collinear, bow-tie,
+// reversed winding -- including the one the engine does NOT make, with
+// `transformFromQuad()` shown accepting the same bow-tie in the adjacent line
+// so the tool's convexity test cannot be mistaken for a duplicate of the
+// engine's. Also the eighth canvas gate, the two menu items' region rules
+// (Trim never grows the document), and the gesture's handle mechanics. Headless
+// and GPU-free; five golden views cover what this cannot see, including the
+// bow-tie refusal, which is drawn in two places and asserted in neither. See
+// app/selftest/CropTool.cpp.
+bool runCropToolTest();
+
 // app/FramePacing (T27, "throttle the UI unless drawing to 60fps, and when
 // nothing is happening, throttle it further"): the three-tier frame budget,
 // lifted out of `main.cpp`'s frame loop so it can be asserted at all --

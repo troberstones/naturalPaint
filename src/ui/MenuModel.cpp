@@ -210,6 +210,10 @@ const MenuItemSpec* specTable() {
     // --- Image ----------------------------------------------------------
     set(MenuAction::ImageSize, "Image Size...", "");
     set(MenuAction::CanvasSize, "Canvas Size...", "");
+    // No ellipsis on either: an ellipsis promises a dialog, and both of these
+    // act on the spot.
+    set(MenuAction::CropToSelection, "Crop to Selection", "");
+    set(MenuAction::TrimToContent, "Trim to Content", "");
 
     // --- Image > Adjustments --------------------------------------------
     //
@@ -455,6 +459,8 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::MotionBlur: return "MotionBlur";
     case MenuAction::ImageSize: return "ImageSize";
     case MenuAction::CanvasSize: return "CanvasSize";
+    case MenuAction::CropToSelection: return "CropToSelection";
+    case MenuAction::TrimToContent: return "TrimToContent";
     case MenuAction::AdjustLevels: return "AdjustLevels";
     case MenuAction::AdjustCurves: return "AdjustCurves";
     case MenuAction::AdjustExposure: return "AdjustExposure";
@@ -735,13 +741,34 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
   // PRD D17, through ops/DocumentTransform (docs/reachability-audit.md C1).
   // Photoshop-style and deliberately small: two of D17's three operations,
   // both reached through app/FilterOps.hpp's `applyImageSize()` /
-  // `applyCanvasSize()`. Crop and rotate/flip-canvas are not here -- see
-  // `MenuAction::ImageSize`'s own comment in the header for why an unwired
-  // item is left out of the tree rather than added disabled.
+  // `applyCanvasSize()`, plus D17's CROP -- which used to be named here as
+  // deliberately absent and is now wired, through `app/CropTool`'s two region
+  // rules onto the same `cropDocument()` the crop TOOL commits to.
+  //
+  // Rotate/flip-canvas is still out, on the rule that has not changed and that
+  // `MenuAction::ImageSize`'s own comment in the header states: an unwired item
+  // is left out of the tree rather than added disabled.
   {
     MenuNode image = submenu("Image");
     image.children.push_back(item(MenuAction::ImageSize, ctx.hasDocument));
     image.children.push_back(item(MenuAction::CanvasSize, ctx.hasDocument));
+    image.children.push_back(separator());
+    // **Crop to Selection takes the STRONGER gate and Trim to Content takes
+    // the weaker one, and the difference is which refusal has anything to
+    // say.** Whether there is a selection is a fact this snapshot already
+    // carries (`hasSelection`, resolved by the caller), it is exactly the
+    // command's precondition, and a Crop to Selection with no selection is a
+    // dead item with nothing to explain -- so it greys.
+    //
+    // Whether any layer holds content is not in the snapshot and could not
+    // cheaply be: `layerContentBounds()` walks every occupied tile of every
+    // layer, and a native menu asks "is this enabled?" from a thread with no
+    // document to walk. So Trim takes `hasDocument` and `applyTrimToContent()`
+    // answers the real question in a sentence naming it -- the Adjustments
+    // submenu's own trade, made for the same reason: greying it out would
+    // replace that sentence with silence.
+    image.children.push_back(item(MenuAction::CropToSelection, ctx.hasSelection));
+    image.children.push_back(item(MenuAction::TrimToContent, ctx.hasDocument));
     image.children.push_back(separator());
     // Adjustments (app/AdjustmentOps), a submenu of Image exactly as in
     // Photoshop -- and under Image rather than as a top-level menu for the

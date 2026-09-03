@@ -190,11 +190,17 @@ bool runMenuModelTest() {
   // failure the paragraph above says this pin exists to catch. 90 is main's 89
   // plus that one item, verified by counting `MenuAction`'s enumerators in the
   // merged header (91 including `Count`) rather than by adding two numbers.
-  check(kMenuActionCount == 90,
-        "ids: exactly 90 actions -- the original 41-item extraction plus D1/D2's "
+  // 90 -> 92: Image > Crop to Selection and Image > Trim to Content
+  // (app/CropTool §7), which `MenuAction::ImageSize`'s own header comment named
+  // as deliberately absent while nothing wired them. Counted by counting
+  // `MenuAction`'s enumerators in the header (93 including `Count`), the way
+  // the paragraph above demands, rather than by adding two to 90.
+  check(kMenuActionCount == 92,
+        "ids: exactly 92 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
-        "dialog and Brush Settings, so an item lost in a later edit fails here");
+        "dialog, Brush Settings and the crop pair, so an item lost in a later edit "
+        "fails here");
 
   {
     std::set<MenuAction> seen;

@@ -629,8 +629,57 @@ measure_n="${2:-10}"
 #     view's job is the ramp's *geometry and stop list* in the ordinary case,
 #     and re-aiming it at an unusual colour would have traded one coverage
 #     for another rather than adding any.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states .")
+#   crop_options / crop_options_perspective -- the options bar's crop row
+#     under `--crop-demo` and `--crop-demo perspective`. `Tool::Crop`'s row is
+#     a per-tool block, so it draws for exactly one tool and `--screenshot`
+#     cannot click a palette cell -- the gap `--gradient-demo` and
+#     `--wand-demo` already cover. Two views rather than one because the whole
+#     of the user's request was a MODE selectable here, and one photograph
+#     cannot show a combo in both of its states. The Perspective view is also
+#     where the SIZE readout earns its place: it reads 528 x 326, which is
+#     `perspectiveCropExtent()`'s longer-of-opposite-edges rule (the quad's two
+#     horizontal edges are 523 and 528, its verticals 296 and 326), so a build
+#     that switched to the mean would draw 526 x 311 here and this view would
+#     redden. `--selftest` proves that rule's arithmetic and cannot prove that
+#     the number reaches the band.
+#
+#   crop_drag -- the rectangle gesture held open: the darkened shield outside
+#     the crop, the eight handles, the thirds guides and the accent outline.
+#     Every one of those exists only while a crop is pending, and a pending
+#     crop is the product of a drag a screenshot run has no pointer to make --
+#     which is why `--crop-demo` pins one, exactly as `--gradient-demo drag`
+#     pins the gradient's far handle.
+#
+#     The shield is the piece worth photographing rather than asserting: it is
+#     four alpha-blended quads tiling the frame between the canvas band and
+#     the crop, drawn with the anti-aliased fill flag off so their shared
+#     edges rasterise watertight. A regression that put the fringe back would
+#     draw a faint bright seam across the picture at each shared edge --
+#     visible to a person, invisible to every assertion in
+#     app/selftest/CropTool.cpp, and it is a picture, so a picture is what
+#     covers it.
+#
+#   crop_perspective -- the four-corner gesture, with the corners deliberately
+#     NOT symmetric (180,140 / 700,200 / 640,520 / 120,430) so a dropped or
+#     swapped coordinate lands somewhere obviously wrong rather than somewhere
+#     plausible, the argument `--clone-demo`'s three marks already make. It
+#     also shows what the mode changes: four handles instead of eight, and
+#     thirds guides that follow the quad's own edges rather than a bounding
+#     box.
+#
+#   crop_refused -- the bow-tie. **The negative half, and the one this feature
+#     most needs**, because the refusal is drawn in two places and
+#     `--selftest` can see neither: the outline goes dashed on the canvas and
+#     the sentence goes into the band, with the CROP button greyed beside it.
+#     A build whose `cropQuadRefusal()` was perfectly correct and whose UI said
+#     nothing would pass every assertion in app/selftest/CropTool.cpp and ship
+#     a tool that silently does nothing when Enter is pressed. The crop is
+#     2400 px wide because the sentence is long and the point is that the
+#     WHOLE sentence is on screen -- a band view cropped to the button would
+#     have proved the button greys and nothing about whether the user is ever
+#     told why.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -850,11 +899,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672)
-view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32)
-view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204)
-view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672  40   40   350  320  40)
+view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32   76   76   350  420  76)
+view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204 1000 1000 1060 1220 2400)
+view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512 76   76   830  830  76)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -963,7 +1012,21 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 #     held -- before that the Export and Close buttons were below the bottom
 #     of the screen. A future edit that adds a row to that dialog will push
 #     them off again, and this view is what will say so.
-view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
+# **The five `crop_*` views are exact (0, 0), measured, not borrowed.** Three
+# of them are text-and-chrome band crops (`crop_options`,
+# `crop_options_perspective`, `crop_refused`) and two are canvas crops full of
+# translucent shield, an accent outline and eight small handles
+# (`crop_drag`, `crop_perspective`) -- profiles that this file's own history
+# says can flake, which is exactly why they were measured rather than handed
+# `gradient_drag`'s numbers by analogy. 8 separately launched captures each,
+# 7 comparisons apiece against that batch's first, on crops of 76 000 /
+# 76 000 / 182 400 / 879 800 / 1 012 600 px: **every one 0 mismatched px at
+# max channel diff 0.** The canvas pair being exact is the more interesting
+# result of the two -- the shield is four alpha-blended quads with the
+# anti-aliased fill flag off, and the reason that comes out bit-stable is the
+# same reason it comes out seamless: adjacent quads sharing exact vertices
+# rasterise watertight, with no fringe geometry to round differently.
+view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -979,7 +1042,10 @@ view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
+# note in cmd_measure on what that mode is for. The five `crop_*` views are 0
+# here because their magnitude threshold is 0 too -- see the paragraph above
+# `view_threshold` for the measurement.
+view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

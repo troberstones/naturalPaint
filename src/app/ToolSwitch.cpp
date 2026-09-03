@@ -1,5 +1,6 @@
 #include "app/ToolSwitch.hpp"
 
+#include "app/CropTool.hpp"
 #include "app/MeasureLine.hpp"
 
 namespace np {
@@ -31,6 +32,21 @@ void setActiveTool(AppState& st, Tool next) noexcept {
 
   st.tools.previous = outgoing;
   st.tools.hasPrevious = true;
+
+  // **A pending crop does not survive a tool change.** It is the polygon
+  // lasso's rule (`ui/MacPaintUI.cpp`: "switching away mid-path abandons it.
+  // Leaving it live would resume a stale path on return, with vertices the
+  // user has long forgotten placing") and the stakes here are higher: a crop
+  // left armed would reappear the next time Crop is chosen, and the next Enter
+  // would destroy a document to a rectangle drawn some time ago.
+  //
+  // Placed after the early return above on purpose -- picking Crop while Crop
+  // is already selected is not a switch, and must not throw away the rectangle
+  // the user is in the middle of adjusting. `next` is not tested at all: a
+  // crop is discarded when the user leaves the crop tool AND when they arrive
+  // at it, and arriving with a stale shape from before is the same defect
+  // wearing the other hat.
+  cropCancel(st.crop);
 }
 
 bool hasPreviousTool(const AppState& st) noexcept { return st.tools.hasPrevious; }

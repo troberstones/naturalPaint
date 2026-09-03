@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "app/CloseDecision.hpp"
+#include "app/CropTool.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/GradientTool.hpp"
 #include "app/Memory.hpp"
@@ -171,7 +172,17 @@ constexpr ToolMeta kToolMeta[] = {
     {"Lasso", "lasso", 57806u, "L", true},
     {"Polygon Lasso", "pentagon", 58667u, "Shift+L", true},
     {"Magic Wand", "wand-sparkles", 58199u, "W", true},
-    {"Crop", "crop", 57515u, "C", false},
+    // **Built**: app/CropTool, gated by `toolCropsCanvas()` -- the eighth
+    // canvas gate, and a new predicate rather than a name added to an existing
+    // one for `toolMeasuresCanvas()`'s reason, which is concrete here:
+    // `toolDrawsSelection()` is the gate on the selection tools' canvas block,
+    // so a Crop widened into it would have every crop drag handed to
+    // `commitDrawnSelection()`. Two modes, chosen in this band's own row
+    // below -- a rectangle through `cropDocument()` and a four-corner
+    // perspective through `transformFromQuad()` + `transformDocument()`.
+    // `Tool::Slice`, which shares its palette group and its cursor, is still
+    // one of the not-built cells and stays false.
+    {"Crop", "crop", 57515u, "C", true},
     // **Built**: app/MeasureLine, gated by `toolMeasuresCanvas()` -- the one
     // tool in this palette whose gesture writes no texel at all. Same
     // arrangement as the eraser row below: the rows are in `Tool` declaration
@@ -277,9 +288,16 @@ bool toolHasCanvasHandler(Tool t) noexcept {
   // and cursor Move does not share) or `toolPansView()` (which moves the VIEW,
   // not the content). Placed before the allocating `toolBeginsStroke()` for
   // the ordering reason stated above: it is cheap and `noexcept`.
+  // `toolCropsCanvas()` is the eighth, and it lives in `app/CropTool` rather
+  // than in `app/StrokeSession` beside the other predicates for the reason
+  // that header's section 6 states: it is one tool's own module's answer about
+  // its own tool, and widening `toolDrawsSelection()` instead -- the one-line
+  // way to make this go true for Crop -- would hand every crop drag to
+  // `commitDrawnSelection()`. Placed before the allocating `toolBeginsStroke()`
+  // for the ordering reason stated above: it is cheap and `noexcept`.
   return toolWritesRgbPixels(t) || toolDrawsSelection(t) || toolSamplesCanvas(t) ||
          toolMeasuresCanvas(t) || toolPansView(t) || toolMovesPixels(t) ||
-         toolBeginsStroke(t) || toolZoomsView(t);
+         toolCropsCanvas(t) || toolBeginsStroke(t) || toolZoomsView(t);
 }
 
 const char* toolNoHandlerException(Tool) noexcept {
@@ -992,6 +1010,150 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
           "Your choice is remembered and applies again on Linear and Radial.",
           gradientKindLabel(st.gradient.kind));
     popAtelierMono();
+    return;
+  }
+
+  // --- the crop tool's MODE, its extent readout and its two verbs ---------
+  //
+  // **The fourth early return in this band, and `docs/ui.md` §4b's test settles
+  // it without argument.** That test is not "does this tool have settings" but
+  // *would the four brush sliders be live controls over something this tool
+  // provably never reads*, and the crop reads none of them: nothing in
+  // `app/CropTool` or in the two engines behind it (`cropDocument()`,
+  // `transformDocument()`) touches a `BrushTip`. It is not the smudge's case --
+  // the smudge keeps the sliders because `smudgeDab()` genuinely reads three of
+  // the four -- and it is not a marginal call the way the smudge's was: the
+  // crop has no tip, no stroke and no deposit at all. Six rows in §4b now.
+  //
+  // The user asked for the mode HERE specifically, rather than as a second
+  // palette cell beside `Tool::Crop`, and that is also the right answer by this
+  // build's own rules: `Tool::Marquee` and `Tool::EllipseMarquee` are two cells
+  // because `docs/shortcuts.md` reserves a key for each, while Rectangle and
+  // Perspective crop are one gesture with one commit and one refusal ladder --
+  // two cells would be two `kToolMeta` rows, two cursors and two canvas blocks
+  // for a difference of four draggable corners.
+  if (st.brush.tool == Tool::Crop) {
+    CropSession& crop = st.crop;
+    bandSeparator();
+    capsLabel("MODE");
+    ImGui::SameLine();
+    int modeIndex = 0;
+    for (size_t i = 0; i < kCropModeCount; ++i)
+      if (kCropModes[i].mode == crop.mode) modeIndex = static_cast<int>(i);
+    // Measured INSIDE the mono push, unlike the gradient's combos above. Those
+    // measure with the default font and get away with it because "Angular" is
+    // short; "Perspective" is not, and the mono face is wider -- measuring
+    // outside clipped the label to "Perspectiv" with the arrow over the "e".
+    pushAtelierMono();
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Perspective").x + ImGui::GetFrameHeight() +
+                            16.0f);
+    if (ImGui::BeginCombo("##cropMode", kCropModes[modeIndex].label)) {
+      for (size_t i = 0; i < kCropModeCount; ++i) {
+        if (ImGui::Selectable(kCropModes[i].label, static_cast<int>(i) == modeIndex)) {
+          // `cropSetMode()`, never a bare assignment. Switching to Rectangle
+          // has to snap four dragged corners to their bounding box, and a
+          // combo that only wrote the enum would leave a perspective quad on
+          // screen being committed as its own bounding box -- a shape that is
+          // not the shape the user is looking at.
+          cropSetMode(crop, kCropModes[i].mode);
+        }
+        // What the mode changes is four handles versus eight and one resample
+        // versus none, which is not guessable from one word -- the same
+        // argument the gradient's KIND rows make for carrying theirs. The
+        // Perspective row also carries the aspect-ratio honesty
+        // (`app/CropTool.hpp` §3): the tool does not claim to recover the
+        // scene's true proportions, and the only place a user can learn that
+        // is here.
+        ImGui::SetItemTooltip("%s", kCropModes[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // **The extent that will result, not the extent of the gesture**, and for
+    // Perspective those are different numbers -- `perspectiveCropExtent()`'s
+    // longer-of-opposite-edges rule (`app/CropTool.hpp` §3) is the whole
+    // decision this feature turns on, and a user who cannot see the answer
+    // before committing has to commit to find out. Drawn from the same function
+    // the commit calls, so it cannot become a picture of a rule the tool no
+    // longer follows.
+    capsLabel("SIZE");
+    ImGui::SameLine();
+    pushAtelierMono();
+    if (crop.active) {
+      const DocumentRegion extent = crop.mode == CropMode::Rectangle
+                                        ? cropRegionOf(crop)
+                                        : perspectiveCropExtent(crop.quad);
+      ImGui::Text("%u x %u", extent.width, extent.height);
+    } else {
+      // Not "0 x 0": there is no crop, and a pair of zeroes reads as a crop
+      // that has collapsed rather than as one that has not been drawn.
+      ImGui::TextUnformatted("--");
+    }
+    popAtelierMono();
+
+    bandSeparator();
+    // **Both verbs are visible, and that is the point.** Enter and Escape are
+    // the shortcuts a user who knows them reaches for; a tool whose entire
+    // interaction is dragging cannot have its only commit on a key, or half the
+    // users never find it. These two set request flags read by the canvas
+    // block, so the button and the key are one commit path
+    // (`app/CropTool.hpp` §5).
+    const std::string quadWhy =
+        crop.mode == CropMode::Perspective ? cropQuadRefusal(crop.quad) : std::string{};
+    const DocumentRegion rectRegion = cropRegionOf(crop);
+    const bool rectUsable = crop.mode != CropMode::Rectangle || !rectRegion.empty();
+    const bool committable = crop.active && quadWhy.empty() && rectUsable;
+    ImGui::BeginDisabled(!committable);
+    if (ImGui::Button("Crop")) crop.commitRequested = true;
+    ImGui::EndDisabled();
+    // Outside the disabled pair, for the SPREAD combo's stated reason: a
+    // disabled item reports no hover, so a tooltip set inside one is the
+    // tooltip nobody can read -- and this is precisely the case where the user
+    // most needs to be told why the button is grey.
+    if (!crop.active) {
+      ImGui::SetItemTooltip("Drag a rectangle on the canvas first.");
+    } else if (!quadWhy.empty()) {
+      ImGui::SetItemTooltip("%s", quadWhy.c_str());
+    } else if (!rectUsable) {
+      ImGui::SetItemTooltip("The rectangle is less than one texel wide or tall.");
+    } else {
+      ImGui::SetItemTooltip("Crop the document to this rectangle. Enter does the same. Undo "
+                            "gives back everything it hid -- the crop moves the pixels, it "
+                            "does not delete them.");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!crop.active);
+    if (ImGui::Button("Cancel")) crop.cancelRequested = true;
+    ImGui::EndDisabled();
+    if (crop.active)
+      ImGui::SetItemTooltip("Discard the crop rectangle. Escape does the same, and so does "
+                            "choosing another tool.");
+
+    // The refusal, or the steep-quad warning, in the band itself rather than
+    // only in a tooltip -- a bow-tie is one careless drag away and the reason
+    // has to be readable without hunting for the control that is greyed.
+    if (!quadWhy.empty()) {
+      bandSeparator();
+      ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(kAccent));
+      ImGui::TextUnformatted(quadWhy.c_str());
+      ImGui::PopStyleColor();
+    } else if (crop.active && crop.mode == CropMode::Perspective &&
+               cropQuadIsSteep(crop.quad)) {
+      // **Not a refusal.** `ops/Transform.hpp` §3 says the resampler takes its
+      // filter factor from the Jacobian at the destination CENTRE, so a strong
+      // perspective is correctly filtered in the middle and progressively less
+      // so at the far edge. That limitation is named there rather than fixed,
+      // and this band is where it stops being silent -- the crop is still
+      // correct, it is just soft where it is most magnified.
+      bandSeparator();
+      ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(kTextSecondary));
+      ImGui::TextUnformatted(
+          "Steep quad: the far edge will be soft. The resampler picks its filter from the "
+          "middle of the result.");
+      ImGui::PopStyleColor();
+    }
     return;
   }
 

@@ -319,8 +319,19 @@ Mat3 transformRotate90(int quarterTurns, uint32_t width, uint32_t height) noexce
 // Eight unknowns from eight equations, by Gaussian elimination with partial
 // pivoting in double (the system is badly conditioned for near-degenerate
 // quads and a float solve loses corners visibly). Returns false and sets
-// `*errorOut` when the system is singular -- three collinear source points, a
-// quad collapsed to a line, or a destination quad that folds over itself.
+// `*errorOut` for a non-finite corner, and when the system is singular --
+// three collinear source points, or a quad collapsed to a line.
+//
+// **It does NOT refuse a self-intersecting quad, and this comment used to
+// claim it did.** A bow-tie -- one corner dragged past its neighbour -- is
+// neither collinear nor collapsed, so the 8x8 system is well conditioned, the
+// `|pivot| < 1e-12` test passes, and the homography returned folds the picture
+// through itself. Nor is reversed winding detected; that comes out mirrored.
+// Both are questions of policy rather than of numerics, so they belong to the
+// caller: `app/CropTool`'s refusal ladder is the one in this build, and its
+// selftest asserts THIS function accepting the same bow-tie on the line
+// adjacent to the tool refusing it, so that "the UI check duplicates the
+// engine's" cannot get it deleted.
 bool transformFromQuad(const std::array<Point2, 4>& src, const std::array<Point2, 4>& dst,
                        Mat3* out, std::string* errorOut);
 

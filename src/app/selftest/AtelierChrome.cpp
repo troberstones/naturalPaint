@@ -419,6 +419,21 @@ bool runAtelierChromeTest() {
     // palette CELLS a user can click, and a route that only one of two cells
     // could reach would be exactly the kind of half-wiring this check exists to
     // catch.
+    // **Crop is the twenty-second**, and it is the second row here that reaches
+    // no texel by writing one: it MOVES every texel of every layer, through
+    // `cropDocument()`'s index copy in Rectangle mode and through
+    // `transformDocument()`'s single resample in Perspective mode
+    // (app/CropTool). Like Measure it needed a gate of its own --
+    // `toolCropsCanvas()`, the eighth -- and for a sharper reason than
+    // Measure's: `toolDrawsSelection()` is the one-word way to make
+    // `toolHasCanvasHandler()` go true here, and it is the gate on the
+    // selection tools' canvas block, so a Crop widened into it would have had
+    // every crop drag handed to `commitDrawnSelection()`.
+    //
+    // `Tool::Slice`, which shares Crop's palette group and its cursor, is
+    // deliberately still false: the group pairing is a layout fact, not a
+    // capability, and a group whose second cell went live by association would
+    // be exactly the half-wiring this check exists to catch.
     const Tool kImplementedTools[] = {Tool::Brush,       Tool::Water,
                                       Tool::DryBrush,    Tool::Eyedropper,
                                       Tool::Marquee,     Tool::EllipseMarquee,
@@ -429,7 +444,7 @@ bool runAtelierChromeTest() {
                                       Tool::Dodge,       Tool::Burn,
                                       Tool::CloneStamp,  Tool::Smudge,
                                       Tool::Hand,        Tool::Zoom,
-                                      Tool::Move};
+                                      Tool::Move,        Tool::Crop};
     bool implementedOk = true;
     for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
       const Tool t = static_cast<Tool>(i);
@@ -439,7 +454,7 @@ bool runAtelierChromeTest() {
       if (toolImplemented(t) != shouldBe) implementedOk = false;
     }
     check(implementedOk,
-          "toolImplemented() is true for exactly the twenty-one tools with real behaviour");
+          "toolImplemented() is true for exactly the twenty-two tools with real behaviour");
 
     // Every tool has an icon, and toolIconCodepoints() is the deduplicated,
     // sorted union of all of them plus the "More" cell's own ellipsis --

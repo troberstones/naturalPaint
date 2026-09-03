@@ -12,6 +12,7 @@
 #include "app/DabLibrary.hpp"
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
+#include "app/CropTool.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
@@ -741,6 +742,19 @@ struct AppState {
 
   bool gradientDragDemo = false;
 
+  // `Tool::Crop`'s pending crop -- the rectangle or the four corners, the mode
+  // toggle, and which handle is under the pointer (app/CropTool.hpp section 5).
+  //
+  // Here rather than on `OpenDocument` for the marquee's reason -- it is an
+  // on-canvas gesture in document texel space and no document may carry it --
+  // and it carries its own `DocumentId` for `MeasureLine`'s reason: unlike the
+  // marquee's rubber band it deliberately OUTLIVES its own drag, because the
+  // user drags a rectangle out, adjusts it by its handles, and only then
+  // commits. A rectangle in one document's texels means nothing in another's,
+  // and `applyCropSession()` refuses on that id rather than cropping the wrong
+  // picture to plausible numbers.
+  CropSession crop;
+
   // What the last eyedropper click did, in one sentence, or empty when there
   // has not been one. Shown in the options bar.
   //
@@ -870,6 +884,14 @@ struct AppState {
   bool requestCut = false;
   bool requestPaste = false;
   bool requestDeleteSelection = false;
+
+  // Image > Crop to Selection and Image > Trim to Content
+  // (`app/CropTool.hpp` §7). Request flags for the reason above and for one
+  // more: both are `cropDocument()` on a rectangle they derive, and a native
+  // menu's AppKit callback has neither the active `OpenDocument` nor a frame
+  // in which to report a refusal.
+  bool requestCropToSelection = false;
+  bool requestTrimToContent = false;
 
   // Undo / redo (PRD O1, R2). Same request-flag reasoning as the block
   // above -- ⌘Z/⇧⌘Z resolve in main.cpp's keymap dispatch, which has no

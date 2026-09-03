@@ -1,5 +1,6 @@
 #include "app/ToolSurface.hpp"
 
+#include "app/CropTool.hpp"       // toolCropsCanvas()
 #include "app/MoveTool.hpp"       // toolMovesPixels()
 #include "app/StrokeSession.hpp"  // the route table and five of the gates
 #include "app/ZoomAndSize.hpp"    // toolZoomsView()
@@ -62,8 +63,8 @@ const char* toolSurfaceRefusal(Tool tool, bool documentOpen) {
   // phrasing of the same fact would be a second thing to keep in step, and the
   // instruction a user has to carry out is identical in every row below.
   //
-  // The ladder is over GATES, not over `Tool` values, so it is five rows for
-  // twenty-one tools and a sixth tool in any family inherits its family's
+  // The ladder is over GATES, not over `Tool` values, so it is six rows for
+  // twenty-two tools and a sixth tool in any family inherits its family's
   // sentence. Ordered cheapest-first for the reason `toolHasCanvasHandler()`
   // orders its own disjunction: `toolBeginsStroke()` builds two probe `Layer`s
   // and is last, so no tool that answers an earlier gate ever reaches it.
@@ -75,6 +76,15 @@ const char* toolSurfaceRefusal(Tool tool, bool documentOpen) {
     return "Nothing to move: no document is open. File > New Document makes one.";
   if (toolWritesRgbPixels(tool))
     return "Nothing to fill: no document is open. File > New Document makes one.";
+  // The sixth row, and it earns its own lead-in rather than borrowing Move's:
+  // what a crop does to a document is change its extent, and "Nothing to move"
+  // would name the wrong operation for a user reading it off a dimmed cell.
+  // The ladder is over gates and this is the eighth gate (app/CropTool.hpp
+  // §6), so `Tool::Slice` -- which shares Crop's palette group -- correctly
+  // does NOT inherit this sentence: it has no gate, so it is a not-built cell
+  // and gets "Not built yet." instead, which is the one-reason rule holding.
+  if (toolCropsCanvas(tool))
+    return "Nothing to crop: no document is open. File > New Document makes one.";
   if (toolBeginsStroke(tool))
     return "Nothing to paint on: no document is open. File > New Document makes one.";
 
