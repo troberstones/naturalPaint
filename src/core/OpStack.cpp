@@ -46,6 +46,18 @@ PointOp toPointOp(const Op& op) {
       const ChannelMixerParams p = op.channelMixer;
       return [p](const std::array<float, 3>& rgb) { return applyChannelMixer(rgb, p); };
     }
+    case PointOpKind::Invert: {
+      const InvertParams p = op.invert;
+      return [p](const std::array<float, 3>& rgb) { return applyInvert(rgb, p); };
+    }
+    case PointOpKind::Posterize: {
+      const PosterizeParams p = op.posterize;
+      return [p](const std::array<float, 3>& rgb) { return applyPosterize(rgb, p); };
+    }
+    case PointOpKind::Threshold: {
+      const ThresholdParams p = op.threshold;
+      return [p](const std::array<float, 3>& rgb) { return applyThreshold(rgb, p); };
+    }
   }
   // Unreachable for a valid PointOpKind value (every enumerator is handled
   // above) -- an identity function rather than undefined behaviour if this
@@ -119,6 +131,9 @@ const char* pointOpKindName(PointOpKind kind) noexcept {
     case PointOpKind::Saturation:   return "Saturation";
     case PointOpKind::Grayscale:    return "Grayscale";
     case PointOpKind::ChannelMixer: return "Channel Mixer";
+    case PointOpKind::Invert:       return "Invert";
+    case PointOpKind::Posterize:    return "Posterize";
+    case PointOpKind::Threshold:    return "Threshold";
   }
   // Unreachable for a valid enumerator; a name rather than a crash if a value
   // is ever cast in from outside the enum, which is what a serialised file's
@@ -159,6 +174,9 @@ std::array<float, 3> applyOpDirect(const std::array<float, 3>& rgb, const Op& op
     case PointOpKind::Saturation:   return applySaturation(rgb, op.saturation);
     case PointOpKind::Grayscale:    return applyGrayscale(rgb, op.grayscale);
     case PointOpKind::ChannelMixer: return applyChannelMixer(rgb, op.channelMixer);
+    case PointOpKind::Invert:       return applyInvert(rgb, op.invert);
+    case PointOpKind::Posterize:    return applyPosterize(rgb, op.posterize);
+    case PointOpKind::Threshold:    return applyThreshold(rgb, op.threshold);
   }
   // Unreachable for a valid PointOpKind value (every enumerator handled
   // above, and -Werror=switch keeps that exhaustive); identity rather than
@@ -296,6 +314,64 @@ void applyExposureBatch(float* __restrict r, float* __restrict g, float* __restr
   for (size_t i = 0; i < n; ++i) b[i] *= mult;
 }
 
+// --- Invert / Posterize / Threshold: delegated per lane, deliberately -------
+//
+// Every batch function above is a hand-written SoA re-derivation of its
+// scalar twin, and each carries its own argument for why the two are
+// bit-identical (evaluation order, when a lane's own read happens relative to
+// its own write). That argument has to be made once per function and is the
+// expensive part of adding one.
+//
+// These three do not make it: they call the scalar function per lane, so
+// bit-identity is true **by construction** rather than by a second derivation
+// that could drift.
+//
+// **And that costs nothing, measured rather than asserted.** All three are
+// dominated by transcendentals -- `shaperEncode`/`shaperDecode` per channel,
+// `std::pow` for a Display-domain Invert, `std::round` for Posterize -- which
+// do not vectorise into the win the flat arithmetic ops above get from being
+// split into three passes. app/selftest/GradeDispatch.cpp's per-op breakdown
+// times every kind's batch path against its scalar one at 1024x1024 and
+// prints the ratio: Invert 0.92x, Posterize 1.00x, Threshold 0.93x -- the
+// same band Levels (0.96x) already sits in for the same reason. So what is
+// being given up is within the noise of a measurement that is in the suite
+// and will say so if that ever changes, and what is being bought is a whole
+// class of "the SoA copy quietly stopped matching" defect that cannot occur.
+//
+// If one of these ever does show up in a profile, the way to make it fast is
+// the same as for the others -- and the assertion that it stayed correct is
+// already written (app/selftest/GradeDispatch.cpp cross-checks the batch path
+// against the per-texel switch, at zero tolerance, for every kind).
+void applyInvertBatch(float* __restrict r, float* __restrict g, float* __restrict b, size_t n,
+                      const InvertParams& p) {
+  for (size_t i = 0; i < n; ++i) {
+    const std::array<float, 3> out = applyInvert({r[i], g[i], b[i]}, p);
+    r[i] = out[0];
+    g[i] = out[1];
+    b[i] = out[2];
+  }
+}
+
+void applyPosterizeBatch(float* __restrict r, float* __restrict g, float* __restrict b, size_t n,
+                         const PosterizeParams& p) {
+  for (size_t i = 0; i < n; ++i) {
+    const std::array<float, 3> out = applyPosterize({r[i], g[i], b[i]}, p);
+    r[i] = out[0];
+    g[i] = out[1];
+    b[i] = out[2];
+  }
+}
+
+void applyThresholdBatch(float* __restrict r, float* __restrict g, float* __restrict b, size_t n,
+                         const ThresholdParams& p) {
+  for (size_t i = 0; i < n; ++i) {
+    const std::array<float, 3> out = applyThreshold({r[i], g[i], b[i]}, p);
+    r[i] = out[0];
+    g[i] = out[1];
+    b[i] = out[2];
+  }
+}
+
 // Same expression, same left-to-right evaluation order as
 // ops::computeLuma()/applySaturation() (ops/PointOps.cpp) -- `luma` is read
 // from all three original channels before any of the three are overwritten
@@ -379,6 +455,9 @@ void applyOpsPremultipliedBatch(std::span<std::array<float, 4>> texels,
       case PointOpKind::Saturation:   applySaturationBatch(r, g, b, n, op.saturation); break;
       case PointOpKind::Grayscale:    applyGrayscaleBatch(r, g, b, n, op.grayscale); break;
       case PointOpKind::ChannelMixer: applyChannelMixerBatch(r, g, b, n, op.channelMixer); break;
+      case PointOpKind::Invert:       applyInvertBatch(r, g, b, n, op.invert); break;
+      case PointOpKind::Posterize:    applyPosterizeBatch(r, g, b, n, op.posterize); break;
+      case PointOpKind::Threshold:    applyThresholdBatch(r, g, b, n, op.threshold); break;
       // No `default:` -- -Werror=switch keeps this exhaustive over
       // PointOpKind the same way applyOpDirect()'s switch already is.
     }

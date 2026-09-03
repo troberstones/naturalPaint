@@ -112,7 +112,7 @@ bool runAdjustmentLayerTest() {
 
   // --- 2. io/OpSerial: the format `np:ops` finally has ------------------
   {
-    // Every one of the six kinds, with non-default params, round-tripped and
+    // Every one of the nine kinds, with non-default params, round-tripped and
     // compared field by field at EXACTLY zero -- the bit patterns are what
     // travel, so "nearly equal" would mean a bug.
     OpStack stack;
@@ -146,6 +146,23 @@ bool runAdjustmentLayerTest() {
       for (size_t j = 0; j < 4; ++j)
         mixer.channelMixer.matrix[i][j] = 0.1f * static_cast<float>(i * 4 + j + 1);
     stack.add(mixer);
+    Op invert;
+    invert.pointKind = PointOpKind::Invert;
+    // The Display domain deliberately, not the default Linear: `domain` is the
+    // only enum-valued field any point op serialises, so a writer that dropped
+    // it would round-trip a Linear fixture perfectly and still be wrong.
+    invert.invert.domain = InvertParams::Domain::Display;
+    invert.invert.amount = 0.375f;
+    stack.add(invert);
+    Op posterize;
+    posterize.pointKind = PointOpKind::Posterize;
+    posterize.posterize.levels = 7;
+    stack.add(posterize);
+    Op threshold;
+    threshold.pointKind = PointOpKind::Threshold;
+    threshold.threshold.threshold = 0.625f;
+    threshold.threshold.amount = 0.5f;
+    stack.add(threshold);
     Op spatial;
     spatial.opClass = OpClass::SpatialB;  // a fixture only -- see core/OpStack.hpp
     spatial.enabled = false;
@@ -156,7 +173,7 @@ bool runAdjustmentLayerTest() {
     std::string why;
     const bool decoded = deserializeOpStack(encoded, &back, &why);
     check(decoded && back.size() == stack.size(),
-          "opserial: a stack holding all six PointOpKinds plus a class-B entry round-trips "
+          "opserial: a stack holding all nine PointOpKinds plus a class-B entry round-trips "
           "with its length intact");
     bool identical = decoded && back.size() == stack.size();
     for (size_t i = 0; i < stack.size() && identical; ++i) {
@@ -177,6 +194,12 @@ bool runAdjustmentLayerTest() {
         identical = false;
       if (a.grayscale.lumaWeights != b.grayscale.lumaWeights) identical = false;
       if (a.channelMixer.matrix != b.channelMixer.matrix) identical = false;
+      if (a.invert.domain != b.invert.domain || a.invert.amount != b.invert.amount)
+        identical = false;
+      if (a.posterize.levels != b.posterize.levels) identical = false;
+      if (a.threshold.threshold != b.threshold.threshold ||
+          a.threshold.amount != b.threshold.amount)
+        identical = false;
     }
     check(identical,
           "opserial: and every field of every entry comes back BIT-IDENTICAL -- including a "
@@ -185,7 +208,7 @@ bool runAdjustmentLayerTest() {
     check(decoded && serializeOpStack(back) == encoded,
           "opserial: re-encoding the decoded stack reproduces the identical string, so the "
           "encoding is a function of the stack and not of how it was built");
-    std::printf("  [measured] a 7-entry stack (all six point kinds + a class-B entry) encodes "
+    std::printf("  [measured] a 10-entry stack (all nine point kinds + a class-B entry) encodes "
                 "to %zu characters of np:ops\n", encoded.size());
 
     // **The fixture that does not share the encoder's assumptions.** Typed out
@@ -238,6 +261,55 @@ bool runAdjustmentLayerTest() {
       check(runs.size() == 1 && runs[0].startIndex == 0 && runs[0].endIndex == 1,
             "opserial: and it SPLITS the run rather than being folded into one -- a newer "
             "build's op sitting between two point ops must not let them collapse across it");
+    }
+
+    // The same treatment for the three kinds this format learned last, each
+    // typed out from the spec rather than produced by the encoder. These are
+    // the kinds whose numeric codes (6, 7, 8) and body layouts were chosen by
+    // this task, so they are exactly the ones with no independent witness yet
+    // -- an encoder and a decoder that agreed on the wrong code, the wrong
+    // field order, or the wrong width would round-trip perfectly and still
+    // write a file no other build could read.
+    //
+    //   0300                  u16 opCount = 3
+    //   0c000000              u32 bodyLength = 12
+    //     0000 0600 01 00       PointA, kind 6 = Invert, enabled
+    //     0100                  u16 domain 1 = Display
+    //     0000803e              f32 amount 0.25
+    //   0a000000              u32 bodyLength = 10
+    //     0000 0700 01 00       PointA, kind 7 = Posterize, enabled
+    //     05000000              i32 levels 5
+    //   0e000000              u32 bodyLength = 14
+    //     0000 0800 00 00       PointA, kind 8 = Threshold, DISABLED
+    //     0000403f              f32 threshold 0.75
+    //     0000803f              f32 amount 1.0
+    const std::string handNew =
+        "npops1:0300"
+        "0c000000" "00000600" "0100" "0100" "0000803e"
+        "0a000000" "00000700" "0100" "05000000"
+        "0e000000" "00000800" "0000" "0000403f" "0000803f";
+    OpStack newKinds;
+    const bool newOk = deserializeOpStack(handNew, &newKinds, &why);
+    check(newOk && newKinds.size() == 3,
+          "opserial: a hand-written payload spelling Invert, Posterize and Threshold decodes "
+          "to three entries");
+    if (newOk && newKinds.size() == 3) {
+      check(newKinds.at(0).pointKind == PointOpKind::Invert &&
+                newKinds.at(0).invert.domain == InvertParams::Domain::Display &&
+                newKinds.at(0).invert.amount == 0.25f && newKinds.at(0).enabled,
+            "opserial: kind code 6 is Invert, and its domain tag reads as Display -- not the "
+            "Linear default a dropped field would leave behind");
+      check(newKinds.at(1).pointKind == PointOpKind::Posterize &&
+                newKinds.at(1).posterize.levels == 5,
+            "opserial: kind code 7 is Posterize, at exactly 5 levels");
+      check(newKinds.at(2).pointKind == PointOpKind::Threshold &&
+                newKinds.at(2).threshold.threshold == 0.75f &&
+                newKinds.at(2).threshold.amount == 1.0f && !newKinds.at(2).enabled,
+            "opserial: kind code 8 is Threshold, with threshold and amount in THAT order -- "
+            "swapping them would still round-trip through this module's own encoder");
+      check(serializeOpStack(newKinds) == handNew,
+            "opserial: and re-encoding the three reproduces the hand-written bytes character "
+            "for character");
     }
 
     // Every way a value can be malformed *as a container*, each refused by

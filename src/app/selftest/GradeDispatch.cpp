@@ -115,6 +115,35 @@ Op opChannelMixer() {
   return op;
 }
 
+// The three kinds that arrived with the adjustment-layer track. Each is set
+// away from BOTH the identity and the params struct's own default: Invert and
+// Threshold default to `amount = 1.0` (a full effect, deliberately -- see
+// ops/ToneOps.hpp), so a fixture left at the default would pass against an
+// implementation that dropped `amount` entirely, and Posterize's default
+// `levels = 0` IS the identity.
+Op opInvert() {
+  Op op;
+  op.pointKind = PointOpKind::Invert;
+  op.invert.domain = InvertParams::Domain::Display;
+  op.invert.amount = 0.7f;
+  return op;
+}
+
+Op opPosterize() {
+  Op op;
+  op.pointKind = PointOpKind::Posterize;
+  op.posterize.levels = 6;
+  return op;
+}
+
+Op opThreshold() {
+  Op op;
+  op.pointKind = PointOpKind::Threshold;
+  op.threshold.threshold = 0.55f;
+  op.threshold.amount = 0.6f;
+  return op;
+}
+
 // The realistic multi-op stack the task's error measurement asks for --
 // five of the six kinds (Grayscale, tested alone above, is deliberately
 // left out of the stack: chaining it collapses every later op's input to a
@@ -137,7 +166,7 @@ std::vector<Op> conservativeStack() {
 // Rebuilds `op` as an ops::PointOp closure -- the exact mapping
 // core/OpStack.cpp's anonymous-namespace toPointOp() applies (that function
 // has internal linkage and cannot be called from this translation unit, so
-// this is a second, hand-written copy of the same six-way switch, the same
+// this is a second, hand-written copy of the same switch, the same
 // duplication app/selftest/LutBake.cpp already accepts for its own
 // GPU-vs-CPU cross-check). Used only to construct the "before" side of the
 // regression and timing comparisons below -- ops::PointOp/
@@ -167,6 +196,18 @@ PointOp toClosure(const Op& op) {
     case PointOpKind::ChannelMixer: {
       const ChannelMixerParams p = op.channelMixer;
       return [p](const std::array<float, 3>& rgb) { return applyChannelMixer(rgb, p); };
+    }
+    case PointOpKind::Invert: {
+      const InvertParams p = op.invert;
+      return [p](const std::array<float, 3>& rgb) { return applyInvert(rgb, p); };
+    }
+    case PointOpKind::Posterize: {
+      const PosterizeParams p = op.posterize;
+      return [p](const std::array<float, 3>& rgb) { return applyPosterize(rgb, p); };
+    }
+    case PointOpKind::Threshold: {
+      const ThresholdParams p = op.threshold;
+      return [p](const std::array<float, 3>& rgb) { return applyThreshold(rgb, p); };
     }
   }
   return [](const std::array<float, 3>& rgb) { return rgb; };
@@ -391,6 +432,23 @@ bool runGradeDispatchTest() {
                static_cast<double>(graded[2]), static_cast<double>(delta));
     check(delta > 0.05f,
           "vacuity guard: realisticStack() changes a representative pixel by more than 0.05");
+
+    // The same guard, per fixture, for the three kinds added with the
+    // adjustment-layer track -- `realisticStack()` does not contain them, so
+    // the check above says nothing about any of the three.
+    const std::vector<std::pair<const char*, Op>> newKinds = {
+        {"Invert", opInvert()}, {"Posterize", opPosterize()}, {"Threshold", opThreshold()}};
+    for (const auto& [label, op] : newKinds) {
+      const std::array<float, 3> out = referenceChain(probe, {op});
+      const float d = std::fabs(out[0] - probe[0]) + std::fabs(out[1] - probe[1]) +
+                      std::fabs(out[2] - probe[2]);
+      std::printf("  [measured] %s on (0.50,0.40,0.30) -> (%.4f,%.4f,%.4f), |delta|=%.4f\n",
+                 label, static_cast<double>(out[0]), static_cast<double>(out[1]),
+                 static_cast<double>(out[2]), static_cast<double>(d));
+      char buf[128];
+      std::snprintf(buf, sizeof buf, "vacuity guard: %s changes that pixel too", label);
+      check(d > 0.05f, buf);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -409,6 +467,9 @@ bool runGradeDispatchTest() {
         {"Saturation", {opSaturation()}},
         {"Grayscale", {opGrayscale()}},
         {"ChannelMixer", {opChannelMixer()}},
+        {"Invert", {opInvert()}},
+        {"Posterize", {opPosterize()}},
+        {"Threshold", {opThreshold()}},
         {"realistic stack (5 ops)", realisticStack()},
     };
     const std::vector<std::array<float, 4>> pixels = {
@@ -464,6 +525,9 @@ bool runGradeDispatchTest() {
         {"Saturation", {opSaturation()}},
         {"Grayscale", {opGrayscale()}},
         {"ChannelMixer", {opChannelMixer()}},
+        {"Invert", {opInvert()}},
+        {"Posterize", {opPosterize()}},
+        {"Threshold", {opThreshold()}},
         {"realistic stack (5 ops)", realisticStack()},
     };
 
@@ -745,6 +809,13 @@ bool runGradeDispatchTest() {
           {"Levels", opLevels()},           {"Curves", opCurvesModerate()},
           {"Exposure", opExposure()},       {"Saturation", opSaturation()},
           {"Grayscale", opGrayscale()},     {"ChannelMixer", opChannelMixer()},
+          // The three added with the adjustment-layer track. Their batch
+          // functions call the scalar one per lane rather than splitting into
+          // three flat passes (core/OpStack.cpp says why), so these rows are
+          // here to put a number on what that costs instead of asserting it
+          // costs nothing.
+          {"Invert", opInvert()},           {"Posterize", opPosterize()},
+          {"Threshold", opThreshold()},
       };
       for (const auto& [label, op] : perOp) {
         const std::vector<Op> oneOp = {op};

@@ -24,6 +24,13 @@ constexpr uint16_t kKindExposure = 2;
 constexpr uint16_t kKindSaturation = 3;
 constexpr uint16_t kKindGrayscale = 4;
 constexpr uint16_t kKindChannelMixer = 5;
+// Appended with the next free codes. **These are the format's identity for a
+// kind, not `PointOpKind`'s ordinal** -- which is exactly why appending to
+// that enum is safe and why these numbers must never be reused or reordered
+// once a file has been written with them.
+constexpr uint16_t kKindInvert = 6;
+constexpr uint16_t kKindPosterize = 7;
+constexpr uint16_t kKindThreshold = 8;
 
 // Every record body starts with class, kind, enabled and the reserved byte.
 constexpr size_t kRecordHeaderBytes = 6;
@@ -35,6 +42,18 @@ void putU16(std::vector<uint8_t>& b, uint16_t v) {
 
 void putU32(std::vector<uint8_t>& b, uint32_t v) {
   for (int i = 0; i < 4; ++i) b.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFFu));
+}
+
+// A signed 32-bit integer, two's complement, little-endian -- the same byte
+// order every other fixed-width field here uses. Via `uint32_t` rather than
+// shifting a signed value, because a right-shift of a negative `int32_t` is
+// implementation-defined and a left-shift that overflows one is undefined;
+// the round trip through the unsigned type is well defined in both
+// directions and is exact for every value.
+void putI32(std::vector<uint8_t>& b, int32_t v) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &v, sizeof(bits));
+  putU32(b, bits);
 }
 
 // The bit pattern, not a decimal rendering. This is the whole of why a grade
@@ -76,6 +95,12 @@ struct Reader {
     std::memcpy(&v, &bits, sizeof(v));
     return v;
   }
+  int32_t i32() {
+    const uint32_t bits = u32();
+    int32_t v = 0;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+  }
 };
 
 int hexDigit(char c) {
@@ -96,6 +121,17 @@ bool fixedParamBytes(uint16_t kind, size_t* out) {
     case kKindSaturation: *out = 4 * 4; return true;
     case kKindGrayscale: *out = 3 * 4; return true;
     case kKindChannelMixer: *out = 12 * 4; return true;
+    // Invert: one u16 domain tag + one f32 amount. The domain is an enum in
+    // ops/ToneOps, written as a number rather than inferred, because a file
+    // that lost which domain an invert was authored in would round-trip to a
+    // visibly different picture.
+    case kKindInvert: *out = 2 + 4; return true;
+    // Posterize: one i32 level count. Written as a fixed-width integer rather
+    // than a float, because it IS an integer -- a level count of 3.9999 is not
+    // a state this op has.
+    case kKindPosterize: *out = 4; return true;
+    // Threshold: two f32s (threshold, amount).
+    case kKindThreshold: *out = 2 * 4; return true;
     default: return false;
   }
 }
@@ -116,6 +152,9 @@ void writeBody(std::vector<uint8_t>& body, const Op& op) {
     case PointOpKind::Levels: kindCode = kKindLevels; break;
     case PointOpKind::Curves: kindCode = kKindCurves; break;
     case PointOpKind::Exposure: kindCode = kKindExposure; break;
+    case PointOpKind::Invert: kindCode = kKindInvert; break;
+    case PointOpKind::Posterize: kindCode = kKindPosterize; break;
+    case PointOpKind::Threshold: kindCode = kKindThreshold; break;
     case PointOpKind::Saturation: kindCode = kKindSaturation; break;
     case PointOpKind::Grayscale: kindCode = kKindGrayscale; break;
     case PointOpKind::ChannelMixer: kindCode = kKindChannelMixer; break;
@@ -172,6 +211,16 @@ void writeBody(std::vector<uint8_t>& body, const Op& op) {
       for (const std::array<float, 4>& row : op.channelMixer.matrix)
         for (const float v : row) putF32(body, v);
       break;
+    case PointOpKind::Invert:
+      putU16(body, static_cast<uint16_t>(op.invert.domain == InvertParams::Domain::Display ? 1u
+                                                                                           : 0u));
+      putF32(body, op.invert.amount);
+      break;
+    case PointOpKind::Posterize: putI32(body, static_cast<int32_t>(op.posterize.levels)); break;
+    case PointOpKind::Threshold:
+      putF32(body, op.threshold.threshold);
+      putF32(body, op.threshold.amount);
+      break;
   }
 }
 
@@ -214,6 +263,9 @@ bool parseRecord(const uint8_t* body, size_t length, Op* out) {
     case kKindLevels: op.pointKind = PointOpKind::Levels; break;
     case kKindCurves: op.pointKind = PointOpKind::Curves; break;
     case kKindExposure: op.pointKind = PointOpKind::Exposure; break;
+    case kKindInvert: op.pointKind = PointOpKind::Invert; break;
+    case kKindPosterize: op.pointKind = PointOpKind::Posterize; break;
+    case kKindThreshold: op.pointKind = PointOpKind::Threshold; break;
     case kKindSaturation: op.pointKind = PointOpKind::Saturation; break;
     case kKindGrayscale: op.pointKind = PointOpKind::Grayscale; break;
     case kKindChannelMixer: op.pointKind = PointOpKind::ChannelMixer; break;
@@ -264,6 +316,23 @@ bool parseRecord(const uint8_t* body, size_t length, Op* out) {
     case PointOpKind::ChannelMixer:
       for (std::array<float, 4>& row : op.channelMixer.matrix)
         for (float& v : row) v = r.f32();
+      break;
+    case PointOpKind::Invert: {
+      // Any code other than 1 reads as Linear. A newer build's third domain
+      // must not become Display by accident -- Linear is this build's default
+      // and the conservative answer, and the record still round-trips because
+      // an unrecognised *kind* is preserved verbatim (the `Unknown` path);
+      // this branch is only reached for a kind this build does claim to know.
+      const uint16_t domain = r.u16();
+      op.invert.domain =
+          domain == 1u ? InvertParams::Domain::Display : InvertParams::Domain::Linear;
+      op.invert.amount = r.f32();
+      break;
+    }
+    case PointOpKind::Posterize: op.posterize.levels = static_cast<int>(r.i32()); break;
+    case PointOpKind::Threshold:
+      op.threshold.threshold = r.f32();
+      op.threshold.amount = r.f32();
       break;
   }
   if (r.bad) return false;

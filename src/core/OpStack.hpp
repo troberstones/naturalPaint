@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ops/PointOps.hpp"
+#include "ops/ToneOps.hpp"
 
 // core/OpStack (PLAN.md "Phase 3 -- Grade it", step 5; docs/operations.md §1
 // and §1.3's four-letter op-class taxonomy; ADR-0004
@@ -88,6 +89,22 @@ enum class PointOpKind {
   Saturation,
   Grayscale,
   ChannelMixer,
+  // Appended, never inserted. io/OpSerial keys a record by a stable numeric
+  // code rather than by this enum's ordinal, so appending is safe for the
+  // format -- but `pointOpKindName()` and the GRADE panel both walk this list
+  // in declaration order, so a new kind appears at the end of the picker,
+  // which is where a reader expects the newest thing to be.
+  //
+  // **These three were already implemented, just not reachable from a layer.**
+  // ops/ToneOps has carried `applyInvert`, `applyPosterize` and
+  // `applyThreshold` -- with their domain choices argued at length -- since
+  // Image > Adjustments needed them. What was missing was purely the
+  // registration: an OpStack kind, a serial record, a LUT kernel and a panel
+  // row. Nothing about the maths is new here, which is why all three land
+  // together rather than one at a time.
+  Invert,
+  Posterize,
+  Threshold,
 };
 
 // One entry in an OpStack.
@@ -122,6 +139,17 @@ struct Op {
   SaturationParams saturation{};
   GrayscaleParams grayscale{};
   ChannelMixerParams channelMixer{};
+  // ops/ToneOps' own params types, reused verbatim rather than restated here:
+  // the destructive Image > Adjustments path and this non-destructive one
+  // must agree about what "posterize to 4 levels" means, and they cannot
+  // disagree if there is only one struct. Note `InvertParams` and
+  // `ThresholdParams` default to `amount = 1` (a full effect) rather than to
+  // an identity -- ToneOps.hpp argues why -- so unlike every field above,
+  // a default-constructed one of these is NOT neutral. That is correct and
+  // harmless: a field is only read when `pointKind` selects it.
+  InvertParams invert{};
+  PosterizeParams posterize{};
+  ThresholdParams threshold{};
 
   // The verbatim bytes of one serialised op record this build could not
   // interpret (io/OpSerial's record body, without its length prefix, which is

@@ -256,6 +256,135 @@ bool runLutBakeTest(GpuContext& gpu) {
     runOneCase(gpuOps, cpuOps, "LutBake curves (kMaxCurvePointsPerChannel points)");
   }
 
+  // --- Invert, both domains -- the Display one is the only kernel in the
+  // tree that includes shaders/include/srgb.wgsl, so this is what holds that
+  // hand-port to color/Space.cpp's constants. ---
+  {
+    Op op;
+    op.pointKind = PointOpKind::Invert;
+    op.invert.domain = InvertParams::Domain::Linear;
+    op.invert.amount = 0.75f;  // not 1.0: a kernel that ignored `amount` would
+                               // otherwise be indistinguishable from a correct one
+    const InvertParams params = op.invert;
+    const std::vector<Op> gpuOps{op};
+    const std::vector<PointOp> cpuOps{
+        [params](const std::array<float, 3>& rgb) { return applyInvert(rgb, params); }};
+    runOneCase(gpuOps, cpuOps, "LutBake invert (linear domain, amount 0.75)");
+  }
+  {
+    Op op;
+    op.pointKind = PointOpKind::Invert;
+    op.invert.domain = InvertParams::Domain::Display;
+    op.invert.amount = 1.0f;
+    const InvertParams params = op.invert;
+    const std::vector<Op> gpuOps{op};
+    const std::vector<PointOp> cpuOps{
+        [params](const std::array<float, 3>& rgb) { return applyInvert(rgb, params); }};
+    runOneCase(gpuOps, cpuOps, "LutBake invert (display domain -- exercises srgb.wgsl)");
+  }
+
+  // --- Posterize. ---
+  //
+  // **A quantiser is a step function, so the fixture has to be checked and
+  // not just chosen.** Everywhere else in this file a small CPU/GPU
+  // disagreement stays small; here, a sample sitting within float noise of a
+  // bin boundary would round one way on the CPU and the other on the GPU, and
+  // the output would differ by a whole bin -- a real failure that says
+  // nothing about the kernel. Rather than picking a level count and hoping,
+  // the margin from every sample cell to the nearest boundary is measured
+  // below and asserted to be far larger than the half-float step the bake
+  // actually introduces.
+  {
+    constexpr int kLevels = 5;
+    Op op;
+    op.pointKind = PointOpKind::Posterize;
+    op.posterize.levels = kLevels;
+
+    const float step = 1.0f / static_cast<float>(kLevels - 1);
+    float worstMargin = 1.0f;
+    for (const auto& cell : sampleCells) {
+      for (int c = 0; c < 3; ++c) {
+        const float shaped = halfRT(gridCoord(cell[static_cast<size_t>(c)]));
+        const float scaled = shaped / step;
+        // Distance to the nearest .5, which is where std::round()/round() flips.
+        const float margin = std::fabs(std::fabs(scaled - std::round(scaled)) - 0.5f);
+        worstMargin = std::min(worstMargin, margin * step);
+      }
+    }
+    std::printf("  [measured] posterize fixture: closest sample sits %.4f from a bin "
+                "boundary, against a half-float step of about %.5f\n",
+                static_cast<double>(worstMargin), 1.0 / 2048.0);
+    check(worstMargin > 20.0f / 2048.0f,
+          "LutBake posterize: no sample cell lands near a quantisation boundary, so a "
+          "CPU/GPU disagreement here is the kernel and not a coin flip");
+
+    const PosterizeParams params = op.posterize;
+    const std::vector<Op> gpuOps{op};
+    const std::vector<PointOp> cpuOps{
+        [params](const std::array<float, 3>& rgb) { return applyPosterize(rgb, params); }};
+    runOneCase(gpuOps, cpuOps, "LutBake posterize (5 levels)");
+  }
+
+  // --- Threshold. Same step-function hazard as Posterize, and the same
+  // treatment: the split point is compared against every sample's own shaped
+  // luma rather than assumed to be clear of them.
+  //
+  // **And the split is 0.75 rather than the obvious 0.5 for a measured
+  // reason.** Threshold's one real design decision is that the comparison
+  // happens in the SHAPER domain, not in linear light (ops/ToneOps.hpp argues
+  // why: 0.5 in linear light is nowhere near a perceptual midpoint). At a
+  // split of 0.5 every sample cell here happens to fall on the same side of
+  // both comparisons -- so a kernel that skipped the shaper encode entirely
+  // and compared raw linear luma passed all six cells. That was measured, not
+  // reasoned about: the sabotage was run and the test stayed green. At 0.75
+  // three of the six cells disagree between the two comparisons, and the
+  // assertion below states that as a property of the fixture so it cannot
+  // quietly stop being true. ---
+  {
+    constexpr float kSplit = 0.75f;
+    Op op;
+    op.pointKind = PointOpKind::Threshold;
+    op.threshold.threshold = kSplit;
+    op.threshold.amount = 0.8f;  // not 1.0, for the reason Invert's is not
+
+    float worstMargin = 1.0f;
+    bool anyAbove = false;
+    bool anyBelow = false;
+    int domainDisagreements = 0;
+    for (const auto& cell : sampleCells) {
+      const std::array<float, 3> shaped{halfRT(gridCoord(cell[0])), halfRT(gridCoord(cell[1])),
+                                        halfRT(gridCoord(cell[2]))};
+      const std::array<float, 3> lin{shaperDecode(shaped[0]), shaperDecode(shaped[1]),
+                                     shaperDecode(shaped[2])};
+      const float linearLuma = computeLuma(lin);
+      const float shapedLuma = shaperEncode(linearLuma);
+      worstMargin = std::min(worstMargin, std::fabs(shapedLuma - kSplit));
+      worstMargin = std::min(worstMargin, std::fabs(linearLuma - kSplit));
+      if (shapedLuma >= kSplit) anyAbove = true; else anyBelow = true;
+      if ((shapedLuma >= kSplit) != (linearLuma >= kSplit)) ++domainDisagreements;
+    }
+    std::printf("  [measured] threshold fixture: closest sample sits %.4f from the split in "
+                "either domain; %d of %zu cells fall on OPPOSITE sides of it in the two "
+                "domains\n",
+                static_cast<double>(worstMargin), domainDisagreements, sampleCells.size());
+    check(worstMargin > 20.0f / 2048.0f,
+          "LutBake threshold: no sample cell's luma lands on the split, so a disagreement "
+          "here is the kernel and not a coin flip");
+    check(anyAbove && anyBelow,
+          "LutBake threshold: the samples straddle the split -- some go white and some go "
+          "black, so a kernel that returned one constant would fail rather than agree");
+    check(domainDisagreements >= 2,
+          "LutBake threshold: and the split separates the SHAPER-domain answer from the "
+          "linear-light one on at least two cells, so a kernel that skipped the shaper "
+          "encode cannot pass by coincidence");
+
+    const ThresholdParams params = op.threshold;
+    const std::vector<Op> gpuOps{op};
+    const std::vector<PointOp> cpuOps{
+        [params](const std::array<float, 3>& rgb) { return applyThreshold(rgb, params); }};
+    runOneCase(gpuOps, cpuOps, "LutBake threshold (split 0.75, amount 0.8)");
+  }
+
   // --- Composed multi-op run: proves the ping-pong sequencing itself, not
   // just any single kernel in isolation -- the GPU analogue of
   // runOpStackTest()'s own CPU-side composition proof. Exposure ->
@@ -283,6 +412,36 @@ bool runLutBakeTest(GpuContext& gpu) {
     };
     runOneCase(gpuOps, cpuOps,
               "LutBake composed run (exposure -> saturation -> channel mixer)");
+  }
+
+  // --- Every kind bakes at all -------------------------------------------
+  //
+  // The cases above name their kinds one at a time, which means a
+  // PointOpKind added later with no kernel behind it -- or with a kernel
+  // whose WGSL does not compile, or whose bind group does not match the
+  // layout -- reaches this file only if whoever added it also remembered to
+  // add a case. `-Wswitch` cannot help here: color/LutBake.cpp looks its
+  // kernel up in a table indexed by the enum's ordinal, and a table entry
+  // naming a file that does not exist is a runtime failure, not a compile
+  // error. This loop is over the enum itself, so it covers whatever the enum
+  // holds.
+  //
+  // Params are left at their defaults deliberately: this asks "does this kind
+  // have a working kernel", not "is the kernel right" -- which is what the
+  // named cases above, with their non-default params, are for.
+  {
+    for (int k = 0; k <= static_cast<int>(PointOpKind::Threshold); ++k) {
+      Op op;
+      op.opClass = OpClass::PointA;
+      op.pointKind = static_cast<PointOpKind>(k);
+      Lut3D lut = bakeLut(gpu, {op});
+      char buf[160];
+      std::snprintf(buf, sizeof buf,
+                   "LutBake coverage: kind %d (%s) has a kernel that compiles and bakes", k,
+                   pointOpKindName(op.pointKind));
+      check(lut.texture != nullptr, buf);
+      releaseLut3D(lut);
+    }
   }
 
   std::printf("[selftest] lut bake %s\n", ok ? "PASS" : "FAIL");

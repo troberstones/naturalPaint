@@ -944,6 +944,14 @@ struct AppState {
   // a demo run cannot rewrite the user's real `panel-layout.txt`.
   bool panelStackDemo = false;
 
+  // `--grade-kinds-demo`: brings the GRADE panel to the front of whatever
+  // stack it is in, so a screenshot can photograph the op-stack editor.
+  // Without it GRADE lives behind the flyout rail's "GR" tab, which no launch
+  // argument can open -- see main.cpp's own comment on why this flag exists at
+  // all. Same in-memory-only rule as `panelStackDemo` above; the seeding of
+  // `AppState::opStack` itself happens in main.cpp, where the arguments are.
+  bool gradeKindsDemo = false;
+
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //
   // Request flags rather than direct action, for the reason the zoom commands

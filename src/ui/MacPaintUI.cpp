@@ -1420,8 +1420,17 @@ void drawOpStackEditor(const OpStackBinding& bound) {
   ImGuiStorage* storage = ImGui::GetStateStorage();
   const ImGuiID kindKey = ImGui::GetID("newOpKind");
   int newOpKindIdx = storage->GetInt(kindKey, 0);
-  const char* kKindNames[] = {"Levels", "Curves", "Exposure",
-                              "Saturation", "Grayscale", "Channel Mixer"};
+  // **Derived from the enum, not restated beside it.** This was a
+  // hand-maintained parallel array, which is the one seam a new PointOpKind
+  // reaches without `-Wswitch` saying a word: adding a kind left the combo
+  // silently short, so the kind existed everywhere except the only place a
+  // user could add one. Built from `pointOpKindName()` instead, so the combo
+  // is complete by construction and the ordinal it stores is the enumerator
+  // it names.
+  static constexpr int kKindCount = static_cast<int>(PointOpKind::Threshold) + 1;
+  const char* kKindNames[kKindCount];
+  for (int k = 0; k < kKindCount; ++k)
+    kKindNames[k] = pointOpKindName(static_cast<PointOpKind>(k));
   const float addW = ImGui::CalcTextSize("+ Add").x + ImGui::GetStyle().FramePadding.x * 2.0f;
   ImGui::SetNextItemWidth(std::max(
       80.0f, ImGui::GetContentRegionAvail().x - addW - ImGui::GetStyle().ItemSpacing.x));
@@ -1543,6 +1552,55 @@ void drawOpStackEditor(const OpStackBinding& bound) {
           // Same treatment as Grayscale immediately above, for the same
           // reason -- a 12-value 3x4 matrix editor is real, separate scope.
           ImGui::TextDisabled("(identity matrix -- no matrix editor in this scope)");
+          break;
+        case PointOpKind::Invert:
+          // Both of InvertParams' fields, because both are one control and
+          // neither has a sensible fixed value: an Invert whose amount is
+          // pinned to 1 cannot be dialled back, and the domain changes the
+          // result visibly (ops/ToneOps.hpp works the difference through).
+          changed = ctlSlider("Amount", &op.invert.amount, 0.0f, 1.0f);
+          {
+            const bool display = op.invert.domain == InvertParams::Domain::Display;
+            if (ctlBeginCombo("Domain", display ? "Display" : "Linear")) {
+              if (ImGui::Selectable("Linear", !display) && display) {
+                op.invert.domain = InvertParams::Domain::Linear;
+                changed = true;
+              }
+              if (!display) ImGui::SetItemDefaultFocus();
+              if (ImGui::Selectable("Display", display) && !display) {
+                op.invert.domain = InvertParams::Domain::Display;
+                changed = true;
+              }
+              if (display) ImGui::SetItemDefaultFocus();
+              ImGui::EndCombo();
+            }
+          }
+          break;
+        case PointOpKind::Posterize: {
+          // An integer count, edited as an integer. The floor of 2 is the
+          // lowest count that is actually a posterize -- ops/ToneOps.hpp
+          // defines 1 as "collapse everything to black" and <= 0 as the
+          // identity, both of which are reachable by DELETING or DISABLING
+          // the op and neither of which anyone drags a slider to want.
+          // `app::makeNewOp()` seeds a new Posterize away from the identity,
+          // so a slider that cannot reach 0 loses nothing -- but a stack
+          // deserialised from a file can still carry levels <= 0, and clamping
+          // the DISPLAYED value without writing it back keeps the read-only
+          // pass free of edits.
+          int levels = op.posterize.levels < 2 ? 2 : op.posterize.levels;
+          if (ctlSliderInt("Levels", &levels, 2, 32)) {
+            op.posterize.levels = levels;
+            changed = true;
+          }
+          break;
+        }
+        case PointOpKind::Threshold:
+          // The split point is authored in the SHAPER domain (ops/ToneOps.hpp
+          // argues why: 0.5 in linear light is nowhere near a perceptual
+          // midpoint), so 0..1 here is the same coordinate space a Curves
+          // control point uses.
+          changed = ctlSlider("Threshold", &op.threshold.threshold, 0.0f, 1.0f);
+          changed |= ctlSlider("Amount", &op.threshold.amount, 0.0f, 1.0f);
           break;
         case PointOpKind::Curves: {
           // The one PLAN.md step 8 explicitly calls out. Channel tabs
@@ -2792,9 +2850,12 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
         // to show yet (`app::makeNewOp()` always builds a disabled PointA op), so
         // it gets a fast path here rather than waiting for the dialog.
         if (ImGui::BeginMenu("Add Op")) {
-          for (const PointOpKind kind :
-               {PointOpKind::Levels, PointOpKind::Curves, PointOpKind::Exposure,
-                PointOpKind::Saturation, PointOpKind::Grayscale, PointOpKind::ChannelMixer}) {
+          // Walked over the enum rather than listed, for the reason
+          // drawOpStackEditor()'s own kind combo is: a hand-written list is
+          // the seam a new PointOpKind reaches without `-Wswitch` noticing,
+          // and this menu and that combo are the only two ways to add one.
+          for (int k = 0; k <= static_cast<int>(PointOpKind::Threshold); ++k) {
+            const PointOpKind kind = static_cast<PointOpKind>(k);
             if (ImGui::MenuItem(pointOpKindName(kind))) {
               run(addLayerOp(doc, i, makeNewOp(kind)));
               structureChanged = true;
@@ -12651,6 +12712,26 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.panels.setActiveInStack(ControlsSection::Color);
       st.panels.stackWith(ControlsSection::Comps, ControlsSection::History);
       st.panels.setCollapsed(ControlsSection::History, true);
+    }
+    // --grade-kinds-demo, after the block above so the two compose: with
+    // --panel-stack-demo GRADE is already a tab of COLOR's stack and this only
+    // fronts it; alone, it puts GRADE there first. Either way it ends up open
+    // and expanded, which is the only state its editors can be photographed
+    // in.
+    if (st.gradeKindsDemo) {
+      st.panels.stackWith(ControlsSection::Grade, ControlsSection::Color);
+      st.panels.setActiveInStack(ControlsSection::Grade);
+      st.panels.setCollapsed(ControlsSection::Grade, false);
+      // GRADE's slot is one of several sharing the right dock's height, and
+      // three op editors do not fit in its default share -- the first capture
+      // taken through this flag cut Invert's Domain combo in half and never
+      // reached Posterize or Threshold at all. Its dock-mates are collapsed so
+      // the slot can take the height, rather than the crop being aimed at
+      // whatever happened to fit.
+      for (const ControlsSection other :
+           {ControlsSection::BrushLibrary, ControlsSection::Brush, ControlsSection::Layers,
+            ControlsSection::History, ControlsSection::Comps})
+        st.panels.setCollapsed(other, true);
     }
   }
   // `effectiveDockExtents()`, not `dockExtents()`: a dock holding no panels is
