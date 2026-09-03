@@ -9,8 +9,8 @@
 #include <span>
 #include <utility>
 
-#include "app/DocumentPresets.hpp"
 #include "app/ImportImage.hpp"
+#include "core/CanvasLimits.hpp"
 #include "core/Document.hpp"
 #include "io/Capabilities.hpp"
 #include "io/ImageIO.hpp"
@@ -61,6 +61,24 @@ std::string readableFormatList() {
     out += imageFormatName(c.format);
   }
   return out;
+}
+
+// core/CanvasLimits' refusal, in this file's message vocabulary, or the empty
+// string when the document is renderable.
+//
+// **Placed after the decode, not before it**, and that is the deliberate half.
+// Refusing on the sniffed header would be cheaper -- a PSD and a PNG both
+// carry their extent in the first few dozen bytes -- but it would mean a
+// second place that has to know how to read every format's dimensions, and
+// getting *that* wrong fails in the direction this whole check exists to
+// prevent. Decoding a file that is about to be refused costs the user a
+// moment; a second extent parser costs a correctness surface. The abort this
+// guards against happens at the first `wgpuDeviceCreateTexture`, which is
+// several steps after the decode either way, so nothing is lost by being late.
+std::string unrenderableRefusal(const std::string& path, const Document& doc, const char* what) {
+  const std::string why = canvasDimensionRefusal(doc.width, doc.height);
+  if (why.empty()) return {};
+  return "Open refused: '" + fileNameOf(path) + "' is a " + what + " this build cannot draw: " + why;
 }
 
 }  // namespace
@@ -124,6 +142,14 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
                  "' is a naturalPaint document, and it could not be read -- " + loaded.error;
       return r;
     }
+    // Before `r.ok`, so a refused document is never half-opened -- the
+    // header's "on every refusal `out.document` is left default-constructed"
+    // contract, which `opened` going out of scope here honours.
+    if (std::string why = unrenderableRefusal(path, opened.document, "naturalPaint document");
+        !why.empty()) {
+      r.status = std::move(why);
+      return r;
+    }
     r.ok = true;
     r.document = std::move(opened);
     r.status = "Opened '" + fileNameOf(path) + "' (naturalPaint document, " +
@@ -160,7 +186,6 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     // that states no size at all, so the zero test below is a belt on a brace.
     const double wD = std::ceil(static_cast<double>(svg.widthPx));
     const double hD = std::ceil(static_cast<double>(svg.heightPx));
-    const double kMax = static_cast<double>(kMaxDocumentPresetDimension);
     if (!(wD >= 1.0) || !(hD >= 1.0)) {
       return refuse("Open refused: '" + fileNameOf(path) +
                         "' is an SVG whose viewport is empty (" +
@@ -171,13 +196,33 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
     // Refused by name rather than clamped. A clamp would open the file and
     // silently crop the artwork, and an SVG is resolution-independent -- the
     // honest answer is that this build's canvas is not, and to say the limit.
-    if (wD > kMax || hD > kMax) {
+    //
+    // **The ceiling is the renderable one (core/CanvasLimits), not
+    // app/DocumentPresets' `kMaxDocumentPresetDimension`.** This branch
+    // originally reached for the preset bound because it was the only canvas
+    // limit that existed when it was written. That bound is 32768 -- twice
+    // what a typical adapter will create a texture for -- so an SVG declaring
+    // a 20000px viewport passed it and then aborted the process at the first
+    // `wgpuDeviceCreateTexture`, which is the exact failure the render
+    // ceiling exists to prevent.
+    //
+    // Worth recording how that survived: this branch and the commit adding
+    // the render ceiling were developed in parallel and **text-merged with no
+    // conflict**, because they touch different lines of the same function.
+    // Neither side's tests covered the other's path. `--selftest`'s
+    // `openAnyFileAsDocument` section now drives an oversize SVG for exactly
+    // that reason.
+    //
+    // Compared as `double` rather than by casting to `int32_t` first: a
+    // hostile or generated SVG can declare a viewport far outside int32's
+    // range, and the cast would wrap before the comparison ever ran.
+    const double kRenderMax = static_cast<double>(maxCanvasDimension());
+    if (wD > kRenderMax || hD > kRenderMax) {
       return refuse("Open refused: '" + fileNameOf(path) + "' is an SVG whose viewport is " +
                         std::to_string(static_cast<long long>(wD)) + "x" +
                         std::to_string(static_cast<long long>(hD)) +
-                        " px, and this build's maximum canvas is " +
-                        std::to_string(kMaxDocumentPresetDimension) + "x" +
-                        std::to_string(kMaxDocumentPresetDimension) +
+                        " px, and this display adapter cannot draw a canvas wider or taller "
+                        "than " + std::to_string(maxCanvasDimension()) +
                         ". Scale it down in the exporting application first.",
                     FileKind::Vector);
     }
@@ -327,6 +372,14 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
                       because + ".",
                   FileKind::Image);
   }
+
+  // The one canvas this build could not draw. Checked here, on the decoded
+  // document, because this is the branch every raster format reaches --
+  // PNG/JPEG through stb, EXR/TIFF/DPX through OpenImageIO, and a layered PSD
+  // through io/PsdImport all arrive as a `Document` at this line, so one check
+  // covers formats that share no decoder.
+  if (std::string why = unrenderableRefusal(path, *decoded, "picture"); !why.empty())
+    return refuse(std::move(why), FileKind::Image);
 
   // --- Wrap it in a lifecycle record ---------------------------------------
   //

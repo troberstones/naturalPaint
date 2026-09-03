@@ -10,6 +10,7 @@
 #include "imgui.h"
 
 #include "app/AppState.hpp"
+#include "core/CanvasLimits.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
 #include "io/ClipboardImage.hpp"
@@ -115,8 +116,20 @@ void drawNewDocumentDialog(AppState& st) {
   // exact same function the preset store itself validates a hand-typed
   // `size` line with (app/DocumentPresets.hpp), so this dialog and a
   // hand-edited presets file are held to one rule, not two.
-  const std::string sizeError =
+  // Two bounds, asked in this order, and the order is the message: a size that
+  // fails BOTH is a nonsense number (a pasted extra digit), and saying so is
+  // more useful than telling the user their 90000px canvas is 5.5x the GPU's
+  // limit. `validateDocumentPresetSize()`'s 32768 is the corrupt-input bound
+  // and this build's adapter limit is usually 16384, so the window between
+  // them -- sizes that parse fine and abort the renderer -- is exactly what
+  // core/CanvasLimits.hpp exists to close, and it is closed here rather than
+  // inside `validateDocumentPresetSize()` because that function also validates
+  // a *stored* presets file, where a GPU this machine does not have is not a
+  // reason to drop the user's saved size.
+  std::string sizeError =
       validateDocumentPresetSize(static_cast<int32_t>(width), static_cast<int32_t>(height));
+  if (sizeError.empty())
+    sizeError = canvasDimensionRefusal(static_cast<int32_t>(width), static_cast<int32_t>(height));
   const bool validSize = sizeError.empty();
   if (!validSize) {
     ImGui::PushStyleColor(ImGuiCol_Text, kError);
@@ -212,7 +225,23 @@ void drawNewDocumentDialog(AppState& st) {
       "Reflects the clipboard as of the last time this window came to the front -- copy, "
       "then click back into naturalPaint, before checking again.");
 
-  const bool hasClipboardImage = clipboardProbe.status == ClipboardImageStatus::Image;
+  // The clipboard's own extent gets the same ceiling as a typed one -- a
+  // screenshot of a very wide multi-monitor desktop is the realistic way to
+  // reach it, and it arrives here with no dialog field the user could have
+  // read a refusal from.
+  const std::string clipboardSizeError =
+      clipboardProbe.status == ClipboardImageStatus::Image
+          ? canvasDimensionRefusal(static_cast<int32_t>(clipboardProbe.width),
+                                   static_cast<int32_t>(clipboardProbe.height))
+          : std::string{};
+  if (!clipboardSizeError.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kError);
+    ImGui::TextWrapped("%s", clipboardSizeError.c_str());
+    ImGui::PopStyleColor();
+  }
+
+  const bool hasClipboardImage =
+      clipboardProbe.status == ClipboardImageStatus::Image && clipboardSizeError.empty();
   if (!hasClipboardImage) ImGui::BeginDisabled();
   if (ImGui::Button("New From Clipboard")) {
     OpenDocument* od = st.documents.add(makeBlankOpenDocument(

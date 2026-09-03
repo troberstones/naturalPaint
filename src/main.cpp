@@ -43,6 +43,7 @@
 #include "app/ZoomAndSize.hpp"
 #include "brush/Deposit.hpp"
 #include "color/Space.hpp"
+#include "core/CanvasLimits.hpp"
 #include "core/Composite.hpp"
 #include "core/Blend.hpp"
 #include "app/LayerEditor.hpp"
@@ -2087,6 +2088,13 @@ int main(int argc, char** argv) {
   np::GpuContext gpu;
   if (!gpu.init(window)) return 1;
 
+  // The single writer core/CanvasLimits.hpp names, placed here because this is
+  // the first line after `gpu.init()` and before any document can exist: every
+  // path that sets a document's extent -- open, New, Image Size, Canvas Size --
+  // reads this figure, and one of them running against the 8192 default while
+  // the adapter allows 16384 would refuse files this machine draws perfectly.
+  np::setMaxCanvasDimension(static_cast<int32_t>(gpu.maxTextureDimension));
+
   np::MixboxLut lut;
   const std::string mixboxLutPath = np::mixboxLutPath();
   if (!lut.load(mixboxLutPath)) {
@@ -2166,6 +2174,15 @@ int main(int argc, char** argv) {
     // 2.3: color/Space's sRGB/Rec.709 transfer function round trip. Also
     // headless and GPU-free -- pure CPU math, no PaintSim involvement.
     const bool colorSpaceOk = np::runColorSpaceTest();
+    // core/CanvasLimits: the extent guard. Headless and GPU-free for the same
+    // reason -- and deliberately so, since the abort it prevents is a GPU
+    // failure that a GPU-driven test could only reproduce by causing it.
+    std::printf("-- canvas limits (core/CanvasLimits) --\n");
+    const bool canvasLimitsOk = np::runCanvasLimitsTest();
+    // color/Gamut + io/SourceGamut: import-time gamut conversion. Headless
+    // and GPU-free -- pure colour maths plus container parsing.
+    std::printf("-- gamut (color/Gamut, io/SourceGamut) --\n");
+    const bool gamutOk = np::runGamutTest();
     // Phase 3 step 1 (ADR-0004): color/Shaper's ACEScct log encode/decode --
     // breakpoint continuity, round trip, a hand-computed known-value check,
     // and monotonicity. Also headless and GPU-free -- pure CPU math, no
@@ -3327,7 +3344,8 @@ int main(int argc, char** argv) {
     // a parked backlog, prompt catch-up on scroll-into-view, and a printed
     // (not asserted) per-tile cost measurement.
     const bool viewportDeferredCompositeOk = np::runViewportDeferredCompositeTest(gpu);
-    const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
+    const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
+                   canvasLimitsOk && gamutOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk && toolSurfaceOk &&

@@ -404,6 +404,93 @@ std::vector<uint16_t> compositeDocumentStraightHalf(
 void packStraightHalfRow(const float* premultiplied, size_t texels, uint16_t* out);
 
 // The GPU half: one texture, re-uploaded only when the key changes.
+// Decision 6, amended: **how long** one call to `viewFor()` may spend
+// catching up off-screen tiles, beyond whatever the viewport itself requires.
+//
+// ==========================================================================
+// Why this stopped being a tile count
+// ==========================================================================
+//
+// It was `kViewportTrickleBudget = 4` tiles. That constant was sized against
+// the right deadline by the wrong arithmetic, and the measurement that found
+// it is worth keeping:
+//
+//   * A cache hit requires `pendingTiles_.empty()` (see `viewFor()`'s early
+//     return and its comment). So while a backlog exists, EVERY frame is a
+//     key miss -- there is no such thing as a partially-cached document.
+//   * A 6000x4000 document is 1504 tiles. At 4 a call that is ~359 frames,
+//     about 3 s at 120 Hz and 6 s at 60 Hz, of continuous composite and
+//     upload after merely *opening a file*, with the user doing nothing.
+//     Measured 2026-09-03: 121 frames served, 121 composite+uploads,
+//     **0 from cache**, `pending_tiles` falling by exactly 4 per frame. The
+//     1024x1024 demo document over the same 121 frames: 2 composites, 119
+//     cache hits.
+//   * Rebuilt with the constant at 64, same file, same frames: backlog gone
+//     by frame 23, then 38 of 61 frames served from cache, worst single call
+//     4.74 ms inside an 8.31-8.44 ms frame -- no frame dropped. Cost per
+//     tile fell from 0.24 ms to 0.08 ms.
+//
+// That 3x per-tile gap **is `S`**, the per-call setup, being re-paid every
+// frame. `S` is O(layers) -- the pairing pass, the clip pass, one
+// `layerPointOps()` per layer -- and the section below still measures it
+// (~3.1 ms on the 40-layer/2048x2048 synthetic). So at 4 tiles a call the
+// app spent ~3.1 ms of setup to buy ~5.4 ms of work, and **the ratio got
+// worse as layers were added, not better**: exactly backwards from what a
+// budget should do.
+//
+// A fixed tile count cannot express that, because the thing being protected
+// is a *deadline* and the thing being counted is not what costs time. So the
+// budget is now the deadline itself, and the tile count is derived from a
+// measured rate. On a one-layer document it takes many tiles; on a
+// forty-layer one it takes few; nobody has to re-calibrate a constant when
+// the layer count changes.
+//
+// ==========================================================================
+// Why an estimate, and not a clock checked mid-call
+// ==========================================================================
+//
+// The obvious implementation is to composite in chunks and stop when the
+// clock says so. That is worse here, and specifically because of `S`:
+// `compositeAndUploadTileList()` pays the O(layers) setup once per call, so
+// chunking a call into four re-pays it four times. Splitting the call to
+// respect a deadline would spend most of the deadline on the overhead the
+// deadline exists to amortise.
+//
+// So the take is chosen **before** the call from `trickleMsPerTile()`, an
+// exponential moving average of this object's own observed
+// `lastUploadMs_ / lastDirtyTiles_`. Two properties make that safe:
+//
+//  1. **It over-estimates, and therefore errs toward taking fewer tiles.**
+//     The observed rate folds `S` in (it is total call time over tiles), so
+//     it is always at least the true marginal `t`. A budget divided by too
+//     large a rate yields too small a take -- the safe direction.
+//  2. **It self-corrects.** A larger take amortises `S` over more tiles, so
+//     the observed rate falls, so the next take is larger -- converging on
+//     the take whose whole-call time is about the budget. That is the fixed
+//     point wanted, reached without anyone solving for it.
+//
+// `kMinViewportTrickleTiles` is the floor, and it is the old constant: a
+// call must never trickle *less* than the design it replaced, whatever the
+// estimate says. `kMaxViewportTrickleTiles` is the ceiling, and it bounds
+// the damage from an estimate that has gone stale in the optimistic
+// direction -- a document that just gained thirty layers is suddenly much
+// more expensive per tile than the average remembers, and without a cap one
+// call could act on the old rate and blow well past the budget. The cap is
+// what makes that a one-call overshoot instead of an unbounded one.
+inline constexpr double kViewportTrickleBudgetMs = 4.0;
+
+// The floor: `kViewportTrickleBudget`'s old value, so the adaptive path can
+// never converge to something slower than the fixed one it replaced. Not
+// zero -- zero would mean a parked viewport, and therefore the navigator
+// thumbnail, never catches up at all.
+inline constexpr size_t kMinViewportTrickleTiles = 4;
+
+// The ceiling, in tiles. 1024 is four times the whole 2048x2048 synthetic
+// the perf section below measures, so it never binds on a realistic call and
+// only ever catches a stale estimate (see above). A canvas-sized backlog
+// still drains in a handful of calls at this cap.
+inline constexpr size_t kMaxViewportTrickleTiles = 1024;
+
 class DocumentTexture {
  public:
   // The view to hand `ImDrawList::AddImageQuad`, or nullptr for a document
@@ -501,6 +588,25 @@ class DocumentTexture {
   // readback in the loop. The GPU readback is asserted too, once, against this
   // buffer.
   const std::vector<uint16_t>& uploadedHalves() const noexcept { return halves_; }
+
+  // --- The trickle budget (see kViewportTrickleBudgetMs) -------------------
+
+  // The deadline a deferred call is budgeted against. `--selftest` sets a
+  // small one to exercise deferral on a fixture that the production budget
+  // would clear in a single call.
+  void setTrickleBudgetMs(double ms) noexcept {
+    if (ms > 0.0) trickleBudgetMs_ = ms;
+  }
+  double trickleBudgetMs() const noexcept { return trickleBudgetMs_; }
+
+  // The learned per-tile rate, or a negative number before the first call has
+  // been observed. Includes the per-call setup `S` amortised over the call's
+  // tiles -- deliberately, see the constant's comment.
+  double trickleMsPerTile() const noexcept { return msPerTileEma_; }
+
+  // Off-screen tiles the budget bought on the most recent deferred call.
+  // Zero on a call that deferred nothing.
+  size_t lastTrickleTake() const noexcept { return lastTrickleTake_; }
 
   // Bytes this object holds that scale with the canvas: the half buffer that
   // mirrors the texture, the float scratch the incremental region walk
@@ -660,49 +766,40 @@ class DocumentTexture {
   FullRecompositeReason lastFullReason_ = FullRecompositeReason::None;
   double lastUploadMs_ = 0.0;
   double totalUploadMs_ = 0.0;
-};
 
-// Decision 6: how many off-screen tiles one call to `viewFor()` will catch
-// up beyond whatever the viewport itself requires, whenever it defers
-// anything at all. `--selftest`'s own performance section
-// (app/selftest/ViewportDeferredComposite.cpp) measures this on the SAME
-// 40-layer/2048x2048 synthetic app/selftest/OpaqueFloor.cpp's and
-// app/selftest/CompositeParallel.cpp's own perf sections use, deliberately a
-// pessimistic case (every layer semi-transparent, none of them an opaque
-// floor, so nothing short-circuits) rather than the real document's own,
-// much cheaper, opaque-floor-assisted number.
-//
-// **Dividing one call's total time by its tile count is not a per-tile
-// cost** -- core/DirtyTiles.hpp's own cost model (its
-// `preferFullRecomposite()` comment) is `S + n*t`: a per-CALL setup `S`
-// (the pairing pass, the clip pass, one `layerPointOps()` per layer -- all
-// O(layers), none of it per tile) plus a per-TILE marginal `t`. An
-// uncalibrated first pass at this measurement conflated the two and swung
-// from 0.72 to 1.79 "ms/tile" purely by changing the trickle budget being
-// measured, which is not a number a constant should be sized from --
-// smaller budgets look artificially expensive per tile because `S` is a
-// larger fraction of a smaller total. The section now fits both constants
-// from two genuinely different tile counts on the identical fixture:
-// measured `S ~= 3.34 ms`, `t ~= 1.36 ms/tile`.
-//
-// `S` is a floor no choice of this constant changes -- even a budget of 1
-// pays it. What the choice DOES trade off: a bigger budget means each
-// deferred call risks more added latency on the frame it lands in (PRD F3
-// is a PER-FRAME budget), but converges a large backlog in fewer total
-// calls -- `S` paid once per call, so fewer calls means less of it paid
-// overall. Since F3 constrains one frame, not total convergence time, the
-// per-call risk is what this is sized against: at 4, `S + budget*t ~=
-// 8.78 ms`, ~44% of PRD F3's 20 ms budget, in the single worst case the
-// section measures (a corner viewport with literally nothing else on
-// screen, so every millisecond of that call is backlog catch-up and none
-// of it is work the frame needed anyway) -- a real cost, but on a
-// deliberately pessimistic document a typical viewport call never actually
-// sees in isolation (a real viewport is never a single pixel; whatever
-// on-screen tiles it already covers are work the frame needed regardless of
-// this decision, not an addition to it). Not zero -- zero would mean a
-// parked viewport, and therefore the navigator thumbnail, never catches up
-// at all.
-inline constexpr size_t kViewportTrickleBudget = 4;
+  // The deadline this object budgets a deferred call against, in
+  // milliseconds. Per-object rather than a global so `--selftest` can pin a
+  // small one and exercise deferral deterministically instead of depending on
+  // whether a production constant happens to be smaller than a fixture's tile
+  // count -- which is how the deferral assertions used to be held, and would
+  // have started passing vacuously the moment the budget grew.
+  double trickleBudgetMs_ = kViewportTrickleBudgetMs;
+
+  // Exponential moving average of observed `lastUploadMs_ / lastDirtyTiles_`.
+  // Negative until the first call has something to observe, which is what
+  // `trickleTake()` reads as "nothing learned yet, take the floor".
+  //
+  // 0.25 smoothing: fast enough that adding thirty layers is absorbed within
+  // a few calls, slow enough that one unlucky call (a scheduler hiccup, a
+  // page fault on a freshly grown `halves_`) does not halve the take.
+  double msPerTileEma_ = -1.0;
+
+  // What the budget actually bought on the most recent deferred call, and
+  // what it would buy right now. Reported rather than inferred: a take that
+  // has silently pinned itself to the floor is the failure mode worth being
+  // able to see, and it is invisible from the tile counts alone.
+  size_t lastTrickleTake_ = 0;
+
+  // `trickleBudgetMs_`, less the estimated cost of the tiles the viewport
+  // requires anyway, divided by the estimated per-tile rate -- clamped to
+  // [kMinViewportTrickleTiles, kMaxViewportTrickleTiles]. See the constant's
+  // own comment for why the estimate is allowed to be this rough.
+  size_t trickleTake(size_t inViewportTiles) const noexcept;
+
+  // Folds one call's observed rate into `msPerTileEma_`. Called at the end of
+  // `viewFor()`, after `lastUploadMs_` and `lastDirtyTiles_` are both final.
+  void observeTrickleRate() noexcept;
+};
 
 // Decision 6: the slack added on every side of a caller's
 // `DocumentTextureViewport` before testing a tile against it. One tile, so a
