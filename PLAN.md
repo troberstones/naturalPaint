@@ -564,6 +564,30 @@ and document persistence.
 
 Selection → path (contour extraction plus curve fitting) is a non-goal.
 
+> 🔨 **Partly delivered, 2026-09-02/03, on branch
+> `claude/natural-paint-svg-support-b2547f`.** Built and green: the Bezier model
+> (`core/Path`), the flattener (`core/PathFlatten`), an exact-area cell
+> rasteriser and a stroke-to-fill stroker (`core/PathRaster`,
+> `core/PathStroke`), `LayerKind::Vector` with its raster cache and `.npaint`
+> persistence (`core/VectorShape`, `core/VectorRaster`, `io/PathSerial`), SVG
+> import (`io/SvgPath`, `io/SvgStyle`, `io/SvgImport`, `app/SvgReport`, pugixml
+> vendored), and the headless core of editing (`app/PenTool`) against the
+> design in `docs/vector-editing.md`.
+>
+> **Not built, by name:** every part of this phase a user can reach. `Tool::Pen`
+> and `Tool::Curve` are still `implemented=false`, there is no canvas gesture,
+> no PATHS panel, and `app/OpenAnyFile` still refuses an SVG by name rather
+> than importing it -- the importer exists and nothing calls it. Path ->
+> selection, fill path and stroke-path-with-brush are likewise unwired. That
+> work is deliberately serialised rather than parallelised: it all lands in
+> `ui/MacPaintUI.cpp`, which is ~14 900 lines with every tool's gesture block
+> inline in `drawUI()`.
+>
+> Also unbuilt: gradients. `io/SvgImport` refuses a gradient paint **by name**
+> rather than half-wiring one, because the intended design
+> (`core/VectorShape.hpp` section 2) is a document-level table several shapes
+> index into, and that is its own change.
+
 ## 14 — Text
 `Text` layer kind — string, font reference and layout parameters, rasterised at
 evaluation, so it stays editable and parametric like an Adjustment layer · **CoreText**
@@ -571,6 +595,17 @@ for shaping, bidi, cluster breaking and font fallback, behind an interface HarfB
 FreeType could replace · point and paragraph text, alignment, leading.
 
 Text on a path, vertical text and rich-text runs are non-goals.
+
+> 🔨 **Shaping engine delivered, the layer kind not, 2026-09-03, same branch.**
+> `text/Shaper.hpp` is the platform-independent interface PRD K2 asks for --
+> no CoreText type appears in it -- with `text/CoreTextShaper.mm` behind it
+> (point and paragraph text, alignment, leading, tracking, bidi and fallback
+> from the OS, glyph outlines through `CTFontCreatePathForGlyph` into
+> `core::Path`) and `text/StubShaper.cpp` for every other platform.
+>
+> **`LayerKind::Text` still carries no content**, which is the half a user
+> would notice. It fans out across the layer panel, `io/NpaintFile` and the
+> compositor, so it is sequenced with phase 13's UI work rather than beside it.
 
 ## 15 — PSD export
 Not the save path — native save shipped in phase 4. Flattened PSD first (small), then

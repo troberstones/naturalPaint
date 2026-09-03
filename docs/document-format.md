@@ -70,7 +70,6 @@ part 0   "composite"      R G B A                    ← any EXR reader shows th
                  np:basis        "mixbox-v1"
                  np:tileSize     128
                  np:docOps       <blob>
-                 np:paths        <blob>
                  np:comps        "npcomps1:<hex>"   layer comps: name +
                                  per-layer state, and the part-name → layer-id
                                  join they are matched through.
@@ -89,6 +88,14 @@ part 1   "L0001"          R G B A                    ← baked projection
                  np:parent      ""
                  np:clipped     1        (only when clipped; PRD C9)
                  np:ops         <blob>
+
+part 1b  "L0005"          (one `mask` channel; see "Groups have no native
+         attrs:  np:kind        "vector"      concept" below for why not zero)
+                 np:vector      "npvec1:<hex>"   Bezier geometry: the layer's
+                                 shapes, their paint, stroke style, optional
+                                 clip and manipulator pivot.
+                                 **A `string`, not a `<blob>`, and it lives on
+                                 the LAYER, not on part 0** -- see below.
 
 part 2   "L0002"          R G B A + pig.* + res.*
          attrs:  np:kind        "media"
@@ -155,8 +162,8 @@ part 4   "S0001"          coverage                   ← a saved selection
   > and it reads back as `vectori` -- a different type from the one written, not working
   > array support. `INT32[5]` is absent like the rest.) So **there is no working blob
   > carrier today**, and every blob this
-  > document names — `np:ops` and `np:comps` (both since resolved, see below),
-  > `np:dabs`, `np:paths`, `np:docOps`,
+  > document names — `np:ops`, `np:comps` and `np:vector` (all three since
+  > resolved, see below), `np:dabs`, `np:docOps`,
   > `np:simParams` — needs one before it can be written. The cheap fix is a base64 or
   > hex **`string`** attribute; the expensive one is writing the header through OpenEXR
   > directly instead of OpenImageIO. `io/NpaintFile` refuses a blob attribute by name
@@ -224,9 +231,20 @@ part 4   "S0001"          coverage                   ← a saved selection
   >   document with and without comps and compares the two files byte for byte with
   >   OpenImageIO's `capDate` masked.
   >
-  > `np:dabs`, `np:paths`, `np:docOps` and `np:simParams` are still unwritten,
-  > but the *carrier* problem is no longer what blocks them — each needs an in-memory
+  > `np:dabs`, `np:docOps` and `np:simParams` are still unwritten, but the
+  > *carrier* problem is no longer what blocks them — each needs an in-memory
   > representation this codebase does not have yet.
+  >
+  > ✅ **`np:paths` is gone from that list, and not because it was written.** The
+  > geometry it was reserved for arrived at PLAN.md phase 13 as `LayerKind::Vector`,
+  > and it went on **the layer**, not on part 0: shapes belong to a layer the way
+  > tiles do, so they move with it through reorder, group, duplicate and delete
+  > without a document-level table needing to be kept in step. `io/PathSerial`
+  > carries them as `"npvec1:<hex>"` on the same hex-string pattern `np:ops` and
+  > `np:comps` established above, and it is **written only when the layer has
+  > shapes**, so a path-free document stays byte-identical to what earlier builds
+  > wrote. A document-level table is still the right home for *gradients*, which
+  > several shapes share (`core/VectorShape.hpp` §2) -- that one is unbuilt.
 
 > ✅ **Implemented, 2026-08-19, at PLAN.md Phase 5 step 3: a Pigment layer's part is
 > written and read with all eleven channels above.** The seven stored ones (`pig.c0
