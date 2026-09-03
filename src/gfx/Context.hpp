@@ -51,6 +51,13 @@ class GpuContext {
   bool hasFloat32Filterable = false;
   uint32_t maxStorageTextures = 4;
 
+  // The adapter's `maxTextureDimension2D`, and therefore the largest canvas
+  // ui/DocumentTexture can create a composite texture for. Defaults to
+  // WebGPU's guaranteed minimum so a failed `wgpuAdapterGetLimits()` leaves a
+  // conservative figure rather than a zero that would refuse every document --
+  // core/CanvasLimits.hpp is where that figure is consulted and why.
+  uint32_t maxTextureDimension = 8192;
+
   uint32_t width = 0;
   uint32_t height = 0;
 

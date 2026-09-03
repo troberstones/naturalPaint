@@ -52,6 +52,19 @@ bool runAccumulatorTest();
 // encode(decode(x)) == x within float tolerance.
 bool runColorSpaceTest();
 
+// core/CanvasLimits: the guard that turned "opening a 17000px file aborts the
+// process" into a refusal. Headless and GPU-free -- the predicate takes its
+// ceiling as a parameter precisely so this can drive both sides of the
+// boundary without depending on what this machine's adapter reports.
+bool runCanvasLimitsTest();
+
+// color/Gamut + io/SourceGamut: the primaries a file declares, and the
+// conversion into the working space. Headless and GPU-free; every matrix is
+// asserted against a PUBLISHED value rather than against this build's own
+// output, which is the only way the derivation itself can be wrong and be
+// caught.
+bool runGamutTest();
+
 // Headless, GPU-free check on color/Shaper (Phase 3 step 1, ADR-0004). This
 // is the *grading* transfer function -- the shaper's log domain curves are
 // authored in, per ADR-0004's "format-level commitment" callout -- as
@@ -5267,9 +5280,11 @@ bool runCompositeParallelTest();
 // deferred tile; a tile that newly enters the viewport is caught up
 // unconditionally the very next call, never waiting on the trickle budget
 // (the "prompt scroll into view" property); and a performance section prints
-// (not asserts) this module's own per-tile composite+pack+upload cost on a
-// large synthetic, which is what `kViewportTrickleBudget`
-// (ui/DocumentTexture.hpp) is set from. See app/selftest/
+// (not asserts) this module's own per-call setup and per-tile cost on a large
+// synthetic -- the two terms `kViewportTrickleBudgetMs`
+// (ui/DocumentTexture.hpp) is spent against -- and a further section asserts
+// that the budget genuinely ADAPTS, on a cheap one-layer fixture where it must
+// buy more tiles than the old fixed count did. See app/selftest/
 // ViewportDeferredComposite.cpp.
 bool runViewportDeferredCompositeTest(GpuContext& gpu);
 

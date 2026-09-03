@@ -62,6 +62,8 @@ add_executable(naturalPaint
   app/selftest/BrushPanelBinding.cpp
   app/selftest/AngleConvention.cpp
   app/selftest/Blend.cpp
+  app/selftest/CanvasLimits.cpp
+  app/selftest/Gamut.cpp
   app/selftest/Blur.cpp
   app/selftest/BlurSimd.cpp
   app/selftest/BrushDynamics.cpp
@@ -262,7 +264,9 @@ add_executable(naturalPaint
   color/LutBake.cpp
   color/Shaper.cpp
   color/Space.cpp
+  color/Gamut.cpp
   core/Blend.cpp
+  core/CanvasLimits.cpp
   core/Channels.cpp
   core/Clipboard.cpp
   core/Composite.cpp
@@ -303,6 +307,7 @@ add_executable(naturalPaint
   io/FileKind.cpp
   io/GimpBrush.cpp
   io/ImageDecode.cpp
+  io/SourceGamut.cpp
   io/ImageIO.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp

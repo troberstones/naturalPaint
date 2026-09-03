@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "app/ImportImage.hpp"
+#include "core/CanvasLimits.hpp"
 #include "core/Document.hpp"
 #include "io/Capabilities.hpp"
 #include "io/ImageIO.hpp"
@@ -58,6 +59,24 @@ std::string readableFormatList() {
     out += imageFormatName(c.format);
   }
   return out;
+}
+
+// core/CanvasLimits' refusal, in this file's message vocabulary, or the empty
+// string when the document is renderable.
+//
+// **Placed after the decode, not before it**, and that is the deliberate half.
+// Refusing on the sniffed header would be cheaper -- a PSD and a PNG both
+// carry their extent in the first few dozen bytes -- but it would mean a
+// second place that has to know how to read every format's dimensions, and
+// getting *that* wrong fails in the direction this whole check exists to
+// prevent. Decoding a file that is about to be refused costs the user a
+// moment; a second extent parser costs a correctness surface. The abort this
+// guards against happens at the first `wgpuDeviceCreateTexture`, which is
+// several steps after the decode either way, so nothing is lost by being late.
+std::string unrenderableRefusal(const std::string& path, const Document& doc, const char* what) {
+  const std::string why = canvasDimensionRefusal(doc.width, doc.height);
+  if (why.empty()) return {};
+  return "Open refused: '" + fileNameOf(path) + "' is a " + what + " this build cannot draw: " + why;
 }
 
 }  // namespace
@@ -119,6 +138,14 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
       // "we did not recognise it" without reading the rest.
       r.status = "Open refused: '" + fileNameOf(path) +
                  "' is a naturalPaint document, and it could not be read -- " + loaded.error;
+      return r;
+    }
+    // Before `r.ok`, so a refused document is never half-opened -- the
+    // header's "on every refusal `out.document` is left default-constructed"
+    // contract, which `opened` going out of scope here honours.
+    if (std::string why = unrenderableRefusal(path, opened.document, "naturalPaint document");
+        !why.empty()) {
+      r.status = std::move(why);
       return r;
     }
     r.ok = true;
@@ -240,6 +267,14 @@ OpenAnyResult openAnyFileAsDocument(const std::string& path, RecentDocuments* re
                       because + ".",
                   FileKind::Image);
   }
+
+  // The one canvas this build could not draw. Checked here, on the decoded
+  // document, because this is the branch every raster format reaches --
+  // PNG/JPEG through stb, EXR/TIFF/DPX through OpenImageIO, and a layered PSD
+  // through io/PsdImport all arrive as a `Document` at this line, so one check
+  // covers formats that share no decoder.
+  if (std::string why = unrenderableRefusal(path, *decoded, "picture"); !why.empty())
+    return refuse(std::move(why), FileKind::Image);
 
   // --- Wrap it in a lifecycle record ---------------------------------------
   //

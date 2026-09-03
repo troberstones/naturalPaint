@@ -137,6 +137,13 @@ bool GpuContext::init(SDL_Window* window) {
     devDesc.requiredLimits = &adapterLimits;
     maxStorageTextures = adapterLimits.maxStorageTexturesPerShaderStage;
     std::printf("[gpu] maxStorageTexturesPerShaderStage: %u\n", maxStorageTextures);
+    // The canvas is one texture this wide (ui/DocumentTexture), so this is
+    // also the largest document that can be drawn. Reported rather than only
+    // stored: a refusal that names a number the user never saw reads as
+    // arbitrary. See core/CanvasLimits.hpp for what happened before anything
+    // consulted it.
+    maxTextureDimension = adapterLimits.maxTextureDimension2D;
+    std::printf("[gpu] maxTextureDimension2D: %u\n", maxTextureDimension);
   }
 
   WGPURequestDeviceCallbackInfo dci = {};
