@@ -148,8 +148,18 @@ set +e
 "$BIN" --selftest > "$GATHER_LOG/selftest.log" 2> "$GATHER_LOG/selftest.stderr.log"
 RC=$?
 set -e
-FAILS="$(grep -c '^FAIL' "$GATHER_LOG/selftest.log" || true)"
-PASSES="$(grep -c '^ok' "$GATHER_LOG/selftest.log" || true)"
+# The suite prints one INDENTED line per assertion, "<label>  pass" or
+# "<label>  FAIL", so both counts anchor on the trailing word.
+#
+# The first version of this anchored on '^FAIL' and '^ok', neither of which
+# the suite ever emits -- so PASSES always read 0 and, far worse, **the FAIL
+# gate was vacuous**. It never caught anything. The only reason a broken
+# suite still failed this script is the exit-code check below, which is the
+# belt; this line was the braces and it was not fastened. Verified against a
+# real sabotage run whose log holds four failures: '^FAIL' finds 0 of them,
+# ' FAIL$' finds all 4.
+FAILS="$(grep -c ' FAIL$' "$GATHER_LOG/selftest.log" || true)"
+PASSES="$(grep -c ' pass$' "$GATHER_LOG/selftest.log" || true)"
 tail -3 "$GATHER_LOG/selftest.log"
 [ "$RC" -eq 0 ] || fail "--selftest exited $RC (log: $GATHER_LOG/selftest.log)"
 [ "$FAILS" -eq 0 ] || fail "$FAILS FAIL line(s) in --selftest (log: $GATHER_LOG/selftest.log)"
