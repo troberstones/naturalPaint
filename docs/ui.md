@@ -577,13 +577,10 @@ The palette also needs two tools the wireframe did not draw: the **eraser** (PRD
 
 Of the 28 `Tool` values (`app/AppState.hpp`) — reachable either directly, as the icon a
 palette cell shows, or through a flyout for every group with more than one member (§2b) —
-**24 have real behaviour and 4 exist for their name, icon and keyboard-shortcut slot
-only.** As of 2026-09-03 the unbuilt four are **Frame, Shape, Slice and Text**, and they
-are not four instances of the same gap:
+**25 have real behaviour and 3 exist for their name, icon and keyboard-shortcut slot
+only.** As of 2026-09-03 the unbuilt three are **Frame, Shape and Slice**, and they are not
+three instances of the same gap:
 
-* **Text** is blocked on PLAN Phase 14's back half. The path model, the rasteriser and the
-  `LayerKind::Vector` layer a glyph outline would land in all exist now; what does not is
-  the shaper (`src/text/`) and `LayerKind::Text`'s content, which is still inert.
 * **Frame and Slice** are blocked on a *receiving model* rather than on effort. Both name a
   document-level region concept that does not exist, and building the gesture without it
   produces a tool that draws a rectangle and forgets it.
@@ -591,6 +588,18 @@ are not four instances of the same gap:
   blocked on geometry either: `core/Path`, `core/PathRaster` and `core/VectorShape` are
   built, so a Shape tool is a gesture that emits a `VectorShape` into the layer the Pen
   already edits.
+
+**Text** shipped on 2026-09-03 with PLAN Phase 14: `text/Shaper` and its CoreText
+implementation, `core/TextContent`, a live `LayerKind::Text` layer, the `np:text` attribute,
+the canvas gesture and overlay in `ui/MacPaintUI.cpp`, and the options row §4b describes.
+A Text layer is a Vector layer that has not been typed out yet — `textContentToShapes()`
+emits exactly the `std::vector<VectorShape>` a Vector layer holds, so there is one
+rasteriser in this build and text goes through it. What is NOT built for it yet, by name:
+selection ranges (the caret is a single byte offset, so there is no shift-click, no
+double-click-a-word and no styled run), text on a path, and vertical text — the last two
+out of scope per PRD.md:102. Its LAYERS-panel thumbnail is also blank, which is Vector's
+gap rather than Text's: `layerContentThumbnail()` gates on `layerHoldsPixels()` and neither
+kind has a tile store.
 
 **Pen and Curve** shipped on 2026-09-03 with PLAN Phase 13's path model: `core/Path`,
 `core/PathRaster`, `core/PathStroke`, a `LayerKind::Vector` layer, `io/SvgImport`, and the
@@ -642,6 +651,15 @@ sliders be live controls over something this tool provably never reads**:
 | Magic Wand | TOLERANCE (0..255), REACH (Contiguous / All Similar), ANTI-ALIAS | It selects; nothing it does deposits a texel. |
 | Paint Bucket | The same three, over its **own** parameter block | It fills a region found by a predicate, not a shape walked by a tip. |
 | Crop | MODE (Rectangle / Perspective), SIZE (the extent that will result), CROP and CANCEL, and the refusal sentence when there is one | It has no tip, no stroke and no deposit; nothing in `app/CropTool` or in the two engines behind it reads a `BrushTip`. |
+| Text | FONT (the installed families, with a filter box), SIZE (px), B and I, ALIGN (L / C / R / J) and COLOR | A glyph is an outline filled by `core/PathRaster`, not a stroke walked by a tip. |
+
+**ALIGN goes dead on point text**, greyed with the reason in a tooltip — SPREAD-on-Angular
+below, exactly. `text/Shaper.hpp` is explicit that alignment means nothing when
+`frame.width == 0`: there is one line and nothing to align it against. Disabled rather than
+hidden for the same reason SPREAD is, and the chosen value is remembered and applies again
+the moment the block gets a frame. The golden pair `text_options` / `text_options_paragraph`
+photographs both states over one crop, because a disabled control is a visual claim and
+`--selftest` can assert the predicate but not the pixel.
 
 **Pen and Curve belong in that table and are not in it yet.** They shipped on 2026-09-03
 without an options row, so they currently take the default and the band shows SIZE / HARD /

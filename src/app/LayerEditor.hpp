@@ -78,6 +78,12 @@ enum class LayerCommand {
   // content, so a fresh one draws nothing until a shape is added -- the same
   // shape of emptiness `NewAdjustmentLayer` above has.
   NewVectorLayer,
+  // PLAN.md phase 14. Same again: its `text` block is its content, and a
+  // fresh one has an empty string -- so it draws nothing until someone types,
+  // which the Text tool does by creating one on the first click. This entry
+  // exists for the layer the tool does NOT create: an empty Text layer made
+  // from the LAYERS panel and then typed into.
+  NewTextLayer,
   DuplicateLayer,
   DeleteLayer,
   MoveLayerUp,

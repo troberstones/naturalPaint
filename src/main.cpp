@@ -571,6 +571,123 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
                  static_cast<double>(onSegment.x), static_cast<double>(onSegment.y));
 }
 
+// --text-demo [paragraph|frame] (PLAN.md Phase 14; PRD K1-K3): puts a
+// `LayerKind::Text` layer on the session's document, selects `Tool::Text`, and
+// drives `app/TextTool`'s real session transitions so the on-canvas text
+// chrome and the Text options row can be photographed.
+//
+// Same argument as `runVectorDemo()` above, one tool along: `--selftest`
+// proves the caret arithmetic, the UTF-8 boundary invariant, the frame-drag
+// threshold and the shaping, and none of that can prove the block box is ON
+// SCREEN under the canvas's zoom and pan, that the caret bar lands on the
+// baseline rather than a guessed constant above it, or that the options row's
+// six controls are drawn at all.
+//
+// **Every state below is reached through `textEditBegin()` /
+// `textCaretSetOffset()` / `textEditFrameDragBegin()`, never by assigning to
+// `st.textEdit`** -- app/TextTool.hpp's single-writer rule, which is greppable
+// precisely so that a fixture cannot quietly become a second writer:
+// `grep -rnP 'textEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` must find
+// nothing, and that grep covers this file.
+//
+//   (default)     Point text: a one-line block with a caret placed by CLICK
+//                 position, so the picture carries the block box, the caret
+//                 bar, and an ALIGN segment correctly greyed out -- point text
+//                 has nothing to align against (text/Shaper.hpp), and that
+//                 disabled state is itself a claim worth photographing.
+//   paragraph     A wrapped block with a frame width, left align, so ALIGN is
+//                 live and the box drawn is the LAYOUT frame rather than the
+//                 glyph bounds -- the two differ, and the overlay picks
+//                 deliberately between them.
+//   frame         A paragraph-frame drag held open mid-gesture: pen-down on
+//                 empty canvas and a move, with no pen-up. Unphotographable
+//                 any other way, and pinned by `st.textEditDemo` for a reason
+//                 the Pen's marquee does not have -- this gesture's pen-up
+//                 CREATES A LAYER, so an unpinned camera would photograph a
+//                 finished text block and label it a rubber band.
+//
+// The frame drag's corners (180,200 -> 760,540) are `--vector-demo marquee`'s
+// own, and for the same reason: the three text canvas views share one golden
+// crop so they are directly diffable, and a rectangle that ran past its
+// bottom edge would be cropped by the harness rather than by anything under
+// test.
+void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
+  np::setActiveTool(st, np::Tool::Text);
+
+  if (mode == 2) {
+    // Empty canvas, well clear of anything, then a move and NO pen-up. No
+    // layer is created and none should be: the layer is the pen-up's product.
+    np::textEditFrameDragBegin(&st.textEdit, np::PathPoint{180.0f, 200.0f}, od.id);
+    np::textEditFrameDragUpdate(&st.textEdit, np::PathPoint{760.0f, 540.0f});
+    st.textEditDemo = true;
+    std::printf("[text-demo] frame drag held open: 180,200 -> 760,540, active=%d, layer=%s\n",
+                static_cast<int>(st.textEdit.frameDragActive),
+                st.textEdit.layerIndex == np::kNoLayer ? "none yet" : "SET (wrong)");
+    return;
+  }
+
+  // 48 px rather than the 24 px default: the block box, the caret bar and the
+  // glyph outlines all have to be separable in a screenshot, and at 24 px on
+  // this canvas the box and the caret are within a pixel or two of each other.
+  np::TextContent text = np::makeTextContent(
+      mode == 1 ? "Paragraph text wraps inside the frame it was dragged out."
+                : "Handgloves",
+      np::PathPoint{200.0f, 300.0f});
+  text.style.sizePx = 48.0f;
+  // A deliberately non-black fill: the overlay draws its chrome in the
+  // accent, and black-on-white text with black chrome over it makes a
+  // mis-registered box indistinguishable from a correctly registered one.
+  text.fill.rgba = {0.10f, 0.14f, 0.22f, 1.0f};
+  if (mode == 1) {
+    // A frame NARROWER than the string needs, so the picture shows real
+    // wrapping rather than one line that happens to fit -- a frame wide
+    // enough to hold the whole string would photograph identically to point
+    // text and prove nothing about the paragraph path.
+    text.frame.width = 520.0f;
+    text.align = np::TextAlign::Center;
+  }
+
+  np::Layer layer = np::makeTextLayer(mode == 1 ? "Paragraph demo" : "Point text demo");
+  layer.text = text;
+
+  const size_t at = od.document.layers.size();
+  np::addLayer(od.document, at, std::move(layer));
+  np::setActiveLayer(od, at);
+  np::setLayersPanelSelection(od, at);
+
+  const np::TextContent& placed = od.document.layers[at].text;
+
+  // The two writes the options bar itself makes when a Text layer is clicked
+  // into (app/AppState.hpp's stated rule), so the row shows THIS block's font
+  // and alignment rather than the tool's untouched defaults. Without them the
+  // photograph would show SIZE 24 beside 48 px text, which looks like the
+  // control is broken and is in fact the fixture skipping a step.
+  st.textStyle = placed.style;
+  st.textAlign = placed.align;
+
+  np::textEditBegin(&st.textEdit, od.id, at, placed);
+  // `textEditBegin()` leaves the caret at the END. A click also positions it,
+  // and the mid-string caret is the more informative photograph: a caret at
+  // the end of the string sits just past the last glyph, which is also where a
+  // caret computed from entirely the wrong glyph would land if the string were
+  // measured instead of shaped.
+  const np::PathPoint clickAt{
+      placed.origin.x + (mode == 1 ? 210.0f : 150.0f),
+      placed.origin.y + (mode == 1 ? 30.0f : 20.0f)};
+  np::textCaretSetOffset(&st.textEdit, placed, np::textOffsetAtPoint(placed, clickAt));
+
+  const np::PathBounds bounds = np::textContentBounds(placed);
+  std::printf("[text-demo] %s, %zu glyph shape(s), caret at byte %zu of %zu, bounds %s\n",
+              mode == 1 ? "paragraph" : "point text",
+              np::textContentToShapes(placed).size(), st.textEdit.caret, placed.utf8.size(),
+              bounds.valid ? "valid" : "INVALID");
+  if (!np::textContentDraws(placed) || !bounds.valid)
+    std::fprintf(stderr,
+                 "[text-demo] this block draws NOTHING -- either the shaper is unavailable in "
+                 "this build or the fill is off, so the photograph shows chrome over an empty "
+                 "canvas\n");
+}
+
 // --ui-merge-demo <command> (PLAN.md Phase 5 step 10): press exactly one of
 // core/Merge's five buttons on the session's document, through the same
 // `applyLayerCommand()` the `Layer` menu and the LAYERS panel call.
@@ -1324,6 +1441,10 @@ int main(int argc, char** argv) {
   // --vector-demo [components|marquee]: see runVectorDemo().
   bool vectorDemo = false;
   int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee
+
+  // --text-demo [paragraph|frame]: see runTextDemo().
+  bool textDemo = false;
+  int textDemoMode = 0;  // 0 = point text, 1 = paragraph, 2 = held-open frame drag
   bool overRangeDemo = false;
   bool flyoutDemo = false;
   // --no-document: see the argument-parsing block, and the "A session always
@@ -1706,6 +1827,23 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "marquee") {
           vectorDemoMode = 2;
+          ++i;
+        }
+      }
+    } else if (a == "--text-demo") {
+      // Selects `Tool::Text` and puts a Text layer under it. See
+      // `runTextDemo()` for what each argument photographs. `--text-demo`
+      // rather than any shorter name for `--vector-demo`'s reason: `--pen-demo`
+      // was taken by the transform demo, and this file's flag namespace is
+      // shared with golden views that already point at the old meanings.
+      textDemo = true;
+      if (i + 1 < argc) {
+        const std::string_view arg(argv[i + 1]);
+        if (arg == "paragraph") {
+          textDemoMode = 1;
+          ++i;
+        } else if (arg == "frame") {
+          textDemoMode = 2;
           ++i;
         }
       }
@@ -3489,6 +3627,12 @@ int main(int argc, char** argv) {
     else
       std::fprintf(stderr, "[vector-demo] no document open -- this flag needs one to put a "
                            "Vector layer in\n");
+  }
+  if (textDemo) {
+    if (np::OpenDocument* od = st.documents.active()) runTextDemo(st, *od, textDemoMode);
+    else
+      std::fprintf(stderr, "[text-demo] no document open -- this flag needs one to put a "
+                           "Text layer in\n");
   }
   if (marqueeDemo) {
     if (np::OpenDocument* od = st.documents.active()) {

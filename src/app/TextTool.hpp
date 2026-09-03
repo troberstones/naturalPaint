@@ -234,6 +234,27 @@ inline constexpr size_t kNoLayer = static_cast<size_t>(-1);
 // while a drag (but no caret session) is live.
 void textEditCancel(TextEditState* state) noexcept;
 
+// Put the caret at `offset`, clamped to a UTF-8 boundary of `text.utf8`.
+//
+// The gesture this exists for is a click on an existing block: `textEditBegin()`
+// deliberately answers only "clicked to start editing" (caret at the end), and
+// a single click in this application means both that AND "clicked at this
+// character". So `ui/` computes the byte offset -- `core/TextContent`'s
+// `textOffsetAtPoint()`, which needs to shape and therefore cannot live in
+// this file -- and hands it here.
+//
+// Clamped despite `textOffsetAtPoint()` already returning a boundary, because
+// this is a public entry point taking a caller's `size_t` and section 3's
+// invariant is this file's to hold, not its callers' to remember.
+void textCaretSetOffset(TextEditState* state, const TextContent& text, size_t offset) noexcept;
+
+// Record that this session has opened an undo entry, so the next edit amends
+// rather than records. `ui/` owns the decision (only it knows whether it just
+// called `recordEdit()` or `amendEdit()`); the FLAG lives here so there is not
+// a second copy of the same fact in `drawUI()` -- `PathEditState::
+// geometryEditOpened`'s reason exactly.
+void textEditMarkUndoOpened(TextEditState* state) noexcept;
+
 // Begin (or replace) a caret-editing session on `content`, the block already
 // on layer `layerIndex` of document `documentId`. Resets any live frame
 // drag and undo bookkeeping -- a fresh session shares nothing with whatever

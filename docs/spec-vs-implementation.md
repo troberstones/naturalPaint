@@ -62,9 +62,9 @@ dispatched today without a design pass first.
 
 ## 2. The tool palette
 
-`docs/ui.md` §2 specifies 28 palette cells. **24 carry real behaviour and 4 are
+`docs/ui.md` §2 specifies 28 palette cells. **25 carry real behaviour and 3 are
 name/icon/slot only** — honestly greyed out, and pinned there by the
-`--selftest` assertion *"`toolImplemented()` is true for exactly the twenty-four
+`--selftest` assertion *"`toolImplemented()` is true for exactly the twenty-five
 tools with real behaviour"* plus the stronger structural one,
 `toolImplemented(t) == toolHasCanvasHandler(t)` for every `Tool`
 (`ui/AtelierChrome.cpp`). That pair is why this half of the palette cannot
@@ -145,7 +145,7 @@ create, not by reading the phase text.
 | 9 — Tile it | no code |
 | 11 — Media layers | `LayerKind::Media` enum value only |
 | 13 — Paths | **partly built.** `core/Path`, `core/PathFlatten`, `core/PathRaster`, `core/PathStroke`, `core/VectorShape`, `LayerKind::Vector`, `io/PathSerial`, `io/SvgImport` and `app/PenTool` all exist, and Pen/Curve have a canvas gesture and an on-canvas overlay. **Not built, by name:** the options bar's Shape/Component mode segment (so Component mode is unreachable from the UI), the gnomon's drawn scale/rotate handles, the PATHS dock tab, and the three PRD J consumers — path-to-selection, fill path, stroke path with the brush. |
-| 14 — Text | **partly built, by inheritance.** Phase 13 supplied everything a glyph outline would be rasterised through; `src/text/`, a shaper and `LayerKind::Text`'s content do not exist, and `Tool::Text` is still marked unbuilt. |
+| 14 — Text | **built.** `text/Shaper` + `text/CoreTextShaper.mm` (+ a stub elsewhere), `core/TextContent`, a live `LayerKind::Text` layer, `np:text` in `io/NpaintFile`, `app/TextTool`, the canvas gesture and overlay, and an options row with FONT / SIZE / B / I / ALIGN / COLOR. `Tool::Text` is marked built and `LayerCommand::NewTextLayer` makes an empty one from the LAYERS panel. **Not built, by name:** selection ranges — the caret is a single byte offset, so there is no shift-click, no double-click-a-word and no styled run. The LAYERS thumbnail for a Text layer is blank, which is Vector's gap it inherits (`layerContentThumbnail()` gates on `layerHoldsPixels()`). Text on a path, vertical text and rich-text runs are non-goals (PRD.md:102). |
 | 15 — PSD export | no code — `src/io/` holds `PsdImport.{cpp,hpp}` and nothing else PSD-shaped. **Import is done and oracle-verified** against psd-tools 1.18.0 across three real Photoshop files; export is untouched. |
 | 19 — Automate it | no code |
 

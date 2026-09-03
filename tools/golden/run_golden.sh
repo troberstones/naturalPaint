@@ -159,6 +159,14 @@ fi
 
 mode="${1:-check}"
 measure_n="${2:-10}"
+# `measure` only: the views to measure, by name. Empty means all of them.
+#
+# It exists because measuring is O(views x N) launches and a change that adds
+# five views should not have to relaunch the other forty-one eight times each
+# to derive their thresholds -- which, at ~2 s a launch, is the difference
+# between one minute and ten. `check` and `update` take no filter on purpose:
+# a partial check is a green light nobody asked for.
+measure_only=("${@:3}")
 
 # --- view table (three parallel indexed arrays; see header note on why) ---
 #
@@ -770,8 +778,78 @@ measure_n="${2:-10}"
 #     honest reason: `Tool::Pen` stopped being greyed out, so the palette cell
 #     in that crop is brighter. The harness caught it as a FAIL rather than
 #     letting a shipped tool keep an unbuilt tool's chrome.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee")
+#
+#   text_options / text_options_paragraph / text_point / text_paragraph /
+#   text_frame -- the Text tool (PLAN.md phase 14, PRD K1-K3): its options row
+#     and its on-canvas chrome, over a Text layer `--text-demo` adds to
+#     `--demo-document`. Five views because the row and the canvas are two
+#     separate crops and each has a state its twin cannot show:
+#
+#       * `text_options` -- the row over POINT text: FONT (a combo carrying
+#         the family, filtered by a search box), SIZE, B / I, ALIGN, COLOR.
+#         The claim this crop exists for is the ALIGN segment **greyed out**:
+#         `text/Shaper.hpp` is explicit that alignment means nothing when
+#         `frame.width == 0`, and a live control over a provable no-op is the
+#         SPREAD-on-Angular defect again. A disabled segment is a visual
+#         state and nothing but a photograph can check it.
+#       * `text_options_paragraph` -- the SAME crop over paragraph text, so
+#         the two are directly diffable: ALIGN is live, and `C` is accented
+#         because the demo's block is centred. It is the control for the view
+#         above -- a row that drew every chip dim in both states would pass
+#         `text_options` on its own and fail here.
+#       * `text_point` -- the canvas: the block's **bounds box** (the union of
+#         the glyph outlines, so the "g" descender is inside it) and the
+#         **caret bar** placed by CLICK POSITION rather than at the end of the
+#         string. Mid-string on purpose: a caret at the end of the text sits
+#         just past the last glyph, which is also where a caret computed from
+#         entirely the wrong glyph would land, so the end position is the one
+#         position that proves least.
+#       * `text_paragraph` -- the canvas again, and three claims no other view
+#         carries: the text WRAPS to the frame, the box drawn is the LAYOUT
+#         frame rather than the glyph bounds (they differ, and the overlay
+#         chooses between them deliberately), and the lines are CENTRED.
+#       * `text_frame` -- a paragraph-frame drag **held open** by
+#         `--text-demo frame`'s `st.textEditDemo` pin, `vector_marquee`'s
+#         mechanism exactly. The pin matters more here than it does there:
+#         this gesture's pen-up CREATES A LAYER, so an unpinned camera would
+#         photograph a finished text block and label it a rubber band. What
+#         this crop shows is the rectangle; that no layer was created is
+#         checked by `--text-demo frame`'s own stdout line ("layer=none yet"),
+#         because the LAYERS panel is at x > 1900 and no canvas crop reaches
+#         it.
+#
+#     The three canvas views share one crop, 1240x740 at (440, 540), for the
+#     `vector_*` views' reason -- same document, same frame, three states of
+#     one overlay, so they diff against each other. The demo's frame-drag
+#     corners were chosen to fit inside it rather than the crop being widened
+#     to chase them: a rectangle clipped by the harness is a rectangle nobody
+#     is testing.
+#
+#     Thresholds measured over 8 launches each, driven from `bash -c` with a
+#     real array -- NOT a zsh loop, for the reason the `vector_*` paragraph
+#     above records at length.
+#
+#   tools_lower -- the BOTTOM of the tool palette, and a blind spot this task
+#     found rather than a view this task needed. `tools` crops 100x402 at
+#     (0, 148); the palette is a single column of 44 px cells and there are
+#     28 of them, so that crop reaches about the first nine and **the last
+#     nineteen have never been under golden coverage at all**. Pen's flip to
+#     built, one commit ago, was therefore invisible to the harness except
+#     indirectly, through the `flyout` crop that happens to overlap it.
+#
+#     This crop, 110x300 at (0, 930), holds Dodge, Pen, Text, Shape and Hand
+#     -- and its whole point is the pair in the middle: **Text drawn lit and
+#     Shape drawn dim, in one frame.** `toolButton()`'s dimming is the only
+#     visual cue that a cell is present but not built, `--selftest` can assert
+#     the predicate but not the pixel, and this is now the one place the two
+#     states sit side by side under the camera.
+#
+#     Deliberately over plain `--demo-document` and not `--text-demo`: with a
+#     tool selected, the accented inverted cell is a THIRD state in the frame
+#     and the built/unbuilt contrast is the thing being photographed. One
+#     variable.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -991,11 +1069,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672  40   40   350  320  40   1916 1916 1916 340  340  340)
-view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32   76   76   350  420  76   940  940  940  370  370  370)
-view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204 1000 1000 1060 1220 2400 640  640  640  1340 1340 1340)
-view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512 76   76   830  830  76   240  240  240  960  960  960)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672  40   40   350  320  40   1916 1916 1916 340  340  340 0 0 440 440 440 0)
+view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32   76   76   350  420  76   940  940  940  370  370  370 76 76 540 540 540 930)
+view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204 1000 1000 1060 1220 2400 640  640  640  1340 1340 1340 1500 1500 1240 1240 1240 110)
+view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512 76   76   830  830  76   240  240  240  960  960  960 100 100 740 740 740 300)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -1118,7 +1196,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # anti-aliased fill flag off, and the reason that comes out bit-stable is the
 # same reason it comes out seamless: adjacent quads sharing exact vertices
 # rasterise watertight, with no fringe geometry to round differently.
-view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0 0  0  0)
+view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0 0  0  0 0 0 0 0 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -1137,7 +1215,7 @@ view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0
 # note in cmd_measure on what that mode is for. The five `crop_*` views are 0
 # here because their magnitude threshold is 0 too -- see the paragraph above
 # `view_threshold` for the measurement.
-view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0 0  0  0)
+view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0 0  0  0 0 0 0 0 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on
@@ -1229,8 +1307,18 @@ cmd_update() {
 cmd_measure() {
   mkdir -p "$WORK_DIR"
   echo "run_golden.sh measure: N=$measure_n launches per view, each diffed against launch 1"
+  if [ "${#measure_only[@]}" -gt 0 ]; then
+    echo "run_golden.sh measure: restricted to ${measure_only[*]}"
+  fi
   local idx=0
   for name in "${view_names[@]}"; do
+    if [ "${#measure_only[@]}" -gt 0 ]; then
+      local wanted=0
+      for w in "${measure_only[@]}"; do
+        if [ "$w" = "$name" ]; then wanted=1; fi
+      done
+      if [ "$wanted" -eq 0 ]; then idx=$((idx + 1)); continue; fi
+    fi
     echo "=== $name ==="
     local first=""
     for i in $(seq 1 "$measure_n"); do
@@ -1257,5 +1345,5 @@ case "$mode" in
   check) cmd_check ;;
   update) cmd_update ;;
   measure) cmd_measure ;;
-  *) echo "usage: $0 [check|update|measure [N]]" >&2; exit 2 ;;
+  *) echo "usage: $0 [check|update|measure [N] [view-name...]]" >&2; exit 2 ;;
 esac

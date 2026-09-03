@@ -477,7 +477,7 @@ bool runToolCursorTest() {
     // will want is already written in `cursorForTool()`. Pinned on two of them
     // so a future implementation that forgot the cursor cannot go unnoticed.
     check(!toolImplemented(Tool::Frame) && cursorForTool(Tool::Frame) == ToolCursor::MoveObject &&
-              !toolImplemented(Tool::Text) && cursorForTool(Tool::Text) == ToolCursor::Text,
+              !toolImplemented(Tool::Shape) && cursorForTool(Tool::Shape) == ToolCursor::Select,
           "unbuilt: an unbuilt tool still has its intent recorded -- the day it ships, "
           "toolImplemented() flips and the right cursor appears with no edit here");
 
@@ -501,10 +501,19 @@ bool runToolCursorTest() {
     // now shipped without `ui/ToolCursor` needing an edit, which is a stronger
     // statement than one, and it is why the promise is worth keeping rather
     // than retiring.
+    //
+    // **And a THIRD time, by Text**, PLAN.md phase 14. `Tool::Text` was the
+    // second example on the line above until this commit; `text/CoreTextShaper`
+    // plus `core/TextContent` plus the canvas block flipped
+    // `toolImplemented()`, and `cursorForTool(Tool::Text)` needed no edit
+    // whatsoever -- it has answered `ToolCursor::Text` since the day this file
+    // was written. `Tool::Shape` took its place above. Three collections is
+    // the point at which the promise stops being a hopeful comment.
     check(toolImplemented(Tool::Eraser) && cursorForTool(Tool::Eraser) == ToolCursor::Paint &&
-              toolImplemented(Tool::Pencil) && cursorForTool(Tool::Pencil) == ToolCursor::Paint,
-          "unbuilt: the Eraser and the Pencil each shipped carrying the intent they were "
-          "written with while still unbuilt -- the promise above, collected twice");
+              toolImplemented(Tool::Pencil) && cursorForTool(Tool::Pencil) == ToolCursor::Paint &&
+              toolImplemented(Tool::Text) && cursorForTool(Tool::Text) == ToolCursor::Text,
+          "unbuilt: the Eraser, the Pencil and Text each shipped carrying the intent they "
+          "were written with while still unbuilt -- the promise above, collected three times");
   }
 
   std::printf("  -- G. §7's bitmap cursors: non-blank, hotspot bounds, and flag-off identity --\n");

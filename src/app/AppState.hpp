@@ -15,6 +15,7 @@
 #include "app/CropTool.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
+#include "app/TextTool.hpp"
 #include "app/DocumentLifecycle.hpp"
 #include "app/DocumentPresets.hpp"
 #include "app/GradientTool.hpp"
@@ -770,6 +771,51 @@ struct AppState {
   // of skips is the whole mechanism. It is NOT a field of `PathEditState`:
   // it says nothing about the gesture, only that this process is a camera.
   bool pathEditDemo = false;
+
+  // `Tool::Text`'s edit session -- which layer is being typed into, the caret,
+  // and a live paragraph-frame drag (app/TextTool.hpp section 5).
+  //
+  // Same single-writer rule as `pathEdit` above, and the same greppable form
+  // of it: every transition goes through app/TextTool.cpp, so a
+  // `grep -rnP 'textEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` finding
+  // anything is the defect.
+  TextEditState textEdit;
+
+  // **The style the NEXT text block gets, and the one the options bar always
+  // edits.** Photoshop's "tool defaults", and the answer to a question a
+  // per-tool options row cannot avoid: what do FONT, SIZE, B/I, ALIGN and
+  // COLOR mean when no Text layer is selected?
+  //
+  // The rule, stated once here because it is the only thing that makes those
+  // five controls unambiguous: **the options bar edits THIS, and when a Text
+  // layer is being edited every change is written through to that layer's
+  // content as well.** Selecting a Text layer loads its content back into
+  // here, so the row always shows what the next keystroke will look like.
+  // One direction of truth at a time.
+  //
+  // The alternative -- controls that edit the layer when there is one and
+  // nothing when there is not -- was rejected because it makes the row go
+  // dead for the entire time before the first click, which is exactly when a
+  // user is choosing a font.
+  //
+  // `fill` is deliberately NOT here. A new text block takes the FOREGROUND
+  // colour, like every other tool in this build (`foregroundLinearRgba()`),
+  // and the options bar's COLOR control edits the active layer's own `fill`.
+  // A third colour store beside the foreground and the layer would be a
+  // colour the user set that nothing painted with.
+  TextStyle textStyle;
+  TextAlign textAlign = TextAlign::Left;
+
+  // `--text-demo frame`'s pin, `pathEditDemo` above's exact twin and for the
+  // identical reason: the paragraph-frame rubber band exists ONLY while the
+  // pointer is down, and a screenshot run has no pointer down.
+  //
+  // When set, the canvas block runs neither `textEditFrameDragUpdate()` (which
+  // would drag `frameDragNow` to wherever the human left the mouse) nor the
+  // end-of-drag transition. The second skip matters more here than it does for
+  // the Pen: this drag's pen-up CREATES A LAYER, so without the pin the camera
+  // would photograph a finished text layer and call it a rubber band.
+  bool textEditDemo = false;
 
   // `Tool::Crop`'s pending crop -- the rectangle or the four corners, the mode
   // toggle, and which handle is under the pointer (app/CropTool.hpp section 5).

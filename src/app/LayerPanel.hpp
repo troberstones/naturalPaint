@@ -116,14 +116,14 @@ uint32_t layerKindRailRgb(LayerKind kind) noexcept;
 // --- The NEW popup (design 2a's headline second change) --------------------
 //
 // 2a collapses three `New` buttons into one `NEW` with a popup "carrying all
-// seven kinds and their rails". Four of those seven cannot be created by this
+// seven kinds and their rails". Three of those seven cannot be created by this
 // build: `core/LayerOps` has `makeRgbLayer()`, `makePigmentLayer()`,
-// `makeAdjustmentLayer()` and `makeVectorLayer()` -- the last of which is not
-// one of 2a's seven at all, and is appended to the popup -- because
-// Media/Strokes/Text/Flats
-// hold no content at all here (core/Layer.hpp: "still inert placeholders";
-// core/Merge.cpp: "a Text layer here has no text, a Strokes layer no dabs and a
-// Flats layer no regions").
+// `makeAdjustmentLayer()`, `makeVectorLayer()` and `makeTextLayer()` -- the
+// fourth of which is not one of 2a's seven at all and is appended to the
+// popup, while the fifth IS one of the seven and so was flipped live in its
+// own slot -- because Media/Strokes/Flats hold no content at all here
+// (core/Layer.hpp: "still inert placeholders"; core/Merge.cpp: "a Strokes
+// layer no dabs and a Flats layer no regions").
 //
 // **They are listed anyway, and drawn disabled.** That is not a dead control
 // dressed as a live one -- it is the identical decision ui/AtelierChrome's

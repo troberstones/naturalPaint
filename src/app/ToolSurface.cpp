@@ -4,6 +4,7 @@
 #include "app/MoveTool.hpp"       // toolMovesPixels()
 #include "app/PenTool.hpp"        // toolEditsPath()
 #include "app/StrokeSession.hpp"  // the route table and five of the gates
+#include "app/TextTool.hpp"       // toolEditsText()
 #include "app/ZoomAndSize.hpp"    // toolZoomsView()
 
 namespace np {
@@ -65,7 +66,7 @@ const char* toolSurfaceRefusal(Tool tool, bool documentOpen) {
   // instruction a user has to carry out is identical in every row below.
   //
   // The ladder is over GATES, not over `Tool` values, so it is seven rows for
-  // twenty-four tools and a further tool in any family inherits its family's
+  // twenty-five tools and a further tool in any family inherits its family's
   // sentence. Ordered cheapest-first for the reason `toolHasCanvasHandler()`
   // orders its own disjunction: `toolBeginsStroke()` builds two probe `Layer`s
   // and is last, so no tool that answers an earlier gate ever reaches it.
@@ -93,6 +94,11 @@ const char* toolSurfaceRefusal(Tool tool, bool documentOpen) {
   // builds two probe `Layer`s and this one is a table lookup.
   if (toolEditsPath(tool))
     return "Nothing to draw paths in: no document is open. File > New Document makes one.";
+  // Its own lead-in for the Pen's reason: a user reading "Nothing to draw
+  // paths in" off a dimmed Text cell would be told about the wrong operation,
+  // and the Text tool neither paints nor edits anchors -- it sets type.
+  if (toolEditsText(tool))
+    return "Nothing to set type in: no document is open. File > New Document makes one.";
   if (toolBeginsStroke(tool))
     return "Nothing to paint on: no document is open. File > New Document makes one.";
 

@@ -161,6 +161,17 @@ void textEditCancel(TextEditState* state) noexcept {
   // `PathEditState::selection` alone.
 }
 
+void textCaretSetOffset(TextEditState* state, const TextContent& text,
+                        size_t offset) noexcept {
+  if (state == nullptr) return;
+  state->caret = clampToBoundary(text.utf8, offset);
+}
+
+void textEditMarkUndoOpened(TextEditState* state) noexcept {
+  if (state == nullptr) return;
+  state->undoOpened = true;
+}
+
 void textEditBegin(TextEditState* state, uint64_t documentId, size_t layerIndex,
                     const TextContent& content) {
   if (state == nullptr) return;
