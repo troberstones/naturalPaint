@@ -5004,6 +5004,27 @@ bool runSvgPathTest();
 // 10 000-rule sheet -- never crashes or hangs. See app/selftest/SvgStyle.cpp.
 bool runSvgStyleTest();
 
+// app/PenTool: the headless core of Stage 4's vector editing (docs/
+// vector-editing.md) -- the two selection modes (Shape/Component) and their
+// shared SET-semantics modifier grammar, hit-test priority over the gnomon /
+// pivot marker / anchors / tangents / segments, the two pivot concepts
+// (`VectorShape::pivot` vs the transient component centroid) and the
+// asymmetry between them under `applyAffineToSelection()`, and
+// `toolEditsPath()`. Headless, GPU-free, writes no files, and touches no
+// `ui/` file -- `Tool::Pen` stays unimplemented and `toolHasCanvasHandler()`
+// unchanged until the commit that wires an actual canvas gesture to this
+// model.
+//
+// The two assertions named by the brief this file was written against: a
+// component-mode affine moves an anchor's point AND both its tangent handles
+// together, checked against hand-computed geometry rather than a re-run of
+// the function under test, including the case where a selected anchor's
+// unselected neighbour keeps its own handle in place; and the hit-test
+// priority order is exactly docs/vector-editing.md section 3's, with
+// `gnomonSuppressed` proven to make the next tier down reachable. See
+// app/selftest/PenTool.cpp.
+bool runPenToolTest();
+
 // `LayerKind::Vector` (PLAN.md phase 13): the layer that holds Bezier geometry
 // instead of pixels, its raster cache, and the materialised view through which
 // it reaches core/Composite without that file gaining a Vector branch.

@@ -17,6 +17,7 @@ add_executable(naturalPaint
   app/HistoryPanel.cpp
   app/Keymap.cpp
   app/PenAxes.cpp
+  app/PenTool.cpp
   app/PsdReport.cpp
   app/ProfileToggle.cpp
   app/Screenshot.cpp
@@ -194,6 +195,7 @@ add_executable(naturalPaint
   app/selftest/GradientTool.cpp
   app/selftest/MoveTool.cpp
   app/selftest/PathRaster.cpp
+  app/selftest/PenTool.cpp
   app/selftest/SvgPath.cpp
   app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
