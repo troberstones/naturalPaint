@@ -76,11 +76,11 @@
 // letting through") lost half its answer. This is also what Photoshop's pair
 // shows.
 //
-// A layer with no pixels to show -- an Adjustment layer, a Group -- is
-// `layerHoldsPixels() == false` and gets an entirely transparent thumbnail.
-// The draw site paints its own "nothing here" mark rather than this module
-// inventing one, because a placeholder is a design decision and this file
-// has no opinions about the panel.
+// A layer with no picture to show at all -- an Adjustment layer, a Group --
+// gets an entirely transparent thumbnail. The draw site paints its own
+// "nothing here" mark rather than this module inventing one, because a
+// placeholder is a design decision and this file has no opinions about the
+// panel. §5 is about the kinds that *do* have a picture but no tiles.
 //
 // **Premultiplied in, straight out.** `core::Tile` stores premultiplied
 // (DESIGN-imaging.md §2) and so does `projectPigmentTexel()`; averaging
@@ -166,6 +166,67 @@
 // `buildDemoDocument()`, which calls `recordEdit()` by hand at the end for
 // precisely this reason. Such a caller must move the revision or call
 // `invalidate()`.
+//
+// ==========================================================================
+// 5. Vector and Text: the layers with a picture and no pixels
+// ==========================================================================
+//
+// A `LayerKind::Vector` layer's content is `Layer::shapes` and a
+// `LayerKind::Text` layer's is `Layer::text`; neither has a tile store, so
+// §3's sampler has nothing to read. Until this section existed the panel drew
+// **a blank checkerboard beside a row whose canvas plainly showed a drawing**,
+// which is the "says something false with confidence" failure §4 is otherwise
+// entirely about, arriving through a different door.
+//
+// **The picture is rasterised at 24x24, from the geometry, on the spot, with
+// no cache of its own.** Three alternatives were weighed:
+//
+//   1. **Park a raster on the layer** (fill `rgbTiles` and let
+//      `layerHoldsPixels()` say yes). core/VectorRaster.hpp §1 rejects this at
+//      length and the reasons are unchanged by a thumbnail wanting it: two of
+//      the compositor's hand-copied re-derivations of that predicate would
+//      dereference a disengaged `std::optional`, and history -- which holds a
+//      whole `Document` by value -- would collapse to about four undo steps.
+//   2. **Thread a `MaterializedDocument` into the panel.** Correct, and the
+//      most reuse; but it rasterises every Vector layer at *document*
+//      resolution to show a 24 px square, i.e. up to 32 MiB of tiles per
+//      layer for 576 texels, and it puts a compositing dependency into a
+//      widget whose whole design (§0) is that it decides nothing.
+//   3. **Rasterise the geometry at thumbnail resolution.** core/PathRaster
+//      hands coverage to a callback and owns no destination (its own §1), and
+//      the destination here is 24*24*4 floats -- 9 216 bytes on the stack of
+//      one call. A shape becomes a scale-and-translate over its anchors
+//      (core/Path.hpp §2 makes that one map with no special cases, because
+//      handles are absolute) and a scanline sweep over at most 24 rows. That
+//      is smaller than the tile sampler it sits beside, so there is nothing
+//      for a cache to save; §4's cache still holds the finished bytes.
+//
+// So (3), and the honest cost statement is that this is O(geometry) where the
+// rest of the file is O(thumbnail): a layer of ten thousand shapes flattens
+// ten thousand paths to draw 576 texels. The clip rectangle is the letterbox,
+// so nothing off-cell is ever *emitted*, but every shape is still walked. If
+// that ever bites, the fix is a bounds reject per shape against the cell, not
+// a cache -- and `--selftest` prints the emitted-texel count so the question
+// is measured rather than argued.
+//
+// **One code path covers both kinds**, because core/TextContent.hpp §1 is
+// right that "a Text layer is a Vector layer that has not been typed out yet":
+// `textContentToShapes()` returns exactly the `std::vector<VectorShape>` a
+// Vector layer holds. `--selftest` asserts the two thumbnails are byte-equal
+// for the same content, so the day someone adds a second branch here it goes
+// red rather than drifting.
+//
+// **Not `layerHoldsPixels()`.** This file asks its own question -- "does this
+// layer draw anything a 24 px picture could show" -- and Vector and Text
+// answer yes to that while still, correctly, answering no to the compositor's
+// "would the walk read tiles off this layer". Widening the shared predicate is
+// the trap alternative 1 above describes.
+//
+// **A Vector layer with no shapes, and a Text layer with no string, are
+// legitimate states** -- both are one click of NEW away -- and both give a
+// fully transparent picture inside a valid letterbox rect, exactly as an RGB
+// layer that has never been painted does. Not a black square: an empty layer
+// and a layer filled with black are different documents.
 namespace np {
 
 // The square cell, in texels. Small on purpose: the layers panel is about
@@ -191,17 +252,25 @@ struct LayerThumbnail {
   std::vector<uint8_t> rgba;  // kLayerThumbPx * kLayerThumbPx * 4
   // The letterboxed rect the document actually occupies, in cell texels.
   int x = 0, y = 0, w = 0, h = 0;
-  // How many source samples were taken. §3's cost claim, measured rather than
-  // asserted; `--selftest` prints it.
+  // The work this thumbnail did, measured rather than asserted; `--selftest`
+  // prints it. For a tiled layer it is §3's source-sample count. For a Vector
+  // or Text layer (§5) nothing is *sampled* at all, so it is the number of
+  // coverage texels the rasteriser emitted -- a different unit, and the same
+  // claim: bounded by the cell, not by the document.
   size_t samples = 0;
 };
 
 // The layer's own content, sRGB-encoded (§1), straight alpha.
 //
-// `layerIndex` out of range, a document with no area, or a layer that holds no
-// pixels at all (an Adjustment layer, a Group) all give a fully transparent
+// A Vector or Text layer's geometry is rasterised into the cell (§5); every
+// other kind is sampled from its tiles (§3).
+//
+// `layerIndex` out of range, a document with no area, or a layer with no
+// picture at all (an Adjustment layer, a Group) all give a fully transparent
 // thumbnail with `w == h == 0` -- three different reasons, one answer, because
-// the panel's answer to all three is the same mark.
+// the panel's answer to all three is the same mark. An *empty* Vector or Text
+// layer is not one of those three: it is equally transparent but its letterbox
+// rect is real, exactly as an unpainted RGB layer's is (§5).
 LayerThumbnail layerContentThumbnail(const Document& doc, size_t layerIndex);
 
 // The layer's mask, as coverage bytes with **no encode** (§1): 0 is black and
