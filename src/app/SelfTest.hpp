@@ -5399,6 +5399,21 @@ bool runSvgImportTest();
 // app/selftest/PenTool.cpp.
 bool runPenToolTest();
 
+// app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
+// gate predicate (`toolEditsText()`), the caret-editing session's UTF-8-safe
+// string edits (insert/backspace/forward-delete/caret movement, every one
+// routed through a single clamp so the caret can never split a multi-byte
+// character), the paragraph-frame drag (a click is point text, a drag past
+// the minimum size is a frame, and the frame's origin is always the drag's
+// top-left regardless of which direction it was dragged), and block
+// hit-testing. Calls none of core/TextContent.hpp's own free functions --
+// those are a sibling track's `.cpp`, built by a parallel effort against the
+// same base and not yet linkable here -- so every `TextContent` in this
+// section is built by field assignment. Headless, GPU-free, writes no files,
+// touches no `ui/` file, and does not exercise `AppState`. See
+// app/selftest/TextTool.cpp.
+bool runTextToolTest();
+
 // `LayerKind::Vector` (PLAN.md phase 13): the layer that holds Bezier geometry
 // instead of pixels, its raster cache, and the materialised view through which
 // it reaches core/Composite without that file gaining a Vector branch.

@@ -2357,6 +2357,15 @@ int main(int argc, char** argv) {
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penToolOk = np::runPenToolTest();
+    // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
+    // gate predicate, the caret-editing session's UTF-8-safe string edits
+    // (insert/backspace/forward-delete/caret movement, all routed through
+    // one clamp so a caret can never split a multi-byte character), the
+    // paragraph-frame drag, and block hit-testing. Calls none of
+    // core/TextContent.hpp's own free functions -- a sibling track's `.cpp`,
+    // not yet linkable against this base. Headless and GPU-free; writes no
+    // files; touches no ui/ file.
+    const bool textToolOk = np::runTextToolTest();
     // text/Shaper: PRD K2's platform-independent shaping interface and its
     // CoreText implementation -- point/paragraph text, the y-up-to-y-down
     // flip, quadratic-to-cubic glyph outlines, and UTF-16 clusters translated
@@ -3218,7 +3227,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk;
+                    penToolOk && textToolOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
