@@ -1,11 +1,15 @@
 #include "app/selftest/Support.hpp"
 
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 
 #include "core/DirtyTiles.hpp"
 #include "core/Path.hpp"
 #include "core/VectorRaster.hpp"
 #include "core/VectorShape.hpp"
+#include "io/NpaintFile.hpp"
+#include "io/PathSerial.hpp"
 
 namespace np {
 
@@ -389,6 +393,191 @@ bool runVectorLayerTest() {
           "bounds: a miter join outsets FURTHER than half the width");
     check(std::fabs(mitred.minX - 2.0f) < 1.0e-4f,
           "bounds: by exactly miterLimit times the half width");
+  }
+
+
+  // --- 11. io/PathSerial: the encoding on its own -------------------------
+  {
+    std::vector<VectorShape> shapes;
+    VectorShape s = rectShape(1.5f, 2.25f, 30.125f, 40.0f);
+    s.id = 7;
+    s.name = "outline";
+    s.fill.on = true;
+    s.fill.rgba = {0.25f, 0.5f, 0.75f, 0.875f};
+    s.stroke.on = true;
+    s.stroke.rgba = {1.0f, 0.0f, 0.5f, 1.0f};
+    s.strokeStyle.width = 3.5f;
+    s.strokeStyle.cap = LineCap::Round;
+    s.strokeStyle.join = LineJoin::Bevel;
+    s.strokeStyle.miterLimit = 7.25f;
+    s.strokeStyle.dashes = {2.0f, 3.5f, 1.0f};
+    s.strokeStyle.dashOffset = 0.75f;
+    s.pivot = PathPoint{11.0f, 12.0f};
+    s.path.rule = FillRule::EvenOdd;
+    s.path.subpaths[0].anchors[1].in = PathPoint{5.5f, 6.5f};
+    s.path.subpaths[0].anchors[1].smooth = true;
+    s.clip = rectShape(0.0f, 0.0f, 10.0f, 10.0f).path;
+    shapes.push_back(s);
+
+    const std::string encoded = serializeVectorShapes(shapes, 99);
+    check(encoded.rfind(kVectorShapeSerialPrefix, 0) == 0,
+          "serial: the value begins with the version prefix, so it is read before the payload");
+
+    std::vector<VectorShape> back;
+    uint64_t nextId = 0;
+    std::string why;
+    check(deserializeVectorShapes(encoded, &back, &nextId, &why),
+          "serial: and decodes cleanly");
+    check(nextId == 99, "serial: nextShapeId survives");
+    check(back.size() == 1, "serial: one shape in, one out");
+
+    // **Bit-exact, not near.** Floats are written as IEEE-754 bit patterns
+    // precisely so that an anchor does not drift by an ulp per save/load
+    // cycle, which over a session would visibly move a shape.
+    const bool exact = back[0].id == 7 && back[0].name == "outline" &&
+                       back[0].fill.on && back[0].fill.rgba == s.fill.rgba &&
+                       back[0].stroke.rgba == s.stroke.rgba &&
+                       back[0].strokeStyle.width == s.strokeStyle.width &&
+                       back[0].strokeStyle.cap == LineCap::Round &&
+                       back[0].strokeStyle.join == LineJoin::Bevel &&
+                       back[0].strokeStyle.miterLimit == 7.25f &&
+                       back[0].strokeStyle.dashes == s.strokeStyle.dashes &&
+                       back[0].strokeStyle.dashOffset == 0.75f &&
+                       back[0].path.rule == FillRule::EvenOdd;
+    check(exact, "serial: every scalar comes back bit-identical, not approximately");
+    check(back[0].pivot.has_value() && back[0].pivot->x == 11.0f && back[0].pivot->y == 12.0f,
+          "serial: the pivot survives -- 'move a pivot and have it stick' depends on this");
+    check(back[0].clip.has_value() && back[0].clip->subpaths.size() == 1,
+          "serial: the clip path survives");
+    check(back[0].path.subpaths[0].anchors[1].in.x == 5.5f &&
+              back[0].path.subpaths[0].anchors[1].smooth,
+          "serial: handles and the smooth flag survive, not just anchors");
+    // The hash is the strongest single statement of round-trip fidelity: it
+    // covers every field that affects the raster plus the pivot, so agreement
+    // means nothing was silently dropped.
+    check(vectorContentHash(back) == vectorContentHash(shapes),
+          "serial: the content hash round-trips, so NO field was silently dropped");
+
+    // Refusals. Each is a shape a `.npaint` could genuinely arrive carrying.
+    std::vector<VectorShape> dummy;
+    // A future tag on a payload that is otherwise PERFECTLY VALID. An earlier
+    // revision of this check used "npvec2:00", which is refused whether or not
+    // the version is inspected -- its two hex digits are truncated anyway --
+    // so it passed with the version gate deleted. Sabotage found that; the
+    // payload below can only be refused BY the version gate.
+    const std::string futureTagged = "npvec2:" + encoded.substr(std::strlen(kVectorShapeSerialPrefix));
+    check(!deserializeVectorShapes(futureTagged, &dummy, nullptr, &why),
+          "serial: a FUTURE version is refused even when its payload is otherwise valid");
+    check(why.find("npvec1:") != std::string::npos,
+          "serial: and the refusal names the version this build speaks");
+    check(!deserializeVectorShapes("npvec1:abc", &dummy, nullptr, &why),
+          "serial: an odd hex length is refused as truncated");
+    check(!deserializeVectorShapes("npvec1:zz", &dummy, nullptr, &why),
+          "serial: a non-hex character is refused");
+    check(!deserializeVectorShapes("", &dummy, nullptr, &why),
+          "serial: an empty value is refused, not read as zero shapes");
+    // A hostile count: 0xFFFFFFFF shapes declared in a payload with nothing
+    // after it. Must be refused before a single reserve().
+    check(!deserializeVectorShapes("npvec1:0000000000000000ffffffff", &dummy, nullptr, &why),
+          "serial: a count larger than the remaining bytes is refused before allocating");
+    check(deserializeVectorShapes(serializeVectorShapes({}, 1), &dummy, nullptr, &why),
+          "serial: an empty shape list is well-formed, not an error");
+  }
+
+  // --- 12. The .npaint round trip -----------------------------------------
+  //
+  // A document format is a file format, so this section writes real files --
+  // io/NpaintFile's own selftest rule -- and removes every one of them.
+  {
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+    doc.layers.clear();
+    addLayer(doc, 0, makeRgbLayer("under"));
+    addLayer(doc, 1, makeVectorLayer("art"));
+    doc.layers[1].opacity = 0.625f;
+    doc.layers[1].blend = "multiply";
+    VectorShape s = rectShape(4.0f, 4.0f, 28.0f, 28.0f);
+    s.id = 3;
+    s.name = "box";
+    s.fill.on = true;
+    s.fill.rgba = {0.125f, 0.25f, 0.5f, 1.0f};
+    s.stroke.on = true;
+    s.stroke.rgba = {1.0f, 1.0f, 0.0f, 1.0f};
+    s.strokeStyle.width = 2.0f;
+    s.pivot = PathPoint{9.0f, 9.0f};
+    doc.layers[1].shapes.push_back(s);
+    doc.layers[1].nextShapeId = 4;
+
+    const char* path = "selftest_vector_roundtrip.npaint";
+    const NpaintSaveResult saved = saveNpaint(doc, path, NpaintSaveOptions{});
+    check(saved.ok, "npaint: a document containing a Vector layer SAVES (it used to be refused)");
+    if (!saved.ok) std::printf("      save error: %s\n", saved.error.c_str());
+
+    if (saved.ok) {
+      const NpaintLoadResult loaded = loadNpaint(path);
+      check(loaded.ok, "npaint: and loads back");
+      if (loaded.ok) {
+        check(loaded.document.layers.size() == 2, "npaint: both layers come back");
+        const Layer& v = loaded.document.layers[1];
+        check(v.kind == LayerKind::Vector, "npaint: the Vector layer is still a Vector layer");
+        check(!v.rgbTiles.has_value(),
+              "npaint: and did NOT come back as pixels -- the geometry is what was stored");
+        check(v.name == "art" && v.blend == "multiply" && v.opacity == 0.625f,
+              "npaint: its ordinary layer metadata survives");
+        check(v.shapes.size() == 1 && v.nextShapeId == 4,
+              "npaint: one shape, and the id counter, come back");
+        check(vectorContentHash(v.shapes) == vectorContentHash(doc.layers[1].shapes),
+              "npaint: the shape's content hash is identical across the round trip");
+        check(v.shapes[0].pivot.has_value() && v.shapes[0].pivot->x == 9.0f,
+              "npaint: including the pivot");
+
+        // The composite must agree, which is the end-to-end claim: geometry
+        // stored, geometry reloaded, same pixels.
+        const std::vector<float> before = compositeDocumentPremultiplied(doc);
+        const std::vector<float> after = compositeDocumentPremultiplied(loaded.document);
+        bool same = before.size() == after.size();
+        if (same)
+          for (size_t i = 0; i < before.size(); ++i)
+            if (before[i] != after[i]) {
+              same = false;
+              break;
+            }
+        check(same, "npaint: and the reloaded document composites BIT-IDENTICALLY");
+
+        // A second generation, which is the claim that actually matters: one
+        // round trip only shows the reader kept what the writer had in hand.
+        const char* path2 = "selftest_vector_roundtrip2.npaint";
+        const NpaintSaveResult again = saveNpaint(loaded.document, path2, NpaintSaveOptions{});
+        check(again.ok, "npaint: a second save of the reloaded document succeeds");
+        if (again.ok) {
+          const NpaintLoadResult twice = loadNpaint(path2);
+          check(twice.ok && twice.document.layers.size() == 2 &&
+                    vectorContentHash(twice.document.layers[1].shapes) ==
+                        vectorContentHash(doc.layers[1].shapes),
+                "npaint: and a SECOND generation is still identical");
+        }
+        std::remove(path2);
+      }
+    }
+    std::remove(path);
+
+    // An EMPTY Vector layer must not write the attribute at all, so a document
+    // without vector content keeps producing the bytes it produced before
+    // `np:vector` existed. Asserted through the reader rather than by reading
+    // the header, because that is the property callers depend on.
+    Document emptyVec = Document::createBlank(kW, kH, WorkingSpace{});
+    emptyVec.layers.clear();
+    addLayer(emptyVec, 0, makeVectorLayer("no shapes"));
+    const char* p3 = "selftest_vector_empty.npaint";
+    const NpaintSaveResult e = saveNpaint(emptyVec, p3, NpaintSaveOptions{});
+    check(e.ok, "npaint: an empty Vector layer saves");
+    if (e.ok) {
+      const NpaintLoadResult back = loadNpaint(p3);
+      check(back.ok && back.document.layers.size() == 1 &&
+                back.document.layers[0].kind == LayerKind::Vector &&
+                back.document.layers[0].shapes.empty(),
+            "npaint: and comes back as an empty Vector layer, not as an RGB one");
+    }
+    std::remove(p3);
   }
 
   return ok;

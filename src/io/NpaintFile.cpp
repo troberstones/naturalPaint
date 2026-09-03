@@ -24,6 +24,7 @@
 #include "io/CompSerial.hpp"
 #include "io/Export.hpp"
 #include "io/OpSerial.hpp"
+#include "io/PathSerial.hpp"
 
 // io/OiioBackend is the only translation unit that may include an
 // OpenImageIO header, so this file reaches it the same way io/Export.cpp
@@ -85,6 +86,16 @@ constexpr const char* kAttrAlphaLocked = "np:alphaLocked";
 // (see `Layer::parent`'s own comment for why a part name cannot be this
 // join's key).
 constexpr const char* kAttrGroupId = "np:groupId";
+
+// PLAN.md phase 13. A Vector layer's whole content: its shapes, as
+// io/PathSerial's `npvec1:<hex>` string. A *string*, not a blob, for the
+// measured reason docs/document-format.md records and io/CompSerial restates
+// -- array-typed EXR attributes silently vanish through this OpenImageIO.
+//
+// Written only when the layer has shapes, so a document whose Vector layer is
+// empty produces the bytes it produced before this attribute existed --
+// `np:ops`' and `np:label`'s rule.
+constexpr const char* kAttrVector = "np:vector";
 // The colour label and the link group (PLAN.md Phase 5 step 11; PRD C15).
 //
 // **Scalars, and deliberately not a third string carrier.**
@@ -267,7 +278,7 @@ bool isLayerAttributeRecognised(const std::string& name) {
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
          name == kAttrParent || name == kAttrOps || name == kAttrMask ||
          name == kAttrClipped || name == kAttrLabel || name == kAttrLink ||
-         name == kAttrGroupId || name == kAttrAlphaLocked;
+         name == kAttrGroupId || name == kAttrAlphaLocked || name == kAttrVector;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -706,6 +717,16 @@ NpaintRawPart buildAdjustmentLayerPart(const Layer& layer, const std::string& pa
 // either way) -- not worth the indirection for the one line that differs
 // between them, `np:kind`, which the caller writes.
 NpaintRawPart buildGroupLayerPart(const Layer& layer, const std::string& partName) {
+  return buildAdjustmentLayerPart(layer, partName);
+}
+
+// A Vector part, PLAN.md phase 13. Identical shape to Adjustment's and Group's
+// and for the identical measured reason: a zero-channel `ImageSpec` makes this
+// OpenImageIO's OpenEXR plugin refuse the whole FILE at open() with "Missing
+// or empty channel list in header", so a layer that holds no pixels still
+// carries the one `mask` channel EXR requires. Its content lives in the
+// `np:vector` attribute, not in a channel.
+NpaintRawPart buildVectorLayerPart(const Layer& layer, const std::string& partName) {
   return buildAdjustmentLayerPart(layer, partName);
 }
 
@@ -1470,7 +1491,8 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
   for (size_t i = 0; i < doc.layers.size(); ++i) {
     const Layer& layer = doc.layers[i];
     if (layer.kind != LayerKind::RGB && layer.kind != LayerKind::Pigment &&
-        layer.kind != LayerKind::Adjustment && layer.kind != LayerKind::Group) {
+        layer.kind != LayerKind::Adjustment && layer.kind != LayerKind::Group &&
+        layer.kind != LayerKind::Vector) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") is a " + layerKindName(layer.kind) +
                   " layer, and this build has no on-disk representation for that kind -- "
@@ -1849,6 +1871,7 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
       case LayerKind::Pigment: part = buildPigmentLayerPart(layer, layerNames[i]); break;
       case LayerKind::Adjustment: part = buildAdjustmentLayerPart(layer, layerNames[i]); break;
       case LayerKind::Group: part = buildGroupLayerPart(layer, layerNames[i]); break;
+      case LayerKind::Vector: part = buildVectorLayerPart(layer, layerNames[i]); break;
       default: part = buildLayerPart(layer, layerNames[i]); break;
     }
     part.attributes.push_back(stringAttr(kAttrKind, layerKindName(layer.kind)));
@@ -1876,6 +1899,13 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // `kAttrGroupId`'s own comment for why no translation happens here.
     if (layer.kind == LayerKind::Group)
       part.attributes.push_back(stringAttr(kAttrGroupId, layer.groupTag));
+    // Vector parts only, and only when there is something to write: an empty
+    // Vector layer must produce the bytes it produced before this attribute
+    // existed, which is also what makes the `layer.shapes.empty()` carry
+    // exception below sound.
+    if (layer.kind == LayerKind::Vector && !layer.shapes.empty())
+      part.attributes.push_back(
+          stringAttr(kAttrVector, serializeVectorShapes(layer.shapes, layer.nextShapeId)));
     // **Written only when the layer is actually clipped** (PLAN.md Phase 5
     // step 9), for the reason `np:ops` and `np:mask` each state in their own
     // way: a document with no clipped layer has to keep producing the bytes
@@ -1909,7 +1939,13 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
         // its place, so it goes back out unchanged. The `layer.ops` test makes
         // the two mutually exclusive, so a part can never end up with two.
         if (isLayerAttributeRecognised(a.name) &&
-            !(a.name == kAttrOps && layer.ops.size() == 0))
+            !(a.name == kAttrOps && layer.ops.size() == 0) &&
+            // A carried `np:vector` this build could not parse is written back
+            // verbatim, but ONLY when this build has nothing of its own to put
+            // in its place. Without this test a layer would emit TWO
+            // `np:vector` attributes and OpenImageIO's last-write-wins would
+            // silently pick one -- io/CompSerial's `doc.comps.empty()` rule.
+            !(a.name == kAttrVector && layer.shapes.empty()))
           continue;
         part.attributes.push_back(a);
       }
@@ -2288,6 +2324,13 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     const bool isGroupLayer = isLayerPartName(part.name) && namedKind &&
                               kind->stringValue == layerKindName(LayerKind::Group) &&
                               adjustmentChannels && tileAligned;
+    // A Vector part: `np:kind = "Vector"` and the same one-channel shape --
+    // `buildVectorLayerPart()` is a thin wrapper over
+    // `buildAdjustmentLayerPart()`, so the reader's test is the identical
+    // `adjustmentChannels` predicate under a third `np:kind`.
+    const bool isVectorLayer = isLayerPartName(part.name) && namedKind &&
+                               kind->stringValue == layerKindName(LayerKind::Vector) &&
+                               adjustmentChannels && tileAligned;
     // An alpha channel part (PRD E11, E13): `S####`, `np:kind = "selection"`,
     // and exactly one HALF channel named `coverage`. Matched by name like every
     // other channel here even though there is only one of them -- a part whose
@@ -2361,7 +2404,8 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       continue;
     }
 
-    if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer && !isGroupLayer) {
+    if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer && !isGroupLayer &&
+        !isVectorLayer) {
       std::string reason;
       if (isChannelPartName(part.name)) {
         // An `S####` part that failed the test above. Worth its own sentence
@@ -2379,14 +2423,20 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       } else if (kind->stringValue != layerKindName(LayerKind::RGB) &&
                  kind->stringValue != layerKindName(LayerKind::Pigment) &&
                  kind->stringValue != layerKindName(LayerKind::Adjustment) &&
-                 kind->stringValue != layerKindName(LayerKind::Group)) {
+                 kind->stringValue != layerKindName(LayerKind::Group) &&
+                 kind->stringValue != layerKindName(LayerKind::Vector)) {
         reason = "its np:kind is \"" + kind->stringValue +
-                 "\", and this build can only hold RGB, Pigment, Adjustment and group layers "
-                 "(see io/NpaintFile.hpp's deferrals)";
+                 "\", and this build can only hold RGB, Pigment, Adjustment, group and Vector "
+                 "layers (see io/NpaintFile.hpp's deferrals)";
       } else if (kind->stringValue == layerKindName(LayerKind::Adjustment)) {
         reason = "it declares np:kind \"Adjustment\" but its channels are not exactly one "
                  "named mask, in half -- an Adjustment layer holds no pixels, so its part "
                  "carries only the one channel EXR requires it to have";
+      } else if (kind->stringValue == layerKindName(LayerKind::Vector)) {
+        reason = "it declares np:kind \"Vector\" but its channels are not exactly one named "
+                 "mask, in half -- a Vector layer holds no pixels, so its part carries only "
+                 "the one channel EXR requires it to have (buildVectorLayerPart() shares "
+                 "Adjustment's shape), and its geometry lives in np:vector";
       } else if (kind->stringValue == layerKindName(LayerKind::Group)) {
         reason = "it declares np:kind \"group\" but its channels are not exactly one named "
                  "mask, in half -- a Group holds no pixels, so its part carries only the one "
@@ -2443,6 +2493,10 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     // separates absent from all-1.0 for exactly this reason).
     size_t maskIdx = 0;
     bool hasMaskChannel = false;
+    // Set when an `np:vector` attribute was present but could NOT be decoded,
+    // so it must stay in the carry and be written back verbatim -- `opsCarried`
+    // below is the same idea for `np:ops`, and the naming follows it.
+    bool vectorCarried = false;
     if (isAdjustmentLayer) {
       layer.kind = LayerKind::Adjustment;
       // No tile storage of any kind is engaged: that is the kind's definition,
@@ -2462,6 +2516,38 @@ NpaintLoadResult loadNpaint(const std::string& path) {
       if (pigmentMaskIdx.has_value()) {
         maskIdx = (*pigmentMaskIdx)[kPigmentChannelCount];
         hasMaskChannel = true;
+      }
+    } else if (isVectorLayer) {
+      layer.kind = LayerKind::Vector;
+      // Adjustment's own reading of the one channel: `np:mask`, not the
+      // channel's presence, says whether the layer has one.
+      const NpaintAttribute* hasMask = findAttr(part.attributes, kAttrMask);
+      if (hasMask != nullptr && hasMask->type == NpaintAttribute::Type::Int &&
+          hasMask->intValue != 0) {
+        maskIdx = 0;
+        hasMaskChannel = true;
+      }
+      // The geometry. A payload this build cannot decode -- a future
+      // `npvec2:`, or a corrupt one -- is NOT an error and is NOT guessed at:
+      // the layer comes back with no shapes and the attribute stays in the
+      // carry, so saving writes it back verbatim (PRD I10). The warning names
+      // what happened, because a Vector layer that silently arrived empty
+      // would look like a lost document rather than a version gap.
+      if (const NpaintAttribute* v = findAttr(part.attributes, kAttrVector);
+          v != nullptr && v->type == NpaintAttribute::Type::String) {
+        std::string why;
+        if (!deserializeVectorShapes(v->stringValue, &layer.shapes, &layer.nextShapeId,
+                                     &why)) {
+          vectorCarried = true;
+          result.warnings.push_back("part '" + part.name + "': " + why);
+        }
+      } else if (v != nullptr) {
+        vectorCarried = true;
+        result.warnings.push_back(
+            "part '" + part.name +
+            "' has an np:vector attribute that is not a string; this build's geometry carrier "
+            "is a hex `string` (io/PathSerial), so the value could not be decoded. The layer "
+            "opened with no shapes and the attribute is written back unchanged (PRD I10).");
       }
     } else if (isGroupLayer) {
       layer.kind = LayerKind::Group;
@@ -2589,7 +2675,9 @@ NpaintLoadResult loadNpaint(const std::string& path) {
 
     std::vector<NpaintAttribute> unknown;
     for (const NpaintAttribute& a : part.attributes) {
-      if (isLayerAttributeRecognised(a.name) && !(opsCarried && a.name == kAttrOps)) continue;
+      if (isLayerAttributeRecognised(a.name) && !(opsCarried && a.name == kAttrOps) &&
+          !(vectorCarried && a.name == kAttrVector))
+        continue;
       unknown.push_back(a);
     }
 

@@ -282,6 +282,7 @@ add_executable(naturalPaint
   io/NpaintFile.cpp
   io/OpSerial.cpp
   io/PackBits.cpp
+  io/PathSerial.cpp
   io/PsPatterns.cpp
   io/PsdImport.cpp
   io/TileResidency.cpp
