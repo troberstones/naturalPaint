@@ -32,4 +32,11 @@ bool glyphPath(uint32_t /*glyphId*/, const TextStyle& /*style*/, Path* /*out*/) 
   return false;
 }
 
+// No platform font catalog to enumerate on this build -- matches
+// `shaperAvailable()`'s own false above, per text/Shaper.hpp's comment on
+// what a font picker should do with an empty list.
+std::vector<std::string> availableFontFamilies() { return {}; }
+
+bool fontFamilyAvailable(std::string_view /*family*/) { return false; }
+
 }  // namespace np
