@@ -848,6 +848,29 @@ measure_only=("${@:3}")
 #     tool selected, the accented inverted cell is a THIRD state in the frame
 #     and the built/unbuilt contrast is the thing being photographed. One
 #     variable.
+#   munsell_page -- the COLOR panel's third mode (docs/munsell-picker.md),
+#     over `--munsell-demo`. The mode is a STATE, not a document or a tool:
+#     nothing about a demo document or a selected tool puts the panel into it,
+#     so without the flag the whole branch is unreachable from the command
+#     line and invisible to this harness -- which is this harness's own known
+#     blind spot, states no launch flag can reach.
+#
+#     The crop is the whole section, mode row through control row, and it was
+#     checked by LOOKING at the first blessed PNG rather than by trusting the
+#     numbers: a crop aimed at empty chrome passes forever, and this file's
+#     history already contains two that were re-aimed for exactly that reason.
+#     Blessed exact (0, 0) -- the panel is chrome, drawn by the same ImGui
+#     path as `wand_options` and `color_overrange`, with no solver output in
+#     the frame.
+#
+#     The subject is a BLUE page with the selection near the ragged edge, and
+#     both halves matter. Blue because its hue page leans hardest (widest at
+#     value 5, two chips at value 9), so the voids that prove the
+#     no-clamping rule are unmissable rather than a corner case. Near the edge
+#     because the demo asks for column 8 and the clamp lands on column 5 --
+#     the void walk, photographed. A sabotage that stopped drawing voids
+#     entirely reddens this view, which is how it is known to be photographing
+#     the picker and not the panel around it.
 #
 #   grade_kinds -- the GRADE panel's inline editors for Invert, Posterize and
 #     Threshold, the three point-op kinds the adjustment-layer track added.
@@ -876,8 +899,8 @@ measure_only=("${@:3}")
 #     panel chrome, static text, no canvas, no anti-aliased overlay -- and it
 #     matches what the `crop_options` band views measured for the same
 #     reasons.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower grade_kinds)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document" "--demo-document --grade-kinds-demo")
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower munsell_page grade_kinds)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document" "--demo-document --munsell-demo" "--demo-document --grade-kinds-demo")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -1097,11 +1120,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672  40   40   350  320  40   1916 1916 1916 340  340  340 0 0 440 440 440 0 1920)
-view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32   76   76   350  420  76   940  940  940  370  370  370 76 76 540 540 540 930 176)
-view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204 1000 1000 1060 1220 2400 640  640  640  1340 1340 1340 1500 1500 1240 1240 1240 110 640)
-view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512 76   76   830  830  76   240  240  240  960  960  960 100 100 740 740 740 300 800)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672  40   40   350  320  40   1916 1916 1916 340  340  340 0 0 440 440 440 0 1920 1920)
+view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32   76   76   350  420  76   940  940  940  370  370  370 76 76 540 540 540 930 235 176)
+view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204 1000 1000 1060 1220 2400 640  640  640  1340 1340 1340 1500 1500 1240 1240 1240 110 632 640)
+view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512 76   76   830  830  76   240  240  240  960  960  960 100 100 740 740 740 300 290 800)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -1224,7 +1247,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # anti-aliased fill flag off, and the reason that comes out bit-stable is the
 # same reason it comes out seamless: adjacent quads sharing exact vertices
 # rasterise watertight, with no fringe geometry to round differently.
-view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0 0  0  0 0 0 0 0 0 0 0)
+view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0 0  0  0 0 0 0 0 0 0 0 0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -1243,7 +1266,7 @@ view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0
 # note in cmd_measure on what that mode is for. The five `crop_*` views are 0
 # here because their magnitude threshold is 0 too -- see the paragraph above
 # `view_threshold` for the measurement.
-view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0 0  0  0 0 0 0 0 0 0 0)
+view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0 0  0  0 0 0 0 0 0 0 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

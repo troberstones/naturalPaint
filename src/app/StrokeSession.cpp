@@ -955,7 +955,16 @@ const Pigment& foregroundPhysicalConstants(const BrushState& brush) noexcept {
 }
 
 std::array<float, 3> foregroundSrgb(const BrushState& brush) noexcept {
-  if (brush.colorMode == ColorMode::Rgb) return brush.rgb;
+  // **`!= Pigment`, not `== Rgb`.** `ColorMode` had two members for its whole
+  // life and this line was written as the two-way question it then was; when
+  // `Munsell` arrived it compiled clean and routed a whole picker's output
+  // into the pigment branch below -- a panel that looks entirely live while
+  // every stroke lays down `defaultPalette()[pigment]`. There is no
+  // diagnostic for that, so `--selftest`'s Munsell section asserts this
+  // function's answer in Munsell mode rather than trusting the reading.
+  // Written as "everything that is not a pigment is the triple" so the next
+  // member added is right by default instead of wrong by default.
+  if (brush.colorMode != ColorMode::Pigment) return brush.rgb;
   const std::vector<Pigment>& palette = defaultPalette();
   // **Out of range falls back to entry 0, NOT to black**, and the difference
   // from `ui/MacPaintUI`'s `foregroundLinearRgba(int)` -- which answers black,
@@ -982,6 +991,14 @@ std::array<float, 3> foregroundSrgb(const BrushState& brush) noexcept {
 }
 
 const char* foregroundName(const BrushState& brush) noexcept {
+  // The same `!= Pigment` rule as `foregroundSrgb()` above, for the same
+  // reason -- this one is only a status string, so getting it wrong would
+  // have been the quieter half of the same bug. "Munsell page" rather than a
+  // notation like "5R 5/8": the hue is a CIELUV angle and the mapping to
+  // Munsell hue is a renotation table that does not exist yet, so naming a
+  // hue family here would be a confident wrong answer
+  // (docs/munsell-picker.md, "The hue control").
+  if (brush.colorMode == ColorMode::Munsell) return "Munsell page";
   if (brush.colorMode == ColorMode::Rgb) return "Custom RGB";
   const std::vector<Pigment>& palette = defaultPalette();
   if (brush.pigment < 0 || static_cast<size_t>(brush.pigment) >= palette.size())
