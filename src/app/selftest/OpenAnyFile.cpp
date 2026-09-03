@@ -2,6 +2,8 @@
 
 #include "app/ImportImage.hpp"
 #include "app/OpenAnyFile.hpp"
+
+#include "core/CanvasLimits.hpp"
 #include "io/FileKind.hpp"
 
 namespace np {
@@ -543,6 +545,45 @@ bool runOpenAnyFileTest() {
     }
     check(contains(svg.status, "picture.svg") && contains(svg.status, "SVG"),
           "...and the status names both the file and SVG");
+
+    // **An SVG bigger than the adapter can draw is refused, not opened.**
+    //
+    // This assertion exists because of a merge, and the merge produced no
+    // conflict. The SVG branch was written when `kMaxDocumentPresetDimension`
+    // (32768) was the only canvas limit in the tree, so it bounded the
+    // viewport against that; core/CanvasLimits landed in parallel with the
+    // real ceiling, which on this adapter is 16384. The two commits touch
+    // different lines of `openAnyFileAsDocument()` and text-merged cleanly,
+    // leaving an SVG declaring a 20000px viewport passing the only check it
+    // had and then aborting the process at the first
+    // `wgpuDeviceCreateTexture` -- exactly the failure the ceiling exists to
+    // prevent, reintroduced through a path neither side's tests covered.
+    //
+    // Driven at `maxCanvasDimension() + 1` rather than a literal, so this
+    // stays meaningful on an adapter that reports something other than 16384.
+    {
+      const long long over = static_cast<long long>(maxCanvasDimension()) + 1;
+      const std::string huge = writeText(
+          "huge.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" +
+                          std::to_string(over) + "\" height=\"10\">"
+                          "<rect x=\"0\" y=\"0\" width=\"5\" height=\"5\" fill=\"#000\"/></svg>\n");
+      const OpenAnyResult r = openAnyFileAsDocument(huge);
+      check(!r.ok, "an SVG wider than the adapter can draw is refused, not opened");
+      check(r.kind == FileKind::Vector,
+            "...still recognised as an SVG -- refused for its size, not misidentified");
+      check(r.document.document.layers.empty(),
+            "...and leaves no half-built document behind");
+
+      // The complement, so the guard cannot pass by refusing every SVG --
+      // exactly at the ceiling must still open.
+      const std::string atLimit = writeText(
+          "at-limit.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" +
+                              std::to_string(maxCanvasDimension()) + "\" height=\"4\">"
+                              "<rect x=\"0\" y=\"0\" width=\"2\" height=\"2\" fill=\"#000\"/></svg>\n");
+      const OpenAnyResult ok2 = openAnyFileAsDocument(atLimit);
+      check(ok2.ok && ok2.document.document.width == maxCanvasDimension(),
+            "...while an SVG exactly AT the ceiling still opens");
+    }
     // Bound to nothing, exactly as an opened picture is: a Cmd-S here would
     // otherwise write EXR bytes over the user's .svg.
     check(svg.document.path.empty(),
