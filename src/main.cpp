@@ -2370,6 +2370,13 @@ int main(int argc, char** argv) {
     // core/DirtyTiles' pass 1 could not see one before this phase.
     // Headless and GPU-free; writes no files.
     const bool vectorLayerOk = np::runVectorLayerTest();
+    // core/TextContent (PLAN.md phase 14): what a `LayerKind::Text` layer
+    // holds -- makeTextContent(), textContentToShapes() (shaping a block
+    // into per-glyph VectorShapes, translated by origin plus each glyph's
+    // own pen position), textContentBounds() and textContentDraws(). Also
+    // guarded on `shaperAvailable()`, for the same reason runTextShaperTest()
+    // is. Headless, GPU-free, writes no files.
+    const bool textContentOk = np::runTextContentTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -3183,7 +3190,7 @@ int main(int argc, char** argv) {
                     documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk &&
                     framePacingOk &&
                     gradientToolOk && pathRasterOk && svgPathOk && svgStyleOk && svgImportOk &&
-                    textShaperOk && vectorLayerOk &&
+                    textShaperOk && vectorLayerOk && textContentOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&

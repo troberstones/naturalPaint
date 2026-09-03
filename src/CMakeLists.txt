@@ -217,6 +217,7 @@ add_executable(naturalPaint
   app/selftest/SvgPath.cpp
   app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
+  app/selftest/TextContent.cpp
   app/selftest/UserBrushLibrary.cpp
   app/selftest/ViewTransform.cpp
   app/selftest/WheelInput.cpp
@@ -281,6 +282,7 @@ add_executable(naturalPaint
   core/PathStroke.cpp
   core/VectorRaster.cpp
   core/VectorShape.cpp
+  core/TextContent.cpp
   core/Pigment.cpp
   core/PigmentBake.cpp
   core/Probe.cpp
