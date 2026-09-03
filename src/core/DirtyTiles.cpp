@@ -10,6 +10,7 @@
 #include "core/Composite.hpp"
 #include "core/Mask.hpp"
 #include "core/Pigment.hpp"
+#include "core/TextContent.hpp"
 #include "core/TileStore.hpp"
 
 namespace np {
@@ -165,6 +166,7 @@ const char* fullRecompositeReasonName(FullRecompositeReason reason) noexcept {
     case FullRecompositeReason::LayerStoragePresenceChanged: return "layer tile store added or "
                                                                     "removed";
     case FullRecompositeReason::VectorGeometryChanged: return "vector layer geometry changed";
+    case FullRecompositeReason::TextContentChanged: return "text layer content changed";
   }
   return "?";
 }
@@ -183,6 +185,7 @@ std::string fullRecompositeExplanation(FullRecompositeReason reason, size_t laye
     case FullRecompositeReason::LayerMaskPresenceChanged:
     case FullRecompositeReason::LayerStoragePresenceChanged:
     case FullRecompositeReason::VectorGeometryChanged:
+    case FullRecompositeReason::TextContentChanged:
       s += " on layer " + std::to_string(layerIndex);
       break;
     default: break;
@@ -245,6 +248,21 @@ DocumentDirtyTiles documentDirtyTiles(const Document& before, const Document& af
     if (a.kind == LayerKind::Vector && b.kind == LayerKind::Vector &&
         vectorContentHash(a.shapes) != vectorContentHash(b.shapes))
       return whole(FullRecompositeReason::VectorGeometryChanged, i);
+    // A Text layer's content is `text`, which no comparison above reaches
+    // either -- and it is worse than the Vector case, because a Text layer
+    // holds no `shapes` to fall back on. Every word of the paragraph above
+    // applies: hashed rather than compared field by field, and deliberately
+    // coarse.
+    //
+    // **`textContentHash()` and not `vectorContentHash(textContentToShapes())`.**
+    // The second would be correct and would SHAPE THE TEXT TWICE ON EVERY
+    // EDIT -- once here and once in core/VectorRaster -- on the hot path of a
+    // user holding a key down. The hash is over the content that produces the
+    // geometry, which is the same question asked one step earlier and for
+    // free.
+    if (a.kind == LayerKind::Text && b.kind == LayerKind::Text &&
+        textContentHash(a.text) != textContentHash(b.text))
+      return whole(FullRecompositeReason::TextContentChanged, i);
   }
 
   // --- Pass 2: which layers changed visible/opacity/blend/clipped ----------

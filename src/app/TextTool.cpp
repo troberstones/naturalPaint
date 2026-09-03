@@ -62,6 +62,16 @@ size_t clampToBoundary(const std::string& utf8, size_t pos) noexcept {
 // `textBackspace()`'s shared "already at the start" case.
 size_t prevBoundary(const std::string& utf8, size_t pos) noexcept {
   if (pos == 0) return 0;
+  // **Clamped again here, even though every public entry point already
+  // clamped.** Not belt-and-braces: without it this function HANGS rather
+  // than answering wrongly. For `pos > utf8.size()` the loop's `i` saturates
+  // at `utf8.size()` (the `std::min` below caps it) while `i < pos` stays
+  // true forever. That is a spin, not a wrong offset, and a caret arriving
+  // out of range is exactly the case the clamp exists for -- so the guard
+  // belongs at BOTH ends rather than only at the one that is currently
+  // reachable. Found by deliberately removing the public clamp: the test
+  // process hung instead of printing a FAIL.
+  if (pos > utf8.size()) pos = utf8.size();
   size_t i = 0, prev = 0;
   while (i < pos) {
     prev = i;

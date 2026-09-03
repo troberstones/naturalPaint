@@ -8,6 +8,7 @@
 #include "core/Mask.hpp"
 #include "core/OpStack.hpp"
 #include "core/Pigment.hpp"
+#include "core/TextContent.hpp"
 #include "core/TileStore.hpp"
 #include "core/VectorShape.hpp"
 
@@ -29,9 +30,17 @@
 // Adjustment layer transforms the composite accumulated *beneath* it rather
 // than contributing to it, PRD C5) and io/NpaintFile to gain a carrier for an
 // op stack, without which the layer's whole content would vanish on save.
-// Media, Strokes, Text and Flats are still inert placeholders: Media needs the
+// **`Vector` and then `Text` followed, at PLAN.md phases 13 and 14**, and both
+// took the same shape as `Adjustment`: a parameter member instead of tiles.
+// `Vector` holds `shapes`; `Text` holds the `text` member below, and
+// `core/TextContent.hpp` argues why that is enough -- a Text layer is a Vector
+// layer that has not been typed out yet, so `textContentToShapes()` produces
+// exactly the geometry `Vector` already had and there is ONE rasteriser in
+// this build rather than a glyph path beside a path path.
+//
+// Media, Strokes and Flats are still inert placeholders: Media needs the
 // fluid solver's own per-medium state on top of the pigment tiles step 3
-// added, and the other three still have no parameter member to hold.
+// added, and the other two still have no parameter member to hold.
 namespace np {
 
 // LayerKind lives here, not in app/Keymap.hpp where it was first sketched --
@@ -364,6 +373,25 @@ struct Layer {
   // must be stable across a save and reopen so that a Paths panel selection,
   // and Stage 4's component selection, survive one.
   uint64_t nextShapeId = 1;
+
+  // The content of a `LayerKind::Text` layer: one text block -- the string,
+  // the style, the frame, the alignment, the origin and the paint. Default
+  // for every other kind, and it is an invariant of this struct that a
+  // non-Text layer never populates it.
+  //
+  // This is that layer's ONLY content, for `shapes`' reason and one more:
+  // the shaped glyph outlines are DERIVED, so storing them here would double
+  // the layer's size and go stale the instant the string or the font changed.
+  // `core/TextContent.hpp` section 1 makes that argument in full.
+  //
+  // **A `TextContent` by value, not an `optional`.** A Text layer always has
+  // one -- an empty string with a chosen font and size is a real state, and
+  // the state a layer is in for the moment between being created and being
+  // typed into. An `optional` would make every reader ask a question with
+  // only one interesting answer, and would make "created but not yet typed"
+  // indistinguishable from "has no content", which is exactly the pair
+  // io/NpaintFile has to tell apart to know whether to write `np:text`.
+  TextContent text;
 
   // The user-facing name. Deliberately NOT unique and deliberately not used
   // to identify anything: docs/document-format.md is explicit that "layer

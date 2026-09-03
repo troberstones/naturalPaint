@@ -655,13 +655,19 @@ bool runMergeFamilyTest() {
     check(hd.over > 0 && warnedPartial,
           "over a partly transparent composite it is not, and says so with the count");
 
-    // C11's other three kinds, refused by naming what each still lacks.
+    // The kinds that CANNOT be rasterised, refused by naming what each still
+    // lacks. `Text` and `Vector` are deliberately not in this list any more:
+    // PLAN.md phases 13 and 14 gave both a parameter member and a rasteriser,
+    // so C11 applies to them for real and they are asserted just below
+    // instead. Leaving them here would have pinned the refusal as correct
+    // behaviour -- which is how a suite ends up asserting that a shipped
+    // feature does not work.
     Document kinds = Document::createBlank(kW, kH, WorkingSpace{});
     kinds.layers.clear();
     kinds.layers.push_back(rgbLayer("Base", 0, 0, kW, kH, {0.5f, 0.5f, 0.5f, 1.0f}));
     bool everyKindNamed = true;
-    for (const LayerKind kind : {LayerKind::Text, LayerKind::Strokes, LayerKind::Flats,
-                                 LayerKind::Media, LayerKind::RGB, LayerKind::Pigment}) {
+    for (const LayerKind kind : {LayerKind::Strokes, LayerKind::Flats, LayerKind::Media,
+                                 LayerKind::RGB, LayerKind::Pigment}) {
       Document one = kinds;
       Layer layer;
       layer.kind = kind;
@@ -674,7 +680,57 @@ bool runMergeFamilyTest() {
         everyKindNamed = false;
     }
     check(everyKindNamed,
-          "every non-Adjustment kind is refused, naming the kind and PRD C11's list");
+          "every kind that still has no parameter member is refused, naming the kind and "
+          "PRD C11's list");
+
+    // --- Vector and Text rasterise, and become ordinary pixels --------------
+    //
+    // The property under test is that the layer's PARTICIPATION in the stack
+    // survives and only its content changes: a rasterised layer keeps its
+    // name, opacity, blend and visibility, loses its geometry, and gains
+    // tiles. The composite is deliberately NOT asserted equal here -- that is
+    // core/VectorRaster's own section's job, and re-deriving it in the merge
+    // family would be a second, weaker copy of it.
+    {
+      Document vec = kinds;
+      Layer v = makeVectorLayer("A square");
+      v.opacity = 0.5f;
+      v.blend = "multiply";
+      VectorShape sq;
+      SubPath sub;
+      sub.closed = true;
+      const PathPoint pts[4] = {{4, 4}, {20, 4}, {20, 20}, {4, 20}};
+      for (const PathPoint& pt : pts) {
+        Anchor an;
+        an.pt = pt;
+        an.in = pt;
+        an.out = pt;
+        sub.anchors.push_back(an);
+      }
+      sq.path.subpaths.push_back(sub);
+      sq.fill.on = true;
+      sq.fill.rgba = {1.0f, 0.0f, 0.0f, 1.0f};
+      sq.id = 1;
+      v.shapes.push_back(std::move(sq));
+      vec.layers.push_back(std::move(v));
+
+      std::vector<std::string> vw;
+      const LayerOpResult vr = rasteriseLayer(vec, 1, &vw);
+      const Layer& done = vec.layers[1];
+      check(vr.ok && done.kind == LayerKind::RGB && done.shapes.empty() &&
+                done.rgbTiles.has_value() && done.rgbTiles->occupiedTileCount() > 0,
+            "rasterise turns a Vector layer into an RGB layer holding the tiles its shapes "
+            "painted, and drops the geometry");
+      check(done.name == "A square" && done.opacity == 0.5f && done.blend == "multiply",
+            "...keeping name, opacity and blend -- rasterising changes what the layer's "
+            "content IS, not how it participates in the stack");
+      bool warnedLost = false;
+      for (const std::string& w : vw)
+        if (contains(w, "resolution-independent")) warnedLost = true;
+      check(warnedLost,
+            "...and warns that the geometry is gone, because nothing on screen says so and "
+            "the layer looks identical the instant after");
+    }
 
     Document emptyStack = kinds;
     emptyStack.layers.push_back(makeAdjustmentLayer("Nothing"));

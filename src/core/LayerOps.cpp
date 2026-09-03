@@ -96,6 +96,26 @@ Layer makeVectorLayer(std::string name) {
   return layer;
 }
 
+Layer makeTextLayer(std::string name) {
+  Layer layer;
+  layer.kind = LayerKind::Text;
+  // No tiles, no mask, no ops, and an EMPTY STRING in `text` -- see
+  // core/LayerOps.hpp. A fresh Text layer draws nothing for the same reason a
+  // fresh Vector layer does, and the emptiness is the kind's definition rather
+  // than an omission.
+  //
+  // `text.style` keeps `TextStyle`'s own defaults rather than taking the
+  // Text tool's current ones: `core/` has no access to `AppState` and should
+  // not, so the tool overwrites the style right after calling this. The
+  // default is what a layer made from the LAYERS panel's NEW popup -- which
+  // has no tool state to consult -- gets, and it has to be something a user
+  // can see once they type into it.
+  layer.text.fill.on = true;
+  layer.text.fill.rgba = {0.0f, 0.0f, 0.0f, 1.0f};
+  layer.name = std::move(name);
+  return layer;
+}
+
 std::string defaultNewGroupName(const Document& doc) {
   // `defaultNewLayerName()`'s own scan, restricted to Group-kind layers so a
   // document with "Layer 3" and "Group 3" both on screen is not a collision --

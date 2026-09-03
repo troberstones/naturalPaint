@@ -1,5 +1,6 @@
 #include "core/TextContent.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 #include "core/VectorShape.hpp"
@@ -208,6 +209,108 @@ bool textContentDraws(const TextContent& text) {
   // comment above just described -- in that common case.
   if (!text.fill.on && !text.stroke.on) return false;
   return !textContentToShapes(text).empty();
+}
+
+// --------------------------------------------------------------------------
+// The caret (header section 4)
+// --------------------------------------------------------------------------
+
+namespace {
+
+// The line height a caret bar should be drawn at. `TextStyle::leading == 0`
+// means "the font's own" (text/Shaper.hpp), which this file cannot ask the
+// font for without a second platform call -- so it falls back to the size
+// itself scaled by a conventional 1.2, the same ratio a typical font's
+// ascent+descent+gap bears to its em size. Stated rather than silent because
+// it IS an approximation: a caret one or two pixels short of the glyphs it
+// sits beside is a cosmetic wrongness, and a caret derived from a number
+// nobody wrote down is a mystery.
+float caretHeightFor(const TextStyle& style) noexcept {
+  return style.leading > 0.0f ? style.leading : style.sizePx * 1.2f;
+}
+
+}  // namespace
+
+PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* height) {
+  if (height) *height = caretHeightFor(text.style);
+
+  // An empty block's caret is at the origin, one line down from nothing.
+  // Shaping an empty string would go through `shapeText()`'s stub-refusal
+  // path (see `textContentToShapes()`'s own comment on why that matters), so
+  // it is short-circuited here for the same reason.
+  if (text.utf8.empty()) return text.origin;
+
+  const ShapedText shaped = shapeText(text.utf8, text.style, text.frame, text.align);
+  if (!shaped.ok || shaped.glyphs.empty()) return text.origin;
+
+  // The first glyph at or after the caret. Scanned rather than indexed
+  // because `cluster` is NOT monotonic in glyph order -- a right-to-left run
+  // walks backwards through the source bytes (text/Shaper.hpp) -- so
+  // `glyphs[k]` says nothing about byte k and a binary search would be
+  // searching an unsorted array.
+  const ShapedGlyph* best = nullptr;
+  for (const ShapedGlyph& g : shaped.glyphs) {
+    if (g.cluster < caretByte) continue;
+    if (best == nullptr || g.cluster < best->cluster) best = &g;
+  }
+
+  if (best != nullptr)
+    return PathPoint{text.origin.x + best->x, text.origin.y + best->y};
+
+  // Past every cluster: the caret is at the end of the text. Its x is the
+  // trailing edge of the LAST GLYPH IN PEN ORDER, which is the largest x --
+  // not `glyphs.back()`, which under bidi is the last glyph in logical order
+  // and can sit at the left end of the line.
+  //
+  // The advance past that glyph is not something `ShapedGlyph` carries, so
+  // the caret sits ON the last glyph's pen position rather than after it.
+  // That is a known half-a-character offset at the end of a line, and it is
+  // the price of `ShapedGlyph` not carrying advances; adding one to that
+  // struct is the fix, and it is a change to text/Shaper.hpp's contract
+  // rather than something this file can paper over.
+  const ShapedGlyph* last = &shaped.glyphs.front();
+  for (const ShapedGlyph& g : shaped.glyphs)
+    if (g.y > last->y || (g.y == last->y && g.x > last->x)) last = &g;
+  return PathPoint{text.origin.x + last->x, text.origin.y + last->y};
+}
+
+size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
+  if (text.utf8.empty()) return 0;
+  const ShapedText shaped = shapeText(text.utf8, text.style, text.frame, text.align);
+  if (!shaped.ok || shaped.glyphs.empty()) return 0;
+
+  // Nearest pen position, with the LINE weighted far more heavily than the
+  // column: a click below the last line of a paragraph must land at the end
+  // of that line, not at whichever glyph happens to be horizontally closest
+  // on the line above. The weight is a plain factor rather than a
+  // line-height-relative one, because it only has to make vertical distance
+  // dominate and the two axes are already in the same unit (text-space px).
+  const float lx = at.x - text.origin.x;
+  const float ly = at.y - text.origin.y;
+
+  const ShapedGlyph* best = nullptr;
+  float bestScore = 0.0f;
+  for (const ShapedGlyph& g : shaped.glyphs) {
+    const float dx = g.x - lx;
+    const float dy = (g.y - ly) * 4.0f;  // a line's worth of error beats a column's
+    const float score = dx * dx + dy * dy;
+    if (best == nullptr || score < bestScore) {
+      best = &g;
+      bestScore = score;
+    }
+  }
+  if (best == nullptr) return 0;
+
+  // A click to the RIGHT of the nearest glyph belongs after it, not on it --
+  // without this, clicking anywhere past the last character puts the caret
+  // before it and typing inserts in the wrong place, which is the single most
+  // noticeable caret bug there is. `nextCluster` walks the glyph list rather
+  // than adding a byte, so the result stays on a UTF-8 boundary.
+  if (lx <= best->x) return best->cluster;
+  size_t next = text.utf8.size();
+  for (const ShapedGlyph& g : shaped.glyphs)
+    if (g.cluster > best->cluster && g.cluster < next) next = g.cluster;
+  return next;
 }
 
 }  // namespace np

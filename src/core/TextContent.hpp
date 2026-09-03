@@ -161,4 +161,48 @@ PathBounds textContentBounds(const TextContent& text);
 // are the same picture and different problems.
 bool textContentDraws(const TextContent& text);
 
+// ==========================================================================
+// 4. The caret, in document coordinates
+// ==========================================================================
+//
+// `app/TextTool` owns the caret as a BYTE OFFSET into `utf8` and knows nothing
+// about where that lands on screen; `ui/` has to draw a blinking bar there.
+// These two functions are the bridge, and they live here rather than in
+// app/TextTool because they need to SHAPE the text, which is this file's job
+// and not that one's (app/TextTool is deliberately free of any shaping
+// dependency -- see its own header).
+//
+// Both work off `ShapedGlyph::cluster`, which text/Shaper.hpp guarantees is a
+// byte offset into the original UTF-8 and "never off a UTF-8 character
+// boundary" even under bidi reordering and font fallback. That guarantee is
+// what makes a byte offset a usable caret unit at all.
+
+// Where the caret sits, in document coordinates: the pen position of the
+// first glyph whose cluster is at or after `caretByte`, or the trailing edge
+// of the last glyph when the caret is at the end.
+//
+// `height` receives the caret bar's height -- the line height at that
+// position, so the bar matches the text rather than being a guessed constant
+// that goes wrong the moment the size changes.
+//
+// **Approximate in exactly one way, and it is stated rather than hidden:** the
+// caret lands on a glyph BOUNDARY, so a caret between two glyphs of one
+// cluster (a combining sequence, or a ligature) draws at the cluster's start.
+// A caret cannot be placed inside a grapheme by `app/TextTool` either -- it
+// steps by code point -- so the two agree, and doing better means a cursor
+// model that knows about ligature carets, which is its own piece of work.
+PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* height);
+
+// The byte offset nearest `at` (document coordinates) -- click-to-place-caret.
+//
+// Nearest by the glyph's pen position, then snapped to that glyph's own
+// cluster, so the returned offset is always a real UTF-8 boundary that
+// `app/TextTool`'s operations can act on without clamping. A click past the
+// last glyph on a line returns the end of the string, which is what makes
+// "click to the right of the text and start typing" work.
+//
+// Returns 0 for empty text or a shaping failure -- there is one position in an
+// empty string and it is 0.
+size_t textOffsetAtPoint(const TextContent& text, PathPoint at);
+
 }  // namespace np
