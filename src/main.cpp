@@ -1829,6 +1829,13 @@ int main(int argc, char** argv) {
     // `selectPolygon()`, to that oracle's own 1/255 quantisation step.
     // Headless and GPU-free; writes no files.
     const bool pathRasterOk = np::runPathRasterTest();
+    // io/SvgStyle -- the CSS cascade for SVG presentation: which declaration
+    // wins among a presentation attribute, a matching <style> sheet rule and
+    // a style="" attribute. The load-bearing check is the counter-intuitive
+    // step in SVG 1.1 section 6.4's order -- any matching sheet rule
+    // outranks a presentation attribute, whatever its own specificity.
+    // Headless, GPU-free, writes no files, and depends on no XML parser.
+    const bool svgStyleOk = np::runSvgStyleTest();
     // LayerKind::Vector -- the geometry-holding layer, its raster cache, and
     // the materialised view it reaches core/Composite through. The
     // load-bearing check is that a pure geometry edit is VISIBLE:
@@ -2622,7 +2629,7 @@ int main(int argc, char** argv) {
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
                     documentTransformOk && transformSessionOk && moveToolOk &&
-                    gradientToolOk && pathRasterOk && vectorLayerOk &&
+                    gradientToolOk && pathRasterOk && svgStyleOk && vectorLayerOk &&
                     transformPreviewTextureOk &&
                     transformCompositeSplitOk && packBitsOk && blurOk && blurSimdOk && filtersOk && filtersExtOk && curveEditOk &&
                     brushDynamicsOk && dynamicsSourcesOk && dabPreviewOk && abrBrushesOk && checkedAddOk &&
