@@ -220,8 +220,63 @@ struct BrushState {
   // `brushTipFor()`'s `tip.linearRgb` are the two places that decode, and
   // `--selftest` asserts they agree.
   //
+  // **The range is `(-inf, +inf)`, not `[0, 1]`, and that is the second
+  // half of this field's contract.** T25a: "the canvas supports fp16 data,
+  // but the colour picker only shows values clamped to 1." A document texel
+  // is scene-referred linear light (`color/Space.hpp`: "Working-space values
+  // are linear light and can legitimately exceed 1.0"), stored as HALF, and
+  // a lit highlight above white is a real measurement rather than an
+  // overflow. The eyedropper is the tool whose whole job is to answer "what
+  // is *that* pixel", so a foreground that cannot hold what it read is a
+  // foreground that answers the question wrongly by construction. It holds
+  // it now.
+  //
+  // **Over-range and sRGB-encoded are not in tension**, which is the thing
+  // that makes one field enough. `srgbEncode`/`srgbDecode` are unclamped and
+  // monotonic (`color/Space.cpp` -- the power segment is evaluated for any
+  // magnitude, and negatives mirror rather than going NaN), so an encoded
+  // 1.31 decodes to a linear 2.0 and back again, bit-stably, through the
+  // very same two functions an in-range colour uses. Nothing about the
+  // encoding needed relaxing; only the clamp that was standing in front of
+  // it did.
+  //
+  // **Why this is one field and not two.** The alternative -- keep `rgb`
+  // pinned to `[0, 1]` and park the true value in a sibling -- was
+  // considered and rejected, because it *institutionalises* the exact
+  // failure `ui/MacPaintUI.cpp`'s eyedropper comment named when it argued
+  // for clamping at the source: "a fourth value only the clamps know about."
+  // Two fields means two answers to "what colour is the foreground", one of
+  // which every existing consumer would keep reading and none of which the
+  // user could tell apart. So there is one value, it is the true one, and
+  // the clamps move to the destinations that genuinely cannot carry it --
+  // where they are **named** rather than incidental. That is
+  // `color/Space.hpp`'s `clampToDisplayRange()`, and grepping it lists the
+  // whole set: `MixboxLut::rgbToLatent()` (both bases), `brushTipFor()`'s
+  // no-LUT fallback, the FG well's `IM_COL32` pack, and the options bar's
+  // gradient ramp. `ImGui::ColorPicker3`'s saturation/value square is a
+  // fifth that clamps in ImGui's own geometry rather than through that call;
+  // its numeric row is given `ImGuiColorEditFlags_HDR` so that it is not a
+  // sixth.
+  //
+  // **The clamps that stayed are the ones with an argument behind them.**
+  // The pigment route is the load-bearing example: `rgbToLatent()` inverts a
+  // reflectance model, there is no reflectance above total reflectance, and
+  // a latent for "brighter than white paper" is not a dimmer answer, it is
+  // not an answer. Clamping there is correct. What was wrong was that it was
+  // silent -- so the COLOR panel now says, on the frame the foreground goes
+  // over range, that the swatch beside it and the PIGMENT route are both
+  // showing something the field no longer contains.
+  //
+  // **Out of scope, deliberately: making the monitor brighter.** The
+  // vendored `third_party/wgpu/include/webgpu/webgpu.h` has no colour-space,
+  // tone-mapping or extended-range field on `WGPUSurfaceConfiguration` at
+  // all, and the surface resolves to `BGRA8Unorm`. Nothing here is an EDR
+  // path and nothing here tone-maps; over-range values *survive and are
+  // legible*, which is a different and much smaller claim.
+  //
   // The initial value is `ui/MacPaintUI.cpp`'s retired `g_colorRgb` default,
-  // carried over unchanged so the RGB picker opens where it always did.
+  // carried over unchanged so the RGB picker opens where it always did --
+  // in range, because that is where a picker should open.
   std::array<float, 3> rgb = {0.10f, 0.12f, 0.45f};
 
   // **`radius`/`hardness`/`roundness`/`angle` (and `spacing`, further down

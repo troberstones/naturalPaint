@@ -3454,6 +3454,43 @@ void drawColorSection(AppState& st) {
     ImGui::TextDisabled("rgb         %.3f %.3f %.3f", sel.rgb[0], sel.rgb[1], sel.rgb[2]);
     popAtelierMono();
   } else {
+    // **The over-range badge, drawn FIRST -- above the picker, not under the
+    // readouts -- and the position is measured rather than a matter of
+    // taste.** T25a: `BrushState::rgb` is scene-referred and may hold a value
+    // no swatch in this build can draw (app/AppState.hpp), and the user has
+    // to be able to tell that the square below is a lie by necessity.
+    //
+    // It was under the readouts first, and a throwaway instrumented build
+    // dumping this branch's own numbers said why that could not work (reading
+    // the code gave three wrong guesses first): in the default
+    // dock this section's content region is **119 px tall** and the block
+    // below already asks for 191, so the RGB branch overflows its slot by
+    // ~72 px before this line exists at all. Anything appended at the bottom
+    // is clipped -- which is exactly what the first golden capture of this
+    // view showed. A banner that only appears when it fits is not a warning.
+    //
+    // Above the `GetContentRegionAvail()` read below, deliberately: the
+    // reserve arithmetic there is counted in lines, and drawing this first
+    // means the space it takes is already out of `avail` rather than being a
+    // seventh line that has to be remembered in two places.
+    //
+    // One short line, `TextUnformatted` rather than `TextWrapped`: a wrapped
+    // banner is 1, 2 or 3 lines depending on dock width, which is the input
+    // that arithmetic cannot see. The rest of the explanation -- which routes
+    // clamp, which keep the value, why pigment is one of the clampers -- is
+    // behind this panel's "?" button (app/ControlsLayout.cpp's `Color`
+    // entry), where this file's own precedent already puts standing context.
+    //
+    // The same yellow the LAYERS and HISTORY panels use for "this is true and
+    // you need to know it", not the accent -- the accent means "this is the
+    // selected thing", and the foreground being over range is not a selection.
+    if (exceedsDisplayRange(st.brush.rgb)) {
+      pushAtelierMono();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.78f, 0.35f, 1.0f));
+      ImGui::TextUnformatted("OVER RANGE  swatch is clamped");
+      ImGui::PopStyleColor();
+      popAtelierMono();
+    }
     // `ColorPicker4()` (which `ColorPicker3` forwards to) sizes its
     // saturation/value square from `CalcItemWidth()` alone -- `sv_picker_size
     // = width - (bars_width + spacing)` (imgui_widgets.cpp) -- and that square
@@ -3501,9 +3538,27 @@ void drawColorSection(AppState& st) {
     // `std::array<float,3>` and ImGui wants a `float*`, so `.data()`; the
     // storage is contiguous by the standard, so this is the same pointer the
     // retired `float g_colorRgb[3]` handed over.
-    ImGui::ColorPicker3("##rgb", st.brush.rgb.data(),
-                        ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview |
-                            ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_Float);
+    //
+    // **`ImGuiColorEditFlags_HDR`, and the name is about float range rather
+    // than about the monitor.** In `ColorEdit4()` the flag is read exactly
+    // once (`imgui_widgets.cpp`): `DragFloat(..., 0.0f, hdr ? 0.0f : 1.0f,
+    // ...)`, and a DragFloat whose min equals its max is unbounded. So this
+    // is the one line that stops the picker's own numeric row being a clamp
+    // on `BrushState::rgb` -- without it, dragging any channel while the
+    // foreground held 1.31 would silently pull the whole triple back into
+    // `[0,1]`, and the eyedropper's preserved value would die the first time
+    // the user touched the panel. It buys nothing about *display*: nothing
+    // here tone-maps and the surface is `BGRA8Unorm` either way
+    // (app/AppState.hpp's `BrushState::rgb`, last paragraph).
+    //
+    // The saturation/value square is still a clamp, and deliberately left as
+    // one: its geometry is a unit square, `S` and `V` are `ImSaturate`d into
+    // coordinates, and there is no position inside it that means 1.31.
+    // Dragging in the square is therefore an edit that brings the foreground
+    // back into range -- which is the honest behaviour for a widget whose
+    // whole surface area is the in-range gamut, and is why the badge below
+    // says which controls clamp rather than pretending none of them do.
+    ImGui::ColorPicker3("##rgb", st.brush.rgb.data(), rgbColorPickerFlags());
     // **This paragraph used to say "Not yet connected: no tool reads this
     // colour", and it was true.** It is now connected -- `foregroundSrgb()`
     // returns this triple in RGB mode, and every route reads it -- so what is
@@ -3513,6 +3568,16 @@ void drawColorSection(AppState& st) {
     // maps through RGB->latent, with the caveat ... that the decomposition is
     // plausible rather than true"); it says nothing about the constants,
     // because there is nothing to say: three floats cannot produce them.
+    //
+    // **No `rgb` readout line here, and its absence is deliberate.** The
+    // PIGMENT branch above prints one because its swatches are a palette and
+    // the resulting triple is not otherwise on screen; here the picker's own
+    // numeric row *is* that readout, and since `ImGuiColorEditFlags_HDR` it
+    // prints the true over-range value (1.516, not 1.000) rather than a
+    // clamped one. A second copy of the same three floats would cost a line
+    // in a section whose content region measures 119 px against a block that
+    // already asks for 191 -- i.e. it would be paid for by clipping the three
+    // physical constants below.
     pushAtelierMono();
     ImGui::TextDisabled("density     %.2f", sel.density);
     ImGui::TextDisabled("staining    %.2f", sel.staining);
@@ -5410,6 +5475,14 @@ std::array<float, 4> foregroundLinearRgba(int pigmentIndex) {
   return {srgbDecode(pig.rgb[0]), srgbDecode(pig.rgb[1]), srgbDecode(pig.rgb[2]), 1.0f};
 }
 
+int rgbColorPickerFlags() noexcept {
+  // See ui/MacPaintUI.hpp for why this is a named function rather than four
+  // enumerators at the one call site, and for what `ImGuiColorEditFlags_HDR`
+  // is doing among them.
+  return ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview |
+         ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR;
+}
+
 std::array<float, 4> foregroundLinearRgba(const BrushState& brush) {
   // One decode, of `app/StrokeSession`'s one answer to "what colour is the
   // foreground". Alpha is 1.0 for the reason the index overload's header
@@ -5464,20 +5537,45 @@ EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
   // every picked colour would repaint far too dark -- the sort of wrong nobody
   // notices until they hold the result against the pixel they picked it from.
   //
-  // Clamped to [0,1]. Working-space values legitimately exceed 1.0
-  // (color/Space.hpp: "Working-space values are linear light and can
-  // legitimately exceed 1.0"), and so therefore can their sRGB encoding -- but
-  // `ImGui::ColorPicker3` cannot show such a value, an 8-bit swatch cannot draw
-  // it, and `MixboxLut::rgbToLatent()` clamps it away regardless. Clamping here
-  // rather than at those three places means the number the picker shows is the
-  // number the next stroke uses, instead of a fourth value only the clamps know
-  // about.
-  for (int c = 0; c < 3; ++c) st.brush.rgb[c] = std::clamp(out.sample.display[c], 0.0f, 1.0f);
+  // **Not clamped, and this line used to be.** T25a. Working-space values
+  // legitimately exceed 1.0 (color/Space.hpp: "Working-space values are linear
+  // light and can legitimately exceed 1.0"), and so therefore can their sRGB
+  // encoding; a texel brighter than white is what an eyedropper on a lit
+  // highlight is *for*. `std::clamp(..., 0.0f, 1.0f)` stood here and threw
+  // that away at the one point in the program where the information still
+  // existed -- pick a 2.5 and get a 1.0, with nothing anywhere saying a
+  // number had been destroyed.
+  //
+  // **The argument that clamp was standing on was real, and it is answered
+  // rather than ignored.** It ran: `ImGui::ColorPicker3` cannot show such a
+  // value, an 8-bit swatch cannot draw it, `MixboxLut::rgbToLatent()` clamps
+  // it away regardless -- so clamping here means "the number the picker shows
+  // is the number the next stroke uses, instead of a fourth value only the
+  // clamps know about." Every clause of that is true, and deleting the clamp
+  // without doing anything else would have recreated exactly the fourth value
+  // it warns of.
+  //
+  // What changed is the three places, not the argument. They are now *named*
+  // clamps (`color/Space.hpp`'s `clampToDisplayRange()`, which is greppable
+  // and lists them), the picker's numeric row is no longer one of them
+  // (`ImGuiColorEditFlags_HDR` at its call site), and the COLOR panel and the
+  // sentence built below both **say** when the swatch has stopped agreeing
+  // with the field. So there is still no value only the clamps know about --
+  // there is one value, the true one, and every place that cannot carry it
+  // admits so out loud. See `app/AppState.hpp`'s `BrushState::rgb` for the
+  // whole contract; `--selftest`'s scene-referred-colour section pins it.
+  for (int c = 0; c < 3; ++c) st.brush.rgb[c] = out.sample.display[c];
 
   out.switchedToRgbMode = st.brush.colorMode == ColorMode::Pigment;
   st.brush.colorMode = ColorMode::Rgb;
 
-  char buf[256];
+  // Asked of what was **stored**, not of `out.sample.display`. They are the
+  // same triple today, and the assignment above is the only reason they are;
+  // asking the field is what keeps this bool describing the foreground rather
+  // than the probe if that ever stops being true.
+  out.overRange = exceedsDisplayRange(st.brush.rgb);
+
+  char buf[512];
   if (out.switchedToRgbMode) {
     std::snprintf(buf, sizeof(buf),
                   "Picked %.3f %.3f %.3f -- COLOR switched to RGB mode: a sampled colour has "
@@ -5491,6 +5589,25 @@ EyedropperPick applyEyedropperPick(AppState& st, PixelCoord at) {
                   static_cast<double>(st.brush.rgb[2]));
   }
   out.report = buf;
+  // **The over-range sentence is appended rather than replacing either of the
+  // two above**, because it is orthogonal to both: a pick can be over range
+  // whether or not it also changed the panel's mode, and a message that had
+  // to choose between saying "PIGMENT constants still come from Ultramarine"
+  // and "this is brighter than the swatch can draw" would drop one true thing
+  // to fit another in.
+  //
+  // Said here as well as in the COLOR panel because the two answer different
+  // questions. The panel's badge is a *standing* statement about the
+  // foreground as it currently is; this is the moment's -- "the number you
+  // just picked is bigger than the square you are looking at", at the instant
+  // the surprise happens, in the bar the user's eye is already in after a
+  // click. Neither one alone covers the other's case: the panel may not even
+  // be open, and the bar's line is replaced by the next thing that reports.
+  if (out.overRange) {
+    out.report +=
+        " Above the display range: the swatch and PIGMENT mode clamp to 1.000, the stroke and "
+        "the document do not.";
+  }
   st.lastPickReport = out.report;
   out.applied = true;
   return out;
@@ -10432,14 +10549,35 @@ void drawToolsPanelBody(AppState& st, float availW, float availH, bool vertical)
   // the well PRD Q10 says the eyedropper picks *into*, so it has to show the
   // colour that was picked.
   const std::array<float, 3> fg = foregroundSrgb(st.brush);
-  dl->AddRectFilled(p, ImVec2(p.x + swatchSide, p.y + swatchSide),
-                    IM_COL32((int)(fg[0] * 255), (int)(fg[1] * 255), (int)(fg[2] * 255), 255));
+  // **Clamp site 1 of the set `color/Space.hpp` names**, and it is a
+  // correctness fix rather than a tidy-up: `IM_COL32` shifts each int into
+  // its own byte lane, so a foreground of 1.4 gives `(int)(1.4f * 255)` =
+  // 357 = 0x165, and the 0x1 lands in the *next channel up*. Since
+  // `BrushState::rgb` became scene-referred (app/AppState.hpp) an unclamped
+  // pack here would not draw an over-range colour too bright, it would draw
+  // a different hue -- the failure mode where the well silently lies about
+  // which colour is loaded, rather than visibly failing to be bright enough.
+  const std::array<float, 3> wellRgb = clampToDisplayRange(fg);
+  dl->AddRectFilled(
+      p, ImVec2(p.x + swatchSide, p.y + swatchSide),
+      IM_COL32((int)(wellRgb[0] * 255), (int)(wellRgb[1] * 255), (int)(wellRgb[2] * 255), 255));
   dl->AddRect(p, ImVec2(p.x + swatchSide, p.y + swatchSide), atelierToken(kRule), 0.0f, 0,
               kRuleThickness);
   ImGui::Dummy(ImVec2(swatchSide, swatchSide));
-  ImGui::SetItemTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
-                      "or picked with the eyedropper (PRD Q10)",
-                      foregroundName(st.brush));
+  // And the clamp is *said*, on the hover of the square that is doing the
+  // lying. This is the one place the well can admit it without gaining
+  // chrome: the COLOR panel carries the standing badge, but this well is
+  // visible in layouts where that panel is collapsed or not docked at all.
+  if (exceedsDisplayRange(fg))
+    ImGui::SetItemTooltip("Foreground: %s (%.3f %.3f %.3f)\nAbove the display range -- this "
+                          "square is clamped to 1.000 and the colour above it is not.\n"
+                          "Chosen in the COLOR panel (docs/ui.md section 3.3), or picked with "
+                          "the eyedropper (PRD Q10)",
+                          foregroundName(st.brush), (double)fg[0], (double)fg[1], (double)fg[2]);
+  else
+    ImGui::SetItemTooltip("Foreground: %s\nChosen in the COLOR panel (docs/ui.md section 3.3), "
+                          "or picked with the eyedropper (PRD Q10)",
+                          foregroundName(st.brush));
   ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
   ImGui::TextUnformatted("FG");
   ImGui::PopStyleColor();

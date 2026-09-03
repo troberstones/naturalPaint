@@ -6,7 +6,7 @@
 # why). This script is the missing other half: it drives the app through a
 # handful of known, scripted UI states via its existing --demo-document /
 # --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo /
-# --gradient-demo / --clone-demo / --smudge-demo / --no-document
+# --gradient-demo / --clone-demo / --smudge-demo / --no-document / --overrange-demo
 # CLI flags, crops each capture down
 # to one small region, and compares it against a reference image committed
 # under tests/golden/ with src/tools/GoldenTool.cpp.
@@ -560,8 +560,71 @@ measure_n="${2:-10}"
 #     document and this one is not, and 7 clean comparisons is 7 clean
 #     comparisons, not a proof that the flake is impossible. If this view ever
 #     does start flaking the widening will be a measurement too.)
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo")
+#
+#   color_overrange -- T25a's visible half: the COLOR panel in RGB mode
+#     holding a **scene-referred** foreground under `--overrange-demo`
+#     (linear 2.600/0.450/0.180, i.e. sRGB 1.516/0.701/0.461). Four things
+#     are in frame and each is load-bearing:
+#
+#       * the PIGMENT/RGB toggle with RGB accented, which is the mode this
+#         whole branch draws in;
+#       * the **OVER RANGE badge**, in the warning yellow -- the state, named,
+#         which is the difference between "a big number" and "the square
+#         below you is not this colour";
+#       * the saturation/value square itself, showing the CLAMPED colour --
+#         the lie by necessity the badge is admitting to;
+#       * the picker's numeric row reading **1.516**, not 1.000. That single
+#         glyph is the whole of the report this track answers ("the colour
+#         picker only shows values clamped to 1"), and it is what
+#         `ImGuiColorEditFlags_HDR` at the `ColorPicker3` call site buys.
+#
+#     `--selftest` has no window and no ImGui frame, so it can prove that
+#     `BrushState::rgb` holds 1.516 and that every consumer agrees -- and it
+#     cannot see one pixel of any of the above. Without this view the visible
+#     half of the change has no coverage at all.
+#
+#     **The crop position is measured, not reasoned.** A throwaway
+#     instrumented build reported this section's
+#     content region as 119 px tall against a block that already asks for
+#     191, so the RGB branch overflows its slot in the default dock and
+#     anything drawn at the BOTTOM of it is clipped -- which is what the
+#     first capture of this view showed, with the badge cut in half. The
+#     badge moved above the picker as a result. This crop starts inside the
+#     panel (x=1920, not the 1900 the `tabs` views use) and stops at x=2520
+#     so the column's own scrollbar at x~2540 is out of frame: that
+#     scrollbar is the exact artifact this file's header records costing the
+#     `layers` view a diffuse 3046-pixel false failure.
+#
+#   fg_well_overrange -- the tool palette's FG well under the same
+#     `--overrange-demo`, and it exists because a sabotage said it had to.
+#     Removing `clampToDisplayRange()` from that well's `IM_COL32` pack (a
+#     one-line edit that turns the foreground into a *different hue*, not a
+#     dimmer one -- 1.516 * 255 = 386 = 0x182, and the 0x1 shifts into the
+#     green lane) produced **no failure anywhere**: all 20 views of the day
+#     passed and `--selftest` cannot draw. The well sits below the palette's
+#     scrolling grid and no existing crop reached it.
+#
+#     40x40 of flat swatch plus the "FG" label. Small on purpose: the claim
+#     is "this square is the CLAMPED colour", one flat RGB triple, and a
+#     bigger crop would only add unrelated chrome that could move for
+#     unrelated reasons. Under the sabotage the same square draws (130, 179,
+#     117) instead of (255, 179, 118) -- a third of the crop, at magnitude
+#     125, which no plausible tolerance would admit.
+#
+#   gradient_overrange -- the options bar's live gradient RAMP under
+#     `--gradient-demo --overrange-demo`, at the identical crop the
+#     `gradient` view above uses. The fourth named clamp site
+#     (`ui/AtelierChrome.cpp`): the ramp is built from the foreground, so a
+#     scene-referred foreground makes an encoded channel exceed 1.0 right at
+#     an `IM_COL32` pack -- the same byte-lane spill `fg_well_overrange`
+#     covers, on a different widget, and equally invisible to `--selftest`.
+#
+#     A second view rather than changing `gradient`'s own arguments: that
+#     view's job is the ramp's *geometry and stop list* in the ordinary case,
+#     and re-aiming it at an unusual colour would have traded one coverage
+#     for another rather than adding any.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -781,11 +844,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0)
-view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664)
-view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400)
-view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40)
+view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76)
+view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090)
+view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -832,7 +895,33 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # it does produce is drawn at a fixed position rather than chased across the
 # frame. Giving these a text budget by analogy would have cost the sensitivity
 # `gradient_drag`'s own entry above records losing for exactly that reason.
-view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0)
+#
+# **`color_overrange` is exact (0, 0), and it was measured before it was
+# written down.** The guess going in was that it would need `toolbar`'s
+# (48, 16): this crop is almost entirely TEXT -- "PIGMENT", "RGB", the
+# OVER RANGE badge and three mono numbers -- and text is the one profile
+# this file's history records flaking (`toolbar`'s single glyph stem,
+# `flyout`'s member names, both coin flips). It does not. 8 separately
+# launched captures, each diffed against that batch's first (168 000 px
+# crop): 7 comparisons, every one **0 mismatched px at max channel diff
+# 0**. So it is blessed exact like `titlebar` and `wand_options` -- both of
+# which are also text views measured rather than handed a budget by
+# analogy, which is the mistake `gradient_drag`'s entry above records
+# making and correcting.
+#
+# **`fg_well_overrange` is exact (0, 0), measured the same way.** 8 launches,
+# 7 comparisons against the batch's first (10 800 px crop): 0 mismatched px
+# at max channel diff 0, every one. It holds one two-letter label and is
+# otherwise a flat swatch on flat chrome, which is the profile `canvas` and
+# `tools` hold exact -- and unlike `toolbar`'s tab-strip glyph, that label is
+# static disabled text with no hover, no animation and no per-frame state.
+#
+# **`gradient_overrange` is exact (0, 0), and NOT because `gradient` above
+# is.** It shares that view's crop, which makes borrowing its threshold the
+# obvious shortcut and the exact mistake this file records `gradient_drag`
+# making. Measured on its own: 8 launches, 7 comparisons against the batch's
+# first (82 840 px crop), 0 mismatched px at max channel diff 0 every time.
+view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -848,7 +937,7 @@ view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0)
+view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

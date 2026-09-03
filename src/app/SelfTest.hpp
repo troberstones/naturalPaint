@@ -338,6 +338,55 @@ bool runProbeTest();
 // deleted the day it does.
 bool runEyedropperTest();
 
+// T25a -- the **scene-referred foreground colour**, and the named clamps that
+// let one field be both display-encoded and over-range.
+//
+// The report: "the canvas supports fp16 data, but the colour picker only shows
+// values clamped to 1." The clamp that did it (`ui/MacPaintUI.cpp`'s
+// eyedropper) was documented and its argument was correct -- three places
+// downstream clamp anyway, so clamping at the source stopped there being "a
+// fourth value only the clamps know about". Deleting it alone would have
+// created exactly that value. So `BrushState::rgb` became over-range-capable
+// (its contract in app/AppState.hpp carries the whole argument), the clamps
+// moved to the destinations that genuinely cannot carry a scene-referred
+// value, and they are named there -- `color/Space.hpp`'s
+// `clampToDisplayRange()`, whose grep is the list.
+//
+// **EDR output is not in scope and is not attempted**: the vendored
+// `webgpu.h` has no colour-space field on `WGPUSurfaceConfiguration`, so
+// nothing here tone-maps or reconfigures the surface. Values survive and are
+// legible; the monitor is unchanged.
+//
+// Confirms: that `srgbEncode`/`srgbDecode` round-trip 0.25 through 12.0, are
+// strictly increasing, hold 1.0 as an EXACT fixed point (so plain white can
+// never be one ulp over range and light the badge) and mirror rather than clip
+// below zero -- the property that makes one field enough; that
+// `exceedsDisplayRange()` treats a value AT either bound as in range and fires
+// on any single channel a ten-thousandth past one, and that
+// `clampToDisplayRange()` clips per channel, idempotently, rather than scaling
+// to fit (it is not a tone-mapper and must not become one); that
+// `rgbColorPickerFlags()` still carries `ImGuiColorEditFlags_HDR` -- a
+// deliberately weak assertion over a hole both harnesses have, since the flag
+// only changes drag-time clamping and a screenshot with no input is
+// byte-identical either way (measured, by sabotage); that **a pick on a
+// texel of linear 2.5/0.5/4.0 lands unclamped in `BrushState::rgb`**, with two
+// over-range channels that differ from each other so no single-constant clamp
+// can pass, reports the over-range state as a state, and says so in the
+// options bar's sentence; that `foregroundLinearRgba()` and `brushTipFor()`'s
+// `tip.linearRgb` are still bit-identical **above 1.0** -- the long-standing
+// agreement assertion, moved into the range where a stray clamp in either one
+// could actually hide; that `MixboxLut::rgbToLatent()` answers an over-range
+// triple exactly as it answers the clamped one, asserted on a **real 512x512
+// LUT** rather than an unloaded one (which returns the same zero `Latent` for
+// every input and would make the equality inert), together with a second
+// assertion that this LUT does distinguish colours at all; that
+// `brushTipFor()`'s no-LUT arm clamps its latent too, so the two arms of one
+// branch agree that pigment is bounded; and -- the other half of what the
+// COLOR panel promises -- that an RGB-layer deposit of an over-range
+// foreground actually writes 3.0 into the HALF texel, so this cannot pass on a
+// build that clamped everything.
+bool runSceneReferredColourTest();
+
 // app/MeasureLine (docs/ui.md section 2's ruler cell): the Measure tool -- the
 // only cell in the palette whose gesture writes no texel at all. Six things:
 // that a 3-4-5 drag reports a length of exactly 5 document texels and that the

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "color/Space.hpp"
+
 // This is the one translation unit that compiles stb_image's actual function
 // bodies (STB_IMAGE_IMPLEMENTATION may only be defined once in the whole
 // binary) -- io/ImageDecode.cpp includes stb_image.h with no implementation
@@ -104,9 +106,27 @@ Latent MixboxLut::rgbToLatent(float r, float g, float b) const {
   Latent z{};
   if (!valid()) return z;
 
-  r = std::clamp(r, 0.0f, 1.0f);
-  g = std::clamp(g, 0.0f, 1.0f);
-  b = std::clamp(b, 0.0f, 1.0f);
+  // **A named clamp, and the one in this build with a physical argument
+  // behind it.** `BrushState::rgb` is scene-referred since T25a and may hold
+  // a value above white (app/AppState.hpp); this is where such a value stops.
+  // That is correct rather than a limitation to work around: the latent this
+  // returns is an inverse of a *reflectance* model, and there is no
+  // reflectance above total reflectance -- paint on paper cannot return more
+  // light than falls on it. A latent for "brighter than white paper" is not a
+  // dimmer answer, it is not an answer.
+  //
+  // It is spelled `clampToDisplayRange()` rather than three `std::clamp`s
+  // (which is what stood here) purely so that this site is greppable from
+  // `color/Space.hpp`'s list. The whole point of naming it is that a user who
+  // picks a 2.5 and paints on a Pigment layer gets 1.0 -- and the COLOR panel
+  // now tells them that in advance instead of leaving it to be discovered.
+  // The bilinear fetch below also *needs* the bound as an invariant: `x`,
+  // `y` and the slice index are derived by multiplying by 63, so an unclamped
+  // 2.5 would index outside the 512x512 LUT.
+  const std::array<float, 3> inGamut = clampToDisplayRange({r, g, b});
+  r = inGamut[0];
+  g = inGamut[1];
+  b = inGamut[2];
 
   const float x = r * 63.0f;
   const float y = g * 63.0f;
@@ -165,9 +185,23 @@ Latent MixboxLut::rgbToLatent(float r, float g, float b) const {
 // granulation values are "chosen to match how these paints actually behave
 // on paper" rather than measured off a spectrophotometer.
 Latent MixboxLut::rgbToLatent(float r, float g, float b) const {
-  r = std::clamp(r, 0.0f, 1.0f);
-  g = std::clamp(g, 0.0f, 1.0f);
-  b = std::clamp(b, 0.0f, 1.0f);
+  // The same named clamp, for the same reason, on the other basis -- see the
+  // NP_USE_MIXBOX branch above. Both bases clamp because *pigment* is
+  // bounded, not because either implementation happens to be.
+  //
+  // **It is not redundant with the reflectance floor further down**, which
+  // is the easy mistake to make reading this function: that `std::clamp` is
+  // inside the per-channel loop and bounds only what goes into Kubelka's
+  // K/S. `sat` above it is computed from the raw triple, and an over-range
+  // channel changes it -- (2.0, 1.0, 1.0) reads as saturation 0.5 where the
+  // colour it stands for, clamped, is a pure neutral at saturation 0. That
+  // would pick a `scatter` for a stain when the paint being described is
+  // opaque, which is a physical constant chosen from a number the model has
+  // no basis for.
+  const std::array<float, 3> inGamut = clampToDisplayRange({r, g, b});
+  r = inGamut[0];
+  g = inGamut[1];
+  b = inGamut[2];
 
   const float maxc = std::max({r, g, b});
   const float minc = std::min({r, g, b});

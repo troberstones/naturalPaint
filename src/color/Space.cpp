@@ -1,5 +1,6 @@
 #include "color/Space.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace np {
@@ -60,6 +61,37 @@ float rec709Decode(float encoded) {
                            ? x / kRec709ToeSlope
                            : std::pow((x + kRec709Offset) / kRec709Scale, 1.0f / kRec709Gamma);
   return sign * linear;
+}
+
+// Strictly greater than the ceiling, and strictly less than the floor -- a
+// value *at* 1.0 is inside the display range, not over it, so a plain white
+// foreground must not light up the panel's over-range badge. The floor half
+// is here because the curves above mirror about zero rather than clipping
+// (see their header), so a negative encoded value is a thing this pipeline
+// can actually hold, and it dies at the same three destinations a value
+// above white does.
+bool exceedsDisplayRange(float encoded) noexcept {
+  return encoded > kDisplayCeiling || encoded < kDisplayFloor;
+}
+
+bool exceedsDisplayRange(const std::array<float, 3>& encoded) noexcept {
+  return exceedsDisplayRange(encoded[0]) || exceedsDisplayRange(encoded[1]) ||
+         exceedsDisplayRange(encoded[2]);
+}
+
+// **Per channel, not a scale-to-fit.** Dividing the triple through by its
+// largest channel would preserve the hue and is what a tone-mapper does;
+// this is not a tone-mapper and must not become one. The destinations this
+// serves are a swatch, a picker square and a pigment LUT, and each of them
+// wants "the nearest colour I can represent" -- clipping per channel is the
+// answer every one of them already assumed it was getting. Preserving hue
+// instead would make the swatch a *different* colour from the one the
+// numeric readout beside it prints, which is precisely the disagreement the
+// readout exists to prevent.
+std::array<float, 3> clampToDisplayRange(const std::array<float, 3>& encoded) noexcept {
+  return {std::clamp(encoded[0], kDisplayFloor, kDisplayCeiling),
+          std::clamp(encoded[1], kDisplayFloor, kDisplayCeiling),
+          std::clamp(encoded[2], kDisplayFloor, kDisplayCeiling)};
 }
 
 }  // namespace np

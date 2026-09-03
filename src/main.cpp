@@ -1094,6 +1094,7 @@ int main(int argc, char** argv) {
   bool wandDemo = false;
   bool wandDemoBucket = false;
   bool smudgeDemo = false;
+  bool overRangeDemo = false;
   bool flyoutDemo = false;
   // --no-document: see the argument-parsing block, and the "A session always
   // has a document" comment this flag is the deliberate exception to.
@@ -1430,6 +1431,23 @@ int main(int argc, char** argv) {
       // them, which is this tool's departure from every other per-tool block in
       // that function (`docs/ui.md` §4b).
       smudgeDemo = true;
+    } else if (a == "--overrange-demo") {
+      // T25a. Puts the COLOR panel in RGB mode holding a **scene-referred**
+      // foreground -- one channel above what the swatch beside it can draw --
+      // so `--screenshot` can photograph the over-range readout and its badge.
+      //
+      // The same gap `--gradient-demo` and `--wand-demo` cover, and this one
+      // is the sharpest case of it in the build: `--selftest` has no window
+      // and no ImGui frame, so it can prove that `BrushState::rgb` holds 1.516
+      // and that every consumer agrees about it, and it cannot see a single
+      // pixel of the thing the report was actually about -- a picker that only
+      // shows values clamped to 1. Without a golden view the entire *visible*
+      // half of T25a would have no coverage at all.
+      //
+      // No sub-word, unlike the two flags above: the in-range state of this
+      // panel is what every other view of the app already shows, so a second
+      // spelling would only photograph the status quo.
+      overRangeDemo = true;
     } else if (a == "--flyout-demo") {
       // sidequest/lucide-toolbox, the nested-flyout revision: holds the
       // Brush group's flyout open (four members, Brush/Pencil implemented-
@@ -1775,6 +1793,14 @@ int main(int argc, char** argv) {
     // phases in which `Tool::Eyedropper` claimed to be built and was not.
     // Headless and GPU-free -- pure CPU, no PaintSim involvement.
     const bool eyedropperOk = np::runEyedropperTest();
+    // T25a: the scene-referred foreground -- an eyedropper pick above white
+    // surviving into `BrushState::rgb` instead of being clamped away, the two
+    // decoders still agreeing in that range, the named display-range clamp and
+    // the destinations that call it, the pigment route clamping deliberately
+    // on a real LUT, and an RGB stroke that does not. Runs straight after the
+    // eyedropper's own section because it extends that section's foreground
+    // assertions into the range they never covered. Headless and GPU-free.
+    const bool sceneReferredColourOk = np::runSceneReferredColourTest();
     // app/MeasureLine: the Measure tool, the one palette cell whose gesture
     // writes nothing at all -- length and heading off a two-point drag, the
     // angle convention pinned geometrically through dabCoverage() rather than
@@ -2760,7 +2786,7 @@ int main(int argc, char** argv) {
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
-                    eyedropperOk && measureOk && toolSwitchOk && toolSurfaceOk &&
+                    eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk && toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -3147,6 +3173,25 @@ int main(int argc, char** argv) {
                 "shows its STRENGTH/TIP row AND keeps the brush sliders\n",
                 st.brush.smudge.strength,
                 st.brush.smudge.dabId.empty() ? "the brush's" : st.brush.smudge.dabId.c_str());
+  }
+  if (overRangeDemo) {
+    // A warm highlight, the sort of thing an eyedropper lands on: linear
+    // 2.6 / 0.45 / 0.18, which encodes to about 1.516 / 0.702 / 0.472. One
+    // channel over and two comfortably in range, deliberately -- a triple
+    // that was over on all three would photograph identically whether the
+    // readout printed per-channel values or one number three times.
+    //
+    // Set through `srgbEncode()` of stated linear values rather than as three
+    // encoded literals, so the number in this file is the *measurement* the
+    // foreground is standing for and the encoding stays the one boundary
+    // `app/AppState.hpp` says it is.
+    st.brush.colorMode = np::ColorMode::Rgb;
+    st.brush.rgb = {np::srgbEncode(2.6f), np::srgbEncode(0.45f), np::srgbEncode(0.18f)};
+    std::printf("[overrange-demo] COLOR in RGB mode, foreground linear 2.600 0.450 0.180 = "
+                "sRGB %.3f %.3f %.3f -- red is above the display range, so the panel shows "
+                "the readout and the OVER RANGE badge and the swatch is clamped\n",
+                static_cast<double>(st.brush.rgb[0]), static_cast<double>(st.brush.rgb[1]),
+                static_cast<double>(st.brush.rgb[2]));
   }
   if (flyoutDemo)
     std::printf("[flyout-demo] Brush group's flyout held open (right-click/press-hold demo)\n");

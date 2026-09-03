@@ -893,9 +893,18 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
       // invisible on a fade and obvious on a ramp with a hard last stop.
       const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(columns);
       const std::array<float, 4> c = gradientSampleStraight(stops, t);
-      const ImU32 col = IM_COL32(static_cast<int>(srgbEncode(c[0]) * 255.0f + 0.5f),
-                                 static_cast<int>(srgbEncode(c[1]) * 255.0f + 0.5f),
-                                 static_cast<int>(srgbEncode(c[2]) * 255.0f + 0.5f),
+      // **`clampToDisplayRange()` after the encode, one of the named set in
+      // `color/Space.hpp`.** The stops come from the foreground, which is
+      // scene-referred since T25a (app/AppState.hpp's `BrushState::rgb`), so
+      // an encoded channel here can exceed 1.0 -- and `IM_COL32` shifts each
+      // int into its own byte lane, which turns 334 into 0x14E and spills the
+      // 0x1 into the neighbouring channel. Unclamped this ramp would not read
+      // "too bright to draw", it would read as the wrong hue.
+      const std::array<float, 3> enc =
+          clampToDisplayRange({srgbEncode(c[0]), srgbEncode(c[1]), srgbEncode(c[2])});
+      const ImU32 col = IM_COL32(static_cast<int>(enc[0] * 255.0f + 0.5f),
+                                 static_cast<int>(enc[1] * 255.0f + 0.5f),
+                                 static_cast<int>(enc[2] * 255.0f + 0.5f),
                                  static_cast<int>(c[3] * 255.0f + 0.5f));
       dl->AddRectFilled(ImVec2(r0.x + static_cast<float>(i), r0.y),
                         ImVec2(r0.x + static_cast<float>(i) + 1.0f, r1.y), col);

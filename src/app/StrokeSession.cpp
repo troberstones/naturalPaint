@@ -755,9 +755,28 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
   // again rather than called because `app/` must not include `ui/` -- the
   // dependency runs the other way. `--selftest` asserts the two agree, which is
   // the guard that spelling it twice needs.
+  //
+  // **This decode is NOT clamped, and since T25a that is load-bearing rather
+  // than incidental.** `BrushState::rgb` is scene-referred and may exceed 1.0
+  // (app/AppState.hpp); `srgbDecode()` is unclamped and monotonic, so an
+  // over-range foreground arrives here as an over-range linear triple and is
+  // deposited into HALF texels that can hold it. An RGB-layer stroke is
+  // therefore one of the routes that keeps the picked value, which is exactly
+  // what the COLOR panel's over-range badge promises the user.
   tip.linearRgb = {srgbDecode(shiftedRgb[0]), srgbDecode(shiftedRgb[1]),
                    srgbDecode(shiftedRgb[2])};
 
+  // **The pigment half is the route that clamps, and it is the same clamp on
+  // both arms below.** `rgbToLatent()` does it internally (paint/Palette.cpp
+  // carries the physical argument: there is no reflectance above total
+  // reflectance), so the `valid()` arm needs nothing here. The fallback arm
+  // did need it: it copies the sRGB triple verbatim, so an over-range
+  // foreground used to walk straight into `Latent::c` and give a Pigment
+  // layer a weight above 1 that `mixLatents()` would then lerp against real
+  // ones. Two arms of one branch disagreeing about whether pigment is
+  // bounded is the sort of divergence nobody looks for, and it only exists
+  // in a build with no LUT -- i.e. in tests and in a broken install, the two
+  // places least likely to have it noticed.
   if (lut.valid())
     tip.pigment = lut.rgbToLatent(shiftedRgb[0], shiftedRgb[1], shiftedRgb[2]);
   else
@@ -767,7 +786,7 @@ BrushTip brushTipFor(const BrushState& brush, const MixboxLut& lut,
     // that never loaded the 512x512 PNG painting *something* beats one that
     // paints white. The LUT is loaded by main.cpp before any UI exists, so
     // this branch is for tests and for a broken install.
-    tip.pigment.c = {shiftedRgb[0], shiftedRgb[1], shiftedRgb[2]};
+    tip.pigment.c = clampToDisplayRange(shiftedRgb);
   return tip;
 }
 

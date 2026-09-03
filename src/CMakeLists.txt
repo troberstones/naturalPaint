@@ -169,6 +169,7 @@ add_executable(naturalPaint
   app/selftest/SaveReadback.cpp
   app/selftest/Scatter.cpp
   app/selftest/ScatterCount.cpp
+  app/selftest/SceneReferredColour.cpp
   app/selftest/Selection.cpp
   app/selftest/SelectionBoundary.cpp
   app/selftest/SelectionDrag.cpp
