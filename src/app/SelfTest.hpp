@@ -5030,4 +5030,34 @@ bool runSvgStyleTest();
 // for a miter join. See app/selftest/VectorLayer.cpp.
 bool runVectorLayerTest();
 
+// text/Shaper: PRD K2's platform-independent shaping interface, and its
+// CoreText implementation. Point and paragraph text (K3), the y-up-to-y-down
+// flip CoreText and this application's document space disagree on, quadratic
+// -> cubic glyph-outline elevation onto core/Path.hpp's one segment type, and
+// UTF-16 cluster indices translated back to UTF-8 byte offsets.
+//
+// **Guarded on `shaperAvailable()`, and this is the first section in the
+// suite that is.** Every assertion here depends on installed system fonts --
+// a CI box with no Apple frameworks (text/StubShaper.cpp) must see a skipped
+// section and a green suite, not a red one for a font this build was never
+// going to have. No exact glyph ids or advances are asserted, for the same
+// reason: those are font-version-dependent and would break the day macOS
+// ships a new Helvetica.
+//
+// The load-bearing assertion is the y-flip, because getting it backwards is
+// the bug that renders symmetric glyphs correctly and everything else upside
+// down: a lowercase "p"'s descender must land at LARGER y than its baseline
+// in this y-down space, and a lowercase "b"'s ascender at SMALLER y. Also
+// proves: "Hello" shapes to 5 glyphs with strictly increasing x and a
+// non-empty `fontsUsed`; cluster indices are non-decreasing, land on UTF-8
+// boundaries (not mid-sequence) for an accented and a CJK string, and stay
+// within the input's byte length; `glyphPath()`'s output passes
+// `pathIsFinite()` with non-degenerate bounds; a CoreText quadratic element
+// arrives through this file as a cubic that samples against the quadratic to
+// a stated tolerance; a narrow paragraph frame wraps to more lines than a
+// wide one; tracking increases total width monotonically; and an empty
+// string and an unknown font family each return a defined result rather than
+// crashing. See app/selftest/TextShaper.cpp.
+bool runTextShaperTest();
+
 }  // namespace np

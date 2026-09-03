@@ -194,6 +194,7 @@ add_executable(naturalPaint
   app/selftest/GradientTool.cpp
   app/selftest/MoveTool.cpp
   app/selftest/PathRaster.cpp
+  app/selftest/TextShaper.cpp
   app/selftest/SvgPath.cpp
   app/selftest/SvgStyle.cpp
   app/selftest/VectorLayer.cpp
@@ -403,6 +404,27 @@ if(APPLE)
   target_sources(naturalPaint PRIVATE ui/MacTrackpadTouch.mm)
   set_source_files_properties(ui/MacTrackpadTouch.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   message(STATUS "naturalPaint: native raw two-finger touch capture (ui/MacTrackpadTouch.mm)")
+
+  # ---- text shaping (text/CoreTextShaper.mm) ---------------------------------
+  #
+  # PRD K2: shaping, bidi and font fallback come from the platform, behind an
+  # interface (text/Shaper.hpp) that names no CoreText type -- this is the
+  # Apple half. Same ARC rationale as the three targets above (Core Foundation
+  # types -- CTFontRef, CFStringRef, CGPathRef -- are not ARC-managed even in
+  # a `-fobjc-arc` translation unit; text/CoreTextShaper.mm's own header
+  # comment says why that matters here specifically).
+  target_sources(naturalPaint PRIVATE text/CoreTextShaper.mm)
+  set_source_files_properties(text/CoreTextShaper.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(naturalPaint PRIVATE
+    "-framework CoreText" "-framework CoreGraphics" "-framework CoreFoundation")
+  message(STATUS "naturalPaint: CoreText glyph shaping (text/CoreTextShaper.mm)")
+else()
+  # No CoreText off Apple platforms -- text/StubShaper.cpp answers every call
+  # in text/Shaper.hpp with a defined refusal (`shaperAvailable() == false`)
+  # rather than leaving the target unbuildable, so app/selftest/TextShaper.cpp
+  # links and runs (skipping itself) on a CI box with no Apple frameworks.
+  target_sources(naturalPaint PRIVATE text/StubShaper.cpp)
+  message(STATUS "naturalPaint: text shaping stub (text/StubShaper.cpp) -- no CoreText on this platform")
 endif()
 
 target_include_directories(naturalPaint PRIVATE
