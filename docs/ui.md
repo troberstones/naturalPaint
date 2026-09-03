@@ -611,8 +611,11 @@ followed later the same day, closing two gaps this paragraph used to name:
 `pathEditSetSelectMode()` had no caller outside a screenshot fixture, so Component mode
 shipped unreachable, and `gnomonHandlePositions()` was hit-tested but never painted, so five
 handles were grabbable with nothing on screen at any of them. What is NOT built for them
-yet, by name: the PATHS dock tab (§5 reserves it), and the three consumers —
-path-to-selection, fill path and stroke path with the current brush.
+yet, by name: the PATHS dock tab (§5 reserves it), and a **gesture** for the three
+consumers — `app/PathConsumers` builds and tests path-to-selection, fill path and stroke
+path with the current brush, headless, and nothing under `ui/` invokes any of them. That is
+the same shape of gap the MODE segment just closed, so it is written here by name rather
+than left to be rediscovered.
 
 `docs/spec-vs-implementation.md` §2 carries the same table with the file-and-line evidence.
 
