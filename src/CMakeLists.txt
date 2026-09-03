@@ -26,6 +26,7 @@ add_executable(naturalPaint
   app/MoveTool.cpp
   app/ToolSwitch.cpp
   app/FramePacing.cpp
+  app/ToolSurface.cpp
   app/LayerPanel.cpp
   app/Latency.cpp
   app/Memory.cpp
@@ -187,6 +188,7 @@ add_executable(naturalPaint
   app/selftest/TileStore.cpp
   app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
+  app/selftest/ToolSurface.cpp
   app/selftest/ToolSwitch.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp

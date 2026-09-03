@@ -50,6 +50,7 @@
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/Snapping.hpp"
+#include "app/ToolSurface.hpp"  // T5's second axis: can this tool act on THIS surface
 #include "app/ToolSwitch.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "app/ViewTransform.hpp"
@@ -500,30 +501,61 @@ bool drawToolGlyph(ImDrawList* dl, uint32_t codepoint, ImVec2 c, ImU32 col) {
 // than degree -- toolTooltip() appends "Not built yet." -- so a user who
 // hovers finds out why the cell did nothing, rather than assuming it is
 // broken.
+//
+// **A second axis, on exactly the same terms (`app/ToolSurface`, T5).**
+// `toolImplemented()` asks whether the tool is BUILT; it cannot ask whether
+// there is anything in front of the user for it to act on. With no document
+// open there very often is not -- `sim::PaintSim`'s canvas is a real,
+// paintable surface and is not a document -- so a Marquee cell used to draw
+// live, take the click, take the accent fill, and then hand the gesture to a
+// handler that read `st.documents.active()`, got nullptr and installed
+// nothing. That is the eyedropper's own defect one axis over, and it gets the
+// same four-part treatment the first axis already has: no click, no hover
+// tint, dimmed glyph, and a tooltip that says why.
+//
+// **`selected` is deliberately NOT gated on the new axis**, and this is the
+// one place the two axes must be treated differently rather than uniformly.
+// The first axis can suppress selection for free because `st.brush.tool` can
+// never hold an unimplemented tool -- nothing ever assigns one -- so the rule
+// costs nothing. That invariant does not hold here: the active tool is
+// perfectly able to be a document-scoped one at the instant the last document
+// closes. Dropping the accent fill then would leave the palette claiming NO
+// tool is active while the options bar, the cursor and the status band all go
+// on naming one, which is four tiers of chrome disagreeing -- precisely the
+// failure this whole discipline exists to prevent. The cell stays lit, stays
+// unclickable, and says why on hover.
 bool toolButton(AppState& st, Tool t, float cellSize) {
   ImGui::PushID(static_cast<int>(t));
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(cellSize, cellSize);
   const bool implemented = toolImplemented(t);
+  // The surface axis. `documents.active()` rather than `!documents.empty()`:
+  // the handlers this predicate speaks for are every one of them written
+  // against `st.documents.active()`, so this asks the identical question they
+  // do rather than a neighbouring one that could differ.
+  const bool documentOpen = st.documents.active() != nullptr;
+  const bool onSurface = toolActsWithoutDocument(t) || documentOpen;
+  // Both axes, and a cell is live only if it clears both.
+  const bool live = implemented && onSurface;
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
-  const bool clicked = clickedRaw && implemented;
+  const bool clicked = clickedRaw && live;
   const bool selected = implemented && st.brush.tool == t;
   const bool hovered = ImGui::IsItemHovered();
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImU32 bg = selected                    ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
-                    : (hovered && implemented)  ? ImGui::GetColorU32(ImGuiCol_ButtonHovered)
-                                                : ImGui::GetColorU32(ImGuiCol_Button);
+  const ImU32 bg = selected             ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
+                    : (hovered && live) ? ImGui::GetColorU32(ImGuiCol_ButtonHovered)
+                                        : ImGui::GetColorU32(ImGuiCol_Button);
   dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), bg);
   dl->AddRect(p, ImVec2(p.x + size.x, p.y + size.y),
               ImGui::GetColorU32(ImGuiCol_Border));
 
-  // Selected tools invert, the way MacPaint's did. A not-built-yet tool is
-  // never selected (see above), so its icon is always the dimmed, halved-
-  // alpha secondary-text colour -- the one visual cue that survives even a
+  // Selected tools invert, the way MacPaint's did. A cell that fails EITHER
+  // axis and is not the active tool draws the dimmed, halved-alpha
+  // secondary-text colour -- the one visual cue that survives even a
   // screenshot with no cursor in it: "this cell is present but off."
   const ImU32 fg = selected ? IM_COL32(20, 22, 24, 255)
-                   : implemented
+                   : live
                        ? ImGui::GetColorU32(ImGuiCol_Text)
                        : (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110);
   const ImVec2 c(p.x + size.x * 0.5f, p.y + size.y * 0.5f);
@@ -534,7 +566,16 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   // gating that on the tooltip's own stationary+delay timer would make the
   // cell itself feel laggy to hover, not just its tooltip.
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    const std::string tip = toolTooltip(t);
+    std::string tip = toolTooltip(t);
+    // Appended here rather than inside `toolTooltip()` because that function
+    // is pure metadata over `kToolMeta` and takes no `AppState` -- the surface
+    // is session state, not a property of the tool. `toolSurfaceRefusal()`
+    // answers nullptr for the not-built cells, so this never stacks a second
+    // reason under "Not built yet."
+    if (const char* why = toolSurfaceRefusal(t, documentOpen)) {
+      tip += "\n";
+      tip += why;
+    }
     ImGui::SetTooltip("%s", tip.c_str());
   }
   if (clicked) setActiveTool(st, t);
@@ -604,9 +645,15 @@ constexpr float kFlyoutPadX = 10.0f;
 //
 // Returns true on click regardless of toolImplemented() -- toolButton()'s
 // own clickedRaw/clicked split, so the caller (not this function) decides
-// what a click on a not-yet-built member means.
-bool toolFlyoutRow(Tool member, bool isCurrent, float rowW) {
+// what a click on a not-yet-built member means. `documentOpen` is the second
+// axis (app/ToolSurface, T5), passed in rather than read here for the same
+// reason: this function draws, the caller decides. A flyout row is the only
+// place a document-scoped tool can be SEEN while the palette cell above it
+// shows a different member of the group, so leaving the axis out here would
+// have left one live-looking route to every tool it disables.
+bool toolFlyoutRow(Tool member, bool isCurrent, bool documentOpen, float rowW) {
   const bool implemented = toolImplemented(member);
+  const bool live = implemented && (toolActsWithoutDocument(member) || documentOpen);
   ImGui::PushID(static_cast<int>(member));
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const ImVec2 size(rowW, kFlyoutRowH);
@@ -614,19 +661,34 @@ bool toolFlyoutRow(Tool member, bool isCurrent, float rowW) {
   const bool hovered = ImGui::IsItemHovered();
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  if (isCurrent || hovered) {
+  // `live &&`: a dead row takes neither fill. The hover half matches
+  // toolButton()'s own suppressed hover tint; the `isCurrent` half is there so
+  // a dimmed glyph is never drawn over the accent, which would read as low
+  // contrast rather than as "off" and would be the one state in the palette
+  // where the disabled cue is weaker than it is everywhere else.
+  if (live && (isCurrent || hovered)) {
     dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y),
                       isCurrent ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
                                 : ImGui::GetColorU32(ImGuiCol_ButtonHovered));
   }
 
-  // The exact fg-colour rule toolButton() uses -- dimmed for a not-built
-  // tool, inverted for the current pick, plain text otherwise -- repeated
-  // here rather than factored out, because toolButton() computes it inline
-  // from state (selected/hovered/implemented) this function does not share
+  // The exact fg-colour rule toolButton() uses -- dimmed for a tool that
+  // fails either axis, inverted for the current pick, plain text otherwise --
+  // repeated here rather than factored out, because toolButton() computes it
+  // inline from state (selected/hovered/live) this function does not share
   // (a flyout row is never "selected" in toolButton()'s sense; `isCurrent`
   // is a different, group-local idea).
-  const ImU32 fg = !implemented
+  //
+  // **`!live` is tested BEFORE `isCurrent` here, and that is not the order
+  // toolButton() uses.** The two are answering different questions and the
+  // difference is deliberate: `selected` up there means "this is the active
+  // tool", and the argument for keeping the active tool lit through a closed
+  // document is written at that function. `isCurrent` here means only "this
+  // is the member the group's cell is showing", which is display state a user
+  // never chose, so there is nothing to preserve by lighting it -- and a group
+  // whose remembered member is document-scoped would otherwise open its flyout
+  // with that row drawn live over a document that is not there.
+  const ImU32 fg = !live
                        ? (atelierToken(kTextSecondary) & 0x00FFFFFFu) | IM_COL32(0, 0, 0, 110)
                    : isCurrent ? IM_COL32(20, 22, 24, 255)
                                : ImGui::GetColorU32(ImGuiCol_Text);
@@ -642,7 +704,12 @@ bool toolFlyoutRow(Tool member, bool isCurrent, float rowW) {
   // that on the tooltip's own stationary+delay timer would make the row
   // itself feel laggy to hover, not just its tooltip.
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    const std::string tip = toolTooltip(member);
+    std::string tip = toolTooltip(member);
+    // The same append toolButton() makes, and for the same reason -- see there.
+    if (const char* why = toolSurfaceRefusal(member, documentOpen)) {
+      tip += "\n";
+      tip += why;
+    }
     ImGui::SetTooltip("%s", tip.c_str());
   }
   ImGui::PopID();
@@ -726,11 +793,20 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
         rowW = std::max(rowW, ImGui::CalcTextSize(toolName(group.members[m])).x);
       rowW += kFlyoutIconGutter + kFlyoutPadX;
 
+      const bool documentOpen = st.documents.active() != nullptr;
       for (int m = 0; m < group.memberCount; ++m) {
         const Tool member = group.members[m];
-        if (toolFlyoutRow(member, member == current, rowW)) {
-          current = member;                                     // display state always updates
-          if (toolImplemented(member)) setActiveTool(st, member);  // selection only if real
+        if (toolFlyoutRow(member, member == current, documentOpen, rowW)) {
+          current = member;  // display state always updates
+          // Selection only if the member clears BOTH axes -- built, and able
+          // to act on the surface that is actually in front of the user
+          // (app/ToolSurface, T5). `current` above is deliberately outside the
+          // gate: which member a group is showing is display state, and a user
+          // who picks the Marquee with no document open should still find the
+          // group on the Marquee once they open one.
+          if (toolImplemented(member) &&
+              (toolActsWithoutDocument(member) || documentOpen))
+            setActiveTool(st, member);
           ImGui::CloseCurrentPopup();
         }
       }
@@ -9530,7 +9606,7 @@ MenuContext menuContextFromState(AppState& st) {
   // so `--selftest` can call the exact predicate the menu uses without
   // needing an `AppState` or touching the recent-documents file this
   // function's own first line reads.
-  ctx.tools = toolMenuFamily(st.brush.tool);
+  ctx.tools = toolMenuFamily(st.brush.tool, st.documents.active() != nullptr);
   ctx.paused = st.paused;
 
   // --- View ---------------------------------------------------------------
@@ -9641,13 +9717,30 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // external linkage `menuContextFromState()` and `app/selftest/MenuBasics.cpp`
 // both need -- the former to assign `ctx.tools`, the latter to assert the
 // A4 fix directly.
-std::vector<MenuFamilyEntry> toolMenuFamily(Tool current) {
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
   std::vector<MenuFamilyEntry> tools;
   for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
     const Tool t = static_cast<Tool>(i);
     const bool implemented = toolImplemented(t);
-    tools.push_back(familyEntry(toolName(t), implemented, current == t, false,
-                                implemented ? std::string() : toolTooltip(t)));
+    // The surface axis (app/ToolSurface, T5), applied here for the reason A4
+    // is the precedent for: `MenuAction::ToolItem`'s handler calls
+    // `setActiveTool()` unconditionally and relies entirely on this `enabled`
+    // flag, so a menu that offered a document-scoped tool with no document
+    // open would be a THIRD live route to a tool the palette and the flyout
+    // both correctly disable -- which is A4's own defect ("all 27 tools were
+    // selectable from this menu while toolButton() correctly gated the same
+    // list one panel over") arriving through the second axis instead of the
+    // first.
+    const char* surfaceWhy = toolSurfaceRefusal(t, documentOpen);
+    const bool live = implemented && (toolActsWithoutDocument(t) || documentOpen);
+    // A disabled entry always carries its reason, and never two: the two
+    // predicates are disjoint by construction -- `toolSurfaceRefusal()`
+    // answers nullptr for every not-built cell -- so this is a choice between
+    // one sentence and the other, never a concatenation.
+    std::string why;
+    if (!implemented) why = toolTooltip(t);          // "... Not built yet."
+    else if (surfaceWhy != nullptr) why = surfaceWhy;  // "... no document is open."
+    tools.push_back(familyEntry(toolName(t), live, current == t, false, std::move(why)));
   }
   return tools;
 }
@@ -11618,6 +11711,51 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           firstLine == std::string::npos ? g_docStatus : g_docStatus.substr(0, firstLine);
       ImGui::TextDisabled("| %s", oneLine.c_str());
       ImGui::SetItemTooltip("%s", g_docStatus.c_str());
+    } else if (st.documents.empty()) {
+      // **docs/testing-issues.md T5, third requirement: say what the surface
+      // is.** "When you close all documents, there is still a document/canvas
+      // that does not belong to anything" -- and until now nothing on screen
+      // said so. The canvas draws, the palette drew live, and the only place
+      // the distinction appeared at all was the status band's terse
+      // "2560 x 1440 - canvas" and the Export dialog's own source line, neither
+      // of which a user reads as an answer to "why did that tool do nothing?"
+      //
+      // Here, and in the same slot as the transient status line above, because
+      // this is the one spot in the chrome that is ALREADY reserved for the
+      // no-documents case: the tab strip owns the middle of this row whenever
+      // there are documents, so a line drawn here can never compete with it,
+      // and the `else` makes a real transient message (a drop report, a failed
+      // open) win the space while it is up. It is not in the status band
+      // (ui/AtelierChrome.cpp) because that band is monospaced numerics with no
+      // prose in it by design, and not on the canvas because a legend painted
+      // over the paper is the one place a painter must not be interrupted.
+      //
+      // The wording is `ui/MacPaintUI.cpp:350` and `:5352`'s clause verbatim --
+      // "no document is open. File > New Document makes one." -- because those
+      // two are the voice this build already refuses in, and a third phrasing
+      // of one fact is a third thing to keep in step.
+      ImGui::TextDisabled("| No document is open. File > New Document makes one.");
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        // The six tools that still work are LISTED BY WALKING THE ENUM, never
+        // typed out: `toolActsWithoutDocument()` is the same predicate the
+        // palette dims by, so this sentence cannot come to disagree with the
+        // cells it is explaining. A tool that gains or loses a no-document
+        // route changes both at once or neither.
+        std::string live;
+        for (int i = 0; i < static_cast<int>(Tool::Count); ++i) {
+          const Tool t = static_cast<Tool>(i);
+          if (!toolImplemented(t) || !toolActsWithoutDocument(t)) continue;
+          if (!live.empty()) live += ", ";
+          live += toolName(t);
+        }
+        ImGui::SetTooltip(
+            "The canvas below is the live painting surface (sim::PaintSim), not a document:\n"
+            "painting it writes a GPU texture and touches no layer, so nothing on it is\n"
+            "saved, undone or exported.\n\n"
+            "Works on it: %s.\n"
+            "Every other tool is dimmed in the palette until a document is open.",
+            live.c_str());
+      }
     }
 
     // Right-aligned: undo / redo, where docs/ui.md section 2 draws them.

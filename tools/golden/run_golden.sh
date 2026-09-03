@@ -6,7 +6,7 @@
 # why). This script is the missing other half: it drives the app through a
 # handful of known, scripted UI states via its existing --demo-document /
 # --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo /
-# --gradient-demo / --clone-demo / --smudge-demo
+# --gradient-demo / --clone-demo / --smudge-demo / --no-document
 # CLI flags, crops each capture down
 # to one small region, and compares it against a reference image committed
 # under tests/golden/ with src/tools/GoldenTool.cpp.
@@ -490,8 +490,78 @@ measure_n="${2:-10}"
 #     `toolbar`'s (48, 16) by analogy, which is the mistake `gradient_drag`'s
 #     entry records making and correcting -- this crop holds more antialiased
 #     text than any other in the table and still did not move a bit.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo")
+#
+#   `no_document` / `no_document_title` (--no-document)
+#     docs/testing-issues.md **T5**: "when you close all documents, there is
+#     still a document/canvas that does not belong to anything."
+#
+#     **This is the state nobody had ever photographed, and it was not
+#     reachable at all.** A session always starts with a document
+#     (src/main.cpp, "A session always has a document"), no CLI flag closed it,
+#     and `--screenshot` cannot click File > Close. So every pixel of the
+#     no-document chrome -- the palette, the title band, the tool menu -- was
+#     outside this harness's reach, which is exactly why T5 could sit open as
+#     "the oldest known structural gap in the build" with a green suite and
+#     twenty green views. `--no-document` skips the startup document; these two
+#     views are the photograph.
+#
+#     `no_document` is the WHOLE tool palette column, top to bottom, and the
+#     height is the point rather than an accident: the claim under test is not
+#     "cells are dimmed", it is **which** cells. Fifteen of the twenty-one
+#     built tools go dim because they need a document; Hand and Zoom stay lit
+#     because they move the view; the Brush group's cell stays on the accent
+#     because it is the active tool and painting the bare canvas is a supported
+#     workflow this change must not break. A crop stopping at the fifth cell
+#     (which is where `tools`' own 402 px would stop) would photograph the
+#     dimming and miss every one of those distinctions -- it would pass equally
+#     happily on a change that disabled the entire palette, which is the one
+#     regression this view exists to catch.
+#
+#     `no_document_title` is the title band's statement, and it needs its own
+#     view because the band is not in `no_document`'s column and `titlebar`
+#     photographs the same band WITH a document (where the tab strip owns that
+#     space and the statement is deliberately not drawn). Cropped to x<900:
+#     everything to the right of that is the PANELS/Undo/Redo/fps group
+#     `titlebar` already covers, and repeating it here would be a second copy
+#     of somebody else's coverage.
+#
+#     `no_document_flyout` (--no-document --flyout-demo) is the third, and it
+#     exists for one specific regression the other two cannot see. **The
+#     judgement call of this whole change is that the bare canvas stays
+#     paintable** -- File > "New" is called "New Canvas" precisely so it cannot
+#     be read as "New Document", and a change that made the document-scoped
+#     tools legible by also switching the paint tools off would have destroyed
+#     the thing it was meant to protect. In `no_document` the Brush group's
+#     cell is the ACTIVE tool, so it draws on the accent whether or not it can
+#     act, and a regression that disabled it would move no pixel in that crop.
+#     The flyout has no such cover: it lists all four members of the paint
+#     group side by side, and with no document open exactly one of them
+#     (Pencil, which `strokeRouteFor()` sends nowhere without a target) is
+#     dimmed while Brush, Water and Dry Brush stay lit. Four sibling tools, one
+#     picture, and the line drawn between them is visible in it -- so switching
+#     the paint tools off moves three rows here and is caught.
+#
+#     **All three are blessed exact (0, 0), and all three were MEASURED rather than
+#     reasoned about.** That matters here more than usual for two of them:
+#     `no_document_title` is 900x77 of nothing but antialiased text, and
+#     `no_document_flyout` is the SAME popup, with the same four member names,
+#     that made `flyout` above widen to (48, 16) -- "a text view wearing a
+#     palette view's threshold ... passing on luck", in that entry's own words.
+#     So the expectation going in was that neither could hold an exact
+#     threshold, and copying `flyout`'s numbers across by analogy would have
+#     been the obvious move and the wrong one.
+#
+#     8 separately launched captures per view, each diffed against that batch's
+#     first: 7 comparisons per view, 21 in all, **every one 0 mismatched px at
+#     max channel diff 0** -- over 124 000 px per `no_document` crop, 69 300
+#     per `no_document_title` and 140 000 per `no_document_flyout`. They get 0
+#     on evidence, not on resemblance. (`flyout`'s own bimodal glyph-edge
+#     flake is not being contradicted here: that view is captured over a
+#     document and this one is not, and 7 clean comparisons is 7 clean
+#     comparisons, not a proof that the flake is impossible. If this view ever
+#     does start flaking the widening will be a measurement too.)
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -711,11 +781,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920 0   0   0    900 1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40)
-view_crop_y=(5    927  965 148 664 0    628 1000 158  166  1462 76   560  76   560  560  370  370  76   76   76)
-view_crop_w=(1400 640  384 100 400 2560 700 900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240)
-view_crop_h=(166  190  192 402 350 77   500 400  500  64   64   76   800  76   800  800  550  550  76   76   76)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0)
+view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664)
+view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400)
+view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -762,7 +832,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # it does produce is drawn at a fixed position rather than chased across the
 # frame. Giving these a text budget by analogy would have cost the sensitivity
 # `gradient_drag`'s own entry above records losing for exactly that reason.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0)
+view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -778,7 +848,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0)
 # still 1400x below the 92 516 px that the diffuse-shift test moved.
 # Confirmed by `measure`, not assumed -- see the
 # note in cmd_measure on what that mode is for.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0)
+view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

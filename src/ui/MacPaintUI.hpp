@@ -214,6 +214,17 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // while `toolButton()` (ui/AtelierChrome.cpp) correctly gated the same list
 // one panel over. `toolImplemented()` is the single predicate both now share.
 //
+// **`documentOpen` is the second axis (app/ToolSurface, docs/testing-issues.md
+// T5), and it is here because A4 is the precedent for it.** With no document
+// open, fifteen of the twenty-one built tools have nothing to act on --
+// `sim::PaintSim`'s canvas is a real, paintable surface and is not a document
+// -- and `MenuAction::ToolItem`'s handler calls `setActiveTool()`
+// unconditionally, relying entirely on the `enabled` flag this function sets.
+// So a Goodies menu that ignored the surface would be A4's own defect wearing
+// the other axis: a third live route to a tool the palette and the flyout both
+// correctly disable. It stays a parameter rather than an `AppState&` for the
+// reason the next paragraph gives.
+//
 // **Exposed for --selftest, and that is the whole reason it is in this
 // header.** `menuContextFromState()` itself is not: its first call loads
 // `st.recentDocuments` from the user's real preferences file
@@ -222,8 +233,9 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
 // nothing and touches no disk, so `app/selftest/MenuBasics.cpp` can call it
 // directly to prove the Goodies menu enables exactly the implemented tools --
 // counted against `toolImplemented()`, never a literal number, so the
-// assertion stays true as tools ship.
-std::vector<MenuFamilyEntry> toolMenuFamily(Tool current);
+// assertion stays true as tools ship -- and `app/selftest/ToolSurface.cpp` can
+// call it with `documentOpen = false` to prove the same of the second axis.
+std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen);
 
 // The foreground colour as STRAIGHT LINEAR RGBA -- what the paint bucket (PRD
 // D25/D26) and the gradient (D24) both need, and what neither can be handed

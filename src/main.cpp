@@ -1095,6 +1095,9 @@ int main(int argc, char** argv) {
   bool wandDemoBucket = false;
   bool smudgeDemo = false;
   bool flyoutDemo = false;
+  // --no-document: see the argument-parsing block, and the "A session always
+  // has a document" comment this flag is the deliberate exception to.
+  bool noDocumentDemo = false;
   bool panelStackDemo = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
@@ -1435,6 +1438,27 @@ int main(int argc, char** argv) {
       // a flyout opens on right-click or a ~350ms press-and-hold, and the
       // screenshot path has neither. See AppState::openToolFlyoutDemo.
       flyoutDemo = true;
+    } else if (a == "--no-document") {
+      // docs/testing-issues.md T5: leaves `st.documents` EMPTY, which is the
+      // state the report is about -- "when you close all documents, there is
+      // still a document/canvas that does not belong to anything."
+      //
+      // **A flag is the only way to photograph it, and that fact is itself
+      // worth recording.** A session always starts with a document (see the
+      // "A session always has a document" block further down), and no CLI flag
+      // closed it, so the whole no-document state -- the dimmed palette, the
+      // title band's statement, the tool menu's disabled rows -- was outside
+      // the golden harness's reach entirely. Reaching it needs a File > Close
+      // on a document the user did not open, and `--screenshot` cannot click a
+      // menu. This is the same gap `--flyout-demo` covers for a press-and-hold
+      // and `--marquee-demo` for a drag.
+      //
+      // It SKIPS the creation rather than closing the document afterwards, so
+      // nothing downstream ever sees a document that then disappeared -- there
+      // is no history entry, no journal record and no tab to have been
+      // removed. What is on screen is exactly what a user who closed their last
+      // document is looking at.
+      noDocumentDemo = true;
     } else if (a == "--panel-stack-demo") {
       // The dockable-panel revision's tab stacks: puts HISTOGRAM and GRADE
       // into COLOR's slot as tabs, and COMPS into the collapsed HISTORY's, so
@@ -1764,6 +1788,15 @@ int main(int argc, char** argv) {
     // conditional, walked over the whole `Tool` enum rather than sampled.
     // Headless and GPU-free.
     const bool toolSwitchOk = np::runToolSwitchTest();
+    // app/ToolSurface (docs/testing-issues.md T5, short-term half): the SECOND
+    // axis of "is this palette cell live". `toolImplemented()` and
+    // `toolHasCanvasHandler()` both ask whether a tool is BUILT; neither can
+    // ask whether there is anything in front of the user for it to act on, and
+    // with no document open there very often is not. Walks every `Tool` in
+    // both surface states, and asserts first of all that the new predicate is
+    // a PROPER subset of the old ones -- a synonym would make every other
+    // assertion here unfalsifiable. Headless and GPU-free.
+    const bool toolSurfaceOk = np::runToolSurfaceTest();
     // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
     // transform's round-trip identity, one hand-worked known-point check,
     // and the view-only proof that mirror/rotation/grayscale never mutate
@@ -2727,7 +2760,7 @@ int main(int argc, char** argv) {
     const bool ok = pigmentOk && accumulatorOk && colorSpaceOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
-                    eyedropperOk && measureOk && toolSwitchOk &&
+                    eyedropperOk && measureOk && toolSwitchOk && toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -2963,8 +2996,17 @@ int main(int argc, char** argv) {
   // already returned, so none of them sees a document they did not ask for --
   // in particular `--selftest`'s idle-RSS assertion, whose whole point is a
   // measurement taken before any subsystem exists.
-  st.documents.add(np::makeBlankOpenDocument(static_cast<int32_t>(kCanvasW),
-                                             static_cast<int32_t>(kCanvasH), np::WorkingSpace{}));
+  //
+  // **`--no-document` is the one deliberate exception** (docs/testing-issues.md
+  // T5). The rule above is about a *session a user is working in*; the state
+  // the T5 report describes is the one after they close their last document,
+  // and there was no way to reach it from a launch at all -- so the palette
+  // dimming, the title band's statement and the Goodies menu's disabled rows
+  // had no photograph anywhere. See that flag's own comment.
+  if (!noDocumentDemo)
+    st.documents.add(np::makeBlankOpenDocument(static_cast<int32_t>(kCanvasW),
+                                               static_cast<int32_t>(kCanvasH),
+                                               np::WorkingSpace{}));
   if (demoDocument) {
     if (np::OpenDocument* od = st.documents.active()) {
       buildDemoDocument(*od);

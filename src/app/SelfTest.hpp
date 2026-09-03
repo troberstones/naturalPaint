@@ -403,6 +403,66 @@ bool runMeasureTest();
 // app/DocumentLifecycle only.
 bool runToolSwitchTest();
 
+// app/ToolSurface -- docs/testing-issues.md **T5**'s short-term half: "closing
+// every document leaves a canvas belonging to nothing."
+//
+// **The point of this section is that it asserts a SECOND AXIS and not a
+// synonym for the first one.** `runEyedropperTest()` above already pins
+// `toolImplemented(t) == toolHasCanvasHandler(t)` for every `Tool` -- both of
+// which are properties of the BUILD, fixed at compile time. Neither can ask
+// whether there is anything in front of the user for the handler to act on,
+// and with no document open there very often is not: `sim::PaintSim`'s canvas
+// is a real, paintable surface and is not a document. So a Marquee cell used
+// to draw live, take the click and take the accent fill over a handler that
+// read `st.documents.active()`, got nullptr and installed nothing -- the
+// eyedropper's own defect, one axis over.
+//
+// Confirms, over the whole `Tool` enum walked rather than sampled:
+//
+//   * `toolActsWithoutDocument()` is a **strict, proper subset** of
+//     `toolImplemented()`, in both directions -- every tool that survives with
+//     no document is built, and at least one built tool does not survive. If a
+//     future edit collapsed the new predicate into either of the two existing
+//     ones this assertion reddens, which is what stops a synonym being shipped
+//     as an axis. The counts are derived from the predicates, never literals,
+//     so the claim stays true as tools ship.
+//   * the six that survive are **each traced to their own gate**, not to a
+//     list: Hand and Zoom through `toolPansView()`/`toolZoomsView()` (which
+//     take no document at all), Measure through `toolMeasuresCanvas()` (whose
+//     `MeasureLine::documentId` is 0 on both sides of the question), and
+//     Brush/Water/Dry Brush through `strokeRouteFor(t, nullptr) ==
+//     StrokeRoute::PaintSim` -- the route table's own "no target at all is the
+//     one case the solver canvas is right for" row.
+//   * **the bare canvas still paints**, asserted as its own claim rather than
+//     inferred: `strokeRouteFor()` sends the three paint tools to the solver
+//     with a null target, and this is the supported workflow the whole track
+//     must not break ("New" is called "New Canvas" for exactly this reason).
+//   * the stroke tools that refuse with no document -- Eraser, Pencil, Smudge,
+//     Clone Stamp, Dodge and Burn -- refuse **through the route table**, so
+//     the predicate cannot disagree with what the canvas block does; and the
+//     bucket and the gradient refuse through
+//     `pixelOpRefusalFor(nullptr) == PixelOpRefusal::NoLayer`.
+//   * `toolSurfaceRefusal()` says something for every built, document-scoped
+//     tool and `nullptr` for all three of its no-answer cases, including the
+//     one that matters: a cell with no canvas handler gets `nullptr`, so
+//     "Not built yet." is never stacked with a second reason. Every sentence
+//     it returns carries the build's existing clause verbatim
+//     ("no document is open. File > New Document makes one.") rather than a
+//     third phrasing of one fact.
+//   * `toolMenuFamily()` -- the Goodies menu, A4's own function -- enables
+//     exactly the tools that clear BOTH axes with no document open, and every
+//     disabled entry carries exactly one reason. A4's original defect was a
+//     menu offering 27 tools the palette correctly gated one panel over; this
+//     is that same defect measured on the second axis.
+//
+// Headless and GPU-free. The palette's own drawing (`toolButton()`,
+// `toolFlyoutRow()`) is out of reach here for the reason every canvas and
+// chrome block is -- there is no window and no ImGui frame -- which is why
+// the predicate was lifted into `app/ToolSurface` in the first place, and why
+// the golden harness carries a `no_document` view that photographs the dimmed
+// palette this section can only assert the inputs to.
+bool runToolSurfaceTest();
+
 // Headless check on the unified view transform (PLAN.md Phase 2 step 11,
 // "View controls" -- PRD Q1-Q4; docs/shortcuts.md section 3's own mandate
 // that mirror and rotation compose into one matrix and pen input maps back

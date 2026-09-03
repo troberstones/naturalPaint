@@ -279,7 +279,13 @@ bool runMenuBasicsTest() {
   std::printf("  -- E. A4: Goodies enables exactly the implemented tools --\n");
 
   {
-    const std::vector<MenuFamilyEntry> tools = toolMenuFamily(Tool::Brush);
+    // `documentOpen = true`: this block is about A4's axis -- is the tool
+    // BUILT -- and that is the state in which the surface axis
+    // (app/ToolSurface, T5) admits every tool, so the two questions are
+    // separated rather than one masking the other. The second axis is asserted
+    // over this same function in app/selftest/ToolSurface.cpp, with
+    // `documentOpen = false`.
+    const std::vector<MenuFamilyEntry> tools = toolMenuFamily(Tool::Brush, true);
     check(tools.size() == static_cast<size_t>(Tool::Count),
           "A4: the Goodies tool family offers every tool -- disabled, not hidden");
 
