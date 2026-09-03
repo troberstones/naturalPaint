@@ -160,6 +160,17 @@ bool runTextShaperTest() {
         // measurably PAST the baseline (y > 0) -- getting the flip backwards
         // would instead show 'p' entirely at y <= 0.
         check(boundsP.maxY > 2.0f, "'p': the descender extends to LARGER y than the baseline");
+        // The line above is TRUE IN BOTH CONVENTIONS and so proves nothing on
+        // its own -- 'p' straddles the baseline, so its y-range clears +2
+        // whichever way up it is (measured: -12.86..5.00 flipped,
+        // -5.00..12.86 not). Found by sabotage: dropping the flip left it
+        // green. What actually distinguishes them is the ASYMMETRY -- a 'p'
+        // reaches much further above the baseline (bowl and stem) than below
+        // it (descender), so in this y-down space the descender depth must be
+        // the SMALLER of the two magnitudes. Upside down, it is the larger.
+        check(boundsP.maxY < -boundsP.minY,
+             "'p': the descender is shallower than the bowl is tall -- only "
+             "true y-DOWN (the assertion above passes either way up)");
         // 'b' has an ascender and no descender: its outline must reach
         // measurably ABOVE the baseline (y < 0) and not noticeably below it.
         check(boundsB.minY < -2.0f, "'b': the ascender extends to SMALLER y than the baseline");
