@@ -1059,56 +1059,83 @@ preview at view resolution, or on a downsampled proxy. Not built.
 
 ---
 
-## T16 — The mask chip is not a control, and no mask can be painted · open
+## T16 — The mask chip is not a control, and no mask can be painted · PARTLY BUILT
 
 **Reported.** When a layer has a layer mask, paint into it when the layer mask
 icon is active; disable it if you shift-click it; and show its result when you
 use the Photoshop command that shows the mask (⌥-click).
 
-**Verified — all three are absent, and they are absent for one shared reason
-plus one deeper one.**
+**Built: gesture 1 (paint into the mask), plus the two thumbnails the panel
+needed to make it a gesture at all. Gestures 2 and 3 are still open**, and the
+"Remaining work" section below says what each costs.
 
-*The shared reason.* The mask chip is **drawn, not clickable**.
-`ui/MacPaintUI.cpp:2512-2514` computes its rectangle and fills it; there is no
-`InvisibleButton`, so no click of any modifier reaches it. Every one of the
-three gestures needs that control to exist first.
+### What was wrong with this entry's own analysis
 
-*The deeper one, and it is the expensive part.* There is **no concept of an
-active mask anywhere in the tree** — `maskActive`, `editingMask`,
-`maskSelected`, `MaskTarget` all return nothing — and, more to the point,
-**nothing in this build can paint a mask at all**. `core/Layer.hpp:281` says
-so outright: "the content of a mask can only come from a `.npaint` or from a
-test writing texels", with `addLayerMask()`/`removeLayerMask()` being "the
-whole of the lifecycle a user can reach". `StrokeRoute`
-(`app/StrokeSession.hpp:300`) confirms it from the other side: its six values
-are `None`, `CpuDeposit`, `RgbDeposit`, `RgbErase`, `PigmentErase`, `PaintSim`
-— there is no mask route, and the parametric kinds "already refuse for having
-no writable store".
+Three of its claims were stale or incorrect by the time they were acted on, and
+they are corrected here rather than deleted, because two of them were the
+reason the job looked bigger than it was.
 
-So "paint into it when the mask icon is active" is not a wiring job. It is a
-seventh `StrokeRoute` writing a `MaskTileStore`, plus the target concept to
-select it.
+* **"Its six values are ..."** — `StrokeRoute` had **ten** values, not six
+  (`None`, `CpuDeposit`, `RgbDeposit`, `RgbErase`, `PigmentErase`,
+  `PencilDeposit`, `TonalBrush`, `CloneStamp`, `Smudge`, `PaintSim`), and
+  `strokeRouteWritesLayer()` already named eight of them as layer writers. So
+  the mask route is the **eleventh**, not the seventh, and it joined a
+  predicate that already had a documented contract for admitting new members.
+* **`app/StrokeSession.hpp:300`** — the enum was at `:539`.
+* **`ui/MacPaintUI.cpp:2512-2514`** — the chip was at ~`:2772`.
+* **The entry never mentions that the compositor already reads masks.**
+  `core/Composite.cpp` composites through `Layer::mask` in the main walk and in
+  both opaque-floor shortcuts, and `layerMaskCoverageAt()` is exported for it.
+  So "a mask can be stored and composited but not painted" was the real
+  starting position, and only the write end was missing.
 
-*And a third thing the report implies but does not name.* Shift-click
-**disables** a mask, which means a mask can be off without being removed —
-there is no such flag on `Layer` (no `maskEnabled`, checked). That is a new
-model field, and therefore a `docs/document-format.md` decision about whether
-it round-trips through `.npaint` or is session-only. It should round-trip: a
-disabled mask that silently re-enables on reload is a data-shaped surprise,
-unlike the group-collapse state (PRD C7) which is genuinely view-only.
+### What is built
 
-**Work**, smallest first, and the first is independently useful:
+* **`StrokeRoute::MaskPaint` and `brush/MaskPaint`** — the deposit this entry
+  called "the real cost". One route rather than a paint/erase pair, because a
+  mask sample is a scalar coverage with no privileged end: painting black hides
+  and painting white reveals, and both are one lerp toward the ink's coverage.
+  The ink becomes a coverage through Rec.709 luma in linear light, sRGB-encoded
+  (`core/SelectionRefine.hpp`'s order), so a 50 % display grey paints coverage
+  0.5 rather than 0.214.
+* **The target concept** — `LayerEditTarget`, `OpenDocument::maskIsEditTarget`
+  and `resolveLayerEditTarget()`. The last of those is the load-bearing one:
+  "the mask is selected" over a layer that has none resolves to `Content`, so
+  the control is never live over nothing.
+* **A layer thumbnail and a mask thumbnail in every row** (`app/LayerThumbnail`),
+  cached on `(DocumentId, revision, layerIndex)`. Sampling is O(thumbnail), not
+  O(document): 9 216 samples per picture whatever the canvas size.
+* **The mask thumbnail IS the control.** Clicking it selects the layer and
+  aims the pen at its mask; clicking the layer thumbnail aims it back at the
+  pixels. The trailing half-filled chip is gone — the thumbnail at the leading
+  edge does the same job (and survives a clipped row better, since clipping
+  eats the trailing end) while also being clickable.
 
-1. Make the chip a control (`InvisibleButton` on the rect already computed at
-   `:2512`), with plain click selecting the mask as the paint target.
-2. `Layer::maskEnabled`, its `.npaint` attribute, its reader/writer, and its
-   place in the format table. Shift-click toggles it; the chip draws the
-   disabled state so it is visible without hovering.
-3. ⌥-click shows the mask alone in the canvas — a view mode, not a document
-   change, so it belongs beside the grayscale check in
+Covered by `app/selftest/MaskTarget.cpp` and by three golden views
+(`layer_thumbs`, `mask_target`, `mask_content`) reachable through the new
+`--mask-demo` flag.
+
+### Remaining work
+
+1. **Shift-click disables the mask.** Unchanged from this entry's original
+   analysis and still the expensive half: `Layer::maskEnabled`, its `.npaint`
+   attribute, its reader/writer, its row in the format table, and — the part
+   that is easy to underestimate — gating **every leaf** that reads
+   `Layer::mask` in `core/Composite.cpp` rather than one derived predicate.
+   That file reads the mask in the main walk and in both opaque-floor
+   shortcuts, and a gate applied to only some of them composites a disabled
+   mask as enabled in exactly the cases the shortcuts fire.
+   It should round-trip: a disabled mask that silently re-enables on reload is
+   a data-shaped surprise, unlike the group-collapse state (PRD C7) which is
+   genuinely view-only.
+2. **⌥-click shows the mask alone in the canvas** — a view mode, not a
+   document change, so it belongs beside the grayscale check in
    `docs/operations.md §7` rather than in the layer model.
-4. `StrokeRoute::MaskPaint` and the deposit that backs it. This is the real
-   cost of the entry and should not be scheduled as if it were part of 1.
+3. **The other tools on a mask.** Only Brush and DryBrush take the mask route;
+   every other tool refuses by name. Eraser, Pencil, Dodge/Burn, Clone Stamp
+   and Smudge each need their own answer about what that operation means on a
+   scalar coverage field — `app/StrokeSession.cpp`'s mask arm lists the
+   question for each.
 
 ---
 

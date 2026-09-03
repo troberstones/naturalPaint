@@ -349,6 +349,91 @@ void runUiLayerDemo(np::OpenDocument& od, bool clip) {
   }
 }
 
+// --mask-demo [content] (docs/testing-issues.md T16): aims the pen at a layer
+// MASK and paints one real stroke into it.
+//
+// **It exists because the state it photographs cannot be reached from a launch
+// argument any other way, and `--selftest` can never see it.** The mask
+// thumbnail IS the target control, so selecting a mask is a click on a 24 px
+// square in a panel -- and `--screenshot` cannot click. That is exactly the
+// reachability gap `docs/reachability-audit.md` T5 sat open behind, and the
+// `--wand-demo` / `--no-document` pattern is the answer to it: make the state
+// reachable by argument, then the golden view is the coverage.
+//
+// It runs on top of `--demo-document`, deliberately, and no fixture of its own
+// was written -- that document's layer 2 ("Yellow, masked ramp") already has
+// asymmetric content in the lower right AND a mask that ramps left to right
+// across it, which is what a thumbnail drawn flipped, mirrored or with red and
+// blue swapped has to fail against. A second fixture would have been a second
+// thing to keep in step for no new coverage.
+//
+// The `content` argument runs the identical script with the target left on the
+// layer's own pixels, which is the comparison shot: the two pictures differ in
+// which square is ringed and in which store the stroke landed, and in nothing
+// else.
+void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
+  // The topmost layer that has a mask -- named by search rather than by index,
+  // so this does not silently aim at the wrong layer if `--demo-document`'s
+  // stack ever changes.
+  size_t target = od.document.layers.size();
+  for (size_t i = od.document.layers.size(); i-- > 0;)
+    if (od.document.layers[i].mask.has_value()) {
+      target = i;
+      break;
+    }
+  if (target >= od.document.layers.size()) {
+    std::fprintf(stderr, "[mask-demo] no layer in this document has a mask -- run it with "
+                         "--demo-document, whose layer 2 does\n");
+    return;
+  }
+  np::setActiveLayer(od, target);
+  np::setLayersPanelSelection(od, target);
+  od.maskIsEditTarget = maskTarget;
+
+  const np::Layer& layer = od.document.layers[target];
+  const np::LayerEditTarget resolved = np::resolveLayerEditTarget(od.maskIsEditTarget, &layer);
+  std::printf("[mask-demo] layer %zu of %zu: '%s', target %s, route %s\n", target,
+              od.document.layers.size(), layer.name.c_str(), np::layerEditTargetName(resolved),
+              np::strokeRouteName(np::strokeRouteFor(np::Tool::Brush, &layer, resolved)));
+
+  // One stroke, through a real `app::StrokeSession` -- the same class the pen
+  // drives -- so the picture is of the route rather than of a fixture that
+  // wrote texels. Black ink, so a mask stroke HIDES and the difference between
+  // the two shots is legible in the canvas as well as in the thumbnail.
+  np::BrushTip tip;
+  tip.radius = 60.0f;
+  tip.hardness = 0.8f;
+  tip.flow = 1.0f;
+  tip.opacity = 1.0f;
+  tip.linearRgb = {0.0f, 0.0f, 0.0f};
+
+  np::StrokeSession session;
+  std::string error;
+  if (!session.begin(od, target, tip, np::Tool::Brush, &error)) {
+    std::fprintf(stderr, "[mask-demo] %s\n", error.c_str());
+    return;
+  }
+  // A diagonal through the masked rectangle (x 480..928, y 512..928 in
+  // `buildDemoDocument()`), so the stroke crosses the ramp rather than running
+  // along one value of it.
+  constexpr int kSamples = 40;
+  for (int i = 0; i <= kSamples; ++i) {
+    const float u = static_cast<float>(i) / static_cast<float>(kSamples);
+    session.addPoint(540.0f + 340.0f * u, 580.0f + 280.0f * u);
+  }
+  session.end();
+  std::printf("[mask-demo] %zu dabs, %zu texels, %zu tiles, history '%s', revision %llu\n",
+              session.dabCount(), session.texelsWritten(), session.strokeTiles().size(),
+              od.history.entries().empty() ? "(none)"
+                                           : od.history.entries().back().label.c_str(),
+              static_cast<unsigned long long>(od.revision));
+  std::printf("[mask-demo] mask store now holds %zu tiles; layer store %zu\n",
+              od.document.layers[target].mask->occupiedTileCount(),
+              od.document.layers[target].rgbTiles.has_value()
+                  ? od.document.layers[target].rgbTiles->occupiedTileCount()
+                  : 0);
+}
+
 // --ui-merge-demo <command> (PLAN.md Phase 5 step 10): press exactly one of
 // core/Merge's five buttons on the session's document, through the same
 // `applyLayerCommand()` the `Layer` menu and the LAYERS panel call.
@@ -1097,6 +1182,8 @@ int main(int argc, char** argv) {
   bool wandDemo = false;
   bool wandDemoBucket = false;
   bool smudgeDemo = false;
+  bool maskDemo = false;
+  bool maskDemoTarget = true;
   bool overRangeDemo = false;
   bool flyoutDemo = false;
   // --no-document: see the argument-parsing block, and the "A session always
@@ -1452,6 +1539,16 @@ int main(int argc, char** argv) {
       wandDemo = true;
       if (i + 1 < argc && std::string_view(argv[i + 1]) == "bucket") {
         wandDemoBucket = true;
+        ++i;
+      }
+    } else if (a == "--mask-demo") {
+      // T16's paint target, made reachable from the command line. See
+      // `runMaskDemo()` for why this has no fixture of its own and why
+      // `content` is the comparison shot rather than a second view of the same
+      // thing.
+      maskDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "content") {
+        maskDemoTarget = false;
         ++i;
       }
     } else if (a == "--smudge-demo") {
@@ -2055,6 +2152,11 @@ int main(int argc, char** argv) {
     // the engine does not refuse, and the two Image-menu items. Headless and
     // GPU-free.
     const bool cropToolOk = np::runCropToolTest();
+    // app/LayerThumbnail + brush/MaskPaint + StrokeSession's mask target:
+    // testing-issues T16 -- the target concept, the mask stroke route, the two
+    // thumbnails' two different transfer functions, and the thumbnail cache's
+    // invalidation rule. Headless and GPU-free.
+    const bool maskTargetOk = np::runMaskTargetTest();
     // app/FramePacing: T27's three frame-budget tiers, the --screenshot
     // exemption the golden harness depends on, and the fixed-timestep ceiling
     // that decides how slow the idle tier is allowed to be. Headless and
@@ -2876,7 +2978,7 @@ int main(int argc, char** argv) {
                     selectionBoundaryOk && floodFillOk && floodFillOptionsOk &&
                     clipboardOk && opStackOk &&
                     lutBakeOk && applyPassOk && gradeDispatchOk && transformOk && resamplePerfOk &&
-                    documentTransformOk && transformSessionOk && moveToolOk && cropToolOk &&
+                    documentTransformOk && transformSessionOk && moveToolOk && cropToolOk && maskTargetOk &&
                     framePacingOk &&
                     gradientToolOk &&
                     transformPreviewTextureOk &&
@@ -3151,6 +3253,10 @@ int main(int argc, char** argv) {
   if (controlsScrollTo != nullptr) st.controlsScrollTo = controlsScrollTo;
   if (uiLayerDemo) {
     if (np::OpenDocument* od = st.documents.active()) runUiLayerDemo(*od, uiLayerDemoClip);
+  }
+  // After --demo-document, which is the fixture it aims at.
+  if (maskDemo) {
+    if (np::OpenDocument* od = st.documents.active()) runMaskDemo(*od, maskDemoTarget);
   }
   if (marqueeDemo) {
     if (np::OpenDocument* od = st.documents.active()) {

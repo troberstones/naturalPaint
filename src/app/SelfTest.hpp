@@ -1249,6 +1249,21 @@ bool runMoveToolTest();
 // bow-tie refusal, which is drawn in two places and asserted in neither. See
 // app/selftest/CropTool.cpp.
 bool runCropToolTest();
+// app/LayerThumbnail, app/StrokeSession's mask target, and brush/MaskPaint --
+// the three halves of `docs/testing-issues.md` T16 that a picture cannot
+// check. Proves: the edit target resolves to `Content` on a layer with no mask
+// however the flag is set, and survives a switch onto a maskless layer and
+// back; the three-argument `strokeRouteFor()` DELEGATES for `Content` rather
+// than carrying a second copy of the table, over every tool; the mask route
+// changes coverage and leaves every content texel bit-identical; the
+// per-stroke ceiling's closed form holds at zero tolerance; an absent mask
+// tile is 1.0 and is allocated rather than skipped when painted dark (the one
+// place copying brush/RgbErase would have been silently wrong); the two
+// thumbnails take DIFFERENT transfer functions -- linear 0.5 encodes to byte
+// 188 in a layer thumbnail and coverage 0.5 stays byte 128 in a mask one; and
+// the thumbnail cache rebuilds when, and only when, the revision it claims to
+// key on moves. Headless and GPU-free.
+bool runMaskTargetTest();
 
 // app/FramePacing (T27, "throttle the UI unless drawing to 60fps, and when
 // nothing is happening, throttle it further"): the three-tier frame budget,

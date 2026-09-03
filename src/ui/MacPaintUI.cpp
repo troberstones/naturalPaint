@@ -1,5 +1,6 @@
 #include "ui/MacPaintUI.hpp"
 
+#include "app/LayerThumbnail.hpp"
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
 #include "ui/DabPicker.hpp"
@@ -2065,7 +2066,11 @@ constexpr float kLayerRowGap     = 5.0f;   // between the leading controls
 constexpr float kLayerLineGap    = 1.0f;   // name -> metadata line
 constexpr float kLayerEyeW       = 14.0f;
 constexpr float kLayerLockW      = 12.0f;
-constexpr float kLayerMaskChipW  = 12.0f;
+// **`kLayerMaskChipW` is gone with the chip it sized.** The trailing half-filled
+// square that said "this layer has a mask" is now the mask THUMBNAIL at the
+// leading edge, which is a control rather than a status light -- see the row's
+// own comment where the chip used to be drawn for why the position moved and
+// how that answers the chip's own 322 px argument.
 // The alpha-lock indicator's own chip -- a checkerboard, not a second padlock.
 // `kLayerLockW` above already owns the padlock glyph two slots to the left of
 // the name column, and drawing a SECOND padlock here for a different flag
@@ -2251,7 +2256,137 @@ ImVec2 newLayerKindMenuMetrics() {
   return ImVec2(kLayerRailW + 6.0f + glyphCol + 8.0f + nameCol + 10.0f, glyphCol);
 }
 
-void drawLayersSection(AppState& st) {
+// --- the row's two thumbnails -----------------------------------------------
+//
+// **One shared atlas page, and `AddImage()` for both**, which is `ui/DabPicker`
+// §2's arrangement -- and its two reasons need restating, because only one of
+// them carries over unchanged.
+//
+//  * **The atlas.** Twenty rows would otherwise be forty texture binds and
+//    forty draw calls in a panel that redraws every frame. Every thumbnail
+//    lives in one 256x256 RGBA8 page, so the whole panel is one bind however
+//    many rows are showing.
+//  * **The transfer function is the part that does NOT carry over.**
+//    `ui/DabPicker` may use `AddImage()` because a tip's coverage is an
+//    opacity, never gamma-encoded. That argument covers the MASK thumbnail
+//    here exactly -- a mask sample is the same kind of quantity -- and it does
+//    **not** cover the layer thumbnail, whose source is linear light. What
+//    makes `AddImage()` correct for that one is that `app/LayerThumbnail` has
+//    already done the sRGB encode on the CPU, so what reaches this atlas is
+//    display bytes of the same kind every `atelierToken()` colour is, and Dear
+//    ImGui's gamma-1.0 pipeline on this application's non-sRGB surface passes
+//    them through unchanged (ui/CanvasQuad.hpp records why that surface is
+//    non-sRGB). Uploading the linear values here and letting `AddImage()` have
+//    them would be `app/selftest/PresentTransfer.cpp`'s defect, one row at a
+//    time -- right at black and at white, and byte 61 where 137 belonged in
+//    between. `app/selftest/MaskTarget.cpp` §9 asserts both bytes.
+//
+// Never released, which is `DabAtlas`'s and `DabPreviewTexture`'s convention
+// and for their stated reason: ImGui's WebGPU backend rebuilds its bind group
+// from the view pointer every frame, so a view created once and kept has no
+// stale-bind-group hazard. That hazard comes from REPLACING a view, and this
+// never does -- a rebuild rewrites cell CONTENTS through
+// `wgpuQueueWriteTexture()`.
+constexpr int kLayerThumbAtlasPx = 256;
+constexpr int kLayerThumbCols = kLayerThumbAtlasPx / kLayerThumbPx;  // 10
+
+class LayerThumbAtlas {
+ public:
+  // Uploads `thumb` into cell `slot` unless what is already there is keyed on
+  // `key`, and returns the page's view (null when there is no adapter).
+  //
+  // The key is the caller's `(documentId, revision, layerIndex, which)` folded
+  // into one word, and it exists for `DabAtlas`'s reason -- sharper here,
+  // because slots are assigned by ROW and every reorder re-assigns rows to
+  // different layers. A cell keyed on its index alone would leave row 7 showing
+  // row 3's layer after a drag: exactly the stale picture
+  // `app/LayerThumbnail` §4 exists to prevent, reintroduced one level down.
+  WGPUTextureView viewFor(GpuContext& gpu, int slot, uint64_t key, const LayerThumbnail& thumb) {
+    if (slot < 0 || slot >= kLayerThumbCols * kLayerThumbCols) return nullptr;
+    if (texture_ == nullptr) {
+      WGPUTextureDescriptor td = {};
+      td.label = sv("layer thumbnail atlas");
+      td.dimension = WGPUTextureDimension_2D;
+      td.size = {static_cast<uint32_t>(kLayerThumbAtlasPx),
+                 static_cast<uint32_t>(kLayerThumbAtlasPx), 1};
+      td.format = WGPUTextureFormat_RGBA8Unorm;
+      td.mipLevelCount = 1;
+      td.sampleCount = 1;
+      td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+      texture_ = wgpuDeviceCreateTexture(gpu.device, &td);
+      if (texture_ == nullptr) return nullptr;
+      view_ = wgpuTextureCreateView(texture_, nullptr);
+    }
+    const auto found = uploaded_.find(slot);
+    if (found != uploaded_.end() && found->second == key) return view_;
+
+    WGPUTexelCopyTextureInfo dst = {};
+    dst.texture = texture_;
+    dst.mipLevel = 0;
+    dst.origin = {static_cast<uint32_t>((slot % kLayerThumbCols) * kLayerThumbPx),
+                  static_cast<uint32_t>((slot / kLayerThumbCols) * kLayerThumbPx), 0};
+    dst.aspect = WGPUTextureAspect_All;
+    WGPUTexelCopyBufferLayout layout = {};
+    layout.bytesPerRow = static_cast<uint32_t>(kLayerThumbPx) * 4u;
+    layout.rowsPerImage = static_cast<uint32_t>(kLayerThumbPx);
+    const WGPUExtent3D extent = {static_cast<uint32_t>(kLayerThumbPx),
+                                 static_cast<uint32_t>(kLayerThumbPx), 1};
+    wgpuQueueWriteTexture(gpu.queue, &dst, thumb.rgba.data(), thumb.rgba.size(), &layout,
+                          &extent);
+    uploaded_[slot] = key;
+    return view_;
+  }
+
+  // The cell's texel rect as UVs.
+  void uvFor(int slot, ImVec2& uv0, ImVec2& uv1) const noexcept {
+    const float x = static_cast<float>((slot % kLayerThumbCols) * kLayerThumbPx);
+    const float y = static_cast<float>((slot / kLayerThumbCols) * kLayerThumbPx);
+    const float n = static_cast<float>(kLayerThumbAtlasPx);
+    uv0 = ImVec2(x / n, y / n);
+    uv1 = ImVec2((x + kLayerThumbPx) / n, (y + kLayerThumbPx) / n);
+  }
+
+ private:
+  WGPUTexture texture_ = nullptr;
+  WGPUTextureView view_ = nullptr;
+  std::unordered_map<int, uint64_t> uploaded_;
+};
+
+LayerThumbAtlas g_layerThumbAtlas;
+LayerThumbnailCache g_layerThumbs;
+
+// The checkerboard a layer thumbnail sits on, so "transparent here" reads as
+// transparent rather than as the row's own background -- which on a selected
+// row is a different colour, and would otherwise make one layer look like two
+// depending on whether its row happened to be selected.
+//
+// Two theme tokens rather than two literals, so the square is legible on a light
+// and a dark canvas alike.
+//
+// **`kChromeDeep` and `kChromeMid`, and NOT `kChromeDeep` and `kRule`.** The
+// alpha-lock chip further down draws its own 2x2 checkerboard in that second
+// pair, and `ui/AtelierTheme.hpp` carries a `static_assert` saying in as many
+// words that `kRule == kChromeDeep` -- so that chip draws four squares in one
+// colour, and its comment describes a checkerboard nobody has ever seen. It is a
+// pre-existing defect and not this task's to fix, but copying its token pair by
+// analogy would have reproduced it here silently, which is why this pair is
+// stated rather than borrowed. `kChromeMid` is #444141 against #201e1d: visible,
+// and quiet enough not to compete with the picture drawn over it.
+void drawThumbCheckerboard(ImDrawList* dl, const ImVec2& lo, const ImVec2& hi) {
+  const float step = (hi.x - lo.x) * 0.25f;
+  dl->AddRectFilled(lo, hi, atelierToken(kChromeDeep));
+  int row = 0;
+  for (float y = lo.y; y < hi.y - 0.5f; y += step, ++row) {
+    int col = 0;
+    for (float x = lo.x; x < hi.x - 0.5f; x += step, ++col) {
+      if (((row + col) & 1) == 0) continue;
+      dl->AddRectFilled(ImVec2(x, y), ImVec2(std::min(x + step, hi.x), std::min(y + step, hi.y)),
+                        atelierToken(kChromeMid));
+    }
+  }
+}
+
+void drawLayersSection(AppState& st, GpuContext& gpu) {
   OpenDocument* od = st.documents.active();
   if (od == nullptr) {
     ImGui::TextDisabled("No document open.");
@@ -2727,6 +2862,100 @@ void drawLayersSection(AppState& st) {
                        layer.locked);
       x += kLayerLockW + kLayerRowGap;
 
+      // ---- the two thumbnails, and the mask one is the paint TARGET --------
+      //
+      // **At the LEADING edge, which is where the mask chip's own argument
+      // points once the chip becomes a control.** That chip (removed below)
+      // was "deliberately not a thumbnail", on two stated grounds: the panel is
+      // about 322 px wide so the row is often clipped, and "there is no way to
+      // paint one yet, and a thumbnail that was always uniform would be worse
+      // than none". Both grounds are engaged with rather than deleted:
+      //
+      //   * **The uniformity ground is gone, and it is gone because of this
+      //     task.** `StrokeRoute::MaskPaint` (app/StrokeSession §1,
+      //     brush/MaskPaint) is the route the chip's comment said did not
+      //     exist, so a mask now has contents worth a picture. The chip was
+      //     right at the time it was written.
+      //   * **The width ground is still real, and the answer is the position.**
+      //     Clipping eats the row's TRAILING end -- `trailingX` is measured
+      //     back from the panel's right edge and `drawClippedText()` truncates
+      //     the name toward it -- so a marker at the leading edge survives a
+      //     narrow panel strictly better than the chip did at the trailing one.
+      //     What it costs is 53 px of the text column, which
+      //     `drawClippedText()` already handles by truncating rather than
+      //     overflowing.
+      //
+      // Drawn 1:1 at `kLayerThumbPx`: upscaling a 24 px picture to fill a
+      // ~37 px row would be blurrier and no more informative, and the design
+      // pass that is expected after this one is where a bigger cell would be
+      // decided together with the row height it needs.
+      const std::optional<size_t> activeIdx = activeLayerIndex(*od);
+      const bool rowIsActive = activeIdx.has_value() && *activeIdx == i;
+      const LayerEditTarget rowTarget =
+          resolveLayerEditTarget(od->maskIsEditTarget, &layer);
+      const float thumbY = o.y + (rowH - kLayerThumbPx) * 0.5f;
+      const ImVec2 contentThumbAt(x, thumbY);
+      ImVec2 maskThumbAt(x, thumbY);
+      {
+        // The atlas SLOT is the panel row -- cheap, and it is why the KEY has to
+        // carry the identity: rows are re-assigned to different layers by every
+        // reorder, and two documents' rows collide outright.
+        //
+        // FNV-1a over the four words rather than a hand-packed bit layout, for
+        // one reason: a packed key needs a field-width argument per component
+        // ("20 layers cannot reach 4096", "a session cannot open 128
+        // documents") and each of those is a claim that ages. A mix has no
+        // budget to overrun, and the cost of a collision here is one stale
+        // 24 px picture rather than anything a user could lose.
+        const LayerThumbnailCache::Row& thumbs =
+            g_layerThumbs.rowFor(doc, i, od->id, od->revision);
+        auto cellKey = [&](uint64_t which) {
+          uint64_t k = 1469598103934665603ULL;
+          for (const uint64_t v : {static_cast<uint64_t>(od->id), od->revision,
+                                   static_cast<uint64_t>(i), which})
+            k = (k ^ v) * 1099511628211ULL;
+          return k;
+        };
+        // `which` is 0 for the layer's own pixels and 1 for its mask -- a
+        // separate argument from `checkered` even though the two agree today,
+        // because one names WHICH PICTURE this is (and so belongs in the cache
+        // key) and the other names how it is drawn. Folding them would make a
+        // future mask thumbnail that wanted a checkerboard silently share the
+        // layer thumbnail's cell key.
+        auto drawThumb = [&](const ImVec2& at, int slot, uint64_t which,
+                             const LayerThumbnail& thumb, bool checkered, bool selected) {
+          const ImVec2 lo = at;
+          const ImVec2 hi(at.x + kLayerThumbPx, at.y + kLayerThumbPx);
+          if (checkered) drawThumbCheckerboard(dl, lo, hi);
+          const WGPUTextureView view = g_layerThumbAtlas.viewFor(gpu, slot, cellKey(which), thumb);
+          if (view != nullptr) {
+            ImVec2 uv0, uv1;
+            g_layerThumbAtlas.uvFor(slot, uv0, uv1);
+            dl->AddImage(reinterpret_cast<ImTextureID>(view), lo, hi, uv0, uv1);
+          }
+          // **The target ring is the accent, and the frame is the hairline.**
+          // A selected cell is drawn with a colour rather than only with a
+          // thicker line, because "which of these two squares is the paint
+          // target" is the one question this pair has to answer at a glance,
+          // and a 1 px width difference at 24 px is not an answer.
+          dl->AddRect(ImVec2(lo.x - 1.0f, lo.y - 1.0f), ImVec2(hi.x + 1.0f, hi.y + 1.0f),
+                      selected ? atelierToken(kAccent) : atelierToken(kHairline), 0.0f, 0,
+                      selected ? 2.0f : 1.0f);
+        };
+
+        const int contentSlot = static_cast<int>((vr * 2) % (kLayerThumbCols * kLayerThumbCols));
+        drawThumb(contentThumbAt, contentSlot, /*which=*/0, thumbs.content, /*checkered=*/true,
+                  rowIsActive && rowTarget == LayerEditTarget::Content);
+        x += kLayerThumbPx + 2.0f;
+        if (layer.mask.has_value()) {
+          maskThumbAt = ImVec2(x, thumbY);
+          drawThumb(maskThumbAt, contentSlot + 1, /*which=*/1, thumbs.mask, /*checkered=*/false,
+                    rowIsActive && rowTarget == LayerEditTarget::Mask);
+          x += kLayerThumbPx;
+        }
+        x += kLayerRowGap;
+      }
+
       // The collapse/expand triangle -- Group rows only. An ordinary row
       // reserves no slot for one and no gap either: indentation is what this
       // panel spends on "you are one level in", not a blank triangle on
@@ -2771,21 +3000,19 @@ void drawLayersSection(AppState& st) {
         popAtelierMono();
         trailingX -= kLayerRowGap;
       }
-      if (layer.mask.has_value()) {
-        // A half-filled square: the mask indicator, and deliberately not a
-        // thumbnail. `layerRowSubLine()` already says `MASK` in the metadata
-        // line; what this adds is that the marker survives the line being
-        // clipped, which at 322 px it often is. It says nothing about the mask's
-        // *contents* -- there is no way to paint one yet, and a thumbnail that
-        // was always uniform would be worse than none.
-        trailingX -= kLayerMaskChipW;
-        const ImVec2 lo(trailingX, o.y + (rowH - kLayerMaskChipW) * 0.5f);
-        const ImVec2 hi(lo.x + kLayerMaskChipW, lo.y + kLayerMaskChipW);
-        dl->AddRectFilled(lo, ImVec2(hi.x, (lo.y + hi.y) * 0.5f), atelierToken(kRule));
-        dl->AddRectFilled(ImVec2(lo.x, (lo.y + hi.y) * 0.5f), hi, atelierToken(kChromeDeep));
-        dl->AddRect(lo, hi, atelierToken(kHairline));
-        trailingX -= kLayerRowGap;
-      }
+      // **The trailing mask chip used to be here, and it is gone rather than
+      // kept beside the thumbnail.** It was a half-filled square that said "this
+      // layer has a mask", explicitly "not a thumbnail", on two stated grounds --
+      // that the row is often clipped at 322 px, and that "there is no way to
+      // paint one yet, and a thumbnail that was always uniform would be worse
+      // than none". The mask thumbnail drawn at the leading edge above answers
+      // both (see its own comment for the argument, which is that clipping eats
+      // the trailing end, not the leading one), and it answers them while ALSO
+      // being the control T16 asked for. Two markers for one fact, one of which
+      // is clickable and one of which is not, is the state in which a user
+      // learns that clicking the wrong one does nothing.
+      //
+      // `layerRowSubLine()` still says `MASK` in the metadata line, unchanged.
       if (layer.alphaLocked) {
         // Alpha lock's own status chip (this task's requirement 6): a 2x2
         // checkerboard in the same two theme tokens the mask chip just above
@@ -2880,6 +3107,51 @@ void drawLayersSection(AppState& st) {
                           "this padlock itself still work.",
                           layer.locked ? "Locked -- click to unlock"
                                        : "Unlocked -- click to lock");
+
+      // **The two thumbnails are controls, and this is T16's first gesture.**
+      // Issued here with the eye and the padlock, for their stated
+      // overlap-ordering reason -- a click on a thumbnail must not also select
+      // or drag the row through the hit target underneath it.
+      //
+      // Each click does two things and both are needed: it makes this row the
+      // active layer, and it sets which of that layer's stores the pen writes.
+      // Selecting without setting the store would make the pair a display; the
+      // reverse would let a user aim at a mask on a layer they are not editing,
+      // which `resolveLayerEditTarget()` would then quietly answer `Content`
+      // for -- a click that appears to work and does not.
+      ImGui::SetCursorScreenPos(contentThumbAt);
+      if (ImGui::InvisibleButton("##contentthumb", ImVec2(kLayerThumbPx, kLayerThumbPx))) {
+        g_layers.selection = makeLayerSelection({i});
+        g_layers.shiftAnchor = i;
+        selected = i;
+        setActiveLayer(*od, i);
+        od->maskIsEditTarget = false;
+      }
+      ImGui::SetItemTooltip("The layer's own pixels. Click to paint here.\n"
+                          "%s",
+                          rowTarget == LayerEditTarget::Content && rowIsActive
+                              ? "This is the current paint target."
+                              : "Not the current paint target.");
+      if (layer.mask.has_value()) {
+        ImGui::SetCursorScreenPos(maskThumbAt);
+        if (ImGui::InvisibleButton("##maskthumb", ImVec2(kLayerThumbPx, kLayerThumbPx))) {
+          g_layers.selection = makeLayerSelection({i});
+          g_layers.shiftAnchor = i;
+          selected = i;
+          setActiveLayer(*od, i);
+          od->maskIsEditTarget = true;
+        }
+        // The tooltip says what the mask IS as well as what the click does,
+        // because the two thumbnails are the same size and the same shape and
+        // one of them is white for a reason a new user has no way to guess.
+        ImGui::SetItemTooltip("The layer mask: white reveals, black hides.\n"
+                            "Click to paint into it -- the brush paints the\n"
+                            "foreground colour's grey as coverage.\n"
+                            "%s",
+                            rowTarget == LayerEditTarget::Mask && rowIsActive
+                                ? "This is the current paint target."
+                                : "Not the current paint target.");
+      }
       if (isGroupRow) {
         ImGui::SetCursorScreenPos(discAt);
         if (ImGui::InvisibleButton("##disclosure", ImVec2(kLayerDisclosureW, kLayerDisclosureW))) {
@@ -10883,7 +11155,7 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
       break;
     // PLAN.md Phase 5 step 1 ("Multiple layers in `Document`, with reorder,
     // visibility, lock, opacity"; PRD C4).
-    case ControlsSection::Layers:       drawLayersSection(st); break;
+    case ControlsSection::Layers:       drawLayersSection(st, gpu); break;
     // PLAN.md Phase 5 step 8 ("History panel ...", PRD O2/O3).
     case ControlsSection::History:      drawHistorySection(st, sim, gpu); break;
     // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14).

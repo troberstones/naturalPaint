@@ -6,7 +6,8 @@
 # why). This script is the missing other half: it drives the app through a
 # handful of known, scripted UI states via its existing --demo-document /
 # --ui-layer-demo / --pigment-stroke-demo / --marquee-demo / --flyout-demo /
-# --gradient-demo / --clone-demo / --smudge-demo / --no-document / --overrange-demo
+# --gradient-demo / --clone-demo / --smudge-demo / --mask-demo / --no-document
+# / --overrange-demo
 # CLI flags, crops each capture down
 # to one small region, and compares it against a reference image committed
 # under tests/golden/ with src/tools/GoldenTool.cpp.
@@ -678,8 +679,51 @@ measure_n="${2:-10}"
 #     WHOLE sentence is on screen -- a band view cropped to the button would
 #     have proved the button greys and nothing about whether the user is ever
 #     told why.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie")
+#   layer_thumbs / mask_target / mask_content -- the LAYERS panel's two
+#     per-row thumbnails, and the mask one acting as the paint target
+#     (`docs/testing-issues.md` T16).
+#
+#     **The three views are one claim in three states, and dropping any of
+#     them drops half of it.** `layer_thumbs` is `--demo-document` alone: three
+#     rows, each with a layer thumbnail, and the masked row with a mask
+#     thumbnail beside it, with the accent ring on the ACTIVE layer's content
+#     thumbnail. `mask_target` adds `--mask-demo`, which aims the pen at that
+#     layer's mask and paints one real stroke into it through
+#     `app::StrokeSession`. `mask_content` runs the identical script with the
+#     target left on the layer's own pixels.
+#
+#     The last two are what make this coverage rather than decoration: they
+#     differ by 2 709 px (1.97 % of the crop, max channel diff 246) in exactly
+#     two places -- which square carries the accent ring, and which of the two
+#     thumbnails grew a black diagonal. A build in which the mask thumbnail
+#     were a status light rather than a control, or in which the target were
+#     selectable but the stroke still went to the layer, makes those two
+#     pictures identical. That is the "live control over nothing" failure this
+#     project has shipped before, and it is the one thing `--selftest` cannot
+#     see: it has no window, and the control is a 24 px square in a panel.
+#
+#     **The fixture is `--demo-document`'s own layer 2 and NOT a new one.**
+#     That layer is a yellow rectangle in the lower right under a mask that
+#     ramps left to right across it -- asymmetric in both axes, in both the
+#     layer and the mask -- so a thumbnail drawn flipped, mirrored, transposed
+#     or with red and blue swapped fails these views. `--ui-layer-demo` also
+#     carries a mask but an EMPTY one on an EMPTY Pigment layer, so both of
+#     its thumbnails would be uniform and neither would catch an orientation
+#     bug; that is why the `layers` view is not simply re-aimed.
+#
+#     640x240 at (1916, 940): the three rows and nothing else. Measured, not
+#     reasoned: 8 launches each, 7 comparisons per view against the batch's
+#     first (137 600 px crop), **0 mismatched px at max channel diff 0 every
+#     time**, so both thresholds are 0. The `layers` view was re-measured in
+#     the same batch and came out at 0/0 as well; its own 96/64 budget is left
+#     alone rather than tightened on one batch's evidence.
+#
+#     `layers` itself changed with this task and its reference was
+#     regenerated: the rows carry thumbnails now, and the trailing half-filled
+#     mask chip is gone -- the mask thumbnail at the leading edge is the same
+#     marker doing the same job, and also the control.
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content")
 # `toolbar`'s height and `canvas`'s x have each moved four times now --
 # **their reference PNGs have moved far less**, and this block is the full
 # genealogy of both, kept in one place rather than scattered across commit
@@ -899,11 +943,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # demo's document coordinates, both made from the centred-document assumption,
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
-view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672  40   40   350  320  40)
-view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32   76   76   350  420  76)
-view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204 1000 1000 1060 1220 2400)
-view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512 76   76   830  830  76)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0    1916 920  0    0    0    900  1000 1830 1900 1900 40   480  40   480  480  390  390  40   40   40   0    0    0    1920 0    40   706  706  672  40   40   350  320  40   1916 1916 1916)
+view_crop_y=(5    927  965  148  664  0    628  1000 158  166  1462 76   560  76   560  560  370  370  76   76   76   148  0    664  235  1370 76   34   34   32   76   76   350  420  76   940  940  940)
+view_crop_w=(1400 640  384  100  400  2560 700  900  100  660  660  1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100  900  400  600  90   1090 1124 1124 1204 1000 1000 1060 1220 2400 640  640  640)
+view_crop_h=(166  190  192  402  350  77   500  400  500  64   64   76   800  76   800  800  550  550  76   76   76   1240 77   350  280  120  76   800  800  1512 76   76   830  830  76   240  240  240)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -1026,7 +1070,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # anti-aliased fill flag off, and the reason that comes out bit-stable is the
 # same reason it comes out seamless: adjacent quads sharing exact vertices
 # rasterise watertight, with no fringe geometry to round differently.
-view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
+view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
 # `tools`/`canvas` are 0 because their magnitude threshold is 0 too -- there
@@ -1045,7 +1089,7 @@ view_threshold=(48 96 0  0  48 0  48 48 48 48 48 0  0  0  0  0  0  0  0  0  0  0
 # note in cmd_measure on what that mode is for. The five `crop_*` views are 0
 # here because their magnitude threshold is 0 too -- see the paragraph above
 # `view_threshold` for the measurement.
-view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
+view_max_changed_px=(16 64 0  0  16 0  16 16 16 16 16 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

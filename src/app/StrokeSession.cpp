@@ -126,8 +126,38 @@ const char* strokeRouteName(StrokeRoute route) noexcept {
     case StrokeRoute::CloneStamp: return "clone-stamp";
     case StrokeRoute::Smudge: return "smudge";
     case StrokeRoute::PaintSim: return "paint-sim";
+    // Named for the STORE it writes and not for the tool that reaches it, like
+    // every other row here: the options bar prints this beside the tool's own
+    // label, so "Brush -> mask-paint" says the one thing a user needs when a
+    // brush stroke is not appearing where they expected it to.
+    case StrokeRoute::MaskPaint: return "mask-paint";
   }
   return "?";
+}
+
+const char* layerEditTargetName(LayerEditTarget target) noexcept {
+  switch (target) {
+    case LayerEditTarget::Content: return "content";
+    case LayerEditTarget::Mask: return "mask";
+  }
+  return "?";
+}
+
+LayerEditTarget resolveLayerEditTarget(bool maskRequested, const Layer* layer) noexcept {
+  // Header: `Mask` only when there really is one. A null layer, or one whose
+  // `mask` is absent, resolves to `Content` however the flag is set.
+  //
+  // **The flag deliberately survives a click onto a maskless row**, which is
+  // why this resolution happens at every read rather than once at the click:
+  // the flag records what the user last asked for, so clicking back onto a
+  // masked layer restores their choice instead of silently forgetting it. The
+  // cost of that is exactly this function -- every reader must resolve rather
+  // than read the flag -- and the panel resolves through it too, so the chip
+  // cannot be lit over a store nothing is writing.
+  if (!maskRequested) return LayerEditTarget::Content;
+  if (layer == nullptr) return LayerEditTarget::Content;
+  if (!layer->mask.has_value()) return LayerEditTarget::Content;
+  return LayerEditTarget::Mask;
 }
 
 StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
@@ -270,17 +300,29 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
   // further (§1b): the solver's dense canvas texture is not a document's tile
   // store, so there is nothing to *sample*, and a clone sent there would lay
   // down the foreground colour instead. Nothing to copy, so nowhere to go.
-  if (target == nullptr)
-    return (erasing || pencil || tonal || cloning || smudging) ? StrokeRoute::None
-                                                              : StrokeRoute::PaintSim;
   //
   // **And except for the smudge**, which is the eraser's row with the argument
   // one notch stronger: the solver has no smudge step either, so a smudge sent
   // there would run the paint path and deposit the loaded FOREGROUND pigment --
   // a tool whose whole promise is "introduces nothing new" introducing a colour
   // the picture did not contain.
+  //
+  // **One block, and it used to be two.** A union merge left a second
+  // `if (target == nullptr)` immediately below this one carrying the smudge
+  // paragraph above and the narrower condition `(erasing || smudging)`. It was
+  // dead -- the first block returns on every path -- but dead in the dangerous
+  // direction: its condition is a strict SUBSET of this one, so deleting or
+  // reordering the wrong one of the pair would have sent the Pencil, Dodge,
+  // Burn and Clone Stamp to `StrokeRoute::PaintSim` with no document open, and
+  // each of those four is a tool that would then have painted the solver
+  // canvas with the loaded pigment while looking like it had worked. The
+  // paragraphs are merged here and the condition kept at the wider of the two.
+  // `app/selftest/LayerMask.cpp` asserts all five refusals against a null
+  // target by name, which is what makes the merge stick: re-narrowing the
+  // condition fails four assertions rather than passing silently.
   if (target == nullptr)
-    return (erasing || smudging) ? StrokeRoute::None : StrokeRoute::PaintSim;
+    return (erasing || pencil || tonal || cloning || smudging) ? StrokeRoute::None
+                                                              : StrokeRoute::PaintSim;
 
   // Locked before kind, so a locked layer refuses for being locked whatever it
   // is made of -- and so the UI's "clear its Lock in LAYERS" message is the one
@@ -390,6 +432,113 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
   // what made "select an RGB layer and paint" put colour on the canvas texture
   // instead of on the layer, invisibly, one line below the locked row that
   // exists to prevent exactly that.
+  return StrokeRoute::None;
+}
+
+StrokeRoute strokeRouteFor(Tool tool, const Layer* target, LayerEditTarget editTarget) noexcept {
+  // **Delegation, not a second table** -- the header says why, and it is this
+  // file's own standing warning: "the options bar's route indicator read 'goes
+  // to the solver' grey for a live RGB stroke for exactly as long as it had its
+  // own copy of the test". Every `Content` answer in the build comes from the
+  // one function above, including this one.
+  if (editTarget == LayerEditTarget::Content) return strokeRouteFor(tool, target);
+
+  // From here the caller has said "the mask", and the rows below are the whole
+  // of what that means. They are short because a mask is one store of one
+  // scalar, so most of the two-argument form's structure -- which of two
+  // content stores, whether a store was ever allocated, what a latent means --
+  // has no analogue here.
+
+  // A `Mask` target on a layer that has no mask does not reach a route.
+  // `resolveLayerEditTarget()` is what callers are supposed to go through, and
+  // it never produces this combination; answered here anyway rather than
+  // trusting them to, because the cost of being wrong is a brush that draws
+  // nothing with a chip lit and no message -- the exact failure this file's §6
+  // records the paint bucket having shipped with.
+  if (target == nullptr || !target->mask.has_value()) return StrokeRoute::None;
+
+  // Locked before anything else, exactly as the content table does it and for
+  // its stated reason: a locked layer refuses for being locked whatever is
+  // being aimed at, so the UI's "clear its Lock in LAYERS" message is the one a
+  // user gets for the one problem they can actually fix. A mask is part of the
+  // layer -- `io/NpaintFile` writes it into the layer's own part -- so the lock
+  // covers it.
+  if (target->locked) return StrokeRoute::None;
+
+  // **`alphaLocked` deliberately does NOT refuse here, and the disagreement is
+  // the decision.** That flag freezes the layer's own alpha channel
+  // (core/Layer.hpp), and a mask is not that channel: it is a separate store
+  // that multiplies the layer's coverage at composite time (core/Mask.hpp's
+  // first sentence). Refusing would block the gesture the flag exists to make
+  // possible -- trim a layer's visible extent without touching its pixels --
+  // and it is the same argument `RgbDeposit` wins on the row above.
+
+  switch (tool) {
+    // **The brush paints a mask, and it is the only tool that does.**
+    // brush/MaskPaint §1: a mask sample has no privileged end, so "paint" and
+    // "erase" are two directions of one lerp toward the ink's coverage --
+    // painting black hides, painting white reveals -- and an eraser aimed here
+    // would be a second control over a number the brush already reaches both
+    // ends of. DryBrush travels with Brush as it does on every other row: the
+    // two differ in the dynamics that shape a dab, not in where the dab lands.
+    case Tool::Brush:
+    case Tool::DryBrush:
+      return StrokeRoute::MaskPaint;
+
+    // The refusals, and each is a real question deferred rather than an
+    // oversight. `--selftest` asserts every one of them by name, so opening a
+    // row means answering its question rather than deleting a case label.
+    //
+    //   * **Eraser** -- has no meaning here that is not already spelled "paint
+    //     white" (§1 above). Photoshop's answer is "paints with the background
+    //     colour", which is a decision about the background swatch and not
+    //     about masks; it can be made later without changing this module.
+    //   * **Pencil** -- `brush/PencilDeposit` §1 thresholds its coverage to an
+    //     aliased keep/drop. A hard-edged mask is a legitimate thing to want,
+    //     but the threshold lives inside that module's own texel step against a
+    //     premultiplied RGBA texel, so it is a `brush/MaskPencil` rather than a
+    //     parameter.
+    //   * **Dodge/Burn** -- `brush/TonalBrush` §0 counts a tonal shift of a
+    //     *colour*. Dodging a coverage is either a gamma on it or a different
+    //     ceiling, and those are two different features wearing one name.
+    //   * **Clone Stamp** -- would need a snapshot of a `MaskTileStore`, which
+    //     `brush/CloneStamp`'s snapshot type is not.
+    //   * **Smudge** -- `brush/Smudge` §2's pick-up is a coverage-weighted mean
+    //     of premultiplied RGBA; the scalar analogue is well defined but its
+    //     "finger has no alpha" degenerate case is not the same one, so it is a
+    //     derivation rather than a substitution.
+    //   * **Water** and everything else -- these route nowhere on a content
+    //     store either, and a mask does not give them a destination they were
+    //     otherwise missing.
+    case Tool::Eraser:
+    case Tool::Pencil:
+    case Tool::Dodge:
+    case Tool::Burn:
+    case Tool::CloneStamp:
+    case Tool::Smudge:
+    case Tool::Water:
+    case Tool::Move:
+    case Tool::Marquee:
+    case Tool::EllipseMarquee:
+    case Tool::Lasso:
+    case Tool::PolygonLasso:
+    case Tool::MagicWand:
+    case Tool::Crop:
+    case Tool::Measure:
+    case Tool::Frame:
+    case Tool::Eyedropper:
+    case Tool::PaintBucket:
+    case Tool::Gradient:
+    case Tool::Hand:
+    case Tool::Zoom:
+    case Tool::Pen:
+    case Tool::Curve:
+    case Tool::Text:
+    case Tool::Shape:
+    case Tool::Slice:
+    case Tool::Count:
+      return StrokeRoute::None;
+  }
   return StrokeRoute::None;
 }
 
@@ -929,16 +1078,28 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
                   std::to_string(doc.document.layers.size()) + " layers.");
 
   Layer& layer = doc.document.layers[layerIndex];
+  // **The edit target is resolved HERE, from the document this call was handed,
+  // rather than passed in by the caller.** `begin()` already derives the layer
+  // from `layerIndex` and the document; the store within that layer is the same
+  // kind of fact, and reading it here means every existing call site --
+  // `ui/MacPaintUI`'s canvas block, `main.cpp`'s demos, the selftests -- reaches
+  // the mask route without a signature change and without any of them being
+  // able to pass a target that disagrees with the panel the user is looking at.
+  //
+  // Resolved, not read: `maskIsEditTarget` is a request, and a request for a
+  // mask on a layer that has none is `Content` (`resolveLayerEditTarget()`).
+  const LayerEditTarget editTarget = resolveLayerEditTarget(doc.maskIsEditTarget, &layer);
   // The route function is the single table (header §1); this refusal reads it
   // rather than re-deriving the same conditions, so the two cannot disagree
   // about which strokes a locked or non-Pigment layer accepts.
-  const StrokeRoute route = strokeRouteFor(tool, &layer);
+  const StrokeRoute route = strokeRouteFor(tool, &layer, editTarget);
   if (!strokeRouteWritesLayer(route))
     return refuse(std::string("stroke refused: the ") + strokeEditLabel(tool) + " on layer " +
                   std::to_string(layerIndex) + " ('" + layer.name + "', " +
                   layerKindName(layer.kind) + (layer.locked ? ", locked" : "") +
-                  (layer.alphaLocked ? ", alpha-locked" : "") + ") routes to " +
-                  strokeRouteName(route) + ", which does not write a layer.");
+                  (layer.alphaLocked ? ", alpha-locked" : "") + ", target " +
+                  layerEditTargetName(editTarget) + ") routes to " + strokeRouteName(route) +
+                  ", which does not write a layer.");
 
   // **The clone's second precondition, and the reason it is here rather than in
   // `strokeRouteFor()`** -- header §1b's last paragraph. The route table is pure
@@ -962,8 +1123,21 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   layerCount_ = doc.document.layers.size();
   tip_ = tip;
   route_ = route;
+  editTarget_ = editTarget;
   tool_ = tool;
-  label_ = strokeEditLabel(tool);
+  // **"mask stroke", not "brush stroke", for a stroke that went into a mask**,
+  // and this is `strokeEditLabel()`'s own requirement one step further out. That
+  // function's comment says a column of identical "brush stroke" rows in which
+  // some of them actually took paint *off* is a panel that cannot be read, and
+  // PRD O2's panel is scanned to find an edit to undo. A stroke that changed no
+  // pixel of the layer and trimmed its visibility instead is at least as far
+  // from "brush stroke" as an erase is -- undoing the wrong one of the two is
+  // exactly the mistake the label exists to prevent.
+  //
+  // Not a row in `strokeEditLabel()` itself, because that function is pure in
+  // the tool and the target store is not a property of the tool. Decided here,
+  // where both are in hand, which is the same place the route was.
+  label_ = route == StrokeRoute::MaskPaint ? "mask stroke" : strokeEditLabel(tool);
 
   // Transfer Opacity/Flow (Part 2, `PsTransfer::opacity`/`.flow`), resolved
   // HERE -- before any of the four `*_.begin()` calls below read
@@ -1146,6 +1320,28 @@ bool StrokeSession::begin(OpenDocument& doc, size_t layerIndex, const BrushTip& 
   else
     smudge_.end();
 
+  // The mask route's target coverage and ceiling, latched together for the
+  // reason every pair above is latched together (brush/MaskPaint §3): the
+  // accumulator counts a fraction of the way to *this* target under *this*
+  // ceiling, so a stroke whose target moved half way through has no
+  // well-defined destination and its accumulator is a fraction of nothing.
+  //
+  // `tip.linearRgb` and `resolvedOpacity` -- the same two fields
+  // `rgb_.begin()` above reads, with the same meanings. The colour becomes a
+  // coverage through `maskTargetForInk()` (brush/MaskPaint §2), which is where
+  // the "50 % grey means 50 % coverage" decision lives; the opacity is the
+  // per-stroke ceiling exactly as it is on every other route, so the OPACITY
+  // slider does the same thing to a mask stroke that it does to a paint stroke,
+  // which is what keeps the BRUSH panel's caption honest.
+  //
+  // The `else` carries the weight the other six do: whichever route this stroke
+  // took, the rest must be left holding no tiles, and an interrupted drag is
+  // exactly the case that reaches here with one of them still live.
+  if (route_ == StrokeRoute::MaskPaint)
+    maskPaint_.begin(maskTargetForInk(tip.linearRgb), resolvedOpacity);
+  else
+    maskPaint_.end();
+
   // Leftover arc length and point history from whatever stroke happened
   // before must not bleed into this one -- brush/StrokePath::reset()'s own
   // contract, and the same call ui/MacPaintUI already makes at pen-down.
@@ -1241,7 +1437,17 @@ void StrokeSession::depositPending() {
   // on the second frame of every erase and silently drop the rest of the drag --
   // a tool that works for one frame and then stops, which is harder to diagnose
   // than one that never works at all.
-  if (strokeRouteFor(tool_, &layer) != route_) {
+  //
+  // **Asked with `editTarget_`, the target LATCHED at pen-down, and not with a
+  // live read of `doc_->maskIsEditTarget`.** A live read would make a click on
+  // the mask thumbnail during a drag redirect the rest of the stroke into a
+  // different store under one history entry that names neither, which is the
+  // same class of half-and-half edit §5 refuses for a layer swapped at the same
+  // index. Latched, the target that moved is a route that no longer matches and
+  // the stroke stops -- and it stops for the reason it should, because
+  // `strokeRouteFor()` with the old target on a layer whose mask has since been
+  // removed answers `None`.
+  if (strokeRouteFor(tool_, &layer, editTarget_) != route_) {
     pending_.clear();
     return;
   }
@@ -1463,7 +1669,16 @@ void StrokeSession::depositPending() {
       // shared, because none of it is a property of what a texel is made of
       // or of which direction the stroke moves it.
       const DepositCount c =
-          route_ == StrokeRoute::TonalBrush
+          // **The mask route is first and the only one that does not name a
+          // content store.** `*layer.mask` rather than `*layer.rgbTiles` or
+          // `*layer.pigmentTiles` -- and the engagement of that optional is
+          // guaranteed by the re-validation above, which re-asks
+          // `strokeRouteFor()` with `editTarget_` and stops the stroke if the
+          // answer moved (a mask removed mid-drag is exactly that).
+          route_ == StrokeRoute::MaskPaint
+              ? maskPaint_.paintDab(*layer.mask, dabTip, centre, doc.width, doc.height, selection,
+                                    &frameTiles_)
+          : route_ == StrokeRoute::TonalBrush
               ? tonal_.toneDab(*layer.rgbTiles, dabTip, centre, doc.width, doc.height, selection,
                                &frameTiles_)
           : route_ == StrokeRoute::Smudge
@@ -1552,6 +1767,10 @@ const std::vector<TileCoord>& StrokeSession::end() {
   // next `begin()` is then responsible for clearing. Two places that must both
   // be right is one more than one place that must be.
   smudge_.end();
+  // And the mask route's, with the rest and unconditionally, for the reason the
+  // six above give: exactly one of them was ever live, and asking which at
+  // cleanup time is how the others keep their tiles after an interrupted drag.
+  maskPaint_.end();
 
   // Exactly one entry, and only for a stroke that put something down --
   // header §2.

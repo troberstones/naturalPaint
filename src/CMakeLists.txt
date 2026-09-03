@@ -205,6 +205,7 @@ add_executable(naturalPaint
   app/selftest/TransformSession.cpp
   app/selftest/FramePacing.cpp
   app/selftest/GradientTool.cpp
+  app/selftest/MaskTarget.cpp
   app/selftest/MoveTool.cpp
   app/selftest/CropTool.cpp
   app/selftest/UserBrushLibrary.cpp
@@ -213,6 +214,7 @@ add_executable(naturalPaint
   app/selftest/ZoomAndSize.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
+  app/LayerThumbnail.cpp
   app/MeasureLine.cpp
   app/GradientTool.cpp
   app/CropTool.cpp
@@ -238,6 +240,7 @@ add_executable(naturalPaint
   brush/Dynamics.cpp
   brush/Grain.cpp
   brush/Library.cpp
+  brush/MaskPaint.cpp
   brush/PencilDeposit.cpp
   brush/PigmentErase.cpp
   brush/RgbDeposit.cpp
