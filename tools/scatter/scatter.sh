@@ -32,10 +32,13 @@ fi
 
 BASE_SHA="$1"; shift
 PRIMARY="$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)"
-# The primary checkout owns the populated _deps; a worktree borrows them.
-DEPS="$(git -C "$PRIMARY" rev-parse --git-common-dir)"
-DEPS="$(cd "$(dirname "$DEPS")" && pwd)/build/_deps"
-WT_ROOT="$(cd "$(dirname "$DEPS")" && pwd)/.claude/worktrees"
+# The primary checkout owns the populated _deps; a worktree borrows them. Both
+# paths below hang off this one root, derived once -- deriving the second from
+# the first is how the worktrees ended up inside build/ the first time this
+# script ran.
+COMMON_ROOT="$(cd "$(dirname "$(git -C "$PRIMARY" rev-parse --git-common-dir)")" && pwd)"
+DEPS="$COMMON_ROOT/build/_deps"
+WT_ROOT="$COMMON_ROOT/.claude/worktrees"
 LOG_ROOT="${SCATTER_LOG_ROOT:-/private/tmp/np-scatter}"
 
 if ! git -C "$PRIMARY" rev-parse --verify --quiet "${BASE_SHA}^{commit}" >/dev/null; then
