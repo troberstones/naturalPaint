@@ -4,6 +4,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <filesystem>
+#include <system_error>
+
+#include <unistd.h>
 
 #include "color/Space.hpp"
 #include "core/Tile.hpp"
@@ -233,6 +238,48 @@ bool oiioEncodeToMemory(const std::vector<float>& samples, uint32_t width, uint3
   return true;
 }
 
+namespace {
+
+// A byte buffer spilled to a uniquely named file under the system temp
+// directory, removed when this goes out of scope. Only oiioDecodeToLinear()'s
+// proxy-refusal retry uses it; see the comment there.
+class SpilledBytes {
+ public:
+  ~SpilledBytes() {
+    if (!path_.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(path_, ec);
+    }
+  }
+  bool write(const uint8_t* data, std::size_t size) {
+    static std::atomic<unsigned> counter{0};
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+    if (ec) return false;
+    path_ = (dir / ("np-memory-image-" + std::to_string(static_cast<long>(::getpid())) + "-" +
+                    std::to_string(counter.fetch_add(1)) + ".bin"))
+                .string();
+    std::FILE* f = std::fopen(path_.c_str(), "wb");
+    if (f == nullptr) {
+      path_.clear();
+      return false;
+    }
+    const bool ok = std::fwrite(data, 1, size, f) == size;
+    std::fclose(f);
+    if (!ok) {
+      std::filesystem::remove(path_, ec);
+      path_.clear();
+    }
+    return ok;
+  }
+  const std::string& path() const { return path_; }
+
+ private:
+  std::string path_;
+};
+
+}  // namespace
+
 DecodedImage oiioDecodeToLinear(const uint8_t* fileData, std::size_t fileSize,
                                 std::string* errorOut) {
   DecodedImage image;
@@ -265,9 +312,25 @@ DecodedImage oiioDecodeToLinear(const uint8_t* fileData, std::size_t fileSize,
   // this project also targets), one or both are honoured, and neither is
   // harmful for the other to also see.
   auto input = OIIO::ImageInput::open("np-memory-image", &config, &reader);
+  // **A plugin that claims proxy support and then reads past the proxy's
+  // end.** OpenImageIO 2.4.17's PSD reader answers `supports("ioproxy")`
+  // and still fails a 52-byte flattened PSD through an IOMemReader with
+  // "hit end of file in psd reader", while the same bytes open from disk
+  // (measured; both open paths probed against Ubuntu 24.04's package). So a
+  // proxy refusal is retried once through a temporary file, which is the
+  // one read path every plugin of every version handles. Nothing about the
+  // result differs -- the bytes are the same -- and a build whose plugins
+  // all honour the proxy (the macOS from-source OpenImageIO) never reaches
+  // this branch. The proxy's own error is what is reported if the retry
+  // fails too, since that is the path that was meant to work.
+  SpilledBytes spill;
   if (!input) {
-    if (errorOut) *errorOut = OIIO::geterror();
-    return image;
+    const std::string proxyError = OIIO::geterror();
+    if (spill.write(fileData, fileSize)) input = OIIO::ImageInput::open(spill.path());
+    if (!input) {
+      if (errorOut) *errorOut = proxyError;
+      return image;
+    }
   }
 
   const OIIO::ImageSpec& spec = input->spec();

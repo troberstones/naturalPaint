@@ -199,7 +199,15 @@ bool runFloodFillTest() {
                 "%.9f; 255x = %.7f (kFloodEdgeBandFloor = %.7f)\n",
                 static_cast<double>(worstStep), static_cast<double>(255.0f * worstStep),
                 static_cast<double>(kFloodEdgeBandFloor));
-    check(near(kFloodEdgeBandFloor, 255.0f * worstStep, 1e-5f),
+    // 1e-4, not the 1e-5 this first asserted: the step is a difference of two
+    // srgbEncode() results near 1.0, where one float ulp is 6e-8, and Apple's
+    // libm and glibc round powf() differently in the last ulp -- measured,
+    // 255 x 6e-8 = 1.5e-5 between the two, which is exactly the gap that
+    // failed on Linux. The constant was derived on macOS; the tolerance now
+    // admits a few ulps of libm on either side, which changes nothing about
+    // what it asserts (a band no narrower than the coarsest step, to within
+    // the arithmetic that produced it).
+    check(near(kFloodEdgeBandFloor, 255.0f * worstStep, 1e-4f),
           "flood: the default edge band IS 255 x the coarsest source step, re-measured here "
           "rather than trusted -- a band any narrower cannot fill the uint8 store's 256 levels");
 

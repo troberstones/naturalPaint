@@ -179,10 +179,11 @@ bool runLayerEditorTest() {
             "and typing into it makes it draw -- the kind rasters to tiles and the string "
             "shapes to glyph outlines");
     else
-      check(layerRastersToTiles(typed.kind) && textContentDraws(typed.text) &&
+      check(layerRastersToTiles(typed.kind) && !textContentDraws(typed.text) &&
                 textContentToShapes(typed.text).empty(),
             "and typing into it makes it draw -- the kind rasters to tiles; this build's "
-            "stub shaper shapes the string to nothing, as shaperAvailable() says");
+            "stub shaper shapes the string to nothing, so it draws nothing, as "
+            "shaperAvailable() says");
     check(od.document.layers[1].name != od.document.layers[2].name,
           "the Vector and Text layers get their own default names too");
   }
