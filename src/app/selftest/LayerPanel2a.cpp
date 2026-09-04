@@ -109,7 +109,7 @@ bool runLayerPanel2aTest() {
     for (const NewLayerKindEntry& e : menu) {
       const bool expected = e.kind == LayerKind::Pigment || e.kind == LayerKind::RGB ||
                             e.kind == LayerKind::Adjustment || e.kind == LayerKind::Vector ||
-                            e.kind == LayerKind::Text;
+                            e.kind == LayerKind::Text || e.kind == LayerKind::Flats;
       if (e.buildable != expected) correctSet = false;
       if (e.buildable) ++buildable;
       // A disabled entry must SAY why, and a live one must not carry an excuse
@@ -117,9 +117,9 @@ bool runLayerPanel2aTest() {
       const char* reason = layerKindUnbuildableReason(e.kind);
       if (e.buildable != (reason == nullptr)) reasonsMatch = false;
     }
-    check(buildable == 5 && correctSet,
-          "new: exactly Pigment, RGB, Adjustment, Vector and Text are buildable -- core/LayerOps "
-          "has five maker functions and Media/Strokes/Flats hold no content at all");
+    check(buildable == 6 && correctSet,
+          "new: exactly Pigment, RGB, Adjustment, Vector, Text and Flats are buildable -- core/LayerOps "
+          "has six maker functions and Media/Strokes hold no content at all");
     check(reasonsMatch,
           "new: every disabled kind carries a reason and every live one carries none -- a "
           "greyed row that cannot say why is indistinguishable from a broken button");

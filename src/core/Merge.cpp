@@ -1,5 +1,7 @@
 #include "core/Merge.hpp"
 
+#include "flats/FlatsLayer.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <optional>
@@ -726,6 +728,29 @@ LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::strin
   // over untouched, because every one of them applied to the layer before and
   // must apply to it after -- rasterising changes what the layer's content IS,
   // not how it participates in the stack.
+  // **A Flats layer rasterises to the tiles it already composites as** --
+  // its cached evaluation (flats/FlatsLayer), which unlike Vector and Text
+  // DOES depend on what lies beneath: a flat is a segmentation of the line
+  // art below it. Rasterising freezes that: the fills stop re-deriving when
+  // the line art changes, which is the same loss "geometry is gone" is for a
+  // Vector layer and is said so below.
+  if (layer.kind == LayerKind::Flats) {
+    const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(doc, index);
+    const std::shared_ptr<const TileStore> tiles = flatsLayerTiles(doc, index);
+    Layer raster = layer;
+    raster.kind = LayerKind::RGB;
+    raster.rgbTiles = tiles ? *tiles : TileStore{};
+    raster.flats = FlatsContent{};
+    const size_t fillCount = eval ? eval->roots().size() : 0;
+    append(warningsOut,
+           "rasterise layer baked " + std::to_string(fillCount) +
+               " fill(s) into pixels; the layer re-flatted the line art beneath it before and "
+               "does not now, and its repairs are gone. Undo restores it.");
+    const std::string flatsLabel = "rasterise " + layerOpDescribe(doc, index);
+    doc.layers[index] = std::move(raster);
+    return layerOpSucceed(flatsLabel, index);
+  }
+
   if (layerRastersToTiles(layer.kind)) {
     const std::vector<VectorShape> shapes = layer.kind == LayerKind::Text
                                                 ? textContentToShapes(layer.text)
@@ -751,9 +776,9 @@ LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::strin
         "rasterise layer refused: " + layerOpDescribe(doc, index) + " is a " +
         layerKindName(layer.kind) +
         " layer. PRD C11 rasterises a *parametric* layer, and of the kinds this build "
-        "has, Adjustment, Vector and Text are the three that qualify -- a Strokes layer "
-        "here has no dabs and a Flats layer no regions, because neither has a parameter "
-        "member yet, and Media needs the fluid solver's per-medium state (core/Layer.hpp). "
+        "has, Adjustment, Vector, Text and Flats are the four that qualify -- a Strokes layer "
+        "here has no dabs because the kind has no parameter member yet, and Media needs the "
+        "fluid solver's per-medium state (core/Layer.hpp). "
         "An RGB or Pigment layer is already pixels and has nothing to rasterise.");
 
   if (layer.ops.size() == 0)

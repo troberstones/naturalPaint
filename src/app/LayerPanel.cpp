@@ -97,7 +97,9 @@ const std::vector<NewLayerKindEntry>& newLayerKindMenu() {
       // already the design's and moving it is what would break the ordering a
       // --selftest pins.
       {LayerKind::Text, true, LayerCommand::NewTextLayer},
-      {LayerKind::Flats, false, {}},
+      // Buildable as of PLAN.md phase 16 (ADR-0009), flipped in place for
+      // Text's reason above.
+      {LayerKind::Flats, true, LayerCommand::NewFlatsLayer},
       // Buildable as of PLAN.md phase 13: an empty Vector layer is a real,
       // saveable, editable thing, unlike the four above it. Appended rather
       // than slotted among the parametric kinds because design 2a's popup
@@ -118,6 +120,7 @@ const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
     case LayerKind::Adjustment:
     case LayerKind::Vector:
     case LayerKind::Text:
+    case LayerKind::Flats:
       return nullptr;
     case LayerKind::Media:
       return "Not built yet. A Media layer needs the fluid solver's own per-medium state on "
@@ -125,9 +128,6 @@ const char* layerKindUnbuildableReason(LayerKind kind) noexcept {
     case LayerKind::Strokes:
       return "Not built yet. A Strokes layer here has no dabs: the kind has no parameter "
              "member to hold them.";
-    case LayerKind::Flats:
-      return "Not built yet. A Flats layer here has no regions: the kind has no fill list to "
-             "hold them.";
     case LayerKind::Group:
       // Not "unbuildable" in the sense the other four are -- a Group is real
       // and fully built. It simply is not one of `newLayerKindMenu()`'s seven

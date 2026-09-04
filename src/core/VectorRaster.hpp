@@ -149,8 +149,9 @@ class MaterializedDocument {
 };
 
 // Which layer kinds hold parametric content that this file turns into tiles:
-// `Vector` (its `shapes`) and, since PLAN.md phase 14, `Text` (its `text`,
-// via `textContentToShapes()`).
+// `Vector` (its `shapes`), since PLAN.md phase 14 `Text` (its `text`, via
+// `textContentToShapes()`), and since phase 16 `Flats` (its `flats`, via
+// flats/FlatsLayer's own cached evaluation -- see the materialise loop).
 //
 // **A predicate rather than `kind == Vector || kind == Text` spelled out at
 // each site**, because there are THREE sites in this file and they are not

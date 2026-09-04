@@ -1,5 +1,8 @@
 #include "ui/MacPaintUI.hpp"
 
+#include "flats/FlatsLayer.hpp"
+#include "flats/Tool.hpp"
+
 #include "app/LayerThumbnail.hpp"
 #include "app/StrokeSession.hpp"
 #include "ui/AtelierChrome.hpp"
@@ -1859,6 +1862,7 @@ const char* layerCommandGlyphFallback(LayerCommand command) noexcept {
     case LayerCommand::NewAdjustmentLayer: return "[A]";
     case LayerCommand::NewVectorLayer: return "[V]";
     case LayerCommand::NewTextLayer: return "[T]";
+    case LayerCommand::NewFlatsLayer: return "[F]";
     case LayerCommand::DuplicateLayer: return "[Dup]";
     case LayerCommand::DeleteLayer: return "[Del]";
     case LayerCommand::AddMask: return "[+Mask]";
@@ -15006,6 +15010,95 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // === The flatting keys (ADR-0009) ======================================
+    //
+    // Raised by the keymap while a Flats layer is active (keymaps/default.json
+    // scopes them), consumed here because this is where the cursor's texel is
+    // known. Each is one recorded edit to the layer (flats/Tool), and the
+    // record is what re-evaluates it (flats/FlatsLayer's cache).
+    if (st.flatsAction != FlatsAction::None) {
+      const FlatsAction act = st.flatsAction;
+      st.flatsAction = FlatsAction::None;
+      OpenDocument* fod = st.documents.active();
+      Layer* flayer = fod != nullptr ? activeLayerOf(*fod) : nullptr;
+      const std::optional<size_t> fidx = fod != nullptr ? activeLayerIndex(*fod) : std::nullopt;
+      if (flayer != nullptr && flayer->kind == LayerKind::Flats && !flayer->locked && fidx.has_value()) {
+        const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(fod->document, *fidx);
+        const bool onCanvas = hovered && tx >= 0 && ty >= 0 && tx < texW && ty < texH;
+        if (eval) {
+          switch (act) {
+            case FlatsAction::DeleteFill:
+              if (onCanvas && flatsDeleteFill(*flayer, *eval, tx, ty)) {
+                fod->recordEdit("flats delete fill", EditKind::Content);
+                g_strokeRefusal.clear();
+              } else {
+                g_strokeRefusal = "K deletes the fill under the cursor: put the cursor on a fill.";
+              }
+              break;
+            case FlatsAction::MergePair:
+              if (!onCanvas) {
+                g_strokeRefusal = "M merges fills: put the cursor on the first fill and press M, then on the second.";
+              } else if (!st.flatsMergeFirst.has_value()) {
+                if (eval->fillAt(tx, ty)) {
+                  st.flatsMergeFirst = std::array<float, 2>{tx, ty};
+                  g_strokeRefusal = "merge armed: move to the fill to merge into it and press M again (Esc cancels).";
+                } else {
+                  g_strokeRefusal = "M merges fills: the cursor is not on a fill.";
+                }
+              } else {
+                const std::array<float, 2> first = *st.flatsMergeFirst;
+                st.flatsMergeFirst.reset();
+                if (flatsMergePair(*flayer, *eval, first[0], first[1], tx, ty)) {
+                  fod->recordEdit("flats merge", EditKind::Content);
+                  g_strokeRefusal.clear();
+                } else {
+                  g_strokeRefusal = "merge: the two points must be two different fills, neither the background.";
+                }
+              }
+              break;
+            case FlatsAction::PrevGap:
+            case FlatsAction::NextGap: {
+              const int n = static_cast<int>(eval->suggestions.size());
+              if (n == 0) {
+                st.flatsGapFocus = -1;
+                g_strokeRefusal = "no gap suggestions on this flat.";
+              } else {
+                const int step = act == FlatsAction::NextGap ? 1 : n - 1;
+                st.flatsGapFocus = ((st.flatsGapFocus < 0 ? (act == FlatsAction::NextGap ? -1 : 0) : st.flatsGapFocus) + step) % n;
+                g_strokeRefusal = "gap " + std::to_string(st.flatsGapFocus + 1) + " of " + std::to_string(n) +
+                                  " -- Return bridges it, , and . move on.";
+              }
+              break;
+            }
+            case FlatsAction::AcceptGap:
+              if (flatsAcceptSuggestion(*flayer, *eval, st.flatsGapFocus)) {
+                fod->recordEdit("flats bridge", EditKind::Content);
+                st.flatsGapFocus = -1;
+                g_strokeRefusal.clear();
+              } else {
+                g_strokeRefusal = "Return bridges the focused gap: press . to focus one first.";
+              }
+              break;
+            case FlatsAction::ClusterSmall: {
+              const int n = flatsClusterSmall(*flayer, *eval, flatsClusterMaxArea(flayer->flats.params));
+              if (n > 0) {
+                fod->recordEdit("flats cluster small fills", EditKind::Content);
+                g_strokeRefusal = "clustered " + std::to_string(n) + " small fill(s) into their neighbours.";
+              } else {
+                g_strokeRefusal = "no small open-bordered fills to cluster.";
+              }
+              break;
+            }
+            case FlatsAction::None:
+              break;
+          }
+        }
+      } else {
+        g_strokeRefusal = "the flatting keys act on a Flats layer: pick one in LAYERS.";
+      }
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) st.flatsMergeFirst.reset();
+
     if (toolWritesRgbPixels(st.brush.tool) && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       OpenDocument* od = st.documents.active();
@@ -15053,7 +15146,54 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         if (hovered && !transformActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
             tx >= 0 && ty >= 0 &&
             tx < texW && ty < texH) {
-          if (!usable) {
+          if (st.bucketFill == BucketFill::Flats && od != nullptr && target != nullptr) {
+            // **The Flats-mode bucket** (ADR-0009). On a Flats layer the click
+            // is a recorded recolour (Option: a carve; Shift: every fill of
+            // that colour), and the record is what re-evaluates the layer.
+            // On a layer that can take pixels it is a bake: the basin under
+            // the click, found in the whole composite, filled through the
+            // same `fillThroughSelection()` the colour bucket uses. Anything
+            // else refuses in the colour bucket's own words.
+            const std::optional<size_t> li = activeLayerIndex(*od);
+            const FlatRgb fg8 = flatRgbFromSrgb(foregroundSrgb(st.brush));
+            const bool optionHeld = ImGui::GetIO().KeyAlt;
+            const bool shiftHeld = ImGui::GetIO().KeyShift;
+            if (target->kind == LayerKind::Flats && !target->locked && li.has_value()) {
+              const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(od->document, *li);
+              if (eval) {
+                const bool changed = optionHeld
+                                         ? flatsBucketCarve(*target, *eval, tx, ty)
+                                         : flatsBucketRecolor(*target, *eval, tx, ty, fg8, -1, shiftHeld) > 0;
+                if (changed) {
+                  od->recordEdit(optionHeld ? "flats carve" : "flats recolour", EditKind::Content);
+                  g_strokeRefusal.clear();
+                } else {
+                  g_strokeRefusal = optionHeld
+                                        ? "no room to carve a fill here -- raise GAP or pick another spot."
+                                        : "no fill under the cursor to recolour.";
+                }
+              }
+            } else if (usable && li.has_value()) {
+              FlatsContent bake;
+              bake.params = st.flatsBucketParams;
+              const std::shared_ptr<const FlatEvaluation> eval =
+                  flatsEvaluateBeneath(od->document, od->document.layers.size(), bake);
+              const int fill = eval ? eval->fillAt(tx, ty) : 0;
+              if (!fill) {
+                g_strokeRefusal = "the click is on a stroke, not inside a region.";
+              } else {
+                Selection region = flatsFillSelection(*eval, fill);
+                if (od->selection.has_value())
+                  region = combineSelections(region, *od->selection, SelectionCombine::Intersect);
+                if (fillThroughSelection(*target->rgbTiles, region, fg) > 0)
+                  od->recordEdit("paint bucket (flats)", EditKind::Content);
+              }
+            } else {
+              g_strokeRefusal = target->locked
+                                    ? pixelOpRefusalMessage(PixelOpRefusal::Locked, target, "paint bucket")
+                                    : pixelOpRefusalMessage(refusal, target, "paint bucket");
+            }
+          } else if (!usable) {
             // The same band, the same colour and the same voice as the stroke
             // refusals below -- and cleared on the next click that lands, so
             // the sentence describes this click rather than an older one.
@@ -16078,6 +16218,37 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // mirror are inherited for free rather than re-derived here -- the one rule
     // that keeps an overlay from drifting off the picture under a rotated
     // canvas.
+    // === Flats overlay (ADR-0009) ==========================================
+    //
+    // The gap suggestions of the active Flats layer, and its recorded
+    // bridges. Ants, like the lasso: a suggestion is something to review and
+    // accept, which is closer to "selected" than to the Pen's geometry. The
+    // focused suggestion (`,` / `.`) is drawn twice so it reads heavier.
+    {
+      const OpenDocument* flatsOd = st.documents.active();
+      const Layer* fl = flatsOd != nullptr ? activeLayerOf(*flatsOd) : nullptr;
+      const std::optional<size_t> fi = flatsOd != nullptr ? activeLayerIndex(*flatsOd) : std::nullopt;
+      if (fl != nullptr && fl->kind == LayerKind::Flats && fi.has_value()) {
+        const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(flatsOd->document, *fi);
+        float antPhase = marchingAntPhase();
+        auto antPath = [&](const FlatPolyline& poly, int passes) {
+          std::vector<Vec2> pts;
+          pts.reserve(poly.size() / 2);
+          for (size_t i = 0; i + 1 < poly.size(); i += 2) pts.push_back(Vec2{poly[i], poly[i + 1]});
+          if (pts.size() == 1) pts.push_back(pts[0]);
+          for (int k = 0; k < passes; k++) drawAntPolyline(dl, xform, pts, /*closed=*/false, antPhase);
+        };
+        if (eval) {
+          for (size_t i = 0; i < eval->suggestions.size(); i++)
+            antPath(eval->suggestions[i], static_cast<int>(i) == st.flatsGapFocus ? 3 : 1);
+        }
+        for (const FlatBridgeStroke& b : fl->flats.edits.bridges)
+          if (!b.erase) antPath(b.pts, 1);
+        if (st.flatsMergeFirst.has_value())
+          antPath(FlatPolyline{(*st.flatsMergeFirst)[0], (*st.flatsMergeFirst)[1], tx, ty}, 1);
+      }
+    }
+
     if (toolEditsPath(st.brush.tool)) {
       const OpenDocument* pathOd = st.documents.active();
       const Layer* pl = pathOd != nullptr ? activeLayerOf(*pathOd) : nullptr;

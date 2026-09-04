@@ -13,6 +13,31 @@ the code.
 
 ---
 
+## 0. Status (2026-09-04)
+
+Phase 16's library and phase 17's edit model are **built**, and the interaction design
+the plan left open is settled in [ADR-0009](adr/0009-flatting-is-a-bucket-mode-on-a-flats-layer.md):
+a Flats layer is the model, and the paint bucket's `FILL: Flats` mode is the entry point.
+
+| piece | state |
+|---|---|
+| `src/flats/` — ink, morphology, trapped ball, expansion, regions, slivers, declutter, membrane, sag, gaps (fronts, endpoints, relatability, elastica, co-completion, closure/Prägnanz) | ported to C++, **bit-exact** against autoFlats' TypeScript on the shared fixtures (label-field hashes in the flats self-test section) |
+| `flats/Model` — parameters, the nine geometry-recorded edit kinds, replay, anchors, palette graph-colouring, carve, cluster | ported; evaluation is a pure function of (line art beneath, content) — see the ADR for what changed from autoFlats |
+| `flats/FlatsLayer` — evaluation against the composite beneath, cached on content hash × beneath signature, rasterised to tiles | built; `core/VectorRaster`'s materialise loop and `core/Merge`'s rasterise use it |
+| `io/FlatsSerial` + `np:flats` | built; save refusal lifted, load carries an unreadable payload verbatim |
+| `LayerCommand::NewFlatsLayer`, `makeFlatsLayer()`, the NEW popup row | built |
+| Paint bucket `FILL: Flats` — recolour / Option carve / Shift same-colour on a Flats layer; bake of the sag basin on an RGB layer; SHEET / GAP / DECLUTTER in the options row | built (ui/AtelierChrome, ui/MacPaintUI) |
+| Flats-scoped keys: `K` delete, `M` two-click merge, `,` `.` `Return` gap review, `⌘⇧K` cluster small; suggestion and bridge overlay | built; `main.cpp` now resolves chords against the active layer's kind |
+| Bridge pen / eraser, draw-merge, lasso → group / shape, select-edits (`flats/Tool` has each as a one-call function) | **model and tool functions built and tested; canvas gestures not yet wired** — the seams are the lasso commit (`selectPolygon` in ui/MacPaintUI) and the Pencil/Eraser stroke route on a Flats layer |
+| Fills panel; `FLATS · N FILLS` sub-line; expand to layers (N9); PSD group export | not built |
+| GPU membrane on `jacobi.wgsl` (N8), GPU growth kernel, capped-resolution preview | not built; the CPU port is the fixed answer they are held to |
+| Wash via a Media layer (N12) | not built |
+
+The invariant suite runs on a machine with no Metal adapter through the `flatstest`
+executable (`src/tools/FlatsTestMain.cpp`) as well as inside `--selftest`.
+
+---
+
 ## 1. Why this merges well
 
 Three structural facts, each verified against both codebases rather than assumed.

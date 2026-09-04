@@ -27,6 +27,7 @@
 #include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "core/Clipboard.hpp"
+#include "flats/Model.hpp"
 #include "core/SelectionBoundary.hpp"
 #include "core/SelectionOps.hpp"
 #include "core/SelectionShapes.hpp"
@@ -652,6 +653,34 @@ struct ToolSwitchState {
   Tool springReturn = Tool::Brush;
 };
 
+// ADR-0009: what the paint bucket fills.
+enum class BucketFill { Colour, Flats };
+struct BucketFillRow {
+  BucketFill mode;
+  const char* label;
+  const char* tip;
+};
+inline constexpr size_t kBucketFillCount = 2;
+inline constexpr BucketFillRow kBucketFills[kBucketFillCount] = {
+    {BucketFill::Colour, "Colour",
+     "The region of similar colour around the click, within TOLERANCE -- the ordinary bucket."},
+    {BucketFill::Flats, "Flats",
+     "The enclosed region of the line art under the click, found by hanging the drawing as a "
+     "rubber sheet pinned at every stroke: a break in a line narrower than GAP does not leak. "
+     "On a Flats layer the click recolours that fill and is remembered; on an RGB layer it "
+     "fills the pixels. Option-click carves a new fill out of a leaked area; Shift-click "
+     "recolours every fill of the same colour."},
+};
+inline const char* bucketFillLabel(BucketFill mode) noexcept {
+  for (size_t i = 0; i < kBucketFillCount; ++i)
+    if (kBucketFills[i].mode == mode) return kBucketFills[i].label;
+  return "?";
+}
+
+// The flatting key actions, raised by the keymap while a Flats layer is
+// active (scoped bindings) and consumed by ui/MacPaintUI's canvas block.
+enum class FlatsAction { None, DeleteFill, MergePair, PrevGap, NextGap, AcceptGap, ClusterSmall };
+
 struct AppState {
   PaintMode mode = PaintMode::Watercolor;
   // The stroke bridge's per-frame cycle. It lives here rather than as a local
@@ -772,6 +801,25 @@ struct AppState {
   // three floats is a format commitment bought for a convenience.
   FloodFillParams magicWand;
   FloodFillParams paintBucket;
+
+  // **The bucket's FILL mode** (ADR-0009): `Colour` is the tolerance flood
+  // above; `Flats` fills the rubber-sheet region under the click instead --
+  // on a Flats layer as a recorded recolour, on an RGB layer as a baked
+  // fill of the basin found in the whole composite. `flatsBucketParams` is
+  // what the bake segments with; a Flats layer uses its own `flats.params`.
+  BucketFill bucketFill = BucketFill::Colour;
+  FlatParams flatsBucketParams;
+
+  // The Flats-scoped key actions (keymaps/default.json, docs/shortcuts.md
+  // §5.1), as request flags the keymap raises and the canvas consumes where
+  // the cursor position is known -- `requestScreenshot`'s shape.
+  FlatsAction flatsAction = FlatsAction::None;
+  // Which gap suggestion `,` / `.` have focused, -1 for none; `Return`
+  // accepts it. Reset whenever the active layer's evaluation changes.
+  int flatsGapFocus = -1;
+  // The first point of a two-click merge (`M` arms it on the fill under the
+  // cursor; the next `M` merges the fill under the cursor into it).
+  std::optional<std::array<float, 2>> flatsMergeFirst;
 
   // `--gradient-demo drag`: a gradient drag HELD OPEN, the way
   // `openToolFlyoutDemo` holds a flyout open and `panelStackDemo` holds a

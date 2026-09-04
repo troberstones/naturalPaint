@@ -3403,6 +3403,9 @@ int main(int argc, char** argv) {
     // a parked backlog, prompt catch-up on scroll-into-view, and a printed
     // (not asserted) per-tile cost measurement.
     const bool viewportDeferredCompositeOk = np::runViewportDeferredCompositeTest(gpu);
+    // PLAN.md phase 16 (ADR-0009): the flatting library absorbed from
+    // autoFlats, bit-exact against its reference on the shared fixtures.
+    const bool flatsOk = np::runFlatsTest();
     const bool ok = pigmentOk && solverFootprintOk && accumulatorOk && colorSpaceOk &&
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
@@ -3455,7 +3458,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && textSerialOk && textToolOk;
+                    penToolOk && textSerialOk && textToolOk && flatsOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4326,13 +4329,18 @@ int main(int argc, char** argv) {
       }
       if (e.type == SDL_EVENT_KEY_DOWN) {
         // Resolve the raw key event through the keymap rather than testing
-        // SDL keycodes here. `activeScope` is std::nullopt because no
-        // document/layer model exists yet (core/Document + core/Layer are a
-        // later Phase 2 step) -- every binding that exists today is global,
-        // so this is "no active layer kind," not a stand-in for a real
-        // value being dropped.
+        // SDL keycodes here. The scope is the ACTIVE LAYER'S KIND, so a
+        // binding scoped to `Flats` in keymaps/default.json (ADR-0009, the
+        // flatting tools; docs/shortcuts.md §5.1) fires only while a Flats
+        // layer is active and a global binding on the same chord fires
+        // everywhere else -- `Keymap::resolve()` prefers the scoped one.
+        // `std::nullopt` when no document is open, which is what every
+        // binding saw before layers existed.
         const np::KeyChord chord{e.key.key, np::keyModsFromSDL(e.key.mod)};
-        const std::optional<std::string> action = keymap.resolve(chord, std::nullopt);
+        std::optional<np::LayerKind> activeScope;
+        if (const np::OpenDocument* scopeDoc = st.documents.active())
+          if (const np::Layer* scopeLayer = np::activeLayerOf(*scopeDoc)) activeScope = scopeLayer->kind;
+        const std::optional<std::string> action = keymap.resolve(chord, activeScope);
         if (action == "toggle_pause") st.paused = !st.paused;
         else if (action == "clear_canvas") st.requestClear = true;
         else if (action == "reload_shaders") st.requestReload = true;
@@ -4341,6 +4349,14 @@ int main(int argc, char** argv) {
         // every macOS route to another process's pixels is behind a
         // permission that fails silently. Serviced in the present block.
         else if (action == "screenshot") st.requestScreenshot = true;
+        // ADR-0009: the flatting keys, scoped to a Flats layer in the keymap
+        // and consumed by ui/MacPaintUI where the cursor's texel is known.
+        else if (action == "flats_delete_fill") st.flatsAction = np::FlatsAction::DeleteFill;
+        else if (action == "flats_merge_pair") st.flatsAction = np::FlatsAction::MergePair;
+        else if (action == "flats_prev_gap") st.flatsAction = np::FlatsAction::PrevGap;
+        else if (action == "flats_next_gap") st.flatsAction = np::FlatsAction::NextGap;
+        else if (action == "flats_accept_gap") st.flatsAction = np::FlatsAction::AcceptGap;
+        else if (action == "flats_cluster_small") st.flatsAction = np::FlatsAction::ClusterSmall;
         // PLAN.md Phase 2 step 11 ("View controls", PRD Q1-Q4). Fit/100%/
         // zoom-in/zoom-out are request flags because they need the canvas
         // window's actual on-screen size, which only exists inside

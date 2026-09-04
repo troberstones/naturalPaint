@@ -1,5 +1,7 @@
 #include "core/VectorRaster.hpp"
 
+#include "flats/FlatsLayer.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -140,6 +142,10 @@ std::shared_ptr<const TileStore> VectorRasterCache::store(uint64_t layerId, uint
 }
 
 void VectorRasterCache::forgetLayersNotIn(const Document& doc) {
+  // The Flats evaluation cache is process-wide (flats/FlatsLayer) and is
+  // swept here too, so deleting a Flats layer releases its label field on
+  // the same call that releases a Vector layer's raster.
+  flatsForgetLayersNotIn(doc);
   for (auto it = byLayer_.begin(); it != byLayer_.end();) {
     bool present = false;
     for (const Layer& l : doc.layers)
@@ -161,7 +167,7 @@ size_t VectorRasterCache::residentBytes() const noexcept {
 }
 
 bool layerRastersToTiles(LayerKind kind) noexcept {
-  return kind == LayerKind::Vector || kind == LayerKind::Text;
+  return kind == LayerKind::Vector || kind == LayerKind::Text || kind == LayerKind::Flats;
 }
 
 bool documentHasVectorLayers(const Document& doc) noexcept {
@@ -176,8 +182,25 @@ MaterializedDocument::MaterializedDocument(const Document& doc, VectorRasterCach
   if (!documentHasVectorLayers(doc)) return;
 
   Document copy = doc;
-  for (Layer& layer : copy.layers) {
+  for (size_t index = 0; index < copy.layers.size(); ++index) {
+    Layer& layer = copy.layers[index];
     if (!layerRastersToTiles(layer.kind)) continue;
+
+    // **A Flats layer takes its own path** (flats/FlatsLayer, ADR-0009): it
+    // evaluates against the composite of the layers BENEATH it in the
+    // ORIGINAL document -- `doc`, not `copy`, whose lower layers may already
+    // have been rewritten -- and its cache is its own, keyed on its content
+    // hash and on a signature of what lies beneath, because a segmentation
+    // is seconds of work and `cache` here may be null. The rewrite it lands
+    // in is the same one as Text and Vector: an RGB layer sharing the cached
+    // tiles.
+    if (layer.kind == LayerKind::Flats) {
+      std::shared_ptr<const TileStore> flatTiles = flatsLayerTiles(doc, index);
+      layer.kind = LayerKind::RGB;
+      layer.rgbTiles = flatTiles ? *flatTiles : TileStore{};
+      layer.flats = FlatsContent{};
+      continue;
+    }
 
     // **Text takes the same path as Vector because it IS the same path.**
     // `textContentToShapes()` produces the identical `std::vector<VectorShape>`

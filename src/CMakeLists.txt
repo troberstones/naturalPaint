@@ -42,6 +42,23 @@ add_executable(naturalPaint
   # what the suite proves and is deliberately NOT split. Listed explicitly
   # rather than globbed, same as every other source in this target, so adding
   # a section is a visible line in the diff and CMake reconfigures for it.
+  # flats/ -- the flatting library absorbed from autoFlats (ADR-0009,
+  # docs/autoflats-migration.md), plus its evaluation cache and the
+  # `np:flats` carrier. Pure CPU; see flatstest below.
+  flats/Field.cpp
+  flats/Ink.cpp
+  flats/Morphology.cpp
+  flats/Expand.cpp
+  flats/Segment.cpp
+  flats/Membrane.cpp
+  flats/Sag.cpp
+  flats/Gaps.cpp
+  flats/Model.cpp
+  flats/Tool.cpp
+  flats/FlatsLayer.cpp
+  flats/FlatsSelfTest.cpp
+  io/FlatsSerial.cpp
+
   app/selftest/Accumulator.cpp
   app/selftest/AdjustmentMenu.cpp
   app/selftest/AdjustmentLayer.cpp
@@ -797,6 +814,27 @@ endif()
 # build for a GPU/windowing reason would be a strange failure mode for
 # something whose whole job is being trustworthy after the app already ran.
 add_executable(goldentool tools/GoldenTool.cpp)
+
+# flatstest -- src/flats/'s self-test section as a standalone, GPU-free binary
+# (src/tools/FlatsTestMain.cpp explains why). The same section is also in
+# naturalPaint's `--selftest` chain; this target exists so it can run on a
+# machine with no Metal adapter, which is where the port was developed.
+add_executable(flatstest
+  tools/FlatsTestMain.cpp
+  flats/Field.cpp
+  flats/Ink.cpp
+  flats/Morphology.cpp
+  flats/Expand.cpp
+  flats/Segment.cpp
+  flats/Membrane.cpp
+  flats/Sag.cpp
+  flats/Gaps.cpp
+  flats/Model.cpp
+  flats/Tool.cpp
+  flats/FlatsSelfTest.cpp
+)
+target_include_directories(flatstest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(flatstest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 target_include_directories(goldentool SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party
 )
