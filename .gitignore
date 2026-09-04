@@ -58,3 +58,7 @@ dry_media.abr
 Lineart4_crop.psd
 Peter_confronts_a_small_monster_with_fire.psd
 Testforautoflats 2.psd
+
+# configure/build logs written by the Linux build loop
+/build-configure.log
+/build.log
