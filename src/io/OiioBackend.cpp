@@ -619,6 +619,19 @@ namespace {
 // singleton. The shared one is global to the process across every library
 // that links OIIO, so its budget -- the number this whole step turns on --
 // could be changed by code this project does not own.
+// A template rather than `if constexpr` in the function above: outside a
+// template both branches of an `if constexpr` must still compile, and the
+// raw-pointer branch does not against a shared_ptr-returning `create()`.
+template <class Created>
+std::shared_ptr<OIIO::ImageCache> adoptImageCache(Created created) {
+  if constexpr (std::is_pointer_v<Created>) {
+    return std::shared_ptr<OIIO::ImageCache>(created,
+                                             [](OIIO::ImageCache* c) { OIIO::ImageCache::destroy(c); });
+  } else {
+    return created;
+  }
+}
+
 OIIO::ImageCache* tileCache(bool createIfAbsent) {
   static std::shared_ptr<OIIO::ImageCache> cache;
   if (!cache && createIfAbsent) {
@@ -626,13 +639,7 @@ OIIO::ImageCache* tileCache(bool createIfAbsent) {
     // package) returns a raw pointer that must go back through
     // ImageCache::destroy(). Both are accepted so the version is a property
     // of the machine, not of this file.
-    auto created = OIIO::ImageCache::create(false);
-    if constexpr (std::is_pointer_v<decltype(created)>) {
-      cache = std::shared_ptr<OIIO::ImageCache>(
-          created, [](OIIO::ImageCache* c) { OIIO::ImageCache::destroy(c); });
-    } else {
-      cache = created;
-    }
+    cache = adoptImageCache(OIIO::ImageCache::create(false));
     // autotile off: an untiled source is not cached tile-wise at all, it is
     // cached whole. io/TileResidency refuses untiled sources for that reason
     // (and for the measured per-tile cost of the alternative), so turning
