@@ -729,6 +729,17 @@ message(STATUS "naturalPaint: OpenImageIO ${OpenImageIO_VERSION} (required)")
 # The escape hatch for a genuinely-intentional unused symbol is [[maybe_unused]]
 # on the declaration, which is local, visible in the diff, and says why -- not a
 # flag removed from this file.
+# core/Half converts through the CPU's own instruction when the compiler
+# says it may (`__F16C__` on x86-64, the ARM half format on aarch64) and
+# otherwise through a portable software path that --selftest reports as "a
+# missing compiler flag, not a missing instruction". Apple silicon has the
+# ARM path unconditionally; on x86-64 F16C has to be asked for. Every
+# x86-64 CPU since 2013 (Ivy Bridge, Piledriver) has it, which is the same
+# floor SDL3 and Mesa assume, so this is not a portability cost.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+  target_compile_options(naturalPaint PRIVATE -mf16c)
+endif()
+
 # GCC 13 with -O2 misreports two std::string constructions -- the default
 # `TransformBeginResult::error` inlined into MoveTool's beginMove, and
 # io/OiioBackend's memoryFilename() concatenation -- as reading past a

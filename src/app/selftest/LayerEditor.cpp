@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "core/TextContent.hpp"
+#include "text/Shaper.hpp"
 #include "core/VectorRaster.hpp"
 
 namespace np {
@@ -165,12 +166,23 @@ bool runLayerEditorTest() {
     // And it is a REAL Text layer, not an inert placeholder: giving it a
     // string makes it draw, through the same predicate core/VectorRaster
     // dispatches on.
+    // Two platforms, one runtime fact deciding the answer: with a shaper
+    // (CoreText on macOS) the string shapes to glyph outlines; on the stub
+    // shaper (text/StubShaper.cpp, every other platform) it shapes to
+    // nothing and `shaperAvailable()` says so -- and the layer is still a
+    // real Text layer whose kind rasters to tiles.
     Layer typed = text;
     typed.text = makeTextContent("Ag", PathPoint{4.0f, 40.0f});
-    check(layerRastersToTiles(typed.kind) && textContentDraws(typed.text) &&
-              !textContentToShapes(typed.text).empty(),
-          "and typing into it makes it draw -- the kind rasters to tiles and the string "
-          "shapes to glyph outlines");
+    if (shaperAvailable())
+      check(layerRastersToTiles(typed.kind) && textContentDraws(typed.text) &&
+                !textContentToShapes(typed.text).empty(),
+            "and typing into it makes it draw -- the kind rasters to tiles and the string "
+            "shapes to glyph outlines");
+    else
+      check(layerRastersToTiles(typed.kind) && textContentDraws(typed.text) &&
+                textContentToShapes(typed.text).empty(),
+            "and typing into it makes it draw -- the kind rasters to tiles; this build's "
+            "stub shaper shapes the string to nothing, as shaperAvailable() says");
     check(od.document.layers[1].name != od.document.layers[2].name,
           "the Vector and Text layers get their own default names too");
   }
