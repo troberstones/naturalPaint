@@ -2088,9 +2088,20 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // The surface flag is the one platform-specific word here: Metal wants
+  // its CAMetalLayer-backed view requested at creation, while on Linux
+  // gfx/Context builds the surface from the X11 or Wayland handles SDL
+  // exposes on any window (SDL_WINDOW_VULKAN is not needed for that, and
+  // asking for it would make window creation depend on the Vulkan loader
+  // before wgpu has had a chance to report a missing adapter itself).
+#if defined(__APPLE__)
+  constexpr SDL_WindowFlags kSurfaceFlag = SDL_WINDOW_METAL;
+#else
+  constexpr SDL_WindowFlags kSurfaceFlag = 0;
+#endif
   SDL_Window* window = SDL_CreateWindow(
       "naturalPaint", 1480, 940,
-      SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_METAL);
+      SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | kSurfaceFlag);
   if (!window) {
     std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
     return 1;

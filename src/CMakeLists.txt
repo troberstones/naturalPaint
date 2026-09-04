@@ -729,6 +729,17 @@ message(STATUS "naturalPaint: OpenImageIO ${OpenImageIO_VERSION} (required)")
 # The escape hatch for a genuinely-intentional unused symbol is [[maybe_unused]]
 # on the declaration, which is local, visible in the diff, and says why -- not a
 # flag removed from this file.
+# GCC 13 with -O2 misreports two std::string constructions -- the default
+# `TransformBeginResult::error` inlined into MoveTool's beginMove, and
+# io/OiioBackend's memoryFilename() concatenation -- as reading past a
+# 16-byte region: -Wstringop-overread firing on libstdc++'s own SSO buffer
+# after inlining, a known false positive (GCC bugzilla 105329 and kin) that
+# names a src/ path and so would trip the zero-warnings rule for nothing.
+# Silenced for GCC only; Clang does not carry the warning.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(naturalPaint PRIVATE -Wno-stringop-overread)
+endif()
+
 target_compile_options(naturalPaint PRIVATE
   -Werror=unused-function
   -Werror=unused-variable

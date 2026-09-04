@@ -23,10 +23,18 @@ struct GlyphFontCandidate {
   const char* why;
 };
 
+//
+// One table for every platform rather than one per `#ifdef`: the loader
+// probes each path for existence, so a macOS path on a Linux box costs one
+// stat and a "(not present)" note in the report, and the list stays
+// readable as a single preference order. Linux entries are the fonts
+// Ubuntu 24.04 installs by default (fonts-dejavu-core, fonts-liberation).
 constexpr GlyphFontCandidate kCandidates[] = {
     {"/System/Library/Fonts/Menlo.ttc", "covers all 7 required codepoints (measured)"},
     {"/System/Library/Fonts/Apple Symbols.ttf",
      "covers 6 of 7 -- no U+2702 scissors, which is reported rather than drawn as a box"},
+    {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+     "Linux: covers all 7 required codepoints (measured under --selftest on Ubuntu 24.04)"},
 };
 
 // The type ramp's two faces (docs/ui.md section 1). Same short-list discipline
@@ -40,6 +48,9 @@ constexpr GlyphFontCandidate kTextCandidates[] = {
     {"/System/Library/Fonts/HelveticaNeue.ttc",
      "the substitution this build makes -- a neo-grotesque, the same species as Archivo"},
     {"/System/Library/Fonts/Helvetica.ttc", "the older grotesque, if Neue is absent"},
+    {"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+     "Linux: the Helvetica-metric grotesque Ubuntu ships"},
+    {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "Linux: present wherever the glyph source is"},
 };
 
 // `ui-monospace` on macOS is SF Mono. Menlo is second because ui/Fonts already
@@ -48,6 +59,8 @@ constexpr GlyphFontCandidate kTextCandidates[] = {
 constexpr GlyphFontCandidate kMonoCandidates[] = {
     {"/System/Library/Fonts/SFNSMono.ttf", "macOS's own ui-monospace, which is what the doc names"},
     {"/System/Library/Fonts/Menlo.ttc", "proven here already: it is the glyph source"},
+    {"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "Linux: the DejaVu monospace, same family as the glyph source"},
+    {"/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf", "Linux: if DejaVu is absent"},
 };
 
 UiFonts g_fonts;

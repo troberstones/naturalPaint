@@ -62,3 +62,8 @@ Testforautoflats 2.psd
 # configure/build logs written by the Linux build loop
 /build-configure.log
 /build.log
+# --selftest output captured by the Linux build loop (stdout and stderr
+# kept apart -- .claude/AGENT-BRIEF.md §2 says why)
+/selftest-out.txt
+/selftest-err.txt
+/run-status.txt
