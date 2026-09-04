@@ -896,7 +896,14 @@ bool runRecoveryJournalTest() {
         (void)wrote;
         const auto t0 = std::chrono::steady_clock::now();
         if (full)
+#if defined(__APPLE__)
           ::fcntl(fd, F_FULLFSYNC);
+#else
+          // Linux has no per-file "flush the device's own cache" request;
+          // syncfs(2) flushes the whole filesystem the fd lives on, which is
+          // the nearest stronger-than-fsync call and the one measured here.
+          ::syncfs(fd);
+#endif
         else
           ::fsync(fd);
         const auto t1 = std::chrono::steady_clock::now();
@@ -905,9 +912,14 @@ bool runRecoveryJournalTest() {
       };
       const double plain = timeSync(false);
       const double full = timeSync(true);
-      std::printf("    [measured] durability of a 1 MiB write: fsync %.2f ms, F_FULLFSYNC "
+#if defined(__APPLE__)
+      const char* fullName = "F_FULLFSYNC";
+#else
+      const char* fullName = "syncfs";
+#endif
+      std::printf("    [measured] durability of a 1 MiB write: fsync %.2f ms, %s "
                   "%.2f ms (%.1fx) -- why the journal uses the first\n",
-                  plain, full, plain > 0.0 ? full / plain : 0.0);
+                  plain, fullName, full, plain > 0.0 ? full / plain : 0.0);
       check(plain >= 0.0 && full >= 0.0, "both durability calls are available on this system");
 
       std::string finishError;

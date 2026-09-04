@@ -1,5 +1,6 @@
 #include "app/OpenAnyFile.hpp"
 
+#include <cmath>
 #include <cerrno>
 #include <cstring>
 #include <filesystem>

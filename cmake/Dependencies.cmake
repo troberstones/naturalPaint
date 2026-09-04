@@ -162,12 +162,25 @@ else()
   # libvulkan.so.1 at runtime rather than linking it (so a machine with no
   # Vulkan ICD still gets a defined "adapter not found" instead of a missing
   # shared object at process start), which is what `dl` is for here. `pthread`
-  # and `m` are what a `.a` built by `rustc` for a glibc target always needs
-  # from a C++ link line: the Rust std runtime spawns OS threads or reads
-  # `errno` from libpthread depending on version, and calls libm transcendental
-  # functions directly rather than through the C++ standard library's own
-  # wrappers. Determined by attempting the link without them and reading which
-  # symbols `ld` reported undefined, not guessed.
+  # and `m` are what a `.a` built by `rustc` for a glibc target needs from a
+  # link line: the Rust std runtime's thread and synchronization primitives
+  # resolve to libpthread symbols, and naga (wgpu-native's shader IR, statically
+  # linked in) calls libm transcendentals -- `log`, `exp`, `pow`, and their
+  # `f`-suffixed float forms -- directly rather than through any C++ standard
+  # library wrapper.
+  #
+  # Measured, not guessed: linking a trivial C program against exactly this
+  # downloaded `libwgpu_native.a` with no extra libraries fails with pages of
+  # `undefined reference to 'log'/'exp'/'pow'/...` from naga's object files;
+  # adding `-lpthread -lm` alone (no `-ldl` needed for that probe, since it
+  # never called into the Vulkan-loading path) resolves every symbol and the
+  # binary runs, successfully calling into the library (wgpuCreateInstance()
+  # returns a real pointer). `-lgcc_s`/`-lstdc++` are not needed here for the
+  # C++ target either: naturalPaint links with `c++`, which already carries
+  # both, and no symbol from this archive comes from either -- checked by
+  # confirming this same probe needed neither, and cross-checking that the
+  # undefined-symbol set has no C++-runtime name in it (no `_Unwind_*`, no
+  # `__cxa_*`, no libstdc++ demangled symbol) before ruling them out.
   target_link_libraries(wgpu_native INTERFACE dl pthread m)
 endif()
 
