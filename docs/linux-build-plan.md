@@ -55,8 +55,14 @@ Mesa llvmpipe: **8040 pass, 31 fail, 1003 s wall** (macOS: ~5 s on real hardware
 The failures fell into five root causes, none of them in the fluid or document code:
 
 1. OpenImageIO **decode** through the 2.4 in-memory read path (EXR, TIFF, DPX, HDR
-   and PSD round trips, open-any-file, PSD import, one tile-residency wording) — one
-   root cause, under investigation in `io/OiioBackend.cpp`.
+   and PSD round trips, open-any-file, PSD import, one tile-residency wording). Two
+   root causes in `io/OiioBackend.cpp`: 2.4 treats an extension-less name with the
+   proxy given only through the config attribute as a missing file (fixed by passing
+   the proxy through `ImageInput::open`'s own parameter), and its PSD reader claims
+   proxy support yet reads past a memory proxy's end (fixed by retrying a refused
+   proxy open through a temporary file). The ImageCache's spec reports an untiled
+   source as one full-size tile, so the native tile shape now comes from a direct
+   header open.
 2. `core/Half` on x86-64 needs `-mf16c` to take its hardware path; the flood edge-band
    figure moves with it. Fixed in `src/CMakeLists.txt`.
 3. Ubuntu's OpenImageIO carries **LibRaw**, so camera raw is supported here and
@@ -67,3 +73,19 @@ The failures fell into five root causes, none of them in the fluid or document c
    trickle budget on a 10 ms/tile software GPU, and a journal write failure provoked
    by permissions that root ignores.
 5. The Text layer's typing check assumed a shaper; it now states the stub's answer.
+
+**Phase 2 — result.** After the fixes above, on the same box:
+**8078 pass, 0 fail, 145 sections, zero warnings, exit 0, 937 s wall** (`--selftest`
+also wrote its output PNG). Every macOS-printed line is unchanged; where a platform's
+answer differs the section prints the Linux one under its own label, and the two
+figures that vary with the machine (idle RSS allowances, the trickle rate) carry
+`[measured]`.
+
+Two things worth knowing before the next person touches this:
+
+- **A copied build directory is not isolated.** `cp -r build build-x` keeps absolute
+  paths to `build/` in the copy's cache and Ninja files, and building the copy
+  reconfigures the original. Use a fresh `cmake -S . -B build-x` instead.
+- **The suite is slow here because llvmpipe is a CPU rasteriser**, not because
+  anything regressed: the GPU sections dominate the 15 minutes. On a machine with a
+  real Vulkan device it should approach the macOS figure.
