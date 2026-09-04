@@ -615,6 +615,10 @@ class DocumentTexture {
   size_t plannedTrickleTake(size_t inViewportTiles) const noexcept {
     return trickleTake(inViewportTiles);
   }
+  // The dirty-tiles-in-viewport count the last `viewFor()` handed
+  // `trickleTake()`; with the same dirty set and viewport the next call
+  // hands it the same number, which is what lets --selftest predict a take.
+  size_t lastInViewportTiles() const noexcept { return lastInViewportTiles_; }
 
   // Bytes this object holds that scale with the canvas: the half buffer that
   // mirrors the texture, the float scratch the incremental region walk
@@ -797,6 +801,9 @@ class DocumentTexture {
   // has silently pinned itself to the floor is the failure mode worth being
   // able to see, and it is invisible from the tile counts alone.
   size_t lastTrickleTake_ = 0;
+  // How many dirty tiles intersected the viewport on the last `viewFor()`
+  // -- the count `trickleTake()` was handed. Read by `lastInViewportTiles()`.
+  size_t lastInViewportTiles_ = 0;
 
   // `trickleBudgetMs_`, less the estimated cost of the tiles the viewport
   // requires anyway, divided by the estimated per-tile rate -- clamped to

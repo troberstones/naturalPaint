@@ -334,6 +334,7 @@ WGPUTextureView DocumentTexture::viewFor(GpuContext& gpu, const OpenDocument& do
     // deferred -- so the budget governs only what this call *adds*. See
     // `kViewportTrickleBudgetMs` for why the rate is an estimate rather than
     // a clock checked mid-call.
+    lastInViewportTiles_ = inViewport.size();
     lastTrickleTake_ = trickleTake(inViewport.size());
     const size_t take = std::min(outViewport.size(), lastTrickleTake_);
     std::vector<TileCoord> processSet = inViewport;

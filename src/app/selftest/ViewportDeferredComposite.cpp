@@ -550,14 +550,20 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
     // take is derived from the learned rate) stated as an equality rather
     // than inferred from a threshold, and it holds on any machine.
     const double rateBefore = dt.trickleMsPerTile();
-    const size_t expectedTake = dt.plannedTrickleTake(1);  // `corner` is one tile
+    // The count handed to trickleTake() is the DIRTY tiles intersecting the
+    // viewport, not the viewport's own extent -- every touch dirties every
+    // tile and the viewport does not move, so the previous call's count is
+    // the next call's count.
+    const size_t inViewportTiles = dt.lastInViewportTiles();
+    const size_t expectedTake = dt.plannedTrickleTake(inViewportTiles);
     touch();
     const size_t take = dt.lastTrickleTake();
 
-    std::printf("    [measured] 1-layer %dx%d, budget %.1f ms -> learned rate %.4f ms/tile, "
-                "take %zu tile(s) (floor is %zu, %d warm-up call(s))\n",
-                kCanvasSize, kCanvasSize, dt.trickleBudgetMs(), dt.trickleMsPerTile(), take,
-                kMinViewportTrickleTiles, call - 1);
+    std::printf("    [measured] 1-layer %dx%d, budget %.1f ms -> learned rate %.4f ms/tile "
+                "(%.4f before the call, %zu tile(s) in the viewport), take %zu tile(s) "
+                "(floor is %zu, %d warm-up call(s))\n",
+                kCanvasSize, kCanvasSize, dt.trickleBudgetMs(), dt.trickleMsPerTile(), rateBefore,
+                inViewportTiles, take, kMinViewportTrickleTiles, call - 1);
 
     // The load-bearing one. A one-layer 128x128-tile composite runs far under
     // 4 ms / 4 tiles = 1 ms per tile on any machine this builds on, so the
