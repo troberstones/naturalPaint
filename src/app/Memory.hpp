@@ -72,4 +72,68 @@ size_t currentResidentBytes();
 // is about what the user will see. Never assume an ordering between them.
 size_t currentFootprintBytes();
 
+// --- Idle dependency-chain accounting (Linux only; see IdleMemory.cpp) ---
+//
+// app/selftest/IdleMemory.cpp's ceiling on macOS is 80 MB core plus a single
+// constant (29.5 MB, measured once with a standalone probe) for the
+// OpenImageIO dylib chain, because Apple's OpenImageIO pulls in a couple of
+// dozen dylibs and that number is stable across point releases. Neither half
+// of that holds on Linux: Ubuntu's libopenimageio-dev links OpenImageIO
+// against GDAL, which alone pulls in on the order of 250 further shared
+// libraries (curl, Kerberos, PostgreSQL, HDF5, netCDF, GEOS, ...) whose
+// total resident size is a property of *this distribution's package graph*,
+// not of this build -- a constant would go stale the next time any of those
+// two hundred fifty packages does. And Mesa's software Vulkan device
+// (lavapipe) costs on the order of 80 MB resident on its own -- LLVM's JIT
+// backend, the loader, and every ICD the loader probes while enumerating
+// physical devices, none of which exists in the macOS/Metal build at all.
+//
+// So both allowances are measured, not guessed: this struct is a sum of
+// resident bytes across this process's own memory mappings (/proc/self/
+// smaps), bucketed by what mapped each chain in, computed once and cached.
+//
+// The "once" matters as much as the "measured": IdleMemory.cpp's assertion
+// is not checked until deep in --selftest's sequence -- after PaintSim
+// exists, after strokes have been drawn, after files have round-tripped
+// through OpenImageIO -- while `idleRssBytes` (main.cpp) is captured right
+// after gpu.init(), before any of that. A dependency-chain snapshot taken
+// when IdleMemory.cpp's check actually runs would be measuring a process
+// that has since done real GPU and file-I/O work (confirmed: idle capture
+// ~208 MB resident with these libraries alone accounting for ~144 MB of it;
+// the same process mid-suite carries 200+ MB of Vulkan-allocated buffer
+// memory on top, none of which existed yet at the idle instant). main.cpp's
+// capture point cannot be moved (out of scope here; see the Linux build
+// report), so instead this is captured as a side effect of the FIRST call
+// to currentResidentBytes() in the process's life -- which main.cpp's own
+// idle-RSS line already makes, before anything else does -- and cached for
+// idleDependencyChainBytes() to hand back later. If that ordering assumption
+// is ever violated (something starts calling currentResidentBytes() earlier
+// than main.cpp's idle line), this degrades to measuring whatever the new
+// first caller sees, which is either the same instant or an even calmer one
+// -- it cannot silently start measuring a LATER, noisier point without that
+// new call site being an active regression in its own right.
+//
+// macOS does not need this: its own version of "measured, not guessed" for
+// this ceiling was the standalone two-line probe program described in
+// IdleMemory.cpp, run once by hand, not at test time -- so this struct is
+// always zero-valued there.
+struct IdleDependencyChainBytes {
+  // Sum of resident bytes for the Vulkan loader, every ICD it probed while
+  // enumerating devices (only one of which -- lvp, lavapipe -- is ever
+  // actually selected), LLVM's JIT backend (lavapipe's rasterizer is
+  // LLVM-generated machine code), and Mesa's Gallium/EGL/GLX glue that comes
+  // along with any of that being loaded at all.
+  size_t vulkanDriverBytes = 0;
+  // Sum of resident bytes for every OTHER shared library beyond the core
+  // runtime (libc/libstdc++/SDL/X11/the executable itself) -- on this
+  // distribution, OpenImageIO's own transitive dependency graph, GDAL and
+  // everything GDAL pulls in among them.
+  size_t oiioChainBytes = 0;
+};
+
+// See the struct's doc comment above for what this measures and why it is
+// captured once, on the first call to currentResidentBytes(), rather than
+// at the point this accessor itself is called.
+IdleDependencyChainBytes idleDependencyChainBytes();
+
 }  // namespace np

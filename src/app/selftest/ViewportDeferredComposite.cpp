@@ -485,21 +485,71 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
     DocumentTexture dt;
     const DocumentTextureViewport corner{0, 0, 1, 1};
 
-    // Several calls, so the moving average has something to converge on --
-    // the first call always takes the floor (nothing observed yet), which is
-    // by design and must not be mistaken for the answer.
-    size_t take = 0;
-    for (int call = 0; call < 6; ++call) {
+    // Warm up until `trickleMsPerTile()` actually stops moving, rather than
+    // assuming a fixed handful of calls is always enough of a warm-up.
+    //
+    // A fixed count -- this used to be a plain `for (call < 6)` -- is a
+    // constant tuned on whatever machine wrote it, and it was tuned on
+    // macOS/Metal: there, the first call is already close to the eventual
+    // steady-state rate, so 6 calls of 0.25 EMA smoothing (DocumentTexture.hpp)
+    // converge with room to spare. On a SOFTWARE Vulkan device (Mesa
+    // lavapipe under Xvfb) the first call or two pay a one-time cost later
+    // calls do not -- the kernel zeroing freshly-faulted pages behind this
+    // texture's first upload, chiefly -- and an EMA needs several more calls'
+    // worth of geometric decay to forget an outlier that much slower than
+    // steady state. `take` was being read from the SAME call whose own
+    // observation updates the average (see `trickleTake()`'s doc comment:
+    // "the take is chosen before the call"), so on a machine whose average
+    // has not yet converged by call 6, the take checked below reflects a
+    // rate one full call staler than the one this section prints -- which is
+    // exactly the gap a floor-pinned `take` was hiding in.
+    //
+    // The fix measures the thing the assumption was standing in for: run
+    // calls until the rate's call-over-call change is small, THEN take one
+    // more call and read ITS take -- now genuinely chosen from a converged
+    // rate, on any machine, fast or slow.
+    int call = 0;
+    auto touch = [&] {
       fillEveryTile(od.document, call % 2 == 0 ? kEditColour : kProbeColour);
       od.recordEdit("touch", EditKind::Content);
       dt.viewFor(gpu, od, nullptr, &corner);
-      take = dt.lastTrickleTake();
+      ++call;
+    };
+    double previousRate = -1.0;
+    // Never trust fewer than this -- matches the old floor-of-6 on a fast
+    // machine's own convergence speed, minus the one extra measurement call
+    // below. 5%, not a tighter tolerance: this is comparing two wall-clock
+    // timings on a real (if idle) machine, and the goal is to stop paying
+    // for more warm-up once the outlier from a cold start has decayed out,
+    // not to demand noise-free timing from a scheduler that owes none.
+    constexpr int kMinWarmupCalls = 4;
+    // A generous ceiling, not a tuned one: 0.75^64 leaves no measurable
+    // trace of even a wildly slow first call, so this is never expected to
+    // bind. If it ever does, the loop still stops -- the measurement call
+    // and every assertion below still run, against whatever rate 64 calls
+    // produced, same as they would have against a rate this loop judged
+    // converged.
+    constexpr int kMaxWarmupCalls = 64;
+    while (call < kMaxWarmupCalls) {
+      touch();
+      const double rate = dt.trickleMsPerTile();
+      const bool converged =
+          call >= kMinWarmupCalls && previousRate > 0.0 && rate > 0.0 &&
+          std::fabs(rate - previousRate) <= 0.05 * previousRate;
+      previousRate = rate;
+      if (converged) break;
     }
 
+    // The measurement call: its `take` is chosen from the rate just
+    // confirmed stable above, not from a rate this same call is about to
+    // move.
+    touch();
+    const size_t take = dt.lastTrickleTake();
+
     std::printf("    [measured] 1-layer %dx%d, budget %.1f ms -> learned rate %.4f ms/tile, "
-                "take %zu tile(s) (floor is %zu)\n",
+                "take %zu tile(s) (floor is %zu, %d warm-up call(s))\n",
                 kCanvasSize, kCanvasSize, dt.trickleBudgetMs(), dt.trickleMsPerTile(), take,
-                kMinViewportTrickleTiles);
+                kMinViewportTrickleTiles, call - 1);
 
     // The load-bearing one. A one-layer 128x128-tile composite runs far under
     // 4 ms / 4 tiles = 1 ms per tile on any machine this builds on, so the
@@ -528,9 +578,22 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
     const size_t takeEighth = dt.lastTrickleTake();
     std::printf("    [measured] 1-layer: budget %.2f ms -> take %zu, budget %.2f ms -> take %zu\n",
                 kViewportTrickleBudgetMs, takeFull, kViewportTrickleBudgetMs / 8.0, takeEighth);
-    check(takeEighth < takeFull,
-          "adaptive: an eighth of the deadline buys STRICTLY fewer tiles (the take really "
-          "is derived from the budget)");
+    // Guarded the same way section 7's own monotonicity check is: "strictly
+    // fewer" only discriminates when the full budget bought more than the
+    // floor in the first place (asserted above already). If `takeFull` were
+    // ever the floor despite that -- it should not be, given the assertion
+    // above, but this comparison should not be the one that fails when
+    // something upstream already has -- an eighth of the budget cannot buy
+    // less than the floor either, so "strictly fewer" would be asserting
+    // something false for a reason this section already reported.
+    if (takeFull > kMinViewportTrickleTiles) {
+      check(takeEighth < takeFull,
+            "adaptive: an eighth of the deadline buys STRICTLY fewer tiles (the take really "
+            "is derived from the budget)");
+    } else {
+      std::printf("    (skipped: full-budget take was already at the floor -- see the FAIL "
+                  "above; vacuous here, exactly like section 7's own monotonicity check)\n");
+    }
     check(takeEighth >= kMinViewportTrickleTiles,
           "adaptive: ...but never below the floor, however small the deadline");
     dt.setTrickleBudgetMs(kViewportTrickleBudgetMs);
