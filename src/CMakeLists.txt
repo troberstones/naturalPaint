@@ -642,6 +642,39 @@ endif()
 # an OpenImageIO install whose imported target did not chain it would fail at
 # link time with an error that points nowhere near the cause.
 find_package(OpenImageIO REQUIRED)
+
+# Ubuntu's libopenimageio-dev (2.4.17.0) was itself built with OpenCV support,
+# so its exported OpenImageIO::OpenImageIO target lists /usr/include/opencv4
+# in INTERFACE_INCLUDE_DIRECTORIES (and the matching SYSTEM variant) --
+# `libopencv-dev`'s headers, which this machine does not have installed and
+# this project never includes (io/OiioBackend.cpp is the one file that
+# touches an OpenImageIO header at all, and it calls no cv:: symbol). CMake's
+# generate step refuses to write build files for any target whose imported
+# include path does not exist on disk, regardless of whether a consumer ever
+# `#include`s anything from it, so linking this target at all fails configure
+# on a machine without the OpenCV dev package -- not a missing library, a
+# missing header directory this build has no use for. Stripped rather than
+# worked around with an unwanted `apt install libopencv-dev`: dropping a
+# nonexistent path from an INTERFACE property changes nothing this project
+# compiles against. Guarded to only touch paths that are actually missing, so
+# a distro whose OpenImageIO package does carry a real (and present) OpenCV
+# include directory keeps it.
+if(TARGET OpenImageIO::OpenImageIO)
+  foreach(_np_oiio_inc_prop INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+    get_target_property(_np_oiio_incs OpenImageIO::OpenImageIO ${_np_oiio_inc_prop})
+    if(_np_oiio_incs)
+      set(_np_oiio_incs_present "")
+      foreach(_np_oiio_inc IN LISTS _np_oiio_incs)
+        if(EXISTS "${_np_oiio_inc}")
+          list(APPEND _np_oiio_incs_present "${_np_oiio_inc}")
+        endif()
+      endforeach()
+      set_target_properties(OpenImageIO::OpenImageIO PROPERTIES
+        ${_np_oiio_inc_prop} "${_np_oiio_incs_present}")
+    endif()
+  endforeach()
+endif()
+
 target_sources(naturalPaint PRIVATE io/OiioBackend.cpp)
 target_compile_definitions(naturalPaint PRIVATE NP_USE_OIIO=1)
 target_link_libraries(naturalPaint PRIVATE

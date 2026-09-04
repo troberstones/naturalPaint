@@ -38,6 +38,7 @@ FetchContent_MakeAvailable(SDL3 imgui)
 # when the backend updates.
 set(WGPU_VERSION v25.0.2.2)
 set(WGPU_DIR ${CMAKE_SOURCE_DIR}/third_party/wgpu)
+if(APPLE)
 if(NOT EXISTS ${WGPU_DIR}/lib/libwgpu_native.a)
   message(FATAL_ERROR
     "wgpu-native not found at ${WGPU_DIR}.\n"
@@ -70,7 +71,14 @@ endif()
 # only fires the next time CMake configures, after the damage of extracting
 # an untrusted archive is already done. Checking the zip pre-extraction would
 # close that gap and is worth doing if this project starts scripting the
-# fetch step instead of asking the user to run `curl | unzip` by hand.
+# fetch step instead of asking the user to run `curl | unzip` by hand -- which
+# is exactly what the non-Apple branch below does, precisely because it IS
+# CMake doing the fetching this time: `file(DOWNLOAD ... EXPECTED_HASH)`
+# refuses to write a byte to disk that does not match the pin, so the zip is
+# checked before extraction rather than the `.a` after it. Both branches still
+# end by hashing the artifact the linker actually reads, for the same reason:
+# it is the one check that catches "the file on disk right now" regardless of
+# how it got there.
 #
 # Computed directly against the artifact vendored in this tree with
 # `shasum -a 256 third_party/wgpu/lib/libwgpu_native.a` -- not invented, not
@@ -92,9 +100,50 @@ if(NOT WGPU_NATIVE_A_ACTUAL_SHA256 STREQUAL WGPU_NATIVE_A_SHA256)
     "deleting the check -- delete third_party/wgpu and re-fetch instead.")
 endif()
 
+set(WGPU_NATIVE_A ${WGPU_DIR}/lib/libwgpu_native.a)
+
+else() # non-Apple: fetch the matching Linux release into the build tree.
+
+# No `.a` is vendored for non-Apple platforms (only third_party/wgpu/include
+# is, and it is shared -- see below). Instead of asking the user to `curl |
+# unzip` by hand as the Apple branch's error message above does, this does it
+# at configure time with `file(DOWNLOAD ... EXPECTED_HASH)`, which is the
+# stronger form of the same check: it refuses to write the zip to disk at all
+# if the hash does not match, rather than writing it and hashing the result
+# afterward. That closes exactly the gap the comment above says checking the
+# zip pre-extraction would close. Skipped once the `.a` already exists in the
+# build tree so a reconfigure does not re-download 15 MB every time.
+set(WGPU_LINUX_DIR ${CMAKE_BINARY_DIR}/wgpu-native)
+set(WGPU_LINUX_ZIP ${WGPU_LINUX_DIR}/wgpu-linux-x86_64-release.zip)
+set(WGPU_LINUX_ZIP_SHA256 78a2a4d90f3a0a67af2ab2634fe09873ced3baceac8822e890cdea34d8ba9834)
+set(WGPU_NATIVE_A ${WGPU_LINUX_DIR}/lib/libwgpu_native.a)
+if(NOT EXISTS ${WGPU_NATIVE_A})
+  file(DOWNLOAD
+    https://github.com/gfx-rs/wgpu-native/releases/download/${WGPU_VERSION}/wgpu-linux-x86_64-release.zip
+    ${WGPU_LINUX_ZIP}
+    EXPECTED_HASH SHA256=${WGPU_LINUX_ZIP_SHA256}
+    TLS_VERIFY ON
+  )
+  file(ARCHIVE_EXTRACT INPUT ${WGPU_LINUX_ZIP} DESTINATION ${WGPU_LINUX_DIR})
+  if(NOT EXISTS ${WGPU_NATIVE_A})
+    message(FATAL_ERROR
+      "Extracted ${WGPU_LINUX_ZIP} but ${WGPU_NATIVE_A} is not there -- the "
+      "release asset's internal layout changed. Re-check wgpu-native "
+      "${WGPU_VERSION}'s wgpu-linux-x86_64-release.zip by hand.")
+  endif()
+endif()
+
+# Headers still come from third_party/wgpu/include (see INTERFACE_INCLUDE_
+# DIRECTORIES below), not from this download: the two are the same tag's
+# webgpu.h, this app is written against the vendored copy, and there is no
+# reason to carry two paths into the same file when only one platform's
+# library differs.
+
+endif()
+
 add_library(wgpu_native STATIC IMPORTED GLOBAL)
 set_target_properties(wgpu_native PROPERTIES
-  IMPORTED_LOCATION ${WGPU_DIR}/lib/libwgpu_native.a
+  IMPORTED_LOCATION ${WGPU_NATIVE_A}
   INTERFACE_INCLUDE_DIRECTORIES ${WGPU_DIR}/include
 )
 if(APPLE)
@@ -108,6 +157,18 @@ if(APPLE)
     "-framework IOSurface"
     "-framework AppKit"
   )
+else()
+  # wgpu-native is a Rust static library; its Vulkan backend dlopens
+  # libvulkan.so.1 at runtime rather than linking it (so a machine with no
+  # Vulkan ICD still gets a defined "adapter not found" instead of a missing
+  # shared object at process start), which is what `dl` is for here. `pthread`
+  # and `m` are what a `.a` built by `rustc` for a glibc target always needs
+  # from a C++ link line: the Rust std runtime spawns OS threads or reads
+  # `errno` from libpthread depending on version, and calls libm transcendental
+  # functions directly rather than through the C++ standard library's own
+  # wrappers. Determined by attempting the link without them and reading which
+  # symbols `ld` reported undefined, not guessed.
+  target_link_libraries(wgpu_native INTERFACE dl pthread m)
 endif()
 
 # ---------------------------------------------------------------- imgui target
