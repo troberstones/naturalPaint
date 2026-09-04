@@ -114,10 +114,11 @@
 // resolve symlinks is the direct macOS primitive, unconditionally available
 // the instant the process starts -- no subsystem, no init call, nothing to
 // get the ordering of wrong, ever, for any future caller. `app/Memory.cpp`
-// takes the same approach for RSS (raw `<mach/mach.h>`, no `#ifdef __APPLE__`
-// guard) and this file follows that precedent: the project currently only
-// builds for macOS, so the guard would be untestable dead code, not
-// portability.
+// takes the same approach for RSS (raw `<mach/mach.h>`). Both files now
+// guard that macOS primitive behind `#if defined(__APPLE__)` with a Linux
+// `#else` (`/proc/self/exe` here, `/proc/self/statm` there) -- see each
+// `#else` branch's own comment for the Linux primitive and what, if
+// anything, is not exactly comparable to the macOS figure it replaces.
 //
 // ==========================================================================
 // Testability: the pure resolver is separate from the real one

@@ -3,20 +3,32 @@
 
 namespace np {
 
-// Current resident set size, in bytes -- macOS only (this project already
-// assumes macOS; see SDL_WINDOW_METAL in main.cpp). Backed by task_info() +
+// Current resident set size, in bytes. On macOS, backed by task_info() +
 // MACH_TASK_BASIC_INFO, which reports the task's *current* resident_size.
 // Deliberately not getrusage()'s ru_maxrss: that field is the process's peak
 // RSS, monotonically non-decreasing for the life of the process, so it can
 // never observe memory being freed (a mode switch releasing ink/oil fields,
 // PaintSim not existing yet) -- exactly the things 1.4 / ADR-0001 need to
-// measure. Returns 0 if task_info() fails.
+// measure. On Linux, backed by /proc/self/statm's resident-pages field,
+// which is the same quantity by the same definition (see Memory.cpp's
+// `#else` branch). Returns 0 on failure, on either platform.
 size_t currentResidentBytes();
 
 // Current *phys_footprint*, in bytes -- the number Activity Monitor prints in
 // its "Memory" column and the number `footprint(1)` totals. Backed by
 // task_info() + TASK_VM_INFO. Returns 0 if task_info() fails or if the kernel
 // is too old to carry the field (it needs TASK_VM_INFO_REV1_COUNT).
+//
+// Linux has no equivalent kernel ledger -- no /proc field both adds GPU
+// driver charges the way phys_footprint's IOAccelerator/IOSurface line does
+// and omits clean file-backed pages the way phys_footprint does. On Linux
+// this is approximated as RssAnon + RssShmem from /proc/self/status: the
+// resident memory that is not a clean file-backed mapping, which mirrors
+// the *omission* half above (excluding the shared-library pages the
+// OpenImageIO allowance below is about) but not the *addition* half -- it
+// cannot see any GPU driver memory, so a widening gap between this and
+// currentResidentBytes() does not mean on Linux what it means on macOS
+// below. Returns 0 on failure there too.
 //
 // WHY BOTH EXIST, because getting this wrong is what T6 in
 // docs/testing-issues.md is about. resident_size above and phys_footprint here
