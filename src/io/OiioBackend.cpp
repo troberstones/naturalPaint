@@ -31,7 +31,16 @@ namespace {
 // disk under either name; every byte goes through a
 // Filesystem::IOVecOutput / IOMemReader proxy.
 std::string memoryFilename(ImageFormat format) {
-  return std::string("np-memory-image.") + imageFormatExtension(format);
+  // Built with append rather than `std::string(...) + ext`: the fused
+  // literal-plus-append form is a known GCC false-positive trigger for
+  // `-Wstringop-overflow` under LTO's whole-program string-size analysis
+  // (it mis-sizes the temporary's SSO buffer against the concatenated
+  // result's length and reports a bogus overflow at this call's one caller,
+  // probeWrite()). This form is behaviourally identical and does not
+  // trip it.
+  std::string name = "np-memory-image.";
+  name += imageFormatExtension(format);
+  return name;
 }
 
 OIIO::TypeDesc typeDescFor(ExportBitDepth depth) {
