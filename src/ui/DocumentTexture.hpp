@@ -607,6 +607,14 @@ class DocumentTexture {
   // Off-screen tiles the budget bought on the most recent deferred call.
   // Zero on a call that deferred nothing.
   size_t lastTrickleTake() const noexcept { return lastTrickleTake_; }
+  // The take the NEXT `viewFor()` would choose for a viewport of
+  // `inViewportTiles` tiles, from the rate as it stands now. Exposed so
+  // --selftest can assert the take it then observes against the number it
+  // was derived from (the take is chosen before the call); the UI never
+  // needs it.
+  size_t plannedTrickleTake(size_t inViewportTiles) const noexcept {
+    return trickleTake(inViewportTiles);
+  }
 
   // Bytes this object holds that scale with the canvas: the half buffer that
   // mirrors the texture, the float scratch the incremental region walk

@@ -545,12 +545,12 @@ bool runViewportDeferredCompositeTest(GpuContext& gpu) {
     // move.
     // The take this call will choose is decided BEFORE it runs, from the
     // rate as it stands now (DocumentTexture.hpp: "the take is chosen before
-    // the call"), and `trickleTake()` is public -- so ask it, then make the
+    // the call"), and `plannedTrickleTake()` asks it -- so ask, then make the
     // call, then compare. That is the property this section is about (the
     // take is derived from the learned rate) stated as an equality rather
     // than inferred from a threshold, and it holds on any machine.
     const double rateBefore = dt.trickleMsPerTile();
-    const size_t expectedTake = dt.trickleTake(1);  // `corner` is one tile
+    const size_t expectedTake = dt.plannedTrickleTake(1);  // `corner` is one tile
     touch();
     const size_t take = dt.lastTrickleTake();
 
