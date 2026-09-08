@@ -1,6 +1,7 @@
 #include "gfx/Context.hpp"
 
 #include <cstdio>
+#include <cstring>
 
 #if defined(__APPLE__)
 #include <SDL3/SDL_metal.h>
@@ -61,9 +62,44 @@ bool GpuContext::init(SDL_Window* window) {
   WGPUSurfaceDescriptor surfDesc = {};
   surfDesc.nextInChain = &src.chain;
   surface = wgpuInstanceCreateSurface(instance, &surfDesc);
+#elif defined(__linux__)
+  // Linux has two windowing systems and no build-time way to know which one
+  // this binary will run under -- the same executable has to work on both a
+  // Wayland session and an Xorg one. So the choice is made at runtime from
+  // `SDL_GetCurrentVideoDriver()` rather than a second CMake configuration.
+  // Both chained-struct shapes are compiled in unconditionally: their layout
+  // comes from the vendored wgpu header, and the handles they carry come from
+  // SDL's window properties, so nothing here needs libwayland-client.h or
+  // Xlib.h to be present at all -- only the one that matches the live driver
+  // is ever populated, but both cost nothing to have on hand.
+  const char* videoDriver = SDL_GetCurrentVideoDriver();
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  WGPUSurfaceSourceWaylandSurface waylandSrc = {};
+  WGPUSurfaceSourceXlibWindow xlibSrc = {};
+  WGPUSurfaceDescriptor surfDesc = {};
+  if (videoDriver && std::strcmp(videoDriver, "wayland") == 0) {
+    waylandSrc.chain.sType = WGPUSType_SurfaceSourceWaylandSurface;
+    waylandSrc.display =
+        SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
+    waylandSrc.surface =
+        SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
+    surfDesc.nextInChain = &waylandSrc.chain;
+  } else if (videoDriver && std::strcmp(videoDriver, "x11") == 0) {
+    xlibSrc.chain.sType = WGPUSType_SurfaceSourceXlibWindow;
+    xlibSrc.display =
+        SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
+    xlibSrc.window = static_cast<uint64_t>(
+        SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0));
+    surfDesc.nextInChain = &xlibSrc.chain;
+  } else {
+    std::fprintf(stderr,
+                 "[gpu] unrecognised SDL video driver '%s' (expected \"x11\" or \"wayland\")\n",
+                 videoDriver ? videoDriver : "(null)");
+    return false;
+  }
+  surface = wgpuInstanceCreateSurface(instance, &surfDesc);
 #else
   // Windows: WGPUSurfaceSourceWindowsHWND from SDL_PROP_WINDOW_WIN32_HWND_POINTER.
-  // Linux:   WGPUSurfaceSourceXlibWindow / WGPUSurfaceSourceWaylandSurface.
 #error "naturalPaint: surface creation not yet implemented for this platform"
 #endif
   if (!surface) {

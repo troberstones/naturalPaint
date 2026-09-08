@@ -84,6 +84,10 @@ enum class LayerCommand {
   // exists for the layer the tool does NOT create: an empty Text layer made
   // from the LAYERS panel and then typed into.
   NewTextLayer,
+  // PLAN.md phase 16 (ADR-0009). Same again: its `flats` block is its
+  // content. Unlike the four above it a fresh one is NOT invisible -- it
+  // flats whatever line art lies beneath it as soon as it exists.
+  NewFlatsLayer,
   DuplicateLayer,
   DeleteLayer,
   MoveLayerUp,

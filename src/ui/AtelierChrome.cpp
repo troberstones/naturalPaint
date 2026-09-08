@@ -1462,7 +1462,74 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   // is a row of live controls bound to a struct the canvas never looks at: a
   // toolbar that responds perfectly and changes nothing.
   FloodFillParams* flood = floodToolParamsFor(st, st.brush.tool);
-  if (flood != nullptr) {
+  // ADR-0009: the bucket's FILL mode. `Colour` is the tolerance flood whose
+  // controls follow; `Flats` replaces them with the rubber sheet's own three
+  // (SHEET, GAP, DECLUTTER), bound to the active Flats layer's parameters
+  // when there is one and to `st.flatsBucketParams` -- what an RGB-layer
+  // bake segments with -- otherwise. The wand has no such mode: a selection
+  // of a flat's region is the Flats-mode bucket's job, one tool over.
+  const bool flatsBucket = flood != nullptr && st.brush.tool == Tool::PaintBucket &&
+                           st.bucketFill == BucketFill::Flats;
+  if (flood != nullptr && st.brush.tool == Tool::PaintBucket) {
+    bandSeparator();
+    capsLabel("FILL");
+    ImGui::SameLine();
+    int fillIndex = 0;
+    for (size_t i = 0; i < kBucketFillCount; ++i)
+      if (kBucketFills[i].mode == st.bucketFill) fillIndex = static_cast<int>(i);
+    pushAtelierMono();
+    float widestFillLabel = 0.0f;
+    for (size_t i = 0; i < kBucketFillCount; ++i)
+      widestFillLabel = std::max(widestFillLabel, ImGui::CalcTextSize(kBucketFills[i].label).x);
+    ImGui::SetNextItemWidth(widestFillLabel + ImGui::GetFrameHeight() + 16.0f);
+    if (ImGui::BeginCombo("##bucketFill", kBucketFills[fillIndex].label)) {
+      for (size_t i = 0; i < kBucketFillCount; ++i) {
+        if (ImGui::Selectable(kBucketFills[i].label, static_cast<int>(i) == fillIndex))
+          st.bucketFill = kBucketFills[i].mode;
+        ImGui::SetItemTooltip("%s", kBucketFills[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    popAtelierMono();
+  }
+  if (flatsBucket) {
+    // The three numbers that decide what one click fills. Bound to the layer
+    // when the click will be remembered by one, so a slider move re-flats the
+    // drawing live and is recorded as an edit when released.
+    OpenDocument* flatsOd = st.documents.active();
+    Layer* flatsLayer = flatsOd != nullptr ? activeLayerOf(*flatsOd) : nullptr;
+    const bool onFlatsLayer = flatsLayer != nullptr && flatsLayer->kind == LayerKind::Flats;
+    FlatParams* fp = onFlatsLayer ? &flatsLayer->flats.params : &st.flatsBucketParams;
+    bool edited = false;
+    bandSeparator();
+    capsLabel("SHEET");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(96.0f);
+    ImGui::SliderFloat("##flatsSheet", &fp->sheet, 0.0f, 30.0f, fp->sheet > 0.0f ? "%.0f px" : "ball");
+    edited = edited || ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SetItemTooltip(
+        "Rubber sheet: hang the drawing pinned at every stroke and take the sagging valleys as "
+        "fills. This is how far a valley must sag below its rim to count as a fill of its own; "
+        "raise it to merge more. 0 rolls a trapped ball instead.");
+    ImGui::SameLine();
+    capsLabel("GAP");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80.0f);
+    ImGui::SliderInt("##flatsGap", &fp->gapSize, 1, 32, "%d px");
+    edited = edited || ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SetItemTooltip("The widest break in a stroke a fill may not leak through.");
+    ImGui::SameLine();
+    capsLabel("DECLUTTER");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80.0f);
+    ImGui::SliderInt("##flatsDeclutter", &fp->declutter, 0, 100, "%d");
+    edited = edited || ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::SetItemTooltip(
+        "Absorb small fills squeezed between strokes (hatching, texture, folds) into the "
+        "area they shade. 0 is off.");
+    if (edited && onFlatsLayer) flatsOd->recordEdit("flats parameters", EditKind::Content);
+  }
+  if (flood != nullptr && !flatsBucket) {
     bandSeparator();
     // Photoshop's units, 0..255, converted at the widget rather than stored --
     // `floodToleranceToUi()` carries the argument for why the number a painter

@@ -42,6 +42,23 @@ add_executable(naturalPaint
   # what the suite proves and is deliberately NOT split. Listed explicitly
   # rather than globbed, same as every other source in this target, so adding
   # a section is a visible line in the diff and CMake reconfigures for it.
+  # flats/ -- the flatting library absorbed from autoFlats (ADR-0009,
+  # docs/autoflats-migration.md), plus its evaluation cache and the
+  # `np:flats` carrier. Pure CPU; see flatstest below.
+  flats/Field.cpp
+  flats/Ink.cpp
+  flats/Morphology.cpp
+  flats/Expand.cpp
+  flats/Segment.cpp
+  flats/Membrane.cpp
+  flats/Sag.cpp
+  flats/Gaps.cpp
+  flats/Model.cpp
+  flats/Tool.cpp
+  flats/FlatsLayer.cpp
+  flats/FlatsSelfTest.cpp
+  io/FlatsSerial.cpp
+
   app/selftest/Accumulator.cpp
   app/selftest/AdjustmentMenu.cpp
   app/selftest/AdjustmentLayer.cpp
@@ -625,6 +642,39 @@ endif()
 # an OpenImageIO install whose imported target did not chain it would fail at
 # link time with an error that points nowhere near the cause.
 find_package(OpenImageIO REQUIRED)
+
+# Ubuntu's libopenimageio-dev (2.4.17.0) was itself built with OpenCV support,
+# so its exported OpenImageIO::OpenImageIO target lists /usr/include/opencv4
+# in INTERFACE_INCLUDE_DIRECTORIES (and the matching SYSTEM variant) --
+# `libopencv-dev`'s headers, which this machine does not have installed and
+# this project never includes (io/OiioBackend.cpp is the one file that
+# touches an OpenImageIO header at all, and it calls no cv:: symbol). CMake's
+# generate step refuses to write build files for any target whose imported
+# include path does not exist on disk, regardless of whether a consumer ever
+# `#include`s anything from it, so linking this target at all fails configure
+# on a machine without the OpenCV dev package -- not a missing library, a
+# missing header directory this build has no use for. Stripped rather than
+# worked around with an unwanted `apt install libopencv-dev`: dropping a
+# nonexistent path from an INTERFACE property changes nothing this project
+# compiles against. Guarded to only touch paths that are actually missing, so
+# a distro whose OpenImageIO package does carry a real (and present) OpenCV
+# include directory keeps it.
+if(TARGET OpenImageIO::OpenImageIO)
+  foreach(_np_oiio_inc_prop INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+    get_target_property(_np_oiio_incs OpenImageIO::OpenImageIO ${_np_oiio_inc_prop})
+    if(_np_oiio_incs)
+      set(_np_oiio_incs_present "")
+      foreach(_np_oiio_inc IN LISTS _np_oiio_incs)
+        if(EXISTS "${_np_oiio_inc}")
+          list(APPEND _np_oiio_incs_present "${_np_oiio_inc}")
+        endif()
+      endforeach()
+      set_target_properties(OpenImageIO::OpenImageIO PROPERTIES
+        ${_np_oiio_inc_prop} "${_np_oiio_incs_present}")
+    endif()
+  endforeach()
+endif()
+
 target_sources(naturalPaint PRIVATE io/OiioBackend.cpp)
 target_compile_definitions(naturalPaint PRIVATE NP_USE_OIIO=1)
 target_link_libraries(naturalPaint PRIVATE
@@ -679,6 +729,28 @@ message(STATUS "naturalPaint: OpenImageIO ${OpenImageIO_VERSION} (required)")
 # The escape hatch for a genuinely-intentional unused symbol is [[maybe_unused]]
 # on the declaration, which is local, visible in the diff, and says why -- not a
 # flag removed from this file.
+# core/Half converts through the CPU's own instruction when the compiler
+# says it may (`__F16C__` on x86-64, the ARM half format on aarch64) and
+# otherwise through a portable software path that --selftest reports as "a
+# missing compiler flag, not a missing instruction". Apple silicon has the
+# ARM path unconditionally; on x86-64 F16C has to be asked for. Every
+# x86-64 CPU since 2013 (Ivy Bridge, Piledriver) has it, which is the same
+# floor SDL3 and Mesa assume, so this is not a portability cost.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+  target_compile_options(naturalPaint PRIVATE -mf16c)
+endif()
+
+# GCC 13 with -O2 misreports two std::string constructions -- the default
+# `TransformBeginResult::error` inlined into MoveTool's beginMove, and
+# io/OiioBackend's memoryFilename() concatenation -- as reading past a
+# 16-byte region: -Wstringop-overread firing on libstdc++'s own SSO buffer
+# after inlining, a known false positive (GCC bugzilla 105329 and kin) that
+# names a src/ path and so would trip the zero-warnings rule for nothing.
+# Silenced for GCC only; Clang does not carry the warning.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(naturalPaint PRIVATE -Wno-stringop-overread)
+endif()
+
 target_compile_options(naturalPaint PRIVATE
   -Werror=unused-function
   -Werror=unused-variable
@@ -797,6 +869,27 @@ endif()
 # build for a GPU/windowing reason would be a strange failure mode for
 # something whose whole job is being trustworthy after the app already ran.
 add_executable(goldentool tools/GoldenTool.cpp)
+
+# flatstest -- src/flats/'s self-test section as a standalone, GPU-free binary
+# (src/tools/FlatsTestMain.cpp explains why). The same section is also in
+# naturalPaint's `--selftest` chain; this target exists so it can run on a
+# machine with no Metal adapter, which is where the port was developed.
+add_executable(flatstest
+  tools/FlatsTestMain.cpp
+  flats/Field.cpp
+  flats/Ink.cpp
+  flats/Morphology.cpp
+  flats/Expand.cpp
+  flats/Segment.cpp
+  flats/Membrane.cpp
+  flats/Sag.cpp
+  flats/Gaps.cpp
+  flats/Model.cpp
+  flats/Tool.cpp
+  flats/FlatsSelfTest.cpp
+)
+target_include_directories(flatstest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(flatstest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 target_include_directories(goldentool SYSTEM PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party
 )

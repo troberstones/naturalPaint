@@ -191,8 +191,22 @@ bool runSolverFootprintTest(GpuContext& gpu, PaintSim& sim) {
     const size_t fp = currentFootprintBytes();
     check(rss > 0, "currentResidentBytes() reports a real reading");
     check(fp > 0, "currentFootprintBytes() reports a real reading");
-    check(fp > rss,
-          "with a live GPU device the footprint dominates the RSS (not a law)");
+    // Two platforms, two correct answers, one constant deciding which is
+    // asserted (PLAN.md §1.5: state the answer for both, never `#ifdef` one
+    // out). On macOS phys_footprint carries the GPU driver's ledger and
+    // exceeds the RSS once a device has submitted work. On Linux
+    // app/Memory's footprint is RssAnon + RssShmem -- a subset of the RSS by
+    // construction, with no driver ledger to add -- so there it can never
+    // exceed the RSS, and the assertion is that it sits inside it.
+#if defined(__APPLE__)
+    constexpr bool kMachFootprint = true;
+#else
+    constexpr bool kMachFootprint = false;
+#endif
+    if (kMachFootprint)
+      check(fp > rss, "with a live GPU device the footprint dominates the RSS (not a law)");
+    else
+      check(fp <= rss, "Linux: the anonymous+shmem footprint sits inside the RSS (by construction)");
     std::printf("  [measured] resident %.1f MB, phys_footprint %.1f MB -- neither is a "
                 "budget; the gap is the graphics driver's, not this build's (T6)\n",
                 rss / (1024.0 * 1024.0), fp / (1024.0 * 1024.0));

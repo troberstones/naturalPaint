@@ -1,8 +1,14 @@
 #include "io/OiioBackend.hpp"
 
+#include <type_traits>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <filesystem>
+#include <system_error>
+
+#include <unistd.h>
 
 #include "color/Space.hpp"
 #include "core/Tile.hpp"
@@ -30,7 +36,16 @@ namespace {
 // disk under either name; every byte goes through a
 // Filesystem::IOVecOutput / IOMemReader proxy.
 std::string memoryFilename(ImageFormat format) {
-  return std::string("np-memory-image.") + imageFormatExtension(format);
+  // Built with append rather than `std::string(...) + ext`: the fused
+  // literal-plus-append form is a known GCC false-positive trigger for
+  // `-Wstringop-overflow` under LTO's whole-program string-size analysis
+  // (it mis-sizes the temporary's SSO buffer against the concatenated
+  // result's length and reports a bogus overflow at this call's one caller,
+  // probeWrite()). This form is behaviourally identical and does not
+  // trip it.
+  std::string name = "np-memory-image.";
+  name += imageFormatExtension(format);
+  return name;
 }
 
 OIIO::TypeDesc typeDescFor(ExportBitDepth depth) {
@@ -223,6 +238,48 @@ bool oiioEncodeToMemory(const std::vector<float>& samples, uint32_t width, uint3
   return true;
 }
 
+namespace {
+
+// A byte buffer spilled to a uniquely named file under the system temp
+// directory, removed when this goes out of scope. Only oiioDecodeToLinear()'s
+// proxy-refusal retry uses it; see the comment there.
+class SpilledBytes {
+ public:
+  ~SpilledBytes() {
+    if (!path_.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(path_, ec);
+    }
+  }
+  bool write(const uint8_t* data, std::size_t size) {
+    static std::atomic<unsigned> counter{0};
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+    if (ec) return false;
+    path_ = (dir / ("np-memory-image-" + std::to_string(static_cast<long>(::getpid())) + "-" +
+                    std::to_string(counter.fetch_add(1)) + ".bin"))
+                .string();
+    std::FILE* f = std::fopen(path_.c_str(), "wb");
+    if (f == nullptr) {
+      path_.clear();
+      return false;
+    }
+    const bool ok = std::fwrite(data, 1, size, f) == size;
+    std::fclose(f);
+    if (!ok) {
+      std::filesystem::remove(path_, ec);
+      path_.clear();
+    }
+    return ok;
+  }
+  const std::string& path() const { return path_; }
+
+ private:
+  std::string path_;
+};
+
+}  // namespace
+
 DecodedImage oiioDecodeToLinear(const uint8_t* fileData, std::size_t fileSize,
                                 std::string* errorOut) {
   DecodedImage image;
@@ -239,10 +296,41 @@ DecodedImage oiioDecodeToLinear(const uint8_t* fileData, std::size_t fileSize,
   // Getting that wrong is a straight segfault rather than an error return.
   config.attribute("oiio:ioproxy", OIIO::TypeDesc::PTR, &proxy);
 
-  auto input = OIIO::ImageInput::open("np-memory-image", &config);
+  // The proxy is ALSO passed as ImageInput::open()'s dedicated `ioproxy`
+  // parameter, not only through the config attribute above. Measured against
+  // this build (OpenImageIO 2.4.17, Ubuntu 24.04): with an extension-less
+  // name and the proxy given only via the config attribute, open() reports
+  // "Image \"np-memory-image\" does not exist" and never reaches the
+  // content-sniffing fallback across plugins -- it treats the bare name as a
+  // literal (missing) file on disk instead of realising the read is meant to
+  // come from the proxy. Passing the same proxy through the `ioproxy`
+  // parameter as well makes open() aware up front that there is no real file
+  // to stat, and it falls through to trying every plugin against the
+  // in-memory bytes, exactly as the comment on memoryFilename() above
+  // describes. Both the parameter and the attribute are kept: whichever
+  // OpenImageIO version is linked (this one, or the newer from-source build
+  // this project also targets), one or both are honoured, and neither is
+  // harmful for the other to also see.
+  auto input = OIIO::ImageInput::open("np-memory-image", &config, &reader);
+  // **A plugin that claims proxy support and then reads past the proxy's
+  // end.** OpenImageIO 2.4.17's PSD reader answers `supports("ioproxy")`
+  // and still fails a 52-byte flattened PSD through an IOMemReader with
+  // "hit end of file in psd reader", while the same bytes open from disk
+  // (measured; both open paths probed against Ubuntu 24.04's package). So a
+  // proxy refusal is retried once through a temporary file, which is the
+  // one read path every plugin of every version handles. Nothing about the
+  // result differs -- the bytes are the same -- and a build whose plugins
+  // all honour the proxy (the macOS from-source OpenImageIO) never reaches
+  // this branch. The proxy's own error is what is reported if the retry
+  // fails too, since that is the path that was meant to work.
+  SpilledBytes spill;
   if (!input) {
-    if (errorOut) *errorOut = OIIO::geterror();
-    return image;
+    const std::string proxyError = OIIO::geterror();
+    if (spill.write(fileData, fileSize)) input = OIIO::ImageInput::open(spill.path());
+    if (!input) {
+      if (errorOut) *errorOut = proxyError;
+      return image;
+    }
   }
 
   const OIIO::ImageSpec& spec = input->spec();
@@ -618,10 +706,27 @@ namespace {
 // singleton. The shared one is global to the process across every library
 // that links OIIO, so its budget -- the number this whole step turns on --
 // could be changed by code this project does not own.
+// A template rather than `if constexpr` in the function above: outside a
+// template both branches of an `if constexpr` must still compile, and the
+// raw-pointer branch does not against a shared_ptr-returning `create()`.
+template <class Created>
+std::shared_ptr<OIIO::ImageCache> adoptImageCache(Created created) {
+  if constexpr (std::is_pointer_v<Created>) {
+    return std::shared_ptr<OIIO::ImageCache>(created,
+                                             [](OIIO::ImageCache* c) { OIIO::ImageCache::destroy(c); });
+  } else {
+    return created;
+  }
+}
+
 OIIO::ImageCache* tileCache(bool createIfAbsent) {
   static std::shared_ptr<OIIO::ImageCache> cache;
   if (!cache && createIfAbsent) {
-    cache = OIIO::ImageCache::create(false);
+    // OpenImageIO 2.5+ returns a shared_ptr here; 2.4 (Ubuntu 24.04's
+    // package) returns a raw pointer that must go back through
+    // ImageCache::destroy(). Both are accepted so the version is a property
+    // of the machine, not of this file.
+    cache = adoptImageCache(OIIO::ImageCache::create(false));
     // autotile off: an untiled source is not cached tile-wise at all, it is
     // cached whole. io/TileResidency refuses untiled sources for that reason
     // (and for the measured per-tile cost of the alternative), so turning
@@ -641,6 +746,35 @@ OIIO::ImageCache* tileCache(bool createIfAbsent) {
 void applyBudget(OIIO::ImageCache* cache, std::size_t budgetBytes) {
   const float mb = static_cast<float>(static_cast<double>(budgetBytes) / (1024.0 * 1024.0));
   cache->attribute("max_memory_MB", mb);
+}
+
+// The ImageCache's own `imagespec()` does NOT report an untiled source's
+// *native* tile shape -- measured against this build (OpenImageIO 2.4.17):
+// with `autotile` left at 0 (this cache's own setting, above), the cache
+// spec's tile_width/tile_height come back equal to the full image's
+// width/height for a genuinely scanline-stored file, never 0x0. That is
+// documented ImageCache behaviour ("an untiled image will be read and cached
+// as one single tile of the full image resolution"), not a bug in the
+// library, but io/TileResidency's refusal test relies on 0x0 meaning
+// "scanline" -- a real 128x128-tiled source only reports 128x128, which
+// looks identical to a 128x128 *scanline* image reported through the cache.
+// So tiled-ness is asked of a plain `ImageInput` opened directly on the
+// file, which reports the format's actual on-disk layout (0x0 for scanline,
+// the real tile size otherwise) regardless of any cache setting -- this is
+// metadata only, a header read, not a pixel read, and happens once per
+// `oiioTileCacheOpen()` call rather than per tile fetch.
+bool nativeTileShape(const std::string& path, int32_t subimage, int32_t miplevel,
+                     int32_t* tileWidth, int32_t* tileHeight) {
+  auto input = OIIO::ImageInput::open(path);
+  if (!input) return false;
+  if ((subimage != 0 || miplevel != 0) && !input->seek_subimage(subimage, miplevel)) {
+    input->close();
+    return false;
+  }
+  *tileWidth = input->spec().tile_width;
+  *tileHeight = input->spec().tile_height;
+  input->close();
+  return true;
 }
 
 }  // namespace
@@ -675,8 +809,20 @@ OiioTileCacheOpen oiioTileCacheOpen(const std::string& path, int32_t subimage,
   out.dataY = spec->y;
   out.dataWidth = spec->width;
   out.dataHeight = spec->height;
-  out.tileWidth = spec->tile_width;
-  out.tileHeight = spec->tile_height;
+  // NOT spec->tile_width/tile_height -- see nativeTileShape()'s comment
+  // above. The cache's own spec reports its *effective* tile shape, which
+  // for a scanline source (with autotile off, as this cache is configured)
+  // equals the full image resolution rather than 0x0, indistinguishable from
+  // a genuinely tiled source whose tiles happen to be that size. Falling
+  // back to the cache's values on a native-open failure is deliberately
+  // conservative: it means "assume tiled" rather than "assume scanline",
+  // which only makes this function *more* willing to serve a cached
+  // residency, never less -- the refusal path this feeds is a safety check,
+  // not a correctness one.
+  if (!nativeTileShape(path, subimage, miplevel, &out.tileWidth, &out.tileHeight)) {
+    out.tileWidth = spec->tile_width;
+    out.tileHeight = spec->tile_height;
+  }
   out.channels = spec->nchannels;
   out.sampleTypeName = spec->format.c_str();
   out.subimageCount = subimages;

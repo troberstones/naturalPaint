@@ -49,6 +49,13 @@
     { "key": ";", "mods": ["Cmd", "Shift"], "action": "toggle_snapping" },
     { "key": "'", "mods": ["Cmd"], "action": "toggle_grid" },
 
-    { "key": "F12", "action": "screenshot" }
+    { "key": "F12", "action": "screenshot" },
+
+    { "key": "K", "scope": "Flats", "action": "flats_delete_fill" },
+    { "key": "M", "scope": "Flats", "action": "flats_merge_pair" },
+    { "key": ",", "scope": "Flats", "action": "flats_prev_gap" },
+    { "key": ".", "scope": "Flats", "action": "flats_next_gap" },
+    { "key": "Return", "scope": "Flats", "action": "flats_accept_gap" },
+    { "key": "K", "mods": ["Cmd", "Shift"], "scope": "Flats", "action": "flats_cluster_small" }
   ]
 }

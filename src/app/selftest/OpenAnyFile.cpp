@@ -687,8 +687,10 @@ bool runOpenAnyFileTest() {
   // `encodeLinearImage()` -- nothing is read from the repository.
   //
   // The formats this cannot reach are the read-only ones, PSD and camera raw:
-  // no encoder exists for either (this OpenImageIO has no PSD writer and no
-  // LibRaw at all), and the only way to test them would be to commit a binary
+  // no encoder exists for either -- this OpenImageIO has no PSD writer, and
+  // camera raw has no writer in ANY OpenImageIO build, LibRaw or not (a
+  // sensor's raw format is never something this library, or LibRaw itself,
+  // produces) -- and the only way to test them would be to commit a binary
   // fixture, which is forbidden. Named here so the gap is visible rather than
   // implied by an absence.
   std::printf("-- F. import: every format class this build reads --\n");

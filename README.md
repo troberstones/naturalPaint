@@ -193,7 +193,7 @@ the backend updates.
 
 | | |
 |---|---|
-| **OS** | macOS on **Apple Silicon**, and only that — see below |
+| **OS** | macOS on **Apple Silicon**, or **Linux x86_64** (Ubuntu 24.04 is what is tested) — see below |
 | **Toolchain** | Xcode Command Line Tools (Clang with C++20), CMake **≥ 3.24**, Git |
 | **OpenImageIO** | **required** — backs the native `.npaint` format, so the build refuses without it |
 | **Network** | needed at configure time — CMake fetches SDL3 and Dear ImGui |
@@ -208,12 +208,34 @@ readers off. Its light dependencies (`imath`, `openexr`, `opencolorio`,
 `robin-map`) do come from Homebrew. Point `CMAKE_PREFIX_PATH` at the install
 prefix when configuring, below.
 
-⚠️ **macOS/arm64 only, in two independent ways.** `src/gfx/Context.cpp` wires up
-surface creation for Metal alone and hits a hard `#error` on any other platform
-(the Windows `HWND` and Linux Xlib/Wayland entry points are named in comments but
-not written). Separately, the vendored `third_party/wgpu/lib/libwgpu_native.a` is
-an `arm64` binary. Everything above the surface layer is portable; nothing else
-about the port is done.
+**Linux (Ubuntu 24.04, x86_64).** The packaged OpenImageIO is enough, and CMake
+downloads the matching `wgpu-native` Linux release into the build tree at configure
+time (hash-checked; see `cmake/Dependencies.cmake`). Install the build and windowing
+dependencies once, then configure with no `CMAKE_PREFIX_PATH`:
+
+```bash
+sudo apt install build-essential cmake ninja-build git \
+  libopenimageio-dev openimageio-tools \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
+  libwayland-dev libxkbcommon-dev libdecor-0-dev libgl-dev libegl-dev libdrm-dev libgbm-dev \
+  libvulkan-dev mesa-vulkan-drivers
+cmake -S . -B build -G Ninja && cmake --build build -j
+```
+
+`src/gfx/Context.cpp` creates the surface from SDL's X11 or Wayland handles at
+runtime, so one binary serves both sessions; wgpu-native drives it through Vulkan.
+On a machine with no GPU, `mesa-vulkan-drivers` provides llvmpipe and the whole
+application — `--selftest` included — runs on it, slowly:
+
+```bash
+xvfb-run -a ./build/src/naturalPaint --selftest    # headless, on llvmpipe
+```
+
+What Linux does not have: CoreText, so the Text tool is present but shapes nothing
+(`text/StubShaper.cpp`; `--selftest` states that answer for both platforms), the
+native menu bar and trackpad gestures, and `phys_footprint` — `app/Memory` reports
+`RssAnon + RssShmem` in its place and says what that does and does not share with
+the macOS ledger. Windows is still a `#error` at the surface.
 
 ### Clone
 

@@ -25,6 +25,7 @@
 #include "io/Export.hpp"
 #include "io/OpSerial.hpp"
 #include "io/PathSerial.hpp"
+#include "io/FlatsSerial.hpp"
 #include "io/TextSerial.hpp"
 
 // io/OiioBackend is the only translation unit that may include an
@@ -98,6 +99,10 @@ constexpr const char* kAttrGroupId = "np:groupId";
 // `np:ops`' and `np:label`'s rule.
 constexpr const char* kAttrVector = "np:vector";
 constexpr const char* kAttrText = "np:text";
+// A Flats layer's whole content -- parameters, repairs, palette -- as one
+// `npflats1:` hex string (io/FlatsSerial). One attribute rather than the
+// migration doc's three, for the reason that header gives.
+constexpr const char* kAttrFlats = "np:flats";
 // The colour label and the link group (PLAN.md Phase 5 step 11; PRD C15).
 //
 // **Scalars, and deliberately not a third string carrier.**
@@ -281,7 +286,7 @@ bool isLayerAttributeRecognised(const std::string& name) {
          name == kAttrParent || name == kAttrOps || name == kAttrMask ||
          name == kAttrClipped || name == kAttrLabel || name == kAttrLink ||
          name == kAttrGroupId || name == kAttrAlphaLocked || name == kAttrVector ||
-         name == kAttrText;
+         name == kAttrText || name == kAttrFlats;
 }
 
 NpaintAttribute stringAttr(const char* name, std::string value) {
@@ -739,6 +744,14 @@ NpaintRawPart buildVectorLayerPart(const Layer& layer, const std::string& partNa
 // `open()` -- so the one `mask` channel is not optional even though nothing
 // reads it.
 NpaintRawPart buildTextLayerPart(const Layer& layer, const std::string& partName) {
+  return buildAdjustmentLayerPart(layer, partName);
+}
+
+// A Flats layer's part (ADR-0009). Adjustment's shape a fourth time: the
+// layer holds no pixels (its content is `np:flats`, and its fills are
+// derived on open -- io/FlatsSerial explains why the label field is not
+// written), and EXR needs the one channel to open the file at all.
+NpaintRawPart buildFlatsLayerPart(const Layer& layer, const std::string& partName) {
   return buildAdjustmentLayerPart(layer, partName);
 }
 
@@ -1504,7 +1517,8 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     const Layer& layer = doc.layers[i];
     if (layer.kind != LayerKind::RGB && layer.kind != LayerKind::Pigment &&
         layer.kind != LayerKind::Adjustment && layer.kind != LayerKind::Group &&
-        layer.kind != LayerKind::Vector && layer.kind != LayerKind::Text) {
+        layer.kind != LayerKind::Vector && layer.kind != LayerKind::Text &&
+        layer.kind != LayerKind::Flats) {
       return fail("save refused: layer " + std::to_string(i) + " (\"" + layer.name +
                   "\") is a " + layerKindName(layer.kind) +
                   " layer, and this build has no on-disk representation for that kind -- "
@@ -1885,6 +1899,7 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
       case LayerKind::Group: part = buildGroupLayerPart(layer, layerNames[i]); break;
       case LayerKind::Vector: part = buildVectorLayerPart(layer, layerNames[i]); break;
       case LayerKind::Text: part = buildTextLayerPart(layer, layerNames[i]); break;
+      case LayerKind::Flats: part = buildFlatsLayerPart(layer, layerNames[i]); break;
       default: part = buildLayerPart(layer, layerNames[i]); break;
     }
     part.attributes.push_back(stringAttr(kAttrKind, layerKindName(layer.kind)));
@@ -1941,6 +1956,12 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     const bool writesOwnText = layer.kind == LayerKind::Text;
     if (writesOwnText)
       part.attributes.push_back(stringAttr(kAttrText, serializeTextContent(layer.text)));
+    // **Flats parts, unconditionally, for `np:text`'s reason**: default
+    // parameters with no repairs is the state a fresh Flats layer is in, and
+    // it is a state that flats the drawing -- so it must round-trip.
+    const bool writesOwnFlats = layer.kind == LayerKind::Flats;
+    if (writesOwnFlats)
+      part.attributes.push_back(stringAttr(kAttrFlats, serializeFlatsContent(layer.flats)));
     // **Written only when the layer is actually clipped** (PLAN.md Phase 5
     // step 9), for the reason `np:ops` and `np:mask` each state in their own
     // way: a document with no clipped layer has to keep producing the bytes
@@ -1986,7 +2007,8 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
             // own -- which, per the block above, is exactly when the layer is
             // not a Text layer. Two `np:text` attributes on one part would
             // leave OpenImageIO's last-write-wins to pick between them.
-            !(a.name == kAttrText && !writesOwnText))
+            !(a.name == kAttrText && !writesOwnText) &&
+            !(a.name == kAttrFlats && !writesOwnFlats))
           continue;
         part.attributes.push_back(a);
       }
@@ -2379,6 +2401,10 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     const bool isTextLayer = isLayerPartName(part.name) && namedKind &&
                              kind->stringValue == layerKindName(LayerKind::Text) &&
                              adjustmentChannels && tileAligned;
+    // A Flats part: the same one-channel shape under a fifth `np:kind`.
+    const bool isFlatsLayer = isLayerPartName(part.name) && namedKind &&
+                              kind->stringValue == layerKindName(LayerKind::Flats) &&
+                              adjustmentChannels && tileAligned;
     // An alpha channel part (PRD E11, E13): `S####`, `np:kind = "selection"`,
     // and exactly one HALF channel named `coverage`. Matched by name like every
     // other channel here even though there is only one of them -- a part whose
@@ -2453,7 +2479,7 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     }
 
     if (!isRgbLayer && !isPigmentLayer && !isAdjustmentLayer && !isGroupLayer &&
-        !isVectorLayer && !isTextLayer) {
+        !isVectorLayer && !isTextLayer && !isFlatsLayer) {
       std::string reason;
       if (isChannelPartName(part.name)) {
         // An `S####` part that failed the test above. Worth its own sentence
@@ -2552,6 +2578,7 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     // below is the same idea for `np:ops`, and the naming follows it.
     bool vectorCarried = false;
     bool textCarried = false;
+    bool flatsCarried = false;
     if (isAdjustmentLayer) {
       layer.kind = LayerKind::Adjustment;
       // No tile storage of any kind is engaged: that is the kind's definition,
@@ -2646,6 +2673,39 @@ NpaintLoadResult loadNpaint(const std::string& path) {
             "part '" + part.name +
             "' declares np:kind \"Text\" but carries no np:text attribute, so there is no "
             "text to read. The layer opened empty.");
+      }
+    } else if (isFlatsLayer) {
+      layer.kind = LayerKind::Flats;
+      const NpaintAttribute* hasMask = findAttr(part.attributes, kAttrMask);
+      if (hasMask != nullptr && hasMask->type == NpaintAttribute::Type::Int &&
+          hasMask->intValue != 0) {
+        maskIdx = 0;
+        hasMaskChannel = true;
+      }
+      // `np:text`'s rules exactly: a future `npflats2:` or a corrupt payload
+      // is not guessed at, the layer opens with default content (which still
+      // flats the drawing), and the attribute stays in the carry so saving
+      // writes it back verbatim (PRD I10). A missing attribute is warned
+      // about, since this build always writes one.
+      if (const NpaintAttribute* f = findAttr(part.attributes, kAttrFlats);
+          f != nullptr && f->type == NpaintAttribute::Type::String) {
+        std::string why;
+        if (!deserializeFlatsContent(f->stringValue, &layer.flats, &why)) {
+          flatsCarried = true;
+          result.warnings.push_back("part '" + part.name + "': " + why);
+        }
+      } else if (f != nullptr) {
+        flatsCarried = true;
+        result.warnings.push_back(
+            "part '" + part.name +
+            "' has an np:flats attribute that is not a string; this build's carrier is a hex "
+            "`string` (io/FlatsSerial), so the value could not be decoded. The layer opened "
+            "with default parameters and the attribute is written back unchanged (PRD I10).");
+      } else {
+        result.warnings.push_back(
+            "part '" + part.name +
+            "' declares np:kind \"Flats\" but carries no np:flats attribute, so there are no "
+            "parameters or repairs to read. The layer opened with defaults.");
       }
     } else if (isGroupLayer) {
       layer.kind = LayerKind::Group;
@@ -2774,7 +2834,8 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     std::vector<NpaintAttribute> unknown;
     for (const NpaintAttribute& a : part.attributes) {
       if (isLayerAttributeRecognised(a.name) && !(opsCarried && a.name == kAttrOps) &&
-          !(vectorCarried && a.name == kAttrVector) && !(textCarried && a.name == kAttrText))
+          !(vectorCarried && a.name == kAttrVector) && !(textCarried && a.name == kAttrText) &&
+          !(flatsCarried && a.name == kAttrFlats))
         continue;
       unknown.push_back(a);
     }

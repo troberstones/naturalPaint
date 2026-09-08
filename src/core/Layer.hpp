@@ -9,6 +9,7 @@
 #include "core/OpStack.hpp"
 #include "core/Pigment.hpp"
 #include "core/TextContent.hpp"
+#include "flats/Model.hpp"
 #include "core/TileStore.hpp"
 #include "core/VectorShape.hpp"
 
@@ -38,9 +39,15 @@
 // exactly the geometry `Vector` already had and there is ONE rasteriser in
 // this build rather than a glyph path beside a path path.
 //
-// Media, Strokes and Flats are still inert placeholders: Media needs the
-// fluid solver's own per-medium state on top of the pigment tiles step 3
-// added, and the other two still have no parameter member to hold.
+// **`Flats` followed at PLAN.md phase 16 (ADR-0009)**, on the same shape once
+// more: the `flats` member below holds its segmentation parameters and every
+// recorded repair, and flats/FlatsLayer evaluates that against the composite
+// beneath the layer into tiles the compositor reads -- the `Text` path with a
+// segmenter where the shaper was.
+//
+// Media and Strokes are still inert placeholders: Media needs the fluid
+// solver's own per-medium state on top of the pigment tiles step 3 added, and
+// Strokes still has no parameter member to hold.
 namespace np {
 
 // LayerKind lives here, not in app/Keymap.hpp where it was first sketched --
@@ -392,6 +399,20 @@ struct Layer {
   // indistinguishable from "has no content", which is exactly the pair
   // io/NpaintFile has to tell apart to know whether to write `np:text`.
   TextContent text;
+
+  // The content of a `LayerKind::Flats` layer: segmentation parameters, the
+  // recorded repairs, and the palette -- flats/Model.hpp §1. Default for
+  // every other kind, and a non-Flats layer never populates it, exactly as
+  // `text` above. By value for `text`'s reason: a Flats layer with no repairs
+  // yet is a real state (it still flats the drawing beneath it), and
+  // io/NpaintFile always writes `np:flats` for the kind.
+  //
+  // The fills themselves -- the label field, the colours -- are DERIVED
+  // (flats/FlatsLayer) and live in a cache outside the document, for the
+  // reasons core/VectorRaster.hpp §1 gives about a vector raster and one
+  // more: a segmentation of a 2K plate is seconds of work, so it is keyed on
+  // this member's hash and on what lies beneath, never redone per frame.
+  FlatsContent flats;
 
   // The user-facing name. Deliberately NOT unique and deliberately not used
   // to identify anything: docs/document-format.md is explicit that "layer

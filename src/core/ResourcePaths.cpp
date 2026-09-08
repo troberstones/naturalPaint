@@ -1,6 +1,8 @@
 #include "core/ResourcePaths.hpp"
 
+#if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#endif
 #include <unistd.h>
 
 #include <climits>
@@ -134,6 +136,8 @@ ResolvedResource resolveFromCandidates(
   return result;
 }
 
+#if defined(__APPLE__)
+
 const std::string& executableDir() {
   static const std::string cached = [] {
     // `_NSGetExecutablePath` wants the buffer size in bytes and returns -1
@@ -160,6 +164,35 @@ const std::string& executableDir() {
   }();
   return cached;
 }
+
+#else  // Linux
+
+const std::string& executableDir() {
+  static const std::string cached = [] {
+    // Linux source: `/proc/self/exe`, the kernel-maintained symlink to this
+    // process's own executable (proc(5)). `readlink()` fills a buffer with
+    // the link target and, unlike `_NSGetExecutablePath`, does not
+    // null-terminate it, so that is done by hand below.
+    char raw[PATH_MAX];
+    const ssize_t n = ::readlink("/proc/self/exe", raw, sizeof(raw) - 1);
+    if (n <= 0) return std::string{};
+    raw[n] = '\0';
+
+    // Same post-processing as the macOS branch above, and for the same
+    // reason: the target `readlink()` returns can itself still contain a
+    // symlink component (e.g. a worktree under a symlinked `/tmp`), and the
+    // resolver below joins this directory with a *relative* path, so an
+    // unresolved component would make an existing staged resource look
+    // absent. `realpath()` resolves all of them.
+    char resolved[PATH_MAX];
+    if (::realpath(raw, resolved) == nullptr) return std::string{};
+
+    return fs::path(resolved).parent_path().string();
+  }();
+  return cached;
+}
+
+#endif
 
 void reportResourceMissing(const char* label, const std::vector<std::string>& tried,
                            std::FILE* out) {

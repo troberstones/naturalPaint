@@ -116,6 +116,16 @@ Layer makeTextLayer(std::string name) {
   return layer;
 }
 
+Layer makeFlatsLayer(std::string name) {
+  Layer layer;
+  layer.kind = LayerKind::Flats;
+  // `flats` keeps `FlatParams`' own defaults -- autoFlats' shipped tuning
+  // (flats/Model.hpp) -- and an empty edit list. Nothing else to set: the
+  // kind's content is that member, and it is complete as constructed.
+  layer.name = std::move(name);
+  return layer;
+}
+
 std::string defaultNewGroupName(const Document& doc) {
   // `defaultNewLayerName()`'s own scan, restricted to Group-kind layers so a
   // document with "Layer 3" and "Group 3" both on screen is not a collision --

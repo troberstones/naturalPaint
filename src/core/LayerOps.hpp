@@ -197,6 +197,13 @@ Layer makeVectorLayer(std::string name);
 // above: no tiles, no mask, no ops. PLAN.md phase 14.
 Layer makeTextLayer(std::string name);
 
+// A `LayerKind::Flats` layer with default parameters and no repairs
+// (ADR-0009, PLAN.md phase 16). Same shape of emptiness as the makers above:
+// no tiles, no mask, no ops. Unlike an empty Text layer it is NOT invisible
+// -- it flats whatever line art lies beneath it the moment it exists, which
+// is the kind's whole meaning.
+Layer makeFlatsLayer(std::string name);
+
 // A default name for a new group: "Group N", `defaultNewLayerName()`'s own
 // rule restricted to Group-kind layers -- see core/LayerOps.cpp.
 std::string defaultNewGroupName(const Document& doc);

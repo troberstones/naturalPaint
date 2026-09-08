@@ -666,7 +666,9 @@ bool runMergeFamilyTest() {
     kinds.layers.clear();
     kinds.layers.push_back(rgbLayer("Base", 0, 0, kW, kH, {0.5f, 0.5f, 0.5f, 1.0f}));
     bool everyKindNamed = true;
-    for (const LayerKind kind : {LayerKind::Strokes, LayerKind::Flats, LayerKind::Media,
+    // `Flats` left this list at PLAN.md phase 16 for the same reason Text and
+    // Vector did: it rasterises now (to its cached evaluation's tiles).
+    for (const LayerKind kind : {LayerKind::Strokes, LayerKind::Media,
                                  LayerKind::RGB, LayerKind::Pigment}) {
       Document one = kinds;
       Layer layer;

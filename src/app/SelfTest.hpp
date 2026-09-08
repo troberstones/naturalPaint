@@ -5549,4 +5549,21 @@ bool runTextContentTest();
 // decimal rendering would lose precision. See app/selftest/TextSerial.cpp.
 bool runTextSerialTest();
 
+// flats/: the invariant suite absorbed from autoFlats (PLAN.md phase 16,
+// ADR-0009; PRD N1-N7, N10), ported before the library it specifies. The
+// membrane against its analytic strip and disc solutions and against a
+// tighter solve; the segmentation invariants (every pixel labelled, core
+// empty on ink, compact ids, areas tiling the free space) on three synthetic
+// drawings under both the trapped ball and the rubber sheet; the ball's gap
+// guarantee (6 px holds, 40 px leaks); the sheet holding a break and
+// absorbing hatching; BIT-EXACT label-field hashes against autoFlats' own
+// TypeScript on the shared fixtures; the model -- anchor-derived colours
+// reproduced across a parameter sweep, every recorded edit kind replayed
+// (recolour, delete, merge pair, draw-merge, shape, group, carve, bridge,
+// erase) and surviving a sweep, the live palette-swatch link; gap
+// suggestions across a 20 px break and a tight closure sealing an 18 px one;
+// and ink extraction in 8-bit display values. Headless, GPU-free, and also
+// built as the `flatstest` executable. Declared in flats/FlatsSelfTest.hpp.
+bool runFlatsTest();
+
 }  // namespace np

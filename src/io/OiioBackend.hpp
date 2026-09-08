@@ -30,20 +30,27 @@
 // --- What of step 2's list actually landed -------------------------------
 //
 // EXR, TIFF, HDR, DPX and flattened-PSD read: yes.
-// **Camera raw: NO -- deliberately, and not by this module's choice.** The
-// OpenImageIO this project links against was built without LibRaw, to keep
-// the dependency from dragging in LibRaw and its own transitive weight. The
-// consequence is measurable rather than assumed: this build's own
-// `format_list` attribute reads
+// **Camera raw: whatever the LINKED OpenImageIO says, and nothing else.**
+// The macOS build links a from-source OpenImageIO built without LibRaw,
+// deliberately, to keep the dependency from dragging in LibRaw and its own
+// transitive weight -- measured, that build's own `format_list` attribute
+// reads
 //
 //   openexr,tiff,jpeg,bmp,cineon,dds,dpx,fits,gif,hdr,ico,iff,null,png,pnm,
 //   psd,rla,sgi,softimage,targa,term,zfile
 //
 // with no "raw" entry, so io/Capabilities reports camera raw unsupported
-// *in the OIIO build too*. PRD I2 (camera raw) is P1 and stays open. This
-// module does not paper over it, and --selftest asserts the unsupported
-// answer specifically, because a capability query that answered "yes" here
-// would be a query in name only.
+// *in that OIIO build too*, and PRD I2 (camera raw) stays open there. The
+// Linux build's `libopenimageio-dev` package, in measured contrast, is built
+// WITH LibRaw and lists "raw" in the same attribute -- so on Linux
+// io/Capabilities truthfully reports camera raw *supported*. Neither answer
+// is hardcoded anywhere in this module: both come from the same
+// `oiioFormatPresent("raw")` / `input_format_list` query, at run time, which
+// is the entire point of PRD I3 -- a table with "camera raw: no" baked in
+// would have been wrong the moment this project first built against a
+// LibRaw-enabled OpenImageIO, and PLAN.md's Linux port is exactly that
+// moment. --selftest asserts whichever answer this build's OpenImageIO
+// actually gives, not one written down in advance.
 //
 // --- Colour and alpha conventions, both measured against this build ------
 //

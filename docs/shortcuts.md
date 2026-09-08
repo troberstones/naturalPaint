@@ -204,6 +204,15 @@ flatted for years in autoFlats is still a user who has used Photoshop for longer
 This is worth recording in the migration doc as a porting task, because it is easy to
 transliterate the keymap along with the algorithm and inherit all seven conflicts.
 
+**Applied, 2026-09-04 (ADR-0009).** `keymaps/default.json` carries the first of these as
+bindings **scoped to the Flats layer kind** — `K` delete fill, `M` two-click merge, `,` /
+`.` cycle gap suggestions, `Return` accept one, `⌘⇧K` cluster small fills — and
+`main.cpp` now resolves every chord against the active layer's kind, so a scoped
+binding fires only while a Flats layer is active. The bucket needs no key: on a Flats
+layer the bucket in its `Flats` fill mode *is* the recolour tool. `⇧K` group, `Y` shape
+fill, `⇧U` draw-merge and `⇧V` select edits are not yet bound; their model functions
+exist in `flats/Tool` and wait on the lasso and stroke gestures.
+
 ### 5.2 `⌘H` cannot be used
 
 Photoshop binds `⌘H` to *hide selection edges*. On macOS `⌘H` hides the application, and

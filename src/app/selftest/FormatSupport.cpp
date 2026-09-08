@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include "io/OiioBackend.hpp"
+
 namespace np {
 
 bool runFormatSupportTest() {
@@ -199,25 +201,61 @@ bool runFormatSupportTest() {
           "PSD export's refusal names the format and why");
   }
 
-  // --- Camera raw: unsupported in BOTH builds. The I3 assertion. ----------
+  // --- Camera raw: whatever the LINKED OpenImageIO itself says. The I3 -----
+  // assertion.
+  //
+  // This is not a per-platform `#ifdef`: `rawInLinkedOiio` is a runtime fact,
+  // read from the same `oiioFormatPresent("raw")` query io/Capabilities.cpp
+  // itself uses to decide `raw.canRead`/`raw.canWrite`. Two real answers
+  // exist and both are asserted here, never guessed at from which OS this is:
+  // the macOS build's own OpenImageIO is built without LibRaw (deliberately,
+  // to keep LibRaw's transitive weight out), so `rawInLinkedOiio` is false
+  // there and every line below prints byte-identical text to what this
+  // section always printed. Ubuntu's `libopenimageio-dev` package, in
+  // contrast, ships LibRaw in, so `rawInLinkedOiio` is true here and the
+  // capability query's job is to say so truthfully -- "camera raw is
+  // unsupported in every OIIO build" would itself be exactly the
+  // hardcoded-table mistake PRD I3 exists to forbid, just written into the
+  // test instead of into io/Capabilities.
   {
+    const bool rawInLinkedOiio = oiioFormatPresent("raw");
     const FormatCapability& raw = formatCapability(ImageFormat::CameraRaw);
-    check(!raw.canRead && !raw.canWrite,
-          "camera raw is unsupported in this build -- INCLUDING the OIIO build, which is "
-          "the assertion a hardcoded 'NP_USE_OIIO implies step 2's list' table would fail");
-    check(raw.backend == FormatBackend::None, "camera raw reports no backend at all");
-    check(!raw.unavailableReason.empty(), "camera raw's refusal carries a reason");
-    check(contains(raw.unavailableReason, "LibRaw"),
-          "camera raw's reason names LibRaw's deliberate exclusion from this "
-          "OpenImageIO build");
-    check(contains(raw.unavailableReason, "run time") &&
-              contains(raw.unavailableReason, "'raw'"),
-          "camera raw's reason says the answer came from asking OpenImageIO at run "
-          "time, and names the plugin it looked for");
+    if (!rawInLinkedOiio) {
+      check(!raw.canRead && !raw.canWrite,
+            "camera raw is unsupported in this build -- INCLUDING the OIIO build, which is "
+            "the assertion a hardcoded 'NP_USE_OIIO implies step 2's list' table would fail");
+      check(raw.backend == FormatBackend::None, "camera raw reports no backend at all");
+      check(!raw.unavailableReason.empty(), "camera raw's refusal carries a reason");
+      check(contains(raw.unavailableReason, "LibRaw"),
+            "camera raw's reason names LibRaw's deliberate exclusion from this "
+            "OpenImageIO build");
+      check(contains(raw.unavailableReason, "run time") &&
+                contains(raw.unavailableReason, "'raw'"),
+            "camera raw's reason says the answer came from asking OpenImageIO at run "
+            "time, and names the plugin it looked for");
+    } else {
+      // This build's linked OpenImageIO has LibRaw built in (its own
+      // `format_list` names "raw"), so the honest answer is "supported", and
+      // asserting anything else would just be a different hardcoded table.
+      check(raw.canRead,
+            "camera raw IS supported by this build's linked OpenImageIO -- its 'raw' "
+            "plugin (LibRaw) is present, so the capability query says so rather than "
+            "assuming the macOS build's answer");
+      check(raw.backend == FormatBackend::Oiio,
+            "camera raw reports the OIIO backend here, since that is the plugin actually "
+            "answering the read");
+      check(raw.unavailableReason.empty(),
+            "camera raw carries no refusal reason in this build -- there is nothing to "
+            "explain, it works");
+    }
+    char i3Label[200];
+    std::snprintf(i3Label, sizeof(i3Label),
+                  "I3: the query distinguishes two OIIO-listed formats from each other -- EXR "
+                  "present, camera raw %s -- rather than answering per build option",
+                  rawInLinkedOiio ? "present" : "absent");
     check(formatCapability(ImageFormat::Exr).canRead &&
-              !formatCapability(ImageFormat::CameraRaw).canRead,
-          "I3: the query distinguishes two OIIO-listed formats from each other -- EXR "
-          "present, camera raw absent -- rather than answering per build option");
+              formatCapability(ImageFormat::CameraRaw).canRead == rawInLinkedOiio,
+          i3Label);
   }
 
   // --- formatsThatCanWriteDepth(): the answer used to build refusals ------

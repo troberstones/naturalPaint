@@ -770,12 +770,24 @@ bool runRecoveryJournalTest() {
     check(beginAsync(session, &beginError), "an asynchronous session begins for the failure");
     const std::string dir = session.directory();
 
-    // Take write permission off the scratch directory, so `saveNpaint()`
-    // cannot create its file. A permission failure rather than a full disk
-    // because it is the one write failure a test can produce on demand and
-    // undo again on the next line but one.
-    fs::permissions(dir, fs::perms::owner_read | fs::perms::owner_exec,
-                    fs::perm_options::replace, ec);
+    // Make the write fail structurally, not by permission. A permission bit
+    // is what a --selftest that only ever ran as an unprivileged user could
+    // get away with; this suite also runs as root (the Linux CI container
+    // has no unprivileged user set up), and root's writes bypass the
+    // filesystem's permission check entirely -- `fs::perms::owner_read |
+    // owner_exec` on the directory would leave `saveNpaint()` free to create
+    // its file exactly as before, `handed`/`later` would both come back with
+    // no errors, and this section would prove nothing. `dir` not existing AS
+    // A DIRECTORY is not a permission question on any account, root
+    // included: replace it with a plain file of the same name, so the
+    // writer's `open()`/OpenImageIO `ImageOutput::create()` call for
+    // `dir/doc-0001.tmp.npaint` fails with ENOTDIR -- the same failure this
+    // section originally meant to provoke, produced a way that is true on
+    // both platforms and every account.
+    fs::remove_all(dir, ec);
+    {
+      std::ofstream blocker(dir, std::ios::binary);
+    }
     const JournalTickResult handed = session.tick(documents, {0.0, false});
     check(handed.errors.empty(),
           "the tick that enqueues a doomed write reports nothing -- it cannot yet know");
@@ -787,7 +799,13 @@ bool runRecoveryJournalTest() {
     check(later.documentsWritten == 0,
           "...without the failure turning every subsequent frame into another attempt");
 
-    fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
+    // Put a real directory back before finishClean() -- its own
+    // `fs::remove_all(directory_)` tolerates either a plain file or a
+    // directory at that path, but restoring it is what the pre-injection
+    // state actually looked like, same as the permission restore this
+    // replaced.
+    fs::remove(dir, ec);
+    fs::create_directories(dir, ec);
     std::string finishError;
     session.finishClean(&finishError);
   }
@@ -896,7 +914,14 @@ bool runRecoveryJournalTest() {
         (void)wrote;
         const auto t0 = std::chrono::steady_clock::now();
         if (full)
+#if defined(__APPLE__)
           ::fcntl(fd, F_FULLFSYNC);
+#else
+          // Linux has no per-file "flush the device's own cache" request;
+          // syncfs(2) flushes the whole filesystem the fd lives on, which is
+          // the nearest stronger-than-fsync call and the one measured here.
+          ::syncfs(fd);
+#endif
         else
           ::fsync(fd);
         const auto t1 = std::chrono::steady_clock::now();
@@ -905,9 +930,14 @@ bool runRecoveryJournalTest() {
       };
       const double plain = timeSync(false);
       const double full = timeSync(true);
-      std::printf("    [measured] durability of a 1 MiB write: fsync %.2f ms, F_FULLFSYNC "
+#if defined(__APPLE__)
+      const char* fullName = "F_FULLFSYNC";
+#else
+      const char* fullName = "syncfs";
+#endif
+      std::printf("    [measured] durability of a 1 MiB write: fsync %.2f ms, %s "
                   "%.2f ms (%.1fx) -- why the journal uses the first\n",
-                  plain, full, plain > 0.0 ? full / plain : 0.0);
+                  plain, fullName, full, plain > 0.0 ? full / plain : 0.0);
       check(plain >= 0.0 && full >= 0.0, "both durability calls are available on this system");
 
       std::string finishError;
