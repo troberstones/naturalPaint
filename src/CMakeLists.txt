@@ -218,6 +218,7 @@ add_executable(naturalPaint
   app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
   app/selftest/ToolSurface.cpp
+  app/selftest/NoDocumentCanvas.cpp
   app/selftest/ExportDialog.cpp
   app/selftest/ToolSwitch.cpp
   app/selftest/SpringEyedropper.cpp

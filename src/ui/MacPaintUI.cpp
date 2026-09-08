@@ -13219,6 +13219,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   const ImVec2 canvasPos(focusedRect.x, focusedRect.y);
   const ImVec2 canvasSize(focusedRect.w, focusedRect.h);
   ImGui::SetNextWindowPos(canvasPos);
+  // docs/testing-issues.md T5, reversed 2026-09-08: with no document open
+  // there is no canvas, so the document-texture pool's resident slots go
+  // with the last document that closed rather than sitting on their GPU
+  // bytes for nobody. Every path that removes a document (the tab strip's
+  // close box in ui/AtelierChrome.cpp, File > Close's performMenuAction()
+  // row, the native menu queue this function just drained above) runs
+  // earlier in this same frame, so `st.documents` already reflects any close
+  // by the time this line runs. Safe to call every frame the session stays
+  // empty: `DocumentTexture::release()` no-ops on an already-empty slot, and
+  // with no document there is nothing left to have drawn a view from this
+  // pool this frame for `release()` to pull out from under (the one case its
+  // own comment warns about).
+  if (st.documents.empty()) g_documentTextures.release();
+
   ImGui::SetNextWindowSize(canvasSize);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   // The canvas surround (PRD **L6**), and the one place this chrome
@@ -13321,40 +13335,50 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         q01(xc01.x, xc01.y);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    // Drop shadow so the sheet reads as paper lying on a dark desk. A fixed
-    // screen-space offset applied to the already-transformed quad, not
-    // mapped through the transform itself -- a shadow shouldn't mirror or
-    // rotate along with the paper; real light doesn't.
-    dl->AddQuadFilled(ImVec2(q00.x + 6, q00.y + 6), ImVec2(q10.x + 6, q10.y + 6),
-                      ImVec2(q11.x + 6, q11.y + 6), ImVec2(q01.x + 6, q01.y + 6),
-                      IM_COL32(0, 0, 0, 110));
-    // AddImageQuad, not AddImage: AddImage can only place an axis-aligned
-    // rect, which has no way to express a flipped or rotated quad. This is
-    // the one drawing change mirror/rotation actually needed -- everything
-    // else is the transform feeding it different corner points.
-    // Precedence chain, most-specific-preview-wins: grade, then
-    // grayscale, then the plain canvas -- a deliberate narrow-scope
-    // choice (PLAN.md Phase 3 step 6). Composing grade and grayscale
-    // together isn't a normal use case and isn't required by PLAN.md's
-    // Verify criterion for either step, so they stay mutually exclusive
-    // by this precedence rather than layered.
-    const bool gradeActive = st.view.grade && sim;
-    const bool grayscaleActive = !gradeActive && st.view.grayscale && sim;
-    if (sim) {
-      const WGPUTextureView tv = gradeActive     ? sim->gradedView()
-                                 : grayscaleActive ? sim->grayscaleView()
-                                                    : sim->canvasView();
-      // Not AddImageQuad: sim/PaintSim's canvas is linear light in an
-      // RGBA8Unorm texture, and ImGui's pipeline would present it with the
-      // wrong transfer function. ui/CanvasQuad owns that conversion.
-      addCanvasQuad(dl, tv, q00, q10, q11, q01);
-    } else {
-      // 1.4 / ADR-0001: no PaintSim exists yet (nothing painted this
-      // session), so there is no composite to show. A flat blank-paper
-      // quad reads as "ready to paint" rather than a rendering glitch --
-      // the first stroke below constructs the sim and this becomes the
-      // real canvasView() from the very next frame.
-      dl->AddQuadFilled(q00, q10, q11, q01, IM_COL32(250, 250, 247, 255));
+    // docs/testing-issues.md T5, reversed 2026-09-08: with no document open
+    // there is no canvas at all -- not the paper, not a shadow under it, not
+    // a border around it. `sim` is guaranteed null here whenever this is
+    // false (main.cpp tears it down the frame the last document closes, and
+    // the `paintTool` leaf predicate below never calls `ensurePaintSim()`
+    // without one), so `documentOpen` alone is the gate; nothing downstream
+    // needs to re-ask `sim` to decide whether to draw.
+    const bool documentOpen = st.documents.active() != nullptr;
+    if (documentOpen) {
+      // Drop shadow so the sheet reads as paper lying on a dark desk. A fixed
+      // screen-space offset applied to the already-transformed quad, not
+      // mapped through the transform itself -- a shadow shouldn't mirror or
+      // rotate along with the paper; real light doesn't.
+      dl->AddQuadFilled(ImVec2(q00.x + 6, q00.y + 6), ImVec2(q10.x + 6, q10.y + 6),
+                        ImVec2(q11.x + 6, q11.y + 6), ImVec2(q01.x + 6, q01.y + 6),
+                        IM_COL32(0, 0, 0, 110));
+      // AddImageQuad, not AddImage: AddImage can only place an axis-aligned
+      // rect, which has no way to express a flipped or rotated quad. This is
+      // the one drawing change mirror/rotation actually needed -- everything
+      // else is the transform feeding it different corner points.
+      // Precedence chain, most-specific-preview-wins: grade, then
+      // grayscale, then the plain canvas -- a deliberate narrow-scope
+      // choice (PLAN.md Phase 3 step 6). Composing grade and grayscale
+      // together isn't a normal use case and isn't required by PLAN.md's
+      // Verify criterion for either step, so they stay mutually exclusive
+      // by this precedence rather than layered.
+      const bool gradeActive = st.view.grade && sim;
+      const bool grayscaleActive = !gradeActive && st.view.grayscale && sim;
+      if (sim) {
+        const WGPUTextureView tv = gradeActive     ? sim->gradedView()
+                                   : grayscaleActive ? sim->grayscaleView()
+                                                      : sim->canvasView();
+        // Not AddImageQuad: sim/PaintSim's canvas is linear light in an
+        // RGBA8Unorm texture, and ImGui's pipeline would present it with the
+        // wrong transfer function. ui/CanvasQuad owns that conversion.
+        addCanvasQuad(dl, tv, q00, q10, q11, q01);
+      } else {
+        // 1.4 / ADR-0001: no PaintSim exists yet (nothing painted this
+        // session), so there is no composite to show. A flat blank-paper
+        // quad reads as "ready to paint" rather than a rendering glitch --
+        // the first stroke below constructs the sim and this becomes the
+        // real canvasView() from the very next frame.
+        dl->AddQuadFilled(q00, q10, q11, q01, IM_COL32(250, 250, 247, 255));
+      }
     }
 
     // --- The open document, over the paper (UI detour step 2) -------------
@@ -13663,7 +13687,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         documentView = g_documentTextures.viewFor(gpu, *activeDocument, nullptr, &docViewport);
       addCanvasQuad(dl, documentView, q00, q10, q11, q01);
     }
-    dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
+    // T5, reversed: no border around a canvas that was never drawn.
+    if (documentOpen) dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
 
     // --- navigator (docs/ui.md section 2) --------------------------------
     //
@@ -15680,10 +15705,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // the pixels, not by reading the condition: strokeTool really was false,
     // and the paint really did land. Gating the two leaf predicates means a
     // branch added later inherits the rule instead of having to remember it.
+    //
+    // **`st.documents.active() != nullptr` is here for the identical reason**
+    // (docs/testing-issues.md T5, reversed 2026-09-08): this is the ONLY
+    // branch below that can call `ensurePaintSim()`, so the document check
+    // belongs on THIS leaf predicate, not on `strokeTool` or on a wrapper
+    // around the branch itself -- either of those would leave `paintTool`
+    // true with no document and this same rerouting failure mode would just
+    // find a new branch to leak through as one gets added later. With the
+    // term here, no document means `paintTool` is false, so this whole
+    // branch is skipped: no `ensurePaintSim()` call, no paper quad, no
+    // solver, exactly `app/ToolSurface`'s `toolActsWithoutDocument()` (which
+    // this predicate must keep agreeing with) says for Brush/Water/Dry
+    // Brush now that PaintSim no longer stands with nothing open.
     const bool paintTool = (st.brush.tool == Tool::Brush ||
                             st.brush.tool == Tool::Water ||
                             st.brush.tool == Tool::DryBrush) &&
-                           !transformActive;
+                           !transformActive && st.documents.active() != nullptr;
     // **The eraser is a stroke tool but never a SOLVER stroke**, which is why it
     // is a second flag rather than a fourth line above. It joins `paintTool` at
     // the two branches below that reach a layer and at the cursor ring, and is
@@ -17742,7 +17780,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     st.requestMode = false;
   }
   if (st.requestClear) {
-    if (sim) sim->clearCanvas(gpu);
+    // File > "New Canvas" (MenuAction::NewCanvas), Edit's "Clear Canvas"
+    // (MenuAction::ClearCanvas) and the clear_canvas keymap (main.cpp) all
+    // just set this one flag -- so this is the single place, not three, that
+    // needs to know docs/testing-issues.md T5 reversed 2026-09-08: with no
+    // document open there is no `sim` to clear (it is null here by
+    // construction -- see the empty-transition hook near the top of
+    // main.cpp's frame loop) and clearing it would have to mean creating one
+    // first. `st.documents.empty()` distinguishes that from the ordinary
+    // "a document is open but nothing has been painted yet" case just below,
+    // where `sim` is ALSO null and the right answer really is to do nothing
+    // -- this if/else-if pair is the only difference between the two.
+    if (sim) {
+      sim->clearCanvas(gpu);
+    } else if (st.documents.empty()) {
+      // The identical call main.cpp:3696 makes at launch. `sim` stays null;
+      // the ordinary lazy-construction path (the `paintTool` branch above)
+      // builds it on the first wet stroke into the new document, exactly as
+      // it would have at launch.
+      st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
+                                             static_cast<int32_t>(canvasH), WorkingSpace{}));
+    }
     st.requestClear = false;
   }
   if (st.requestReload) {

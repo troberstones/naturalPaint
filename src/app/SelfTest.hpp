@@ -576,6 +576,19 @@ bool runSpringEyedropperTest();
 // palette this section can only assert the inputs to.
 bool runToolSurfaceTest();
 
+// docs/testing-issues.md T5, reversed 2026-09-08: "painting the bare canvas
+// is a supported workflow" no longer holds. With no document open there is
+// no canvas either -- `sim::PaintSim` is torn down the moment the last
+// document closes and never constructed again until one is open. Pins two
+// things: `DocumentSession::empty()` (the CPU-side predicate the canvas
+// block and `ensurePaintSim()`'s call site now gate on) reads true with zero
+// documents and false with one, and a private PaintSim's `shutdown()`
+// measurably drops the process footprint rather than merely nulling a
+// pointer -- printed `[measured]` before and after. Owns its own PaintSim
+// rather than the shared `*s` neighbouring GPU sections borrow, since every
+// section after this one in main.cpp's chain still needs that one alive.
+bool runNoDocumentCanvasTest(GpuContext& gpu, const MixboxLut& lut);
+
 // app/ExportDialog -- the decisions the two export dialogs make, lifted out of
 // ui/MacPaintUI.cpp in answer to the report "the export dialog seems a little
 // confusing".

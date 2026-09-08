@@ -2393,6 +2393,12 @@ int main(int argc, char** argv) {
     // a PROPER subset of the old ones -- a synonym would make every other
     // assertion here unfalsifiable. Headless and GPU-free.
     const bool toolSurfaceOk = np::runToolSurfaceTest();
+    // docs/testing-issues.md T5, reversed 2026-09-08: no document means no
+    // canvas at all now, not a bare paintable one belonging to nobody.
+    // Pins DocumentSession::empty() as the predicate the canvas block and
+    // ensurePaintSim()'s call site gate on, and that a private PaintSim's
+    // shutdown() measurably drops the process footprint.
+    const bool noDocumentCanvasOk = np::runNoDocumentCanvasTest(gpu, lut);
     // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
     // transform's round-trip identity, one hand-worked known-point check,
     // and the view-only proof that mirror/rotation/grayscale never mutate
@@ -3519,7 +3525,7 @@ int main(int argc, char** argv) {
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk;
+                    textKeyCaptureOk && noDocumentCanvasOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4736,6 +4742,22 @@ int main(int argc, char** argv) {
 
     ImGui::NewFrame();
     const uint64_t newFrameNs = frameTrace ? SDL_GetTicksNS() : 0;
+
+    // docs/testing-issues.md T5, reversed 2026-09-08: "painting the bare
+    // canvas is a supported workflow" no longer holds -- with no document
+    // open there is no canvas either, so `sim` is torn down the moment the
+    // last one closes rather than left alive with nothing to belong to.
+    // Every path that removes a document (the tab strip's close box in
+    // ui/AtelierChrome.cpp, File > Close's performMenuAction() row, the
+    // native menu queue MacPaintUI's drawUI() drains at its own top) runs
+    // from inside last frame's drawUI() call, so `st.documents` already
+    // reflects any close by the time this frame starts. Idempotent by
+    // construction, not by a tracked transition flag: `sim` is null on
+    // every frame after the one this fires, so there is nothing to re-run.
+    if (sim && st.documents.empty()) {
+      sim->shutdown();
+      sim.reset();
+    }
 
     // ---- the stroke bridge: dried paint moves into the document -----------
     //
