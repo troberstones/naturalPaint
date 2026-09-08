@@ -3089,6 +3089,13 @@ int main(int argc, char** argv) {
     // disclosed rather than hidden, and that a splitter drag moves exactly
     // the boundary it grabbed. Headless, GPU-free and ImGui-free.
     const bool dockLayoutOk = np::runDockLayoutTest();
+    // Track panelgear: the panel grip's gear settings button beside the "?"
+    // -- COLOR is the only section that declares one, its Lucide codepoint
+    // reaches the real face drawToolGlyph() reads, and panelGripFor()'s
+    // title-fit predicate (re-derived independently; that function is
+    // file-local to ui/MacPaintUI.cpp) flips exactly at the two-button
+    // threshold a section with both a help button and a gear needs. GPU-free.
+    const bool panelSettingsOk = np::runPanelSettingsTest();
     // The incremental composite (core/DirtyTiles + core/Composite's region
     // walk + ui/DocumentTexture's sub-rectangle upload): that the dirty set is
     // complete, that a non-tile-local change is classified as one, and that
@@ -3472,7 +3479,7 @@ int main(int argc, char** argv) {
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
-                    controlsLayoutOk && panelLayoutOk && dockLayoutOk &&
+                    controlsLayoutOk && panelLayoutOk && dockLayoutOk && panelSettingsOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk && layerGroupOk &&
                     layerGroupPanelOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&

@@ -107,6 +107,7 @@ add_executable(naturalPaint
   app/selftest/PanelLayout.cpp
   app/selftest/DockLayout.cpp
   app/selftest/ControlsLayout.cpp
+  app/selftest/PanelSettings.cpp
   app/selftest/CowTile.cpp
   app/selftest/CreateBlank.cpp
   app/selftest/CurveEdit.cpp
