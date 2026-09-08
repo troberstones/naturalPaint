@@ -15,13 +15,23 @@ namespace np {
 
 // docs/testing-issues.md T5, short-term half -- app/ToolSurface.
 //
+// **Reversed 2026-09-08.** This section used to pin a six-and-fifteen split
+// with Brush, Water and Dry Brush among the six that survive with no
+// document open, because painting the bare `sim::PaintSim` canvas was a
+// supported workflow. It no longer is: T5's long-term half tore the canvas
+// down with the last document instead, so those three tools joined the
+// eighteen that need one. Section C below used to be titled "the bare canvas
+// is a supported workflow and still paints"; it now asserts the opposite,
+// under the same name, for the same reason a fixture that used to prove a
+// route worked now has to prove it refuses.
+//
 // **What would make this section worthless, stated first.** If
 // `toolActsWithoutDocument()` turned out to equal `toolImplemented()` or
 // `toolHasCanvasHandler()` for every `Tool`, this would be a synonym dressed
 // as an axis and every assertion below would be unfalsifiable. So the FIRST
 // thing asserted is the strict-subset relation in both directions, counted off
-// the predicates rather than off a literal, and the six-and-fifteen split is
-// then traced tool by tool to the gate that produced it.
+// the predicates rather than off a literal, and the three-and-eighteen split
+// is then traced tool by tool to the gate that produced it.
 //
 // Headless and GPU-free: no device, no window, no ImGui frame. The palette
 // cells these predicates dim are photographed by `tools/golden/run_golden.sh`'s
@@ -109,39 +119,46 @@ bool runToolSurfaceTest() {
           "gate: Measure survives through toolMeasuresCanvas() -- MeasureLine's documentId "
           "0 IS the no-document value, and it is not the eyedropper's gate");
 
-    // The three paint tools, through the route table itself. This is section
-    // C's claim from the predicate's side; both are kept, because a route
-    // table that changed and a predicate that did not is exactly the drift the
-    // whole design is arranged to make impossible.
-    check(toolActsWithoutDocument(Tool::Brush) && toolActsWithoutDocument(Tool::Water) &&
-              toolActsWithoutDocument(Tool::DryBrush),
-          "gate: Brush, Water and Dry Brush survive through strokeRouteFor(t, nullptr)");
+    // **Brush, Water and Dry Brush are the reversal's whole point.**
+    // `strokeRouteFor(t, nullptr)` still answers `PaintSim` -- that table did
+    // not change, only what `PaintSim` on its own is worth changed -- so the
+    // subset relation up in section A would go vacuous here if this predicate
+    // still said yes. It must not.
+    check(!toolActsWithoutDocument(Tool::Brush) && !toolActsWithoutDocument(Tool::Water) &&
+              !toolActsWithoutDocument(Tool::DryBrush) &&
+              strokeRouteFor(Tool::Brush, nullptr) == StrokeRoute::PaintSim &&
+              strokeRouteFor(Tool::Water, nullptr) == StrokeRoute::PaintSim &&
+              strokeRouteFor(Tool::DryBrush, nullptr) == StrokeRoute::PaintSim,
+          "gate, reversed: Brush, Water and Dry Brush no longer survive with no document, "
+          "even though strokeRouteFor(t, nullptr) still answers PaintSim for all three -- "
+          "that route means \"which layer\", not \"does a canvas exist\"");
   }
 
   // -----------------------------------------------------------------------
-  // C. THE LINE. The bare canvas is a supported workflow and still paints.
+  // C. THE LINE, reversed. There is no bare canvas left to paint.
   // -----------------------------------------------------------------------
   //
-  // File > "New" is called "New Canvas" precisely so it cannot be read as
-  // "New Document" (docs/testing-issues.md T5). Painting with no document open
-  // is designed behaviour, and a change that made the document-scoped tools
-  // legible by also switching the paint tools off would have destroyed the one
-  // thing it was supposed to protect. Asserted as its own claim, in the route
-  // table's own terms, rather than left to be inferred from section B.
+  // Until 2026-09-08 this section asserted the opposite of what follows:
+  // File > "New" was renamed "New Canvas" precisely so painting with no
+  // document open could not be mistaken for "New Document", and a change that
+  // made the document-scoped tools legible by also switching the paint tools
+  // off would have destroyed the one thing that renaming protected. T5's
+  // long-term half removed the thing being protected -- `sim::PaintSim` is
+  // torn down with the last document and never rebuilt without one -- so the
+  // workflow this section used to pin no longer exists, and pinning it as
+  // still working would be asserting a state the build can no longer reach.
   {
-    check(strokeRouteFor(Tool::Brush, nullptr) == StrokeRoute::PaintSim &&
-              strokeRouteFor(Tool::Water, nullptr) == StrokeRoute::PaintSim &&
-              strokeRouteFor(Tool::DryBrush, nullptr) == StrokeRoute::PaintSim,
-          "the line: with NO document, the three paint tools still route to the solver "
-          "canvas -- painting the bare canvas is supported and is not disabled here");
-    check(toolSurfaceRefusal(Tool::Brush, false) == nullptr &&
-              toolSurfaceRefusal(Tool::Water, false) == nullptr &&
-              toolSurfaceRefusal(Tool::DryBrush, false) == nullptr &&
-              toolSurfaceRefusal(Tool::Hand, false) == nullptr &&
+    check(toolSurfaceRefusal(Tool::Brush, false) != nullptr &&
+              toolSurfaceRefusal(Tool::Water, false) != nullptr &&
+              toolSurfaceRefusal(Tool::DryBrush, false) != nullptr,
+          "the line, reversed: with NO document, the three paint tools ARE given a refusal "
+          "sentence now -- there is no canvas left for them to reach");
+    check(toolSurfaceRefusal(Tool::Hand, false) == nullptr &&
               toolSurfaceRefusal(Tool::Zoom, false) == nullptr &&
               toolSurfaceRefusal(Tool::Measure, false) == nullptr,
-          "the line: and none of the six is given a refusal sentence, so no live cell can "
-          "be dimmed by the palette's tooltip path either");
+          "the line, reversed: Hand, Zoom and Measure are the only three left with no "
+          "refusal sentence -- they move process state or measure geometry, neither of "
+          "which needed a canvas to begin with");
   }
 
   // -----------------------------------------------------------------------
@@ -163,6 +180,26 @@ bool runToolSurfaceTest() {
     check(everyStrokeRefuserRefuses,
           "refused: Eraser, Pencil, Smudge, Clone Stamp, Dodge and Burn are BUILT and still "
           "cannot act with no document -- through the route table's own nullptr row");
+
+    // **The three paint tools, joining the refused side for the first time.**
+    // Their route is NOT `None` like the six above -- `strokeRouteFor()`
+    // still answers `PaintSim`, unchanged -- so they refuse through a
+    // DIFFERENT gate: `toolBeginsStroke()`'s fallback in
+    // `toolSurfaceRefusal()` ("Nothing to paint on"), reached precisely
+    // because `toolActsWithoutDocument()` no longer accepts the `PaintSim`
+    // route on its own (section B's reversed check, from the predicate's
+    // side).
+    const Tool kPaintTools[] = {Tool::Brush, Tool::Water, Tool::DryBrush};
+    bool everyPaintToolRefusesNow = true;
+    for (Tool t : kPaintTools) {
+      if (toolActsWithoutDocument(t)) everyPaintToolRefusesNow = false;
+      if (strokeRouteFor(t, nullptr) != StrokeRoute::PaintSim) everyPaintToolRefusesNow = false;
+      if (!toolBeginsStroke(t)) everyPaintToolRefusesNow = false;
+      if (!toolImplemented(t)) everyPaintToolRefusesNow = false;  // built, and still refused
+    }
+    check(everyPaintToolRefusesNow,
+          "refused: Brush, Water and Dry Brush are BUILT, still route to PaintSim, and still "
+          "cannot act with no document -- because there is no PaintSim to route to");
 
     check(pixelOpRefusalFor(nullptr) == PixelOpRefusal::NoLayer &&
               !toolActsWithoutDocument(Tool::PaintBucket) &&

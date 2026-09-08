@@ -23,15 +23,20 @@ bool toolActsWithoutDocument(Tool tool) {
   // and reads no layer.
   if (toolMeasuresCanvas(tool)) return true;
 
-  // The stroke family, asked of the route table itself rather than restated.
-  // `strokeRouteFor()`'s `target == nullptr` row is the literal decision:
-  // Brush, Water and Dry Brush answer `PaintSim` ("no target at all is the one
-  // case the solver canvas is right for"), and the eraser, the pencil, the
-  // tonal pair, the clone and the smudge each answer `None` there, by name,
-  // with a paragraph apiece saying what running them on the solver would
-  // silently do instead. Every one of those decisions reaches this predicate
-  // without being repeated in it.
-  if (strokeRouteFor(tool, nullptr) != StrokeRoute::None) return true;
+  // The stroke family, asked of the route table itself rather than restated
+  // -- with one term subtracted from what that table alone would say.
+  // `strokeRouteFor()`'s `target == nullptr` row still answers `PaintSim` for
+  // Brush, Water and Dry Brush ("no target at all is the one case the solver
+  // canvas is right for") and `None` for the eraser, the pencil, the tonal
+  // pair, the clone and the smudge, each by name. That table is about which
+  // LAYER a stroke can reach, not about whether `sim::PaintSim` currently
+  // exists to reach at all -- and docs/testing-issues.md T5 (reversed
+  // 2026-09-08) means it no longer does with no document open: the canvas is
+  // torn down with the last document rather than left standing for anyone to
+  // paint on. So `PaintSim` on its own is no longer enough to survive here;
+  // only a route that lands on an actual Layer does.
+  const StrokeRoute route = strokeRouteFor(tool, nullptr);
+  if (route != StrokeRoute::None && route != StrokeRoute::PaintSim) return true;
 
   // The fill family, asked the same way. `pixelOpRefusalFor(nullptr)` is
   // `PixelOpRefusal::NoLayer` today, so this term is false for the bucket and
