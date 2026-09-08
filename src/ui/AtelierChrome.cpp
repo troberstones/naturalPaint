@@ -1238,6 +1238,108 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
   // with. The swatch therefore edits the active layer's own `fill` and goes
   // dead -- visibly, with the reason -- when there is no Text layer, which is
   // SPREAD-on-Angular's precedent rather than a new idea.
+  // --- the Pen's and the Curve's selection-mode segment -------------------
+  //
+  // **This row exists because `pathEditSetSelectMode()` had no caller.** It
+  // was built, tested and documented at PLAN.md phase 13, and until this row
+  // the only thing in the tree that invoked it was `--vector-demo components`,
+  // a screenshot fixture -- so Component mode shipped unreachable by any user.
+  // docs/vector-editing.md section 3 calls the two modes the whole of the
+  // editing model, and half of it was behind a function nobody could call.
+  // That is the same "engine capability with no control" gap the gradient's
+  // KIND combo and the flood fill's three parameters each closed.
+  //
+  // **A MODE segment rather than two palette cells**, which is the decision
+  // the plan took and the reason it took it: docs/ui.md section 2 specifies
+  // exactly 28 cells and Pen/Curve are a flyout PAIR, so inventing a
+  // black-arrow/white-arrow pair the way Photoshop has them would add two
+  // tools the UI spec does not have. One row, two chips.
+  //
+  // Both tools get it, not just the Pen: `toolEditsPath()` is true for the
+  // pair because -- app/PenTool.hpp section 2's words -- both author the same
+  // anchor model, so a mode that applied to one and not the other would be a
+  // distinction with nothing behind it.
+  if (toolEditsPath(st.brush.tool)) {
+    OpenDocument* pathOd = st.documents.active();
+    Layer* pathLayer = pathOd != nullptr ? activeLayerOf(*pathOd) : nullptr;
+    // The identical target rule the canvas block uses (`ui/MacPaintUI.cpp`'s
+    // `pathTargetOk`), asked here rather than re-derived: a row that came
+    // alive over a layer the gesture then refuses would be a control lying
+    // about what the next click does.
+    if (pathLayer != nullptr && pathLayer->kind != LayerKind::Vector) pathLayer = nullptr;
+
+    bandSeparator();
+    capsLabel("MODE");
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::BeginDisabled(pathLayer == nullptr);
+    struct ModeChip {
+      const char* label;
+      PathSelectMode mode;
+      const char* tip;
+    };
+    static const ModeChip kModeChips[] = {
+        {"SHAPE##pathModeShape", PathSelectMode::Shape,
+         "Select whole shapes. Clicking anywhere on a path takes all of it, and the "
+         "gnomon moves, scales and rotates the shape about its own stored pivot."},
+        {"COMPONENT##pathModeComp", PathSelectMode::Component,
+         "Select anchors and their tangent handles. Tangent sticks draw for selected "
+         "anchors only, and a transform moves each anchor together with its two handles "
+         "rather than shearing them off it."},
+    };
+    for (const ModeChip& chip : kModeChips) {
+      const bool on = st.pathEdit.selection.mode == chip.mode;
+      if (atelierToggleChip(chip.label, on) && pathLayer != nullptr) {
+        // **The transition, never the field.** `pathEditSetSelectMode()` does
+        // three things a direct assignment would silently skip: it cancels
+        // any live drag BEFORE the selection changes, it carries the
+        // selection across (a shape's anchors on the way in, their shapes on
+        // the way out) instead of dropping it, and it re-derives the pivot.
+        // Assigning `selection.mode` here would also be a second writer of
+        // state app/PenTool.hpp section 8 makes greppable precisely so there
+        // is only one.
+        pathEditSetSelectMode(&st.pathEdit, chip.mode, pathLayer->shapes);
+      }
+      ImGui::SetItemTooltip("%s", chip.tip);
+      ImGui::SameLine();
+    }
+    ImGui::NewLine();
+    ImGui::EndDisabled();
+    popAtelierMono();
+    if (pathLayer == nullptr)
+      ImGui::SetItemTooltip(
+          "The Pen edits vector geometry, and there is no Vector layer selected. Make one "
+          "with NEW + > Vector in the LAYERS panel, or open an SVG.");
+
+    bandSeparator();
+    // **A count, because a selection you cannot see is a selection you cannot
+    // trust.** In Shape mode the accented outline says which shapes are in;
+    // in Component mode the picture is a scatter of small squares that is
+    // genuinely hard to count, and "4 anchors" versus "1 anchor" is the
+    // difference between a transform that does what you meant and one that
+    // shears a corner off. It is also the only feedback that a click MISSED:
+    // an empty selection and a selection of one shape draw almost the same
+    // frame at a glance.
+    capsLabel("SELECTED");
+    ImGui::SameLine();
+    pushAtelierMono();
+    if (pathLayer == nullptr) {
+      ImGui::TextDisabled("--");
+    } else if (st.pathEdit.selection.mode == PathSelectMode::Shape) {
+      const size_t n = st.pathEdit.selection.shapes.size();
+      if (n == 0) ImGui::TextDisabled("no shapes");
+      else
+        ImGui::Text("%zu of %zu shape%s", n, pathLayer->shapes.size(),
+                    pathLayer->shapes.size() == 1 ? "" : "s");
+    } else {
+      const size_t n = st.pathEdit.selection.components.size();
+      if (n == 0) ImGui::TextDisabled("no anchors");
+      else ImGui::Text("%zu anchor%s", n, n == 1 ? "" : "s");
+    }
+    popAtelierMono();
+    return;
+  }
+
   if (st.brush.tool == Tool::Text) {
     OpenDocument* textOd = st.documents.active();
     Layer* textLayer = textOd != nullptr ? activeLayerOf(*textOd) : nullptr;

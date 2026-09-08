@@ -397,9 +397,19 @@ void pathEditCancel(PathEditState* state) noexcept;
 // whichever drag the hit implies. Returns true when a drag began that will
 // CHANGE GEOMETRY -- the caller uses that to decide whether to open an undo
 // entry, and a selection-only click deliberately returns false.
+//
+// `gnomonReachPx` is forwarded verbatim to `hitTestPath()` and carries that
+// parameter's meaning exactly (see it, and `kDefaultGnomonReachPx`): a caller
+// that DRAWS the gnomon at a constant on-screen size must pass the same
+// `screenPx / zoom` it drew with. It was defaulted-away here at first, which
+// made the hit test's reach a fixed 40 DOCUMENT px while the overlay had not
+// been written yet -- harmless only for as long as nothing was drawn. The
+// moment a handle is on screen, a drawn size and a hit size derived
+// separately are a control that lies about where it is.
 bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
                    PathPoint at, float pickRadiusPx, bool gnomonSuppressed,
-                   SelectionCombine how, uint64_t documentId);
+                   SelectionCombine how, uint64_t documentId,
+                   float gnomonReachPx = kDefaultGnomonReachPx);
 
 // What one `pathEditUpdate()` did, which is exactly what the caller needs to
 // decide between `recordEdit()` and `amendEdit()`.

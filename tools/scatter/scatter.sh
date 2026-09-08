@@ -17,6 +17,13 @@
 #    re-downloads and re-extracts SDL3 and Dear ImGui per worktree. Pointing
 #    both at the primary checkout's already-populated _deps takes a fresh
 #    configure from ~560s to ~32s.
+#  * **The revert that is a delete.** A track's sabotage harness reverted with
+#    `git checkout --` in a `finally`, its first sabotage failed to BUILD (an
+#    unused-function warning under -Werror), and the revert threw away the
+#    uncommitted implementation it had just spent an hour on. The rule the
+#    brief must carry, and now does: **commit before you sabotage.** A
+#    sabotage is a temporary edit on top of a committed state, never on top of
+#    the only copy of the work.
 #  * **The shared /tmp collision.** Parallel agents given a brief with
 #    hardcoded log paths clobber each other's build output, and the symptom is
 #    one track "passing" against another track's binary. Each track gets a

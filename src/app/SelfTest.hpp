@@ -1294,7 +1294,14 @@ bool runCropToolTest();
 // thumbnails take DIFFERENT transfer functions -- linear 0.5 encodes to byte
 // 188 in a layer thumbnail and coverage 0.5 stays byte 128 in a mask one; and
 // the thumbnail cache rebuilds when, and only when, the revision it claims to
-// key on moves. Headless and GPU-free.
+// key on moves. Also app/LayerThumbnail §5: a Vector or Text layer draws its
+// GEOMETRY into the cell rather than the blank checkerboard it used to get for
+// failing `layerHoldsPixels()`, with the shape asserted in the right quadrant
+// of a fixture asymmetric in both axes, the sRGB encode and the un-premultiply
+// asserted on a half-covered edge, a Text layer's thumbnail asserted
+// BYTE-identical to a Vector layer holding `textContentToShapes()` of the same
+// content, and an empty layer of either kind asserted transparent rather than
+// black. Headless and GPU-free.
 bool runMaskTargetTest();
 
 // app/FramePacing (T27, "throttle the UI unless drawing to 60fps, and when
@@ -5402,13 +5409,24 @@ bool runSvgStyleTest();
 // `transparent`, `currentColor`); `fill="none"` genuinely distinct from a
 // real zero-alpha paint; `clip-path` attaching a clip, including the
 // multi-shape union case; every refused construct named (filters, patterns,
-// masks, `<switch>`, `<foreignObject>`, `<image>`, `<text>`, scripts,
+// masks, `<switch>`, `<foreignObject>`, `<image>`, scripts,
 // animation elements, an external `<use>` reference, a `url(#id)` paint
 // pointing at a gradient); every security cap firing, including the
 // self-referencing `<use>` bomb returning promptly rather than hanging; and
-// two on-disk fixtures written to carry real Inkscape/Illustrator exporter
+// four on-disk fixtures written to carry real Inkscape/Illustrator exporter
 // boilerplate (tests/svg/*.svg), each still producing the geometry and
-// paint their visible shapes call for. Headless, GPU-free; writes no files.
+// paint their visible shapes call for.
+//
+// **`<text>` (io/SvgImport.hpp section 7) is section 13**, and three of its
+// assertions cannot be made anywhere else in this build: that SVG's BASELINE
+// `y` becomes `TextContent`'s TOP-LEFT `origin` by the shaper's own ascent
+// rather than a guessed fraction of `font-size`; that `text-anchor` becomes
+// an ORIGIN SHIFT rather than a `TextAlign` that provably does nothing at
+// `frame.width == 0`; and that the flat shape list plus each block's
+// `shapesBefore` still re-interleave into the document's PAINTING order, so
+// that a shape drawn over a label does not come back under it. Each of those
+// compares against `shapeText()` asked independently, not against the
+// importer's own arithmetic. Headless, GPU-free; writes no files.
 // See app/selftest/SvgImport.cpp.
 bool runSvgImportTest();
 
@@ -5565,5 +5583,19 @@ bool runTextSerialTest();
 // and ink extraction in 8-bit display values. Headless, GPU-free, and also
 // built as the `flatstest` executable. Declared in flats/FlatsSelfTest.hpp.
 bool runFlatsTest();
+
+// app/PathConsumers (PRD J1/J2/J3/J4): the three things a user does WITH a
+// path -- convert it to a selection, fill it, and stroke it with the current
+// brush. Headless, GPU-free, writes no files. Proves the path-to-selection
+// coverage against TWO independent rasterisers (core/SelectionShapes'
+// selectPolygon() and selectRectangle(), which also pins the texel
+// convention), the fill's stored alpha against pi*r^2 and w*h, the dab stream
+// against arc length rather than vertex count (including the implied closing
+// edge of a closed subpath), that a Text layer goes through all three and
+// answers texel-identically to a Vector layer built from its own shapes, that
+// an alpha-locked target refuses the fill but is HONOURED by the stroke, that
+// the active selection bounds both edits, and that every refusal names its own
+// cause. See app/selftest/PathConsumers.cpp.
+bool runPathConsumersTest();
 
 }  // namespace np

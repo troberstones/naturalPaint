@@ -198,6 +198,38 @@ part 4   "S0001"          coverage                   ← a saved selection
   >   I10's rule applied one level below the attribute.
   > - **Floats travel as IEEE-754 bit patterns**, so a grade reopens as the grade that was
   >   authored rather than as one that is nearly it.
+
+### The carry's own hazard: two attributes with one name
+
+PRD I10 says an attribute this build cannot decode is carried verbatim to the next save.
+That creates a failure mode with no symptom: if a name is missing from
+`isLayerAttributeRecognised()` (or its document-level twin), the next save writes **the
+carried copy and this build's own copy** — two EXR attributes with the same name — and
+OpenImageIO's last-write-wins silently picks one. The document then reopens as something
+other than what was saved, with no error anywhere.
+
+Every `np:*` name was audited against this in September 2026
+(`src/app/selftest/VectorLayer.cpp` §§12–17). Closing it needs an **edit-after-load** test:
+on an unedited document the carried and fresh copies are byte-identical, so a plain round
+trip cannot tell them apart no matter how carefully it compares. Three shapes of test were
+needed:
+
+- Most names: load, edit, save passing `&loaded.carry`, reopen, assert the EDIT survived.
+- `np:parent` / `np:groupId` / `np:mask`: the same, but over a real grouped fixture —
+  `np:parent` is an *empty* string on an ungrouped layer and OpenImageIO drops empty string
+  attributes, so it never reaches the file at all and no ungrouped fixture can exercise it.
+  The assertion that bites is that an **ungrouped** member stays ungrouped: a replayed
+  `np:parent` beside a dropped empty one silently puts it back in the group.
+- `np:version` / `np:basis` / `np:tileSize`: no edit can work, because this build writes a
+  constant and both copies are therefore identical. These need a hand-built carry holding a
+  value this build never writes.
+
+**`np:comps` is the one name that cannot be made to fail**, and the reason is worth knowing
+rather than reading as an omission. Its carry replay and its fresh push are guarded by exact
+complements (`doc.comps.empty()` and `!doc.comps.empty()`), so exactly one is ever written;
+break the complement and the doubling would be invisible, because OpenImageIO collapses the
+duplicate before any reader — including a test — could count occurrences. Both guards say so
+at their own site, naming each other.
   >
   > Hex rather than base64 because a `--selftest` fixture has to be writable **by hand** —
   > the same discipline `io/NpaintFile`'s hand-built 52-byte PSD fixture follows, so the

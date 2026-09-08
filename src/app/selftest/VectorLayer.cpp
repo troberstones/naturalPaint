@@ -5,6 +5,9 @@
 #include <cstring>
 
 #include "core/DirtyTiles.hpp"
+#include "core/LayerCompOps.hpp"
+#include "core/LayerSetOps.hpp"
+#include "core/OpStack.hpp"
 #include "core/Path.hpp"
 #include "core/VectorRaster.hpp"
 #include "core/VectorShape.hpp"
@@ -646,6 +649,70 @@ bool runVectorLayerTest() {
                 "npaint: and a SECOND generation is still identical");
         }
         std::remove(path2);
+
+        // **Edit the geometry, save again WITH THE CARRY, and the EDIT must
+        // win.** This is the assertion that catches a missing
+        // `isLayerAttributeRecognised()` entry for `np:vector`, and none of
+        // the round trips above can: without that entry the reader files
+        // `np:vector` in the carry as an unknown attribute, and the writer
+        // then emits BOTH its own fresh one and the carried stale one on the
+        // same part, leaving OpenImageIO's last-write-wins to choose. On a
+        // document that has not been edited the two are byte-identical and
+        // every assertion above passes -- which is exactly how the `np:text`
+        // side of this file stayed green under the same sabotage until an
+        // edit-after-load case was added to section 13.
+        //
+        // **`&loaded.carry` is the whole point of this block.** Without the
+        // carry, `saveNpaint()` has no unknown attributes to replay and the
+        // double-`np:vector` hazard is unreachable. PRD I10's carry-forward
+        // is a real save path -- every save of an opened document takes it --
+        // so testing the write path without it tests the wrong path.
+        //
+        // The user-visible failure is: open a drawing, drag a shape, save,
+        // reopen, and the shape is back where it started. So the test drags.
+        Document edited = loaded.document;
+        VectorShape moved = rectShape(40.0f, 40.0f, 60.0f, 52.0f);
+        moved.id = edited.layers[1].shapes[0].id;
+        moved.name = "box moved after the round trip";
+        moved.fill.on = true;
+        moved.fill.rgba = {1.0f, 0.0f, 0.25f, 1.0f};
+        moved.pivot = PathPoint{50.0f, 46.0f};
+        edited.layers[1].shapes[0] = moved;
+        // A SECOND shape as well: a stale `np:vector` winning would restore
+        // the one-shape list, so the shape COUNT separates the two payloads
+        // on its own, without relying on the hash.
+        VectorShape drawn = rectShape(2.0f, 2.0f, 10.0f, 10.0f);
+        drawn.id = 4;
+        drawn.name = "drawn after the round trip";
+        edited.layers[1].shapes.push_back(drawn);
+        edited.layers[1].nextShapeId = 5;
+        const uint64_t editedHash = vectorContentHash(edited.layers[1].shapes);
+        // Guard the guard: if the edit did not actually change the payload the
+        // assertions below would pass under the sabotage for the wrong reason,
+        // because a stale attribute winning would be indistinguishable from a
+        // fresh one.
+        check(editedHash != vectorContentHash(doc.layers[1].shapes),
+              "npaint: the post-load edit really does change the vector payload (without "
+              "this, the stale-attribute assertions below could not tell the two apart)");
+
+        const char* path3 = "selftest_vector_edited.npaint";
+        const NpaintSaveResult afterEdit =
+            saveNpaint(edited, path3, NpaintSaveOptions{}, &loaded.carry);
+        check(afterEdit.ok, "npaint: saving a Vector layer that was edited after loading works");
+        if (afterEdit.ok) {
+          const NpaintLoadResult reread = loadNpaint(path3);
+          const bool shaped = reread.ok && reread.document.layers.size() == 2;
+          check(shaped && reread.document.layers[1].shapes.size() == 2,
+                "npaint: and BOTH shapes come back -- one shape here would be the stale "
+                "np:vector the file was opened with, replayed out of the carry");
+          check(shaped && vectorContentHash(reread.document.layers[1].shapes) == editedHash,
+                "npaint: the EDIT comes back, not the geometry the file was opened with -- a "
+                "stale np:vector left in the carry alongside a fresh one would silently win "
+                "here and nowhere else");
+          check(shaped && reread.document.layers[1].nextShapeId == 5,
+                "npaint: including the id counter the edit advanced");
+        }
+        std::remove(path3);
       }
     }
     std::remove(path);
@@ -820,6 +887,378 @@ bool runVectorLayerTest() {
             "its attribute where an empty Vector layer does not");
     }
     std::remove(tp3);
+  }
+
+  // --- 14. The rest of the layer attribute table, edited after load --------
+  //
+  // Sections 12 and 13 each close ONE name in
+  // `io/NpaintFile.cpp`'s `isLayerAttributeRecognised()` list. This section
+  // closes four more, by exactly the same argument and in one fixture.
+  //
+  // The hazard, once, in full: an attribute missing from that list is filed by
+  // the reader as an *unknown* attribute in `NpaintCarry::layerAttributes`.
+  // The writer replays the carry AFTER writing its own attributes, so the part
+  // ends up with two attributes of the same name and OpenImageIO's
+  // last-write-wins picks the CARRIED, stale one. Nothing errors. The document
+  // simply loads as something other than what was saved.
+  //
+  // Why an ordinary round trip cannot see this: on an unedited document the
+  // two copies hold the same value, so every round-trip and second-generation
+  // assertion passes. **The document has to be edited after loading, and the
+  // carry has to be handed back to the save** -- which is the real save path
+  // for every opened document, so this is the ordinary case and not a corner.
+  //
+  // The four names below are the ones whose value a caller can change with a
+  // plain assignment and whose payload this build can construct. The audit's
+  // remaining uncovered names -- `np:parent`, `np:groupId`, `np:mask`,
+  // `np:ops`, and the document-level `np:comps`, `np:version`, `np:basis`,
+  // `np:tileSize` -- need a Group layer, a decodable op stack, or a
+  // hand-built carry, and are deliberately NOT faked here: a test that cannot
+  // fail is worse than an admitted gap.
+  {
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+    doc.layers.clear();
+    addLayer(doc, 0, makeRgbLayer("base"));
+    addLayer(doc, 1, makeRgbLayer("decorated"));
+    Layer& d = doc.layers[1];
+    // Every one of the four is written by the writer ONLY when set (`np:label`
+    // and `np:link` when non-empty/non-zero, `np:clipped` and `np:alphaLocked`
+    // only when true), so the fixture has to set them or the file holds
+    // nothing for the carry to go stale with.
+    d.clipped = true;
+    d.alphaLocked = true;
+    d.colorLabel = "red";
+    d.linkGroup = 7;
+
+    const char* fp = "selftest_npattrs_fixture.npaint";
+    const NpaintSaveResult saved = saveNpaint(doc, fp, NpaintSaveOptions{});
+    check(saved.ok, "npaint: a layer carrying clipped/alphaLocked/label/link saves");
+    if (!saved.ok) std::printf("      save error: %s\n", saved.error.c_str());
+
+    if (saved.ok) {
+      const NpaintLoadResult loaded = loadNpaint(fp);
+      const bool shaped = loaded.ok && loaded.document.layers.size() == 2;
+      check(shaped && loaded.document.layers[1].clipped &&
+                loaded.document.layers[1].alphaLocked &&
+                loaded.document.layers[1].colorLabel == "red" &&
+                loaded.document.layers[1].linkGroup == 7,
+            "npaint: and all four come back on the ordinary round trip");
+
+      if (shaped) {
+        // Every field moved to a DIFFERENT value. The two booleans go true ->
+        // false on purpose: that is the direction in which the writer emits
+        // nothing of its own, so a carried copy is the only `np:clipped` /
+        // `np:alphaLocked` in the file and wins outright rather than by a
+        // tie-break. The two non-booleans move to another non-default value
+        // rather than to the default, so BOTH copies are present and the
+        // assertion is about which one OpenImageIO kept.
+        Document edited = loaded.document;
+        edited.layers[1].clipped = false;
+        edited.layers[1].alphaLocked = false;
+        edited.layers[1].colorLabel = "blue";
+        edited.layers[1].linkGroup = 3;
+
+        const char* ep = "selftest_npattrs_edited.npaint";
+        const NpaintSaveResult afterEdit =
+            saveNpaint(edited, ep, NpaintSaveOptions{}, &loaded.carry);
+        check(afterEdit.ok,
+              "npaint: saving those four fields after an edit, WITH the carry, works");
+        if (afterEdit.ok) {
+          const NpaintLoadResult r = loadNpaint(ep);
+          const bool rs = r.ok && r.document.layers.size() == 2;
+          check(rs && !r.document.layers[1].clipped,
+                "npaint: an UNCLIPPED layer stays unclipped -- a carried np:clipped replayed "
+                "beside no fresh one would silently re-clip it (the user unclips, saves, "
+                "reopens, and the layer is clipped again)");
+          check(rs && !r.document.layers[1].alphaLocked,
+                "npaint: an UNLOCKED alpha stays unlocked, for the same reason and by the "
+                "same mechanism");
+          check(rs && r.document.layers[1].colorLabel == "blue",
+                "npaint: the NEW colour label wins, not the one the file was opened with -- "
+                "two np:label attributes on one part and last-write-wins picks the carried");
+          check(rs && r.document.layers[1].linkGroup == 3,
+                "npaint: and the NEW link group wins, not the stale carried one");
+        }
+        std::remove(ep);
+      }
+    }
+    std::remove(fp);
+  }
+
+  // --- 15. The three attributes only a GROUP part carries -----------------
+  //
+  // `np:parent`, `np:groupId` and `np:mask` are section 14's hazard again, but
+  // no plain RGB fixture can reach them: `np:groupId` and `np:mask` are
+  // written only on a Group part, and `np:parent` -- though written
+  // unconditionally -- is an EMPTY string on an ungrouped layer, which this
+  // OpenImageIO drops before it reaches the file (see io/NpaintFile.cpp's
+  // NpaintAttribute comment). An attribute that never lands is an attribute
+  // the carry never picks up, so the double-write is unreachable until a real
+  // group exists. Hence the group.
+  {
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+    doc.layers.clear();
+    addLayer(doc, 0, makeRgbLayer("member A"));
+    addLayer(doc, 1, makeRgbLayer("member B"));
+    const LayerSetOpResult grouped = applyLayerSetOp(doc, LayerSetCommand::GroupLayers,
+                                                     makeLayerSelection({0, 1}));
+    check(grouped.ok && doc.layers.size() == 3 && doc.layers[2].kind == LayerKind::Group,
+          "npaint: a real Group layer is built for the group-only attributes");
+
+    if (grouped.ok && doc.layers.size() == 3) {
+      const size_t gi = 2;
+      const std::string tag0 = doc.layers[gi].groupTag;
+
+      const char* gp = "selftest_npattrs_group.npaint";
+      const NpaintSaveResult saved = saveNpaint(doc, gp, NpaintSaveOptions{});
+      check(saved.ok, "npaint: a grouped document saves");
+      if (!saved.ok) std::printf("      save error: %s\n", saved.error.c_str());
+
+      if (saved.ok) {
+        const NpaintLoadResult loaded = loadNpaint(gp);
+        const bool shaped = loaded.ok && loaded.document.layers.size() == 3 &&
+                            loaded.document.layers[gi].kind == LayerKind::Group;
+        check(shaped && loaded.document.layers[gi].groupTag == tag0 &&
+                  loaded.document.layers[0].parent == tag0 &&
+                  loaded.document.layers[1].parent == tag0,
+              "npaint: the group's tag and both members' np:parent come back");
+
+        if (shaped) {
+          Document edited = loaded.document;
+          // (a) Ungroup member A: `np:parent` goes to the empty string, which
+          //     the writer emits and OpenImageIO then DROPS -- so a carried
+          //     stale tag would be the only np:parent left on the part and
+          //     would win outright. The user gesture is: ungroup one layer,
+          //     save, reopen, and it is back inside the group.
+          edited.layers[0].parent.clear();
+          // (b) Rename the group's identity. Member B is moved with it, so
+          //     the document stays internally consistent and the assertion is
+          //     purely about which np:groupId survived.
+          const std::string tag1 = tag0 + "-renamed";
+          edited.layers[gi].groupTag = tag1;
+          edited.layers[1].parent = tag1;
+          // (c) Give the group a mask it did not have. The writer emits
+          //     np:mask=1 and a real mask channel; the carried np:mask=0 would
+          //     win and the reader -- which trusts the attribute, not the
+          //     channel's presence -- would drop the mask on the floor.
+          const LayerOpResult masked = addLayerMask(edited, gi);
+          check(masked.ok && edited.layers[gi].mask.has_value(),
+                "npaint: a mask can be added to the group after loading");
+
+          const char* ep = "selftest_npattrs_group_edited.npaint";
+          const NpaintSaveResult afterEdit =
+              saveNpaint(edited, ep, NpaintSaveOptions{}, &loaded.carry);
+          check(afterEdit.ok, "npaint: saving the edited group WITH the carry works");
+          if (afterEdit.ok) {
+            const NpaintLoadResult r = loadNpaint(ep);
+            const bool rs = r.ok && r.document.layers.size() == 3;
+            check(rs && r.document.layers[0].parent.empty(),
+                  "npaint: the UNGROUPED member stays ungrouped -- a carried np:parent "
+                  "replayed beside a dropped empty one would silently put it back in the "
+                  "group (ungroup, save, reopen, still grouped)");
+            check(rs && r.document.layers[gi].groupTag == tag1 &&
+                      r.document.layers[1].parent == tag1,
+                  "npaint: the group's NEW np:groupId wins, not the one the file was opened "
+                  "with");
+            check(rs && r.document.layers[gi].mask.has_value(),
+                  "npaint: and the newly added group mask survives -- np:mask, not the "
+                  "channel's presence, is what the reader trusts, so a stale carried 0 "
+                  "would throw the mask away without a word");
+          }
+          std::remove(ep);
+        }
+      }
+      std::remove(gp);
+    }
+  }
+
+  // --- 16. The document-level twin, isDocumentAttributeRecognised() -------
+  //
+  // Same hazard, other table. `np:version`, `np:basis` and `np:tileSize` have
+  // one property the layer attributes do not: this build writes a CONSTANT
+  // for each, so a file this build wrote holds exactly the value it would
+  // write again, and a stale carried copy is byte-identical to the fresh one.
+  // No edit-after-load can separate them, because there is nothing on the
+  // Document to edit.
+  //
+  // So the carry is built BY HAND with values this build would never write.
+  // That is not an artificial state: it is precisely the carry the loader
+  // itself produces the moment a name goes missing from the table, and it is
+  // also what a foreign or newer writer's file would leave behind. The claim
+  // under test is the writer's replay rule -- "a name this build owns is
+  // never replayed out of the carry beside this build's own" -- asserted
+  // where it is observable, on the file that comes back.
+  {
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+
+    NpaintCarry carry;
+    NpaintAttribute ver;
+    ver.name = "np:version";
+    ver.type = NpaintAttribute::Type::Int;
+    ver.intValue = 9999;  // no build will ever stamp this
+    NpaintAttribute tile;
+    tile.name = "np:tileSize";
+    tile.type = NpaintAttribute::Type::Int;
+    tile.intValue = 7;  // not a power of two, and not kTileSize
+    NpaintAttribute basis;
+    basis.name = "np:basis";
+    basis.type = NpaintAttribute::Type::String;
+    basis.stringValue = "stale-carried-basis";
+    carry.documentAttributes = {ver, tile, basis};
+    // Left EMPTY on purpose: `NpaintCarry::basis` is the *supported* route by
+    // which a foreign basis reaches the writer, and it is not the route under
+    // test. With it empty the writer stamps the document's own basis, so the
+    // only way "stale-carried-basis" can reach the file is the replay bug.
+    carry.basis.clear();
+
+    const char* dp = "selftest_npattrs_doc.npaint";
+    const NpaintSaveResult saved = saveNpaint(doc, dp, NpaintSaveOptions{}, &carry);
+    check(saved.ok, "npaint: a save carrying hand-built document attributes succeeds");
+    if (!saved.ok) std::printf("      save error: %s\n", saved.error.c_str());
+
+    if (saved.ok) {
+      const NpaintLoadResult back = loadNpaint(dp);
+      check(back.ok, "npaint: and the file it wrote loads");
+      if (back.ok) {
+        auto warnedAbout = [&](const char* needle) {
+          for (const std::string& w : back.warnings)
+            if (w.find(needle) != std::string::npos) return true;
+          return false;
+        };
+        check(back.carry.sourceVersion != 9999 && !warnedAbout("np:version 9999"),
+              "npaint: the carried np:version was DROPPED, not written beside this build's -- "
+              "two np:version attributes and last-write-wins would make every file this build "
+              "saves claim a format it does not speak");
+        check(!warnedAbout("np:tileSize 7"),
+              "npaint: the carried np:tileSize was dropped too, so the file does not describe "
+              "a tile layout it was not written in");
+        check(back.carry.basis != "stale-carried-basis" &&
+                  back.document.pigmentBasis != "stale-carried-basis",
+              "npaint: and the carried np:basis was dropped -- NpaintCarry::basis is the "
+              "supported route for a foreign basis and it was deliberately empty here, so a "
+              "basis arriving by replay is the bug, and it would mislabel every pigment "
+              "latent in the file");
+        // A general tripwire for the NEXT document attribute somebody adds,
+        // and deliberately not a restatement of the three checks above: the
+        // reader consumes a correctly-typed np:version / np:basis /
+        // np:tileSize with its own unconditional `continue`, BEFORE
+        // `isDocumentAttributeRecognised()` is consulted at all, so none of
+        // those three can reach this vector however the table is edited. What
+        // this does catch is a name the writer emits that the reader has no
+        // case for: it comes straight back as unknown, and the save after
+        // that doubles it. Empty is the only correct answer for a file this
+        // build wrote.
+        check(back.carry.documentAttributes.empty(),
+              "npaint: a document this build wrote leaves NOTHING in the document-attribute "
+              "carry -- an entry here is a name the writer emits and the reader has no case "
+              "for, which is where a doubled attribute begins");
+      }
+    }
+    std::remove(dp);
+  }
+
+  // --- 17. The last two: np:ops and np:comps ------------------------------
+  //
+  // Both hold a payload rather than a scalar, which is why they are last, and
+  // both have a documented carry EXCEPTION in the writer -- an `np:ops` is
+  // replayed when the layer's own stack is empty, and an `np:comps` when the
+  // document has no comps, because in each of those cases the carried copy is
+  // an undecodable payload this build has nothing of its own to put in place
+  // of (PRD I10). The exception is what makes the test's direction matter:
+  // **the edit has to leave a non-empty stack and a non-empty comp list**, or
+  // the carried copy is replayed legitimately and the assertion would be
+  // asserting the exception rather than the bug.
+  {
+    Document doc = Document::createBlank(kW, kH, WorkingSpace{});
+    doc.layers.clear();
+    addLayer(doc, 0, makeRgbLayer("bottom"));
+    addLayer(doc, 1, makeRgbLayer("adjusted"));
+    Op exposure;
+    exposure.pointKind = PointOpKind::Exposure;
+    exposure.exposure.stops = 1.0f;
+    doc.layers[1].ops.add(exposure);
+    const LayerOpResult captured = captureLayerComp(doc, "as opened");
+    check(captured.ok && doc.comps.size() == 1,
+          "npaint: a fixture with one op and one layer comp is built");
+
+    const char* fp = "selftest_npattrs_payload.npaint";
+    const NpaintSaveResult saved = saveNpaint(doc, fp, NpaintSaveOptions{});
+    check(saved.ok, "npaint: and it saves");
+    if (!saved.ok) std::printf("      save error: %s\n", saved.error.c_str());
+
+    if (saved.ok) {
+      const NpaintLoadResult loaded = loadNpaint(fp);
+      const bool shaped = loaded.ok && loaded.document.layers.size() == 2;
+      check(shaped && loaded.document.layers[1].ops.size() == 1 &&
+                loaded.document.comps.size() == 1,
+            "npaint: the op stack and the comp both come back on the ordinary round trip");
+
+      if (shaped) {
+        Document edited = loaded.document;
+        // A SECOND op and a SECOND comp: both lists stay non-empty, so the
+        // writer emits its own copy of each and the carry exceptions above do
+        // not apply. A stale carried payload winning shows up as a list that
+        // is one entry short -- the user adds an adjustment, saves, reopens,
+        // and it is gone.
+        Op saturation;
+        saturation.pointKind = PointOpKind::Saturation;
+        saturation.saturation.scale = 0.5f;
+        edited.layers[1].ops.add(saturation);
+        const LayerOpResult second = captureLayerComp(edited, "after the edit");
+        check(second.ok && edited.comps.size() == 2,
+              "npaint: a second op and a second comp are added after loading");
+
+        // ==================================================================
+        // `np:comps` IS NOT ASSERTED HERE, AND THAT IS THE FINDING
+        // ==================================================================
+        //
+        // The comps assertion below is an ordinary round-trip claim. It does
+        // NOT close `np:comps` in `isDocumentAttributeRecognised()`, and no
+        // assertion can, because removing that entry has no observable
+        // effect. Measured, not reasoned: with the entry removed the whole
+        // suite stays green.
+        //
+        // Two independent reasons, both worth writing down because each on
+        // its own would make a test here decorative:
+        //
+        //  1. The READER never files a decodable `np:comps` in
+        //     `documentAttributes` -- its own block `continue`s first -- and
+        //     when the payload is UNdecodable the writer's documented
+        //     exception replays it deliberately. So on every carry the loader
+        //     can actually produce, the table entry changes nothing.
+        //
+        //  2. Even from a hand-built carry holding a stale comps payload, the
+        //     doubled attribute is harmless, because io/NpaintFile.cpp pushes
+        //     its own `np:comps` onto part 0 AFTER the carry replay, not
+        //     before. Last-write-wins therefore picks the FRESH copy. Every
+        //     other document attribute is pushed before the replay and so
+        //     loses -- which is exactly why section 16's three assertions
+        //     bite and this one cannot.
+        //
+        // So `np:comps` is protected by a push ORDER that nothing states or
+        // enforces, rather than by the recognition table. Moving that push
+        // above the carry replay would make the hazard live and silent, and
+        // no assertion in this suite would notice. Writing a green "test" for
+        // it here would only record that the accident currently holds.
+        const char* ep = "selftest_npattrs_payload_edited.npaint";
+        const NpaintSaveResult afterEdit =
+            saveNpaint(edited, ep, NpaintSaveOptions{}, &loaded.carry);
+        check(afterEdit.ok, "npaint: saving the edited payloads WITH the carry works");
+        if (afterEdit.ok) {
+          const NpaintLoadResult r = loadNpaint(ep);
+          const bool rs = r.ok && r.document.layers.size() == 2;
+          check(rs && r.document.layers[1].ops.size() == 2,
+                "npaint: BOTH ops come back -- one op here would be the stale np:ops the file "
+                "was opened with, replayed out of the carry beside the fresh one");
+          check(rs && r.document.comps.size() == 2 &&
+                    r.document.comps[1].name == "after the edit",
+                "npaint: and BOTH comps, the new one included -- np:comps is the document's "
+                "only record of them, so a stale copy winning loses the capture outright");
+        }
+        std::remove(ep);
+      }
+    }
+    std::remove(fp);
   }
 
   return ok;

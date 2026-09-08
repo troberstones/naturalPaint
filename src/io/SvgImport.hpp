@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "core/TextContent.hpp"
 #include "core/VectorShape.hpp"
 
 // io/SvgImport -- an SVG document, in document-space `VectorShape`s.
@@ -167,8 +168,7 @@
 // Every element this importer does not render skips its own subtree and
 // adds one line to `refusals` naming the tag (and, where useful, the `id`):
 // `<filter>`, `<pattern>`, `<mask>`, `<switch>`, `<foreignObject>`,
-// `<image>`, `<text>` (and everything inside it -- Stage 5's job, named
-// here rather than attempted), `<script>`, every animation element
+// `<image>`, `<script>`, every animation element
 // (`<animate>`, `<animateTransform>`, `<animateMotion>`, `<animateColor>`,
 // `<set>`), `<symbol>`, `<a>`, and any element tag this file has never
 // heard of -- a vendor extension, a typo, or a future SVG addition all get
@@ -208,6 +208,90 @@
 // below for the exact numbers and what each one is proof against; every one
 // of them is checked BEFORE the walk does further work on the strength of
 // it, not after, so a bomb is refused promptly rather than part-processed.
+//
+// ==========================================================================
+// 7. `<text>`: a Text layer where the layout maps, outlines where it does not
+// ==========================================================================
+//
+// `core/TextContent.hpp` gives this importer somewhere to put text that stays
+// editable, so a `<text>` element is no longer refused outright. It lands one
+// of three ways, and **which one is always in `refusals` when it is not the
+// first**:
+//
+//   * **A `TextContent`** (`texts` below) -- the string, font, size, colour
+//     and origin, still parametric, exactly what a `LayerKind::Text` layer
+//     holds. Taken when the whole element reduces to ONE styled run and the
+//     accumulated transform is a translation plus a positive uniform scale.
+//   * **Glyph OUTLINES** appended to `shapes` -- taken when it does not: a
+//     `<tspan>` that repositions the text or carries its own style (two runs,
+//     and `TextStyle` is one style per block by construction -- see
+//     text/Shaper.hpp), or a transform with rotation, skew or a mirror in it,
+//     which `TextContent` has no matrix to carry. The result is exact; what
+//     is lost is that it is no longer editable AS TEXT, which is why it is
+//     named in `refusals` rather than done quietly.
+//   * **Refused by name**, drawing nothing: `<textPath>` (text on a path), a
+//     vertical `writing-mode`, `textLength`/`lengthAdjust`, a per-character
+//     `rotate`, a `font-size` on the `<text>` element itself in a unit
+//     relative to a basis this walk never resolved (`em`/`ex`/`%`), an
+//     element inside `<text>` this file does not handle, and any build with
+//     no shaper at all (text/Shaper.hpp's `shaperAvailable()`).
+//
+// **A positioned `<tspan>` is outlined, not refused**, and that is a
+// deliberate departure from this track's brief. A `<tspan x= y=>` restarts
+// the text position, which for single-valued `x`/`y` is EXACTLY one more
+// point-text run at a new baseline -- so the outline is not an approximation,
+// and refusing instead would drop the label out of essentially every
+// multi-line Inkscape export, whose every line is its own positioned
+// `<tspan>`. What genuinely cannot be laid out here -- `rotate`,
+// `textLength` -- is still refused by name above.
+//
+// --------------------------------------------------------------------------
+// 7a. Painting order: ONE flat `shapes` vector, and `texts` INDEXES INTO IT
+// --------------------------------------------------------------------------
+//
+// `shapes` is document order and document order IS painting order (see
+// `shapes`' own comment). A second, parallel `texts` vector consumed as "all
+// shapes, then all texts" would break that the moment a shape is drawn OVER a
+// label -- an ordinary way to knock a caption out of a badge -- and the label
+// would come back on top.
+//
+// So `SvgTextBlock::shapesBefore` records `shapes.size()` at the instant the
+// block was encountered, which is exactly "how many shapes are painted BELOW
+// this text". A caller reconstructs the document's own order by walking
+// `texts` in order and emitting `shapes[previous .. shapesBefore)` before each
+// one, then whatever is left over on top. `app/OpenAnyFile.cpp` does precisely
+// that, producing an alternating stack of Vector and Text layers rather than
+// one Vector layer; that is the only reason its SVG branch is more than a
+// dozen lines.
+//
+// The rejected alternative was one `std::vector<std::variant<VectorShape,
+// TextContent>>`. It keeps the order by construction, which is genuinely
+// nicer, but it changes the type of `shapes` -- which app/SvgReport,
+// `--selftest` and `core::Layer::shapes` all consume directly as a
+// `vector<VectorShape>` -- for a property one `size_t` per text block already
+// carries.
+//
+// --------------------------------------------------------------------------
+// 7b. Two conversions that are silent when they are wrong
+// --------------------------------------------------------------------------
+//
+// **`x`/`y` on `<text>` is the BASELINE; `TextContent::origin` is the block's
+// TOP-LEFT.** (SVG 1.1 10.4; core/TextContent.hpp section 2; text/Shaper.hpp
+// on its text-space origin.) The offset between them is the distance from the
+// shaped block's top down to its first baseline, which is a property of the
+// FONT at that size, not a fraction of `font-size` -- so it is read back off
+// the shaper: shape the run, take the smallest `ShapedGlyph::y`, which is that
+// first baseline in text-space. Guessing it as, say, `0.8 * sizePx` puts every
+// imported label off by a few pixels in a way that reads as a rendering bug
+// rather than an import bug.
+//
+// **`text-anchor` is not `TextAlign`.** An SVG `<text>` is point text --
+// `frame.width == 0` -- and text/Shaper.hpp is explicit that alignment means
+// nothing there, because there is nothing to align against. So `text-anchor:
+// middle`/`end` is applied as an ORIGIN SHIFT of half / all of the SHAPED
+// width, computed per text chunk, and `TextContent::align` is left at its
+// default. Storing the anchor as an align value instead would compile,
+// round-trip, and provably do nothing.
 namespace np {
 
 // See section 6. Checked before a `<use>` is expanded (i.e. before its
@@ -235,6 +319,26 @@ inline constexpr size_t kMaxSvgElements = 20000;
 // enormous, which never recurses and never visits a second element.
 inline constexpr size_t kMaxSvgAnchors = 200000;
 
+// One `<text>` element that mapped to an editable text block -- section 7.
+// Everything a `LayerKind::Text` layer needs, plus where in the painting
+// order it belongs.
+struct SvgTextBlock {
+  // Already in DOCUMENT coordinates, with `origin` at the block's TOP-LEFT
+  // (section 7b) and `align` deliberately left at its default (also 7b).
+  TextContent content;
+
+  // `SvgImportResult::shapes.size()` at the moment this block was
+  // encountered: the number of shapes painted BELOW it. Section 7a is the
+  // whole argument for this field's existence -- without it the flat shape
+  // list and this list cannot be re-interleaved into the document's own
+  // painting order.
+  size_t shapesBefore = 0;
+
+  // The `<text>` element's `id`, or empty. Same role `VectorShape::name`
+  // plays for a shape: a layer name a user can recognise.
+  std::string name;
+};
+
 // Mirrors `PsdImportResult`'s shape (io/PsdImport.hpp).
 struct SvgImportResult {
   bool ok = false;
@@ -253,6 +357,13 @@ struct SvgImportResult {
   // `core::Layer::shapes`' own "bottom to top" convention expects), already
   // flattened to document coordinates per section 1.
   std::vector<VectorShape> shapes;
+
+  // Every `<text>` element that mapped to an editable text block, in
+  // document order, each carrying the count of `shapes` painted below it --
+  // section 7a is why that count is here and not implied. A `<text>` that
+  // fell back to outlines is NOT here: its glyphs are in `shapes` above, in
+  // their proper place, and `refusals` says the fallback happened.
+  std::vector<SvgTextBlock> texts;
 
   // One line per refused element, attribute, or tripped cap -- section 5
   // and 6 name exactly what ends up here and why. Never a silent drop.
