@@ -13855,6 +13855,57 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
 
+    // --- the spring-loaded Eyedropper: Alt/Option held over a paintable
+    // tool samples like `Tool::Eyedropper`, release hands the tool back -----
+    //
+    // Resolved beside the Hand's block just above, and for the identical
+    // reason: below `panning`/`sizing` would cost a dead frame at the start
+    // of every Alt-drag sample. app/ToolSwitch.hpp's own header is the
+    // rationale for the borrow itself; `springEyedropperEligible()` there is
+    // the one place the "which tools does this apply to" table lives, so it
+    // is not repeated here.
+    //
+    // Guards below are the UI's own gesture-priority rules, the ones that
+    // apply regardless of which tool is active; which TOOLS the borrow
+    // applies to at all (Clone Stamp's source pick, the four selection
+    // tools' Alt-subtract, Zoom's Alt-out, Pen's gnomon suppression, the
+    // Flats bucket's carve, all excluded) is `springEyedropperEligible()`'s
+    // own business rule and is checked exactly once, inside
+    // `beginSpringEyedropper()` itself -- not repeated here as a second
+    // opinion that could drift from it:
+    //
+    //   * `!io.WantTextInput` -- the Hand's own guard, same reasoning.
+    //   * no mouse button down -- the Hand's own guard, same reasoning: a
+    //     gesture already spoken for (a marquee drag reading Alt-subtract,
+    //     say) must not have its tool swapped out from under it.
+    //   * `!st.polygonLassoActive` -- the Hand's own guard, same reasoning.
+    //   * `!io.KeyCtrl` -- Ctrl+Alt is brush sizing (`sizingHeld`, resolved
+    //     just below this block) and sizing must keep winning; since Alt is
+    //     definitionally down at this press edge, excluding Ctrl here is the
+    //     whole of "not the sizing chord" and "sizing not already active"
+    //     both -- sizing cannot be held without Ctrl down too.
+    //
+    // The release is `!io.KeyAlt`, matching the Hand's own `!IsKeyDown`
+    // reasoning about a missed key-up (Cmd-Tab away mid-hold), AND the left
+    // button not down -- unlike the Hand, so that a click-drag sample begun
+    // under Alt keeps sampling to its own mouse-up rather than snapping back
+    // to the original tool the instant Alt lifts mid-drag.
+    {
+      const bool eyedropAnyMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                                       ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+                                       ImGui::IsMouseDown(ImGuiMouseButton_Right);
+      const bool altPressed = ImGui::IsKeyPressed(ImGuiKey_LeftAlt, /*repeat=*/false) ||
+                              ImGui::IsKeyPressed(ImGuiKey_RightAlt, /*repeat=*/false);
+      if (altPressed && !ImGui::GetIO().WantTextInput && !eyedropAnyMouseDown &&
+          !st.polygonLassoActive && !ImGui::GetIO().KeyCtrl) {
+        beginSpringEyedropper(st);
+      } else if (springEyedropperHeld(st) &&
+                !ImGui::GetIO().KeyAlt &&
+                !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        endSpringEyedropper(st);
+      }
+    }
+
     // --- rotate view on drag (PRD Q4: "R" held + drag) -- resolved before
     // the pan/zoom blocks below since, like Hand-tool panning, it claims
     // the left-mouse-drag gesture; the two must agree on who wins. Not
