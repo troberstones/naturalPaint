@@ -33,6 +33,7 @@
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
 #include "app/MunsellSelection.hpp"
+#include "app/NoDocumentCanvas.hpp"
 #include "color/Munsell.hpp"
 #include "app/OpenAnyFile.hpp"
 #include "app/PenAxes.hpp"
@@ -4801,10 +4802,10 @@ int main(int argc, char** argv) {
     // reflects any close by the time this frame starts. Idempotent by
     // construction, not by a tracked transition flag: `sim` is null on
     // every frame after the one this fires, so there is nothing to re-run.
-    if (sim && st.documents.empty()) {
-      sim->shutdown();
-      sim.reset();
-    }
+    // The actual predicate-and-teardown pair lives in
+    // app/NoDocumentCanvas.hpp so --selftest can call the identical
+    // function rather than a look-alike.
+    np::releaseSolverWhenNoDocuments(sim, st.documents);
 
     // ---- the stroke bridge: dried paint moves into the document -----------
     //
