@@ -116,6 +116,37 @@ struct ExposureUniform {
 };
 static_assert(sizeof(ExposureUniform) == 16, "must match lut_op_exposure.wgsl's vec4<f32> P");
 
+// The three ToneOps kinds. Each packs into the same single `vec4<f32> P` every
+// kernel here binds at slot 0, so none of them needs a storage buffer or a
+// second binding layout.
+struct InvertUniform {
+  float amount;
+  // 0 = Linear, 1 = Display. A float because the whole uniform is one vec4;
+  // the kernel compares `>= 0.5` rather than `== 1.0` so a value that took a
+  // float round trip cannot land between the two branches.
+  float domain;
+  float pad[2];
+};
+static_assert(sizeof(InvertUniform) == 16, "must match lut_op_invert.wgsl's vec4<f32> P");
+
+struct PosterizeUniform {
+  // The level COUNT, carried as a float and read back with `i32()` in the
+  // kernel. Every count this op accepts is exactly representable in f32 (it
+  // is a small integer), so the round trip is lossless -- unlike packing it
+  // into a uniform's bit pattern, which would need a second binding type for
+  // one integer.
+  float levels;
+  float pad[3];
+};
+static_assert(sizeof(PosterizeUniform) == 16, "must match lut_op_posterize.wgsl's vec4<f32> P");
+
+struct ThresholdUniform {
+  float threshold;
+  float amount;
+  float pad[2];
+};
+static_assert(sizeof(ThresholdUniform) == 16, "must match lut_op_threshold.wgsl's vec4<f32> P");
+
 struct SaturationUniform {
   float scale;
   float weights[3];
@@ -176,7 +207,14 @@ WGPUBuffer makeStorageBuffer(GpuContext& gpu, const void* data, uint64_t size) {
 const char* kOpKernelPath[] = {
     "lut_op_levels.wgsl",  "lut_op_curves.wgsl",       "lut_op_exposure.wgsl",
     "lut_op_saturation.wgsl", "lut_op_grayscale.wgsl", "lut_op_channel_mixer.wgsl",
+    "lut_op_invert.wgsl", "lut_op_posterize.wgsl", "lut_op_threshold.wgsl",
 };
+// Indexed by `PointOpKind`'s ordinal, so the table and the enum must stay the
+// same length. Nothing else in this file would notice them diverging -- the
+// lookup would simply read past the end and hand a pipeline the wrong source.
+static_assert(sizeof(kOpKernelPath) / sizeof(kOpKernelPath[0]) ==
+                  static_cast<size_t>(PointOpKind::Threshold) + 1,
+              "kOpKernelPath must have one entry per PointOpKind, in enum order");
 
 }  // namespace
 
@@ -332,6 +370,41 @@ Lut3D bakeLut(GpuContext& gpu, const std::vector<Op>& ops) {
         if (!pipe) break;
         ExposureUniform u{};
         u.stops = op.exposure.stops;
+        WGPUBuffer buf = makeUniformBuffer(gpu, &u, sizeof(u));
+        scratchBuffers.push_back(buf);
+        dispatchPass(pipe, {bufEntry(0, buf, sizeof(u)), texEntry(1, pp.src()), texEntry(2, pp.dst())});
+        pp.flip();
+        break;
+      }
+      case PointOpKind::Invert: {
+        WGPUComputePipeline pipe = getOpPipeline(PointOpKind::Invert);
+        if (!pipe) break;
+        InvertUniform u{};
+        u.amount = op.invert.amount;
+        u.domain = op.invert.domain == InvertParams::Domain::Display ? 1.0f : 0.0f;
+        WGPUBuffer buf = makeUniformBuffer(gpu, &u, sizeof(u));
+        scratchBuffers.push_back(buf);
+        dispatchPass(pipe, {bufEntry(0, buf, sizeof(u)), texEntry(1, pp.src()), texEntry(2, pp.dst())});
+        pp.flip();
+        break;
+      }
+      case PointOpKind::Posterize: {
+        WGPUComputePipeline pipe = getOpPipeline(PointOpKind::Posterize);
+        if (!pipe) break;
+        PosterizeUniform u{};
+        u.levels = static_cast<float>(op.posterize.levels);
+        WGPUBuffer buf = makeUniformBuffer(gpu, &u, sizeof(u));
+        scratchBuffers.push_back(buf);
+        dispatchPass(pipe, {bufEntry(0, buf, sizeof(u)), texEntry(1, pp.src()), texEntry(2, pp.dst())});
+        pp.flip();
+        break;
+      }
+      case PointOpKind::Threshold: {
+        WGPUComputePipeline pipe = getOpPipeline(PointOpKind::Threshold);
+        if (!pipe) break;
+        ThresholdUniform u{};
+        u.threshold = op.threshold.threshold;
+        u.amount = op.threshold.amount;
         WGPUBuffer buf = makeUniformBuffer(gpu, &u, sizeof(u));
         scratchBuffers.push_back(buf);
         dispatchPass(pipe, {bufEntry(0, buf, sizeof(u)), texEntry(1, pp.src()), texEntry(2, pp.dst())});

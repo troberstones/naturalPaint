@@ -379,6 +379,15 @@ Op makeNewOp(PointOpKind kind) {
   op.opClass = OpClass::PointA;
   op.pointKind = kind;
   op.enabled = false;  // see the header: build, then reveal
+  // **One kind's identity default is not a usable starting value.** Every
+  // params struct in ops/ToneOps.hpp defaults to the identity except Invert
+  // and Threshold, which deliberately default to the full effect -- and
+  // Posterize's identity is `levels == 0`, a value the op is never enabled at
+  // and no slider offers. Left alone, a freshly added Posterize would be the
+  // one kind that still does nothing after the user enables it. Seeded here,
+  // in the single place both the layer-row menu and the GRADE panel's "+ Add"
+  // go through, rather than fixed up in whichever editor happens to draw it.
+  if (kind == PointOpKind::Posterize) op.posterize.levels = 4;
   return op;
 }
 

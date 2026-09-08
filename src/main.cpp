@@ -1460,6 +1460,7 @@ int main(int argc, char** argv) {
   // has a document" comment this flag is the deliberate exception to.
   bool noDocumentDemo = false;
   bool panelStackDemo = false;
+  bool gradeKindsDemo = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
@@ -1970,6 +1971,26 @@ int main(int argc, char** argv) {
       // screenshot path has no drag -- the same gap --flyout-demo exists to
       // cover for a press-and-hold. See `st.panelStackDemo`.
       panelStackDemo = true;
+    } else if (a == "--grade-kinds-demo") {
+      // The GRADE panel's per-kind inline editors for Invert, Posterize and
+      // Threshold, which nothing else can reach.
+      //
+      // **This flag exists because those three editors are otherwise in the
+      // one blind spot this project's two gates share.** `--selftest` runs
+      // headless and draws no ImGui, and every golden view is a launch flag
+      // plus a crop -- so a panel state no flag produces is photographed by
+      // nothing. The three kinds arrived with an op stack that is fully
+      // covered on the CPU (app/selftest/GradeDispatch.cpp), on the GPU
+      // (app/selftest/LutBake.cpp) and through the file format
+      // (app/selftest/AdjustmentLayer.cpp) -- and their sliders, their domain
+      // combo and their layout inside a narrow docked column were covered by
+      // none of it.
+      //
+      // Seeds `AppState::opStack` (the session-level grade stack GRADE binds
+      // to, not a document's own), so no document state is touched and the
+      // flag composes with --panel-stack-demo, which is what puts GRADE into
+      // a slot wide enough to photograph.
+      gradeKindsDemo = true;
     } else if (a == "--ui-layer-demo") {
       // UI detour step 3: build a stack through the layer editor's own
       // commands. See runUiLayerDemo(). `noclip` runs the same script without
@@ -3680,6 +3701,28 @@ int main(int argc, char** argv) {
   st.openLayerMenu = openLayerMenu;
   st.openToolFlyoutDemo = flyoutDemo;
   st.panelStackDemo = panelStackDemo;
+  st.gradeKindsDemo = gradeKindsDemo;
+  if (gradeKindsDemo) {
+    // Enabled, and with params well away from both the identity and the
+    // params structs' own defaults -- an editor showing a default value would
+    // photograph identically whether or not it were reading the op at all.
+    np::Op invert = np::makeNewOp(np::PointOpKind::Invert);
+    invert.enabled = true;
+    invert.invert.domain = np::InvertParams::Domain::Display;
+    invert.invert.amount = 0.65f;
+    st.opStack.add(invert);
+    np::Op posterize = np::makeNewOp(np::PointOpKind::Posterize);
+    posterize.enabled = true;
+    posterize.posterize.levels = 6;
+    st.opStack.add(posterize);
+    np::Op threshold = np::makeNewOp(np::PointOpKind::Threshold);
+    threshold.enabled = true;
+    threshold.threshold.threshold = 0.55f;
+    threshold.threshold.amount = 0.8f;
+    st.opStack.add(threshold);
+    std::printf("[grade-kinds-demo] GRADE seeded with Invert(Display, 0.65), Posterize(6) and "
+                "Threshold(0.55, 0.80), all enabled\n");
+  }
   if (dabDemoId != nullptr) st.dabDemoId = dabDemoId;
   if (brushSettingsDemo) {
     st.showBrushSettings = true;
