@@ -70,6 +70,27 @@ struct KeyChord {
   bool operator==(const KeyChord& o) const { return key == o.key && mods == o.mods; }
 };
 
+// The gate `main.cpp`'s key-down handler applies BEFORE `Keymap::resolve()`,
+// not inside it: `Keymap` has no notion of a text-editing session, and
+// giving it one would mean every future caller of `resolve()` -- there is
+// only the one today, but the whole point of this class is that another
+// tool can add bindings without touching it -- has to know app/TextTool's
+// state to get an answer.
+//
+// While `textSessionActive` (app/TextTool.hpp) is true, only a chord
+// carrying Cmd or Ctrl (`kModCmd` / `kModCtrl` above -- the two modifiers
+// this build treats as "the app-level modifier", per `ui/MacPaintUI.cpp`'s
+// existing `io.KeyCtrl || io.KeySuper` convention) reaches the keymap at
+// all; every bare or Shift/Alt-only chord belongs to the session instead --
+// a keystroke, a caret move, Backspace/Delete deleting a character rather
+// than the canvas selection. `false` for `textSessionActive` reaches every
+// chord unchanged, which is every key-down this build has ever routed
+// through `resolve()` before this gate existed.
+//
+// A pure function of the chord's modifier bits and one bool: no `Keymap`,
+// no `TextEditState`, so it is exercised in `--selftest` with neither.
+bool keyChordReachesKeymap(KeyChord chord, bool textSessionActive) noexcept;
+
 // One row of the keymap file: a chord bound to a named action, optionally
 // scoped to a single layer kind. `scope == std::nullopt` means global --
 // binds regardless of what kind of layer is active (or if there is no

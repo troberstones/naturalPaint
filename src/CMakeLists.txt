@@ -247,6 +247,7 @@ add_executable(naturalPaint
   app/selftest/ZoomAndSize.cpp
   app/selftest/TextSerial.cpp
   app/selftest/PathConsumers.cpp
+  app/selftest/TextKeyCapture.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp

@@ -5598,4 +5598,15 @@ bool runFlatsTest();
 // cause. See app/selftest/PathConsumers.cpp.
 bool runPathConsumersTest();
 
+// The Text tool owning the keyboard while a session is live: app/Keymap's
+// keyChordReachesKeymap() gate (bare/Shift/Alt chords blocked, Cmd/Ctrl
+// chords still reach the keymap, everything passes with no session),
+// app/TextTool's textSessionActive() transitions (true from either
+// textEditBegin() or textEditFrameDragBegin(), false only from
+// textEditCancel()), and textEditRevert() restoring a session's UTF-8
+// content and caret byte-for-byte on Escape while plain textEditCancel()
+// (every other way a session ends) leaves it untouched. Headless, GPU-free,
+// writes no files. See app/selftest/TextKeyCapture.cpp.
+bool runTextKeyCaptureTest();
+
 }  // namespace np

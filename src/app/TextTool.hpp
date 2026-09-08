@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 #include "core/Path.hpp"          // PathPoint, PathBounds
@@ -222,9 +223,43 @@ struct TextEditState {
   // holds a second copy of the same fact, so `recordEdit()` vs `amendEdit()`
   // has exactly one place that can get it wrong.
   bool undoOpened = false;
+
+  // **Whether a session (caret or frame-drag) is currently live at all** --
+  // the fact `textSessionActive()` below reports. `layerIndex != kNoLayer`
+  // looks like the same fact but is not one: it is never reset back to
+  // `kNoLayer` by `textEditCancel()` (that function's own comment explains
+  // why -- the index names a session that survives a cancelled DRAG), so a
+  // predicate built on it would read "active" forever after the very first
+  // character ever typed into any text layer. `active` is the fact this
+  // struct did not previously have a field for: true from `textEditBegin()`
+  // or `textEditFrameDragBegin()` (a drag is a candidate session before any
+  // layer exists to index), false from `textEditCancel()`. Set ONLY by
+  // those three functions, same single-writer rule as every other field here.
+  bool active = false;
+
+  // The `TextContent::utf8` and caret this session started from, captured by
+  // `textEditBegin()`. Exists for exactly one reader, `textEditRevert()`
+  // (Escape's undo-the-whole-session path) -- everywhere else that needs
+  // "what was here before" already has it, either from `core/History` (a
+  // structural edit) or because it never needed it (a frame drag has no
+  // `TextContent` yet). Not touched by `textEditFrameDragBegin()`: a drag
+  // has no block to snapshot until it finishes, and `textEditRevert()` is
+  // never called while one is live (Escape mid-drag has no `editing` layer
+  // for `ui/` to pass it, so it takes the plain-cancel path instead).
+  std::string snapshotUtf8;
+  size_t snapshotCaret = 0;
 };
 
 inline constexpr size_t kNoLayer = static_cast<size_t>(-1);
+
+// True while a caret-editing session OR a candidate frame drag is live --
+// from whichever of `textEditBegin()` / `textEditFrameDragBegin()` started
+// it, until `textEditCancel()` ends it. This is the term `main.cpp`'s
+// key-down handler gates on before ever calling `Keymap::resolve()`
+// (`keyChordReachesKeymap()`, app/Keymap.hpp): while this is true, an
+// unmodified chord belongs to the text session typing into the layer, not to
+// whatever global or Flats-scoped action happens to share that key.
+bool textSessionActive(const TextEditState& state) noexcept;
 
 // Abandon any live paragraph-frame drag. Does NOT reset `documentId`,
 // `layerIndex` or `caret` -- those name the caret-editing session, which
@@ -232,7 +267,30 @@ inline constexpr size_t kNoLayer = static_cast<size_t>(-1);
 // `PathEditState::selection` alive across an abandoned gesture. Called when
 // Escape is pressed mid-drag, or the tool changes away from `Tool::Text`
 // while a drag (but no caret session) is live.
+//
+// **Does end the session**, in the `textSessionActive()` sense above: `active`
+// becomes false. That is orthogonal to the paragraph above -- `active` is a
+// new field with no prior behaviour to preserve, where `documentId`/
+// `layerIndex`/`caret` are existing fields whose callers already depend on
+// them surviving a cancelled drag.
 void textEditCancel(TextEditState* state) noexcept;
+
+// Restore `text->utf8` (and the caret) to the snapshot `textEditBegin()` took
+// when this session started, undoing every edit the session has made so far.
+// Used ONLY by the Escape-while-editing-an-existing-layer path in `ui/` --
+// every other way a session ends (document switch, the layer disappearing,
+// a tool change, clicking away, Cmd+Return) keeps the typed text, which is
+// what `textEditCancel()` alone already does with no help from this
+// function. `ui/` calls this FIRST, then `textEditCancel()` to end the
+// session itself -- this function touches only `text` and the snapshot
+// fields, never `active`/`frameDragActive`/`undoOpened`.
+//
+// A no-op on the content when nothing was typed this session (the snapshot
+// already equals `text->utf8`), so callers do not need to guard on
+// `undoOpened` before calling it -- only before deciding whether a
+// now-redundant top-of-history entry needs folding away, which is `ui/`'s
+// job (it owns `core::History`, this file does not).
+void textEditRevert(TextContent* text, TextEditState* state) noexcept;
 
 // Put the caret at `offset`, clamped to a UTF-8 boundary of `text.utf8`.
 //
