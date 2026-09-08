@@ -12,6 +12,7 @@
 #include "ui/LabelledControl.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/DockLayout.hpp"
+#include "ui/PanelGrip.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/NewDocumentDialog.hpp"
 
@@ -11653,29 +11654,18 @@ bool panelHasSubject(const AppState& st, ControlsSection section) {
 // only way to reach them, which is exactly the complaint: *"I don't see
 // handles to tear off any of the panels like tool settings or the tool bar on
 // the left."*
-constexpr float kPanelRailW = 14.0f;
 // How far the pointer must travel before a press on a grip becomes a tear-off
 // rather than a click. Dear ImGui's own default drag threshold is 6 px; a
 // grip is a small target and a collapse is cheap to undo, so this is a little
 // larger than that to keep an imprecise click from becoming a move.
 constexpr float kPanelDragThresholdPx = 8.0f;
-// The "?" help button's diameter, and the gap it keeps from the grip's right
-// edge -- one shared constant so `panelGripFor()`'s title-fit check and
-// `drawPanelGrip()`'s own drawing can never disagree about how much width
-// the button costs.
-constexpr float kPanelHelpBtnSize = 16.0f;
-constexpr float kPanelHelpBtnMargin = 6.0f;
+// kPanelHelpBtnSize, kPanelHelpBtnMargin, kPanelRailW, PanelGripKind and
+// PanelGripLayout now live in ui/PanelGrip.hpp -- pulled out of this file so
+// app/selftest/PanelSettings.cpp can call the real `panelGripFor()` below
+// instead of re-deriving its formula (see that header's own comment).
 
-enum class PanelGripKind { Bar, Rail };
-
-struct PanelGripLayout {
-  PanelGripKind kind = PanelGripKind::Bar;
-  // Bar height, or rail width.
-  float extent = kPanelHeaderExtent;
-  bool showTitle = true;
-};
-
-PanelGripLayout panelGripFor(ControlsSection section, const AtelierRect& slot, bool collapsed) {
+PanelGripLayout panelGripFor(const ControlsSectionSpec& spec, const AtelierRect& slot,
+                              bool collapsed) {
   PanelGripLayout g;
 
   // A collapsed panel IS its grip: the slot is `kPanelHeaderExtent` tall and
@@ -11692,7 +11682,6 @@ PanelGripLayout panelGripFor(ControlsSection section, const AtelierRect& slot, b
 
   g.kind = PanelGripKind::Bar;
   g.extent = std::min(kPanelHeaderExtent, std::max(1.0f, slot.h));
-  const ControlsSectionSpec& spec = controlsSectionSpec(section);
   pushAtelierMono();
   const float titleW = ImGui::CalcTextSize(spec.title).x;
   popAtelierMono();
@@ -11748,7 +11737,7 @@ bool drawPanelPlacementItems(AppState& st, ControlsSection section) {
 AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRect& slot,
                           bool collapsed, bool* layoutChanged) {
   const ControlsSectionSpec& spec = controlsSectionSpec(section);
-  const PanelGripLayout g = panelGripFor(section, slot, collapsed);
+  const PanelGripLayout g = panelGripFor(spec, slot, collapsed);
   const bool bar = g.kind == PanelGripKind::Bar;
 
   const AtelierRect grip = bar ? AtelierRect{slot.x, slot.y, slot.w, g.extent}
