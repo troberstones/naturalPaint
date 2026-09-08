@@ -2378,6 +2378,12 @@ int main(int argc, char** argv) {
     // conditional, walked over the whole `Tool` enum rather than sampled.
     // Headless and GPU-free.
     const bool toolSwitchOk = np::runToolSwitchTest();
+    // app/ToolSwitch: the spring-loaded Eyedropper (Alt/Option), the Hand's
+    // borrow-and-give-back shape applied to a second tool -- eligibility
+    // walked over every (Tool, BucketFill) pair, the borrow writing no
+    // ledger entry, and the two springs proven mutually exclusive rather
+    // than merely never observed together. Headless and GPU-free.
+    const bool springEyedropperOk = np::runSpringEyedropperTest();
     // app/ToolSurface (docs/testing-issues.md T5, short-term half): the SECOND
     // axis of "is this palette cell live". `toolImplemented()` and
     // `toolHasCanvasHandler()` both ask whether a tool is BUILT; neither can
@@ -3446,7 +3452,8 @@ int main(int argc, char** argv) {
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
-                    eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk && toolSurfaceOk &&
+                    eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk &&
+                    springEyedropperOk && toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&

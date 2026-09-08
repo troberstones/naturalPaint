@@ -495,6 +495,27 @@ bool runMeasureTest();
 // app/DocumentLifecycle only.
 bool runToolSwitchTest();
 
+// app/ToolSwitch -- the spring-loaded Eyedropper: Alt/Option held over a
+// paintable tool borrows `Tool::Eyedropper`, release hands the tool back.
+// A second borrow beside `runToolSwitchTest()`'s Hand, in its own file per
+// this suite's one-section-one-file rule (that file is already the Hand's
+// and T24's; this one does not reopen it).
+//
+// Covers: `springEyedropperEligible()` walked over every `(Tool, BucketFill)`
+// pair against a hand-written expected table, not a restatement of the
+// production switch; begin/end restoring the exact prior tool (`brush.tool`
+// really becomes `Eyedropper`, `effectiveTool()` still reports the tool the
+// user is in, matching the Hand's own shape); the borrow writing no
+// `previous`/`hasPrevious` ledger entry; a begin refused for an ineligible
+// tool, for the Ctrl+Alt sizing chord's tool (indirectly, by refusing
+// `PaintBucket` in Flats mode the same as any other ineligible tool -- the
+// UI's own Ctrl guard is not reachable headless); a repeat-press no-op; a
+// release with no press behind it; and that a Hand spring and an Eyedropper
+// spring can never both be live, in both directions.
+//
+// Headless and GPU-free: app/ToolSwitch only.
+bool runSpringEyedropperTest();
+
 // app/ToolSurface -- docs/testing-issues.md **T5**'s short-term half: "closing
 // every document leaves a canvas belonging to nothing."
 //

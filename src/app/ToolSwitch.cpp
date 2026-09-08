@@ -54,7 +54,9 @@ bool hasPreviousTool(const AppState& st) noexcept { return st.tools.hasPrevious;
 Tool previousTool(const AppState& st) noexcept { return st.tools.previous; }
 
 Tool effectiveTool(const AppState& st) noexcept {
-  return st.tools.springHeld ? st.tools.springReturn : st.brush.tool;
+  if (st.tools.springHeld) return st.tools.springReturn;
+  if (st.tools.springEyedropperHeld) return st.tools.springEyedropperReturn;
+  return st.brush.tool;
 }
 
 bool springHandHeld(const AppState& st) noexcept { return st.tools.springHeld; }
@@ -65,6 +67,14 @@ bool beginSpringHand(AppState& st) noexcept {
   // one). Re-borrowing would overwrite `springReturn` with the Hand already
   // installed, and the release would then strand the user in it.
   if (st.tools.springHeld) return false;
+  // The other spring holds `brush.tool` right now -- refusing here rather
+  // than stealing it out from under the Eyedropper borrow is what keeps the
+  // two mutually exclusive by construction (ToolSwitch.hpp's own comment on
+  // `beginSpringEyedropper()`), and it is a real sequence: Alt held with the
+  // mouse still up borrows the Eyedropper, and Space pressed before Alt is
+  // released would otherwise install the Hand over it with nothing left
+  // remembering which tool either borrow started from.
+  if (st.tools.springEyedropperHeld) return false;
   st.tools.springHeld = true;
   st.tools.springReturn = st.brush.tool;
   st.brush.tool = Tool::Hand;
@@ -76,6 +86,88 @@ bool endSpringHand(AppState& st) noexcept {
   if (!st.tools.springHeld) return false;
   st.tools.springHeld = false;
   st.brush.tool = st.tools.springReturn;
+  return true;
+}
+
+bool springEyedropperHeld(const AppState& st) noexcept { return st.tools.springEyedropperHeld; }
+
+bool springEyedropperEligible(Tool t, BucketFill fill) noexcept {
+  switch (t) {
+    // The paint-tool family: nothing here already has a use for a bare Alt.
+    case Tool::Brush:
+    case Tool::Water:
+    case Tool::DryBrush:
+    case Tool::Pencil:
+    case Tool::Eraser:
+    case Tool::Dodge:
+    case Tool::Burn:
+    case Tool::Smudge:
+      return true;
+    // ADR-0009: the Flats-mode bucket spends Alt carving a new fill out of a
+    // leaked area (AppState.hpp's `kBucketFills` row for it says so); only
+    // the ordinary Colour-tolerance bucket has Alt to lend.
+    case Tool::PaintBucket:
+      return fill == BucketFill::Colour;
+    // Every one of these already has a live, shipped meaning for Alt, or
+    // reads the canvas by a different gesture entirely -- listed rather than
+    // caught by a `default:` so `-Wswitch` still catches a `Tool` this
+    // predicate has not been told about, the same house style
+    // `ui/ToolCursor.cpp`'s `cursorForTool()` uses.
+    case Tool::Eyedropper:
+    case Tool::Marquee:
+    case Tool::EllipseMarquee:
+    case Tool::Hand:
+    case Tool::Zoom:
+    case Tool::Move:
+    case Tool::Lasso:
+    case Tool::PolygonLasso:
+    case Tool::MagicWand:
+    case Tool::Crop:
+    case Tool::Measure:
+    case Tool::Frame:
+    case Tool::CloneStamp:
+    case Tool::Gradient:
+    case Tool::Pen:
+    case Tool::Curve:
+    case Tool::Text:
+    case Tool::Shape:
+    case Tool::Slice:
+    case Tool::Count:
+      return false;
+  }
+  // Unreachable for any real `Tool` value -- see `cursorForTool()`'s own
+  // identical trailing return for why a switch that already lists every
+  // enumerator still needs one.
+  return false;
+}
+
+bool beginSpringEyedropper(AppState& st) noexcept {
+  if (st.tools.springEyedropperHeld) return false;
+  // Mirrors `beginSpringHand()`'s own guard just above, in the other
+  // direction: the Hand is already installed in `brush.tool`, and this
+  // borrow must not overwrite it out from under that one.
+  if (st.tools.springHeld) return false;
+  // The business rule, not a UI gesture-priority guard -- checked here, once,
+  // rather than at the `ui/MacPaintUI.cpp` call site, so `--selftest` can
+  // assert "a begin while ineligible is refused" through this function alone
+  // and a second call site can never diverge from it. `effectiveTool()`
+  // rather than `st.brush.tool`: identical whenever this line is reached
+  // (the guard above already refused a live Hand-borrow), but it is the one
+  // spelling that stays correct if a future caller ever reaches here through
+  // a borrow this file does not yet know about.
+  if (!springEyedropperEligible(effectiveTool(st), st.bucketFill)) return false;
+  st.tools.springEyedropperHeld = true;
+  st.tools.springEyedropperReturn = st.brush.tool;
+  st.brush.tool = Tool::Eyedropper;
+  // Deliberately does NOT touch `previous`/`hasPrevious` -- same reasoning
+  // as the Hand's borrow, header §1.
+  return true;
+}
+
+bool endSpringEyedropper(AppState& st) noexcept {
+  if (!st.tools.springEyedropperHeld) return false;
+  st.tools.springEyedropperHeld = false;
+  st.brush.tool = st.tools.springEyedropperReturn;
   return true;
 }
 

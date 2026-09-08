@@ -651,6 +651,23 @@ struct ToolSwitchState {
   // The tool to hand back on release. Written only by `beginSpringHand()`,
   // and read only by `endSpringHand()` and `effectiveTool()`.
   Tool springReturn = Tool::Brush;
+
+  // --- the spring-loaded Eyedropper (Alt/Option) --------------------------
+  //
+  // A second, independent borrow of the exact same shape as the Hand's pair
+  // above -- Alt held over a paintable tool samples like `Tool::Eyedropper`
+  // and letting go hands the borrowed-from tool back, without moving
+  // `previous`/`hasPrevious` for the same reason the Hand's does not. Its own
+  // fields rather than widening `springHeld`/`springReturn` to carry either
+  // tool: `app/ToolSwitch.cpp` must be able to refuse a Hand-borrow while an
+  // Eyedropper-borrow is already in flight (and vice versa) by testing two
+  // independent booleans, which a single "which tool is borrowed" flag would
+  // still need a variant tag for -- two bools already is that tag.
+  bool springEyedropperHeld = false;
+  // The tool to hand back on release. Written only by
+  // `beginSpringEyedropper()`, and read only by `endSpringEyedropper()` and
+  // `effectiveTool()`.
+  Tool springEyedropperReturn = Tool::Brush;
 };
 
 // ADR-0009: what the paint bucket fills.
