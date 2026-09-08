@@ -2114,10 +2114,18 @@ void layerSetCommandIconButton(AppState& st, const Document& doc, const LayerSel
 //     `MEDIA - NORMAL - 100%` from `layerRowSubLine()` like every other kind,
 //     and the drying meter the design draws in the trailing slot is absent.
 //
-//  4. **`FLATS - 153 FILLS`.** A Flats layer has no fills. core/Merge.cpp says
-//     it in as many words -- "a Flats layer no regions" -- and there is no fill
-//     list, no count and no Fills panel. A Flats row reads `FLATS - NORMAL -
-//     100%`.
+//  4. **`FLATS - 153 FILLS`.** A Flats layer HAS fills since the autoFlats
+//     port (`FlatEvaluation::fills` in flats/Model, evaluated and cached by
+//     flats/FlatsLayer), but the count is not on the row: `layerRowSubLine()`
+//     reads kind, blend and opacity from the `Layer` alone, and the number
+//     lives in an evaluation keyed on content hash x beneath signature that
+//     the panel would have to fetch (`flatsEvaluateLayer()`) -- cheap on a
+//     cache hit, a full segmentation on a miss, and the row is drawn every
+//     frame. There is also no Fills panel. So a Flats row reads `FLATS -
+//     NORMAL - 100%` for now; docs/spec-vs-implementation.md §1 tracks both.
+//     (Before the port this note read "a Flats layer has no fills", which
+//     was true then and survived the port unedited -- a documentation-only
+//     reading would have believed it.)
 //
 //  5. **The `NEW` popup's shortcut column** (`SHIFT-CMD-N`, `SHIFT-CMD-R`).
 //     `keymaps/default.json` binds no layer action to any key, and `CMD-N`

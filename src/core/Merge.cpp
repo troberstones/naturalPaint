@@ -514,10 +514,11 @@ LayerOpResult mergeLayerDown(Document& doc, size_t index, std::vector<std::strin
         " is a " + layerKindName(holdsPixels(up) ? low.kind : up.kind) +
         " layer, which owns no pixel storage in this build (core/Layer.hpp: Vector holds "
         "shapes and Text holds a text block, neither of which is a tile store; Media needs "
-        "the fluid solver's per-medium state; Strokes and Flats have no parameter member "
-        "yet). A merge would produce an empty layer and call it a merge. Layer > Rasterise "
-        "Layer turns a Vector or Text layer into pixels first (PRD C11), and then this "
-        "merge is an ordinary one.");
+        "the fluid solver's per-medium state; Strokes has no parameter member yet; a Flats "
+        "layer's fills are derived from the line art beneath it, not stored). A merge would "
+        "produce an empty layer and call it a merge. Layer > Rasterise Layer turns a Vector, "
+        "Text or Flats layer into pixels first (PRD C11), and then this merge is an ordinary "
+        "one.");
 
   if (pigmentPair) {
     const std::string obstacle = latentPathObstacle(doc, index);

@@ -232,14 +232,24 @@ should pin rather than leave to look like a bug.
 
 ---
 
-## 8. What of this design is on screen, as of 2026-09-03
+## 8. What of this design is on screen, as of 2026-09-08
 
 This file was written before the code, so the honest closing section is which of
-its decisions a user can actually reach. **Built and photographed** (three
-golden views — `vector_shape`, `vector_components`, `vector_marquee`):
+its decisions a user can actually reach. First written 2026-09-03 against
+`cff137a`; refreshed 2026-09-08 against `36f5509`. **Built and photographed**
+(golden views `vector_shape`, `vector_components`, `vector_marquee`,
+`pen_options`, `pen_options_component`):
 
 - §1's pivot frame, drawn as a crosshair at a selected shape's pivot.
-- §3's hit-test priority, driving the canvas gesture in `ui/MacPaintUI.cpp`.
+- §2's world-axis-aligned gnomon — bounds box, four scale corners, two axis
+  arrows and the rotate ring — drawn in `ui/MacPaintUI.cpp` from
+  `gnomonHandlePositions()`, the same function the hit-test reads, so the
+  drawn geometry and the hit geometry cannot disagree (`58239cb`).
+- §3's hit-test priority, driving the canvas gesture in `ui/MacPaintUI.cpp`,
+  and §3's **mode segment**: the options bar's Shape / Component chips call
+  `pathEditSetSelectMode()` (`ui/AtelierChrome.cpp`, "This row exists because
+  `pathEditSetSelectMode()` had no caller"), with a SELECTED readout beside
+  them (`58239cb`).
 - §4's modifier grammar, via `selectionCombineFromModifiers()`.
 - §6's six drag kinds and the single-writer rule — `PathEditState` is mutated
   only in `app/PenTool.cpp`, and `grep -rnP 'pathEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` finds
@@ -249,16 +259,22 @@ golden views — `vector_shape`, `vector_components`, `vector_marquee`):
 
 **Not on screen yet, by name:**
 
-- **The mode segment.** `pathEditSetSelectMode()` is built and tested, and has
-  no caller under `ui/`. So §3's Component mode — half of this document — is
-  unreachable from the UI, and the shipped Pen only ever selects whole shapes.
-  It is one options-bar row (`docs/ui.md` §4b names it).
-- **The gnomon's own handles.** `gnomonHandlePositions()` is *hit-tested*
-  (a press inside the ring starts a `Manipulator` drag) but never *drawn*, so
-  §2's world-axis-aligned gnomon is currently an invisible target. Scale and
-  rotate reach nothing: `pathEditUpdate()` applies a translate for every drag
-  kind that is not a `TangentDrag`.
-- **The PATHS panel**, and the three PRD J consumers.
+- **Scale and rotate.** The gnomon's corners and ring are drawn and hit-tested,
+  and a press on either starts a `Manipulator` drag — but `pathEditUpdate()`
+  (`app/PenTool.cpp`, the `Manipulator` arm) applies `transformTranslate` for
+  every drag kind that is not a `TangentDrag`. Nothing reads which handle was
+  pressed once the drag kind is set, so §2's gnomon is a visible target whose
+  scale and rotate handles move the selection. Tracked as a row in
+  `docs/spec-vs-implementation.md` §2.
+- **The PATHS panel**, and the three PRD J consumers. `app/PathConsumers`
+  supplies path-to-selection, fill path and stroke path headless, with a
+  selftest section and no UI caller.
+
+**What the 2026-09-03 edition listed here and is now built:** the mode
+segment (it said `pathEditSetSelectMode()` had no caller under `ui/`) and the
+gnomon's drawing (it said the handles were hit-tested but never drawn). Both
+landed in `58239cb`, one day after that edition was written — the entry rotted
+in a day, which is the reason this section carries a date.
 
 §6's own warning came true in a small way and is worth recording: the canvas
 block originally ended a drag on `IsMouseReleased` alone, which is what every
