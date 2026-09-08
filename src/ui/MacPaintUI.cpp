@@ -16697,7 +16697,16 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // window is idle. 1.06 s is ImGui's own `InputText` period, so the
           // canvas caret and the panel's rename box blink together rather
           // than beating against each other.
-          const bool on = std::fmod(ImGui::GetTime(), 1.06) < 0.66;
+          //
+          // **Held ON under `--screenshot`.** The blink is a wall-clock phase
+          // sampled at a frame INDEX, so whether golden frame 90 lands in the
+          // 0.66 s "on" window depends on how fast the first 90 frames
+          // rendered -- machine load, not code. `text_point` and
+          // `text_paragraph` were blessed with the caret on and then failed
+          // with it off, 1150 px each, on a build that had not touched this
+          // code. Same reasoning as the frozen fps readout this flag exists
+          // for: a live phase is a nondeterminism source no threshold holds.
+          const bool on = st.screenshotCliActive || std::fmod(ImGui::GetTime(), 1.06) < 0.66;
           if (on) {
             dl->AddLine(ImVec2(top.x, top.y), ImVec2(bot.x, bot.y), kTextCasing, 4.0f);
             dl->AddLine(ImVec2(top.x, top.y), ImVec2(bot.x, bot.y), kTextCore, 2.0f);
