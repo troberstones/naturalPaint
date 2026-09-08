@@ -1,5 +1,7 @@
 #include "app/selftest/Support.hpp"
 
+#include "app/NoDocumentCanvas.hpp"
+
 namespace np {
 
 namespace {
@@ -58,6 +60,16 @@ void waitForGpuIdle(GpuContext& gpu) {
 // sections around this one take by reference: this section's whole point is
 // to shut one down, and every GPU section after this one in main.cpp's `ok`
 // chain still needs the shared sim alive.
+//
+// Part B calls `np::releaseSolverWhenNoDocuments()` (app/NoDocumentCanvas.hpp)
+// directly -- the exact function main.cpp's frame loop calls, not a
+// look-alike built out of `PaintSim::shutdown()` and `unique_ptr::reset()`
+// inline. An earlier version of this section called those two directly,
+// which meant the frame loop's own hook could be sabotaged (e.g. turned into
+// a no-op) with this section still green, because it was never actually
+// calling the code under test. That gap is what B0/B1 below close, alongside
+// the pre-existing GPU teardown measurement in B2, which now runs through
+// the same function.
 bool runNoDocumentCanvasTest(GpuContext& gpu, const MixboxLut& lut) {
   bool ok = true;
   auto check = [&](bool cond, const char* what) {
@@ -107,10 +119,39 @@ bool runNoDocumentCanvasTest(GpuContext& gpu, const MixboxLut& lut) {
       s->frame(gpu, SimParams{});
       waitForGpuIdle(gpu);
 
+      // -----------------------------------------------------------------
+      // B0. A document open: releaseSolverWhenNoDocuments() must refuse.
+      // -----------------------------------------------------------------
+      {
+        DocumentSession oneDoc;
+        oneDoc.add(makeBlankOpenDocument(64, 64, WorkingSpace{}, "probe"));
+        const bool releasedWithDoc = releaseSolverWhenNoDocuments(localSim, oneDoc);
+        check(!releasedWithDoc,
+              "releaseSolverWhenNoDocuments() returns false with a document open");
+        check(localSim != nullptr,
+              "...and leaves the sim alive when it refuses");
+      }
+
+      // -----------------------------------------------------------------
+      // B1. A null sim: must report false and must not crash.
+      // -----------------------------------------------------------------
+      {
+        std::unique_ptr<PaintSim> nullSim;
+        DocumentSession emptySession;
+        const bool releasedNullSim = releaseSolverWhenNoDocuments(nullSim, emptySession);
+        check(!releasedNullSim, "releaseSolverWhenNoDocuments() returns false on a null sim");
+        check(nullSim == nullptr, "...and does not construct one");
+      }
+
+      // -----------------------------------------------------------------
+      // B2. The GPU-side teardown actually gives memory back.
+      // -----------------------------------------------------------------
+      DocumentSession emptySession;
       const size_t beforeShutdown = currentFootprintBytes();
-      localSim->shutdown();
-      localSim.reset();
+      const bool released = releaseSolverWhenNoDocuments(localSim, emptySession);
       const size_t afterShutdown = currentFootprintBytes();
+      check(released,
+            "releaseSolverWhenNoDocuments() returns true with an empty document session");
       std::printf("  [measured] process footprint before this sim's shutdown(): %.2f MiB\n",
                   static_cast<double>(beforeShutdown) / (1024.0 * 1024.0));
       std::printf("  [measured] process footprint after this sim's shutdown():  %.2f MiB\n",

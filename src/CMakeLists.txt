@@ -35,6 +35,7 @@ add_executable(naturalPaint
   app/Latency.cpp
   app/Memory.cpp
   app/MunsellSelection.cpp
+  app/NoDocumentCanvas.cpp
   # One translation unit per --selftest section, plus Driver.cpp for the three
   # drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
   # These were one 20 815-line app/SelfTest.cpp until every parallel branch
