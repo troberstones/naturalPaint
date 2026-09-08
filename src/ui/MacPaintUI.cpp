@@ -4068,7 +4068,7 @@ void drawColorSection(AppState& st) {
       ImGui::PushID(static_cast<int>(i));
       const ImVec2 p = ImGui::GetCursorScreenPos();
       if (ImGui::InvisibleButton("##sw", ImVec2(sw, sw)))
-        st.brush.pigment = static_cast<int>(i);
+        selectPigment(st, static_cast<int>(i));
       const Pigment& pg = palette[i];
       dl->AddRectFilled(p, ImVec2(p.x + sw, p.y + sw),
                         IM_COL32((int)(pg.rgb[0] * 255), (int)(pg.rgb[1] * 255),
@@ -4227,20 +4227,6 @@ void drawColorSection(AppState& st) {
     // plausible rather than true"); it says nothing about the constants,
     // because there is nothing to say: three floats cannot produce them.
     //
-    // **No `rgb` readout line here, and its absence is deliberate.** The
-    // PIGMENT branch above prints one because its swatches are a palette and
-    // the resulting triple is not otherwise on screen; here the picker's own
-    // numeric row *is* that readout, and since `ImGuiColorEditFlags_HDR` it
-    // prints the true over-range value (1.516, not 1.000) rather than a
-    // clamped one. A second copy of the same three floats would cost a line
-    // in a section whose content region measures 119 px against a block that
-    // already asks for 191 -- i.e. it would be paid for by clipping the three
-    // physical constants below.
-    pushAtelierMono();
-    ImGui::TextDisabled("density     %.2f", sel.density);
-    ImGui::TextDisabled("staining    %.2f", sel.staining);
-    ImGui::TextDisabled("granulation %.2f", sel.granulation);
-    popAtelierMono();
     // The paragraph that used to sit here permanently ("This colour paints:
     // RGB layers take it exactly...") now lives behind this panel's "?"
     // button (ui/ControlsLayout.cpp's `Color` entry, drawn by
@@ -5756,50 +5742,50 @@ namespace {
 
 // A5 (reachability audit): Density, Staining and Granulation used to be live
 // `ctlSlider()`s here, and a drag on any of them worked for exactly one
-// frame. main.cpp's simulation block runs after `ImGui::Render()` and before
-// the sim upload and overwrites all three from the *active pigment's own*
-// constants, unconditionally, every frame:
+// frame -- main.cpp's simulation block ran after `ImGui::Render()` and
+// overwrote all three from the *active pigment's own* constants,
+// unconditionally, every frame ("Physical constants follow the selected
+// paint, not a global slider"). The fix at the time was the honest one for a
+// build with nowhere to put a second value: `BeginDisabled()`, read-only,
+// labelled as owned by the loaded pigment.
 //
-//   st.sim.density = pig.density;
-//   st.sim.staining = pig.staining;
-//   st.sim.granulation = pig.granulation;
-//
-// with the comment "Physical constants follow the selected paint, not a
-// global slider, so switching from Phthalo Blue to Ultramarine actually
-// changes behaviour" (main.cpp:2521-2525). That comment is the design
-// decision, not a bug to route around, and it is a *domain* question before
-// it is a code one: CONTEXT.md does not gloss "Pigment" as a struct, but
-// PLAN.md's own step-8 record does, in exactly these words -- describing
-// `brushTipFor()`'s deliberate choice not to carry these three fields into
-// `brush/Deposit`, "because `brush/Deposit` simulates no settling, lifting
-// or granulation and three dead fields would imply a fidelity that is not
-// there." Settling, lifting and granulation are properties of the SOLVER's
-// simulated paper and water, driven by which real paint is loaded --
-// `paint/Palette.hpp`'s header calls the numbers "the real pigment
-// measurements published with Mixbox," and real paints differ in exactly
-// this way (a staining pigment resists being lifted, a granulating one
-// pools in the paper's tooth). A user picks that behaviour by picking a
-// pigment, not by dialling a slider independent of one -- the same reading
-// `drawBrushSection()`'s LOADED PIGMENT block already gives these three,
-// read-only, several hundred lines above this section. Editing them here as
-// a per-session override, and *keeping* that override past the next frame,
-// is a real alternative -- but nothing in the PRD, CONTEXT.md, the palette
-// header or main.cpp's own comment asks for one, and inventing somewhere for
-// it to live (a per-preset shadow value? a global multiplier?) would be
-// answering a question nobody asked. So the honest fix is the
-// disabled-rather-than-hidden treatment `drawBrushSection()` already gives
-// OPACITY and WET: the value is real and worth showing, the control here
-// just is not what owns it.
+// **This is the promised follow-up, now that there is somewhere for the
+// second value to live.** `AppState::pigmentOverride` (app/AppState.hpp) is
+// a per-session override, and `effectivePigmentConstants()` there is what
+// main.cpp's simulation block reads in place of the unconditional overwrite
+// above -- so a drag here now survives the next frame. It still is not a
+// second, independent set of constants: `drawBrushSection()`'s LOADED
+// PIGMENT block, several hundred lines above this section, keeps reading the
+// palette pigment directly and stays read-only, and picking a different
+// pigment (the swatch click, this file's PIGMENT branch of
+// `drawColorSection()`) clears the override outright rather than letting one
+// paint's density outlive the paint it came from.
 void drawPigmentSection(AppState& st) {
-  ImGui::BeginDisabled();
-  ctlSlider("Density", &st.sim.density, 0.0f, 1.0f);
+  PigmentOverride& ov = st.pigmentOverride;
+  const Pigment& loaded = foregroundPhysicalConstants(st.brush);
+  // While no override is active, keep the three fields mirroring the loaded
+  // pigment so the first drag moves the slider from where it is actually
+  // reading rather than snapping from whatever the override last held (or
+  // its zero-initialised default).
+  if (!ov.active) {
+    ov.density = loaded.density;
+    ov.staining = loaded.staining;
+    ov.granulation = loaded.granulation;
+  }
+  if (ctlSlider("Density", &ov.density, 0.0f, 1.0f)) ov.active = true;
   ImGui::SetItemTooltip("How fast pigment drops out of suspension.");
-  ctlSlider("Staining", &st.sim.staining, 0.02f, 1.0f);
+  if (ctlSlider("Staining", &ov.staining, 0.02f, 1.0f)) ov.active = true;
   ImGui::SetItemTooltip("Resistance to being lifted back into the water.");
-  ctlSlider("Granulation", &st.sim.granulation, 0.0f, 1.0f);
+  if (ctlSlider("Granulation", &ov.granulation, 0.0f, 1.0f)) ov.active = true;
   ImGui::SetItemTooltip("Affinity for the paper's valleys.");
-  ImGui::EndDisabled();
-  ImGui::TextDisabled("Owned by the loaded pigment -- pick a different paint to change these.");
+
+  if (ov.active) {
+    ImGui::TextDisabled("overriding %s", loaded.name);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset")) ov.active = false;
+  } else {
+    ImGui::TextDisabled("%s", loaded.name);
+  }
 
   ctlSlider("Diffusion", &st.sim.pigmentDiffuse, 0.0f, 1.0f);
   ImGui::SetItemTooltip("Pigment spreading through the wet film.\n"
@@ -10654,6 +10640,7 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.showRulers = st.showRulers;
   ctx.showNavigator = st.showNavigator;
   ctx.showBrushSettings = st.showBrushSettings;
+  ctx.showPigmentPanel = st.panels.placementOf(ControlsSection::Pigment) != PanelPlacement::Hidden;
   ctx.showGuides = st.showGuides;
   ctx.showGrid = st.showGrid;
   ctx.snappingEnabled = st.snappingEnabled;
@@ -10812,6 +10799,11 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
 // a modal sets a flag instead of calling `ImGui::OpenPopup()`, which
 // ui/MenuModel.hpp records as `MenuEffect::Deferred` and which
 // app/selftest/MenuModel.cpp asserts is true of all nine of them.
+//
+// Forward-declared: `MenuAction::Pigment` below needs it and its own
+// definition sits further down this file, beside the panel-menu code that is
+// its other caller.
+void savePanelLayout(const AppState& st);
 void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canvasW,
                        uint32_t canvasH) {
   OpenDocument* doc = st.documents.active();
@@ -11125,6 +11117,20 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::BrushSettings:
       st.showBrushSettings = !st.showBrushSettings;
       break;
+    // Same inline reasoning as BrushSettings above, plus a save: unlike
+    // `showBrushSettings`, this writes into `st.panels`, which is the thing
+    // `panel-layout.txt` mirrors -- so this action has to save it itself
+    // rather than relying on `drawUI()`'s per-frame `panelLayoutChanged`
+    // flag, which this native-menu callback runs outside of.
+    case MenuAction::Pigment: {
+      const PanelPlacement current = st.panels.placementOf(ControlsSection::Pigment);
+      st.panels.setPlacement(ControlsSection::Pigment, current == PanelPlacement::Hidden
+                                                            ? PanelPlacement::Flyout
+                                                            : PanelPlacement::Hidden);
+      if (st.flyoutOpen && st.flyoutSection == ControlsSection::Pigment) st.flyoutOpen = false;
+      savePanelLayout(st);
+      break;
+    }
     case MenuAction::Guides:           st.showGuides = !st.showGuides;           break;
     case MenuAction::Grid:             st.showGrid = !st.showGrid;               break;
     case MenuAction::Snap:             st.snappingEnabled = !st.snappingEnabled; break;

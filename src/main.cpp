@@ -3295,6 +3295,11 @@ int main(int argc, char** argv) {
     // so a backend wired to Cocoa's `terminate:` -- which would route straight
     // past the guard runQuitGuardTest() covers -- cannot pass.
     const bool menuModelOk = np::runMenuModelTest();
+    // A real, opt-in PIGMENT panel: the Hidden-by-default placement table,
+    // the Window > Pigment check item, and the session override
+    // (`AppState::pigmentOverride`, `effectivePigmentConstants()`,
+    // `selectPigment()`) it turns live. Headless, GPU-free and ImGui-free.
+    const bool pigmentPanelOk = np::runPigmentPanelTest();
     // The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9): the
     // dialog-to-engine wiring for grow, shrink, feather, colour range and
     // luminance range, plus the dedicated undo stack a pure-selection change
@@ -3498,7 +3503,7 @@ int main(int argc, char** argv) {
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
-                    closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
+                    closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
                     openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
                     angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
@@ -4815,14 +4820,21 @@ int main(int argc, char** argv) {
     // wash that granulates unexpectedly. `foregroundPhysicalConstants()` is
     // also the bounds-checked read `defaultPalette()[st.brush.pigment]` was not.
     const std::array<float, 3> fg = np::foregroundSrgb(st.brush);
-    const auto& pig = np::foregroundPhysicalConstants(st.brush);
+    // `effectivePigmentConstants()` (app/AppState.hpp): the PIGMENT panel's
+    // session override when one is live, else the same bounds-checked
+    // `defaultPalette()[st.brush.pigment]` read `foregroundPhysicalConstants()`
+    // performs -- so this is still `foregroundPhysicalConstants()` in every
+    // frame the panel has not touched.
+    const np::PigmentConstants pig = np::effectivePigmentConstants(st);
     const np::Latent z = lut.rgbToLatent(fg[0], fg[1], fg[2]);
     for (int i = 0; i < 3; ++i) {
       st.sim.brushLatentC[i] = z.c[i];
       st.sim.brushLatentR[i] = z.res[i];
     }
     // Physical constants follow the selected paint, not a global slider, so
-    // switching from Phthalo Blue to Ultramarine actually changes behaviour.
+    // switching from Phthalo Blue to Ultramarine actually changes behaviour --
+    // unless the PIGMENT panel has a session override live, in which case
+    // they follow that instead.
     st.sim.density = pig.density;
     st.sim.staining = pig.staining;
     st.sim.granulation = pig.granulation;

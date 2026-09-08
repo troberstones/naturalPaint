@@ -103,6 +103,10 @@ bool runPanelLayoutTest() {
     bool placementFollowsRole = true;
     for (const PanelEntry& e : layout.entries()) {
       if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options) continue;
+      // PIGMENT is Simulation-rolled but starts Hidden, not Flyout -- see
+      // `defaultPlacementFor()`'s own comment (app/PanelLayout.cpp) and
+      // app/selftest/PigmentPanel.cpp, which pins that exception on its own.
+      if (e.section == ControlsSection::Pigment) continue;
       const ControlsSectionRole role = controlsSectionSpec(e.section).role;
       const PanelPlacement want =
           (role == ControlsSectionRole::View || role == ControlsSectionRole::Simulation)
@@ -113,9 +117,9 @@ bool runPanelLayoutTest() {
     check(placementFollowsRole,
           "panel layout: **a Tool or Document panel starts in the right dock and a View or "
           "Simulation panel starts on the flyout rail** -- the occasional roles do not spend a "
-          "grip apiece of a dock that does not scroll");
-    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 7,
-          "panel layout: which is seven panels on the rail -- and the rail is not empty on a "
+          "grip apiece of a dock that does not scroll (PIGMENT excepted -- it starts Hidden)");
+    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 6,
+          "panel layout: which is six panels on the rail -- and the rail is not empty on a "
           "first run, which is the mode the revamp was asked for by name");
 
     // Whatever is in the right dock is in `controlsSections()`'s own order --
@@ -205,10 +209,16 @@ bool runPanelLayoutTest() {
     check(d.left == kDefaultDockExtents.left && d.right == kDefaultDockExtents.right &&
               d.top == kDefaultDockExtents.top && d.bottom == kDefaultDockExtents.bottom,
           "panel layout: the default dock extents are ui/AtelierLayout's kDefaultDockExtents");
-    check(layout.sectionsIn(PanelPlacement::Bottom).empty() &&
-              layout.sectionsIn(PanelPlacement::Hidden).empty(),
-          "panel layout: nothing starts on the bottom or hidden -- the bottom dock is empty "
-          "space the user may claim, and nothing is out of reach on a first run");
+    check(layout.sectionsIn(PanelPlacement::Bottom).empty(),
+          "panel layout: nothing starts on the bottom -- it is empty space the user may "
+          "claim on a first run");
+    // PIGMENT is the one exception to "nothing is out of reach on a first
+    // run": app/selftest/PigmentPanel.cpp covers the reason (it edits an
+    // off-by-default session override) and the Window > Pigment item that
+    // reaches it.
+    const std::vector<ControlsSection> hidden = layout.sectionsIn(PanelPlacement::Hidden);
+    check(hidden.size() == 1 && hidden[0] == ControlsSection::Pigment,
+          "panel layout: PIGMENT is the one section that starts Hidden, and nothing else does");
   }
 
   // ==========================================================================
