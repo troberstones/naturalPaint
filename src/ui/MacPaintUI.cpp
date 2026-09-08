@@ -14960,11 +14960,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // app/selftest/Eyedropper.cpp exists to catch.
     //
     // **This block writes no `st.pathEdit` field.** Every transition goes
-    // through app/PenTool.cpp's four functions, so the state machine is in one
+    // through app/PenTool.cpp's functions, so the state machine is in one
     // greppable place -- `grep -rnP 'pathEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` finding
     // anything is the defect. Storage on AppState with mutation spread through
     // `drawUI()` is exactly how `marqueeDragging` got three writers and an
     // unconditional clear in a sibling tool's else arm.
+    //
+    // **Switching away from Pen/Curve ends an open placement session**,
+    // leaving whatever anchors were already placed (docs/vector-editing.md
+    // section 8). This has to live OUTSIDE the `toolEditsPath()` gate below,
+    // since the moment the tool has actually changed that whole block stops
+    // running -- nothing inside it could ever see "I used to be active and
+    // now am not."
+    if (!toolEditsPath(st.brush.tool) && pathEditHasOpenPath(st.pathEdit))
+      pathEditEndOpenPath(&st.pathEdit);
+
     if (toolEditsPath(st.brush.tool) && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       OpenDocument* pathDoc = st.documents.active();
@@ -14975,26 +14985,62 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         pathEditCancel(&st.pathEdit);
 
       Layer* pathLayer = pathDoc != nullptr ? activeLayerOf(*pathDoc) : nullptr;
-      const bool pathTargetOk = pathLayer != nullptr && pathLayer->kind == LayerKind::Vector;
+      bool pathTargetOk = pathLayer != nullptr && pathLayer->kind == LayerKind::Vector;
 
-      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) pathEditCancel(&st.pathEdit);
+      // Escape while a press-drag is live (adjusting the tangent a placement
+      // just laid down, or any of today's other drags) cancels THAT DRAG
+      // only -- `pathEditCancel()` never touches the open-placement fields.
+      // Escape with no drag live, and a path still open, ends the
+      // PLACEMENT SESSION instead, leaving what is already placed (bullet 1
+      // of this track): there is no drag for `pathEditCancel()` to cancel,
+      // so calling it here would do nothing and leave the session dangling.
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        if (st.pathEdit.drag == PathDragKind::None && pathEditHasOpenPath(st.pathEdit)) {
+          pathEditEndOpenPath(&st.pathEdit);
+        } else {
+          pathEditCancel(&st.pathEdit);
+        }
+      }
+      // Return ends an open placement the same way, leaving it unclosed --
+      // the keyboard half of "clicking away", for a user who wants to stop
+      // without reaching for another tool or another shape to click on.
+      if (pathEditHasOpenPath(st.pathEdit) &&
+          (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+        pathEditEndOpenPath(&st.pathEdit);
+      }
 
-      if (!pathTargetOk) {
-        // **Refused at pen-DOWN and out loud**, the gradient's rule rather than
-        // the bucket's: a Pen drag across a raster layer that silently did
-        // nothing is the same invisible wrong-target failure app/StrokeSession
-        // section 1 was written about.
+      if (!pathTargetOk && pathDoc == nullptr) {
+        // No document at all: there is nothing to put a layer ON, so this is
+        // the one case placement genuinely cannot cover, and it is refused
+        // exactly as before -- the gradient's rule, out loud rather than
+        // silent.
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           g_strokeRefusal =
-              pathLayer == nullptr
-                  ? std::string("The Pen needs a layer to edit: this document has none "
-                                "selected.")
-                  : std::string("The Pen edits vector geometry, and '" + pathLayer->name +
-                                "' is a " + layerKindName(pathLayer->kind) +
-                                " layer. Make one with NEW + > Vector in the LAYERS "
-                                "panel, or open an SVG.");
+              std::string("The Pen needs a layer to edit: this document has none selected.");
         }
-      } else {
+      } else if (!pathTargetOk && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // **Auto-create a Vector layer** rather than refuse (bullet 4 of this
+        // track): the active layer being an RGB, Pigment or Text layer used
+        // to be a dead end here, and the Pen is the one tool in this build
+        // whose entire job is authoring Vector content, so "make one for me"
+        // is a more honest answer than a sentence telling the user to go
+        // find the LAYERS panel themselves. The SAME insertion the panel's
+        // own NEW > Vector row uses (`app/LayerEditor.cpp`'s
+        // `LayerCommand::NewVectorLayer`), so this gets the identical undo
+        // entry, default name and selection move that gesture already has.
+        runLayerCommand(st, LayerCommand::NewVectorLayer);
+        // `runLayerCommand()` inserts into `pathDoc->document.layers`, which
+        // may reallocate -- `pathLayer` has to be re-read rather than
+        // trusted from before the call.
+        pathLayer = activeLayerOf(*pathDoc);
+        pathTargetOk = pathLayer != nullptr && pathLayer->kind == LayerKind::Vector;
+        // `pathTargetOk` now true drops straight into the block below on the
+        // SAME frame, so the press that triggered the auto-create is not
+        // lost -- a user should not have to click twice.
+      }
+
+      if (pathTargetOk) {
         // The pick radius is a constant number of SCREEN pixels, converted to
         // document units here -- the crop tool's `grabTexels` rule, and the
         // reason app/PenTool takes it as a parameter rather than owning a
@@ -15004,6 +15050,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // docs/vector-editing.md section 3's escape hatch for a handle sitting
         // underneath it.
         const bool gnomonSuppressed = ImGui::GetIO().KeyAlt;
+        const bool curveMode = st.brush.tool == Tool::Curve;
 
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           // One modifier grammar for the whole app: core/SelectionOps' own
@@ -15011,9 +15058,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // semantics (docs/vector-editing.md section 4).
           const SelectionCombine how = selectionCombineFromModifiers(
               ImGui::GetIO().KeyShift, ImGui::GetIO().KeyAlt);
-          pathEditBegin(&st.pathEdit, pathLayer->shapes, PathPoint{tx, ty}, pickTexels,
-                        gnomonSuppressed, how, pathDocId,
-                        pathGnomonReachTexels(st.view.zoom));
+          // `pathEditBeginPen()`, not `pathEditBegin()` directly -- the ONE
+          // difference bullet 2 of this track states: an empty-canvas press
+          // (or one on the open path's own first anchor) places or closes
+          // instead of marqueeing; every other hit still goes through
+          // `pathEditBegin()`'s ordinary gestures, which this function calls
+          // internally for exactly that reason.
+          const PenPressResult pressed = pathEditBeginPen(
+              &st.pathEdit, &pathLayer->shapes, &pathLayer->nextShapeId, PathPoint{tx, ty},
+              pickTexels, gnomonSuppressed, how, pathDocId, curveMode,
+              pathGnomonReachTexels(st.view.zoom));
+          // Placing an anchor or closing a subpath IS the edit, made on the
+          // press itself -- unlike every other gesture here, which edits
+          // only once a drag actually moves something. `pathEditBeginPen()`
+          // already mutated `pathLayer->shapes`; this is where the caller
+          // records that the same way `pathEditUpdate()`'s `EditBegan`
+          // does below.
+          if (pressed == PenPressResult::Placed) {
+            pathDoc->recordEdit("place anchor", EditKind::Content);
+          } else if (pressed == PenPressResult::Closed) {
+            pathDoc->recordEdit("close path", EditKind::Content);
+          }
         }
 
         // `--vector-demo marquee` pins a held-open drag for the camera
@@ -15041,6 +15106,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // after, so a drag is ONE undo step and a click that never moved
             // leaves no entry at all (app/DocumentLifecycle.hpp's rule, and the
             // reason PathEditChange has three values rather than being a bool).
+            // A placement's own `PenExtend` drag-before-release (above) is
+            // always `EditContinued` here -- the anchor itself was already
+            // recorded at press -- so this amends rather than double-records.
             if (changed == PathEditChange::EditBegan) {
               pathDoc->recordEdit("edit path", EditKind::Content);
             } else if (changed == PathEditChange::EditContinued) {
@@ -15048,6 +15116,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             }
           }
         }
+
+        // Tracks the live cursor for the overlay's rubber band while a
+        // placement session is open and idle -- a no-op the moment a drag
+        // owns `dragNow` instead (`pathEditTrackCursor()`'s own guard).
+        if (hovered) pathEditTrackCursor(&st.pathEdit, PathPoint{tx, ty});
       }
     }
 
@@ -16831,6 +16904,54 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           dl->AddRectFilled(tl, br, IM_COL32(255, 255, 255, 24));
           dl->AddRect(tl, br, IM_COL32(0, 0, 0, 160), 0.0f, 0, 2.0f);
           dl->AddRect(tl, br, kPathCore, 0.0f, 0, 1.0f);
+        }
+
+        // --- the placement rubber band: last anchor -> cursor ---
+        //
+        // Bullet 6 of this track: preview where the next press would land,
+        // curved when Curve is active. `st.pathEdit.dragNow` is what tracks
+        // the cursor here -- NOT `tx`/`ty` directly -- because a screenshot
+        // run has no live pointer, and this is the same field
+        // `--vector-demo pendraw` pins through `pathEditTrackCursor()`
+        // exactly as `vector_marquee`'s own rubber band reads `dragNow`
+        // rather than the live mouse two blocks up.
+        if (pathEditHasOpenPath(st.pathEdit)) {
+          const VectorShape* openShape = nullptr;
+          for (const VectorShape& s : pl->shapes) {
+            if (s.id == st.pathEdit.openPathShapeId) {
+              openShape = &s;
+              break;
+            }
+          }
+          if (openShape != nullptr &&
+              st.pathEdit.openPathSubPath < openShape->path.subpaths.size()) {
+            const SubPath& openSub = openShape->path.subpaths[st.pathEdit.openPathSubPath];
+            if (!openSub.anchors.empty()) {
+              const Anchor& lastAnchor = openSub.anchors.back();
+              const Vec2 a = xform.toScreen(Vec2{lastAnchor.pt.x, lastAnchor.pt.y});
+              const Vec2 b =
+                  xform.toScreen(Vec2{st.pathEdit.dragNow.x, st.pathEdit.dragNow.y});
+              if (st.brush.tool == Tool::Curve) {
+                // The same cubic shape a placement would fit (bullet 3),
+                // with the cursor standing in for the not-yet-placed next
+                // anchor -- through the last anchor's own out-handle, which
+                // `pathEditBeginPen()`'s Catmull-Rom fit already set.
+                const Vec2 c1 = xform.toScreen(Vec2{lastAnchor.out.x, lastAnchor.out.y});
+                dl->AddBezierCubic(ImVec2(a.x, a.y), ImVec2(c1.x, c1.y), ImVec2(b.x, b.y),
+                                    ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 140), 2.0f);
+                dl->AddBezierCubic(ImVec2(a.x, a.y), ImVec2(c1.x, c1.y), ImVec2(b.x, b.y),
+                                    ImVec2(b.x, b.y), IM_COL32(255, 255, 255, 190), 1.0f);
+              } else {
+                dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 140), 2.0f);
+                dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), IM_COL32(255, 255, 255, 190),
+                            1.0f);
+              }
+              // The landing dot: "click HERE", not only a line pointing
+              // somewhere near the pointer.
+              dl->AddCircle(ImVec2(b.x, b.y), anchorHalf, IM_COL32(255, 255, 255, 200), 0,
+                            1.0f);
+            }
+          }
         }
       }
     }

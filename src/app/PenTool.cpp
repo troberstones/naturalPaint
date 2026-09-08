@@ -537,6 +537,58 @@ std::vector<ComponentRef> allAnchorsOf(const std::vector<VectorShape>& shapes,
   return out;
 }
 
+// Curve mode's tangent, at anchor `i` of `sub`, from its immediate
+// neighbours -- a uniform (unweighted) Catmull-Rom tangent, converted to a
+// Bezier handle pair by the standard `pt +/- m/3` relation. Both `in` and
+// `out` come from the SAME `m`, so they are exactly opposite through `pt` by
+// construction: that IS what `smooth = true` means (`core/Path.hpp`), not a
+// separate invariant this function has to also enforce.
+//
+// `closed` wraps neighbour lookup around the ends (bullet 3's "a closed path
+// fits across the seam"); open leaves an end anchor's missing neighbour out
+// of the average, i.e. `m` becomes the one-sided secant `next - pt` or
+// `pt - prev` -- the ordinary open-curve endpoint rule for a Catmull-Rom
+// fit, and the reason a 1- or 2-anchor open subpath still gets a sane answer
+// (a straight corner, and a straight line, respectively) rather than a
+// divide against a neighbour that does not exist.
+void fitAnchorTangent(SubPath* sub, size_t i, bool closed) noexcept {
+  const size_t n = sub->anchors.size();
+  if (i >= n) return;
+  Anchor& anchor = sub->anchors[i];
+  if (n == 1) {
+    anchor.in = anchor.pt;
+    anchor.out = anchor.pt;
+    anchor.smooth = false;
+    return;
+  }
+
+  bool hasPrev = false, hasNext = false;
+  PathPoint prev{}, next{};
+  if (closed) {
+    hasPrev = hasNext = true;
+    prev = sub->anchors[(i + n - 1) % n].pt;
+    next = sub->anchors[(i + 1) % n].pt;
+  } else {
+    hasPrev = i > 0;
+    hasNext = i + 1 < n;
+    if (hasPrev) prev = sub->anchors[i - 1].pt;
+    if (hasNext) next = sub->anchors[i + 1].pt;
+  }
+
+  PathPoint m{0.0f, 0.0f};
+  if (hasPrev && hasNext) {
+    m = PathPoint{(next.x - prev.x) * 0.5f, (next.y - prev.y) * 0.5f};
+  } else if (hasNext) {
+    m = PathPoint{next.x - anchor.pt.x, next.y - anchor.pt.y};
+  } else if (hasPrev) {
+    m = PathPoint{anchor.pt.x - prev.x, anchor.pt.y - prev.y};
+  }
+
+  anchor.out = PathPoint{anchor.pt.x + m.x / 3.0f, anchor.pt.y + m.y / 3.0f};
+  anchor.in = PathPoint{anchor.pt.x - m.x / 3.0f, anchor.pt.y - m.y / 3.0f};
+  anchor.smooth = true;
+}
+
 }  // namespace
 
 void pathEditCancel(PathEditState* state) noexcept {
@@ -733,8 +785,7 @@ PathEditChange pathEditUpdate(PathEditState* state, std::vector<VectorShape>* sh
 
     case PathDragKind::AnchorDrag:
     case PathDragKind::TangentDrag:
-    case PathDragKind::Manipulator:
-    case PathDragKind::PenExtend: {
+    case PathDragKind::Manipulator: {
       // **Rebuilt from the pen-down snapshot, never accumulated.** One affine
       // against the original geometry -- so the result depends on where the
       // pointer IS, not on how many frames it took to get there.
@@ -762,6 +813,39 @@ PathEditChange pathEditUpdate(PathEditState* state, std::vector<VectorShape>* sh
       const bool first = !state->geometryEditOpened;
       state->geometryEditOpened = true;
       return first ? PathEditChange::EditBegan : PathEditChange::EditContinued;
+    }
+
+    case PathDragKind::PenExtend: {
+      // Pen's drag-before-release (docs/vector-editing.md section 8, bullet
+      // 1 of this track): the OUT tangent follows the pointer and the IN
+      // tangent mirrors it through the anchor, i.e. `pathEditBeginPen()`'s
+      // placed corner becomes smooth the moment it is dragged at all. A
+      // plain click never reaches here -- `dx == 0.0f && dy == 0.0f` above
+      // returns before the switch -- so it leaves the corner placement put
+      // there untouched, which is the whole of "a plain click leaves a
+      // corner."
+      //
+      // Rebuilt from the pen-down snapshot like every other case here, which
+      // for THIS drag is the shape exactly as `pathEditBeginPen()` left it
+      // (the new anchor placed, corner tangents) -- so the result depends on
+      // where the pointer IS, never on the path it took to get there.
+      *shapes = state->shapesAtDragStart;
+      for (VectorShape& s : *shapes) {
+        if (s.id != state->dragComponent.shapeId) continue;
+        if (state->dragComponent.subPath >= s.path.subpaths.size()) continue;
+        SubPath& sub = s.path.subpaths[state->dragComponent.subPath];
+        if (state->dragComponent.anchor >= sub.anchors.size()) continue;
+        Anchor& a = sub.anchors[state->dragComponent.anchor];
+        a.out = at;
+        a.in = PathPoint{2.0f * a.pt.x - at.x, 2.0f * a.pt.y - at.y};
+        a.smooth = true;
+      }
+
+      // `geometryEditOpened` is already true -- `pathEditBeginPen()` set it
+      // the moment the anchor itself went down, which is the edit the
+      // caller already recorded. This drag only ever AMENDS that entry.
+      state->geometryEditOpened = true;
+      return PathEditChange::EditContinued;
     }
 
     case PathDragKind::None:
@@ -794,6 +878,174 @@ void pathEditEnd(PathEditState* state, const std::vector<VectorShape>& shapes) {
   }
 
   pathEditCancel(state);
+}
+
+// --- placement (section 9) --------------------------------------------------
+
+bool pathEditHasOpenPath(const PathEditState& state) noexcept { return state.openPathActive; }
+
+void pathEditEndOpenPath(PathEditState* state) noexcept {
+  if (state == nullptr) return;
+  state->openPathActive = false;
+  state->openPathShapeId = 0;
+  state->openPathSubPath = 0;
+}
+
+void pathEditTrackCursor(PathEditState* state, PathPoint at) noexcept {
+  if (state == nullptr) return;
+  if (state->drag != PathDragKind::None) return;
+  if (!state->openPathActive) return;
+  state->dragNow = at;
+}
+
+PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* shapes,
+                                uint64_t* nextShapeId, PathPoint at, float pickRadiusPx,
+                                bool gnomonSuppressed, SelectionCombine how,
+                                uint64_t documentId, bool curveMode, float gnomonReachPx) {
+  if (state == nullptr || shapes == nullptr || nextShapeId == nullptr)
+    return PenPressResult::Selecting;
+
+  const PathHit hit = hitTestPath(*shapes, state->selection, at, pickRadiusPx, gnomonSuppressed,
+                                  /*pivotMoveModeActive=*/false, gnomonReachPx);
+
+  const bool hitsOpenFirstAnchor =
+      state->openPathActive && hit.kind == PathHitKind::Anchor &&
+      hit.component.shapeId == state->openPathShapeId &&
+      hit.component.subPath == state->openPathSubPath && hit.component.anchor == 0;
+
+  if (hitsOpenFirstAnchor) {
+    // Close: the placement session ends, leaving the shape it built. There
+    // is nothing to drag -- closing IS the whole edit.
+    VectorShape* s = findShapeMut(shapes, state->openPathShapeId);
+    if (s != nullptr && state->openPathSubPath < s->path.subpaths.size()) {
+      SubPath& sub = s->path.subpaths[state->openPathSubPath];
+      sub.closed = true;
+      if (curveMode && !sub.anchors.empty()) {
+        // Bullet 3's "a closed path fits across the seam": the first and
+        // last anchor each gain a neighbour they did not have while the
+        // subpath was open, so only those two need refitting.
+        fitAnchorTangent(&sub, 0, /*closed=*/true);
+        fitAnchorTangent(&sub, sub.anchors.size() - 1, /*closed=*/true);
+      }
+      // The finished shape becomes the selection -- Shape mode, the same
+      // "what you just made is now the object" every vector editor lands on
+      // once a path closes.
+      state->selection.mode = PathSelectMode::Shape;
+      state->selection.components.clear();
+      std::vector<uint64_t> one{s->id};
+      combineShapeSelection(&state->selection.shapes, one, SelectionCombine::Replace);
+    }
+    pathEditEndOpenPath(state);
+    state->drag = PathDragKind::None;
+    state->dragComponent = ComponentRef{};
+    state->geometryEditOpened = false;
+    state->shapesAtDragStart.clear();
+    state->shapesAtDragStart.shrink_to_fit();
+    state->documentId = documentId;
+    state->dragStart = at;
+    state->dragNow = at;
+    pathEditRefreshPivot(state, *shapes);
+    return PenPressResult::Closed;
+  }
+
+  if (hit.kind == PathHitKind::None) {
+    // Empty canvas: place. Starts a new shape when nothing is open yet,
+    // otherwise appends to the open subpath.
+    uint64_t shapeId = 0;
+    uint32_t subPathIdx = 0;
+    uint32_t anchorIdx = 0;
+
+    Anchor placed;
+    placed.pt = at;
+    placed.in = at;
+    placed.out = at;
+    placed.smooth = false;
+
+    if (!state->openPathActive) {
+      VectorShape s;
+      s.id = (*nextShapeId)++;
+      SubPath sub;
+      sub.closed = false;
+      sub.anchors.push_back(placed);
+      s.path.subpaths.push_back(std::move(sub));
+      shapeId = s.id;
+      shapes->push_back(std::move(s));
+      state->openPathActive = true;
+      state->openPathShapeId = shapeId;
+      state->openPathSubPath = 0;
+    } else {
+      VectorShape* s = findShapeMut(shapes, state->openPathShapeId);
+      if (s == nullptr || state->openPathSubPath >= s->path.subpaths.size()) {
+        // The shape being extended is gone (deleted from under the
+        // placement session, which this file has no way to prevent since it
+        // owns no lock on `*shapes`). Nothing sane to extend -- end the
+        // session and treat the press as a miss rather than fabricate a new
+        // shape silently in its place.
+        pathEditEndOpenPath(state);
+        return PenPressResult::Selecting;
+      }
+      SubPath& sub = s->path.subpaths[state->openPathSubPath];
+      sub.anchors.push_back(placed);
+      shapeId = s->id;
+      subPathIdx = state->openPathSubPath;
+      anchorIdx = static_cast<uint32_t>(sub.anchors.size() - 1);
+    }
+
+    if (curveMode) {
+      VectorShape* s = findShapeMut(shapes, shapeId);
+      SubPath& sub = s->path.subpaths[subPathIdx];
+      // Bullet 3: "recomputed for the previous anchor and the new one on
+      // each placement" -- refitting every anchor would also be correct
+      // (the formula is the same for an untouched interior anchor) but
+      // recomputes work nothing changed for; only these two neighbours have.
+      if (sub.anchors.size() >= 2) fitAnchorTangent(&sub, sub.anchors.size() - 2, false);
+      fitAnchorTangent(&sub, sub.anchors.size() - 1, false);
+    }
+
+    // The newly placed anchor is the selection -- "one anchor... selected"
+    // (bullet 1).
+    state->selection.mode = PathSelectMode::Component;
+    std::vector<ComponentRef> one{ComponentRef{shapeId, subPathIdx, anchorIdx, AnchorPart::Point}};
+    combineComponentSelection(&state->selection.components, one, SelectionCombine::Replace);
+    pathEditRefreshPivot(state, *shapes);
+
+    state->documentId = documentId;
+    state->dragStart = at;
+    state->dragNow = at;
+    state->geometryEditOpened = true;
+
+    if (curveMode) {
+      // Nothing left for a drag-before-release to do: bullet 3's tangent
+      // comes from the neighbours' positions, never from where the pointer
+      // goes after the press. Ending the "drag" immediately is what makes
+      // `pathEditUpdate()`'s `PenExtend` arm -- which manually sets a
+      // tangent -- Pen-only, without a `curveMode` flag threaded through a
+      // function that otherwise has no notion of which of the two tools is
+      // active.
+      state->drag = PathDragKind::None;
+      state->dragComponent = ComponentRef{};
+      state->shapesAtDragStart.clear();
+      state->shapesAtDragStart.shrink_to_fit();
+    } else {
+      // Snapshot AFTER the placement, so `PenExtend`'s drag-before-release
+      // adjusts the tangent from the corner state each frame rather than
+      // accumulating -- this file's stated rule for every other drag.
+      state->dragComponent = ComponentRef{shapeId, subPathIdx, anchorIdx, AnchorPart::Point};
+      state->shapesAtDragStart = *shapes;
+      state->drag = PathDragKind::PenExtend;
+    }
+    return PenPressResult::Placed;
+  }
+
+  // Existing geometry that is not the open path's own first anchor: today's
+  // gestures, unchanged, via `pathEditBegin()` (bullet 2). And this press
+  // "clicked away" from placement (docs/vector-editing.md section 8) -- the
+  // open path ends, keeping whatever was already placed.
+  if (state->openPathActive) pathEditEndOpenPath(state);
+  const bool changesGeometry =
+      pathEditBegin(state, *shapes, at, pickRadiusPx, gnomonSuppressed, how, documentId,
+                    gnomonReachPx);
+  return changesGeometry ? PenPressResult::Editing : PenPressResult::Selecting;
 }
 
 }  // namespace np

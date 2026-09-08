@@ -387,6 +387,21 @@ struct PathEditState {
   // throws the placement away silently.
   PathPoint componentPivot{};
   bool componentPivotIsUserPlaced = false;
+
+  // Pen/Curve's open placement session (docs/vector-editing.md section 8):
+  // the shape and subpath still accepting empty-canvas presses. `active` is
+  // false when there is nothing open, which is the only time the NEXT
+  // empty-canvas press starts a new shape rather than extending this one.
+  //
+  // Deliberately not derived from `selection` -- the selection can change
+  // (a Shift-click elsewhere, a mode switch) without ending placement, and
+  // placement can end (Escape, Return, a tool switch, a click onto other
+  // geometry) without changing the selection. Two different facts, so two
+  // different fields, the same reasoning `componentPivotIsUserPlaced` above
+  // is for.
+  bool openPathActive = false;
+  uint64_t openPathShapeId = 0;
+  uint32_t openPathSubPath = 0;
 };
 
 // Abandon any live gesture, keeping the selection. Called when the tool
@@ -458,5 +473,99 @@ void pathEditRefreshPivot(PathEditState* state, const std::vector<VectorShape>& 
 // the selection it was placed against no longer exists.
 void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
                            const std::vector<VectorShape>& shapes);
+
+// ==========================================================================
+// 9. PLACEMENT -- Pen/Curve laying down new anchors
+// ==========================================================================
+//
+// Before this, `PathDragKind::PenExtend` was a switch arm with no writer:
+// Pen and Curve could select and move geometry that already existed (an SVG
+// import) but had no way to CREATE any. This section is the writer.
+//
+// `pathEditBegin()` above is unchanged and still owns every gesture over
+// EXISTING geometry (docs/vector-editing.md section 3's hit-test tiers 1-5).
+// `pathEditBeginPen()` below is what `ui/`'s Pen/Curve canvas block calls
+// INSTEAD of `pathEditBegin()`, for one reason `pathEditBegin()` cannot
+// itself absorb: placing an anchor, or closing a subpath, is a document edit
+// made ON THE PRESS -- not a result a follow-up drag produces against a
+// snapshot, which is the assumption every other transition in this file
+// makes (`shapesAtDragStart`'s whole point, stated on `PathEditState`
+// itself). So this is the one transition that mutates `*shapes` directly,
+// and the one caller that checks its own return value for whether to
+// `recordEdit()` -- immediately, not from a later `pathEditUpdate()`.
+
+// What one `pathEditBeginPen()` press did.
+enum class PenPressResult {
+  Editing,    // existing geometry, not the open path's own first anchor --
+              // `pathEditBegin()`'s ordinary gestures took over (bullet 2:
+              // "presses on existing geometry keep today's gestures").
+  Selecting,  // as `Editing`, but no geometry changed (a selection-only
+              // click) -- `pathEditBegin()` returned false.
+  Placed,     // a new anchor went down. `*shapes` already changed --
+              // `recordEdit()` now.
+  Closed,     // the press landed on the open subpath's own first anchor:
+              // closed, and placement ended. `*shapes` already changed --
+              // `recordEdit()` now.
+};
+
+// Pen/Curve's press. Hit-tests `at` exactly as `hitTestPath()` does (so a
+// gnomon handle, a tangent, or any anchor OTHER than the open path's own
+// first one still means what it always has), and handles exactly two cases
+// itself:
+//
+//   empty canvas                        -> place a new anchor, extending the
+//                                           open path or starting one
+//   the open path's own FIRST anchor    -> close it; placement ends
+//
+// Every other hit -- and every press when there is no open path and the hit
+// is not `PathHitKind::None` -- is forwarded verbatim to `pathEditBegin()`,
+// which is also where an open path gets ENDED for a reason placement itself
+// does not cover: "clicking away" (docs/vector-editing.md section 8) is a
+// press that lands on OTHER geometry, which only `pathEditBegin()`'s hit
+// test tiers can identify.
+//
+// `curveMode` selects Pen's placement (a plain click leaves a corner; a drag
+// before release sets a mirrored smooth tangent, `pathEditUpdate()`'s
+// `PenExtend` arm) or Curve's (every anchor smooth, its tangent fit through
+// its neighbours by a uniform Catmull-Rom -> Bezier conversion, refit for
+// the newly placed anchor AND its predecessor on every press, and again
+// across the seam when a press closes the subpath).
+//
+// `*nextShapeId` is the layer's own `Layer::nextShapeId` counter, advanced
+// here exactly as the LAYERS panel's NEW > Vector insertion advances it
+// (`core/LayerOps.cpp`'s `makeVectorLayer()`), so a placed shape's id is
+// never reused within its layer.
+PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* shapes,
+                                uint64_t* nextShapeId, PathPoint at, float pickRadiusPx,
+                                bool gnomonSuppressed, SelectionCombine how,
+                                uint64_t documentId, bool curveMode,
+                                float gnomonReachPx = kDefaultGnomonReachPx);
+
+// Whether a placement session is open -- `ui/`'s overlay uses this to decide
+// whether to draw the rubber-band segment from the last anchor to the
+// cursor, and Escape/Return/a tool switch use it to decide whether there is
+// a placement to end (as opposed to only a live drag to cancel).
+bool pathEditHasOpenPath(const PathEditState& state) noexcept;
+
+// Ends Pen/Curve placement, LEAVING what is already placed -- the open
+// subpath stays unclosed. Called on Escape when no drag is live, on Return,
+// on a switch away from Pen/Curve, and internally by `pathEditBeginPen()`
+// itself for a press that "clicks away" onto other geometry. A no-op when
+// there is nothing open.
+void pathEditEndOpenPath(PathEditState* state) noexcept;
+
+// Tracks the live cursor for the overlay's rubber band while a placement
+// session is open and no drag owns `dragNow` already (`PathDragKind::None`)
+// -- a no-op otherwise, so it can be called every frame without contending
+// with `PathDragKind::PenExtend`'s own use of the same field. `ui/` calls
+// this instead of writing `dragNow` directly, keeping the single-writer rule
+// this header states above intact.
+//
+// `--vector-demo pendraw` calls it exactly once with a fixed point rather
+// than relying on a live pointer, the same determinism `pathEditDemo`'s pin
+// gives the marquee and gradient-drag demos -- a screenshot run has no
+// pointer moving frame to frame, but this field needs no per-frame pin the
+// way a true drag does: nothing else advances it once set.
+void pathEditTrackCursor(PathEditState* state, PathPoint at) noexcept;
 
 }  // namespace np
