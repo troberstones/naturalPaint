@@ -3271,6 +3271,30 @@ bool runPanelLayoutTest();
 // writes no files.
 bool runDockLayoutTest();
 
+// Track panelgear: the panel grip's gear settings button, beside the "?" --
+// app/ControlsLayout.hpp's `ControlsSectionSpec::hasSettings`, the Lucide
+// "settings" codepoint (`ui/AtelierChrome.hpp`'s `kSettingsIconCodepoint`),
+// and ui/MacPaintUI.cpp's `panelGripFor()`/`drawSectionSettings()`.
+//
+// What is asserted:
+//  - COLOR is the only section with `hasSettings` true, by a scan of every
+//    `ControlsSectionSpec` and the lookup agreeing.
+//  - The gear codepoint is in the merged tool-icon atlas, and -- the
+//    stronger question -- `uiFonts().text` itself (what `drawToolGlyph()`
+//    actually reads) draws it, not merely whatever `installToolIconFont()`
+//    merged onto.
+//  - `panelGripFor()`'s title-fit predicate, re-derived independently (that
+//    function is file-local to ui/MacPaintUI.cpp) against a real measured
+//    title width: it flips exactly at the predicted two-button threshold for
+//    a section with both a help button and a gear, and that threshold is
+//    strictly wider than a one-button prediction would give.
+//
+// A real headless `ImGuiContext` for the font/text-metric parts (Part B/C),
+// the same way app/selftest/Fonts.cpp's Part C/D and
+// app/selftest/AtelierChrome.cpp's palette probe establish is safe without a
+// window or a renderer. GPU-free; writes no files.
+bool runPanelSettingsTest();
+
 // ---------------------------------------------------------------------------
 // The incremental composite
 // ---------------------------------------------------------------------------

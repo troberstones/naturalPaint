@@ -177,6 +177,13 @@ struct ControlsSectionSpec {
   // field entirely) means the section has nothing that needs saying beyond
   // its controls, and the grip draws no "?" at all rather than an empty one.
   const char* helpText = nullptr;
+  // Whether the grip draws a gear button (immediately left of the "?", or in
+  // its place when there is no help text) opening this section's settings
+  // popover -- ui/MacPaintUI.cpp's `drawSectionSettings()`. `false` by
+  // default; COLOR is the first (and, today, only) section to set it, for
+  // the Munsell page's two controls that do not fit under its grid. Data
+  // only -- this field decides whether the button exists, not what it draws.
+  bool hasSettings = false;
 };
 
 // Every section, in the order the column draws them. The list is data rather

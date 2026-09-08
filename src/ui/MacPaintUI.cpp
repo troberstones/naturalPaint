@@ -3791,14 +3791,18 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
   // rectangles (printed Munsell pages are rectangular too); an unreachable
   // control does not read at all.
   //
-  // **One control row, not two, and no readout block.** What fits under the
-  // grid is the hue strip and a single row. The pigment constants that the
-  // PIGMENT and RGB branches print are therefore *not* printed here --
-  // docs/munsell-picker.md said they should be, and the measurement says
-  // there is no room, so they moved to this panel's "?" text instead of being
-  // drawn into the clipped region where nobody would ever see them. The
-  // per-cell value, chroma and sRGB triple live in the grid's own tooltip,
-  // which costs no height at all.
+  // **No control row and no readout block below the grid any more.** What
+  // fits under the grid is the hue strip alone. The steps slider and the
+  // per-row/per-page chroma toggle used to share this space as one control
+  // row -- now they are behind the grip's gear button instead (see
+  // `drawSectionSettings()`, `ControlsSectionSpec::hasSettings`), and the
+  // height that row used to reserve (`reserveBelow`, below) is returned to
+  // the grid. The pigment constants that the PIGMENT and RGB branches print
+  // are, as before, *not* printed here -- docs/munsell-picker.md said they
+  // should be, and the measurement says there is no room even now, so they
+  // stay in this panel's "?" text rather than being drawn into a region that
+  // still cannot hold them. The per-cell value, chroma and sRGB triple live
+  // in the grid's own tooltip, which costs no height at all.
   constexpr float kMinCellPx = 5.0f;
   constexpr float kHueBarW = 15.0f;
   const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -3812,12 +3816,12 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
   // conventional arrangement, so the layout forced by the measurement is the
   // one a picker would have wanted anyway.
   //
-  // `GetFrameHeightWithSpacing()`, not `GetTextLineHeightWithSpacing()`: the
-  // control row holds a `SliderInt`, whose frame is the text line plus
-  // `FramePadding.y` twice. Reserving a text line for it under-reserved by
-  // exactly that padding and clipped the bottom of the only row of controls
-  // this branch has.
-  const float reserveBelow = ImGui::GetFrameHeightWithSpacing();
+  // Zero, now that the control row has moved into the gear settings popover
+  // -- kept as a named variable rather than deleted outright because the
+  // `dumpLayout` printf below still reports it, and a reader diffing that
+  // output against an older run should see it go to zero rather than
+  // disappear from the line entirely.
+  const float reserveBelow = 0.0f;
   const float cellW = std::max(
       kMinCellPx, std::floor((avail.x - kHueBarW - spacing) / static_cast<float>(n)));
   const float cellH =
@@ -3960,39 +3964,9 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
                         "Changing it never changes the row, so the foreground's\n"
                         "luminance does not move.");
 
-  // --- the control row -----------------------------------------------------
-  //
-  // Both controls on ONE row, and `SliderInt` directly rather than
-  // `ctlSliderInt()`. That is a deliberate departure from this column's rule
-  // that every labelled control goes through the `ctl*` family so its name
-  // cannot be clipped, and the reason is the measurement above: the label
-  // column those helpers reserve is most of a 294 px row, and two rows do not
-  // exist here at all. The label is one character, drawn explicitly, so the
-  // failure the rule guards against -- a name clipped by the panel edge --
-  // cannot happen either way.
-  pushAtelierMono();
-  ImGui::TextDisabled("n");
-  popAtelierMono();
-  ImGui::SameLine();
-  const float toggleW = ImGui::CalcTextSize("per page").x + ImGui::GetStyle().FramePadding.x * 4.0f;
-  ImGui::SetNextItemWidth(
-      std::max(60.0f, avail.x - ImGui::GetCursorPosX() - toggleW - ImGui::GetStyle().ItemSpacing.x));
-  if (ImGui::SliderInt("##munsellsteps", &br.munsellSteps, kMinPageSteps, kMaxPageSteps))
-    applyMunsellSelection(br);
-  ImGui::SetItemTooltip(
-      "How finely the page is quantized: n values by n chromas.\n"
-      "9 puts the rows on value 1..9, the classic printed Munsell page.");
-  ImGui::SameLine();
-  if (ImGui::SmallButton(br.munsellPerRowChroma ? "per row" : "per page")) {
-    br.munsellPerRowChroma = !br.munsellPerRowChroma;
-    applyMunsellSelection(br);
-  }
-  ImGui::SetItemTooltip(
-      "Chroma normalisation.\n"
-      "per page: one chroma scale for the whole page, so a column means one\n"
-      "chroma in every row and the ragged edge is the sRGB gamut's own shape.\n"
-      "per row: every row spans its own gamut, so the grid fills but a column\n"
-      "no longer means one chroma. Row luminance is exact either way.");
+  // The steps slider and the per-row/per-page chroma toggle used to draw
+  // here, as one control row under the grid -- see `drawSectionSettings()`
+  // below for where they moved and why.
 
   if (dumpLayout)
     std::printf("[munsell-layout] avail=%.1fx%.1f cell=%.1fx%.1f gridH=%.1f reserveBelow=%.1f "
@@ -4003,6 +3977,49 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
                 static_cast<double>(reserveBelow), static_cast<double>(gridH + reserveBelow),
                 static_cast<double>(ImGui::GetCursorPosY() - startY),
                 static_cast<double>((ImGui::GetCursorPosY() - startY) - avail.y));
+}
+
+// A section's settings, opened from its grip's gear button
+// (`drawPanelGrip()`, near the bottom of this file) -- a switch rather than
+// a virtual call, because today exactly one section (`ControlsSectionSpec::
+// hasSettings`) has any: COLOR's Munsell page. Kept as one small function
+// with an empty default case, the same shape `drawPanelPlacementItems()`
+// uses for the grip's other popup, so a second section that grows settings
+// later has one place to add its case rather than a scheme to invent.
+void drawSectionSettings(ControlsSection section, AppState& st) {
+  switch (section) {
+    case ControlsSection::Color: {
+      // The Munsell page's two settings (drawMunsellPage(), above), moved
+      // out of the panel body -- see that function's `reserveBelow` comment
+      // for why there was no room to keep them there. Same controls, same
+      // tooltips; only the width arithmetic is gone, because a popover is
+      // free to size itself rather than fighting a 294 px column for space.
+      BrushState& br = st.brush;
+      pushAtelierMono();
+      ImGui::TextDisabled("n");
+      popAtelierMono();
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(140.0f);
+      if (ImGui::SliderInt("##munsellsteps", &br.munsellSteps, kMinPageSteps, kMaxPageSteps))
+        applyMunsellSelection(br);
+      ImGui::SetItemTooltip(
+          "How finely the page is quantized: n values by n chromas.\n"
+          "9 puts the rows on value 1..9, the classic printed Munsell page.");
+      if (ImGui::SmallButton(br.munsellPerRowChroma ? "per row" : "per page")) {
+        br.munsellPerRowChroma = !br.munsellPerRowChroma;
+        applyMunsellSelection(br);
+      }
+      ImGui::SetItemTooltip(
+          "Chroma normalisation.\n"
+          "per page: one chroma scale for the whole page, so a column means one\n"
+          "chroma in every row and the ragged edge is the sRGB gamut's own shape.\n"
+          "per row: every row spans its own gamut, so the grid fills but a column\n"
+          "no longer means one chroma. Row luminance is exact either way.");
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 void drawColorSection(AppState& st) {
@@ -11688,11 +11705,16 @@ PanelGripLayout panelGripFor(ControlsSection section, const AtelierRect& slot, b
   // 22 px for the triangle and its gap, 4 px of breathing room after the word
   // -- the same two numbers `drawPanelGrip()` lays the bar out with, so the
   // two cannot disagree about whether the title fits. Sections with a "?"
-  // help button (`spec.helpText != nullptr`) also reserve the button's own
-  // width, or a tight panel could draw a title running straight into it.
-  const float helpReserve =
-      spec.helpText != nullptr ? (kPanelHelpBtnSize + kPanelHelpBtnMargin) : 0.0f;
-  g.showTitle = slot.w >= 22.0f + titleW + 4.0f + helpReserve;
+  // help button (`spec.helpText != nullptr`) and/or a gear settings button
+  // (`spec.hasSettings`) each reserve that button's own width, or a tight
+  // panel could draw a title running straight into one of them --
+  // `drawPanelGrip()` packs both buttons from the right edge (help
+  // outermost, gear immediately left of it, or in help's place when there is
+  // no help), so a section with both reserves BOTH widths, not just one.
+  const float oneBtnReserve = kPanelHelpBtnSize + kPanelHelpBtnMargin;
+  const float helpReserve = spec.helpText != nullptr ? oneBtnReserve : 0.0f;
+  const float settingsReserve = spec.hasSettings ? oneBtnReserve : 0.0f;
+  g.showTitle = slot.w >= 22.0f + titleW + 4.0f + helpReserve + settingsReserve;
   return g;
 }
 
@@ -11819,11 +11841,17 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
       // The "?" help button -- context that matters occasionally (what a
       // Pigment vs. RGB colour actually carries, say) rather than on every
       // glance at the panel, so it is one click away instead of a permanent
-      // paragraph in the body. Only drawn where there is something to show
-      // (`spec.helpText != nullptr`) and only when the title itself fits --
-      // `panelGripFor()` already reserved this button's own width as part of
-      // that same fit check, so the two can never disagree.
-      if (spec.helpText != nullptr) {
+      // paragraph in the body. And the gear settings button, immediately to
+      // its LEFT -- or in its place, at the grip's own right edge, when the
+      // section has no help text -- opening a section's own settings that do
+      // not fit its cramped body. Each is only drawn where there is
+      // something to show (`spec.helpText != nullptr` / `spec.hasSettings`)
+      // and only when the title itself fits -- `panelGripFor()` already
+      // reserved both buttons' width as part of that same fit check, so
+      // layout and drawing can never disagree.
+      const bool hasHelp = spec.helpText != nullptr;
+      const bool hasSettingsBtn = spec.hasSettings;
+      if (hasHelp) {
         const ImVec2 btnCenter(grip.right() - kPanelHelpBtnMargin - kPanelHelpBtnSize * 0.5f, cy);
         ImGui::PushID(static_cast<int>(section));
         ImGui::PushID("##help");
@@ -11844,6 +11872,46 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
           ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
           ImGui::TextUnformatted(spec.helpText);
           ImGui::PopTextWrapPos();
+          ImGui::EndPopup();
+        }
+        ImGui::PopID();
+        ImGui::PopID();
+      }
+      if (hasSettingsBtn) {
+        // One button-width plus its margin to the left of the help button's
+        // own centre when there is a help button; the help button's own spot
+        // otherwise -- the same packing `panelGripFor()`'s reserve sums.
+        const float centerX = hasHelp
+            ? (grip.right() - kPanelHelpBtnMargin - kPanelHelpBtnSize - kPanelHelpBtnMargin -
+               kPanelHelpBtnSize * 0.5f)
+            : (grip.right() - kPanelHelpBtnMargin - kPanelHelpBtnSize * 0.5f);
+        const ImVec2 btnCenter(centerX, cy);
+        ImGui::PushID(static_cast<int>(section));
+        ImGui::PushID("##settings");
+        ImGui::SetCursorScreenPos(
+            ImVec2(btnCenter.x - kPanelHelpBtnSize * 0.5f, btnCenter.y - kPanelHelpBtnSize * 0.5f));
+        ImGui::InvisibleButton("##settingsBtn", ImVec2(kPanelHelpBtnSize, kPanelHelpBtnSize));
+        const bool settingsHovered = ImGui::IsItemHovered();
+        if (settingsHovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##settingsPopup");
+        const uint32_t settingsInk = atelierToken(settingsHovered ? kTextPrimary : kTextSecondary);
+        if (!drawToolGlyph(dl, kSettingsIconCodepoint, btnCenter, settingsInk)) {
+          // Fallback for a machine where the vendored Lucide TTF failed to
+          // load (see drawToolGlyph()'s own comment): a small gear drawn
+          // from draw-list primitives -- a ring with six teeth -- rather
+          // than nothing at all.
+          const float r = kPanelHelpBtnSize * 0.26f;
+          dl->AddCircle(btnCenter, r, settingsInk, 12, kDividerThickness);
+          for (int i = 0; i < 6; ++i) {
+            const float a = static_cast<float>(i) * (2.0f * 3.14159265f / 6.0f);
+            const ImVec2 dir(std::cos(a), std::sin(a));
+            const ImVec2 p0(btnCenter.x + dir.x * (r + 1.0f), btnCenter.y + dir.y * (r + 1.0f));
+            const ImVec2 p1(btnCenter.x + dir.x * (r + 3.0f), btnCenter.y + dir.y * (r + 3.0f));
+            dl->AddLine(p0, p1, settingsInk, kDividerThickness);
+          }
+        }
+        if (ImGui::BeginPopup("##settingsPopup")) {
+          drawSectionSettings(section, st);
           ImGui::EndPopup();
         }
         ImGui::PopID();
