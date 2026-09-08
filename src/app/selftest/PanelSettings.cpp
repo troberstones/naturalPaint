@@ -4,6 +4,7 @@
 #include "ui/AtelierChrome.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/Fonts.hpp"
+#include "ui/PanelGrip.hpp"
 
 namespace np {
 
@@ -17,28 +18,34 @@ namespace np {
 // cramped control row under the grid -- into the gear's popover, and the
 // row's reserved height went back to the grid.
 //
-// `panelGripFor()` and `drawSectionSettings()` are file-local to
-// ui/MacPaintUI.cpp -- no header declares either, the same situation
-// app/selftest/ChromeConsistency.cpp describes for `atelierLayout()`'s
-// arithmetic ("written out again independently here rather than obtained by
-// calling the function and comparing it to itself"). Part C below follows
-// that same discipline for `panelGripFor()`'s title-fit predicate: it
-// re-derives the formula from the two named constants that formula and
-// `drawPanelGrip()`'s button placement both read (`kPanelHelpBtnSize` = 16,
-// `kPanelHelpBtnMargin` = 6, re-typed from ui/MacPaintUI.cpp -- if either
-// ever moves, this section starts failing rather than silently checking a
-// stale number), against a REAL measured title width: the same font and the
-// same `pushAtelierMono()` call `panelGripFor()` itself uses, run through a
-// real headless `ImGuiContext` the way app/selftest/Fonts.cpp's Part C/D and
-// app/selftest/AtelierChrome.cpp's palette probe already establish is safe
-// without a window or a renderer.
+// `drawSectionSettings()` is still file-local to ui/MacPaintUI.cpp -- no
+// header declares it, the same situation app/selftest/ChromeConsistency.cpp
+// describes for `atelierLayout()`'s arithmetic. `panelGripFor()` is not: it
+// is declared in ui/PanelGrip.hpp precisely so Part C below can call the REAL
+// function rather than re-deriving its formula. An earlier revision of this
+// section re-typed `kPanelHelpBtnSize`/`kPanelHelpBtnMargin` and re-wrote the
+// `showTitle` predicate by hand -- which meant a change to
+// `panelGripFor()`'s own arithmetic (e.g. `settingsReserve` silently dropped
+// to zero) left the re-derivation, and this section, unable to see it: the
+// sabotage that finds that exact defect left `--selftest` green. Part C now
+// builds three `ControlsSectionSpec`s (no help/no settings, settings only,
+// settings+help -- the middle one has no real section, since COLOR is the
+// only section with `hasSettings` and it also carries `helpText`) and calls
+// `panelGripFor()` itself at slot widths bracketing an independently
+// predicted threshold, checking `showTitle` flips exactly there. The
+// predicted threshold still needs a REAL measured title width -- the same
+// font and the same `pushAtelierMono()` call `panelGripFor()` itself uses,
+// run through a headless `ImGuiContext` the way app/selftest/Fonts.cpp's
+// Part C/D and app/selftest/AtelierChrome.cpp's palette probe already
+// establish is safe without a window or a renderer -- but the reserve math
+// and the fit predicate are now the real function's, not a copy of them.
 //
-// **What this cannot prove headlessly**: that `panelGripFor()`'s actual body
-// still reads these same two constants for both buttons rather than having
-// drifted from them, or that a click on the drawn gear really does open
-// `drawSectionSettings()` for the right section -- both are that one
-// function's internals and its input handling, provable only by screenshot
-// (tools/golden's COLOR/Munsell views, re-blessed for this track).
+// **What this cannot prove headlessly**: that a click on the drawn gear
+// really does open `drawSectionSettings()` for the right section, or that
+// `drawPanelGrip()`'s own button placement still matches the reserve
+// `panelGripFor()` computes -- both are that function's input handling and
+// drawing, provable only by screenshot (tools/golden's COLOR/Munsell views,
+// re-blessed for this track).
 bool runPanelSettingsTest() {
   bool ok = true;
   auto check = [&](bool cond, const char* what) {
@@ -97,17 +104,10 @@ bool runPanelSettingsTest() {
     ImGui::SetCurrentContext(previous);
   }
 
-  // --- Part C: panelGripFor()'s title-fit predicate flips at the predicted
-  //             width, for a section with BOTH a "?" and a gear ------------
+  // --- Part C: panelGripFor() ITSELF -- not a re-derivation -- flips
+  //             showTitle at the predicted width, for three specs bracketing
+  //             every helpText/hasSettings combination that matters --------
   {
-    // Re-typed from ui/MacPaintUI.cpp's kPanelHelpBtnSize/kPanelHelpBtnMargin
-    // -- both the help button and the gear share this one size and margin,
-    // so a section with BOTH reserves TWO button-widths, not one.
-    constexpr float kBtnSize = 16.0f;
-    constexpr float kBtnMargin = 6.0f;
-    constexpr float kOneBtnReserve = kBtnSize + kBtnMargin;   // 22
-    constexpr float kBothBtnReserve = 2.0f * kOneBtnReserve;  // 44
-
     ImGuiContext* previous = ImGui::GetCurrentContext();
     ImGuiContext* context = ImGui::CreateContext();
     ImGui::SetCurrentContext(context);
@@ -119,53 +119,81 @@ bool runPanelSettingsTest() {
     io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
     io.IniFilename = nullptr;  // this probe has no business writing imgui.ini
 
+    // One title, shared by all three specs below, so the same measured width
+    // predicts all three thresholds -- panelGripFor() itself reads
+    // spec.title, so what it measures is this exact string too.
+    static constexpr const char* kProbeTitle = "PROBE SECTION";
+
     float titleW = -1.0f;
+    // Every check below that touches ImGui text measurement -- the probe
+    // title AND the three panelGripFor() calls, since panelGripFor() itself
+    // calls CalcTextSize() -- runs inside this one NewFrame()/EndFrame()
+    // bracket. NewFrame(), not a bare PushFont(): PushFont() alone leaves
+    // g.FontSizeBase at whatever an unstarted frame defaults it to (0),
+    // which CalcTextSize() would read as a zero-size font -- the same
+    // "a headless ImGuiContext is fine for layout questions" precedent
+    // app/selftest/AtelierChrome.cpp's palette-width probe already
+    // established, minus the child-window scrollbar machinery this question
+    // does not need.
     if (loaded.ok) {
-      // NewFrame(), not a bare PushFont(): PushFont() alone leaves
-      // g.FontSizeBase at whatever an unstarted frame defaults it to (0),
-      // which CalcTextSize() would read as a zero-size font -- the same
-      // "a headless ImGuiContext is fine for layout questions" precedent
-      // app/selftest/AtelierChrome.cpp's palette-width probe already
-      // established, minus the child-window scrollbar machinery this
-      // question does not need.
       ImGui::NewFrame();
       pushAtelierMono();
-      titleW = ImGui::CalcTextSize(controlsSectionSpec(ControlsSection::Color).title).x;
+      titleW = ImGui::CalcTextSize(kProbeTitle).x;
       popAtelierMono();
+
+      std::printf("    [measured] probe title width in the panel's mono face = %.1f px\n",
+                  static_cast<double>(titleW));
+      check(titleW > 0.0f, "the real mono face loaded and measured a nonzero probe title width");
+
+      if (titleW > 0.0f) {
+        // ui/PanelGrip.hpp's real constants -- not re-typed -- so a change to
+        // either one moves this section's predicted threshold along with
+        // panelGripFor()'s own.
+        constexpr float kOneBtnReserve = kPanelHelpBtnSize + kPanelHelpBtnMargin;  // 22
+
+        // Three specs, one shared title, differing only in helpText/
+        // hasSettings -- section/role/defaultOpen play no part in
+        // panelGripFor()'s title-fit arithmetic, so an arbitrary real
+        // section (Color) fills that slot.
+        ControlsSectionSpec specNeither{ControlsSection::Color, ControlsSectionRole::Tool,
+                                         kProbeTitle, true};
+        ControlsSectionSpec specSettingsOnly = specNeither;
+        specSettingsOnly.hasSettings = true;  // helpText stays null -- no real section is this
+        ControlsSectionSpec specBoth = specSettingsOnly;
+        specBoth.helpText = "probe help text";
+
+        // Calls the REAL panelGripFor() at slot widths bracketing the
+        // predicted threshold and checks showTitle flips exactly there --
+        // this is what makes the check see a change to panelGripFor()'s own
+        // reserve arithmetic, where the old re-derivation could not.
+        auto assertFlip = [&](const ControlsSectionSpec& spec, float reserve, const char* label) {
+          const float threshold = 22.0f + titleW + 4.0f + reserve;
+          const AtelierRect below{0.0f, 0.0f, threshold - 1.0f, 200.0f};
+          const AtelierRect at{0.0f, 0.0f, threshold, 200.0f};
+          const bool showsBelow = panelGripFor(spec, below, /*collapsed=*/false).showTitle;
+          const bool showsAt = panelGripFor(spec, at, /*collapsed=*/false).showTitle;
+          check(!showsBelow, (std::string("title-fit (") + label +
+                               "): 1 px under the predicted threshold, the REAL panelGripFor() "
+                               "does not show the title")
+                                  .c_str());
+          check(showsAt, (std::string("title-fit (") + label +
+                          "): at the predicted threshold, the REAL panelGripFor() shows the "
+                          "title -- it flips exactly there, not before or after")
+                             .c_str());
+        };
+
+        assertFlip(specNeither, 0.0f, "no help, no settings");
+        assertFlip(specSettingsOnly, kOneBtnReserve, "settings only, no help");
+        assertFlip(specBoth, 2.0f * kOneBtnReserve, "settings + help");
+      }
+
       ImGui::EndFrame();
+    } else {
+      check(false, "the real mono face loaded and measured a nonzero probe title width");
     }
+
     ImGui::DestroyContext(context);
     ImGui::SetCurrentContext(previous);
-
-    std::printf("    [measured] COLOR title width in the panel's mono face = %.1f px\n",
-                static_cast<double>(titleW));
-    check(loaded.ok && titleW > 0.0f,
-          "the real mono face loaded and measured a nonzero COLOR title width");
-
-    if (loaded.ok && titleW > 0.0f) {
-      // panelGripFor()'s own formula: showTitle = slot.w >= 22 + titleW + 4
-      // + helpReserve + settingsReserve. COLOR has both spec.helpText and
-      // spec.hasSettings, so the reserve is the two-button sum.
-      const float threshold = 22.0f + titleW + 4.0f + kBothBtnReserve;
-      auto showTitleAt = [&](float slotW) { return slotW >= threshold; };
-      check(!showTitleAt(threshold - 1.0f),
-            "title-fit: 1 px under the predicted (two-button) threshold, the title does not "
-            "fit");
-      check(showTitleAt(threshold),
-            "title-fit: at the predicted (two-button) threshold, the title fits -- it flips "
-            "exactly there, not before or after");
-
-      // And the reserve really is BOTH buttons, not one: a regression that
-      // dropped the gear's own reserve from the sum (leaving only the help
-      // button's) would predict a narrower threshold than COLOR actually
-      // needs. Checked as an inequality between the two re-derived
-      // thresholds rather than by calling panelGripFor() with only one flag
-      // set, which this file cannot do without COLOR itself changing.
-      const float oneButtonThreshold = 22.0f + titleW + 4.0f + kOneBtnReserve;
-      check(oneButtonThreshold < threshold,
-            "title-fit: the one-button threshold is strictly narrower than the two-button one "
-            "a section with both a help button and a gear actually needs");
-    }
   }
 
   std::printf("[selftest] panel settings %s\n", ok ? "PASS" : "FAIL");
