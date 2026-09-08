@@ -709,11 +709,19 @@ namespace {
 // A template rather than `if constexpr` in the function above: outside a
 // template both branches of an `if constexpr` must still compile, and the
 // raw-pointer branch does not against a shared_ptr-returning `create()`.
+//
+// The deleter's parameter is `Created`, not `OIIO::ImageCache*`, on purpose.
+// A discarded `if constexpr` branch is only skipped for statements that
+// DEPEND on the template parameter; a lambda taking a plain `ImageCache*`
+// depends on nothing, so `ImageCache::destroy(c)` was checked at definition
+// time and failed on OpenImageIO 3.1, whose `destroy()` takes a
+// `std::shared_ptr&`. The Linux branch built this against 2.4 only, where it
+// happened to compile -- the both-config blind spot, again.
 template <class Created>
 std::shared_ptr<OIIO::ImageCache> adoptImageCache(Created created) {
   if constexpr (std::is_pointer_v<Created>) {
     return std::shared_ptr<OIIO::ImageCache>(created,
-                                             [](OIIO::ImageCache* c) { OIIO::ImageCache::destroy(c); });
+                                             [](Created c) { OIIO::ImageCache::destroy(c); });
   } else {
     return created;
   }
