@@ -2648,6 +2648,11 @@ int main(int argc, char** argv) {
     // stroke path with the current brush. Headless and GPU-free; guards its
     // Text sections on shaperAvailable() the way runTextContentTest() does.
     const bool pathConsumersOk = np::runPathConsumersTest();
+    // The Text tool owning the keyboard while a session is live: app/Keymap's
+    // keyChordReachesKeymap() gate, app/TextTool's textSessionActive()
+    // transitions, and textEditRevert() vs plain textEditCancel(). Headless
+    // and GPU-free; writes no files.
+    const bool textKeyCaptureOk = np::runTextKeyCaptureTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -3501,7 +3506,8 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk;
+                    penToolOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    textKeyCaptureOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4405,7 +4411,16 @@ int main(int argc, char** argv) {
         std::optional<np::LayerKind> activeScope;
         if (const np::OpenDocument* scopeDoc = st.documents.active())
           if (const np::Layer* scopeLayer = np::activeLayerOf(*scopeDoc)) activeScope = scopeLayer->kind;
-        const std::optional<std::string> action = keymap.resolve(chord, activeScope);
+        // A live Text session owns an unmodified chord before the keymap ever
+        // sees it -- app/Keymap.hpp's keyChordReachesKeymap(): typing "f" or
+        // pressing Backspace into a text layer must not also fire
+        // `mirror_x`/`delete_selection`. Cmd/Ctrl chords still reach
+        // `resolve()` (Cmd+Z etc.), and every chord does when no session is
+        // live, which is every key-down before this gate existed.
+        const std::optional<std::string> action =
+            np::keyChordReachesKeymap(chord, np::textSessionActive(st.textEdit))
+                ? keymap.resolve(chord, activeScope)
+                : std::nullopt;
         if (action == "toggle_pause") st.paused = !st.paused;
         else if (action == "clear_canvas") st.requestClear = true;
         else if (action == "reload_shaders") st.requestReload = true;

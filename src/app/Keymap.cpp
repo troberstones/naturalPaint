@@ -228,6 +228,11 @@ uint16_t keyModsFromSDL(SDL_Keymod sdlMods) {
   return m;
 }
 
+bool keyChordReachesKeymap(KeyChord chord, bool textSessionActive) noexcept {
+  if (!textSessionActive) return true;
+  return (chord.mods & (kModCmd | kModCtrl)) != 0;
+}
+
 bool Keymap::loadFromFile(std::string_view relativePath) {
   const fs::path p = fs::path(keymapDir()) / relativePath;
   std::ifstream in(p, std::ios::binary);

@@ -14983,6 +14983,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // reach a paragraph frame without inventing a second tool: `frame.width`
     // is the single number that tells point text from paragraph text
     // (core/TextContent.hpp section 2), and a click cannot supply one.
+    // ACCEPT: the tool switched away while a caret or frame-drag session was
+    // live. Checked OUTSIDE the `toolEditsText()` gate below on purpose --
+    // once the tool has changed, that gated block never runs again to notice
+    // its own session is still marked active, and `textSessionActive()`
+    // (app/TextTool.hpp; main.cpp's key-down handler) would keep routing
+    // every bare hotkey to the Text session forever. Plain `textEditCancel()`
+    // is right here, not `textEditRevert()`: switching tools is one of this
+    // step's three "accept" gestures (the others are clicking away, already
+    // handled below by `textEditFrameDragBegin()`/`textEditBegin()`
+    // discarding the old session, and Cmd+Return) -- it keeps whatever was
+    // typed, it just stops the session from owning the keyboard.
+    if (textSessionActive(st.textEdit) && !toolEditsText(st.brush.tool)) {
+      textEditCancel(&st.textEdit);
+    }
     if (toolEditsText(st.brush.tool) && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       OpenDocument* textDoc = st.documents.active();
@@ -15003,7 +15017,30 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
       if (editing == nullptr && !st.textEdit.frameDragActive) textEditCancel(&st.textEdit);
 
-      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) textEditCancel(&st.textEdit);
+      // Escape CANCELS, not just closes: an existing layer's session reverts
+      // its text to what it was when `textEditBegin()` opened it (Cmd+Return
+      // and every other way out of a session KEEP the typed text -- this is
+      // the one exception). `editing != nullptr` is exactly "there is a real
+      // layer with a live caret session" -- the other case Escape reaches,
+      // a bare frame drag with no layer yet, has no `TextContent` to revert
+      // and takes the plain-cancel path below unchanged, same as document
+      // switch and layer-gone above.
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        if (editing != nullptr) {
+          textEditRevert(&editing->text, &st.textEdit);
+          // The session's open undo entry (if any) now names a document
+          // state nothing points at any more -- the live document was just
+          // reverted out from under it. Folding it to a no-op with the same
+          // `amendEdit()` call the typing loop below already uses (it keeps
+          // the entry's serial and simply overwrites its stored snapshot,
+          // app/DocumentLifecycle.hpp's own comment on `amendEdit()`) makes
+          // that entry equal its predecessor again -- consistent with the
+          // live document, and with nothing dangling for `core/History` to
+          // undo TO that was never really a state the user asked for.
+          if (st.textEdit.undoOpened) textDoc->amendEdit("type", EditKind::Content);
+        }
+        textEditCancel(&st.textEdit);
+      }
 
       if (textDoc != nullptr && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         // A click on the ACTIVE layer's own text block edits it. Only the
@@ -15089,7 +15126,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // own rule for unmodified keys, stated where the Move tool's arrows use
       // it. Without this, renaming a layer while the Text tool happens to be
       // selected types into the canvas instead.
-      if (editing != nullptr && textDoc != nullptr && !ImGui::GetIO().WantTextInput) {
+      //
+      // **Also guarded on `textSessionActive()`.** `editing != nullptr` alone
+      // answers "is the active layer a Text block this session's layerIndex
+      // still names", which stays true across Cmd+Return/Escape ending the
+      // session -- `layerIndex` is deliberately not one of the fields cancel
+      // resets (this file's own comment above, and app/TextTool.hpp). Without
+      // this second check, accepting with Cmd+Return would silently resume
+      // typing into the same layer on the very next keystroke instead of
+      // handing bare keys back to the keymap the way main.cpp's own gate
+      // (keyChordReachesKeymap()) now expects.
+      if (editing != nullptr && textDoc != nullptr && textSessionActive(st.textEdit) &&
+          !ImGui::GetIO().WantTextInput) {
         ImGuiIO& io = ImGui::GetIO();
         bool edited = false;
 
@@ -15131,7 +15179,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // "commit" for text: the layer IS the document, every keystroke is
         // already in it, and Escape just puts the caret away. A Return that
         // ended editing would make a two-line caption impossible.
-        if (ImGui::IsKeyPressed(ImGuiKey_Enter, true) ||
+        //
+        // Cmd+Return is the one exception: ACCEPT, ending the session and
+        // keeping the text, same as switching tools or clicking away --
+        // `io.KeyCtrl || io.KeySuper` is this file's existing cross-platform
+        // "the Cmd chord" test (see the Layers panel's multi-select above).
+        // Checked first so a Cmd-held Return does not also fall through to
+        // the plain-newline branch.
+        if ((io.KeyCtrl || io.KeySuper) &&
+            (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+          textEditCancel(&st.textEdit);
+        } else if (ImGui::IsKeyPressed(ImGuiKey_Enter, true) ||
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, true)) {
           textInsertUtf8(&editing->text, &st.textEdit, "\n");
           edited = true;
