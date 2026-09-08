@@ -5451,6 +5451,18 @@ bool runSvgImportTest();
 // app/selftest/PenTool.cpp.
 bool runPenToolTest();
 
+// app/PenTool section 9 -- Pen/Curve PLACEMENT: `pathEditBeginPen()`
+// creating a shape from the first empty-canvas press, extending it on
+// subsequent ones, closing it on a press back at its own first anchor, and
+// falling through to `pathEditBegin()`'s ordinary gestures for a press on
+// OTHER geometry; `pathEditUpdate()`'s `PenExtend` arm setting a mirrored
+// smooth tangent from a drag-before-release; `pathEditEndOpenPath()` leaving
+// what was placed; and Curve mode's Catmull-Rom tangent fit, checked both
+// for C1 continuity at interior anchors and against a hand-computed value.
+// Headless and GPU-free; writes no files; touches no ui/ file. See
+// app/selftest/PenDraw.cpp.
+bool runPenDrawTest();
+
 // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
 // gate predicate (`toolEditsText()`), the caret-editing session's UTF-8-safe
 // string edits (insert/backspace/forward-delete/caret movement, every one

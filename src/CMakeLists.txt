@@ -235,6 +235,7 @@ add_executable(naturalPaint
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
   app/selftest/PenTool.cpp
+  app/selftest/PenDraw.cpp
   app/selftest/TextTool.cpp
   app/selftest/TextShaper.cpp
   app/selftest/SvgPath.cpp

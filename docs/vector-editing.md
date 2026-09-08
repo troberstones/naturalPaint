@@ -151,6 +151,11 @@ One modifier grammar, two implementations of what it means. That is the point:
 a user who has learned the modifiers on the Lasso does not have to learn them
 again here.
 
+**With `Tool::Pen` or `Tool::Curve` active, an empty-canvas press places an
+anchor instead of starting a marquee** (`pathEditBeginPen()`, §8) — every
+tier above §3's "empty canvas" tier 6 still selects exactly as this section
+describes; only tier 6 itself is repurposed.
+
 ---
 
 ## 5. Explicitly deferred
@@ -236,9 +241,19 @@ should pin rather than leave to look like a bug.
 
 This file was written before the code, so the honest closing section is which of
 its decisions a user can actually reach. First written 2026-09-03 against
-`cff137a`; refreshed 2026-09-08 against `36f5509`. **Built and photographed**
-(golden views `vector_shape`, `vector_components`, `vector_marquee`,
-`pen_options`, `pen_options_component`):
+`cff137a`; refreshed 2026-09-08 against `36f1e09` to add placement. **Built and
+photographed** (golden views `vector_shape`, `vector_components`,
+`vector_marquee`, `pen_options`, `pen_options_component`, `pen_drawing`):
+
+- **Placement.** `pathEditBeginPen()` (`app/PenTool.cpp`) is the writer
+  `PathDragKind::PenExtend` did not have until now: an empty-canvas press
+  creates a new `VectorShape` or extends the open one, a drag before release
+  sets Pen's smooth tangent, a press on the open subpath's own first anchor
+  closes it, and Escape/Return/a tool switch/a click onto other geometry all
+  end the session, leaving whatever is already placed. Curve fits every
+  anchor's tangent through its neighbours by a uniform Catmull-Rom
+  conversion instead of reading the drag. The active layer auto-vivifies a
+  Vector layer on the first press rather than refusing.
 
 - §1's pivot frame, drawn as a crosshair at a selected shape's pivot.
 - §2's world-axis-aligned gnomon — bounds box, four scale corners, two axis

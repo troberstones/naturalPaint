@@ -467,6 +467,13 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
 //                 move, with no pen-up. The rubber band exists only while the
 //                 pointer is down, so it is unphotographable any other way --
 //                 `--gradient-demo drag`'s argument exactly.
+//   pendraw       A half-built path: three presses via `pathEditBeginPen()`,
+//                 the REAL placement transition (app/PenTool.hpp section 9),
+//                 left OPEN -- no fourth press on the first anchor -- so the
+//                 picture carries two committed segments, three anchors and
+//                 the rubber band to a pinned cursor position. Well clear of
+//                 the blob and triangle below so none of the three presses
+//                 lands on their geometry instead of empty canvas.
 void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // Two shapes, deliberately unalike. The blob's handles do not coincide with
   // their anchors, so it draws tangent sticks; the triangle's do, so it draws
@@ -544,6 +551,37 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     st.pathEditDemo = true;
     std::printf("[vector-demo] marquee held open: 140,120 -> 760,540, drag=%d\n",
                 static_cast<int>(st.pathEdit.drag));
+    return;
+  }
+
+  if (mode == 3) {
+    // Three real presses, each through pen-down/pen-up exactly as the canvas
+    // block drives them, clear of the blob (compass anchors at doc x
+    // 210-590, y 190-570) and the triangle (560-900, 620-860) -- AND inside
+    // the same crop `vector_shape`/`vector_components`/`vector_marquee` use
+    // (device px 340-1680, 370-1330; at this demo's 2x-device-pixel, 1:1
+    // document zoom, that is document x ~115-785, y ~100-580 -- a point
+    // outside it is composited but falls outside every one of those views'
+    // own crop, and a first attempt at this view learned that the hard way,
+    // placing two of the three points off the right edge of the crop AND
+    // under the COLOR/LAYERS dock).
+    const np::PathPoint p1{650.0f, 120.0f};
+    const np::PathPoint p2{750.0f, 240.0f};
+    const np::PathPoint p3{650.0f, 360.0f};
+    for (const np::PathPoint& p : {p1, p2, p3}) {
+      np::pathEditBeginPen(&st.pathEdit, &shapes, &od.document.layers[at].nextShapeId, p,
+                           pickTexels, false, np::SelectionCombine::Replace, od.id,
+                           /*curveMode=*/false);
+      np::pathEditEnd(&st.pathEdit, shapes);
+    }
+    // The rubber band's destination, PINNED rather than read from a live
+    // pointer -- this process has none, `marquee` mode's own reason two
+    // arms up -- via the one function that writes `dragNow` without also
+    // owning a drag (`pathEditTrackCursor()`, app/PenTool.hpp section 9).
+    np::pathEditTrackCursor(&st.pathEdit, np::PathPoint{750.0f, 470.0f});
+    std::printf("[vector-demo] pendraw: %zu anchors placed, open=%d\n",
+                shapes.back().path.subpaths[0].anchors.size(),
+                static_cast<int>(np::pathEditHasOpenPath(st.pathEdit)));
     return;
   }
 
@@ -1441,9 +1479,9 @@ int main(int argc, char** argv) {
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
-  // --vector-demo [components|marquee]: see runVectorDemo().
+  // --vector-demo [components|marquee|pendraw]: see runVectorDemo().
   bool vectorDemo = false;
-  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee
+  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw
 
   // --text-demo [paragraph|frame]: see runTextDemo().
   bool textDemo = false;
@@ -1837,6 +1875,9 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "marquee") {
           vectorDemoMode = 2;
+          ++i;
+        } else if (arg == "pendraw") {
+          vectorDemoMode = 3;
           ++i;
         }
       }
@@ -2603,6 +2644,12 @@ int main(int argc, char** argv) {
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penToolOk = np::runPenToolTest();
+    // app/PenTool section 9 -- Pen/Curve placement: a press creating and
+    // extending a shape, a press on its own first anchor closing it, a drag
+    // setting a mirrored tangent, Escape leaving what was placed, and
+    // Curve's Catmull-Rom tangent fit proven C1-continuous numerically.
+    // Headless and GPU-free; writes no files; touches no ui/ file.
+    const bool penDrawOk = np::runPenDrawTest();
     // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
     // gate predicate, the caret-editing session's UTF-8-safe string edits
     // (insert/backspace/forward-delete/caret movement, all routed through
@@ -3494,7 +3541,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk;
+                    penToolOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
