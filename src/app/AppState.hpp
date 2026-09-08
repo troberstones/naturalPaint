@@ -681,6 +681,30 @@ inline const char* bucketFillLabel(BucketFill mode) noexcept {
 // active (scoped bindings) and consumed by ui/MacPaintUI's canvas block.
 enum class FlatsAction { None, DeleteFill, MergePair, PrevGap, NextGap, AcceptGap, ClusterSmall };
 
+// A per-session override of the three physical constants that otherwise
+// follow `BrushState::pigment` unconditionally, every frame (main.cpp's
+// simulation block, "Physical constants follow the selected paint, not a
+// global slider"). The PIGMENT panel (`ui/MacPaintUI.cpp`'s
+// `drawPigmentSection()`) used to show these three as `BeginDisabled()`
+// read-only mirrors of `st.sim`, because a live slider there looked
+// editable and snapped back one frame later -- this struct is what makes
+// them actually editable: the sliders write here instead of into `st.sim`
+// directly, and `effectivePigmentConstants()` below is what main.cpp reads
+// in their place.
+//
+// Not a second, independent set of constants and not persisted: it is
+// cleared -- `active = false` -- the moment `BrushState::pigment` changes
+// (the swatch click in `ui/MacPaintUI.cpp`'s `drawColorSection()` PIGMENT
+// branch is the single write site), so switching paint always wins over a
+// stale override rather than silently keeping one paint's density on
+// another paint's staining and granulation.
+struct PigmentOverride {
+  bool active = false;
+  float density = 0.0f;
+  float staining = 0.0f;
+  float granulation = 0.0f;
+};
+
 struct AppState {
   PaintMode mode = PaintMode::Watercolor;
   // The stroke bridge's per-frame cycle. It lives here rather than as a local
@@ -694,6 +718,9 @@ struct AppState {
   // absorption together via setWorkingTime(); 15 matches the shipped defaults.
   float workingTime = 15.0f;
   BrushState brush;
+  // The PIGMENT panel's session override of `defaultPalette()[brush.pigment]`'s
+  // three physical constants. See `PigmentOverride`'s own comment above.
+  PigmentOverride pigmentOverride;
   // The ledger behind `brush.tool` -- app/ToolSwitch.hpp owns every write to
   // both. Here rather than on `BrushState` because `BrushState` is copied
   // wholesale by the brush presets (`applyPresetToBrush()`, and
@@ -1703,6 +1730,55 @@ struct AppState {
   // a different string run to run rather than stable glyph-edge noise.
   bool screenshotCliActive = false;
 };
+
+// The three floats `effectivePigmentConstants()` below returns -- deliberately
+// not `paint::Pigment`, which also carries a `name` and an `rgb` that neither
+// caller (main.cpp's simulation block, `--selftest`'s PigmentPanel section)
+// wants a copy of.
+struct PigmentConstants {
+  float density;
+  float staining;
+  float granulation;
+};
+
+// What main.cpp's simulation block reads every frame in place of
+// `foregroundPhysicalConstants(st.brush)` (app/StrokeSession.hpp) alone: the
+// PIGMENT panel's session override when `st.pigmentOverride.active`, else the
+// same bounds-checked `defaultPalette()[st.brush.pigment]` read
+// `foregroundPhysicalConstants()` performs.
+//
+// **That lookup is duplicated here, not called** -- `StrokeSession.hpp`
+// already `#include`s this header, so the reverse include a direct call
+// would need is a cycle. Both branches are pinned by name (`--selftest`'s
+// PigmentPanel section), so a future divergence between the two copies of
+// the bad-index fallback is a build-time-reachable assertion, not a silent
+// drift.
+// The single write site of `BrushState::pigment`, forced through here so
+// `--selftest` can assert the override-clearing rule below without driving
+// the PIGMENT swatch's own click (`ui/MacPaintUI.cpp`'s `drawColorSection()`,
+// the only caller): picking a pigment always wins over a stale
+// `pigmentOverride` rather than silently keeping one paint's density on
+// another paint's staining and granulation. The same "one setter" shape
+// `app/ToolSwitch.hpp` uses for `BrushState::tool`, and for the identical
+// reason -- a fact with more than one writer is a fact this build stops
+// being able to trust.
+inline void selectPigment(AppState& st, int index) noexcept {
+  st.brush.pigment = index;
+  st.pigmentOverride.active = false;
+}
+
+inline PigmentConstants effectivePigmentConstants(const AppState& st) noexcept {
+  if (st.pigmentOverride.active)
+    return {st.pigmentOverride.density, st.pigmentOverride.staining,
+            st.pigmentOverride.granulation};
+  const std::vector<Pigment>& palette = defaultPalette();
+  const size_t index =
+      st.brush.pigment >= 0 && static_cast<size_t>(st.brush.pigment) < palette.size()
+          ? static_cast<size_t>(st.brush.pigment)
+          : 0;
+  const Pigment& p = palette[index];
+  return {p.density, p.staining, p.granulation};
+}
 
 // ---------------------------------------------------------------------------
 // The flood-fill tools' options: the tool -> parameter-block mapping, the

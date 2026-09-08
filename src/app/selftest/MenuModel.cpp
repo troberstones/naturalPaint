@@ -195,12 +195,15 @@ bool runMenuModelTest() {
   // as deliberately absent while nothing wired them. Counted by counting
   // `MenuAction`'s enumerators in the header (93 including `Count`), the way
   // the paragraph above demands, rather than by adding two to 90.
-  check(kMenuActionCount == 92,
-        "ids: exactly 92 actions -- the original 41-item extraction plus D1/D2's "
+  // 92 -> 93: `Pigment` (Window > Pigment), the check item that turns
+  // `ControlsSection::Pigment`'s Hidden-by-default placement on -- counted
+  // the same way, off `MenuAction`'s enumerators (94 including `Count`).
+  check(kMenuActionCount == 93,
+        "ids: exactly 93 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
-        "dialog, Brush Settings and the crop pair, so an item lost in a later edit "
-        "fails here");
+        "dialog, Brush Settings, the crop pair and Pigment, so an item lost in a "
+        "later edit fails here");
 
   {
     std::set<MenuAction> seen;

@@ -4578,6 +4578,14 @@ bool runMenuBasicsTest();
 //    opening but not for a check mark flipping.
 bool runMenuModelTest();
 
+// A real, opt-in PIGMENT panel (app/AppState.hpp's `PigmentOverride`,
+// `effectivePigmentConstants()`, `selectPigment()`): the default placement
+// table with Pigment Hidden and nothing else moved, the Window > Pigment
+// check item mirroring that placement, and the override itself -- palette
+// values when inactive, the override's own three floats when active, and a
+// pigment change clearing it. Headless, GPU-free and ImGui-free.
+bool runPigmentPanelTest();
+
 // The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9). Headless --
 // no window, no GPU, no ImGui context.
 //

@@ -176,6 +176,7 @@ add_executable(naturalPaint
   app/selftest/PigmentDeposit.cpp
   app/selftest/PigmentLayer.cpp
   app/selftest/PigmentSelection.cpp
+  app/selftest/PigmentPanel.cpp
   app/selftest/PlaceImageAsLayer.cpp
   app/selftest/PointOps.cpp
   app/selftest/PresentTransfer.cpp

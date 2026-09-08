@@ -85,6 +85,13 @@ PanelPlacement defaultPlacementFor(ControlsSection section) {
   switch (section) {
     case ControlsSection::Tools:   return PanelPlacement::Left;
     case ControlsSection::Options: return PanelPlacement::Top;
+    // The panel this edits (`AppState::pigmentOverride`, app/AppState.hpp)
+    // is off by default, and a panel for turning on an off-by-default
+    // override is not worth a permanent flyout slot until the user asks for
+    // it -- the Window menu's "Pigment" check item
+    // (`MenuAction::Pigment`, ui/MacPaintUI.cpp's `performMenuAction()`) is
+    // what moves it to its role's normal placement below.
+    case ControlsSection::Pigment: return PanelPlacement::Hidden;
     default:                       break;
   }
   switch (controlsSectionSpec(section).role) {
