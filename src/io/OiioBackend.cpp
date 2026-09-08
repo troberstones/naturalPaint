@@ -328,6 +328,12 @@ DecodedImage oiioDecodeToLinear(const uint8_t* fileData, std::size_t fileSize,
     const std::string proxyError = OIIO::geterror();
     if (spill.write(fileData, fileSize)) input = OIIO::ImageInput::open(spill.path());
     if (!input) {
+      // Drain the retry's own error too. Left pending, OpenImageIO prints it
+      // at process exit ("exited with a pending error message that was never
+      // retrieved"), which the selftest's stdout then ends with -- seen on
+      // the first macOS run of this path, for a garbage buffer whose retry
+      // was expected to fail. Same convention as the write path above.
+      (void)OIIO::geterror();
       if (errorOut) *errorOut = proxyError;
       return image;
     }

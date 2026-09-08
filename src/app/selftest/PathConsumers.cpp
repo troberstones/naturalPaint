@@ -953,6 +953,7 @@ bool runPathConsumersTest() {
           "  and paints nothing outside it");
   }
 
+  std::printf("[selftest] path consumers %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
 
