@@ -54,6 +54,12 @@
 #include "app/LayerPanel.hpp"
 #include "app/MoveTool.hpp"  // Tool::Move
 #include "app/OpenAnyFile.hpp"
+// The PATHS panel: its verbs, the two headless questions it asks every frame,
+// and the three consumers it is the first UI caller of anywhere in the tree
+// (docs/path-editing-plan.md section 4).
+#include "app/PathConsumers.hpp"
+#include "app/PathOps.hpp"
+#include "app/PathsPanel.hpp"
 #include "app/QuitSequence.hpp"
 #include "app/SelectionDrag.hpp"
 #include "app/Snapping.hpp"
@@ -12148,6 +12154,566 @@ void drawFlatsToolsSection(AppState& st) {
   }
 }
 
+// ===========================================================================
+// The PATHS panel (docs/path-editing-plan.md section 4)
+// ===========================================================================
+//
+// The second member of the family FLATS TOOLS started: a palette scoped to one
+// layer kind, on the flyout rail, revealed on the TRANSITION into that kind
+// and greyed rather than hidden once docked. `app/ControlsLayout.hpp` named
+// this panel as that pattern's next consumer before it existed.
+//
+// **What it does NOT have, and must not acquire.** The flats panel's expensive
+// lesson was that a panel button can never see `onCanvas` -- the docks draw
+// before the canvas hit-test, so when a button is clicked the pointer is over
+// the panel -- and so every flats command that needs a canvas point is raised
+// as a deferred `FlatsAction` and consumed a frame later in the canvas route.
+//
+// **Every verb here is point-free.** `app/PathOps.hpp` section 4 says so in
+// its own words: each one acts on the persisted `PathSelection`, which
+// outlives the frame, so they are called DIRECTLY below with no request flag
+// and no round trip. There is no `st.pathAction`, and adding one by analogy
+// with the flats panel would be machinery for a hazard this panel does not
+// have.
+//
+// **The greying rule is `pathOpCanRun()` and nothing else.** Swept once per
+// frame by `pathOpAvailability()` (app/PathsPanel.hpp, headless so
+// `--selftest` can check the agreement), so a lit button cannot refuse and a
+// greyed one carries the verb's own sentence in its tooltip.
+
+struct PathsPanelSubject {
+  OpenDocument* od = nullptr;
+  Layer* layer = nullptr;
+  size_t index = 0;
+  bool locked = false;
+};
+
+// The active layer, if it is a Vector layer this panel may edit. The identical
+// shape `flatsPanelSubject()` has, one `LayerKind` over: null for no document,
+// no active layer, or a layer of another kind, and `locked` reported
+// separately because a locked layer is a DIFFERENT sentence from an absent
+// one.
+PathsPanelSubject pathsPanelSubject(AppState& st) {
+  PathsPanelSubject sub;
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) return sub;
+  Layer* layer = activeLayerOf(*od);
+  const std::optional<size_t> idx = activeLayerIndex(*od);
+  if (layer == nullptr || !idx.has_value() || layer->kind != LayerKind::Vector) return sub;
+  sub.od = od;
+  sub.layer = layer;
+  sub.index = *idx;
+  sub.locked = layer->locked;
+  return sub;
+}
+
+// The panel's own status line: the last refusal, the last discard notice, or
+// the last thing a MAKE button did.
+//
+// Separate from `g_strokeRefusal`, which is the CANVAS's refusal line and is
+// written by the stroke routes every frame a gesture is refused. Sharing it
+// would make a JOIN's "the second path's fill and stroke were dropped" -- a
+// sentence about something that has already happened and that nothing will
+// repeat -- vanish the moment the pointer touched the canvas.
+std::string g_pathsStatus;
+
+// Which shape's name is being edited, or 0. One at a time by construction,
+// which is what a double-click-to-rename means.
+uint64_t g_pathsRenamingShape = 0;
+char g_pathsRenameBuf[128] = {0};
+
+// The shape ids the current selection names, in either mode -- what the
+// per-shape style chips (RULE, CAP, JOIN) act on.
+//
+// **Component mode resolves to its anchors' shapes** rather than refusing: a
+// fill rule and a line cap are properties of a shape, and a user with three
+// anchors of one path selected who presses ROUND CAP means that path. This is
+// the same widening `applyAffineToSelection()` documents for the opposite
+// reason, and it is stated here because "which shape does this button mean?"
+// has two defensible answers and only one of them is implemented.
+std::vector<uint64_t> pathsSelectedShapeIds(const PathSelection& sel) {
+  std::vector<uint64_t> ids;
+  if (sel.mode == PathSelectMode::Shape) {
+    ids = sel.shapes;
+  } else {
+    ids.reserve(sel.components.size());
+    for (const ComponentRef& c : sel.components) ids.push_back(c.shapeId);
+  }
+  std::sort(ids.begin(), ids.end());
+  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+  return ids;
+}
+
+void drawPathsSection(AppState& st, const MixboxLut& lut) {
+  const PathsPanelSubject sub = pathsPanelSubject(st);
+  const bool live = sub.layer != nullptr && !sub.locked;
+
+  // The empty list is a real subject for the sweep below: with no document
+  // open every verb refuses `EmptySelection`, which is the right thing for the
+  // tooltips to say, and it means there is no `sub.layer != nullptr` branch
+  // wrapped round the whole panel body.
+  static const std::vector<VectorShape> kNoShapes;
+  const std::vector<VectorShape>& shapes = sub.layer != nullptr ? sub.layer->shapes : kNoShapes;
+
+  // **One sweep, before anything is drawn or run.** Every button below reads
+  // this and nothing re-asks -- a verb that mutated the geometry mid-frame
+  // would otherwise leave the buttons after it lit against a selection that no
+  // longer means what they were greyed by.
+  const PathOpAvailability avail = pathOpAvailability(shapes, st.pathEdit.selection);
+
+  const std::vector<uint64_t> selectedIds = pathsSelectedShapeIds(st.pathEdit.selection);
+
+  // Run a verb, and then do the two things `app/PathOps` deliberately does not
+  // do for its caller (that header's sections 2 and 3): record the undo entry,
+  // and repair the selection.
+  auto runVerb = [&](PathOp op) {
+    if (sub.layer == nullptr) return;
+    const PathOpResult r =
+        runPathOp(op, &sub.layer->shapes, &sub.layer->nextShapeId, st.pathEdit.selection);
+    if (!r.changed) {
+      // Unreachable while the button was lit, and written anyway --
+      // app/PathOps.hpp section 2's own argument: "impossible today" is how a
+      // control lies tomorrow, and a keyboard route to these verbs is one
+      // track away.
+      g_pathsStatus = pathOpRefusalText(r.refusal);
+      return;
+    }
+    // **`erasedShapes` acted on, unconditionally.** A join that consumed a
+    // whole shape, or a delete that emptied one, leaves the selection and the
+    // open placement session naming geometry that is gone. Through PenTool,
+    // which is the only writer of `PathEditState` -- `grep -rnP
+    // 'pathEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` must find nothing.
+    pathEditPruneSelection(&st.pathEdit, sub.layer->shapes);
+    // RELEASE mints shapes and, by the same single-writer rule, does not
+    // select them itself. Selecting them is what makes the release visible:
+    // otherwise the compound vanishes from the selection and its parts arrive
+    // unselected, which reads as a delete.
+    if (!r.createdShapes.empty())
+      pathEditSelectShapes(&st.pathEdit, r.createdShapes, SelectionCombine::Replace,
+                           sub.layer->shapes);
+    sub.od->recordEdit(pathOpEditName(op), EditKind::Content);
+    // **JOIN's discard, said out loud.** `PathOpResult::discardedShapeStyle`
+    // exists for exactly this line; a silent loss the user finds three edits
+    // later is the failure mode docs/path-editing-plan.md section 1.2 calls
+    // the cheapest honest guard against.
+    g_pathsStatus = r.discardedShapeStyle
+                        ? "Joined across two shapes -- the second path's fill and stroke were "
+                          "dropped, and the first's kept."
+                        : "";
+  };
+
+  // One verb button. Greyed on its own refusal, and the refusal is what the
+  // tooltip says when it is -- so "why is this dead?" is answered where the
+  // question is asked rather than in a status line the user has to find.
+  auto verbButton = [&](const char* label, PathOp op, const char* tip) {
+    const bool can = live && avail.enabled(op);
+    ImGui::BeginDisabled(!can);
+    const bool clicked = ImGui::SmallButton(label);
+    ImGui::EndDisabled();
+    // `AllowWhenDisabled`, because the disabled button is precisely the one
+    // whose tooltip carries information.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      std::string t = tip;
+      if (!live) {
+        t += "\n\n";
+        t += sub.layer == nullptr
+                 ? "Select a Vector layer in LAYERS to use this."
+                 : "This layer is locked. Unlock it in LAYERS to edit its paths.";
+      } else if (!can) {
+        t += "\n\n";
+        t += pathOpRefusalText(avail.refusalFor(op));
+      }
+      ImGui::SetTooltip("%s", t.c_str());
+    }
+    if (clicked && can) runVerb(op);
+    return clicked && can;
+  };
+
+  // A per-shape style chip (RULE / CAP / JOIN). Not a `PathOp`: these edit a
+  // shape's paint rather than its topology, so they have no refusal enum and
+  // their only precondition is that some shape is selected.
+  auto styleChip = [&](const char* label, bool on, const char* editName, const char* tip,
+                       const std::function<void(VectorShape&)>& apply) {
+    const bool can = live && !selectedIds.empty();
+    ImGui::BeginDisabled(!can);
+    if (on) {
+      ImGui::PushStyleColor(ImGuiCol_Button, atelierToken(kAccent));
+      ImGui::PushStyleColor(ImGuiCol_Text, atelierToken(kChromeDeep));
+    }
+    const bool clicked = ImGui::SmallButton(label);
+    if (on) ImGui::PopStyleColor(2);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      std::string t = tip;
+      if (!can) t += "\n\nSelect a path first.";
+      ImGui::SetTooltip("%s", t.c_str());
+    }
+    if (clicked && can) {
+      for (VectorShape& s : sub.layer->shapes)
+        if (std::find(selectedIds.begin(), selectedIds.end(), s.id) != selectedIds.end()) apply(s);
+      sub.od->recordEdit(editName, EditKind::Content);
+      g_pathsStatus.clear();
+    }
+  };
+
+  // The first selected shape, for the chips' "which one is on?" readout. The
+  // FIRST rather than "all agree", which is the same convention the options
+  // band's own mixed-selection rule takes: showing nothing lit for a mixed
+  // selection would make the row look broken rather than mixed.
+  const VectorShape* firstSelected = nullptr;
+  if (sub.layer != nullptr && !selectedIds.empty())
+    for (const VectorShape& s : sub.layer->shapes)
+      if (s.id == selectedIds.front()) {
+        firstSelected = &s;
+        break;
+      }
+
+  // ---- the shape list ---------------------------------------------------
+  //
+  // A row per shape: its name, whether it is filled, and whether and how
+  // thickly it is stroked. The row selects; a double-click on the name renames
+  // it.
+  //
+  // **The swatches are a readout, not an editor.** Which colour a path takes
+  // is the options band's row (docs/path-editing-plan.md section 2.2), and a
+  // second colour control here would be a second answer to "what does this
+  // shape's fill follow?" for anyone with both on screen.
+  flatsCapsLabel("SHAPES");
+  ImGui::BeginDisabled(!live);
+  if (sub.layer == nullptr) {
+    textDisabledWrapped("%s", st.documents.active() == nullptr
+                                  ? "No document open."
+                                  : "Pick a Vector layer in LAYERS to use these. NEW + > Vector "
+                                    "makes one; the Pen and the Curve draw into it.");
+  } else if (sub.layer->shapes.empty()) {
+    textDisabledWrapped("No paths yet. Draw one with the Pen or the Curve, or open an SVG.");
+  }
+  for (size_t i = 0; sub.layer != nullptr && i < sub.layer->shapes.size(); ++i) {
+    VectorShape& s = sub.layer->shapes[i];
+    ImGui::PushID(static_cast<int>(i));
+    const bool selected =
+        std::find(selectedIds.begin(), selectedIds.end(), s.id) != selectedIds.end();
+
+    if (g_pathsRenamingShape == s.id) {
+      ImGui::SetNextItemWidth(-1.0f);
+      const bool done = ImGui::InputText("##rename", g_pathsRenameBuf, sizeof(g_pathsRenameBuf),
+                                         ImGuiInputTextFlags_EnterReturnsTrue);
+      if (ImGui::IsItemDeactivated()) {
+        // Deactivation covers Return, Escape and a click elsewhere alike. The
+        // name is only written when it CHANGED, so an Escape or a stray click
+        // does not spend an undo entry on nothing.
+        if (done && s.name != g_pathsRenameBuf) {
+          s.name = g_pathsRenameBuf;
+          sub.od->recordEdit("rename path", EditKind::Content);
+        }
+        g_pathsRenamingShape = 0;
+      }
+    } else {
+      const std::string label = s.name.empty() ? ("Path " + std::to_string(s.id)) : s.name;
+      if (ImGui::Selectable(label.c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick)) {
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+          g_pathsRenamingShape = s.id;
+          std::snprintf(g_pathsRenameBuf, sizeof(g_pathsRenameBuf), "%s", label.c_str());
+        } else {
+          // **Through PenTool, never by assignment.** The modifier grammar is
+          // `selectionCombineFromModifiers()`, the same one the marquee and
+          // every other selection in this build reads, so Shift-clicking rows
+          // extends exactly as Shift-dragging on the canvas does.
+          const ImGuiIO& io = ImGui::GetIO();
+          pathEditSelectShapes(&st.pathEdit, {s.id},
+                               selectionCombineFromModifiers(io.KeyShift, io.KeyAlt),
+                               sub.layer->shapes);
+        }
+      }
+    }
+
+    // The paint readout, on the same line and right-aligned so the names form
+    // a column that can be read down.
+    ImGui::SameLine();
+    ImGui::ColorButton("##fill",
+                       ImVec4(s.fill.rgba[0], s.fill.rgba[1], s.fill.rgba[2],
+                              s.fill.on ? s.fill.rgba[3] : 0.0f),
+                       ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop |
+                           ImGuiColorEditFlags_AlphaPreviewHalf,
+                       ImVec2(14.0f, 14.0f));
+    ImGui::SetItemTooltip("%s", s.fill.on ? "Filled." : "No fill.");
+    ImGui::SameLine();
+    ImGui::ColorButton("##stroke",
+                       ImVec4(s.stroke.rgba[0], s.stroke.rgba[1], s.stroke.rgba[2],
+                              s.stroke.on ? s.stroke.rgba[3] : 0.0f),
+                       ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop |
+                           ImGuiColorEditFlags_AlphaPreviewHalf,
+                       ImVec2(14.0f, 14.0f));
+    ImGui::SetItemTooltip("%s", s.stroke.on ? "Stroked." : "No stroke.");
+    if (s.stroke.on) {
+      ImGui::SameLine();
+      textDisabledWrapped("%.1f", s.strokeStyle.width);
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndDisabled();
+
+  // ---- PATH: the topology verbs -----------------------------------------
+  ImGui::Separator();
+  flatsCapsLabel("PATH");
+  verbButton("CLOSE", PathOp::Close,
+             "Close every selected subpath: the last anchor joins back to the first.\n"
+             "The closing segment is implied, never a repeated anchor.");
+  ImGui::SameLine();
+  verbButton("OPEN", PathOp::Open,
+             "Cut a closed subpath open at the selected anchor, so it runs from one end to "
+             "the other again.");
+  ImGui::SameLine();
+  verbButton("JOIN", PathOp::Join,
+             "Join two selected END anchors into one path.\n\n"
+             "The two anchors STAY as two anchors: a weld is lossy, and two anchors a hair "
+             "apart is a state you can see and fix. Joining across two shapes moves the "
+             "subpath into whichever appears first in the layer, and the other shape's fill "
+             "and stroke are dropped -- the status line says so when it happens.");
+  ImGui::SameLine();
+  verbButton("REVERSE", PathOp::Reverse,
+             "Run the selected subpaths the other way round. Each anchor's two tangent "
+             "handles swap with it, so the curve is unchanged and only its direction is "
+             "not.");
+  verbButton("COMPOUND", PathOp::MakeCompound,
+             "Gather the selected shapes into one compound path, so their subpaths share a "
+             "fill rule and a hole reads as a hole.");
+  ImGui::SameLine();
+  verbButton("RELEASE", PathOp::ReleaseCompound,
+             "Break a compound path back into one shape per subpath. The parts arrive "
+             "selected.");
+
+  ImGui::BeginDisabled(!live);
+  flatsCapsLabel("RULE");
+  ImGui::SameLine();
+  styleChip("NONZERO", firstSelected != nullptr && firstSelected->path.rule == FillRule::NonZero,
+            "fill rule",
+            "Non-zero winding: a subpath inside another fills too unless it runs the other "
+            "way round. REVERSE is what makes a hole under this rule.",
+            [](VectorShape& s) { s.path.rule = FillRule::NonZero; });
+  ImGui::SameLine();
+  styleChip("EVEN-ODD", firstSelected != nullptr && firstSelected->path.rule == FillRule::EvenOdd,
+            "fill rule",
+            "Even-odd: every other crossing is a hole, whichever way the subpaths run.",
+            [](VectorShape& s) { s.path.rule = FillRule::EvenOdd; });
+
+  flatsCapsLabel("CAP");
+  ImGui::SameLine();
+  styleChip("BUTT", firstSelected != nullptr && firstSelected->strokeStyle.cap == LineCap::Butt,
+            "line cap", "The stroke stops dead at the end anchor.",
+            [](VectorShape& s) { s.strokeStyle.cap = LineCap::Butt; });
+  ImGui::SameLine();
+  styleChip("ROUND##cap",
+            firstSelected != nullptr && firstSelected->strokeStyle.cap == LineCap::Round,
+            "line cap", "A half-disc of the stroke's own width past each end.",
+            [](VectorShape& s) { s.strokeStyle.cap = LineCap::Round; });
+  ImGui::SameLine();
+  styleChip("SQUARE",
+            firstSelected != nullptr && firstSelected->strokeStyle.cap == LineCap::Square,
+            "line cap", "A half-width square past each end.",
+            [](VectorShape& s) { s.strokeStyle.cap = LineCap::Square; });
+
+  flatsCapsLabel("JOIN");
+  ImGui::SameLine();
+  styleChip("MITER", firstSelected != nullptr && firstSelected->strokeStyle.join == LineJoin::Miter,
+            "line join",
+            "A sharp corner, falling back to a bevel past the miter limit so a near-"
+            "straight join does not shoot off the canvas.",
+            [](VectorShape& s) { s.strokeStyle.join = LineJoin::Miter; });
+  ImGui::SameLine();
+  styleChip("ROUND##join",
+            firstSelected != nullptr && firstSelected->strokeStyle.join == LineJoin::Round,
+            "line join", "An arc of the stroke's own width round the corner.",
+            [](VectorShape& s) { s.strokeStyle.join = LineJoin::Round; });
+  ImGui::SameLine();
+  styleChip("BEVEL", firstSelected != nullptr && firstSelected->strokeStyle.join == LineJoin::Bevel,
+            "line join", "The corner cut straight across.",
+            [](VectorShape& s) { s.strokeStyle.join = LineJoin::Bevel; });
+  ImGui::EndDisabled();
+
+  // ---- ANCHOR: the per-knot verbs ---------------------------------------
+  //
+  // Three where another editor has two, and the third is the one users
+  // actually reach for: CORNER collapses the handles onto the anchor and
+  // straightens both adjoining segments, BREAK leaves them exactly where they
+  // are and only stops them moving together. Two buttons both called "corner"
+  // doing different things is worse than three with distinct verbs.
+  ImGui::Separator();
+  flatsCapsLabel("ANCHOR");
+  verbButton("SMOOTH", PathOp::Smooth,
+             "Refit each selected anchor's two handles from its neighbours, opposite through "
+             "the anchor. The same fit the Curve tool lays down, so the button and the tool "
+             "cannot drift apart on what smooth means.");
+  ImGui::SameLine();
+  verbButton("CORNER", PathOp::Corner,
+             "Collapse the handles onto the anchor: both adjoining segments become straight.");
+  ImGui::SameLine();
+  verbButton("BREAK", PathOp::Break,
+             "Let the two handles move independently, leaving them exactly where they are. "
+             "This is the one for kinking a curve without losing it.");
+  verbButton("INSERT", PathOp::InsertAnchor,
+             "Add an anchor halfway along the segment between two selected neighbours. The "
+             "curve is unchanged -- the four surrounding handles are re-derived to reproduce "
+             "it exactly.");
+  ImGui::SameLine();
+  verbButton("DELETE", PathOp::DeleteAnchor,
+             "Remove the selected anchors. The subpath stays; a subpath left with no anchors "
+             "goes, and so does a shape left with no subpaths.");
+
+  // ---- MAKE: the three consumers ----------------------------------------
+  //
+  // **These three are `app/PathConsumers`' first UI callers, ever.** They were
+  // built, selftested and listed in docs/vector-editing.md section 8 under
+  // "not on screen yet" with this panel named as their home; PRD J1-J4 becomes
+  // reachable here.
+  //
+  // FILL and STROKE need a TARGET, which no other paint command in this build
+  // does: the active layer is the Vector one -- that is what makes this panel
+  // live -- and a Vector layer holds no texels. `pathPaintTargetBelow()` is
+  // that rule, headless and asserted; the label under the buttons names the
+  // layer, because a command that paints into a layer you are not looking at
+  // must say which one before you press it, not after.
+  ImGui::Separator();
+  flatsCapsLabel("MAKE");
+
+  const Document* doc = sub.od != nullptr ? &sub.od->document : nullptr;
+  const std::optional<size_t> fillTarget =
+      doc != nullptr ? pathPaintTargetBelow(doc->layers, sub.index, PathPaintKind::Fill)
+                     : std::nullopt;
+  const std::optional<size_t> strokeTarget =
+      doc != nullptr ? pathPaintTargetBelow(doc->layers, sub.index, PathPaintKind::Stroke)
+                     : std::nullopt;
+  const bool anyShape = sub.layer != nullptr && !sub.layer->shapes.empty();
+
+  ImGui::BeginDisabled(!live || !anyShape);
+  if (ImGui::SmallButton("SELECTION")) {
+    const PathShapesResult sh = pathConsumerShapes(*sub.layer);
+    if (!sh.ok) {
+      g_pathsStatus = sh.error;
+    } else {
+      const PathSelectionResult r = pathToSelection(
+          sh.shapes, sub.od->selection.has_value() ? &*sub.od->selection : nullptr,
+          SelectionCombine::Replace, sub.od->document.width, sub.od->document.height);
+      if (!r.ok) {
+        g_pathsStatus = r.error;
+      } else {
+        // **No `recordEdit()`, deliberately and permanently.** A selection is
+        // not a document edit (app/DocumentLifecycle.hpp), which is why
+        // `PathSelectionResult` is the one of the three result types with no
+        // `editLabel` to hand over.
+        installSelection(*sub.od, std::move(r.selection));
+        g_pathsStatus = "Selection made from " + std::to_string(sh.shapes.size()) +
+                        " path(s): " + std::to_string(r.selectedTexels) + " texel(s).";
+      }
+    }
+  }
+  ImGui::SetItemTooltip(
+      "Turn the whole layer's paths into a selection, replacing the current one.\n\n"
+      "A path encloses what it encloses: an unfilled path still contributes its area, and a "
+      "clipped one contributes only what its clip lets through.");
+  ImGui::EndDisabled();
+
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!live || !anyShape || !fillTarget.has_value());
+  if (ImGui::SmallButton("FILL")) {
+    const PathShapesResult sh = pathConsumerShapes(*sub.layer);
+    if (!sh.ok) {
+      g_pathsStatus = sh.error;
+    } else {
+      Layer& target = sub.od->document.layers[*fillTarget];
+      const PathFillResult r =
+          fillPathIntoLayer(target, sh.shapes, sub.od->selection.has_value() ? &*sub.od->selection
+                                                                            : nullptr,
+                            sub.od->document.width, sub.od->document.height);
+      if (!r.ok) {
+        g_pathsStatus = r.error;
+      } else if (r.editLabel.empty()) {
+        g_pathsStatus = "The fill changed nothing -- the paths land outside the selection, or "
+                        "off the canvas.";
+      } else {
+        sub.od->recordEdit(r.editLabel, EditKind::Content);
+        g_pathsStatus = "Filled " + std::to_string(r.texelsChanged) + " texel(s) into " +
+                        target.name + ".";
+      }
+    }
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    std::string t =
+        "Paint each path's fill and then its stroke into the layer below, bottom shape to "
+        "top -- the same order the vector layer composites in.";
+    if (!fillTarget.has_value())
+      t += "\n\nThere is no RGB layer below this one to fill into. Make one in LAYERS.";
+    ImGui::SetTooltip("%s", t.c_str());
+  }
+
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!live || !anyShape || !strokeTarget.has_value());
+  if (ImGui::SmallButton("STROKE")) {
+    const PathShapesResult sh = pathConsumerShapes(*sub.layer);
+    if (!sh.ok) {
+      g_pathsStatus = sh.error;
+    } else {
+      Layer& target = sub.od->document.layers[*strokeTarget];
+      // A mouse's tip: the current brush at full pressure. `brushTipFor()`
+      // rather than a hand-built `BrushTip`, so this stroke is the brush the
+      // palette shows -- its size, its colour and its pigment -- and not a
+      // second idea of what the current brush is.
+      const BrushTip tip = brushTipFor(st.brush, lut, 1.0f);
+      const PathStrokeResult r = strokePathWithBrush(
+          target, sh.shapes, tip,
+          sub.od->selection.has_value() ? &*sub.od->selection : nullptr, sub.od->document.width,
+          sub.od->document.height);
+      if (!r.ok) {
+        g_pathsStatus = r.error;
+      } else if (r.editLabel.empty()) {
+        g_pathsStatus = "The stroke changed nothing -- the paths land outside the selection, "
+                        "or off the canvas.";
+      } else {
+        sub.od->recordEdit(r.editLabel, EditKind::Content);
+        g_pathsStatus = "Stroked " + std::to_string(r.dabs) + " dab(s) into " + target.name + ".";
+      }
+    }
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    std::string t =
+        "Run the current brush along every path, as ONE stroke -- so two paths that cross do "
+        "not build up past the brush's opacity any more than a hand-drawn stroke crossing "
+        "itself does.";
+    if (!strokeTarget.has_value())
+      t += "\n\nThere is no RGB or Pigment layer below this one to stroke into. Make one in "
+           "LAYERS.";
+    ImGui::SetTooltip("%s", t.c_str());
+  }
+
+  if (live && anyShape) {
+    const std::optional<size_t> shown = fillTarget.has_value() ? fillTarget : strokeTarget;
+    if (shown.has_value())
+      textDisabledWrapped("FILL and STROKE paint into %s, below this layer.",
+                          sub.od->document.layers[*shown].name.c_str());
+    else
+      textDisabledWrapped("Nothing below this layer holds pixels to paint into.");
+  }
+
+  // ---- the status line --------------------------------------------------
+  //
+  // Last, and outside every `BeginDisabled`, because the sentence explaining
+  // why the panel is dead must not itself be drawn dead.
+  if (sub.layer == nullptr) {
+    ImGui::Separator();
+    textDisabledWrapped("%s", st.documents.active() == nullptr
+                                  ? "No document open."
+                                  : "Pick a Vector layer in LAYERS to use these.");
+  } else if (sub.locked) {
+    ImGui::Separator();
+    textDisabledWrapped("This layer is locked. Unlock it in LAYERS to edit its paths.");
+  } else if (!g_pathsStatus.empty()) {
+    ImGui::Separator();
+    textDisabledWrapped("%s", g_pathsStatus.c_str());
+  }
+}
+
 // One panel's contents, with no frame of its own.
 //
 // The switch is what the `##controls` loop's switch used to be, moved here so
@@ -12190,6 +12756,9 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
     case ControlsSection::Comps:        drawCompsSection(st); break;
     case ControlsSection::FlatsSegmentation: drawFlatsSegmentationSection(st); break;
     case ControlsSection::FlatsTools:   drawFlatsToolsSection(st); break;
+    // docs/path-editing-plan.md section 4. `lut` for MAKE STROKE alone,
+    // which builds the current brush's tip the way the canvas route does.
+    case ControlsSection::Paths:        drawPathsSection(st, lut); break;
     // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and a
     // curve widget operating in the shaper domain").
     case ControlsSection::Grade:        drawGradeSection(st); break;
@@ -13882,11 +14451,25 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         revealLayer != nullptr ? std::optional<LayerKind>(revealLayer->kind) : std::nullopt;
     const bool becameFlats = nowKind.has_value() && *nowKind == LayerKind::Flats &&
                              st.lastActiveLayerKind != nowKind;
+    // **PATHS is revealed by the same edge, one layer kind over** (docs/
+    // path-editing-plan.md section 4.1). Extending this block rather than
+    // adding a second one is not tidiness: `st.lastActiveLayerKind` is
+    // written below, and a second block reading it would see the value this
+    // one had already advanced -- so its own "the kind CHANGED" test would be
+    // false on the very frame it was true, and the panel would never appear.
+    // One reader, one writer, one frame.
+    const bool becameVector = nowKind.has_value() && *nowKind == LayerKind::Vector &&
+                              st.lastActiveLayerKind != nowKind;
     st.lastActiveLayerKind = nowKind;
     if (becameFlats && st.panels.placementOf(ControlsSection::FlatsTools) ==
                            PanelPlacement::Flyout) {
       st.flyoutOpen = true;
       st.flyoutSection = ControlsSection::FlatsTools;
+    }
+    if (becameVector &&
+        st.panels.placementOf(ControlsSection::Paths) == PanelPlacement::Flyout) {
+      st.flyoutOpen = true;
+      st.flyoutSection = ControlsSection::Paths;
     }
   }
 

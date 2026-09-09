@@ -281,9 +281,17 @@ photographed** (golden views `vector_shape`, `vector_components`,
   pressed once the drag kind is set, so §2's gnomon is a visible target whose
   scale and rotate handles move the selection. Tracked as a row in
   `docs/spec-vs-implementation.md` §2.
-- **The PATHS panel**, and the three PRD J consumers. `app/PathConsumers`
-  supplies path-to-selection, fill path and stroke path headless, with a
-  selftest section and no UI caller.
+- ~~**The PATHS panel**, and the three PRD J consumers.~~ **Built 2026-09-09**
+  (`docs/path-editing-plan.md` §4). `ControlsSection::Paths` is a `Tool`-role
+  panel on the flyout rail, revealed on the transition into a Vector layer the
+  way FLATS TOOLS is revealed on the transition into a Flats layer. It carries
+  `app/PathOps`' eleven verbs — each greyed on its own `pathOpCanRun()` answer,
+  so a lit button cannot refuse — the per-shape fill rule, cap and join, and a
+  MAKE row that is `app/PathConsumers`' first UI caller anywhere in the tree.
+  `pathToSelection()` installs the selection with no `recordEdit()`;
+  `fillPathIntoLayer()` and `strokePathWithBrush()` paint into the nearest
+  layer BELOW the path, because the active layer is the Vector one and holds no
+  texels.
 
 **What the 2026-09-03 edition listed here and is now built:** the mode
 segment (it said `pathEditSetSelectMode()` had no caller under `ui/`) and the

@@ -53,11 +53,12 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 17, "every section has exactly one spec (17)");
-  check(newOrder.size() == kOldOrder.size() + 8,
+  check(sections.size() == 18, "every section has exactly one spec (18)");
+  check(newOrder.size() == kOldOrder.size() + 9,
         "the same sections plus COMPS, COLOR, BRUSH LIBRARY, HISTOGRAM, TOOLS and OPTIONS from "
         "the dockable-panel revamp, and -- as of the flats panels (ADR-0009) -- FLATS TOOLS and "
-        "SEGMENTATION, reordered; none was dropped");
+        "SEGMENTATION, and PATHS (docs/path-editing-plan.md section 4), reordered; none was "
+        "dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
     // enumerators rather than against a count, so a section added to the enum
@@ -77,9 +78,10 @@ bool runControlsLayoutTest() {
         ControlsSection::Grade,      ControlsSection::Histogram,
         ControlsSection::BrushLibrary,
         ControlsSection::Brush,      ControlsSection::FlatsTools,
+        ControlsSection::Paths,
         ControlsSection::Pigment,    ControlsSection::Medium,
         ControlsSection::BoardTilt,  ControlsSection::Grid,       ControlsSection::Solver};
-    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 17,
+    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 18,
                   "kAll must list every ControlsSection enumerator");
     bool eachOnce = true;
     for (const ControlsSection s : kAll) {

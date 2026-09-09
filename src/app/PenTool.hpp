@@ -492,6 +492,50 @@ void pathEditRefreshPivot(PathEditState* state, const std::vector<VectorShape>& 
 void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
                            const std::vector<VectorShape>& shapes);
 
+// Drop everything the selection and the open placement session name that
+// `shapes` no longer contains -- the transition the PATHS panel runs after
+// every `runPathOp()` (docs/path-editing-plan.md sections 1.4 and 4).
+//
+// **Against the surviving geometry, not against a list of erased ids.**
+// `PathOpResult::erasedShapes` is the id-shaped half of the hazard and it is
+// the half app/PathOps.hpp calls out, but a DELETE that leaves a shape
+// standing with fewer subpaths, or a subpath standing with fewer anchors,
+// dangles a component-mode `ComponentRef` by INDEX with no id having
+// disappeared at all. One rule -- "does this reference still resolve?" --
+// covers both, and cannot be the half the caller forgot to pass in.
+//
+// The open placement session goes through `pathEditEndOpenPath()` rather than
+// having its three fields cleared here, so there stays exactly one place that
+// knows what ending placement means.
+//
+// A live drag is cancelled whenever anything was pruned. That cannot happen
+// from a panel button -- the docks draw before the canvas
+// hit-test, so a click on a button is never also a click dragging an anchor
+// -- but a keyboard route to these verbs is docs/path-editing-plan.md track
+// C1's, and a verb run mid-drag would leave `shapesAtDragStart` describing
+// geometry that no longer exists.
+//
+// Idempotent, and a no-op when everything already resolves: the panel calls
+// it unconditionally after a verb rather than only when `erasedShapes` is
+// non-empty, so there is no second predicate to get wrong.
+void pathEditPruneSelection(PathEditState* state, const std::vector<VectorShape>& shapes);
+
+// Install `ids` as the SHAPE-mode selection -- the PATHS panel's shape-list
+// row click, and how the caller of `runPathOp(ReleaseCompound)` selects the
+// shapes that verb minted (app/PathOps.hpp section 3: the verbs never touch
+// the selection, so the caller re-selects, and it does so through here rather
+// than by assigning the field).
+//
+// Switches `mode` to `Shape`: a list of whole shapes is what it is handed,
+// and leaving the selection in Component mode would draw an anchor scatter
+// for shapes the user picked as objects.
+//
+// Ids not present in `shapes` are dropped rather than stored. A writer that
+// can install a dangle would make `pathEditPruneSelection()` above something
+// every caller has to remember instead of an invariant.
+void pathEditSelectShapes(PathEditState* state, const std::vector<uint64_t>& ids,
+                          SelectionCombine how, const std::vector<VectorShape>& shapes);
+
 // ==========================================================================
 // 9. PLACEMENT -- Pen/Curve laying down new anchors
 // ==========================================================================

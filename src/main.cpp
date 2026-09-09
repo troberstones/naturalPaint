@@ -2698,6 +2698,14 @@ int main(int argc, char** argv) {
     // both promoted into core/Path so Curve mode and the SMOOTH button share
     // one implementation. Headless and GPU-free; writes no files.
     const bool pathOpsOk = np::runPathOpsTest();
+    // The PATHS panel (docs/path-editing-plan.md section 4): its registration
+    // in three of the four tables a section must appear in, that every verb
+    // button greys on its own `pathOpCanRun()` answer, that
+    // `pathEditPruneSelection()` repairs the selection and the open placement
+    // session after a verb erases geometry, and the layer-below rule MAKE
+    // FILL and MAKE STROKE need and no other paint command in this build
+    // does. Headless and GPU-free; writes no files; opens no window.
+    const bool pathsPanelOk = np::runPathsPanelTest();
     // app/PenTool section 9 -- Pen/Curve placement: a press creating and
     // extending a shape, a press on its own first anchor closing it, a drag
     // setting a mirrored tangent, Escape leaving what was placed, and
@@ -3613,7 +3621,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && pathOpsOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    penToolOk && pathOpsOk && pathsPanelOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk;
     s->shutdown();
     gpu.shutdown();
