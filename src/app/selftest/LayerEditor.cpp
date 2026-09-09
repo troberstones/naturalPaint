@@ -62,7 +62,7 @@ bool runLayerEditorTest() {
   // range is well defined to cast.
   {
     const std::vector<LayerCommand>& all = allLayerCommands();
-    check(all.size() == 22, "the menu walks all 22 commands");
+    check(all.size() == 23, "the menu walks all 23 commands");
     bool everyValueListed = true;
     size_t named = 0;
     for (int v = 0; v < 64; ++v) {

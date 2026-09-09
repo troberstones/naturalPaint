@@ -87,6 +87,9 @@ part 1   "L0001"          R G B A                    ← baked projection
                  np:locked      1
                  np:parent      ""
                  np:clipped     1        (only when clipped; PRD C9)
+                 np:flatsRef    1        (only when marked; ADR-0009 -- the
+                                          layer a Flats layer segments, in
+                                          place of the whole stack beneath it)
                  np:ops         <blob>
 
 part 1b  "L0005"          (one `mask` channel; see "Groups have no native

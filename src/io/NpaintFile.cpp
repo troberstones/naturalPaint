@@ -78,6 +78,15 @@ constexpr const char* kAttrClipped = "np:clipped";
 // document with no alpha-locked layer produces exactly the bytes it produced
 // before this attribute existed.
 constexpr const char* kAttrAlphaLocked = "np:alphaLocked";
+// Whether the layer is a flatting reference (core/Layer.hpp's
+// `flatsReference`): an `int` 0/1, `np:alphaLocked`'s own type and rule --
+// written **only when true**, so a document with no reference layer produces
+// exactly the bytes it produced before this attribute existed. Written on
+// EVERY kind, not only the kinds that can plausibly be line art: the flag is
+// the artist's statement about a layer, a Flats layer decides on its own
+// whether to honour it, and PRD I10's rule is that a preserved attribute
+// must round-trip wherever a file happens to carry it.
+constexpr const char* kAttrFlatsRef = "np:flatsRef";
 // **A Group layer's own stable identity** (PLAN.md Phase 5's C7/C12
 // follow-on; core/Layer.hpp's `groupTag`). Written **only on a Group-kind
 // part**, `np:mask`'s own rule and reason: meaningless on any other kind, so
@@ -285,7 +294,8 @@ bool isLayerAttributeRecognised(const std::string& name) {
          name == kAttrOpacity || name == kAttrVisible || name == kAttrLocked ||
          name == kAttrParent || name == kAttrOps || name == kAttrMask ||
          name == kAttrClipped || name == kAttrLabel || name == kAttrLink ||
-         name == kAttrGroupId || name == kAttrAlphaLocked || name == kAttrVector ||
+         name == kAttrGroupId || name == kAttrAlphaLocked || name == kAttrFlatsRef ||
+         name == kAttrVector ||
          name == kAttrText || name == kAttrFlats;
 }
 
@@ -2000,6 +2010,9 @@ NpaintSaveResult saveNpaint(const Document& doc, const std::string& path,
     // test). Absent therefore reads as `false`, `Layer::alphaLocked`'s own
     // default.
     if (layer.alphaLocked) part.attributes.push_back(intAttr(kAttrAlphaLocked, 1));
+    // Same rule: only when true, so the byte identity of every document
+    // without a reference layer is unchanged.
+    if (layer.flatsReference) part.attributes.push_back(intAttr(kAttrFlatsRef, 1));
     // PLAN.md Phase 5 step 11 / PRD C15. Written only when set; see the
     // attribute names at the top of this file for why these two are scalars
     // rather than a carrier, and why the range check on the link group is a
@@ -2816,6 +2829,12 @@ NpaintLoadResult loadNpaint(const std::string& path) {
     if (const NpaintAttribute* a = findAttr(part.attributes, kAttrAlphaLocked);
         a && a->type == NpaintAttribute::Type::Int)
       layer.alphaLocked = a->intValue != 0;
+    // Absent means `false`, `Layer::flatsReference`'s own default: a file
+    // written before this step loads with no reference layer, which is
+    // exactly the "every layer below" behaviour it had when it was saved.
+    if (const NpaintAttribute* a = findAttr(part.attributes, kAttrFlatsRef);
+        a && a->type == NpaintAttribute::Type::Int)
+      layer.flatsReference = a->intValue != 0;
     // PLAN.md Phase 5 step 11 / PRD C15. Absent means each member's own default
     // -- unlabelled, unlinked -- so a `.npaint` written before this step loads
     // with neither, without the reader having to know that. The label is taken

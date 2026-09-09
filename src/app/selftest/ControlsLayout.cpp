@@ -53,10 +53,11 @@ bool runControlsLayoutTest() {
               positionIn(kOldOrder, ControlsSection::History) + 1, kOldOrder.size(),
               positionIn(newOrder, ControlsSection::History) + 1, newOrder.size());
 
-  check(sections.size() == 15, "every section has exactly one spec (15)");
-  check(newOrder.size() == kOldOrder.size() + 6,
-        "the same sections plus COMPS, COLOR, BRUSH LIBRARY, HISTOGRAM and -- as of the "
-        "dockable-panel revamp -- TOOLS and OPTIONS, reordered; none was dropped");
+  check(sections.size() == 17, "every section has exactly one spec (17)");
+  check(newOrder.size() == kOldOrder.size() + 8,
+        "the same sections plus COMPS, COLOR, BRUSH LIBRARY, HISTOGRAM, TOOLS and OPTIONS from "
+        "the dockable-panel revamp, and -- as of the flats panels (ADR-0009) -- FLATS TOOLS and "
+        "SEGMENTATION, reordered; none was dropped");
   {
     // Every enumerator appears exactly once. Written against the list of
     // enumerators rather than against a count, so a section added to the enum
@@ -72,11 +73,13 @@ bool runControlsLayoutTest() {
     const ControlsSection kAll[] = {
         ControlsSection::Tools,      ControlsSection::Options,
         ControlsSection::Color,      ControlsSection::Layers,     ControlsSection::History,
-        ControlsSection::Comps,      ControlsSection::Grade,      ControlsSection::Histogram,
+        ControlsSection::Comps,      ControlsSection::FlatsSegmentation,
+        ControlsSection::Grade,      ControlsSection::Histogram,
         ControlsSection::BrushLibrary,
-        ControlsSection::Brush,      ControlsSection::Pigment,    ControlsSection::Medium,
+        ControlsSection::Brush,      ControlsSection::FlatsTools,
+        ControlsSection::Pigment,    ControlsSection::Medium,
         ControlsSection::BoardTilt,  ControlsSection::Grid,       ControlsSection::Solver};
-    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 15,
+    static_assert(sizeof(kAll) / sizeof(kAll[0]) == 17,
                   "kAll must list every ControlsSection enumerator");
     bool eachOnce = true;
     for (const ControlsSection s : kAll) {
@@ -166,7 +169,28 @@ bool runControlsLayoutTest() {
     for (const ControlsSectionSpec& spec : sections) {
       // TOOLS and OPTIONS join them: a collapsed tool palette is an empty left
       // edge, which is not a state a first run should ever start in.
-      const bool shouldBeOpen = spec.role == ControlsSectionRole::Document ||
+      // **SEGMENTATION is the one Document section that does NOT start open.**
+      // The rule above was written when every Document panel applied to every
+      // document: LAYERS, HISTORY and COMPS have something to say the moment a
+      // file is open. SEGMENTATION has something to say only while the active
+      // layer is a Flats layer, which for most sessions is never, and the
+      // right dock does not scroll.
+      //
+      // **What that costs was measured, not assumed, and it is smaller than it
+      // looks.** Flipping this flag alone changes nothing at all: whether a
+      // panel actually starts expanded is decided by `defaultAffordableInDock()`
+      // in app/PanelLayout, and SEGMENTATION is not in that allow-list, so it
+      // starts collapsed either way. Putting it in the allow-list as well -- the
+      // change that really does expand it -- was tried, and LAYERS still cleared
+      // its three visible rows at the reference window size with room to spare;
+      // the only assertion that failed was the `expanded == 4` count below.
+      //
+      // So this flag is a statement of intent ("would you want this open if
+      // there were room"), and the answer is no for a panel that is blank
+      // unless a Flats layer is selected. It is not load-bearing for the dock
+      // arithmetic, and a future reader should not believe it is.
+      const bool shouldBeOpen = (spec.role == ControlsSectionRole::Document &&
+                                 spec.section != ControlsSection::FlatsSegmentation) ||
                                 spec.section == ControlsSection::Color ||
                                 spec.section == ControlsSection::Tools ||
                                 spec.section == ControlsSection::Options;

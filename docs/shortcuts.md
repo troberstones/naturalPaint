@@ -210,8 +210,11 @@ bindings **scoped to the Flats layer kind** — `K` delete fill, `M` two-click m
 `main.cpp` now resolves every chord against the active layer's kind, so a scoped
 binding fires only while a Flats layer is active. The bucket needs no key: on a Flats
 layer the bucket in its `Flats` fill mode *is* the recolour tool. `⇧K` group, `Y` shape
-fill, `⇧U` draw-merge and `⇧V` select edits are not yet bound; their model functions
-exist in `flats/Tool` and wait on the lasso and stroke gestures.
+fill, `⇧U` draw-merge and `⇧V` select edits are still not bound as KEYS, but they are no
+longer unreachable: each is a cell in the **FLATS TOOLS** palette, which picks it as a
+sticky tool the way a brush is picked, and the canvas route commits it. The letters above
+are what those cells advertise, so binding them later changes how they are reached and not
+what they do.
 
 ### 5.2 `⌘H` cannot be used
 

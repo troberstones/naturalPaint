@@ -70,6 +70,7 @@ const std::vector<LayerCommand>& allLayerCommands() {
       LayerCommand::RemoveMask,     LayerCommand::ToggleVisible,
       LayerCommand::ToggleLocked,   LayerCommand::ToggleClipped,
       LayerCommand::ToggleAlphaLock,
+      LayerCommand::ToggleFlatsReference,
       LayerCommand::MergeDown,      LayerCommand::MergeVisible,
       LayerCommand::StampVisible,   LayerCommand::FlattenImage,
       LayerCommand::RasteriseLayer,
@@ -96,6 +97,7 @@ const char* layerCommandLabel(LayerCommand command) noexcept {
     case LayerCommand::ToggleLocked:       return "Toggle Lock";
     case LayerCommand::ToggleClipped:      return "Clip to Layer Below";
     case LayerCommand::ToggleAlphaLock:    return "Lock Transparent Pixels";
+    case LayerCommand::ToggleFlatsReference: return "Use as Flats Reference";
     case LayerCommand::MergeDown:          return "Merge Down";
     case LayerCommand::MergeVisible:       return "Merge Visible";
     case LayerCommand::StampVisible:       return "Stamp Visible";
@@ -129,6 +131,7 @@ const char* layerCommandGlyph(LayerCommand command) noexcept {
     case LayerCommand::ToggleLocked:
     case LayerCommand::ToggleClipped:
     case LayerCommand::ToggleAlphaLock:
+    case LayerCommand::ToggleFlatsReference:
     case LayerCommand::CaptureComp:
       return "";
   }
@@ -181,6 +184,15 @@ bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t sel
     case LayerCommand::ToggleAlphaLock:
       return haveSelection &&
              (doc.layers[selected].kind == LayerKind::RGB || doc.layers[selected].alphaLocked);
+    // Offered on every layer that has one, `ToggleVisible`'s shape rather than
+    // `ToggleAlphaLock`'s: which marks a given Flats layer actually reads is
+    // decided by `flatsSourceLayers()` from the Flats layer's position, not
+    // from this row, so greying by kind here would be guessing at scope from
+    // the wrong end of the stack. The one case that can never mean anything --
+    // a Flats layer marking itself -- is a refusal with a sentence, this
+    // file's own stated preference over a control that silently does nothing.
+    case LayerCommand::ToggleFlatsReference:
+      return haveSelection;
     // PLAN.md Phase 5 step 10. Availability only where the gesture is
     // meaningless on this row -- the bottom layer has nothing below it to
     // merge into, and an empty document has nothing to collapse. Everything
@@ -210,6 +222,15 @@ bool layerCommandAvailable(const Document& doc, LayerCommand command, size_t sel
       return count > 0;
   }
   return false;
+}
+
+LayerEditResult applyFlatsExpand(OpenDocument& od, FlatsExpandMode mode, size_t selected) {
+  // Straight through `recordMerge`, which is what makes this one structural
+  // edit and therefore one undo step -- and which carries the warning out to
+  // the LAYERS panel where every other destructive operation reports.
+  std::vector<std::string> warnings;
+  LayerOpResult r = expandFlatsLayer(od.document, selected, mode, &warnings);
+  return recordMerge(od, std::move(r), selected, std::move(warnings));
 }
 
 LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t selected) {
@@ -289,6 +310,12 @@ LayerEditResult applyLayerCommand(OpenDocument& od, LayerCommand command, size_t
           od,
           setLayerAlphaLocked(doc, selected,
                               selected < count ? !doc.layers[selected].alphaLocked : true),
+          selected, selected);
+    case LayerCommand::ToggleFlatsReference:
+      return record(
+          od,
+          setLayerFlatsReference(doc, selected,
+                                 selected < count ? !doc.layers[selected].flatsReference : true),
           selected, selected);
     // PLAN.md Phase 5 step 10 / PRD C10, C11. Each collects core/Merge's
     // warnings into a local list and hands it on, so the panel can say what a

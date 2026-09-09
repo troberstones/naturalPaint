@@ -301,6 +301,79 @@ bool runToolSwitchTest() {
           "zero, rather than the heading it had when it was last on screen");
   }
 
+  // ========================================================================
+  // The flatting tools: a second sticky mode over the same canvas clicks
+  // ========================================================================
+  //
+  // These exist because a palette button cannot use the key path (the docks
+  // draw before the canvas hit-test, so the pointer is never over a texel when
+  // a button is clicked). That makes `flatsTool` a second answer to "what does
+  // a click mean", and this block pins the rule that keeps it from becoming an
+  // ambiguous one.
+  {
+    AppState st;
+    setFlatsTool(st, FlatsTool::DeleteFill);
+    check(st.flatsTool == FlatsTool::DeleteFill, "toolswitch: a flatting tool can be picked");
+
+    // **The rule.** Without this, a user picks the Brush in TOOLS, drags on a
+    // Flats layer, and gets a bridge stroke because DELETE was still lit in a
+    // palette they may not even have on screen.
+    setActiveTool(st, Tool::Brush);
+    check(st.flatsTool == FlatsTool::None,
+          "toolswitch: **picking an ordinary tool leaves flatting mode** -- one deliberate "
+          "pick, one answer to what a canvas click means");
+
+    // Re-picking the tool you already hold is exactly how a user says "stop
+    // doing the other thing", so the clear must not be behind the
+    // `next == outgoing` early return.
+    setFlatsTool(st, FlatsTool::BridgePen);
+    setActiveTool(st, Tool::Brush);
+    check(st.flatsTool == FlatsTool::None,
+          "toolswitch: ...including re-picking the tool already held, which is ahead of the "
+          "no-op early return rather than behind it");
+
+    // The host tools are ADR-0009's table. Getting one wrong is not cosmetic:
+    // the cursor, the options row and the canvas's drag handling all follow
+    // `brush.tool`, so a BRIDGE that left the Marquee installed would draw a
+    // rubber-band rectangle over a gesture that is a freehand stroke.
+    struct HostRow { FlatsTool tool; Tool host; };
+    const HostRow kHosts[] = {
+        {FlatsTool::BridgePen, Tool::Pencil},   {FlatsTool::BridgeEraser, Tool::Eraser},
+        {FlatsTool::Group, Tool::Lasso},        {FlatsTool::ShapeFill, Tool::Lasso},
+        {FlatsTool::Carve, Tool::PaintBucket},
+    };
+    bool hostsOk = true;
+    for (const HostRow& r : kHosts) {
+      AppState h;
+      setFlatsTool(h, r.tool);
+      if (h.brush.tool != r.host || h.flatsTool != r.tool) hostsOk = false;
+    }
+    check(hostsOk, "toolswitch: each lasso/stroke/bucket flatting tool installs the host tool "
+                   "ADR-0009's table gives it, and stays picked itself");
+
+    // The four with no host must leave `brush.tool` ALONE -- the flats route
+    // takes their events before any tool sees them, so the tool the user had
+    // is still theirs when they leave flatting mode.
+    bool keptOk = true;
+    for (const FlatsTool t : {FlatsTool::DeleteFill, FlatsTool::MergePair, FlatsTool::DrawMerge,
+                              FlatsTool::SelectEdits}) {
+      AppState k;
+      setActiveTool(k, Tool::Move);
+      setFlatsTool(k, t);
+      if (k.brush.tool != Tool::Move) keptOk = false;
+    }
+    check(keptOk, "toolswitch: a flatting tool with no host in that table leaves the active "
+                  "tool untouched, so leaving flatting mode gives it back");
+
+    // A half-finished two-click merge belongs to the gesture being abandoned.
+    AppState m;
+    m.flatsMergeFirst = std::array<float, 2>{4.0f, 5.0f};
+    setFlatsTool(m, FlatsTool::DeleteFill);
+    check(!m.flatsMergeFirst.has_value(),
+          "toolswitch: picking a flatting tool cancels a half-armed merge, rather than "
+          "carrying its first point into the next gesture");
+  }
+
   std::printf("[selftest] tool switch %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

@@ -19,8 +19,10 @@ namespace {
 constexpr ControlsSection kAllSections[] = {
     ControlsSection::Tools,        ControlsSection::Options,   ControlsSection::Color,
     ControlsSection::Layers,       ControlsSection::History,   ControlsSection::Comps,
+    ControlsSection::FlatsSegmentation,
     ControlsSection::Grade,        ControlsSection::Histogram, ControlsSection::BrushLibrary,
-    ControlsSection::Brush,        ControlsSection::Pigment,   ControlsSection::Medium,
+    ControlsSection::Brush,        ControlsSection::FlatsTools,
+    ControlsSection::Pigment,      ControlsSection::Medium,
     ControlsSection::BoardTilt,    ControlsSection::Grid,      ControlsSection::Solver,
 };
 
@@ -102,7 +104,15 @@ bool runPanelLayoutTest() {
     // the test would only be checking that two hand-written tables match.
     bool placementFollowsRole = true;
     for (const PanelEntry& e : layout.entries()) {
-      if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options) continue;
+      // TOOLS and OPTIONS are the former chrome bands. FLATS TOOLS is the
+      // third exception and the first of a new kind: a tool palette scoped
+      // to one layer kind, which is idle for most of most sessions and so
+      // starts on the rail rather than spending a grip of a dock that does
+      // not scroll. app/PanelLayout's `defaultPlacementFor()` carries the
+      // argument in full.
+      if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options ||
+          e.section == ControlsSection::FlatsTools)
+        continue;
       const ControlsSectionRole role = controlsSectionSpec(e.section).role;
       const PanelPlacement want =
           (role == ControlsSectionRole::View || role == ControlsSectionRole::Simulation)
@@ -114,9 +124,10 @@ bool runPanelLayoutTest() {
           "panel layout: **a Tool or Document panel starts in the right dock and a View or "
           "Simulation panel starts on the flyout rail** -- the occasional roles do not spend a "
           "grip apiece of a dock that does not scroll");
-    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 7,
-          "panel layout: which is seven panels on the rail -- and the rail is not empty on a "
-          "first run, which is the mode the revamp was asked for by name");
+    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 8,
+          "panel layout: which is eight panels on the rail -- the five View/Simulation sections, "
+          "GRADE and HISTOGRAM, and FLATS TOOLS -- and the rail is not empty on a first run, "
+          "which is the mode the revamp was asked for by name");
 
     // Whatever is in the right dock is in `controlsSections()`'s own order --
     // i.e. the outgoing column's order with the flyout sections lifted out.
@@ -381,7 +392,15 @@ bool runPanelLayoutTest() {
     check(exactlyOnceEach(layout),
           "panel layout: a version 1 file parses to a complete, valid layout");
     const std::vector<ControlsSection> right = layout.sectionsIn(PanelPlacement::Right);
-    check(right.size() == 6 && right[0] == ControlsSection::Grade &&
+    // **Seven, not the six the file names**, and the extra one is the point of
+    // the repair rule rather than a wrinkle in it: SEGMENTATION did not exist
+    // when a version 1 file was written, so it is appended at its own default
+    // placement, which is this dock. The three positional checks still pin the
+    // file's own order, because an appended section goes to the END -- what a
+    // user arranged in the previous build is not reshuffled by a section they
+    // have never seen. (FLATS TOOLS is appended too, but to the flyout rail,
+    // so it does not appear here.)
+    check(right.size() == 7 && right[0] == ControlsSection::Grade &&
               right[1] == ControlsSection::Layers && right[2] == ControlsSection::Color,
           "panel layout: **version 1's `section <key> 1` lands in the right dock, in order** -- "
           "a user's arrangement from the previous build survives the revamp");
@@ -439,7 +458,7 @@ bool runPanelLayoutTest() {
         "naturalPaint-panel-layout 2\n"
         "panel layers right 1.000 0\n");
     check(exactlyOnceEach(missing),
-          "panel layout: a file naming one section still yields all fifteen");
+          "panel layout: a file naming one section still yields all seventeen");
     check(missing.placementOf(ControlsSection::Tools) == PanelPlacement::Left &&
               missing.placementOf(ControlsSection::Options) == PanelPlacement::Top,
           "panel layout: **an appended section arrives at its default placement**, not swept "

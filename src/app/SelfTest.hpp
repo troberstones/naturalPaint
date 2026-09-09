@@ -493,6 +493,17 @@ bool runMeasureTest();
 //
 // Headless and GPU-free: app/ToolSwitch, app/MeasureLine and
 // app/DocumentLifecycle only.
+// core/Merge's `expandFlatsLayer()` (PRD N9). Touches no files, no GPU and
+// no ImGui: it builds a two-box document in memory, flats it, expands it in
+// each mode and reads the result back. Pins the three ways the expansion can
+// be silently wrong -- the sRGB->linear decode, the Group's member run, and
+// the single undo entry -- none of which any other section would notice.
+bool runFlatsExpandTest();
+
+// flats/FlatsLayer's source resolution: which layers a flats evaluation reads,
+// what the staleness signature covers, and the bake's three source modes.
+bool runFlatsSourceTest();
+
 bool runToolSwitchTest();
 
 // app/ToolSurface -- docs/testing-issues.md **T5**'s short-term half: "closing

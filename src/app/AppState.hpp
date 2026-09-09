@@ -27,6 +27,7 @@
 #include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
 #include "core/Clipboard.hpp"
+#include "flats/FlatsLayer.hpp"
 #include "flats/Model.hpp"
 #include "core/SelectionBoundary.hpp"
 #include "core/SelectionOps.hpp"
@@ -681,6 +682,75 @@ inline const char* bucketFillLabel(BucketFill mode) noexcept {
 // active (scoped bindings) and consumed by ui/MacPaintUI's canvas block.
 enum class FlatsAction { None, DeleteFill, MergePair, PrevGap, NextGap, AcceptGap, ClusterSmall };
 
+// The flatting TOOLS: a sticky mode, picked in the FLATS TOOLS palette and
+// held until something else is picked -- the way a brush stays picked.
+//
+// **Why a mode and not more `FlatsAction`s.** A `FlatsAction` is a one-shot:
+// the keymap raises it, ui/MacPaintUI consumes it in the same frame at the
+// cursor's texel, and it resets to `None`. That works for a key, which is
+// pressed while the pointer is already over the fill it means. It cannot
+// work for a button, because the docks are drawn BEFORE the canvas hit-test
+// each frame, so at the instant a panel button is clicked the pointer is
+// over the panel and the canvas reports no hovered texel at all.
+//
+// A tool has no such problem: picking it needs no point, and the point comes
+// from the click that follows. That is also what these gestures already are
+// in the model -- `flats/Model.hpp`'s edits store a POINT or a PATH and
+// replay against freshly segmented regions, so "drop a delete mark here" is
+// a persistent object in the layer rather than a command that ran once.
+//
+// The keys keep working exactly as they did; both routes call the same
+// `flats/Tool` functions and record the same edits.
+enum class FlatsTool {
+  None,          // the ordinary tools behave normally
+  DeleteFill,    // click       -> FlatDeleteMark
+  MergePair,     // two clicks  -> FlatMergePair
+  Carve,         // click       -> FlatCarve
+  DrawMerge,     // drag        -> FlatMergeStroke
+  BridgePen,     // drag        -> FlatBridgeStroke
+  BridgeEraser,  // drag        -> FlatBridgeStroke{erase}
+  Group,         // lasso       -> FlatGroup
+  ShapeFill,     // lasso       -> FlatShapeFill
+  SelectEdits,   // click       -> remove the nearest recorded edit
+};
+
+// One row of the FLATS TOOLS palette. `shortcut` is the chord ADR-0009's
+// table gives the gesture, shown on the cell and in its tooltip; it is a
+// label, not a claim the key is bound -- `keymaps/default.json` binds the
+// subset it binds, and the palette is what makes the rest reachable at all.
+struct FlatsToolRow {
+  FlatsTool tool;
+  const char* label;
+  const char* shortcut;
+  const char* tip;
+};
+inline constexpr size_t kFlatsToolCount = 9;
+inline constexpr FlatsToolRow kFlatsTools[kFlatsToolCount] = {
+    {FlatsTool::DeleteFill, "DELETE", "K",
+     "Click a fill to delete it. Recorded as a mark at that point, so the fill stays deleted "
+     "when the line art changes and the drawing re-flats."},
+    {FlatsTool::MergePair, "MERGE", "M",
+     "Click one fill, then another: the second merges into the first. Recorded as the two "
+     "points, never as the two region ids they resolved to."},
+    {FlatsTool::Carve, "CARVE", "â¥G",
+     "Click inside a leaked area to cut a new fill out of it, using GAP as the ball radius."},
+    {FlatsTool::DrawMerge, "DRAW MERGE", "â§U",
+     "Drag from one fill across others: everything the stroke crosses merges into the fill it "
+     "started in."},
+    {FlatsTool::BridgePen, "BRIDGE", "B",
+     "Draw an invisible barrier across a broken line so the fill stops there. Never rendered "
+     "and never exported -- it only closes the gap."},
+    {FlatsTool::BridgeEraser, "UNBRIDGE", "E", "Rub out a bridge you drew."},
+    {FlatsTool::Group, "GROUP", "â§K",
+     "Lasso round some fills to group them. Membership is recomputed from the lasso path on "
+     "every re-flat, so it survives edits to the line art."},
+    {FlatsTool::ShapeFill, "SHAPE", "Y",
+     "Lasso a fill by hand. It is stamped after segmentation and wins over whatever the "
+     "segmenter put there, because you drew it on purpose."},
+    {FlatsTool::SelectEdits, "UNDO EDIT", "â§V",
+     "Click near a repair you recorded to remove just that one, leaving the rest."},
+};
+
 struct AppState {
   PaintMode mode = PaintMode::Watercolor;
   // The stroke bridge's per-frame cycle. It lives here rather than as a local
@@ -805,10 +875,20 @@ struct AppState {
   // **The bucket's FILL mode** (ADR-0009): `Colour` is the tolerance flood
   // above; `Flats` fills the rubber-sheet region under the click instead --
   // on a Flats layer as a recorded recolour, on an RGB layer as a baked
-  // fill of the basin found in the whole composite. `flatsBucketParams` is
-  // what the bake segments with; a Flats layer uses its own `flats.params`.
+  // fill of the basin the bake segments. `flatsBucketParams` is what the bake
+  // segments with; a Flats layer uses its own `flats.params`.
   BucketFill bucketFill = BucketFill::Colour;
   FlatParams flatsBucketParams;
+
+  // **WHAT the bake segments** -- the options bar's SOURCE combo.
+  //
+  // It defaults to `ExcludeTarget` rather than `AllLayers` because the old
+  // behaviour was a defect, not a preference: the bake segmented the whole
+  // composite INCLUDING the layer it was about to write to, so the second
+  // fill on a layer saw the first fill's own pixels as line art and found a
+  // different set of regions. `AllLayers` is still offered because it is the
+  // right answer when the line art lives on the layer being filled.
+  FlatsBakeSource flatsBakeSource = FlatsBakeSource::ExcludeTarget;
 
   // The Flats-scoped key actions (keymaps/default.json, docs/shortcuts.md
   // §5.1), as request flags the keymap raises and the canvas consumes where
@@ -820,6 +900,24 @@ struct AppState {
   // The first point of a two-click merge (`M` arms it on the fill under the
   // cursor; the next `M` merges the fill under the cursor into it).
   std::optional<std::array<float, 2>> flatsMergeFirst;
+
+  // The picked flatting tool, or `None`. Written through
+  // `app/ToolSwitch`'s `setFlatsTool()` only -- and `setActiveTool()` clears
+  // it, so deliberately picking an ordinary tool leaves flatting mode. That
+  // one rule is what keeps "which gesture does a canvas click mean" a
+  // question with a single answer.
+  FlatsTool flatsTool = FlatsTool::None;
+  // The drag in progress for a stroke-shaped flatting tool (BRIDGE,
+  // UNBRIDGE, DRAW MERGE), as [x0,y0,x1,y1,...] in texel space. Committed on
+  // release and cleared; empty whenever no such drag is in flight. Session
+  // state, not document state -- what the document keeps is the recorded edit
+  // the release produces.
+  FlatPolyline flatsStroke;
+  // The active layer's kind on the previous frame, so ui/MacPaintUI can
+  // reveal the FLATS TOOLS flyout on the TRANSITION into a Flats layer
+  // rather than every frame one is selected. Level-triggering it would
+  // re-open the flyout the instant the user closed it.
+  std::optional<LayerKind> lastActiveLayerKind;
 
   // `--gradient-demo drag`: a gradient drag HELD OPEN, the way
   // `openToolFlyoutDemo` holds a flyout open and `panelStackDemo` holds a
@@ -1053,6 +1151,11 @@ struct AppState {
   // all. Same in-memory-only rule as `panelStackDemo` above; the seeding of
   // `AppState::opStack` itself happens in main.cpp, where the arguments are.
   bool gradeKindsDemo = false;
+  // `--flats-demo`: a Flats layer over line art, selected, with the flats
+  // panels fronted -- the fixture the FLATS TOOLS and SEGMENTATION golden
+  // views photograph, and the only way to reach those panels' populated state
+  // from a launch flag (they are blank unless a Flats layer is active).
+  bool flatsDemo = false;
 
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //

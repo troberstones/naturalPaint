@@ -9,6 +9,7 @@
 #include "core/Document.hpp"
 #include "core/LayerSetOps.hpp"
 #include "core/OpStack.hpp"
+#include "core/Merge.hpp"  // FlatsExpandMode, for applyFlatsExpand() below
 
 // app/LayerEditor (UI detour step 3, problem 2: "five built features have no
 // entry point").
@@ -106,6 +107,19 @@ enum class LayerCommand {
   // anything but an RGB layer (`layerCommandAvailable()`), and refused by
   // core/LayerOps' own `setLayerAlphaLocked()` if reached anyway.
   ToggleAlphaLock,
+  // ADR-0009: mark this layer as the drawing a Flats layer reads
+  // (`core/Layer.hpp`'s `flatsReference`). A fourth per-layer flag, here for
+  // the same reason the three above it are: a gesture with no value attached,
+  // so both the `Layer` menu and the LAYERS panel offer it with no bespoke
+  // code in either.
+  //
+  // It carries more weight than a preference. With nothing marked, a Flats
+  // layer reads every layer below it, so it re-segments -- a fifth of a
+  // second -- whenever ANY of them changes, including a colour rough nobody
+  // wanted flatted. Naming the line art is how a painter stops paying for
+  // that, which is why it is one click from the row rather than a field in a
+  // panel.
+  ToggleFlatsReference,
   // PLAN.md Phase 5 step 10 / PRD C10 (P0) and C11 (P1) -- core/Merge. Listed
   // here rather than wired into the menu separately for this file's own
   // reason: `allLayerCommands()` is what both the `Layer` menu and the LAYERS
@@ -201,6 +215,16 @@ struct LayerEditResult {
 // which refuses it by name with the numbers, because a clamp would silently
 // act on a different layer than the one the caller named.
 LayerEditResult applyLayerCommand(OpenDocument& doc, LayerCommand command, size_t selected);
+
+// PRD N9: expand the Flats layer at `selected` into real layers.
+//
+// **Not a `LayerCommand`, and the boundary is this header's own.** A
+// `LayerCommand` is "a gesture with no value attached", and the mode is a
+// value -- the same reasoning that keeps comp restore and rename out of that
+// enum. It gets its own entry point rather than four near-identical
+// enumerators, and both menus offer it as a submenu over
+// `allFlatsExpandModes()`.
+LayerEditResult applyFlatsExpand(OpenDocument& doc, FlatsExpandMode mode, size_t selected);
 
 // --- The multi-selection entry point (PLAN.md Phase 5 step 11; PRD C12, C13,
 //     C15) -------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include "core/Parallel.hpp"
 
 namespace np {
 
@@ -75,18 +76,57 @@ void smooth(Level& L, int sweeps) {
     if (y < h - 1) sum += u[i + w];
     u[i] = sum * 0.25f;
   };
+  // One interior row of one colour sweep. Lifted out of the loop below so
+  // that the same body serves the serial and the threaded path -- there is
+  // one copy of this arithmetic, not two.
+  auto interiorRow = [&](int y, int color) {
+    const size_t row = static_cast<size_t>(y) * w;
+    int x = (y ^ color) & 1;
+    if (x == 0) { edge(0, y); x = 2; }
+    for (; x < last; x += 2) {
+      const size_t i = row + x;
+      u[i] = (b[i] + u[i - 1] + u[i + 1] + u[i - w] + u[i + w]) * 0.25f * free[i];
+    }
+    if (x == last) edge(last, y);
+  };
+
+  // **Rows of one colour sweep run in parallel, and the result is
+  // BIT-IDENTICAL.** That is not a hope, it is the red-black property this
+  // function was already written around and states above: within a colour,
+  // every cell reads only cells of the OTHER colour, none of which this
+  // sweep writes. So no row's input depends on any other row's output, each
+  // cell is written exactly once by exactly one row, and the arithmetic per
+  // cell is unchanged and in the same order. Reordering the rows therefore
+  // cannot change a single bit -- which matters more here than usual, because
+  // `flats/FlatsSelfTest` pins this port bit-exactly against autoFlats and
+  // would redden instantly if it did.
+  //
+  // **Chunked, not one dispatch per row.** `smooth()` is called for every
+  // colour of every sweep of every level of every V-cycle -- thousands of
+  // calls per evaluation -- so dispatching ~1000 blocks per sweep would spend
+  // more in libdispatch than the sweep costs. Each task takes a contiguous
+  // BAND of at least `kBand` rows, which also keeps a task's reads and writes
+  // in a few cache lines' worth of rows rather than striped across the image.
+  //
+  // The chunk count collapses to 1 on the coarse levels (a 16x16 grid has 14
+  // interior rows), and `parallelFor` runs a single-index range serially, so
+  // the multigrid's small levels pay nothing at all for this.
+  constexpr int kBand = 64;
+  constexpr size_t kMaxChunks = 16;
+  const int rows = h - 2;
+  const size_t chunks =
+      rows <= kBand ? 1 : std::min(kMaxChunks, static_cast<size_t>(rows) / kBand);
+  const int perChunk = rows > 0 ? (rows + static_cast<int>(chunks) - 1) / static_cast<int>(chunks) : 0;
+
   for (int s = 0; s < sweeps; s++) {
     for (int color = 0; color < 2; color++) {
       for (int x = color & 1; x < w; x += 2) edge(x, 0);
-      for (int y = 1; y < h - 1; y++) {
-        const size_t row = static_cast<size_t>(y) * w;
-        int x = (y ^ color) & 1;
-        if (x == 0) { edge(0, y); x = 2; }
-        for (; x < last; x += 2) {
-          const size_t i = row + x;
-          u[i] = (b[i] + u[i - 1] + u[i + 1] + u[i - w] + u[i + w]) * 0.25f * free[i];
-        }
-        if (x == last) edge(last, y);
+      if (rows > 0) {
+        parallelFor(chunks, 2, [&](size_t c) {
+          const int y0 = 1 + static_cast<int>(c) * perChunk;
+          const int y1 = std::min(h - 1, y0 + perChunk);
+          for (int y = y0; y < y1; y++) interiorRow(y, color);
+        });
       }
       if (h > 1)
         for (int x = ((h - 1) ^ color) & 1; x < w; x += 2) edge(x, h - 1);

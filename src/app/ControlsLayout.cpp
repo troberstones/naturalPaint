@@ -45,9 +45,29 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        "the numeric row under it does not."},
       {ControlsSection::BrushLibrary, R::Tool, "BRUSH LIBRARY", false},
       {ControlsSection::Brush, R::Tool, "BRUSH EDITOR", false},
+      // Last of the `Tool` roles, which is what keeps the role sequence
+      // non-decreasing (app/selftest/ControlsLayout.cpp asserts it).
+      {ControlsSection::FlatsTools, R::Tool, "FLATS TOOLS", false,
+       "The flatting gestures of a Flats layer, as tools rather than as keys. Each one is\n"
+       "STICKY: pick DELETE and every click deletes a fill until you pick something else,\n"
+       "the way a brush stays picked. What each one records is a POINT or a PATH, never a\n"
+       "region id -- so editing the line art re-flats the drawing and every repair you made\n"
+       "replays against the fresh regions (ADR-0009).\n\n"
+       "The buttons grey out when the active layer is not a Flats layer. The panel stays\n"
+       "where you docked it rather than vanishing, so its place on screen is yours to keep."},
       {ControlsSection::Layers, R::Document, "LAYERS", true},
       {ControlsSection::History, R::Document, "HISTORY", true},
       {ControlsSection::Comps, R::Document, "COMPS", true},
+      // Last of the `Document` roles, for the same ordering reason.
+      {ControlsSection::FlatsSegmentation, R::Document, "SEGMENTATION", false,
+       "How the line art beneath a Flats layer is cut into fills. A Flats layer stores no\n"
+       "pixels: it stores these parameters plus the repairs you made, and re-derives every\n"
+       "fill from the drawing underneath. So moving a slider here re-flats the drawing.\n\n"
+       "Fills are anchored to a PLACE, not to a number, which is why nudging a slider from\n"
+       "417 fills to 381 leaves most of them wearing the colour they already had, and why\n"
+       "putting the slider back reproduces all 417 exactly.\n\n"
+       "SHEET, GAP and DECLUTTER also appear on the Paint Bucket's options row. They are the\n"
+       "same three fields, not a copy -- both bind the active layer directly."},
       {ControlsSection::Grade, R::View, "GRADE", false},
       // View role, right beside GRADE for the same reason (see the header):
       // closed by default too, so a document that is merely open does not

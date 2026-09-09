@@ -217,6 +217,8 @@ add_executable(naturalPaint
   app/selftest/ToolCursor.cpp
   app/selftest/ToolSurface.cpp
   app/selftest/ExportDialog.cpp
+  app/selftest/FlatsExpand.cpp
+  app/selftest/FlatsSource.cpp
   app/selftest/ToolSwitch.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp

@@ -366,6 +366,23 @@ void runLayerCommand(AppState& st, LayerCommand command) {
   g_layers.lastWarnings = r.warnings;
 }
 
+// PRD N9's expansion, through the same funnel `runLayerCommand()` uses so the
+// refusal and the warning land in the LAYERS panel where every other
+// destructive layer operation reports.
+void runFlatsExpand(AppState& st, FlatsExpandMode mode) {
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) {
+    g_layers.lastError =
+        "expand flats refused: no document is open. File > New Document makes one.";
+    return;
+  }
+  const LayerEditResult r = applyFlatsExpand(*od, mode, od->activeLayer);
+  setActiveLayer(*od, r.selected);
+  g_layers.selection = singleLayerSelection(r.selected);
+  g_layers.lastError = r.ok ? std::string() : r.error;
+  g_layers.lastWarnings = r.warnings;
+}
+
 // The same path for a gesture over the whole selection (PLAN.md Phase 5
 // step 11). Two things happen here and nowhere else, both of them
 // app/LayerPanel.hpp's stated filter rule:
@@ -1952,6 +1969,7 @@ const char* layerCommandGlyphFallback(LayerCommand command) noexcept {
     case LayerCommand::ToggleLocked:
     case LayerCommand::ToggleClipped:
     case LayerCommand::ToggleAlphaLock:
+    case LayerCommand::ToggleFlatsReference:
     case LayerCommand::CaptureComp:
       return "?";
   }
@@ -2119,10 +2137,19 @@ void layerSetCommandIconButton(AppState& st, const Document& doc, const LayerSel
 //     flats/FlatsLayer), but the count is not on the row: `layerRowSubLine()`
 //     reads kind, blend and opacity from the `Layer` alone, and the number
 //     lives in an evaluation keyed on content hash x beneath signature that
-//     the panel would have to fetch (`flatsEvaluateLayer()`) -- cheap on a
-//     cache hit, a full segmentation on a miss, and the row is drawn every
-//     frame. There is also no Fills panel. So a Flats row reads `FLATS -
-//     NORMAL - 100%` for now; docs/spec-vs-implementation.md §1 tracks both.
+//     the panel would have to fetch. There is also no Fills panel. So a Flats
+//     row reads `FLATS - NORMAL - 100%` for now;
+//     docs/spec-vs-implementation.md §1 tracks both.
+//
+//     **The cost argument here has since been answered, and this note is kept
+//     rather than deleted because the row still does not show the number.**
+//     Fetching through `flatsEvaluateLayer()` is cheap on a cache hit and a
+//     full segmentation on a miss, and a row is drawn every frame -- which is
+//     why it was not done. `flatsPeekEvaluation()` (flats/FlatsLayer) is the
+//     cache read with no recompute, added for the SEGMENTATION panel's own
+//     live readout, and it is what a sub-line should use if one is ever
+//     added: it costs a hash and a map lookup, and returns null rather than
+//     segmenting when the answer is not already known.
 //     (Before the port this note read "a Flats layer has no fills", which
 //     was true then and survived the port unedited -- a documentation-only
 //     reading would have believed it.)
@@ -2870,7 +2897,18 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
           // other entry is about the layer under the cursor.
           if (command == LayerCommand::CaptureComp) continue;
           const bool available = layerCommandAvailable(doc, command, i);
-          if (ImGui::MenuItem(layerCommandLabel(command), nullptr, false, available)) {
+          // The four flags read their state back here for the same reason the
+          // `Layer` menu does: "Use as Flats Reference" with no check mark is
+          // a command whose current value the user has to guess at.
+          bool checked = false;
+          if (i < doc.layers.size()) {
+            if (command == LayerCommand::ToggleVisible) checked = doc.layers[i].visible;
+            if (command == LayerCommand::ToggleLocked) checked = doc.layers[i].locked;
+            if (command == LayerCommand::ToggleClipped) checked = doc.layers[i].clipped;
+            if (command == LayerCommand::ToggleAlphaLock) checked = doc.layers[i].alphaLocked;
+            if (command == LayerCommand::ToggleFlatsReference) checked = doc.layers[i].flatsReference;
+          }
+          if (ImGui::MenuItem(layerCommandLabel(command), nullptr, checked, available)) {
             runLayerCommand(st, command);
             structureChanged = true;
           }
@@ -2879,6 +2917,29 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
         // Properties -- but *adding* one is a single gesture with no parameters
         // to show yet (`app::makeNewOp()` always builds a disabled PointA op), so
         // it gets a fast path here rather than waiting for the dialog.
+        // PRD N9. A bespoke submenu rather than four `LayerCommand`
+        // enumerators, because a mode is a VALUE and app/LayerEditor.hpp's
+        // enum is documented as gestures with no value attached -- the same
+        // shape, and the same reason, as the "Add Op" menu directly below.
+        // Walked over `allFlatsExpandModes()` so a mode added to the enum
+        // cannot be a mode no menu offers.
+        {
+          const bool isFlats =
+              i < doc.layers.size() && doc.layers[i].kind == LayerKind::Flats;
+          if (ImGui::BeginMenu("Expand Flats to Layers", isFlats)) {
+            for (const FlatsExpandMode m : allFlatsExpandModes()) {
+              if (ImGui::MenuItem(flatsExpandModeLabel(m))) {
+                runFlatsExpand(st, m);
+                // The expansion grows `doc.layers`, and `layer` above is a
+                // reference into that vector -- so the row must stop here,
+                // not merely the loop. Without this it is a use of an
+                // invalidated reference, not a cosmetic glitch.
+                structureChanged = true;
+              }
+            }
+            ImGui::EndMenu();
+          }
+        }
         if (ImGui::BeginMenu("Add Op")) {
           // Walked over the enum rather than listed, for the reason
           // drawOpStackEditor()'s own kind combo is: a hand-written list is
@@ -10577,7 +10638,7 @@ MenuContext menuContextFromState(AppState& st) {
                                : std::string("(no layer selected)");
 
     for (const LayerCommand command : allLayerCommands()) {
-      // The three toggles show the selected layer's current state as a check
+      // The four toggles show the selected layer's current state as a check
       // mark, which is what makes "Toggle Visibility" honest about which way
       // it is about to go.
       bool checked = false;
@@ -10586,13 +10647,14 @@ MenuContext menuContextFromState(AppState& st) {
         if (command == LayerCommand::ToggleLocked) checked = d.layers[selected].locked;
         if (command == LayerCommand::ToggleClipped) checked = d.layers[selected].clipped;
         if (command == LayerCommand::ToggleAlphaLock) checked = d.layers[selected].alphaLocked;
+        if (command == LayerCommand::ToggleFlatsReference) checked = d.layers[selected].flatsReference;
       }
       // Grouped as the panel groups them: creation, then the whole-layer
       // operations, then the mask, then the flags.
       const bool rule = command == LayerCommand::NewAdjustmentLayer ||
                         command == LayerCommand::MoveLayerDown ||
                         command == LayerCommand::RemoveMask ||
-                        command == LayerCommand::ToggleClipped;
+                        command == LayerCommand::ToggleFlatsReference;
       ctx.layerCommands.push_back(familyEntry(layerCommandLabel(command),
                                               layerCommandAvailable(d, command, selected),
                                               checked, rule));
@@ -11511,6 +11573,426 @@ void drawToolsPanelBody(AppState& st, float availW, float availH, bool vertical)
   ImGui::PopStyleColor();
 }
 
+// ==========================================================================
+// The Flats panels (ADR-0009)
+// ==========================================================================
+//
+// Two sections, and they are deliberately two. SEGMENTATION is about the
+// document -- the parameters a Flats layer stores and re-derives its fills
+// from -- and lives in the right dock with the other document panels. FLATS
+// TOOLS is a tool palette scoped to a layer kind, the first of a family
+// docs/ui.md section 2 promises, and lives on the flyout rail so that it
+// costs nothing while no Flats layer is active.
+//
+// **Neither uses `panelHasSubject()`.** That hook collapses a slot, and what
+// was asked for here is the opposite: a palette the user has docked stays
+// where they put it and greys out instead, so its place on screen is stable.
+// Both bodies therefore draw their full layout whatever the active layer is,
+// wrapped in `BeginDisabled`, with one line saying why.
+
+// The active layer, if it is a Flats layer this panel may edit. Null
+// otherwise, which is the disabled case -- and null for a LOCKED Flats layer
+// too, because every control below records an edit and core/LayerOps would
+// refuse it: offering a live slider whose every move is refused is
+// availability used as decoration.
+// The caps sub-heading these panels group their controls under. A local
+// twin of ui/AtelierChrome.cpp's `capsLabel()`, which is file-local there
+// and not worth exporting for two callers.
+void flatsCapsLabel(const char* text) {
+  ImGui::Spacing();
+  pushAtelierMono();
+  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
+  ImGui::TextUnformatted(text);
+  ImGui::PopStyleColor();
+  popAtelierMono();
+}
+
+struct FlatsPanelSubject {
+  OpenDocument* od = nullptr;
+  Layer* layer = nullptr;
+  size_t index = 0;
+  bool locked = false;
+};
+
+// GROUP and SHAPE: the lasso committed as a flats edit rather than as a
+// selection. Returns true when it consumed the gesture, in which case the
+// caller must NOT also commit a selection.
+//
+// **The lasso is not hijacked silently.** Selecting a region on a Flats layer
+// is a legitimate thing to want, so this only fires while one of the two
+// lasso-shaped flatting tools is actually picked in the palette -- an
+// explicit, visible mode with an accented cell, not a hidden meaning the
+// Lasso acquires whenever the active layer happens to be a Flats layer.
+bool flatsLassoCommit(AppState& st, OpenDocument* od) {
+  if (od == nullptr) return false;
+  if (st.flatsTool != FlatsTool::Group && st.flatsTool != FlatsTool::ShapeFill) return false;
+  Layer* layer = activeLayerOf(*od);
+  if (layer == nullptr || layer->kind != LayerKind::Flats || layer->locked) return false;
+
+  // Consumed either way from here down: the tool is picked and the layer is
+  // right, so a path too short to use is a refusal with a sentence, not a
+  // silent fall-through to making a selection the user did not ask for.
+  if (st.lassoPoints.size() < 3) {
+    g_strokeRefusal = "a lasso needs at least three points.";
+    return true;
+  }
+  FlatPolyline path;
+  path.reserve(st.lassoPoints.size() * 2);
+  for (const SelectionPoint& p : st.lassoPoints) {
+    path.push_back(p.x);
+    path.push_back(p.y);
+  }
+  const bool group = st.flatsTool == FlatsTool::Group;
+  // A shape fill is drawn in the foreground colour, decoded the way every
+  // other flats consumer decodes it: `FlatRgb` is 8-bit DISPLAY sRGB, which
+  // is the domain the palette and the anchor hash were authored in.
+  const bool ok = group ? flatsGroupFromPath(*layer, path)
+                        : flatsShapeFromPath(*layer, path, flatRgbFromSrgb(foregroundSrgb(st.brush)));
+  if (ok) {
+    od->recordEdit(group ? "flats group" : "flats shape fill", EditKind::Content);
+    g_strokeRefusal.clear();
+  } else {
+    g_strokeRefusal = group ? "that lasso grouped nothing."
+                            : "that lasso made no shape.";
+  }
+  return true;
+}
+
+FlatsPanelSubject flatsPanelSubject(AppState& st) {
+  FlatsPanelSubject sub;
+  OpenDocument* od = st.documents.active();
+  if (od == nullptr) return sub;
+  Layer* layer = activeLayerOf(*od);
+  const std::optional<size_t> idx = activeLayerIndex(*od);
+  if (layer == nullptr || !idx.has_value() || layer->kind != LayerKind::Flats) return sub;
+  sub.od = od;
+  sub.layer = layer;
+  sub.index = *idx;
+  sub.locked = layer->locked;
+  return sub;
+}
+
+// The one line every Flats panel shows when it has nothing to act on. Says
+// what to do, not merely that something is wrong -- `drawLayersSection`'s
+// no-document arm is the model.
+void flatsPanelIdleNote(const AppState& st) {
+  if (st.documents.active() == nullptr) {
+    textDisabledWrapped("No document open.");
+    return;
+  }
+  textDisabledWrapped("Pick a Flats layer in LAYERS to use these. Layer > New Flats Layer makes "
+                      "one; it flats whatever line art lies beneath it as soon as it exists.");
+}
+
+void drawFlatsSegmentationSection(AppState& st) {
+  const FlatsPanelSubject sub = flatsPanelSubject(st);
+  const bool live = sub.layer != nullptr && !sub.locked;
+
+  // **Peek, never evaluate.** `flatsContentHash()` covers `FlatParams`, so
+  // every frame of a slider drag is a cache miss, and a miss in
+  // `flatsEvaluateLayer()` is a whole rubber-sheet segmentation. Reading the
+  // fill count through the peek costs a hash and a map lookup instead, and
+  // renders "--" for the few frames a drag is in flight -- which is the
+  // truthful answer anyway, since nothing is recorded until release.
+  std::shared_ptr<const FlatEvaluation> eval;
+  if (sub.layer != nullptr) eval = flatsPeekEvaluation(sub.od->document, sub.index);
+
+  // ---- the readout ------------------------------------------------------
+  //
+  // Three numbers, because the request "control the number of unique flats"
+  // has two readings and this shows both: how many FILLS there are (MIN
+  // REGION, SLIVER, DECLUTTER move it) and how many distinct COLOURS they
+  // wear (PALETTE moves it). Groups ride along as the third.
+  {
+    std::string readout = "--  FILLS";
+    if (eval) {
+      size_t fills = 0;
+      std::set<FlatRgb> colours;
+      for (const int r : eval->roots()) {
+        const FlatFill& f = eval->fills[static_cast<size_t>(r)];
+        if (f.isBg || f.deleted) continue;
+        ++fills;
+        colours.insert(f.color);
+      }
+      const size_t groups = sub.layer->flats.edits.groups.size();
+      readout = std::to_string(fills) + "  FILLS   " + std::to_string(colours.size()) +
+                "  COLOURS   " + std::to_string(groups) + "  GROUPS";
+    }
+    pushAtelierMono();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(
+                                             eval ? kTextPrimary : kTextSecondary)));
+    ImGui::TextUnformatted(readout.c_str());
+    ImGui::PopStyleColor();
+    popAtelierMono();
+    if (!eval && sub.layer != nullptr)
+      ImGui::SetItemTooltip("Recomputing -- the counts reappear when you let go of the slider.");
+  }
+
+  // ---- WHAT is being segmented -----------------------------------------
+  //
+  // The panel's second most important line, and it exists because the answer
+  // is no longer always "everything below". A layer marked with `Use as Flats
+  // Reference` narrows the source to exactly the marked layers, which is both
+  // a correctness win (a colour rough under the inks stops being flatted) and
+  // the performance one (the evaluation cache is keyed on what the evaluation
+  // READ, so an unmarked layer's edits no longer re-run a 200 ms
+  // segmentation). A user who cannot see which of the two rules is in force
+  // cannot tell a fast document from a slow one.
+  if (sub.layer != nullptr) {
+    const std::vector<size_t> source = flatsSourceLayers(sub.od->document, sub.index);
+    bool named = false;
+    for (const size_t i : source)
+      if (i < sub.od->document.layers.size() && sub.od->document.layers[i].flatsReference)
+        named = true;
+    std::string line;
+    if (source.empty()) {
+      line = "SOURCE  nothing below";
+    } else if (!named) {
+      line = "SOURCE  " + std::to_string(source.size()) +
+             (source.size() == 1 ? " layer below" : " layers below");
+    } else if (source.size() == 1) {
+      line = "SOURCE  " + sub.od->document.layers[source.front()].name + "  (reference)";
+    } else {
+      line = "SOURCE  " + std::to_string(source.size()) + " references";
+    }
+    pushAtelierMono();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kTextSecondary)));
+    ImGui::TextUnformatted(line.c_str());
+    ImGui::PopStyleColor();
+    popAtelierMono();
+    ImGui::SetItemTooltip(
+        named ? "Only the layers marked `Use as Flats Reference` are segmented. Editing any other "
+                "layer costs nothing."
+              : "Every visible layer below is segmented, so editing any of them re-flats. Right-"
+                "click the line art in LAYERS and pick `Use as Flats Reference` to narrow it.");
+  }
+
+  if (sub.layer == nullptr) {
+    ImGui::Separator();
+    flatsPanelIdleNote(st);
+    return;
+  }
+  if (sub.locked)
+    textDisabledWrapped("This layer is locked. Unlock it in LAYERS to change how it segments.");
+
+  ImGui::Separator();
+
+  FlatParams* fp = &sub.layer->flats.params;
+  // One accumulator for the whole panel and ONE `recordEdit` at the end, on
+  // release rather than per frame. Per-frame recording would make a single
+  // drag dozens of undo steps and dozens of full segmentations; this is the
+  // rule the options-bar trio already follows (ui/AtelierChrome.cpp).
+  bool edited = false;
+  auto done = [&edited]() { edited |= ImGui::IsItemDeactivatedAfterEdit(); };
+
+  ImGui::BeginDisabled(!live);
+
+  flatsCapsLabel("LINE");
+  ctlSlider("INK", &fp->lineThreshold, 0.0f, 1.0f, "%.3f");
+  ImGui::SetItemTooltip("Ink darker than this is a line. Display-domain darkness, not linear.");
+  done();
+  ctlSlider("COLOUR REJECT", &fp->colourReject, 0.0f, 1.0f, "%.2f");
+  ImGui::SetItemTooltip("Saturation above this is not a line -- so coloured art is not mistaken "
+                        "for ink.");
+  done();
+  ctlSliderInt("SMOOTH", &fp->smoothing, 0, 8);
+  ImGui::SetItemTooltip("Morphological closing radius, in pixels.");
+  done();
+  ImGui::Checkbox("SKELETONISE", &fp->skeletonize);
+  ImGui::SetItemTooltip("Erode the line mask to a 1 px centreline before segmenting.");
+  done();
+
+  flatsCapsLabel("REGIONS");
+  ctlSlider("SHEET", &fp->sheet, 0.0f, 30.0f, fp->sheet > 0.0f ? "%.0f px" : "ball");
+  ImGui::SetItemTooltip("Rubber-sheet persistence. 0 runs the trapped ball instead.\n"
+                        "Also on the Paint Bucket's options row -- the same field.");
+  done();
+  ctlSliderInt("GAP", &fp->gapSize, 1, 32);
+  ImGui::SetItemTooltip("The widest break a fill must not leak through, in pixels.\n"
+                        "Also on the Paint Bucket's options row -- the same field.");
+  done();
+  ImGui::Checkbox("SEAL TIGHT GAPS", &fp->closeTightGaps);
+  ImGui::SetItemTooltip("Close unambiguous breaks before segmenting.");
+  done();
+  // The engine says "ball mode only" (flats/Model.hpp), so the control is
+  // disabled rather than silently ignored when the sheet is running.
+  ImGui::BeginDisabled(fp->sheet > 0.0f);
+  ImGui::Checkbox("MERGE LEAKS", &fp->autoMergeLeaks);
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip(fp->sheet > 0.0f
+                            ? "Trapped-ball only. Set SHEET to 0 (\"ball\") to use this."
+                            : "Merge open cross-flow fragments.");
+  done();
+
+  flatsCapsLabel("HOW MANY FILLS");
+  ctlSliderInt("MIN REGION", &fp->minRegion, 0, 2000);
+  ImGui::SetItemTooltip("Fills smaller than this many pixels are absorbed into a neighbour.");
+  done();
+  ctlSliderInt("SLIVER", &fp->sliverWidth, 0, 16);
+  ImGui::SetItemTooltip("Corridor slivers thinner than this merge away.");
+  done();
+  ctlSliderInt("DECLUTTER", &fp->declutter, 0, 100);
+  ImGui::SetItemTooltip("How strongly hatching and texture are absorbed.\n"
+                        "Also on the Paint Bucket's options row -- the same field.");
+  done();
+
+  flatsCapsLabel("HOW MANY COLOURS");
+  ctlSliderInt("PALETTE", &fp->paletteSize, 0, 24);
+  done();
+  // `ctlSliderInt` takes no format string, so 0 cannot render as the word
+  // "unique" inside the widget. A line under it says what the number means
+  // rather than adding a format overload for one caller.
+  if (fp->paletteSize == 0)
+    textDisabledWrapped("0 -- a unique colour per fill, derived from where the fill is.");
+  else
+    textDisabledWrapped("Graph-coloured into %d; neighbouring fills never share.", fp->paletteSize);
+
+  // Reserved in the model, so it is shown and disabled rather than offered.
+  ImGui::BeginDisabled(true);
+  ImGui::Checkbox("COMPLETION FIELD", &fp->completionField);
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip("Reserved: the stochastic completion field scorer is not built.");
+
+  ImGui::EndDisabled();
+
+  if (edited && live) sub.od->recordEdit("flats parameters", EditKind::Content);
+
+  // ---- groups -----------------------------------------------------------
+  ImGui::Separator();
+  flatsCapsLabel("GROUPS");
+  FlatEdits& edits = sub.layer->flats.edits;
+  if (edits.groups.empty()) {
+    textDisabledWrapped("No groups yet. Pick GROUP in FLATS TOOLS and lasso round some fills.");
+  } else {
+    uint32_t removeId = 0;
+    for (FlatGroup& g : edits.groups) {
+      ImGui::PushID(static_cast<int>(g.id));
+      // Member count from the evaluation, which is the only proof that
+      // `flatAssignGroups()` resolved the lasso path to fills at all -- the
+      // `FlatFill::group` field had no reader anywhere before this panel.
+      std::string members = "--";
+      if (eval) {
+        size_t n = 0;
+        for (const int r : eval->roots())
+          if (eval->fills[static_cast<size_t>(r)].group == static_cast<int>(g.id)) ++n;
+        members = std::to_string(n);
+      }
+      char nameBuf[128];
+      std::snprintf(nameBuf, sizeof nameBuf, "%s", g.name.c_str());
+      ImGui::BeginDisabled(!live);
+      if (ctlInputText(members.c_str(), nameBuf, sizeof nameBuf, 0)) g.name = nameBuf;
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        sub.od->recordEdit("rename flats group", EditKind::Content);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x")) removeId = g.id;
+      ImGui::SetItemTooltip("Remove this group. The fills stay; only the grouping goes.");
+      ImGui::EndDisabled();
+      ImGui::PopID();
+    }
+    if (removeId != 0 && live) {
+      // Through the model's own removal path rather than erasing the vector
+      // here, so there is one place a recorded edit is taken back.
+      flatRemoveEdit(edits, FlatEditRef{6, removeId});
+      sub.od->recordEdit("delete flats group", EditKind::Content);
+    }
+  }
+}
+
+void drawFlatsToolsSection(AppState& st) {
+  const FlatsPanelSubject sub = flatsPanelSubject(st);
+  const bool live = sub.layer != nullptr && !sub.locked;
+
+  std::shared_ptr<const FlatEvaluation> eval;
+  if (sub.layer != nullptr) eval = flatsPeekEvaluation(sub.od->document, sub.index);
+
+  ImGui::BeginDisabled(!live);
+
+  // ---- the sticky tools -------------------------------------------------
+  //
+  // Text labels, not Lucide glyphs, and that is a decision rather than a
+  // shortcut: a new icon needs its codepoint in `toolIconCodepoints()` or
+  // the font merge drops it silently, and app/selftest/Fonts.cpp pins the
+  // required-glyph count with a hand-written justification. Nine ASCII cells
+  // keep that whole file out of this change, and the labels are verbs.
+  const float availW = ImGui::GetContentRegionAvail().x;
+  for (size_t i = 0; i < kFlatsToolCount; ++i) {
+    const FlatsToolRow& row = kFlatsTools[i];
+    const bool on = st.flatsTool == row.tool;
+    ImGui::PushID(static_cast<int>(i));
+    if (on) {
+      float ac[3], fg[3];
+      unpackRgb(kAccent, ac);
+      unpackRgb(kOnAccent, fg);
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(ac[0], ac[1], ac[2], 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(ac[0], ac[1], ac[2], 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(fg[0], fg[1], fg[2], 1.0f));
+    }
+    if (ImGui::Button(row.label, ImVec2(availW, 0.0f)))
+      setFlatsTool(st, on ? FlatsTool::None : row.tool);  // clicking the lit one puts it down
+    if (on) ImGui::PopStyleColor(3);
+    ImGui::SetItemTooltip("%s  (%s)\n\n%s", row.label, row.shortcut, row.tip);
+    ImGui::PopID();
+  }
+
+  // ---- the point-free actions -------------------------------------------
+  //
+  // These four need no click on the canvas -- they act on the whole layer or
+  // on the focused suggestion -- so they stay one-shot `FlatsAction`s and
+  // raise exactly what the keys raise. The block in the canvas route
+  // consumes them in the same frame, so there is one implementation and one
+  // set of refusal sentences.
+  ImGui::Separator();
+  flatsCapsLabel("GAPS");
+  const size_t suggestions = eval ? eval->suggestions.size() : 0;
+  ImGui::BeginDisabled(suggestions == 0);
+  if (ImGui::SmallButton("< PREV")) st.flatsAction = FlatsAction::PrevGap;
+  ImGui::SameLine();
+  if (ImGui::SmallButton("NEXT >")) st.flatsAction = FlatsAction::NextGap;
+  ImGui::SameLine();
+  ImGui::BeginDisabled(st.flatsGapFocus < 0);
+  if (ImGui::SmallButton("BRIDGE IT")) st.flatsAction = FlatsAction::AcceptGap;
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  if (suggestions == 0)
+    textDisabledWrapped(eval ? "No gaps proposed." : "--");
+  else
+    textDisabledWrapped("%d proposed%s.", static_cast<int>(suggestions),
+                        st.flatsGapFocus >= 0
+                            ? (" -- " + std::to_string(st.flatsGapFocus + 1) + " focused").c_str()
+                            : "");
+
+  ImGui::Separator();
+  flatsCapsLabel("CLEAN UP");
+  if (ImGui::SmallButton("CLUSTER SMALL FILLS")) st.flatsAction = FlatsAction::ClusterSmall;
+  ImGui::SetItemTooltip("Merge every small open-bordered fill into its neighbour.");
+
+  ImGui::EndDisabled();
+
+  // ---- what the panel is currently waiting for --------------------------
+  //
+  // The pending half of a two-click merge is state a user can otherwise only
+  // discover by clicking again and being surprised, and the refusal sentence
+  // is duplicated here because this panel is often on screen when the
+  // options bar is collapsed or docked somewhere else.
+  if (st.flatsMergeFirst.has_value()) {
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(atelierToken(kAccent)));
+    ImGui::TextUnformatted("MERGE ARMED");
+    ImGui::PopStyleColor();
+    textDisabledWrapped("Click the fill it should merge into. Escape cancels.");
+  }
+  if (sub.layer == nullptr) {
+    ImGui::Separator();
+    flatsPanelIdleNote(st);
+  } else if (sub.locked) {
+    ImGui::Separator();
+    textDisabledWrapped("This layer is locked. Unlock it in LAYERS to flat with it.");
+  } else if (!g_strokeRefusal.empty()) {
+    ImGui::Separator();
+    textDisabledWrapped("%s", g_strokeRefusal.c_str());
+  }
+}
+
 // One panel's contents, with no frame of its own.
 //
 // The switch is what the `##controls` loop's switch used to be, moved here so
@@ -11551,6 +12033,8 @@ void drawPanelBody(AppState& st, ControlsSection section, std::unique_ptr<PaintS
     case ControlsSection::History:      drawHistorySection(st, sim, gpu); break;
     // PLAN.md Phase 5 step 12 ("Layer comps ...", PRD C14).
     case ControlsSection::Comps:        drawCompsSection(st); break;
+    case ControlsSection::FlatsSegmentation: drawFlatsSegmentationSection(st); break;
+    case ControlsSection::FlatsTools:   drawFlatsToolsSection(st); break;
     // PLAN.md Phase 3 step 8 ("Op-stack UI -- reorder, toggle, delete, and a
     // curve widget operating in the shaper domain").
     case ControlsSection::Grade:        drawGradeSection(st); break;
@@ -13046,6 +13530,54 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // fronts it; alone, it puts GRADE there first. Either way it ends up open
     // and expanded, which is the only state its editors can be photographed
     // in.
+    // --flats-demo. Two jobs: put a Flats layer on the stack and select it
+    // (the panels are blank without one, so no arrangement alone can reach
+    // their populated state), and dock SEGMENTATION expanded where a crop can
+    // frame it. FLATS TOOLS is left on the rail and opened as the flyout,
+    // because floating-on-reveal is the behaviour being photographed.
+    if (st.flatsDemo) {
+      if (OpenDocument* fd = st.documents.active()) {
+        // **Its own line art, rather than whatever --demo-document happens to
+        // hold.** That document is soft translucent rectangles, and the ink
+        // extractor wants dark AND desaturated, so it segments into a single
+        // background region -- the panels would photograph a truthful but
+        // useless `0 FILLS`. A white ground with three closed black boxes on
+        // it is the same fixture flats/Field.hpp's own `flatThreeBoxes()` uses
+        // for the identical reason: the simplest thing with a known answer.
+        Document& fdoc = fd->document;
+        const size_t art = fdoc.layers.size();
+        addLayer(fdoc, art, makeRgbLayer("Line art"));
+        if (fdoc.layers[art].rgbTiles.has_value()) {
+          TileStore& ts = *fdoc.layers[art].rgbTiles;
+          auto put = [&](int x, int y, float v) {
+            if (x < 0 || y < 0 || x >= fdoc.width || y >= fdoc.height) return;
+            const PixelCoord at{x, y};
+            ts.getOrCreate(tileCoordAt(at)).writePixel(tileLocalOffset(at), {v, v, v, 1.0f});
+          };
+          for (int y = 0; y < fdoc.height; ++y)
+            for (int x = 0; x < fdoc.width; ++x) put(x, y, 1.0f);
+          const int boxes[3][4] = {{60, 60, 420, 420}, {480, 60, 900, 300}, {200, 500, 800, 940}};
+          for (const auto& b : boxes) {
+            for (int t = 0; t < 5; ++t) {
+              for (int x = b[0]; x <= b[2]; ++x) { put(x, b[1] + t, 0.0f); put(x, b[3] - t, 0.0f); }
+              for (int y = b[1]; y <= b[3]; ++y) { put(b[0] + t, y, 0.0f); put(b[2] - t, y, 0.0f); }
+            }
+          }
+        }
+        const size_t at = fdoc.layers.size();
+        addLayer(fdoc, at, makeFlatsLayer("Flats"));
+        setActiveLayer(*fd, at);
+        // A lit cell, so the palette photographs its selected state rather
+        // than nine identical grey buttons -- the same argument the
+        // pen_options / text_options views make about an accented chip.
+        setFlatsTool(st, FlatsTool::DeleteFill);
+      }
+      st.panels.setCollapsed(ControlsSection::FlatsSegmentation, false);
+      st.panels.setCollapsed(ControlsSection::Color, true);
+      st.panels.setCollapsed(ControlsSection::History, true);
+      st.panels.setCollapsed(ControlsSection::Comps, true);
+      st.panels.setCollapsed(ControlsSection::Layers, true);
+    }
     if (st.gradeKindsDemo) {
       st.panels.stackWith(ControlsSection::Grade, ControlsSection::Color);
       st.panels.setActiveInStack(ControlsSection::Grade);
@@ -13095,6 +13627,36 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // dock it is in, `ui/DockLayout` says where in that dock, and `drawDock()`
   // draws it. See this file's "dockable panel system" section for the design.
   //
+  // ==========================================================================
+  // Reveal the flatting palette when a Flats layer becomes active (ADR-0009)
+  // ==========================================================================
+  //
+  // **On the transition, not on the state.** Level-triggering this -- "a Flats
+  // layer is active, so show the palette" -- would re-open the flyout on the
+  // very next frame after the user closed it, which is a panel that cannot be
+  // dismissed. So it fires only when the active layer's kind CHANGES into
+  // Flats, and closing it then sticks until the user goes somewhere else and
+  // comes back.
+  //
+  // Only while the palette is actually on the rail. Once the user docks it,
+  // it is a docked panel like any other: it stays where they put it and greys
+  // itself out instead, which is the behaviour that was asked for and the
+  // reason `panelHasSubject()` is not used for it.
+  {
+    const OpenDocument* revealDoc = st.documents.active();
+    const Layer* revealLayer = revealDoc != nullptr ? activeLayerOf(*revealDoc) : nullptr;
+    const std::optional<LayerKind> nowKind =
+        revealLayer != nullptr ? std::optional<LayerKind>(revealLayer->kind) : std::nullopt;
+    const bool becameFlats = nowKind.has_value() && *nowKind == LayerKind::Flats &&
+                             st.lastActiveLayerKind != nowKind;
+    st.lastActiveLayerKind = nowKind;
+    if (becameFlats && st.panels.placementOf(ControlsSection::FlatsTools) ==
+                           PanelPlacement::Flyout) {
+      st.flyoutOpen = true;
+      st.flyoutSection = ControlsSection::FlatsTools;
+    }
+  }
+
   // Order matters, but only for one reason: a dock's window is created here
   // and the canvas's is created below, and `fixedFlags` carries
   // `NoBringToFrontOnFocus`, so creation order IS z-order. Docks first means a
@@ -14390,8 +14952,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                 // first -- so a lasso released away from where it started is
                 // completed with a straight line, which is what every editor
                 // does rather than refusing the gesture.
-                if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
-                commitDrawnSelection(st, *od, drawn);
+                if (!flatsLassoCommit(st, od)) {
+                  if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
+                  commitDrawnSelection(st, *od, drawn);
+                }
               }
               st.lassoPoints.clear();
             }
@@ -14420,8 +14984,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             st.polygonLassoActive = false;
             if (od != nullptr) {
               std::optional<Selection> drawn;
-              if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
-              commitDrawnSelection(st, *od, drawn);
+              if (!flatsLassoCommit(st, od)) {
+                if (st.lassoPoints.size() >= 3) drawn = selectPolygon(st.lassoPoints);
+                commitDrawnSelection(st, *od, drawn);
+              }
             }
             st.lassoPoints.clear();
           }
@@ -15205,7 +15771,159 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) st.flatsMergeFirst.reset();
 
-    if (toolWritesRgbPixels(st.brush.tool) && !panning && !rotating && !sizingHeld &&
+    // ======================================================================
+    // The flatting TOOLS as canvas events (ADR-0009's table)
+    // ======================================================================
+    //
+    // These are the sticky counterpart of the one-shot key actions above, and
+    // they exist because a palette button cannot use the key path: the docks
+    // are drawn before the canvas hit-test, so at the instant a button is
+    // clicked the pointer is over the panel and there is no hovered texel to
+    // act on. A tool needs no point when it is picked -- the point comes from
+    // the click that follows -- which is also what these gestures already are
+    // in the model, where every edit is stored as a place rather than as a
+    // region id.
+    //
+    // Both routes call the same `flats/Tool` functions and record the same
+    // edits, so this adds an entry point, not a second implementation.
+    //
+    // GROUP and SHAPE are absent here on purpose: they are lasso gestures and
+    // are committed where the lasso commits, beside `selectPolygon()`.
+    bool flatsToolOwnsCanvas = false;
+    if (st.flatsTool != FlatsTool::None) {
+      OpenDocument* ftod = st.documents.active();
+      Layer* ftl = ftod != nullptr ? activeLayerOf(*ftod) : nullptr;
+      const std::optional<size_t> fti = ftod != nullptr ? activeLayerIndex(*ftod) : std::nullopt;
+      if (ftl != nullptr && ftl->kind == LayerKind::Flats && !ftl->locked && fti.has_value() &&
+          !transformActive) {
+        // The ordinary tool must not also act. The hosts ADR-0009 gives these
+        // gestures (Pencil, Eraser, Paint Bucket) all write pixels, and a
+        // Flats layer takes none -- so without this the user would get the
+        // flatting edit AND the RGB route's "this layer cannot take pixels"
+        // refusal, with the refusal landing second and being the one they read.
+        flatsToolOwnsCanvas = true;
+        const bool onCanvas = hovered && tx >= 0 && ty >= 0 && tx < texW && ty < texH;
+        const FlatsTool ft = st.flatsTool;
+        const bool strokeTool = ft == FlatsTool::BridgePen || ft == FlatsTool::BridgeEraser ||
+                                ft == FlatsTool::DrawMerge;
+
+        // ---- the stroke tools: accumulate while dragging, commit on release
+        if (strokeTool) {
+          if (onCanvas && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            st.flatsStroke.clear();
+            st.flatsStroke.push_back(tx);
+            st.flatsStroke.push_back(ty);
+          } else if (!st.flatsStroke.empty() && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                     onCanvas) {
+            // Coincident samples add nothing but cost -- the same guard the
+            // lasso applies to its own vertices.
+            const float lx = st.flatsStroke[st.flatsStroke.size() - 2];
+            const float ly = st.flatsStroke[st.flatsStroke.size() - 1];
+            if (lx != tx || ly != ty) {
+              st.flatsStroke.push_back(tx);
+              st.flatsStroke.push_back(ty);
+            }
+          }
+          if (!st.flatsStroke.empty() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            const FlatPolyline pts = st.flatsStroke;
+            st.flatsStroke.clear();
+            bool changed = false;
+            if (ft == FlatsTool::DrawMerge) {
+              const std::shared_ptr<const FlatEvaluation> eval =
+                  flatsEvaluateLayer(ftod->document, *fti);
+              changed = eval && flatsDrawMerge(*ftl, *eval, pts);
+              if (!changed)
+                g_strokeRefusal = "draw-merge: drag from inside one fill across the fills it "
+                                  "should swallow.";
+            } else {
+              const bool erase = ft == FlatsTool::BridgeEraser;
+              changed = flatsBridgeStroke(*ftl, pts, erase);
+              if (!changed) g_strokeRefusal = "a bridge needs a drag, not a click.";
+            }
+            if (changed) {
+              ftod->recordEdit(ft == FlatsTool::DrawMerge ? "flats draw-merge"
+                               : ft == FlatsTool::BridgeEraser ? "flats unbridge"
+                                                               : "flats bridge",
+                               EditKind::Content);
+              g_strokeRefusal.clear();
+            }
+          }
+        } else if (onCanvas && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+          // ---- the click tools ---------------------------------------------
+          const std::shared_ptr<const FlatEvaluation> eval =
+              flatsEvaluateLayer(ftod->document, *fti);
+          if (eval) {
+            switch (ft) {
+              case FlatsTool::DeleteFill:
+                if (flatsDeleteFill(*ftl, *eval, tx, ty)) {
+                  ftod->recordEdit("flats delete fill", EditKind::Content);
+                  g_strokeRefusal.clear();
+                } else {
+                  g_strokeRefusal = "nothing to delete there -- click inside a fill.";
+                }
+                break;
+              case FlatsTool::Carve:
+                if (flatsBucketCarve(*ftl, *eval, tx, ty)) {
+                  ftod->recordEdit("flats carve", EditKind::Content);
+                  g_strokeRefusal.clear();
+                } else {
+                  g_strokeRefusal = "no room to carve a fill here -- raise GAP or pick another spot.";
+                }
+                break;
+              case FlatsTool::SelectEdits:
+                // The reach is the bridge eraser's radius, so "near enough to
+                // rub out" means the same distance in both tools rather than
+                // being a second number invented here.
+                if (flatsRemoveEditAt(*ftl, tx, ty, kFlatEraseRadius)) {
+                  ftod->recordEdit("flats remove edit", EditKind::Content);
+                  g_strokeRefusal.clear();
+                } else {
+                  g_strokeRefusal = "no recorded repair near enough to remove.";
+                }
+                break;
+              case FlatsTool::MergePair:
+                // The same two-stage gesture `M` performs, and it shares
+                // `flatsMergeFirst` with it deliberately: arming with the key
+                // and closing with the tool (or the reverse) is one merge, not
+                // two half-merges.
+                if (!st.flatsMergeFirst.has_value()) {
+                  if (eval->fillAt(tx, ty)) {
+                    st.flatsMergeFirst = std::array<float, 2>{tx, ty};
+                    g_strokeRefusal = "merge armed -- click the fill it should merge into.";
+                  } else {
+                    g_strokeRefusal = "start a merge inside a fill.";
+                  }
+                } else {
+                  const std::array<float, 2> first = *st.flatsMergeFirst;
+                  st.flatsMergeFirst.reset();
+                  if (flatsMergePair(*ftl, *eval, first[0], first[1], tx, ty)) {
+                    ftod->recordEdit("flats merge", EditKind::Content);
+                    g_strokeRefusal.clear();
+                  } else {
+                    g_strokeRefusal =
+                        "merge: the two points must be two different fills, neither the background.";
+                  }
+                }
+                break;
+              case FlatsTool::Group:
+              case FlatsTool::ShapeFill:
+              case FlatsTool::BridgePen:
+              case FlatsTool::BridgeEraser:
+              case FlatsTool::DrawMerge:
+              case FlatsTool::None:
+                break;
+            }
+          }
+        }
+      } else if (ftl != nullptr && ftl->kind != LayerKind::Flats) {
+        // The palette greys itself out in this case, but the tool can also be
+        // left picked and the layer changed underneath it.
+        g_strokeRefusal = "the flatting tools act on a Flats layer: pick one in LAYERS.";
+      }
+    }
+    if (!flatsToolOwnsCanvas && st.flatsStroke.empty() == false) st.flatsStroke.clear();
+
+    if (toolWritesRgbPixels(st.brush.tool) && !flatsToolOwnsCanvas && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       OpenDocument* od = st.documents.active();
       Layer* target = od != nullptr ? activeLayerOf(*od) : nullptr;
@@ -15282,8 +16000,15 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             } else if (usable && li.has_value()) {
               FlatsContent bake;
               bake.params = st.flatsBucketParams;
+              // WHAT to segment is the SOURCE combo's answer, and it is not
+              // cosmetic: the default excludes the layer being filled, so a
+              // second fill no longer sees the first fill's pixels as line
+              // art. Cached under the target's own id, because two targets
+              // with the same parameters now read different sources.
+              const std::vector<size_t> source =
+                  flatsBakeSourceLayers(od->document, *li, st.flatsBakeSource);
               const std::shared_ptr<const FlatEvaluation> eval =
-                  flatsEvaluateBeneath(od->document, od->document.layers.size(), bake);
+                  flatsEvaluateSource(od->document, target->id, source, bake);
               const int fill = eval ? eval->fillAt(tx, ty) : 0;
               if (!fill) {
                 g_strokeRefusal = "the click is on a stroke, not inside a region.";
@@ -16335,7 +17060,30 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       const Layer* fl = flatsOd != nullptr ? activeLayerOf(*flatsOd) : nullptr;
       const std::optional<size_t> fi = flatsOd != nullptr ? activeLayerIndex(*flatsOd) : std::nullopt;
       if (fl != nullptr && fl->kind == LayerKind::Flats && fi.has_value()) {
-        const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(flatsOd->document, *fi);
+        // **PEEK, never evaluate. This is per-frame draw code.**
+        //
+        // Measured, on a 1024x1024 document: one evaluation is ~215 ms, of
+        // which the rubber-sheet membrane solve is ~110 ms. This line used to
+        // call `flatsEvaluateLayer()`, which computes on a cache miss -- and
+        // every frame of a parameter drag IS a miss, because
+        // `flatsContentHash()` covers `FlatParams`. Instrumenting a synthetic
+        // drag over 90 frames measured **92 evaluations and 22 seconds of
+        // compute -- about 4 fps** on a drag that is deliberately not even
+        // recorded until release.
+        //
+        // Peeking costs a hash and a map lookup. When the cache is cold the
+        // overlay simply draws nothing for a frame, which is the truthful
+        // state: there are no suggestions to review for a segmentation that
+        // has not been computed. The cache is warm in every case that matters,
+        // because the compositor populates it when it materialises the layer's
+        // tiles (`flatsLayerTiles()` -> `flatsEvaluateLayer()`), and that runs
+        // whenever the document's revision moves.
+        //
+        // The rule this line now obeys: **nothing on the per-frame draw path
+        // may call a computing evaluation.** The event-driven callers (a key,
+        // a click, a stroke release) still use the computing form, which is
+        // correct -- they happen once per gesture, not once per frame.
+        const std::shared_ptr<const FlatEvaluation> eval = flatsPeekEvaluation(flatsOd->document, *fi);
         float antPhase = marchingAntPhase();
         auto antPath = [&](const FlatPolyline& poly, int passes) {
           std::vector<Vec2> pts;

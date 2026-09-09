@@ -17,6 +17,10 @@
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
 #include "core/VectorRaster.hpp"
+#include "color/Space.hpp"
+#include "ops/FloodFill.hpp"
+#include <map>
+#include <string>
 
 namespace np {
 namespace {
@@ -703,6 +707,206 @@ LayerOpResult flattenDocument(Document& doc, std::vector<std::string>* warningsO
 // ==========================================================================
 // Rasterise a parametric layer (PRD C11)
 // ==========================================================================
+
+const std::vector<FlatsExpandMode>& allFlatsExpandModes() {
+  static const std::vector<FlatsExpandMode> kModes = {
+      FlatsExpandMode::PerFill, FlatsExpandMode::PerColour, FlatsExpandMode::PerGroup,
+      FlatsExpandMode::Merged};
+  return kModes;
+}
+
+const char* flatsExpandModeLabel(FlatsExpandMode mode) noexcept {
+  switch (mode) {
+    case FlatsExpandMode::PerFill:   return "One Layer per Fill";
+    case FlatsExpandMode::PerColour: return "One Layer per Colour";
+    case FlatsExpandMode::PerGroup:  return "One Layer per Group";
+    case FlatsExpandMode::Merged:    return "Merged into One Layer";
+  }
+  return "?";
+}
+
+namespace {
+
+// A hex name for a colour, so a per-colour expansion produces layer names a
+// user can match against a swatch rather than "Layer 7".
+std::string flatsHexName(const FlatRgb& c) {
+  static const char* kHex = "0123456789ABCDEF";
+  std::string out = "#";
+  for (const uint8_t v : c) {
+    out.push_back(kHex[(v >> 4) & 0xF]);
+    out.push_back(kHex[v & 0xF]);
+  }
+  return out;
+}
+
+}  // namespace
+
+LayerOpResult expandFlatsLayer(Document& doc, size_t index, FlatsExpandMode mode,
+                               std::vector<std::string>* warningsOut) {
+  LayerOpResult refusal;
+  if (!layerOpInRange(doc, index, "expand flats", &refusal)) return refusal;
+  if (!layerOpNotLocked(doc, index, "expand flats", kLockedMergeDestroys, &refusal)) return refusal;
+
+  const Layer& layer = doc.layers[index];
+  if (layer.kind != LayerKind::Flats)
+    return layerOpFail("expand flats refused: " + layerOpDescribe(doc, index) +
+                       " is not a Flats layer. Only a Flats layer has fills to expand.");
+
+  const std::shared_ptr<const FlatEvaluation> eval = flatsEvaluateLayer(doc, index);
+  if (!eval)
+    return layerOpFail("expand flats refused: " + layerOpDescribe(doc, index) +
+                       " has no evaluation -- a zero-size document, or no line art beneath it.");
+
+  // ---- bucketing: which fills become which layer -------------------------
+  //
+  // One entry per output layer, in the order the layers will read top-down.
+  // `eval->roots()` is already largest-area-first, so a per-fill expansion
+  // comes out big-to-small without a second sort, and per-colour/per-group
+  // inherit that order from the first fill that opens each bucket.
+  struct Bucket {
+    std::string name;
+    std::array<float, 4> linear{};
+  };
+  std::vector<Bucket> buckets;
+  // Indexed by fill id; -1 for a fill that contributes to no layer.
+  std::vector<int> bucketOf(eval->fills.size(), -1);
+  std::map<FlatRgb, int> byColour;
+  std::map<int, int> byGroup;
+
+  const FlatEdits& edits = layer.flats.edits;
+  auto openBucket = [&](const std::string& name, const FlatRgb& c) {
+    Bucket b;
+    b.name = name;
+    // `FlatRgb` is 8-bit DISPLAY sRGB (flats/Model.hpp); `fillThroughSelection`
+    // wants STRAIGHT LINEAR. Skipping this decode fills roughly twice as dark
+    // as the flat shows on screen, which reads as a colour-management bug
+    // rather than a missing conversion -- the Flats bucket decodes at exactly
+    // the same boundary.
+    b.linear = {srgbDecode(static_cast<float>(c[0]) / 255.0f),
+                srgbDecode(static_cast<float>(c[1]) / 255.0f),
+                srgbDecode(static_cast<float>(c[2]) / 255.0f), 1.0f};
+    buckets.push_back(b);
+    return static_cast<int>(buckets.size()) - 1;
+  };
+
+  for (const int r : eval->roots()) {
+    const FlatFill& f = eval->fills[static_cast<size_t>(r)];
+    if (f.isBg || f.deleted || !f.visible) continue;
+    int b = -1;
+    switch (mode) {
+      case FlatsExpandMode::Merged:
+        if (buckets.empty()) openBucket(layer.name, f.color);
+        b = 0;
+        break;
+      case FlatsExpandMode::PerFill:
+        b = openBucket(f.name.empty() ? ("Fill " + std::to_string(r)) : f.name, f.color);
+        break;
+      case FlatsExpandMode::PerColour: {
+        auto it = byColour.find(f.color);
+        if (it == byColour.end()) it = byColour.emplace(f.color, openBucket(flatsHexName(f.color), f.color)).first;
+        b = it->second;
+        break;
+      }
+      case FlatsExpandMode::PerGroup: {
+        auto it = byGroup.find(f.group);
+        if (it == byGroup.end()) {
+          std::string name = "Ungrouped";
+          for (const FlatGroup& g : edits.groups)
+            if (static_cast<int>(g.id) == f.group) name = g.name;
+          it = byGroup.emplace(f.group, openBucket(name, f.color)).first;
+        }
+        b = it->second;
+        break;
+      }
+    }
+    bucketOf[static_cast<size_t>(r)] = b;
+  }
+
+  if (buckets.empty())
+    return layerOpFail("expand flats refused: " + layerOpDescribe(doc, index) +
+                       " has no visible fills to expand.");
+
+  // ---- the explosion guard -----------------------------------------------
+  if (buckets.size() > kFlatsExpandMaxLayers)
+    return layerOpFail(
+        "expand flats refused: that would make " + std::to_string(buckets.size()) +
+        " layers, and the ceiling is " + std::to_string(kFlatsExpandMaxLayers) +
+        ". Every expanded layer is copied into every undo step from now on, so this is a "
+        "memory cost rather than a long list. Expand per colour or per group instead, or "
+        "raise MIN REGION, DECLUTTER or PALETTE in SEGMENTATION first. Nothing was changed.");
+
+  // ---- one pass over the labels ------------------------------------------
+  //
+  // NOT `flatsFillSelection()` per bucket: that walks the whole image once
+  // for every fill, so 64 buckets on a 2K plate would be 268 million texel
+  // tests for a job that is one pass with a lookup.
+  std::vector<Selection> coverage(buckets.size());
+  {
+    const std::vector<int32_t> lut = eval->rootLut();
+    for (int y = 0; y < eval->h; ++y) {
+      for (int x = 0; x < eval->w; ++x) {
+        const int32_t root = lut[eval->labels[static_cast<size_t>(y) * eval->w + x]];
+        if (root <= 0 || static_cast<size_t>(root) >= bucketOf.size()) continue;
+        const int b = bucketOf[static_cast<size_t>(root)];
+        if (b < 0) continue;
+        coverage[static_cast<size_t>(b)]
+            .tiles.getOrCreate(tileCoordAt(PixelCoord{x, y}))
+            .writeCoverage(tileLocalOffset(PixelCoord{x, y}), 1.0f);
+      }
+    }
+  }
+
+  // ---- materialise --------------------------------------------------------
+  std::vector<Layer> made;
+  made.reserve(buckets.size());
+  for (size_t b = 0; b < buckets.size(); ++b) {
+    Layer l = makeRgbLayer(buckets[b].name);
+    if (l.rgbTiles.has_value())
+      fillThroughSelection(*l.rgbTiles, coverage[b], buckets[b].linear);
+    // How the layer participates in the stack carries over from the Flats
+    // layer, exactly as `rasteriseLayer()` does: expanding changes what the
+    // content IS, not how it composites.
+    l.opacity = layer.opacity;
+    l.blend = layer.blend;
+    l.visible = layer.visible;
+    made.push_back(std::move(l));
+  }
+
+  const size_t count = made.size();
+  const std::string label = "expand " + layerOpDescribe(doc, index) + " to " +
+                            std::to_string(count) + (count == 1 ? " layer" : " layers");
+  std::string groupName;
+
+  if (count == 1) {
+    doc.layers[index] = std::move(made.front());
+  } else {
+    // Members are a contiguous run with the Group directly ABOVE them, each
+    // carrying the group's tag in `parent` -- core/LayerSetOps' own shape, so
+    // `layerGroupDepth()` and `groupMemberSpan()` agree with what this built.
+    // `made` is top-down, and the stack is bottom-up, so it reverses here.
+    Layer group = makeGroupLayer(doc, layer.name + " (" +
+                                          (mode == FlatsExpandMode::PerColour  ? "colours"
+                                           : mode == FlatsExpandMode::PerGroup ? "groups"
+                                                                               : "fills") +
+                                          ")");
+    group.opacity = layer.opacity;
+    group.visible = layer.visible;
+    groupName = group.name;
+    for (Layer& m : made) m.parent = group.groupTag;
+    std::reverse(made.begin(), made.end());
+    doc.layers.erase(doc.layers.begin() + static_cast<ptrdiff_t>(index));
+    doc.layers.insert(doc.layers.begin() + static_cast<ptrdiff_t>(index),
+                      std::make_move_iterator(made.begin()), std::make_move_iterator(made.end()));
+    doc.layers.insert(doc.layers.begin() + static_cast<ptrdiff_t>(index + count), std::move(group));
+  }
+
+  append(warningsOut,
+         "expand flats produced " + std::to_string(count) + " layer(s)" +
+             (groupName.empty() ? "" : " in group \"" + groupName + "\"") +
+             "; the layer re-flatted the line art beneath it before and does not now, and its "
+             "repairs are gone. Undo restores it.");
+  return layerOpSucceed(label, count == 1 ? index : index + count);
+}
 
 LayerOpResult rasteriseLayer(Document& doc, size_t index, std::vector<std::string>* warningsOut) {
   LayerOpResult refusal;
