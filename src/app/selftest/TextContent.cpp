@@ -433,6 +433,27 @@ bool runTextContentTest() {
           "newline: the empty line's caret sits at the alignment point -- centred here, not at "
           "the left edge");
 
+    // A freshly dragged, still-EMPTY text frame puts its caret on the first
+    // baseline, not on the frame's top edge. With the caret's baseline on the
+    // top edge the bar draws almost entirely above the box, and then the
+    // first character typed appears a whole ascent lower -- the same "the
+    // caret is not where the text will be" complaint as the newline case.
+    {
+      TextContent blank = para("");
+      TextContent oneChar = para("H");
+      const TextCaretSegment cb = textCaretSegment(blank, 0);
+      const TextCaretSegment c1 = textCaretSegment(oneChar, 0);
+      std::printf("  [measured] empty frame caret y %.2f, after one character %.2f (frame top %.1f)\n",
+                  cb.bottom.y, c1.bottom.y, org.y);
+      check(std::fabs(cb.bottom.y - c1.bottom.y) < 0.01f,
+            "empty frame: REQUIRED -- an empty PARAGRAPH block's caret sits exactly where the "
+            "first character will, not on the frame's top edge with the bar hanging above the box");
+      check(cb.bottom.y > org.y,
+            "empty frame: and that is BELOW the frame's top-left, which is what `origin` means "
+            "for paragraph text -- an assertion the equality above would pass even if both were "
+            "wrong in the same direction");
+    }
+
     // Point text is deliberately NOT given a phantom line. Its shaper never
     // breaks a line at all, so a caret dropped to a second one would sit
     // under text that is not there.

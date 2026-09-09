@@ -140,6 +140,20 @@ PathPoint shapedOrigin(const TextContent& text, const ShapedText& shaped) noexce
   return PathPoint{text.origin.x, text.origin.y - shaped.firstBaselineY};
 }
 
+// Where a line with NO glyphs on it begins, in text space -- which is its
+// alignment point, since there is nothing on it to align.
+//
+// Two callers, and they are the two states a text block spends its first
+// moments in: a block just created and not yet typed into, and a block whose
+// text ends in the newline you just pressed. Justified starts at the left
+// edge like Left does; there is nothing to stretch on an empty line.
+float emptyLineStartX(const TextContent& text) noexcept {
+  if (text.frame.width <= 0.0f) return 0.0f;  // point text: no frame to align within
+  if (text.align == TextAlign::Center) return text.frame.width * 0.5f;
+  if (text.align == TextAlign::Right) return text.frame.width;
+  return 0.0f;
+}
+
 // The conventional ascent/descent split of a line box around the baseline,
 // shared by the caret and the selection highlight so the two cannot disagree
 // -- core/TextContent.hpp's `TextCaretSegment` says why that matters.
@@ -326,12 +340,31 @@ CaretPen caretPenFor(const TextContent& text, size_t caretByte) {
   CaretPen c;
   c.height = caretHeightFor(text.style);
 
-  // An empty block's caret is at the origin, one line down from nothing.
-  // Shaping an empty string would go through `shapeText()`'s stub-refusal
-  // path (see `textContentToShapes()`'s own comment on why that matters), so
-  // it is short-circuited here for the same reason.
+  // An empty block has nothing to shape, and shaping an empty string would go
+  // through `shapeText()`'s stub-refusal path (see `textContentToShapes()`'s
+  // own comment on why that matters), so it is answered here instead.
   if (text.utf8.empty()) {
+    // Point text: `origin` IS the baseline (section 2b), so the caret is
+    // already in the right place and nothing needs measuring.
     c.pen = text.origin;
+
+    // Paragraph text: `origin` is the frame's TOP-LEFT, and a caret whose
+    // baseline sits on the top edge draws almost entirely ABOVE the box --
+    // which is what a freshly dragged text frame looked like, until the first
+    // character was typed and the type appeared a whole ascent lower down.
+    //
+    // The first baseline is an ascent below the frame top, and that ascent is
+    // a property of the font at this size, so it is MEASURED rather than
+    // guessed: one character is shaped in this block's own style and frame,
+    // and its first baseline is where this block's would be. A fraction of
+    // `sizePx` would be wrong by a few pixels in a way that reads as the
+    // caret being misaligned with its own text.
+    if (text.frame.width > 0.0f) {
+      const ShapedText probe = shapeText("x", text.style, text.frame, text.align);
+      if (probe.ok)
+        c.pen = PathPoint{text.origin.x + emptyLineStartX(text),
+                          text.origin.y + probe.firstBaselineY};
+    }
     return c;
   }
 
@@ -399,13 +432,8 @@ CaretPen caretPenFor(const TextContent& text, size_t caretByte) {
   // text is a real gap, named in core/TextContent.hpp section 2, and moving
   // the caret without moving the type would disguise it rather than fix it.
   if (endsWithNewline && text.frame.width > 0.0f) {
-    // Where a line begins, which is the alignment point for an empty one.
-    // Justified starts at the left edge like Left does -- there is nothing to
-    // stretch on a line with no glyphs.
-    float lineStartX = 0.0f;
-    if (text.align == TextAlign::Center) lineStartX = text.frame.width * 0.5f;
-    else if (text.align == TextAlign::Right) lineStartX = text.frame.width;
-    c.pen = PathPoint{blockAt.x + lineStartX, blockAt.y + last->y + shaped.lineHeightPx};
+    c.pen = PathPoint{blockAt.x + emptyLineStartX(text),
+                      blockAt.y + last->y + shaped.lineHeightPx};
     return c;
   }
 
