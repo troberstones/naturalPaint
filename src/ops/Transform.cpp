@@ -9,6 +9,7 @@
 #include "core/Parallel.hpp"
 #include "core/Premultiply.hpp"
 #include "ops/Resample.hpp"
+#include <cctype>
 
 namespace np {
 namespace {
@@ -578,6 +579,28 @@ const char* resampleKernelName(ResampleKernel kernel) noexcept {
     case ResampleKernel::Lanczos3: return "Lanczos3";
   }
   return "unknown";
+}
+
+std::optional<ResampleKernel> resampleKernelFromName(std::string_view name) noexcept {
+  // Case-insensitive over the exact strings resampleKernelName() produces, so
+  // a file that stores "Catmull-Rom" and one a human typed as "catmull-rom"
+  // both read back as the same kernel. ASCII only, which every name here is.
+  auto equals = [&](const char* other) {
+    size_t n = 0;
+    while (other[n] != '\0') ++n;
+    if (name.size() != n) return false;
+    for (size_t i = 0; i < n; ++i) {
+      const auto a = static_cast<unsigned char>(name[i]);
+      const auto b = static_cast<unsigned char>(other[i]);
+      if (std::tolower(a) != std::tolower(b)) return false;
+    }
+    return true;
+  };
+  for (const ResampleKernel k : {ResampleKernel::Nearest, ResampleKernel::Bilinear,
+                                 ResampleKernel::CatmullRom, ResampleKernel::Mitchell,
+                                 ResampleKernel::Lanczos3})
+    if (equals(resampleKernelName(k))) return k;
+  return std::nullopt;
 }
 
 // ==========================================================================

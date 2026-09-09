@@ -6,6 +6,7 @@ add_executable(naturalPaint
   app/BrushSheet.cpp
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
+  app/Command.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp
@@ -152,6 +153,7 @@ add_executable(naturalPaint
   app/selftest/ImageDecode.cpp
   app/selftest/ImageIO.cpp
   app/selftest/IncrementalComposite.cpp
+  app/selftest/Command.cpp
   app/selftest/Json.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp

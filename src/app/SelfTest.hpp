@@ -3563,6 +3563,16 @@ bool runLayerGroupPanelTest();
 // properties against hand-typed text: a float round-trips to the identical
 // bit pattern, and object key order survives a rewrite -- which is what makes
 // an action file diffable (PRD P5). Headless, GPU-free, filesystem-free.
+// app/Command -- the one door every recordable document edit goes through
+// (docs/automation-plan.md step 1). Asserts the layer between the command
+// table and the appliers it dispatches to: a string identity that cannot be
+// moved by an enum, an unknown id REFUSED rather than skipped, a precondition
+// that runs before the applier, and layers addressed by name so a replay on a
+// reordered document cannot act on a different one. Drives the plan's own
+// composite case -- flatten, blur, set blend to Subtract, threshold -- entirely
+// through applyCommand(). Headless, GPU-free, filesystem-free.
+bool runCommandTest();
+
 bool runJsonTest();
 
 bool runExportStatesTest();

@@ -3224,6 +3224,9 @@ int main(int argc, char** argv) {
     // GPU-free; writes and removes a selftest_exportstates/ directory.
     // io/Json: the shared JSON reader/writer the export presets, the keymap
     // and (next) the action format all read through. See app/SelfTest.hpp.
+    // app/Command: the recordable-command table and its one door. See
+    // app/SelfTest.hpp.
+    const bool commandOk = np::runCommandTest();
     const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
@@ -3569,7 +3572,7 @@ int main(int argc, char** argv) {
                     shelvedLinksOk && scatterCountOk && strokePathOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
-                    jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&

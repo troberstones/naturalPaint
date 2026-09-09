@@ -7,6 +7,8 @@
 
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
+#include <optional>
+#include <string_view>
 
 // ops/Transform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14, D15,
 // D16, D17).
@@ -421,6 +423,14 @@ float resampleKernelWeight(ResampleKernel kernel, float t) noexcept;
 
 // Human-readable name, for refusal messages and for a menu.
 const char* resampleKernelName(ResampleKernel kernel) noexcept;
+
+// The inverse, matching `resampleKernelName()`'s own strings case-
+// insensitively. Added for io/ActionFile (docs/automation-plan.md), which
+// needs a kernel choice to survive a round trip through a text file; the
+// pair follows `layerKindName()`/`layerKindFromName()` and
+// `blendModeName()`/`blendModeFromName()`, so there is one vocabulary rather
+// than a second one invented at the file format's edge.
+std::optional<ResampleKernel> resampleKernelFromName(std::string_view name) noexcept;
 
 // --------------------------------------------------------------------------
 // A flat image in the tile store's own space: **linear light, premultiplied
