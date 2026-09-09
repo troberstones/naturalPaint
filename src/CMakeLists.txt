@@ -225,6 +225,7 @@ add_executable(naturalPaint
   app/selftest/FlatsExpand.cpp
   app/selftest/FlatsSource.cpp
   app/selftest/ToolSwitch.cpp
+  app/selftest/ToolHotkeys.cpp
   app/selftest/SpringEyedropper.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp

@@ -52,7 +52,15 @@ bool runKeymapTest() {
     const auto cmdQ = km.resolve(KeyChord{SDLK_Q, kModCmd}, std::nullopt);
     check(cmdQ == std::optional<std::string>("quit"), "resolve(Cmd+Q) -> quit");
 
-    const auto unbound = km.resolve(KeyChord{SDLK_Z, 0}, std::nullopt);
+    // **`F9`, not the bare `Z` this line used to press.** `Z` was genuinely
+    // unbound for as long as no tool in this build had a working letter;
+    // docs/shortcuts.md §1 reserves it for the Zoom and `keymaps/default.json`
+    // now binds it (`tool_zoom` -- app/selftest/ToolHotkeys.cpp). A fixture
+    // chosen because it happened to be free is a fixture that expires, and
+    // this one did: the claim is that `resolve()` returns nothing for a chord
+    // nobody bound, so it wants a chord the shortcuts document reserves for
+    // nothing at all, not one that was merely unimplemented at the time.
+    const auto unbound = km.resolve(KeyChord{SDLK_F9, 0}, std::nullopt);
     check(unbound == std::nullopt, "resolve() on an unbound chord returns nothing");
   }
 

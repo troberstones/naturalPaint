@@ -1,7 +1,9 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "app/AppState.hpp"
@@ -180,13 +182,64 @@ constexpr uint32_t kMoreIconCodepoint = 57526u;  // "ellipsis"
 constexpr uint32_t kSettingsIconCodepoint = 57684u;  // "settings"
 
 // docs/shortcuts.md section 1's reserved letter for a tool ("B", "Shift+L"),
-// or an empty string when no letter is reserved yet. **This is not a
-// working shortcut** -- keymaps/default.json does not bind any tool-select
-// key today (see main.cpp's key-down dispatch: every binding it resolves is
-// a command, never a tool switch), so this is what a tooltip *shows*, not a
-// promise that pressing the key does anything. Wiring that dispatch is a
-// separate, later change.
+// or an empty string when no letter is reserved yet.
+//
+// **This used to be decorative, and the comment here said so.** For most of
+// this build's life it read "this is not a working shortcut -- keymaps/
+// default.json does not bind any tool-select key today", and it was true:
+// twenty-one palette tooltips promised a letter that nothing in the process
+// read. `keymaps/default.json` now carries one `tool_<slug>` binding per
+// non-empty entry in this column, `src/main.cpp`'s key-down dispatch resolves
+// the `tool_` prefix through `toolFromSelectAction()` below, and
+// `app/selftest/ToolHotkeys.cpp` asserts the two agree in *both* directions --
+// every letter here is bound, and every binding names a tool that exists. The
+// column can only go back to being decorative by turning that section red.
 std::string toolShortcutLabel(Tool t);
+
+// -------------------------------------------------- tool select actions
+//
+// The stable machine name for a tool, as a keymap action says it:
+// `"brush"`, `"rect_marquee"`, `"clone_stamp"`. **Not the display name and
+// not the Lucide icon name**, both of which are already columns in the same
+// table and neither of which is safe to key a data file on -- a display name
+// is prose a product decision may reword ("Elliptical Marquee" -> "Ellipse"),
+// and an icon name belongs to Lucide, which renames its own glyphs on its own
+// schedule. A slug changes only when someone deliberately breaks every user's
+// keymap file.
+//
+// Every `Tool` has one, including the cells `toolImplemented()` says are not
+// built: a slug is an identity, not a capability, and withholding one from
+// `Tool::Shape` would only mean the row that finally builds it has to invent
+// the name under time pressure. `Tool::Count` or any other stray cast reads
+// as `""`, the same unknown-row contract `toolName()` gives.
+const char* toolSlug(Tool t);
+
+// The reverse lookup, over that same one table. `std::nullopt` for a slug no
+// row declares -- which is what makes a typo in keymaps/default.json a
+// *detectable* condition rather than a binding that silently selects
+// `Tool::Brush` because zero was the fallback.
+std::optional<Tool> toolForSlug(std::string_view slug);
+
+// The keymap action name that selects `t`: `"tool_" + toolSlug(t)`.
+//
+// One prefix and one table, rather than twenty-eight action names spelled out
+// in a dispatch chain. `MenuAction::ToolItem` already made the same trade for
+// the Tools menu -- one menu arm, the `Tool` carried as the item's param --
+// and a per-tool `else if` arm is precisely the shape that lets the twenty-
+// second tool ship with a tooltip, an icon, a menu row and no key.
+std::string toolSelectActionName(Tool t);
+
+// The tool a keymap action selects, or `std::nullopt` when the action is not
+// a tool select at all.
+//
+// Two ways to get nothing back, deliberately not distinguished here: an
+// action without the `tool_` prefix (`"undo"`, `"flats_next_gap"` -- the
+// dispatch chain's own arms, which have to fall past this one untouched), and
+// the prefix followed by a slug no `Tool` declares. The second is a broken
+// keymap, and `app/selftest/ToolHotkeys.cpp` is what names it; at runtime
+// both mean "not a tool switch", because the alternative -- guessing at the
+// nearest slug -- selects a tool the user did not ask for.
+std::optional<Tool> toolFromSelectAction(std::string_view action);
 
 // The tooltip a palette cell shows on hover, matching the design's own
 // "Brush Tool  B" -- name, "Tool", and the shortcut letter when one is

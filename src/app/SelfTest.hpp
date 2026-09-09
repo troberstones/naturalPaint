@@ -163,6 +163,19 @@ bool runSolverFootprintTest(GpuContext& gpu, PaintSim& sim);
 // scope-correct action for a scoped-only binding.
 bool runKeymapTest();
 
+// docs/shortcuts.md §1's tool letters, and the bidirectional assertion that
+// keeps `ui/AtelierChrome.cpp`'s `shortcut` column from going back to being
+// decorative text. Every row that reserves a letter must have exactly one
+// global `tool_<slug>` binding in keymaps/default.json on exactly that chord,
+// and every `tool_*` binding in that file must name a slug some `Tool`
+// declares. Also: the slug column is unique and reversible, one real chord is
+// followed through `resolve()` -> `toolFromSelectAction()` -> `setActiveTool()`
+// (the route main.cpp's key-down handler takes), and every bound tool chord is
+// proven to be refused by `keyChordReachesKeymap()` while a text session is
+// live -- twenty-one bare letters that would otherwise retype a caption as a
+// sequence of tool changes. Headless and GPU-free.
+bool runToolHotkeysTest();
+
 // Headless, GPU-free check on ui/Fonts -- the glyph coverage the layers panel
 // depends on. **This section exists because nine other sections could not
 // have caught the bug it guards**: nine of them assert `layerKindGlyph()`

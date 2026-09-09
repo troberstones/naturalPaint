@@ -2351,6 +2351,12 @@ int main(int argc, char** argv) {
     // Phase 2 step 15: app/Keymap load, conflict detection and resolve().
     // Headless, GPU-free -- pure CPU/file-IO, no PaintSim involvement.
     const bool keymapOk = np::runKeymapTest();
+    // docs/shortcuts.md §1's tool letters: the two-directional check that
+    // `kToolMeta`'s shortcut column and keymaps/default.json say the same
+    // thing. That column was display-only text for the whole life of the
+    // build -- twenty-one tooltips promising a key nothing read -- and this
+    // is what makes going back to that state a red line. Headless, GPU-free.
+    const bool toolHotkeysOk = np::runToolHotkeysTest();
     // UI detour: ui/Fonts -- ImGui's built-in ProggyClean holds no glyph above
     // U+00FF, so six of docs/ui.md 3.2's seven layer-kind glyphs could not be
     // drawn at all. Headless and GPU-free: it bakes a real font atlas on the
@@ -3609,7 +3615,7 @@ int main(int argc, char** argv) {
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
                     penToolOk && pathOpsOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
-                    textKeyCaptureOk && noDocumentCanvasOk;
+                    textKeyCaptureOk && toolHotkeysOk && noDocumentCanvasOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4535,8 +4541,24 @@ int main(int argc, char** argv) {
         // `mirror_x`/`delete_selection`. Cmd/Ctrl chords still reach
         // `resolve()` (Cmd+Z etc.), and every chord does when no session is
         // live, which is every key-down before this gate existed.
+        //
+        // **`io.WantTextInput` is the second half of that same sentence, and
+        // it was missing.** `textSessionActive()` knows about the canvas Text
+        // tool and nothing else; an ImGui `InputText` -- the layer-rename box
+        // is the one every user meets -- is just as much a text-editing
+        // session and was reaching `resolve()` unfiltered, so typing a layer
+        // name containing an `f` already toggled the mirror. That was one
+        // stray letter and survived unnoticed; with the twenty-one tool
+        // bindings below it becomes "rename a layer to Background and land on
+        // the Gradient tool", which is why the gate is widened in the same
+        // commit that adds them rather than left as someone else's bug.
+        // `ui/MacPaintUI.cpp` already guards every bare key it reads directly
+        // (the spring Hand, the nudge arrows, the flats keys) on exactly this
+        // flag; this is that rule applied at the one place it was not.
+        const bool typingIntoAWidget =
+            np::textSessionActive(st.textEdit) || ImGui::GetIO().WantTextInput;
         const std::optional<std::string> action =
-            np::keyChordReachesKeymap(chord, np::textSessionActive(st.textEdit))
+            np::keyChordReachesKeymap(chord, typingIntoAWidget)
                 ? keymap.resolve(chord, activeScope)
                 : std::nullopt;
         if (action == "toggle_pause") st.paused = !st.paused;
@@ -4685,6 +4707,30 @@ int main(int argc, char** argv) {
         else if (action == "toggle_guides") st.showGuides = !st.showGuides;
         else if (action == "toggle_snapping") st.snappingEnabled = !st.snappingEnabled;
         else if (action == "toggle_grid") st.showGrid = !st.showGrid;
+        // docs/shortcuts.md §1, "unmodified letters are tools" -- **one arm,
+        // not twenty-one.**
+        //
+        // Every other line in this chain is a literal action name, and the
+        // obvious way to write this one was twenty-one more of them. The
+        // reason it is a table walk instead is the defect this commit exists
+        // to fix: `kToolMeta`'s shortcut column had been display-only text for
+        // the whole life of the build, twenty-one tooltips promising a letter
+        // no code read, precisely because "wire the key too" was a separate
+        // per-tool edit that nobody made. A prefix plus
+        // `ui/AtelierChrome`'s own table makes the next tool's hotkey a row in
+        // the data, and `app/selftest/ToolHotkeys.cpp` fails if that row is
+        // missing -- neither of which is true of an `else if` chain.
+        //
+        // `MenuAction::ToolItem` (ui/MacPaintUI.cpp) is the precedent and the
+        // sibling: one menu arm carrying the `Tool` as its param, calling the
+        // same `setActiveTool()`. Both routes end in app/ToolSwitch's single
+        // writer of `st.brush.tool`, so the key, the menu row and the palette
+        // cell cannot disagree about what picking a tool does.
+        else if (const std::optional<np::Tool> picked =
+                     action ? np::toolFromSelectAction(*action) : std::nullopt;
+                 picked.has_value()) {
+          np::setActiveTool(st, *picked);
+        }
       }
     }
 
