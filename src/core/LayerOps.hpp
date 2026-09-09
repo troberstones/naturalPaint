@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 #include "core/Blend.hpp"
 #include "core/Document.hpp"
@@ -250,6 +251,27 @@ LayerOpResult removeLayer(Document& doc, size_t index);
 // layer clips to is derived from position (core/Layer.hpp), so every other
 // reorder legitimately re-parents it, which is exactly what dragging a clipped
 // layer around a stack is for.
+// The contiguous run of layers directly below `groupIndex` whose `parent` names
+// that group -- PLAN.md Phase 5 section 5's invariant, read back rather than
+// assumed. A downward scan, so a same-tag layer that is NOT contiguous with the
+// group (a state this codebase's own operations never produce, but a hand-built
+// or hand-edited `Document` might) is simply not included: the same "absent
+// means neutral" answer core/Mask.hpp gives a missing tile. It does not crash
+// and it does not guess.
+//
+// Returns `[groupIndex + 1, groupIndex]` -- an empty, well-formed range with
+// `first > second` -- for a group with no members, so callers test
+// `first <= second` rather than special-casing size 0.
+//
+// **Here rather than in core/LayerSetOps, where it was file-local, because
+// `moveLayer()` below needs it.** A Group layer that reorders without its
+// members leaves them behind with a `parent` that still names it, which this
+// function then reads as "not members" -- the group arrives somewhere new and
+// empty, and the children stay where they were. That was a real defect, and it
+// was invisible from inside LayerSetOps because every operation THERE moves
+// spans already.
+std::pair<size_t, size_t> groupMemberSpan(const Document& doc, size_t groupIndex);
+
 LayerOpResult moveLayer(Document& doc, size_t from, size_t to);
 
 // Inserts a deep copy of the layer at `index` **directly above it**, at
