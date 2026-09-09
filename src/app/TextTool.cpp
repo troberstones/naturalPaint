@@ -245,4 +245,16 @@ bool textEditFrameDragEnd(TextEditState* state, TextContent* out, float minSizeD
   return true;
 }
 
+TextInputAction textInputAction(bool sessionActive, bool platformActive, bool imguiWantsText,
+                                bool startedHere) noexcept {
+  // Re-asserted rather than edge-triggered: `platformActive` is asked of SDL
+  // itself every frame, so a stop performed behind our back (ImGui's backend
+  // does exactly that when one of its own text widgets loses focus) is
+  // repaired on the next frame instead of leaving the caret mute for the rest
+  // of the session.
+  if (sessionActive) return platformActive ? TextInputAction::Leave : TextInputAction::Start;
+  if (startedHere && platformActive && !imguiWantsText) return TextInputAction::Stop;
+  return TextInputAction::Leave;
+}
+
 }  // namespace np

@@ -369,4 +369,50 @@ void textEditFrameDragUpdate(TextEditState* state, PathPoint at) noexcept;
 // separate off-by-one to reason about.
 bool textEditFrameDragEnd(TextEditState* state, TextContent* out, float minSizeDoc) noexcept;
 
+// ==========================================================================
+// 7. THE PLATFORM'S TEXT INPUT -- who asks SDL to deliver characters
+// ==========================================================================
+//
+// `ui/MacPaintUI.cpp`'s typing loop reads `io.InputQueueCharacters`, which
+// ImGui fills from `SDL_EVENT_TEXT_INPUT` and from nothing else. SDL does not
+// send that event unless text input has been STARTED for the window
+// (`SDL_StartTextInput()`): on macOS, `SDL_cocoakeyboard.m` runs the key
+// event through `interpretKeyEvents:` -- the only producer of the event, and
+// the thing that decodes dead keys, Option-accents and IME composition --
+// only while `SDL_TextInputActive()` is true.
+//
+// Nothing in this application used to call it. ImGui's SDL3 backend calls it
+// for ImGui's OWN text widgets, from the platform IME hook, which fires only
+// when `io.WantTextInput` is set by an active `InputText()` -- and a Text
+// tool session is not an ImGui widget, so that flag is false for the whole of
+// it. **The measured result was that `InputQueueCharacters` was empty on
+// every frame of every session: not one typed character could ever reach a
+// Text layer.** This function is the missing half.
+//
+// Pure, so `--selftest` can prove the table without a window. The caller
+// (`main.cpp`'s frame loop) holds `startedHere` -- "the last Start below was
+// ours" -- and updates it from what it does:
+//
+//   sessionActive && !platformActive          -> Start   (also RE-starts: an
+//       ImGui text field that took focus mid-session and then lost it stops
+//       text input on the way out, and the backend will not restart it for a
+//       caret it knows nothing about)
+//   !sessionActive && startedHere && platformActive && !imguiWantsText
+//                                             -> Stop
+//   otherwise                                 -> Leave
+//
+// The two conditions on Stop are each a thing that must not be taken away:
+// `startedHere` because text input ImGui started belongs to ImGui (stopping
+// it behind the backend's back leaves `ImGui_ImplSDL3_UpdateIme()`'s
+// `ImeWindow == window` early-return convinced it is still on, and it never
+// restarts it -- a permanently dead rename box), and `!imguiWantsText`
+// because a widget may have taken focus in the same frame the session ended.
+//
+// Stopping at all, rather than simply leaving text input on forever, is what
+// keeps a CJK input method from swallowing every bare hotkey in the
+// application once the caret is put away.
+enum class TextInputAction { Leave, Start, Stop };
+TextInputAction textInputAction(bool sessionActive, bool platformActive, bool imguiWantsText,
+                                bool startedHere) noexcept;
+
 }  // namespace np

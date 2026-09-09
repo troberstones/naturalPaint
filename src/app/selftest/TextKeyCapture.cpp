@@ -154,6 +154,68 @@ bool runTextKeyCaptureTest() {
           "call sites rely on");
   }
 
+  // --- 4. textInputAction() -- the platform hand-off ------------------------
+  //
+  // The half that made the whole feature inert: `ui/MacPaintUI.cpp`'s typing
+  // loop reads `io.InputQueueCharacters`, ImGui fills that from
+  // `SDL_EVENT_TEXT_INPUT` and nothing else, and SDL generates that event only
+  // while text input has been STARTED for the window. Nothing in this
+  // application called `SDL_StartTextInput()`; ImGui's backend calls it only
+  // for its own `InputText()` widgets, and a Text-tool caret session is not
+  // one. Measured on the running app before this existed: `sdlTextInput=0`
+  // and `chars=0` on every frame of a live session -- the gate in section 1
+  // was correctly keeping bare keys AWAY from the keymap, and there was
+  // nothing on the other side to receive them.
+  //
+  // Pure and headless, which is the point of it being a function rather than
+  // four lines inline in the frame loop (app/TextTool.hpp section 7).
+  {
+    using A = TextInputAction;
+    // A session opens while the platform is off: start, every time.
+    check(textInputAction(/*sessionActive=*/true, /*platformActive=*/false,
+                          /*imguiWantsText=*/false, /*startedHere=*/false) == A::Start,
+          "textInputAction(): REQUIRED -- a live session with text input off must START it");
+    // Already on because we turned it on: nothing to do, every frame, forever.
+    check(textInputAction(true, true, false, true) == A::Leave,
+          "textInputAction(): a live session with text input already on is left alone");
+    // **The re-start.** ImGui's backend stops text input when one of its own
+    // widgets loses focus, and its UpdateIme() will never restart it for a
+    // caret it knows nothing about. Asking SDL every frame is what repairs
+    // that; an edge-triggered version would leave the caret mute for the rest
+    // of the session.
+    check(textInputAction(/*sessionActive=*/true, /*platformActive=*/false,
+                          /*imguiWantsText=*/false, /*startedHere=*/true) == A::Start,
+          "textInputAction(): REQUIRED -- a live session must RE-start after ImGui's backend "
+          "stopped text input behind our back");
+    // Session over, we own it, nobody else wants it: stop, so a CJK input
+    // method does not keep swallowing bare hotkeys.
+    check(textInputAction(/*sessionActive=*/false, /*platformActive=*/true,
+                          /*imguiWantsText=*/false, /*startedHere=*/true) == A::Stop,
+          "textInputAction(): REQUIRED -- the session ending stops the text input we started");
+    // Session over, but ImGui started it: NOT ours to stop. Stopping it here
+    // leaves ImGui_ImplSDL3_UpdateIme()'s `ImeWindow == window` early-return
+    // convinced text input is still on, and it never restarts it -- a
+    // permanently dead layer-rename box.
+    check(textInputAction(/*sessionActive=*/false, /*platformActive=*/true,
+                          /*imguiWantsText=*/false, /*startedHere=*/false) == A::Leave,
+          "textInputAction(): REQUIRED -- text input ImGui started is never stopped by us");
+    // Session over, and a text widget took focus in the same frame: leave it
+    // on, it is being used.
+    check(textInputAction(/*sessionActive=*/false, /*platformActive=*/true,
+                          /*imguiWantsText=*/true, /*startedHere=*/true) == A::Leave,
+          "textInputAction(): REQUIRED -- an ImGui widget wanting text input keeps it on");
+    // Nothing live, nothing on: no call at all.
+    check(textInputAction(false, false, false, false) == A::Leave,
+          "textInputAction(): idle with text input off asks SDL for nothing");
+    check(textInputAction(false, false, false, true) == A::Leave,
+          "textInputAction(): a stop already performed is not repeated");
+    // The session wins over an ImGui widget's flag: they cannot both be
+    // typing, and the session's answer is the one that needs the platform on.
+    check(textInputAction(/*sessionActive=*/true, /*platformActive=*/false,
+                          /*imguiWantsText=*/true, /*startedHere=*/false) == A::Start,
+          "textInputAction(): a live session starts text input regardless of io.WantTextInput");
+  }
+
   std::printf("[selftest] text key capture %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

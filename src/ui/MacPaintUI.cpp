@@ -10801,6 +10801,33 @@ void drawMenuNodes(AppState& st, const std::vector<MenuNode>& nodes, uint32_t ca
   }
 }
 
+// "Somebody is typing, so an unmodified key is a CHARACTER" -- the question
+// every bare-key canvas gesture below has to ask before claiming a key.
+//
+// Two owners, and the second is why this function exists rather than a
+// third repetition of `io.WantTextInput`:
+//
+//   * an ImGui text widget (`io.WantTextInput`) -- the layer-rename box one
+//     panel over, which is the owner those gestures were already written
+//     against;
+//   * the **Text tool's own caret session**, which is not an ImGui widget and
+//     therefore never raises that flag. Before this, typing a space into a
+//     Text layer sprang the Hand tool -- which took `toolEditsText()` false,
+//     which made the canvas block's own accept-on-tool-change arm cancel the
+//     session outright. One space and the caret was gone for good; the tool
+//     sprang back on key-up and the session did not. Measured, not deduced:
+//     an injected bare Space moved `st.brush.tool` from Text to Hand and
+//     `textSessionActive()` from 1 to 0 in the same frame.
+//
+// main.cpp's `keyChordReachesKeymap()` gate is the same rule applied to the
+// OTHER dispatcher -- it stops the keymap's `toggle_pause`/`mirror_x`, which
+// it did correctly all along. These three gestures never went through the
+// keymap (they need a key's HELD state, which `Keymap::resolve()` cannot
+// express) and so were never covered by it.
+bool keyboardBelongsToTyping(const AppState& st) {
+  return ImGui::GetIO().WantTextInput || textSessionActive(st.textEdit);
+}
+
 }  // namespace
 
 // Declared in ui/MacPaintUI.hpp, which carries the full argument for why this
@@ -14498,7 +14525,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                 ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
                                 ImGui::IsMouseDown(ImGuiMouseButton_Right);
       if (ImGui::IsKeyPressed(ImGuiKey_Space, /*repeat=*/false) &&
-          !ImGui::GetIO().WantTextInput && !anyMouseDown && !st.polygonLassoActive) {
+          !keyboardBelongsToTyping(st) && !anyMouseDown && !st.polygonLassoActive) {
         beginSpringHand(st);
       } else if (springHandHeld(st) && !ImGui::IsKeyDown(ImGuiKey_Space)) {
         endSpringHand(st);
@@ -14546,7 +14573,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                                        ImGui::IsMouseDown(ImGuiMouseButton_Right);
       const bool altPressed = ImGui::IsKeyPressed(ImGuiKey_LeftAlt, /*repeat=*/false) ||
                               ImGui::IsKeyPressed(ImGuiKey_RightAlt, /*repeat=*/false);
-      if (altPressed && !ImGui::GetIO().WantTextInput && !eyedropAnyMouseDown &&
+      if (altPressed && !keyboardBelongsToTyping(st) && !eyedropAnyMouseDown &&
           !st.polygonLassoActive && !ImGui::GetIO().KeyCtrl) {
         beginSpringEyedropper(st);
       } else if (springEyedropperHeld(st) &&
@@ -14566,7 +14593,12 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // through a discrete action. `⇧R` (reset) *is* a discrete action --
     // see main.cpp's "reset_rotation" dispatch arm -- because resetting is
     // a one-shot command, not a hold.
-    const bool rotateHeld = ImGui::IsKeyDown(ImGuiKey_R);
+    // `!keyboardBelongsToTyping()` for the reason the Hand's own block above
+    // states, and for one this key has that Space does not: `R` was never
+    // guarded on `io.WantTextInput` either, so typing an "r" into the
+    // layer-rename box and then dragging on canvas has always spun the view.
+    // Both owners, one predicate.
+    const bool rotateHeld = ImGui::IsKeyDown(ImGuiKey_R) && !keyboardBelongsToTyping(st);
     // !st.pendingGuide: a guide drag-to-create claims the left-mouse-drag
     // gesture too (PRD Q5), the same way Hand-tool panning already does
     // below -- these must not fire simultaneously with dragging a new guide

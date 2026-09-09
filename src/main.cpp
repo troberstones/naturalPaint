@@ -4285,6 +4285,10 @@ int main(int argc, char** argv) {
   // laying out docked panels, sizing the canvas and settling ImGui's first
   // frames in exactly that window, and none of it is input-driven.
   uint64_t pacingPrevFrameNs = 0;
+  // "The last SDL_StartTextInput() was ours, not the ImGui backend's" --
+  // app/TextTool.hpp section 7's `startedHere`. Written only by the switch at
+  // the top of the loop below.
+  bool textInputStartedHere = false;
   uint64_t pacingLastActivityNs = SDL_GetTicksNS();
   np::FramePacingTier pacingTier = np::FramePacingTier::Unthrottled;
 
@@ -4332,6 +4336,32 @@ int main(int argc, char** argv) {
         }
       }
     }
+    // ---- hand the keyboard to a live Text session, at the PLATFORM ------
+    //
+    // Resolved here, ahead of this frame's `SDL_PollEvent()` drain, because
+    // the thing it switches on is whether SDL generates `SDL_EVENT_TEXT_INPUT`
+    // for the events about to be pumped -- turning it on after the drain
+    // would cost the first keystroke of every session. `st.textEdit` is last
+    // frame's `drawUI()` output, which is where every session begins and ends.
+    //
+    // app/TextTool.hpp section 7 is the whole argument, including why the
+    // Stop arm is the delicate one; `textInputStartedHere` is the one bit of
+    // state it needs and this is its only writer.
+    switch (np::textInputAction(np::textSessionActive(st.textEdit),
+                                SDL_TextInputActive(window),
+                                ImGui::GetIO().WantTextInput, textInputStartedHere)) {
+      case np::TextInputAction::Start:
+        SDL_StartTextInput(window);
+        textInputStartedHere = true;
+        break;
+      case np::TextInputAction::Stop:
+        SDL_StopTextInput(window);
+        textInputStartedHere = false;
+        break;
+      case np::TextInputAction::Leave:
+        break;
+    }
+
     const uint64_t frameStartNs = SDL_GetTicksNS();
     pacingPrevFrameNs = frameStartNs;
     st.lastInputEventNs = 0;
