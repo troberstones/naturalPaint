@@ -1376,19 +1376,54 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # the options band only, so it contains no canvas, no marching ants and no
 # rounded button geometry -- two combos, three sliders and a line of text, all
 # of which land on the same pixels every launch.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 88 0 0)
-# `flats_tools` is (88, 16) and `flats_segmentation` is exact (0, 0), and the
-# asymmetry between two views of the same kind of content is measured rather
-# than assumed. `run_golden.sh measure 10 flats_tools flats_segmentation`:
-# SEGMENTATION was 0 px in all nine comparisons; FLATS TOOLS was BIMODAL in
-# exactly the shape `toolbar` above is -- either 0 px or exactly 3 px, at the
-# same three pixels every time (crop (24, 657..659), max channel diff 44),
-# which is one anti-aliased button edge landing either side of a sub-pixel
-# boundary. 88 is 2x the worst observed magnitude and 16 is over 5x the worst
-# observed count, which is this file's own rule for turning a measurement into
-# a threshold. The two differ because the palette is a column of framed
-# buttons and the parameter panel is text and sliders: only the former has a
-# vertical frame edge to wobble.
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 48 0)
+# **Twenty-one views were re-blessed when the FLATS TOOLS palette gained its
+# nine Lucide icons, and none of it was a content change.** Adding glyphs to
+# the merge repacks the font atlas, which moves where each glyph's bitmap
+# lands and shifts text rasterisation by a sub-pixel across the WHOLE UI --
+# so every view with a label in it drifted a little: 2 to 94 mismatched
+# pixels out of hundreds of thousands, max channel diff 11 to 68 (a single
+# glyph edge), mean around 0.00x. `main` paid the same cost once already and
+# re-blessed 7 views for the panel-grip gear button.
+#
+# Recorded because the number is alarming and the cause is not: the honest
+# check is which views FAIL, not which ones `update` rewrites. `update`
+# additionally rewrote `layers` and `tabs`, both of which PASSED, and that
+# drift was reverted -- see the note on `update` further down.
+#
+# `flats_tools` is exact (0, 0) -- 8 launches, 0 mismatched pixels in all
+# seven comparisons.
+#
+# **`flats_segmentation` is (48, 160), and getting there is a lesson about
+# sample size.** It was set to (0, 0) on a measurement of 8 launches that
+# came back all-zero. It then failed a full run, passed the next, and failed
+# the one after -- two runs of the SAME binary disagreeing with each other,
+# which is a flake and not a content change. `measure 12` found the shape:
+# **3 of 11 comparisons differ, always by exactly 37 pixels at max channel
+# diff 24, and the other 8 by nothing** -- the bimodal sub-pixel glyph
+# rounding `toolbar` above has, and that `flats_tools` had before it stopped
+# drawing text buttons. At roughly 27% per launch, eight consecutive
+# same-mode runs has better than a 1-in-10 chance, so the original
+# measurement was not wrong so much as too small to see the second mode.
+# 48 is 2x the worst magnitude and 160 is over 4x the worst count, this
+# file's own rule.
+#
+# The same caveat applies to every (0, 0) here that rests on 8 launches: an
+# all-zero sample that size cannot distinguish "exact" from "bimodal at one
+# run in four". They are left exact deliberately -- a threshold too tight
+# fails loudly and gets measured again, which is what happened here, while
+# one too loose passes a real regression in silence.
+#
+# **`flats_tools` used to carry (88, 16) and no longer needs it, which is
+# worth recording because a stale allowance is a weakened gate.** The palette
+# was a column of `ImGui::Button`s then, and it was BIMODAL in exactly the
+# shape `toolbar` above is: either 0 px or exactly 3 px, at the same three
+# pixels every time (crop (24, 657..659), max channel diff 44) -- one
+# anti-aliased button frame landing either side of a sub-pixel boundary. The
+# palette now draws the tool palette's own cells (`flatsToolButton()`), which
+# are `AddRectFilled`/`AddRect` at integer positions with a glyph centred in
+# them and no anti-aliased frame to wobble, so the view went bit-stable and
+# the threshold was tightened to match. Re-measure before widening it again.
 #
 # The second criterion: how many pixels may differ at all, whatever their
 # magnitude. See goldentool's runDiff() for why one threshold is not enough.
@@ -1408,7 +1443,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
 # note in cmd_measure on what that mode is for. The five `crop_*` views are 0
 # here because their magnitude threshold is 0 too -- see the paragraph above
 # `view_threshold` for the measurement.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 16 0 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 160 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

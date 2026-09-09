@@ -383,6 +383,17 @@ const std::vector<uint32_t>& toolIconCodepoints() {
         points.push_back(m.codepoint);
     points.push_back(kMoreIconCodepoint);
     points.push_back(kSettingsIconCodepoint);
+    // The FLATS TOOLS palette draws Lucide cells exactly as the tool palette
+    // does, so its nine icons need the same merge. Walked from
+    // `app/AppState.hpp`'s own table rather than restated here, for the
+    // reason the `kToolMeta` walk above exists: a flats tool added without an
+    // icon becomes a gap in this list, not a cell that silently draws
+    // nothing forever. `eraser` is already here from `Tool::Eraser` and the
+    // dedup below absorbs it.
+    for (const FlatsToolRow& r : kFlatsTools)
+      if (r.codepoint != 0u &&
+          std::find(points.begin(), points.end(), r.codepoint) == points.end())
+        points.push_back(r.codepoint);
     std::sort(points.begin(), points.end());
     return points;
   }();

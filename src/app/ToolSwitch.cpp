@@ -201,36 +201,27 @@ void setFlatsTool(AppState& st, FlatsTool next) noexcept {
   st.flatsMergeFirst.reset();
   if (next == FlatsTool::None) return;
 
-  // **The host tool, per ADR-0009's table.** The flatting gestures are the
-  // existing tools scoped to a layer kind, not a parallel set: a bridge IS
-  // the Pencil, a group IS the Lasso. Setting the host here is what keeps
-  // the cursor, the options row and the canvas's own drag handling agreeing
-  // with the palette -- picking BRIDGE and then finding the Marquee's
-  // rubber-band on screen would be the palette lying about what it did.
+  // **The regular toolbox is deliberately left alone.**
   //
-  // Written straight to `brush.tool` rather than through `setActiveTool()`,
-  // and that is deliberate: `setActiveTool()` clears `flatsTool` (above), so
-  // routing through it here would undo the line before it. The ledger is not
-  // touched for the same reason -- the user picked a flatting tool, not the
-  // Pencil, and "previous tool" should take them back to whatever they were
-  // using before flatting.
-  switch (next) {
-    case FlatsTool::BridgePen:    st.brush.tool = Tool::Pencil; break;
-    case FlatsTool::BridgeEraser: st.brush.tool = Tool::Eraser; break;
-    case FlatsTool::Group:
-    case FlatsTool::ShapeFill:    st.brush.tool = Tool::Lasso; break;
-    case FlatsTool::Carve:        st.brush.tool = Tool::PaintBucket; break;
-    // DeleteFill, MergePair, DrawMerge and SelectEdits have no host in
-    // ADR-0009's table -- they are bare canvas clicks and drags, and the
-    // flats route below takes the event before any tool sees it. Leaving
-    // `brush.tool` alone means the tool the user had is still theirs when
-    // they leave flatting mode.
-    case FlatsTool::DeleteFill:
-    case FlatsTool::MergePair:
-    case FlatsTool::DrawMerge:
-    case FlatsTool::SelectEdits:
-    case FlatsTool::None:         break;
-  }
+  // This used to install a host tool per ADR-0009's table -- BRIDGE set the
+  // Pencil, GROUP set the Lasso -- on the reasoning that the flatting
+  // gestures ARE those tools scoped to a layer kind, so the cursor and the
+  // options row should agree with the palette. In use that reasoning is
+  // wrong, and the user named it: picking a flats tool visibly moved the
+  // selection in the tool palette, so one click lit a cell in each of two
+  // palettes and put the app in a state neither of them described on its
+  // own. Worse, leaving flatting mode then dropped the user on a tool they
+  // never chose.
+  //
+  // The two palettes are now independent, which is only safe because the
+  // flats canvas route owns every one of these gestures itself --
+  // ui/MacPaintUI's route takes the pointer before the ordinary tools get
+  // it, including the lasso path GROUP and SHAPE need. Before that route
+  // owned the lasso, removing the host tool here would have silently killed
+  // those two: their commit lived inside `case Tool::Lasso:` and ran only
+  // while the Lasso was the active tool.
+  //
+  // So there is nothing left to do here but set the mode.
 }
 
 }  // namespace np

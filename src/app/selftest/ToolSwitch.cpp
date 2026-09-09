@@ -332,38 +332,52 @@ bool runToolSwitchTest() {
           "toolswitch: ...including re-picking the tool already held, which is ahead of the "
           "no-op early return rather than behind it");
 
-    // The host tools are ADR-0009's table. Getting one wrong is not cosmetic:
-    // the cursor, the options row and the canvas's drag handling all follow
-    // `brush.tool`, so a BRIDGE that left the Marquee installed would draw a
-    // rubber-band rectangle over a gesture that is a freehand stroke.
-    struct HostRow { FlatsTool tool; Tool host; };
-    const HostRow kHosts[] = {
-        {FlatsTool::BridgePen, Tool::Pencil},   {FlatsTool::BridgeEraser, Tool::Eraser},
-        {FlatsTool::Group, Tool::Lasso},        {FlatsTool::ShapeFill, Tool::Lasso},
-        {FlatsTool::Carve, Tool::PaintBucket},
-    };
-    bool hostsOk = true;
-    for (const HostRow& r : kHosts) {
-      AppState h;
-      setFlatsTool(h, r.tool);
-      if (h.brush.tool != r.host || h.flatsTool != r.tool) hostsOk = false;
+    // **NO flatting tool touches the regular toolbox. Every one of the nine.**
+    //
+    // This assertion is the reverse of the one it replaces. `setFlatsTool()`
+    // used to install a host tool from ADR-0009's table -- BRIDGE set the
+    // Pencil, GROUP set the Lasso -- and the test pinned that table. In use
+    // it was wrong and the user said so: one click lit a cell in each of two
+    // palettes, and leaving flatting mode then handed back a tool nobody had
+    // chosen.
+    //
+    // Asserted over the WHOLE enum rather than the five that used to have
+    // hosts, and from several different starting tools, because "leaves it
+    // alone" is only worth anything if it holds for the tool the user
+    // actually had. A regression here is silent: the flats gesture still
+    // works, the palette merely lies about what else it did.
+    bool independent = true;
+    for (const Tool start : {Tool::Move, Tool::Brush, Tool::Lasso, Tool::PaintBucket}) {
+      for (int v = 0; v < static_cast<int>(FlatsTool::SelectEdits) + 1; ++v) {
+        AppState h;
+        setActiveTool(h, start);
+        const Tool before = h.brush.tool;
+        setFlatsTool(h, static_cast<FlatsTool>(v));
+        if (h.brush.tool != before) independent = false;
+        if (h.flatsTool != static_cast<FlatsTool>(v)) independent = false;
+      }
     }
-    check(hostsOk, "toolswitch: each lasso/stroke/bucket flatting tool installs the host tool "
-                   "ADR-0009's table gives it, and stays picked itself");
+    check(independent,
+          "toolswitch: **picking a flatting tool never changes `brush.tool`** -- the two "
+          "palettes are independent, over every FlatsTool and from four different starting "
+          "tools, and the flats tool still ends up picked");
 
-    // The four with no host must leave `brush.tool` ALONE -- the flats route
-    // takes their events before any tool sees them, so the tool the user had
-    // is still theirs when they leave flatting mode.
-    bool keptOk = true;
-    for (const FlatsTool t : {FlatsTool::DeleteFill, FlatsTool::MergePair, FlatsTool::DrawMerge,
-                              FlatsTool::SelectEdits}) {
-      AppState k;
-      setActiveTool(k, Tool::Move);
-      setFlatsTool(k, t);
-      if (k.brush.tool != Tool::Move) keptOk = false;
-    }
-    check(keptOk, "toolswitch: a flatting tool with no host in that table leaves the active "
-                  "tool untouched, so leaving flatting mode gives it back");
+    // The other half of the same rule, and the reason the above is SAFE.
+    // GROUP and SHAPE used to reach their gesture through `Tool::Lasso`:
+    // `flatsLassoCommit()` was an interception inside `case Tool::Lasso:` and
+    // ran only while that tool was active, so installing it was load-bearing.
+    // The flats canvas route owns the lasso path now
+    // (`ui/MacPaintUI.cpp`'s `flatsToolOwnsCanvasNow()`), which is why
+    // dropping the host tool does not silently kill those two. Nothing
+    // headless can reach an ImGui frame to prove that, so what is pinned here
+    // is the invariant it rests on: the two lasso tools are ordinary members
+    // of the enum with no tool requirement of their own.
+    AppState g;
+    setActiveTool(g, Tool::Brush);
+    setFlatsTool(g, FlatsTool::Group);
+    check(g.flatsTool == FlatsTool::Group && g.brush.tool == Tool::Brush,
+          "toolswitch: GROUP is picked with the Brush still active -- its gesture no longer "
+          "depends on the Lasso being installed behind the user's back");
 
     // A half-finished two-click merge belongs to the gesture being abandoned.
     AppState m;
