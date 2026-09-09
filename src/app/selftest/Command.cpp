@@ -183,18 +183,65 @@ bool runCommandTest() {
           "composite: every step said what it did");
   }
 
-  std::printf("  -- E. the precondition runs before the applier --\n");
+  std::printf("  -- E. the precondition is a hook a replayer can ask --\n");
   {
+    // **Deliberately NOT phrased as "the precondition runs first".** The
+    // appliers refuse a locked layer themselves -- `applyPixelFilter()` calls
+    // `pixelOpRefusalFor()` before it touches the engine -- so an assertion
+    // that only drove `applyCommand()` would pass with the precondition hook
+    // deleted entirely, and would be measuring the applier while claiming to
+    // measure the table. It was written that way first and a sabotage caught
+    // it. What the hook uniquely buys is that a REPLAYER can ask before
+    // applying, so that is what is asserted here: the hook itself, called
+    // directly, on a document where the answer differs.
     OpenDocument od = makeCommandDocument();
+    const CommandSpec* blur = findCommand("filter_gaussian_blur");
+    check(blur != nullptr && blur->unavailableReason(od, JsonValue::object()).empty(),
+          "precondition: a writable RGB layer reports the blur available");
+
     recordLayerEdit(od, setLayerLocked(od.document, od.activeLayer, true));
+    const std::string why = blur == nullptr ? std::string()
+                                            : blur->unavailableReason(od, JsonValue::object());
+    check(!why.empty() && contains(why, "Detail"),
+          "precondition: a locked layer reports it unavailable, naming the layer");
+
     const size_t entriesBefore = od.history.entries().size();
     JsonValue blurParams = JsonValue::object();
     blurParams.set("sigma", JsonValue::number(4.0));
     const CommandResult r = applyCommand(od, Command{"filter_gaussian_blur", blurParams});
-    check(!r.ok, "locked layer: the blur is refused");
-    check(r.texelsChanged == 0 && od.history.entries().size() == entriesBefore,
-          "locked layer: zero texels, and nothing recorded -- the engine was never reached");
-    check(contains(r.status, "Detail"), "locked layer: the refusal names the layer");
+    check(!r.ok && r.texelsChanged == 0 && od.history.entries().size() == entriesBefore,
+          "locked layer: refused, zero texels, nothing recorded");
+
+    // The precondition also answers for a document that has no layer at all,
+    // which no applier can be asked about without one.
+    OpenDocument empty = makeCommandDocument();
+    empty.document.layers.clear();
+    const CommandSpec* flatten = findCommand("flatten_image");
+    const CommandSpec* create = findCommand("new_rgb_layer");
+    check(flatten != nullptr && !flatten->unavailableReason(empty, JsonValue::object()).empty(),
+          "precondition: an empty stack reports flatten unavailable");
+    check(create != nullptr && create->unavailableReason(empty, JsonValue::object()).empty(),
+          "precondition: an empty stack can still take a layer-creating command");
+  }
+
+  std::printf("  -- E2. a structural command moves the selection --\n");
+  {
+    // The property `fromLayerEdit()` exists for, probed with a CREATE rather
+    // than a flatten. A flatten is the weak case: `activeLayerIndex()` clamps
+    // into the stack, so a stale index after one still reads as the survivor
+    // and an assertion built on it passes with the adoption deleted -- a
+    // sabotage caught that too. A create is the strong case: the new layer's
+    // index is not a clamp of anything, so failing to adopt it leaves every
+    // later step painting on the layer the user had selected BEFORE.
+    OpenDocument od = makeCommandDocument();
+    const std::string before = activeLayerOf(od) != nullptr ? activeLayerOf(od)->name : "";
+    const CommandResult made = applyCommand(od, Command{"new_rgb_layer", JsonValue::object()});
+    const Layer* now = activeLayerOf(od);
+    check(made.ok && od.document.layers.size() == 3, "new layer: the stack grew");
+    check(now != nullptr && now->name != before,
+          "new layer: the active layer is the NEW one, not the one selected before");
+    check(now != nullptr && layerIndexNamed(od.document, now->name) == od.activeLayer,
+          "new layer: the index and the name agree about which layer is active");
   }
 
   std::printf("  -- F. parameters are validated, not assumed --\n");
