@@ -340,6 +340,107 @@ bool runMoveToolTest() {
           "would have to be re-mixed, not alpha-blended, back onto what is left");
   }
 
+  // --- a Text layer moves; it is the one pixel-less kind that can ----------
+  //
+  // Reported as "the move tool doesn't work on the text layer", and it did
+  // not: `TransformSession::beginLayer()` refused every layer with neither
+  // `rgbTiles` nor `pigmentTiles` ("holds no pixels to transform"), which is
+  // true of a Text layer and yet beside the point -- its geometry is
+  // `TextContent::origin`, and moving the block means moving that.
+  //
+  // Headless: none of this shapes anything. `transformLayer()`'s Text branch
+  // reads the matrix and writes the origin, and that is the whole operation.
+  {
+    Document doc;
+    doc.width = 256;
+    doc.height = 256;
+    Layer text = makeTextLayer("caption");
+    text.text = TextContent{};
+    text.text.utf8 = "Handgloves";
+    text.text.origin = PathPoint{40.0f, 90.0f};
+    doc.layers.push_back(std::move(text));
+
+    // A whole-number translate, which is what a Move drag and an arrow nudge
+    // both produce.
+    const LayerTransformResult moved =
+        transformTextLayer(doc, 0, transformTranslate(12.0f, -7.0f));
+    check(moved.ok, "text: a translation of a Text layer is accepted, not refused for having "
+                    "no pixels");
+    // The separation that keeps a whole-document resize working: the GENERAL
+    // per-layer entry still walks a Text layer, finds no stores and succeeds
+    // having changed nothing, which is what `transformDocument()` needs from
+    // it (app/selftest/DocumentTransform.cpp section 10 pins that directly).
+    // Folding the text handling into it would have refused every document
+    // resize of a document containing a caption.
+    {
+      Document walked = doc;
+      const PathPoint originBefore = walked.layers[0].text.origin;
+      DocumentTransformParams walkParams;
+      const LayerTransformResult general =
+          transformLayer(walked, 0, transformScale(2.0f, 2.0f), walkParams);
+      check(general.ok && walked.layers[0].text.origin.x == originBefore.x,
+            "text: REQUIRED -- the GENERAL transformLayer() still succeeds-and-does-nothing on a "
+            "Text layer, so a whole-document crop or resize is not refused on a technicality");
+    }
+    check(doc.layers[0].text.origin.x == 52.0f && doc.layers[0].text.origin.y == 83.0f,
+          "text: REQUIRED -- the block's origin moved by exactly the translation (40,90) + "
+          "(12,-7) = (52,83); this is the assertion that fails if the Text branch silently "
+          "returns ok having changed nothing, which is what the tile path did");
+    check(doc.layers[0].text.utf8 == "Handgloves",
+          "text: the content itself is untouched -- a move is not an edit of the string");
+
+    // And the refusal that keeps a corner handle from silently degrading into
+    // a move: a `TextContent` has an origin and a type size and no term for
+    // an arbitrary 2x2, so a scale must be refused rather than half-applied.
+    const PathPoint before = doc.layers[0].text.origin;
+    const LayerTransformResult scaled = transformTextLayer(doc, 0, transformScale(2.0f, 2.0f));
+    check(!scaled.ok && scaled.error.find("Text layer") != std::string::npos,
+          "text: REQUIRED -- a SCALE is refused by name; a TextContent has nowhere to store one");
+    check(doc.layers[0].text.origin.x == before.x && doc.layers[0].text.origin.y == before.y,
+          "text: REQUIRED -- and the refusal changed nothing. Applying the translation part of a "
+          "scale matrix would move the block and silently discard the resize asked for");
+
+    // A rotation is refused for the same reason, and is worth its own line
+    // because a rotation matrix has a zero translation part -- so a check
+    // that only looked at whether the block MOVED would pass it by accident.
+    const LayerTransformResult rotated =
+        transformTextLayer(doc, 0, transformRotateDegrees(30.0f));
+    check(!rotated.ok && rotated.error.find("Text layer") != std::string::npos,
+          "text: a ROTATION is refused too -- its translation part is zero, so 'did the origin "
+          "move' would have called this one fine");
+
+    // The whole point: the Move tool's own entry reaches all of the above.
+    OpenDocument od;
+    od.id = 91;
+    od.document = doc;
+    od.recordEdit("text fixture", EditKind::Structural);
+    TransformSession ts;
+    const TransformBeginResult began = beginMove(ts, od);
+    check(began.ok && ts.active() && ts.target() == TransformTarget::Layer,
+          "text: REQUIRED -- beginMove() ACCEPTS a Text layer; this is the gate that used to "
+          "refuse it, and the reason the tool did nothing at all");
+
+    const PathPoint originAtBegin = od.document.layers[0].text.origin;
+    setMoveTranslation(ts, 5.0f, 9.0f);
+    const TransformCommitResult done = ts.commit(od);
+    check(done.ok && od.document.layers[0].text.origin.x == originAtBegin.x + 5.0f &&
+              od.document.layers[0].text.origin.y == originAtBegin.y + 9.0f,
+          "text: REQUIRED -- and a committed move through the session moves the origin, so the "
+          "tool's own path works end to end and not just transformLayer()");
+
+    // The keyboard form of the same gesture, which is a second entry point
+    // and was equally dead.
+    OpenDocument nudged;
+    nudged.id = 92;
+    nudged.document = doc;
+    nudged.recordEdit("text fixture", EditKind::Structural);
+    const PathPoint beforeNudge = nudged.document.layers[0].text.origin;
+    const TransformCommitResult nudge = nudgeMove(nudged, -1.0f, 0.0f);
+    check(nudge.ok && nudged.document.layers[0].text.origin.x == beforeNudge.x - 1.0f,
+          "text: REQUIRED -- an arrow-key nudge moves a Text layer too; nudgeMove() comes "
+          "through the same refused gate");
+  }
+
   std::printf("[selftest] move tool %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }

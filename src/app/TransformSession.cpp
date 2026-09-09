@@ -6,6 +6,25 @@
 #include "core/LayerGeometry.hpp"
 
 namespace np {
+namespace {
+
+// `core/TextContent`'s `PathBounds` (float, min/max, `valid`) as the
+// `LayerBounds` (integer texels, `empty`) the rest of this file speaks. The
+// block is shaped to get them, which is why this is not a member of anything
+// hot: it runs once, at pen-down.
+LayerBounds boundsFromTextContent(const TextContent& text) {
+  LayerBounds b;
+  const PathBounds pb = textContentBounds(text);
+  if (!pb.valid) return b;  // an empty block: no content, and beginLayer() says so
+  b.empty = false;
+  b.minX = static_cast<int32_t>(std::floor(pb.minX));
+  b.minY = static_cast<int32_t>(std::floor(pb.minY));
+  b.maxX = static_cast<int32_t>(std::ceil(pb.maxX));
+  b.maxY = static_cast<int32_t>(std::ceil(pb.maxY));
+  return b;
+}
+
+}  // namespace
 
 namespace {
 
@@ -301,12 +320,32 @@ TransformBeginResult TransformSession::beginLayer(const OpenDocument& od, size_t
              " is locked. Unlock it first.";
     return r;
   }
-  if (!layer.rgbTiles.has_value() && !layer.pigmentTiles.has_value()) {
+  // A Text layer is the one kind with no pixels that a transform still means
+  // something for: `TextContent::origin` is its geometry, and `ops/
+  // DocumentTransform`'s `transformLayer()` moves that point (and refuses a
+  // scale or rotation by name, since a `TextContent` has nowhere to put one).
+  // Without this exemption the refusal below fired first and the Move tool
+  // did nothing at all on a caption -- both the drag and the arrow-key nudge,
+  // since `nudgeMove()` comes through here too.
+  //
+  // The same gap is still open for `LayerKind::Vector`, which also holds no
+  // tiles: its geometry is `layer.shapes`, every anchor of which would have
+  // to be mapped. That is a bigger change than this one and nobody has asked
+  // for it, so it is named here rather than half-done.
+  const bool geometryOnlyText = layer.kind == LayerKind::Text;
+  if (!geometryOnlyText && !layer.rgbTiles.has_value() && !layer.pigmentTiles.has_value()) {
     r.error = "transform refused: " + layerLabel(doc, layerIndex) + " is a " +
              layerKindName(layer.kind) + " layer, which holds no pixels to transform.";
     return r;
   }
-  const LayerBounds bounds = layerContentBounds(layer);
+  // `layerContentBounds()` scans tile stores and finds nothing on a Text
+  // layer, so its bounds come from the shaped block instead. Deliberately not
+  // widened inside `layerContentBounds()` itself: that function is read by
+  // thumbnails, fitting and several layer ops, and quietly giving Text layers
+  // bounds everywhere is a change with a much larger blast radius than the
+  // one thing needed here.
+  const LayerBounds bounds =
+      geometryOnlyText ? boundsFromTextContent(layer.text) : layerContentBounds(layer);
   if (bounds.empty) {
     r.error = "transform refused: " + layerLabel(doc, layerIndex) +
              " has no content -- nothing to transform.";
@@ -414,7 +453,18 @@ TransformCommitResult TransformSession::commit(OpenDocument& od,
   }
 
   if (target_ == TransformTarget::Layer) {
-    const LayerTransformResult r = transformLayer(od.document, layerIndex_, pending_, params);
+    // A Text layer's geometry is `TextContent::origin`, not a tile store, so
+    // it takes the one path that moves a point instead of resampling pixels.
+    // `transformLayer()` would walk it, find no stores and report success
+    // having moved nothing -- which is the right answer for the whole-document
+    // crop/resize that also calls it, and the wrong one here.
+    // ops/DocumentTransform.hpp's `transformTextLayer()` says why those two
+    // callers are kept apart.
+    const bool textLayer = layerIndex_ < od.document.layers.size() &&
+                           od.document.layers[layerIndex_].kind == LayerKind::Text;
+    const LayerTransformResult r =
+        textLayer ? transformTextLayer(od.document, layerIndex_, pending_)
+                  : transformLayer(od.document, layerIndex_, pending_, params);
     if (!r.ok) {
       out.error = r.error;
       return out;

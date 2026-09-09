@@ -627,6 +627,62 @@ bool transformSelectionCoverage(const Selection& in, const DocumentRegion& srcRe
 // The layer entry point
 // --------------------------------------------------------------------------
 
+LayerTransformResult transformTextLayer(Document& doc, size_t index, const Mat3& dstFromSrc) {
+  LayerTransformResult r;
+  if (index >= doc.layers.size()) {
+    r.error = "move text refused: index " + std::to_string(index) + " is out of range.";
+    return r;
+  }
+  Layer& layer = doc.layers[index];
+  if (layer.kind != LayerKind::Text) {
+    r.error = "move text refused: " + layerLabelFor(doc, index) + " is a " +
+              layerKindName(layer.kind) + " layer, not a Text layer.";
+    return r;
+  }
+  if (layer.locked) {
+    r.error = "move text refused: " + layerLabelFor(doc, index) +
+              " is locked, and a lock freezes a layer's content. Unlock it first. Nothing was "
+              "changed.";
+    return r;
+  }
+
+  // **Translation only, and refused by name otherwise.** A scale or rotation
+  // has nowhere to go in a `TextContent`: there is an origin and a font size,
+  // and no term for an arbitrary 2x2. A uniform scale could in principle be
+  // folded into `style.sizePx` and `frame`, and a rotation could not be
+  // represented at all -- so rather than silently applying the translation
+  // part of a matrix the user built with a corner handle, moving the block
+  // and quietly discarding the resize they asked for, this refuses and says
+  // what to do instead.
+  const std::array<float, 9>& t = dstFromSrc.m;
+  const auto near = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
+  const bool translationOnly = near(t[0], 1.0f) && near(t[1], 0.0f) && near(t[3], 0.0f) &&
+                               near(t[4], 1.0f) && near(t[6], 0.0f) && near(t[7], 0.0f) &&
+                               near(t[8], 1.0f);
+  if (!translationOnly) {
+    r.error = "transform refused: " + layerLabelFor(doc, index) +
+              " is a Text layer. Its geometry is an origin point and a type size, so a move "
+              "relocates it exactly, but a scale or rotation has nowhere to be stored -- change "
+              "SIZE on the Text options row, or rasterise the layer first (Layer > Rasterise) to "
+              "transform it as pixels. Nothing was changed.";
+    return r;
+  }
+
+  layer.text.origin.x += t[2];
+  layer.text.origin.y += t[5];
+  r.ok = true;
+  r.editLabel = "move text";
+  // `ExactRemap` describes how a RESAMPLE was avoided, and nothing here was
+  // resampled or could be -- the block is re-shaped from scratch at the new
+  // origin on the next composite. `None` rather than `Identity`, which would
+  // claim the transform itself was the identity; the cost is that the status
+  // line says "Moved." where a pixel layer moved by a whole number of texels
+  // gets to say "lossless". Text is the more lossless of the two, and saying
+  // so would need a value this enum does not have.
+  r.exact = ExactRemap::None;
+  return r;
+}
+
 LayerTransformResult transformLayer(Document& doc, size_t index, const Mat3& dstFromSrc,
                                     const DocumentTransformParams& params) {
   LayerTransformResult r;
