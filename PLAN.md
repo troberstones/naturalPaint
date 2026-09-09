@@ -705,6 +705,15 @@ Media layer and run the existing solver.
 
 # Phase 19 — Automate it
 
+> Surveyed and planned in detail in [docs/automation-plan.md](docs/automation-plan.md),
+> which **widens step 1**: an action records arbitrary document commands ("flatten,
+> blur, set blend to Subtract, threshold"), not only an op stack. That is still not a
+> new subsystem in the sense this step means it — `ui/MenuModel`'s 94 named actions,
+> `allLayerCommands()` and `app/PixelOpBridge`'s single choke point are the vocabulary
+> already — but it does add one `applyCommand()` funnel the UI is migrated onto. The
+> node-graph alternative (file-read and file-save as nodes) is considered there and
+> rejected; a save node forfeits P4.
+
 **Goal.** Record once, run on forty files. For texture preparation this is the largest
 productivity feature in the incumbent, and here it is mostly a file format.
 
