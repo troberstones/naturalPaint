@@ -3238,6 +3238,10 @@ int main(int argc, char** argv) {
     // app/SelfTest.hpp.
     const bool recorderOk = np::runRecorderTest();
     const bool actionFileOk = np::runActionFileTest();
+    // app/CommandsOpStack: the rows that carry an op as a parameter, keyed by
+    // kind NAME, and the selection rows that cross the session/document line.
+    // See app/SelfTest.hpp.
+    const bool commandsOpStackOk = np::runCommandsOpStackTest();
     const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
@@ -3586,6 +3590,7 @@ int main(int argc, char** argv) {
                     commandsLayersOk &&
                     recorderOk &&
                     actionFileOk &&
+                    commandsOpStackOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
