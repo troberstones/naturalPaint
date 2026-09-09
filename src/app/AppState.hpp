@@ -774,7 +774,7 @@ inline constexpr FlatsToolRow kFlatsTools[kFlatsToolCount] = {
     {FlatsTool::DeleteFill, "DELETE", "K",
      "Click a fill to delete it. Recorded as a mark at that point, so the fill stays deleted "
      "when the line art changes and the drawing re-flats.", "square-minus", 57713u},
-    {FlatsTool::MergePair, "MERGE", "M",
+    {FlatsTool::MergePair, "MERGE", "U",
      "Click one fill, then another: the second merges into the first. Recorded as the two "
      "points, never as the two region ids they resolved to.", "combine", 58444u},
     {FlatsTool::Carve, "CARVE", "â¥G",

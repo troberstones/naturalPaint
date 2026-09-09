@@ -187,24 +187,34 @@ namespace {
 // requiredUiCodepoints() lists (ui/Fonts.cpp), and adding one more codepoint
 // for a single tooltip character is not worth the merge-range entry when
 // plain ASCII already says the same thing unambiguously.
+//
+// `shortcut` and `slug` are the keymap pair and sit next to each other for
+// that reason: `slug` is the stable machine name a `keymaps/default.json`
+// binding says (`"tool_rect_marquee"`), `shortcut` is the chord that binding
+// must carry, and `app/selftest/ToolHotkeys.cpp` asserts the two columns and
+// the data file agree in both directions. See AtelierChrome.hpp's
+// `toolSlug()` for why the slug is not just `name` or `lucideName`
+// lower-cased -- both of those are allowed to be renamed by someone who is
+// not thinking about anyone's keymap file.
 struct ToolMeta {
   const char* name;
   const char* lucideName;
   uint32_t codepoint;
   const char* shortcut;  // "" when docs/shortcuts.md reserves none yet
+  const char* slug;      // never "" -- every Tool has an identity
   bool implemented;
 };
 
 constexpr ToolMeta kToolMeta[] = {
     // --- the tools with real behaviour --------------------------------
-    {"Brush", "brush", 57811u, "B", true},
-    {"Water", "droplet", 57524u, "", true},
-    {"Dry Brush", "paintbrush-2", 58088u, "", true},
-    {"Eyedropper", "pipette", 57659u, "I", true},
-    {"Rectangle Marquee", "square-dashed", 57803u, "M", true},
-    {"Elliptical Marquee", "circle-dashed", 58544u, "Shift+M", true},
-    {"Hand", "hand", 57815u, "H", true},
-    {"Zoom", "zoom-in", 57782u, "Z", true},
+    {"Brush", "brush", 57811u, "B", "brush", true},
+    {"Water", "droplet", 57524u, "", "water", true},
+    {"Dry Brush", "paintbrush-2", 58088u, "", "dry_brush", true},
+    {"Eyedropper", "pipette", 57659u, "I", "eyedropper", true},
+    {"Rectangle Marquee", "square-dashed", 57803u, "M", "rect_marquee", true},
+    {"Elliptical Marquee", "circle-dashed", 58544u, "Shift+M", "ellipse_marquee", true},
+    {"Hand", "hand", 57815u, "H", "hand", true},
+    {"Zoom", "zoom-in", 57782u, "Z", "zoom", true},
     // --- the name/icon/slot-only cells (app/AppState.hpp) -------------
     // **Built**, as of app/MoveTool: a pen-down begins an app/TransformSession
     // on the active layer (or on the selection's pixels), the drag accumulates
@@ -213,10 +223,10 @@ constexpr ToolMeta kToolMeta[] = {
     // this half of the table: the rows are in `Tool`'s declaration order and
     // the static_assert rests on that, so the divider marks where the enum's
     // not-built run began, not a second list to keep in step.
-    {"Move", "move", 57633u, "V", true},
-    {"Lasso", "lasso", 57806u, "L", true},
-    {"Polygon Lasso", "pentagon", 58667u, "Shift+L", true},
-    {"Magic Wand", "wand-sparkles", 58199u, "W", true},
+    {"Move", "move", 57633u, "V", "move", true},
+    {"Lasso", "lasso", 57806u, "L", "lasso", true},
+    {"Polygon Lasso", "pentagon", 58667u, "Shift+L", "polygon_lasso", true},
+    {"Magic Wand", "wand-sparkles", 58199u, "W", "magic_wand", true},
     // **Built**: app/CropTool, gated by `toolCropsCanvas()` -- the eighth
     // canvas gate, and a new predicate rather than a name added to an existing
     // one for `toolMeasuresCanvas()`'s reason, which is concrete here:
@@ -227,14 +237,14 @@ constexpr ToolMeta kToolMeta[] = {
     // perspective through `transformFromQuad()` + `transformDocument()`.
     // `Tool::Slice`, which shares its palette group and its cursor, is still
     // one of the not-built cells and stays false.
-    {"Crop", "crop", 57515u, "C", true},
+    {"Crop", "crop", 57515u, "C", "crop", true},
     // **Built**: app/MeasureLine, gated by `toolMeasuresCanvas()` -- the one
     // tool in this palette whose gesture writes no texel at all. Same
     // arrangement as the eraser row below: the rows are in `Tool` declaration
     // order, so a built tool stays where the enum puts it and the divider
     // above marks the enum's not-built run, not a second sorted half.
-    {"Measure", "ruler", 57675u, "", true},
-    {"Frame", "frame", 58001u, "", false},
+    {"Measure", "ruler", 57675u, "", "measure", true},
+    {"Frame", "frame", 58001u, "", "frame", false},
     // **Built**, as of the clone route: brush/CloneStamp, and
     // app/StrokeSession §1b for the table it routes through. It stays in this
     // half of the table for the same reason the Eraser row just below does --
@@ -243,7 +253,7 @@ constexpr ToolMeta kToolMeta[] = {
     // not a second list to keep in step. This tool needs the flag twice over:
     // it makes the palette cell clickable at all, and its Option+click source
     // gesture only exists while the cell is selected.
-    {"Clone Stamp", "stamp", 58299u, "S", true},
+    {"Clone Stamp", "stamp", 58299u, "S", "clone_stamp", true},
     // **Built**, as of the RGB erase route: PRD F9/F10 (P0), ADR-0007,
     // brush/RgbErase. It stays in this half of the table because the rows are in
     // `Tool`'s declaration order and the static_assert below rests on that --
@@ -251,16 +261,16 @@ constexpr ToolMeta kToolMeta[] = {
     // list to keep in step. Flipping this flag is what makes the palette cell
     // clickable at all; a route that works behind a disabled cell is a feature
     // no user can reach.
-    {"Eraser", "eraser", 57999u, "E", true},
-    {"Paint Bucket", "paint-bucket", 58086u, "Shift+G", true},
-    {"Gradient", "blend", 58780u, "G", true},
+    {"Eraser", "eraser", 57999u, "E", "eraser", true},
+    {"Paint Bucket", "paint-bucket", 58086u, "Shift+G", "paint_bucket", true},
+    {"Gradient", "blend", 58780u, "G", "gradient", true},
     // **Built**, as of the aliased-mark route: brush/PencilDeposit,
     // `StrokeRoute::PencilDeposit`, app/StrokeSession §1's Pencil rows. Same
     // note as the Eraser above about why it stays in this half of the table:
     // the rows are in `Tool`'s declaration order and the static_assert below
     // rests on that, so the divider marks where the enum's not-built run began
     // rather than a second list to keep in step.
-    {"Pencil", "pencil", 57849u, "", true},
+    {"Pencil", "pencil", 57849u, "", "pencil", true},
     // **Built**, as of the tonal route: `strokeRouteFor()` sends both to
     // `StrokeRoute::TonalBrush` on a writable RGB layer (brush/TonalBrush;
     // app/StrokeSession.hpp §1's Dodge/Burn rows). Two rows for one engine and
@@ -268,9 +278,9 @@ constexpr ToolMeta kToolMeta[] = {
     // direction is what the pick means. Same placement argument as the Eraser
     // row above: the rows are in `Tool`'s declaration order and the
     // static_assert below rests on that.
-    {"Smudge", "droplets", 57525u, "N", true},
-    {"Dodge", "sun", 57720u, "O", true},
-    {"Burn", "moon", 57630u, "Shift+O", true},
+    {"Smudge", "droplets", 57525u, "N", "smudge", true},
+    {"Dodge", "sun", 57720u, "O", "dodge", true},
+    {"Burn", "moon", 57630u, "Shift+O", "burn", true},
     // **Built**, as of the smudge route: brush/Smudge, StrokeRoute::Smudge.
     // Same rule as the Eraser row above -- the flag flips in the commit that
     // wires the drag, not in the one that writes the arithmetic, and until it
@@ -283,11 +293,11 @@ constexpr ToolMeta kToolMeta[] = {
     // and separately asserts `toolNoHandlerException()` is empty, so flipping
     // either half alone turns the suite red -- and the tempting repair is a
     // row in the table that is asserted to have none.
-    {"Pen", "pen-tool", 57649u, "P", true},
-    {"Curve", "spline", 58251u, "Shift+P", true},
-    {"Text", "type", 57752u, "T", true},
-    {"Shape", "shapes", 58547u, "", false},
-    {"Slice", "slice", 58096u, "", false},
+    {"Pen", "pen-tool", 57649u, "P", "pen", true},
+    {"Curve", "spline", 58251u, "Shift+P", "curve", true},
+    {"Text", "type", 57752u, "T", "text", true},
+    {"Shape", "shapes", 58547u, "", "shape", false},
+    {"Slice", "slice", 58096u, "", "slice", false},
     // **Built**: app/PenTool, gated by `toolEditsPath()` alongside Pen and
     // Curve. Photoshop's black arrow, and the tool that lets the Pen stop
     // being one: before this, Pen presses on existing geometry ran the
@@ -296,13 +306,16 @@ constexpr ToolMeta kToolMeta[] = {
     // places points (docs/path-editing-plan.md section 3.3).
     //
     // `A` is not a new claim -- docs/shortcuts.md section 1 has reserved it
-    // for "Path select" since before any of this existed.
-    {"Path Select", "mouse-pointer-2", 57795u, "A", true},
+    // for "Path select" since before any of this existed. It is now a
+    // WORKING key rather than a tooltip's promise, which is the other half
+    // of this merge: the slug column beside it is what `keymaps/default.json`
+    // binds against.
+    {"Path Select", "mouse-pointer-2", 57795u, "A", "path_select", true},
 };
 static_assert(std::size(kToolMeta) == static_cast<size_t>(Tool::Count),
               "one ToolMeta row per Tool value, in app/AppState.hpp's declaration order");
 
-constexpr ToolMeta kUnknownTool{"?", "", 0u, "", false};
+constexpr ToolMeta kUnknownTool{"?", "", 0u, "", "", false};
 
 // `t` past the table (Tool::Count, or any other stray cast) reads as the
 // unknown row -- the same "?" contract the old per-field switches gave
@@ -316,6 +329,36 @@ const ToolMeta& metaFor(Tool t) noexcept {
 
 const char* toolName(Tool t) { return metaFor(t).name; }
 bool toolImplemented(Tool t) noexcept { return metaFor(t).implemented; }
+
+// ------------------------------------------------ tool select actions
+//
+// The prefix a tool-select keymap action carries. One string, defined once:
+// `toolSelectActionName()` writes it and `toolFromSelectAction()` reads it,
+// so the two cannot drift into disagreeing about what a tool binding looks
+// like -- which is the whole failure mode a `starts_with("tool_")` written
+// out twice invites.
+constexpr std::string_view kToolActionPrefix = "tool_";
+
+const char* toolSlug(Tool t) { return metaFor(t).slug; }
+
+std::optional<Tool> toolForSlug(std::string_view slug) {
+  // The empty slug is `kUnknownTool`'s, never a row's -- matching it would
+  // turn `toolFromSelectAction("tool_")` into a tool switch.
+  if (slug.empty()) return std::nullopt;
+  for (size_t i = 0; i < std::size(kToolMeta); ++i)
+    if (slug == kToolMeta[i].slug) return static_cast<Tool>(i);
+  return std::nullopt;
+}
+
+std::string toolSelectActionName(Tool t) {
+  return std::string(kToolActionPrefix) + toolSlug(t);
+}
+
+std::optional<Tool> toolFromSelectAction(std::string_view action) {
+  if (action.size() <= kToolActionPrefix.size()) return std::nullopt;
+  if (action.substr(0, kToolActionPrefix.size()) != kToolActionPrefix) return std::nullopt;
+  return toolForSlug(action.substr(kToolActionPrefix.size()));
+}
 
 bool toolHasCanvasHandler(Tool t) noexcept {
   // Ten gates, each of them the expression the corresponding block in
