@@ -346,18 +346,22 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 
 ### Step 1 — `app/Command` and the registry
 
-- [ ] `Command{std::string id; JsonValue params;}` and `CommandResult{ok, status, warnings}`
-- [ ] `applyCommand(OpenDocument&, const Command&)`
-- [ ] registry: id → `{apply, precondition, paramNames}`; lookup by id, never by ordinal
+- [x] `Command{std::string id; JsonValue params;}` and `CommandResult{ok, status, warnings}`
+- [x] `applyCommand(OpenDocument&, const Command&)`
+- [x] registry: id → `{apply, precondition, paramNames}`; lookup by id, never by ordinal
+- [x] the plan's composite case runs end to end through `applyCommand()` alone —
+      `flatten_image` → `filter_gaussian_blur` → `set_layer_blend` → `adjust_threshold`
+- [x] `select_layer`, `new_rgb_layer`, `image_size` (6 of ~50 rows registered)
+- [x] sabotage: skipping an unknown id, blanking the precondition hook, and dropping the
+      `LayerEditResult::selected` adoption each go red — **two of these did not, at first**
 - [ ] registrations — filters (7): blur, sharpen, unsharp, noise, emboss, median, motion blur
 - [ ] registrations — adjustments (19) and the four auto solvers
-- [ ] registrations — document: `image_size`, `canvas_size`, `crop_to_selection`, `trim_to_content`
+- [ ] registrations — document: `canvas_size`, `crop_to_selection`, `trim_to_content`
 - [ ] registrations — `LayerCommand` (all of `allLayerCommands()`), incl. `flatten_image`
 - [ ] registrations — `LayerSetCommand` (all of `allLayerSetCommands()`)
 - [ ] registrations — `core/LayerOps` setters, incl. `set_layer_blend`
 - [ ] registrations — op-stack edits, carrying an op in `io/OpSerial`'s text encoding
 - [ ] registrations — selection: select all, deselect, invert, load channel as selection
-- [ ] `select_layer` by name (the target-state command §5 requires)
 - [ ] **the exhaustiveness test** + an exception table that starts empty but for the
       `AppState`-only actions of §1, each with a stated reason
 - [ ] **gate:** every id round-trips through `JsonValue` and back; unknown id refuses by name
