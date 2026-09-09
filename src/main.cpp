@@ -641,6 +641,14 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 //                 live and the box drawn is the LAYOUT frame rather than the
 //                 glyph bounds -- the two differ, and the overlay picks
 //                 deliberately between them.
+//   rotated       A block carrying a non-identity `TextContent::transform`
+//                 (core/TextContent.hpp section 4), still in a live editing
+//                 session. The camera for the claim that a rotated block is
+//                 STILL TEXT: the glyphs are at an angle, and so are the
+//                 block box, the selection highlight and the caret bar --
+//                 all three of which were computed axis-aligned before the
+//                 transform existed, and any one of them left that way is a
+//                 bug no headless assertion can see.
 //   frame         A paragraph-frame drag held open mid-gesture: pen-down on
 //                 empty canvas and a move, with no pen-up. Unphotographable
 //                 any other way, and pinned by `st.textEditDemo` for a reason
@@ -717,6 +725,34 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
       placed.origin.x + (mode == 1 ? 210.0f : 150.0f),
       placed.origin.y + (mode == 1 ? 30.0f : 20.0f)};
   np::textCaretSetOffset(&st.textEdit, placed, np::textOffsetAtPoint(placed, clickAt));
+
+  if (mode == 3) {
+    // A rotation ABOUT THE BLOCK'S OWN CENTRE, which is what the Move tool's
+    // rotate handle produces -- a rotation about the document origin would
+    // fling the block off canvas and photograph an empty crop.
+    //
+    // Applied through `transformTextLayer()` rather than by assigning the
+    // matrix, so this fixture goes through the same entry the tool does and
+    // cannot pass while that entry is broken.
+    const np::PathBounds box = np::textContentBounds(od.document.layers[at].text);
+    const np::Point2 pivot{(box.minX + box.maxX) * 0.5f, (box.minY + box.maxY) * 0.5f};
+    const np::LayerTransformResult rot = np::transformTextLayer(
+        od.document, at, np::transformRotateDegreesAbout(-20.0f, pivot));
+    if (!rot.ok) std::fprintf(stderr, "[text-demo] rotation refused: %s\n", rot.error.c_str());
+
+    // A live SELECTION as well as a caret, because the highlight is the
+    // second thing that has to turn with the block and it is drawn by
+    // different code from the caret. Four characters, set through
+    // app/TextTool's own API -- never by assigning to `st.textEdit`, which
+    // this file's header notes is greppable precisely so a fixture cannot
+    // become a second writer.
+    const np::TextContent& turned = od.document.layers[at].text;
+    np::textCaretSetOffset(&st.textEdit, turned, 0);
+    for (int k = 0; k < 4; ++k) np::textCaretRight(turned, &st.textEdit, /*extend=*/true);
+    std::printf("[text-demo] rotated -20 degrees about (%.1f,%.1f), selection %zu..%zu\n",
+                pivot.x, pivot.y, np::textSelection(st.textEdit).lo,
+                np::textSelection(st.textEdit).hi);
+  }
 
   const np::PathBounds bounds = np::textContentBounds(placed);
   std::printf("[text-demo] %s, %zu glyph shape(s), caret at byte %zu of %zu, bounds %s\n",
@@ -1908,6 +1944,9 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "frame") {
           textDemoMode = 2;
+          ++i;
+        } else if (arg == "rotated") {
+          textDemoMode = 3;
           ++i;
         }
       }

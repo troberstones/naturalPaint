@@ -646,39 +646,84 @@ LayerTransformResult transformTextLayer(Document& doc, size_t index, const Mat3&
     return r;
   }
 
-  // **Translation only, and refused by name otherwise.** A scale or rotation
-  // has nowhere to go in a `TextContent`: there is an origin and a font size,
-  // and no term for an arbitrary 2x2. A uniform scale could in principle be
-  // folded into `style.sizePx` and `frame`, and a rotation could not be
-  // represented at all -- so rather than silently applying the translation
-  // part of a matrix the user built with a corner handle, moving the block
-  // and quietly discarding the resize they asked for, this refuses and says
-  // what to do instead.
+  // **Composed onto the block's own matrix, not applied to its pixels.**
+  // core/TextContent.hpp section 4 is the argument: a Text layer stores a
+  // `Mat3`, `textContentToShapes()` maps every glyph outline through it, and
+  // the block stays a string, a font and a size afterwards. So a rotate or a
+  // scale here is a matrix multiply and the text remains editable -- which is
+  // the whole difference between this and rasterising on the first rotation.
+  //
+  // `dstFromSrc * existing`, in that order: the drag is expressed in DOCUMENT
+  // space (ops/Transform.hpp's `Mat3` comment -- `a * b` applies `b` first),
+  // so it has to be applied AFTER whatever the block already carries. The
+  // reverse order would interpret each new drag in the block's own rotated
+  // frame, which makes a second rotation drift off the handle the user is
+  // holding.
   const std::array<float, 9>& t = dstFromSrc.m;
   const auto near = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
   const bool translationOnly = near(t[0], 1.0f) && near(t[1], 0.0f) && near(t[3], 0.0f) &&
                                near(t[4], 1.0f) && near(t[6], 0.0f) && near(t[7], 0.0f) &&
                                near(t[8], 1.0f);
-  if (!translationOnly) {
-    r.error = "transform refused: " + layerLabelFor(doc, index) +
-              " is a Text layer. Its geometry is an origin point and a type size, so a move "
-              "relocates it exactly, but a scale or rotation has nowhere to be stored -- change "
-              "SIZE on the Text options row, or rasterise the layer first (Layer > Rasterise) to "
-              "transform it as pixels. Nothing was changed.";
+
+  // **A plain move of an unrotated block still moves `origin`, and leaves the
+  // matrix alone.** Dragging a caption is far and away the commonest thing
+  // done to one, and routing it through the matrix instead would cost two
+  // things for nothing: the block would serialise in the newer on-disk form
+  // (io/TextSerial.hpp) purely for having been nudged, so documents with no
+  // rotated text in them would stop opening in older builds; and `origin`
+  // would stop being the block's position, which is what every reader of it
+  // -- the options row, the frame outline, `textOffsetAtPoint()`'s own
+  // text-space arithmetic -- takes it to be.
+  //
+  // **The `isIdentity` half of the guard is not optional.** `origin` is
+  // applied BEFORE the matrix, so once a block carries one, shifting `origin`
+  // by d moves the drawn text by `M * d` -- a rotated caption would slide off
+  // at an angle to the cursor, and a scaled one would run away from it. Only
+  // while M is the identity are the two the same, and that is exactly the
+  // condition tested here.
+  const Mat3 identity = mat3Identity();
+  if (translationOnly && layer.text.transform.m == identity.m) {
+    layer.text.origin.x += t[2];
+    layer.text.origin.y += t[5];
+    r.ok = true;
+    r.editLabel = "move text";
+    r.exact = ExactRemap::None;
     return r;
   }
 
-  layer.text.origin.x += t[2];
-  layer.text.origin.y += t[5];
+  const Mat3 composed = mat3Multiply(dstFromSrc, layer.text.transform);
+
+  // **A degenerate result is refused, and the block is left exactly as it
+  // was.** A corner handle dragged through its opposite corner produces a
+  // zero-area matrix; storing one would make the block invisible AND
+  // permanently uneditable, because `textOffsetAtPoint()` inverts this matrix
+  // to turn a click back into a byte offset (core/TextContent.hpp section 5)
+  // and there is no inverse to invert. Refusing costs the user one drag;
+  // accepting costs them the layer.
+  Mat3 unused;
+  if (!mat3Invert(composed, &unused)) {
+    r.error = "transform refused: that would flatten " + layerLabelFor(doc, index) +
+              " to zero width or height. A text block is stored as a matrix and clicked "
+              "through its inverse, so a collapsed one could never be selected or edited "
+              "again. Nothing was changed.";
+    return r;
+  }
+
+  layer.text.transform = composed;
+
+  // A pure translation of an ALREADY transformed block still says "move" --
+  // that is what the user did, and the two labels are not cosmetic: undoing a
+  // stack of edits is much easier to follow when a nudge and a rotation are
+  // not both called "transform text".
   r.ok = true;
-  r.editLabel = "move text";
+  r.editLabel = translationOnly ? "move text" : "transform text";
   // `ExactRemap` describes how a RESAMPLE was avoided, and nothing here was
-  // resampled or could be -- the block is re-shaped from scratch at the new
-  // origin on the next composite. `None` rather than `Identity`, which would
-  // claim the transform itself was the identity; the cost is that the status
-  // line says "Moved." where a pixel layer moved by a whole number of texels
-  // gets to say "lossless". Text is the more lossless of the two, and saying
-  // so would need a value this enum does not have.
+  // resampled or could be -- the block is re-shaped from scratch through the
+  // new matrix on the next composite. `None` rather than `Identity`, which
+  // would claim the transform itself was the identity; the cost is that the
+  // status line says "Moved." where a pixel layer moved by a whole number of
+  // texels gets to say "lossless". Text is the more lossless of the two, and
+  // saying so would need a value this enum does not have.
   r.exact = ExactRemap::None;
   return r;
 }

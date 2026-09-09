@@ -299,6 +299,136 @@ bool runTextContentTest() {
           "bp.maxY>0 form passes either way up and proves nothing (see comment above)");
   }
 
+  // --- the transform: a scaled or rotated block is STILL TEXT ---------------
+  //
+  // core/TextContent.hpp section 4. The failure these guard against is not
+  // "the matrix is stored wrong" -- that is loud -- but the two quiet ones:
+  // a matrix that is stored and never APPLIED (the handle looks dead), and a
+  // matrix that is applied to the drawing but not to the hit test (the block
+  // draws at an angle and can only be clicked where it used to be).
+  {
+    const PathPoint org{40.0f, 90.0f};
+
+    // 1. Identity changes nothing at all. This is the assertion that fails if
+    //    the mapping pass runs unconditionally with a subtly wrong matrix --
+    //    every other check here uses a non-identity transform and would not
+    //    notice the default case regressing.
+    {
+      TextContent plain = makeTextContent("Handgloves", org);
+      TextContent explicitId = plain;
+      explicitId.transform = mat3Identity();
+      const PathBounds a = textContentBounds(plain);
+      const PathBounds b = textContentBounds(explicitId);
+      check(a.valid && b.valid && a.minX == b.minX && a.maxX == b.maxX && a.minY == b.minY &&
+                a.maxY == b.maxY,
+            "transform: an explicit IDENTITY matrix is byte-for-byte the same geometry as the "
+            "default -- the fast path and the general path agree");
+    }
+
+    // 2. A scale reaches the geometry, and leaves the string and size alone.
+    {
+      TextContent t = makeTextContent("Handgloves", org);
+      const PathBounds before = textContentBounds(t);
+      t.transform = transformScale(2.0f, 2.0f);
+      const PathBounds after = textContentBounds(t);
+      check(before.valid && after.valid &&
+                std::fabs((after.maxX - after.minX) - 2.0f * (before.maxX - before.minX)) < 0.01f,
+            "transform: a 2x scale doubles the shaped width -- the matrix is APPLIED by "
+            "textContentToShapes(), not merely stored");
+      check(t.utf8 == "Handgloves" && t.style.sizePx == makeTextContent("x", org).style.sizePx,
+            "transform: and neither the string nor the type size changed -- this is what makes a "
+            "scaled block still editable text rather than a rasterised picture of text");
+    }
+
+    // 3. **The round trip that matters**: a caret drawn at byte N, clicked on,
+    //    comes back as byte N -- under a rotation. This fails if the drawing
+    //    path maps and the hit test does not (the block is unclickable where
+    //    it is drawn), if the inverse is composed on the wrong side, or if
+    //    either side forgets `origin`.
+    {
+      TextContent t = makeTextContent("Handgloves", org);
+      // About the block's own middle, which is what a rotate handle produces.
+      const PathBounds box = textContentBounds(t);
+      const Point2 pivot{(box.minX + box.maxX) * 0.5f, (box.minY + box.maxY) * 0.5f};
+      t.transform = transformRotateDegreesAbout(30.0f, pivot);
+
+      bool everyOffsetRoundTrips = true;
+      size_t firstBad = 0;
+      for (size_t n = 0; n <= t.utf8.size(); ++n) {
+        const TextCaretSegment seg = textCaretSegment(t, n);
+        // Sample ON the baseline, a hair inside the caret: the segment's own
+        // endpoints are the ascender top and descender bottom, and a click at
+        // the very top of a line legitimately belongs to the line above.
+        const PathPoint at{(seg.top.x + seg.bottom.x) * 0.5f, (seg.top.y + seg.bottom.y) * 0.5f};
+        if (textOffsetAtPoint(t, at) != n) {
+          everyOffsetRoundTrips = false;
+          firstBad = n;
+          break;
+        }
+      }
+      if (!everyOffsetRoundTrips)
+        std::printf("  [measured] first caret offset that did not round-trip: %zu\n", firstBad);
+      check(everyOffsetRoundTrips,
+            "transform: REQUIRED -- under a 30-degree rotation, clicking the middle of the caret "
+            "drawn for byte N returns byte N, for EVERY N. This is the assertion that fails if "
+            "the hit test does not invert the matrix the drawing applied");
+    }
+
+    // 4. The selection quad turns with the block. Under a rotation its top
+    //    edge is no longer horizontal -- which an axis-aligned rect could
+    //    never express, and is why the API returns four corners.
+    {
+      TextContent t = makeTextContent("Handgloves", org);
+      const std::vector<TextQuad> square = textSelectionQuads(t, 0, 4);
+      check(square.size() == 1 && std::fabs(square[0].corner[0].y - square[0].corner[1].y) < 0.01f,
+            "transform: unrotated, a selection quad's top edge is horizontal");
+      t.transform = transformRotateDegrees(30.0f);
+      const std::vector<TextQuad> turned = textSelectionQuads(t, 0, 4);
+      check(turned.size() == 1 && std::fabs(turned[0].corner[0].y - turned[0].corner[1].y) > 1.0f,
+            "transform: REQUIRED -- rotated, it is NOT. A highlight that stayed axis-aligned "
+            "under rotated type is the bug the quad API exists to prevent");
+    }
+
+    // 5. The hash covers the matrix, or core/VectorRaster's cache serves the
+    //    pre-rotation picture and the handle looks dead.
+    {
+      TextContent a = makeTextContent("Handgloves", org);
+      TextContent b = a;
+      b.transform = transformRotateDegrees(15.0f);
+      check(textContentHash(a) != textContentHash(b),
+            "transform: REQUIRED -- the content hash changes with the matrix, so the raster cache "
+            "cannot serve an unrotated block for a rotated one");
+    }
+
+    // 6. A degenerate matrix has no inverse, so the hit test refuses rather
+    //    than dividing by ~0 and returning a garbage offset.
+    {
+      TextContent t = makeTextContent("Handgloves", org);
+      t.transform = transformScale(0.0f, 1.0f);
+      check(textOffsetAtPoint(t, PathPoint{50.0f, 95.0f}) == 0,
+            "transform: a collapsed matrix makes the hit test answer 0 rather than reading an "
+            "infinity -- and ops/DocumentTransform refuses to store one in the first place");
+    }
+
+    // 7. Curve handles are mapped too, not just anchors. `in`/`out` are
+    //    absolute positions, so a transform that moved only `pt` would turn
+    //    every round glyph inside out -- silent on straight-edged letters.
+    {
+      TextContent t = makeTextContent("o", org);   // a glyph that is all curve
+      t.transform = transformTranslate(1000.0f, 0.0f);
+      const std::vector<VectorShape> shapes = textContentToShapes(t, nullptr);
+      bool everyHandleMoved = !shapes.empty();
+      for (const VectorShape& sh : shapes)
+        for (const SubPath& sub : sh.path.subpaths)
+          for (const Anchor& an : sub.anchors)
+            if (an.in.x < 900.0f || an.out.x < 900.0f) everyHandleMoved = false;
+      check(everyHandleMoved,
+            "transform: REQUIRED -- the bezier control points move with their anchors. Mapping "
+            "only `pt` leaves every curve's handles behind, which is invisible on 'H' and "
+            "turns 'o' inside out");
+    }
+  }
+
   return ok;
 }
 

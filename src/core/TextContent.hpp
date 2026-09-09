@@ -6,6 +6,7 @@
 
 #include "core/Path.hpp"
 #include "core/VectorShape.hpp"
+#include "ops/Transform.hpp"
 #include "text/Shaper.hpp"
 
 // core/TextContent -- what a `LayerKind::Text` layer holds (PLAN.md phase 14;
@@ -61,6 +62,42 @@
 // A `stroke` is carried for the same reason and with the same default (`on ==
 // false`): outlined text is one `Paint` away once a UI wants it, and leaving
 // the field out would change the serialised framing later.
+//
+// ==========================================================================
+// 4. `transform`: how a block scales and rotates and stays EDITABLE
+// ==========================================================================
+//
+// A text block has to be able to sit at an angle, or twice its drawn size,
+// without stopping being text. The alternative -- rasterise on the first
+// rotation -- is what makes type in most paint programs a one-way door: the
+// moment you turn it, the string, the font and the size are gone.
+//
+// So a Text layer carries a full `Mat3`, and section 1's rule is unchanged:
+// nothing downstream learns a new concept. `textContentToShapes()` maps every
+// glyph outline through it on the way out, exactly where it already applied
+// `origin`, and the rasteriser, the cache, the compositor and the exporter
+// see the same `std::vector<VectorShape>` they always did.
+//
+// **The composition is `document = transform * (origin + penPosition)`.**
+// Shaping is untouched by it -- the block wraps to `frame.width` and breaks
+// its lines in TEXT space, then the whole shaped result is mapped. That is
+// what makes the transform non-destructive: dragging a rotation handle cannot
+// change where the words break, because the line breaking has already
+// happened by the time the matrix is applied.
+//
+// **A `Mat3`, not a scale factor plus an angle.** The decomposed spelling
+// cannot represent the composition of two drags (a rotate, then a
+// non-uniform scale, is a shear -- there is no angle and no pair of scale
+// factors that says so), so it would have to either refuse the second drag or
+// silently drop the shear. `ops/Transform.hpp` already owns this type and the
+// composition rules; storing anything else here would be a second, weaker
+// spelling of it.
+//
+// **Every geometric query below maps through it**, and the inverse is what
+// click-to-place-caret needs -- see section 5. A degenerate matrix (a handle
+// dragged to zero width) has no inverse, and `ops/DocumentTransform.hpp`'s
+// `transformTextLayer()` refuses to store one for exactly that reason: a
+// block you cannot click is a block you cannot get back.
 namespace np {
 
 // One text block. The whole content of a `LayerKind::Text` layer.
@@ -87,6 +124,12 @@ struct TextContent {
   // (text/Shaper.hpp), and this is the single translation applied on the way
   // out -- so moving a text block is one field, not a walk over glyphs.
   PathPoint origin;
+
+  // Section 4. Identity by default, so a block that has never been scaled or
+  // rotated behaves exactly as it did before this field existed -- and
+  // serialises to the older on-disk form, which is what lets an existing
+  // document still open in an older build (io/TextSerial.hpp).
+  Mat3 transform;
 
   // Section 3. `fill.on` defaults false on `Paint` itself, so a `TextContent`
   // built by aggregate initialisation and never painted draws nothing; every
@@ -153,6 +196,12 @@ std::vector<VectorShape> textContentToShapes(const TextContent& text,
 //
 // `valid == false` for empty text, which is `PathBounds`'s own answer for
 // nothing at all rather than a zero-area box at `origin`.
+//
+// **The axis-aligned box of the TRANSFORMED geometry** (section 4), because
+// it is derived from `textContentToShapes()` and always has been. For a
+// rotated block that box is larger than the text -- which is correct for what
+// callers use it for (the tiles to allocate, the extent to fit) and loose for
+// a hit test, where `textOffsetAtPoint()` is exact and should be preferred.
 PathBounds textContentBounds(const TextContent& text);
 
 // Whether this text block would draw anything: non-empty after shaping AND at
@@ -162,7 +211,7 @@ PathBounds textContentBounds(const TextContent& text);
 bool textContentDraws(const TextContent& text);
 
 // ==========================================================================
-// 4. The caret, in document coordinates
+// 5. The caret and the selection, in document coordinates
 // ==========================================================================
 //
 // `app/TextTool` owns the caret as a BYTE OFFSET into `utf8` and knows nothing
@@ -177,13 +226,27 @@ bool textContentDraws(const TextContent& text);
 // boundary" even under bidi reordering and font fallback. That guarantee is
 // what makes a byte offset a usable caret unit at all.
 
+// A caret is a SEGMENT, not a point and a height.
+//
+// It was the latter until `transform` existed, and the caller reconstructed
+// the bar by stepping up and down in y. Under a rotation that is wrong in a
+// way that looks like a rendering bug: the text turns and the insertion point
+// stays vertical. Two mapped endpoints turn with the block for free.
+//
+// The `top`/`bottom` split is the conventional 0.8/0.2 of the line box around
+// the baseline, and it now lives HERE rather than in the drawing code,
+// because `textSelectionQuads()` needs the identical split -- a caret and a
+// highlight that disagreed by a pixel would look like a rendering bug on
+// every screenshot. One definition, two readers.
+struct TextCaretSegment {
+  PathPoint top{0.0f, 0.0f};
+  PathPoint bottom{0.0f, 0.0f};
+};
+
 // Where the caret sits, in document coordinates: the pen position of the
 // first glyph whose cluster is at or after `caretByte`, or the trailing edge
-// of the last glyph when the caret is at the end.
-//
-// `height` receives the caret bar's height -- the line height at that
-// position, so the bar matches the text rather than being a guessed constant
-// that goes wrong the moment the size changes.
+// of the last glyph when the caret is at the end -- then mapped through
+// `transform`.
 //
 // **Approximate in exactly one way, and it is stated rather than hidden:** the
 // caret lands on a glyph BOUNDARY, so a caret between two glyphs of one
@@ -191,24 +254,30 @@ bool textContentDraws(const TextContent& text);
 // A caret cannot be placed inside a grapheme by `app/TextTool` either -- it
 // steps by code point -- so the two agree, and doing better means a cursor
 // model that knows about ligature carets, which is its own piece of work.
-PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* height);
+TextCaretSegment textCaretSegment(const TextContent& text, size_t caretByte);
 
-// The rectangles to paint behind a selected range `[loByte, hiByte)` -- one
-// per LINE the range covers, in the same document coordinates the caret comes
-// back in.
+// Four corners of one line's selection highlight, in document coordinates and
+// in the order top-left, top-right, bottom-right, bottom-left **of the block's
+// own text space** -- so under a rotation they are still that block's corners,
+// wound consistently, and a caller can hand them straight to a quad drawer.
+//
+// A quad rather than `PathBounds` for the reason the caret is a segment: the
+// axis-aligned box of a rotated line's highlight is visibly not the highlight,
+// and it is larger than the text it claims to cover.
+struct TextQuad {
+  PathPoint corner[4];
+};
+
+// The quads to paint behind a selected range `[loByte, hiByte)` -- one per
+// LINE the range covers.
 //
 // One per line rather than one per glyph because that is what a selection
 // looks like, and because per-glyph rectangles of a proportional font leave
-// hairline seams between them at fractional zoom. Each line's rectangle spans
+// hairline seams between them at fractional zoom. Each line's quad spans
 // from the leftmost selected pen position on that line to the rightmost
 // TRAILING edge (`x + advance`, text/Shaper.hpp) -- the same field the caret
 // needs, for the same reason: without it the highlight stops in front of the
 // last selected character.
-//
-// Vertically each rectangle uses `textCaretPosition()`'s own 0.8/0.2 split of
-// the caret height, so the highlight and the caret agree about where a line
-// box is; a highlight that disagreed with the caret by a pixel would look
-// like a rendering bug on every screenshot.
 //
 // Empty when the range is empty, when the block is empty, or when shaping
 // fails -- all three are "nothing to paint" rather than errors, matching what
@@ -217,13 +286,31 @@ PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* he
 // **Lines are grouped by the glyphs' baseline `y`**, and a selection that is
 // contiguous in BYTES can be discontiguous on a line under bidi -- a
 // right-to-left run inside a left-to-right paragraph. Each line still gets
-// exactly one rectangle here, spanning the extremes, so such a selection
-// paints wider than it strictly covers. That is the standard simplification
-// and the alternative (a run-splitting pass over the reordered glyphs) is not
-// worth building until this application has a bidi document to test it on.
-std::vector<PathBounds> textSelectionRects(const TextContent& text, size_t loByte, size_t hiByte);
+// exactly one quad here, spanning the extremes, so such a selection paints
+// wider than it strictly covers. That is the standard simplification and the
+// alternative (a run-splitting pass over the reordered glyphs) is not worth
+// building until this application has a bidi document to test it on.
+std::vector<TextQuad> textSelectionQuads(const TextContent& text, size_t loByte, size_t hiByte);
+
+// The four corners of the block's own frame -- the paragraph box for
+// paragraph text, and the ink bounds for point text -- mapped through
+// `transform`, for the outline the Text tool draws around the block it is
+// editing.
+//
+// Exists so the drawing code does not rebuild `origin + frame` itself and
+// then forget to map it: that is precisely the bug that leaves a frame
+// sitting square while the type inside it is at an angle. `valid == false`
+// for an empty block, matching `textContentBounds()`.
+bool textFrameQuad(const TextContent& text, TextQuad* out);
 
 // The byte offset nearest `at` (document coordinates) -- click-to-place-caret.
+//
+// **`at` is mapped through the INVERSE of `transform` first**, so a click
+// lands where the user sees the character, not where it would have been
+// unrotated. This is the one place the inverse is needed, and it is why
+// `transformTextLayer()` refuses a degenerate matrix: with no inverse there
+// is no way to turn a click back into a byte, and the block becomes
+// permanently uneditable.
 //
 // Nearest by the glyph's pen position, then snapped to that glyph's own
 // cluster, so the returned offset is always a real UTF-8 boundary that
@@ -231,8 +318,8 @@ std::vector<PathBounds> textSelectionRects(const TextContent& text, size_t loByt
 // last glyph on a line returns the end of the string, which is what makes
 // "click to the right of the text and start typing" work.
 //
-// Returns 0 for empty text or a shaping failure -- there is one position in an
-// empty string and it is 0.
+// Returns 0 for empty text, a shaping failure, or a non-invertible
+// `transform` -- there is one position in an empty string and it is 0.
 size_t textOffsetAtPoint(const TextContent& text, PathPoint at);
 
 }  // namespace np

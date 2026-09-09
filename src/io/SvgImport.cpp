@@ -827,11 +827,18 @@ float shapedBaselineOffset(const ShapedText& s) {
   return minY;
 }
 
-// A translation plus a POSITIVE UNIFORM scale, or nothing. `TextContent` has
-// no matrix (core/TextContent.hpp), so this is exactly the set of accumulated
-// transforms a text block can absorb: the scale folds into `sizePx` and the
-// translation into `origin`. Rotation, skew and mirroring cannot fold, and
-// the caller outlines instead.
+// A translation plus a POSITIVE UNIFORM scale, or nothing: the scale folds
+// into `sizePx` and the translation into `origin`. Rotation, skew and
+// mirroring do not fold, and the caller outlines those to paths instead.
+//
+// **This is now the importer's own limit, not the model's.** It read "a
+// `TextContent` has no matrix" until one was added for the Move tool
+// (core/TextContent.hpp section 4), so a rotated `<text>` could in principle
+// come in as live text carrying that matrix rather than as outlines. Doing
+// it is a real, bounded follow-up -- it needs the accumulated CTM split into
+// the part that folds into the type size and the part that stays a matrix,
+// and it needs deciding what a MIRRORED block should mean -- and it is not
+// done here, so this stays as it was rather than being half-changed.
 bool decomposeTranslateScale(const Mat3& m, float* s, float* tx, float* ty) {
   if (std::fabs(m.m[6]) > 1e-6f || std::fabs(m.m[7]) > 1e-6f ||
       std::fabs(m.m[8] - 1.0f) > 1e-6f)

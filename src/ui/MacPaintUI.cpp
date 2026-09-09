@@ -17940,34 +17940,42 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // every time a line wrapped, which reads as the frame moving when it
         // did not.
         const bool paragraph = tl->text.frame.width > 0.0f;
-        PathBounds box;
-        if (paragraph) {
-          box.valid = true;
-          box.minX = tl->text.origin.x;
-          box.minY = tl->text.origin.y;
-          box.maxX = tl->text.origin.x + tl->text.frame.width;
-          // `frame.height == 0` means "as tall as the lines need"
-          // (core/TextContent.hpp), so the box has to ASK how tall that came
-          // out rather than drawing a zero-height line.
-          const PathBounds ink = textContentBounds(tl->text);
-          box.maxY = tl->text.frame.height > 0.0f
-                         ? tl->text.origin.y + tl->text.frame.height
-                         : (ink.valid ? ink.maxY : tl->text.origin.y);
-        } else {
-          box = textContentBounds(tl->text);
-        }
-
-        if (box.valid) {
-          const Vec2 a = xform.toScreen(Vec2{box.minX, box.minY});
-          const Vec2 b = xform.toScreen(Vec2{box.maxX, box.maxY});
-          const ImVec2 tlp(std::min(a.x, b.x), std::min(a.y, b.y));
-          const ImVec2 brp(std::max(a.x, b.x), std::max(a.y, b.y));
+        // `textFrameQuad()` decides paragraph-frame vs point-ink and maps the
+        // corners through the block's transform, so a rotated block gets a
+        // rotated box. It is a QUAD rather than a rect for that reason: the
+        // axis-aligned box of turned text is visibly not the text's own
+        // frame.
+        TextQuad box;
+        if (textFrameQuad(tl->text, &box)) {
+          ImVec2 pt[4];
+          for (int i = 0; i < 4; ++i) {
+            const Vec2 v = xform.toScreen(Vec2{box.corner[i].x, box.corner[i].y});
+            pt[i] = ImVec2(v.x, v.y);
+          }
+          const ImU32 core = paragraph ? kTextCore : IM_COL32(255, 255, 255, 200);
           // A dark casing under a light core, the gradient band's own reason:
           // this is drawn over the user's picture at whatever colour that
           // happens to be.
-          dl->AddRect(tlp, brp, kTextCasing, 0.0f, 0, 3.0f);
-          dl->AddRect(tlp, brp, paragraph ? kTextCore : IM_COL32(255, 255, 255, 200), 0.0f, 0,
-                      1.5f);
+          //
+          // **An axis-aligned quad still goes through `AddRect`.** Not for
+          // the golden's sake: ImGui's rectangle path has its own
+          // anti-aliasing, and routing an unrotated box through the general
+          // polyline instead visibly changes the border of every text block
+          // in the application to buy nothing. The quad path is for the case
+          // that could not be drawn before at all.
+          const bool axisAligned = std::fabs(pt[0].y - pt[1].y) < 0.01f &&
+                                   std::fabs(pt[1].x - pt[2].x) < 0.01f &&
+                                   std::fabs(pt[2].y - pt[3].y) < 0.01f &&
+                                   std::fabs(pt[3].x - pt[0].x) < 0.01f;
+          if (axisAligned) {
+            const ImVec2 tlp(std::min(pt[0].x, pt[2].x), std::min(pt[0].y, pt[2].y));
+            const ImVec2 brp(std::max(pt[0].x, pt[2].x), std::max(pt[0].y, pt[2].y));
+            dl->AddRect(tlp, brp, kTextCasing, 0.0f, 0, 3.0f);
+            dl->AddRect(tlp, brp, core, 0.0f, 0, 1.5f);
+          } else {
+            dl->AddPolyline(pt, 4, kTextCasing, ImDrawFlags_Closed, 3.0f);
+            dl->AddPolyline(pt, 4, core, ImDrawFlags_Closed, 1.5f);
+          }
         }
 
         // --- the caret ---
@@ -17989,32 +17997,31 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // under it stop being readable, and a selection whose text you
           // cannot read is worse than no highlight.
           //
-          // One rectangle per line, from `core/TextContent`'s
-          // `textSelectionRects()` -- which needs `ShapedGlyph::advance` to
+          // One QUAD per line, from `core/TextContent`'s
+          // `textSelectionQuads()` -- which needs `ShapedGlyph::advance` to
           // know where a line's last selected character ENDS, the same field
-          // the caret needed.
+          // the caret needed, and which maps the corners through the block's
+          // transform so the highlight turns with the type.
           const TextSelection sel = textSelection(st.textEdit);
           if (!sel.empty()) {
-            for (const PathBounds& r : textSelectionRects(tl->text, sel.lo, sel.hi)) {
-              if (!r.valid) continue;
-              const Vec2 ra = xform.toScreen(Vec2{r.minX, r.minY});
-              const Vec2 rb = xform.toScreen(Vec2{r.maxX, r.maxY});
-              dl->AddRectFilled(ImVec2(std::min(ra.x, rb.x), std::min(ra.y, rb.y)),
-                                ImVec2(std::max(ra.x, rb.x), std::max(ra.y, rb.y)),
-                                IM_COL32(90, 150, 255, 90));
+            for (const TextQuad& q : textSelectionQuads(tl->text, sel.lo, sel.hi)) {
+              const Vec2 a = xform.toScreen(Vec2{q.corner[0].x, q.corner[0].y});
+              const Vec2 b = xform.toScreen(Vec2{q.corner[1].x, q.corner[1].y});
+              const Vec2 c = xform.toScreen(Vec2{q.corner[2].x, q.corner[2].y});
+              const Vec2 d = xform.toScreen(Vec2{q.corner[3].x, q.corner[3].y});
+              dl->AddQuadFilled(ImVec2(a.x, a.y), ImVec2(b.x, b.y), ImVec2(c.x, c.y),
+                                ImVec2(d.x, d.y), IM_COL32(90, 150, 255, 90));
             }
           }
 
-          float caretH = 0.0f;
-          const PathPoint cp = textCaretPosition(tl->text, st.textEdit.caret, &caretH);
-          // The caret hangs from the pen position UP by the ascent and DOWN by
-          // the descent, because the pen position is on the BASELINE and a bar
-          // drawn downward from it would sit entirely under the text. 0.8/0.2
-          // is the conventional ascent/descent split of a line box, and it is
-          // an approximation for the reason `caretHeightFor()` states: the
-          // font's real metrics would need a second platform call.
-          const Vec2 top = xform.toScreen(Vec2{cp.x, cp.y - caretH * 0.8f});
-          const Vec2 bot = xform.toScreen(Vec2{cp.x, cp.y + caretH * 0.2f});
+          // Both endpoints come from `core/TextContent` already mapped through
+          // the block's transform, so the bar leans with rotated type instead
+          // of standing vertical in it. The 0.8/0.2 ascent/descent split that
+          // used to be reconstructed here now lives beside the one the
+          // selection highlight uses, so the two cannot drift apart.
+          const TextCaretSegment caret = textCaretSegment(tl->text, st.textEdit.caret);
+          const Vec2 top = xform.toScreen(Vec2{caret.top.x, caret.top.y});
+          const Vec2 bot = xform.toScreen(Vec2{caret.bottom.x, caret.bottom.y});
           // **Blinking, and NOT on a `static` clock.** `ImGui::GetTime()` is
           // the frame clock this whole UI already runs on, so the caret blinks
           // at the same rate on every document and stops nothing when the
