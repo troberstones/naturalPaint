@@ -5607,6 +5607,33 @@ bool runPenToolTest();
 // app/selftest/PenDraw.cpp.
 bool runPenDrawTest();
 
+// app/VectorStyle -- the Pen's PAINT (docs/path-editing-plan.md section 2).
+//
+// The section exists because a pen-drawn path was invisible: the shape was
+// default-constructed, `Paint::on` is false on both the fill and the stroke,
+// and `core/VectorRaster.cpp` gates on exactly those two flags. The overlay
+// drew the path anyway, so the defect only showed on a tool switch.
+//
+// The four things asserted, each guarding a failure a count-based check
+// cannot see:
+//
+//   * the default style is stroke-ON / fill-OFF, and a bare `VectorShape` is
+//     neither -- the two states named side by side rather than assumed apart.
+//   * a placed shape carries the style's WIDTH and both ALPHAS, not merely
+//     its on-flags. The fixture uses 7.25 px and alpha 0.5 so a stamp that
+//     forgot `strokeStyle` (leaving `StrokeStyle`'s own 1.0) or premultiplied
+//     the colour cannot coincide with the right answer.
+//   * selection-first-else-default, over a layer whose shapes are in an order
+//     that is NOT id order, including a component selection resolving to its
+//     shapes and a stale selection naming a deleted id.
+//   * the colour path is LINEAR: `foregroundLinearRgba()` decodes, and the
+//     fixture avoids 0.0 and 1.0 -- the two values where an sRGB encode and a
+//     decode agree, and therefore where the assertion would survive its own
+//     sabotage.
+//
+// Headless and GPU-free; writes no files. See app/selftest/VectorStyle.cpp.
+bool runVectorStyleTest();
+
 // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
 // gate predicate (`toolEditsText()`), the caret-editing session's UTF-8-safe
 // string edits (insert/backspace/forward-delete/caret movement, every one

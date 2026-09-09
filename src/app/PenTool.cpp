@@ -1,5 +1,7 @@
 #include "app/PenTool.hpp"
 
+#include "app/VectorStyle.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -952,7 +954,8 @@ void pathEditTrackCursor(PathEditState* state, PathPoint at) noexcept {
 
 PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* shapes,
                                 uint64_t* nextShapeId, PathPoint at, float pickRadiusPx,
-                                uint64_t documentId, bool curveMode) {
+                                uint64_t documentId, bool curveMode,
+                                const VectorStyle& style) {
   if (state == nullptr || shapes == nullptr || nextShapeId == nullptr)
     return PenPressResult::Inert;
 
@@ -1019,6 +1022,14 @@ PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* 
 
     if (!state->openPathActive) {
       VectorShape s;
+      // **The paint, before anything else.** A default-constructed
+      // `VectorShape` has `fill.on == false` AND `stroke.on == false`, so the
+      // shape this branch used to build rasterised to nothing --
+      // `core/VectorRaster.cpp` gates on exactly those two flags. The editing
+      // overlay drew the path regardless, which is why the defect was
+      // invisible right up until the tool changed. app/VectorStyle.hpp
+      // section 1.
+      setVectorStyle(&s, style);
       s.id = (*nextShapeId)++;
       SubPath sub;
       sub.closed = false;

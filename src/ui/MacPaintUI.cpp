@@ -6248,6 +6248,28 @@ std::array<float, 4> foregroundLinearRgba(const BrushState& brush) {
   return {srgbDecode(fg[0]), srgbDecode(fg[1]), srgbDecode(fg[2]), 1.0f};
 }
 
+VectorStyle penVectorStyle(const AppState& st) {
+  VectorStyle style = st.vectorStyle;
+  const std::array<float, 4> fg = foregroundLinearRgba(st.brush);
+  // **Colour from the foreground, on/off and width from the tool default.**
+  // The two halves answer different questions: "what colour does this build
+  // paint with" has one answer for every tool (app/AppState.hpp), while "does
+  // a pen path have a fill" is a per-tool choice the options bar owns.
+  //
+  // `fg` is LINEAR-LIGHT and STRAIGHT already -- `foregroundLinearRgba()`
+  // decodes sRGB on the way out and `Paint::rgba` is stored linear and
+  // un-premultiplied (core/VectorShape.hpp section 1). Assigning the ENCODED
+  // triple here instead would make every pen stroke read about twice as dark
+  // as the swatch that promised it, which is the failure the flats expander
+  // shipped once already, and it is invisible unless you are looking for it.
+  // Alpha is the style's own, not `fg`'s: `foregroundLinearRgba()` always
+  // answers 1.0 (the foreground well has no opacity of its own), and a user
+  // who dialled a translucent stroke on the options bar must keep it.
+  style.stroke.rgba = {fg[0], fg[1], fg[2], style.stroke.rgba[3]};
+  style.fill.rgba = {fg[0], fg[1], fg[2], style.fill.rgba[3]};
+  return style;
+}
+
 GradientStops currentGradientStops(const BrushState& brush) {
   return gradientToolStops(foregroundLinearRgba(brush));
 }
@@ -16375,7 +16397,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           if (pathToolPlacesAnchors(st.brush.tool)) {
             const PenPressResult pressed = pathEditBeginPen(
                 &st.pathEdit, &pathLayer->shapes, &pathLayer->nextShapeId, PathPoint{tx, ty},
-                pickTexels, pathDocId, curveMode);
+                pickTexels, pathDocId, curveMode, penVectorStyle(st));
             // Placing, closing or reversing-to-resume IS the edit, made on
             // the press itself -- unlike every other gesture here, which
             // edits only once a drag actually moves something.

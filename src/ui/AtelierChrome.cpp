@@ -11,6 +11,7 @@
 
 #include "app/PenTool.hpp"
 #include "app/TextTool.hpp"    // toolEditsText()
+#include "app/VectorStyle.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
 #include "app/DocumentLifecycle.hpp"
@@ -1332,6 +1333,187 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
     // alive over a layer the gesture then refuses would be a control lying
     // about what the next click does.
     if (pathLayer != nullptr && pathLayer->kind != LayerKind::Vector) pathLayer = nullptr;
+
+    // --- STROKE and FILL ----------------------------------------------------
+    //
+    // **Without this row the Pen drew nothing.** `pathEditBeginPen()` built a
+    // default-constructed `VectorShape`, whose `fill.on` and `stroke.on` are
+    // both false, so every path it ever laid down rasterised to nothing;
+    // app/VectorStyle.hpp section 1 has the whole account. The paint now comes
+    // from `st.vectorStyle` plus the foreground, and this is where a user says
+    // what it should be.
+    //
+    // **Selection first, else default** -- app/VectorStyle.hpp section 3, and
+    // the one rule both controls follow. With shapes selected (in EITHER mode:
+    // Component mode's anchors resolve to the shapes they sit on) these edit
+    // THOSE SHAPES and record a document edit; with nothing selected they edit
+    // the tool default, which is what the next pen stroke will be.
+    //
+    // The consequence, and the reason the readout is computed before anything
+    // is drawn: **the control shows the SELECTION's value, not the default's.**
+    // A width box reading 1.0 while a drag would change a selected 12 px stroke
+    // is a control lying about what it is about to do -- the same class of
+    // defect as a menu item wired to the wrong engine.
+    //
+    // Cap and join are deliberately NOT here: they are per-shape finishing
+    // choices, they belong in the PATHS panel, and this band already carries
+    // MODE and SELECTED.
+    VectorStyleReadout pathStyle;
+    pathStyle.style = st.vectorStyle;
+    if (pathLayer != nullptr)
+      pathStyle = vectorStyleReadout(pathLayer->shapes, st.pathEdit.selection, st.vectorStyle);
+
+    // **A drag is ONE undo entry, not sixty** -- the same split
+    // `pathEditUpdate()` returns as `EditBegan` / `EditContinued`, and the
+    // reason it returns it. The first frame of a gesture that changes anything
+    // records; every frame after it amends.
+    //
+    // "Still the same gesture" is asked as "is the pointer still down", NOT as
+    // ImGui's item-active state, because the colour swatch's picker lives in a
+    // popup: the swatch itself is not the active item while the user drags
+    // inside that popup, so an active-state test would open a fresh undo entry
+    // per frame for exactly the control that needs the grouping most.
+    struct PathStyleGesture {
+      bool open = false;
+    };
+    static PathStyleGesture gStrokeWidth, gStrokeColor, gFillColor;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      gStrokeWidth.open = false;
+      gStrokeColor.open = false;
+      gFillColor.open = false;
+    }
+    // One funnel for both controls, so the rule above is written once rather
+    // than five times. `gesture` null means a single-click change (the NONE
+    // chips) that can never need amending.
+    auto editPathStyle = [&](const char* what, PathStyleGesture* gesture,
+                             const VectorStyleMutator& mutate) {
+      std::vector<VectorShape>* shapesPtr = pathLayer != nullptr ? &pathLayer->shapes : nullptr;
+      const size_t n =
+          applyVectorStyleEdit(shapesPtr, st.pathEdit.selection, &st.vectorStyle, mutate);
+      // Zero means the selection named no shape and the TOOL DEFAULT was
+      // written. Nothing in the document moved, so recording an edit here
+      // would put an undo entry on the stack that undoes nothing visible.
+      if (n == 0 || pathOd == nullptr) return;
+      const bool continuing = gesture != nullptr && gesture->open;
+      if (gesture != nullptr) gesture->open = true;
+      // `amendEdit()` answers false when there is no entry of ours to fold
+      // into; falling back to a fresh record is the honest recovery, and is
+      // what its own header asks a caller to do rather than assume.
+      if (!continuing || !pathOd->amendEdit(what, EditKind::Content))
+        pathOd->recordEdit(what, EditKind::Content);
+    };
+
+    bandSeparator();
+    capsLabel("STROKE");
+    ImGui::SameLine();
+    pushAtelierMono();
+    ImGui::BeginDisabled(pathLayer == nullptr);
+
+    ImGui::SetNextItemWidth(86.0f);
+    float pathStrokeW = pathStyle.style.strokeStyle.width;
+    // A drag, not a slider, for the reason SIZE above is one: a stroke width
+    // has no natural maximum and a slider would have to invent one. The `~`
+    // in the mixed format string is the mixed affordance -- the number shown
+    // is the FIRST selected shape's, and without the mark it would read as
+    // everybody's.
+    if (ImGui::DragFloat("##pathStrokeWidth", &pathStrokeW, 0.1f, 0.0f, 4096.0f,
+                         pathStyle.mixedStrokeWidth ? "~%.2f px" : "%.2f px")) {
+      const float w = std::max(0.0f, pathStrokeW);
+      editPathStyle("stroke width", &gStrokeWidth,
+                    [w](VectorStyle& vs) { vs.strokeStyle.width = w; });
+    }
+    ImGui::SetItemTooltip(
+        "Stroke width in document pixels. %s A width of 0 draws nothing, which is not the "
+        "same as NONE: the stroke is still there and still round-trips.",
+        pathStyle.fromSelection ? "Edits the SELECTED shapes."
+                                : "Nothing is selected, so this sets what the NEXT path "
+                                  "you draw will use.");
+
+    ImGui::SameLine();
+    // sRGB-encoded into the picker and decoded back out. `Paint::rgba` is
+    // linear-light STRAIGHT alpha (core/VectorShape.hpp section 1) and ImGui's
+    // picker is display-referred; skipping either half is how a stroke ends up
+    // roughly twice as dark as the swatch that promised it.
+    {
+      const std::array<float, 4>& lin = pathStyle.style.stroke.rgba;
+      float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
+      if (ImGui::ColorEdit4("##pathStrokeColor", enc,
+                            ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
+                                ImGuiColorEditFlags_AlphaPreviewHalf)) {
+        const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
+                                          srgbDecode(enc[2]), enc[3]};
+        editPathStyle("stroke colour", &gStrokeColor, [out](VectorStyle& vs) {
+          vs.stroke.rgba = out;
+          // Setting a colour means wanting to see it. Leaving `on` false would
+          // make the swatch a control with no visible effect.
+          vs.stroke.on = true;
+        });
+      }
+    }
+    ImGui::SetItemTooltip(
+        "Stroke colour.%s A new path takes the FOREGROUND colour instead -- the same colour "
+        "every other tool here paints with -- and this overrides it.",
+        pathStyle.mixedStrokeColor ? " The selection has more than one; this is the first "
+                                     "shape's."
+                                   : "");
+
+    ImGui::SameLine();
+    // NONE is lit when the paint is OFF, which is what it is naming. SVG's
+    // `stroke="none"` is a real state and is not an alpha of zero
+    // (core/VectorShape.hpp): a shape with neither fill nor stroke still
+    // exists, still hit-tests and still round-trips.
+    const bool pathStrokeOff = !pathStyle.style.stroke.on;
+    if (atelierToggleChip(pathStyle.mixedStrokeOn ? "NONE ~##pathStrokeNone"
+                                                  : "NONE##pathStrokeNone",
+                          pathStrokeOff && !pathStyle.mixedStrokeOn)) {
+      const bool on = pathStrokeOff;
+      editPathStyle("stroke on", nullptr, [on](VectorStyle& vs) { vs.stroke.on = on; });
+    }
+    ImGui::SetItemTooltip(
+        "No stroke at all -- SVG's `stroke=\"none\"`, which is different from a "
+        "transparent one: the shape keeps no stroke rather than an invisible one.");
+
+    bandSeparator();
+    capsLabel("FILL");
+    ImGui::SameLine();
+    // **Fill is off by default and there is no width control for it**, because
+    // a fill is only defined over an enclosed region: filling an OPEN path
+    // means implicitly closing it, so the user would see a straight edge they
+    // never drew joining the last anchor back to the first, moving with every
+    // further click. app/VectorStyle.hpp section 2.
+    {
+      const std::array<float, 4>& lin = pathStyle.style.fill.rgba;
+      float enc[4] = {srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2]), lin[3]};
+      if (ImGui::ColorEdit4("##pathFillColor", enc,
+                            ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
+                                ImGuiColorEditFlags_AlphaPreviewHalf)) {
+        const std::array<float, 4> out = {srgbDecode(enc[0]), srgbDecode(enc[1]),
+                                          srgbDecode(enc[2]), enc[3]};
+        editPathStyle("fill colour", &gFillColor, [out](VectorStyle& vs) {
+          vs.fill.rgba = out;
+          vs.fill.on = true;
+        });
+      }
+    }
+    ImGui::SetItemTooltip(
+        "Fill colour. Setting one turns the fill ON.%s An OPEN path is filled as though "
+        "closed, which is SVG's rule and why this is off until you ask for it.",
+        pathStyle.mixedFillColor ? " The selection has more than one; this is the first "
+                                   "shape's."
+                                 : "");
+
+    ImGui::SameLine();
+    const bool pathFillOff = !pathStyle.style.fill.on;
+    if (atelierToggleChip(pathStyle.mixedFillOn ? "NONE ~##pathFillNone" : "NONE##pathFillNone",
+                          pathFillOff && !pathStyle.mixedFillOn)) {
+      const bool on = pathFillOff;
+      editPathStyle("fill on", nullptr, [on](VectorStyle& vs) { vs.fill.on = on; });
+    }
+    ImGui::SetItemTooltip("No fill at all -- SVG's `fill=\"none\"`. The default for a pen, "
+                          "which draws lines.");
+
+    ImGui::EndDisabled();
+    popAtelierMono();
 
     bandSeparator();
     capsLabel("MODE");

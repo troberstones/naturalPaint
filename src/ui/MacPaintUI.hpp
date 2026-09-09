@@ -273,6 +273,21 @@ std::array<float, 4> foregroundLinearRgba(int pigmentIndex);
 // into one would have made the palette test un-writable without a BrushState.
 std::array<float, 4> foregroundLinearRgba(const BrushState& brush);
 
+// The paint a newly placed Pen/Curve shape gets: `st.vectorStyle` with
+// `stroke.rgba` (and `fill.rgba`) taken from the FOREGROUND, the way the Text
+// tool's frame-drag end takes `made.fill.rgba` from `foregroundLinearRgba()`.
+// app/AppState.hpp's rule -- one foreground colour for the whole build --
+// applied to the one tool that had no colour at all.
+//
+// **A named function rather than four lines at the call site, so `--selftest`
+// can reach it.** The defect this whole change exists to fix was a call site
+// that stamped nothing; a call site that stamps the wrong colour is the same
+// class of defect and is equally invisible on screen (the stroke would be
+// roughly twice as dark, which is a thing you notice only if you already
+// suspect it). Neither is checkable while the answer is computed inline in a
+// canvas gesture block.
+VectorStyle penVectorStyle(const AppState& st);
+
 // The exact `ImGuiColorEditFlags` the COLOR panel's RGB picker is drawn with.
 //
 // **A function rather than a literal at the call site, so `--selftest` can

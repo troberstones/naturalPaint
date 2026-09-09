@@ -110,6 +110,12 @@ enum class PathSelectMode { Shape, Component };
 // points *together*, so that function looks at which ANCHORS are referenced
 // by a selection (de-duplicating `Point`/`InHandle`/`OutHandle` entries for
 // the same anchor down to one), not which `part` any one entry named.
+// The paint a newly placed shape is stamped with. Declared, not included:
+// `app/VectorStyle.hpp` includes THIS header (its selection rule is written
+// over `PathSelection`), and section 1's "no AppState, no ui/" rule is worth
+// more here than the convenience of a complete type in a signature.
+struct VectorStyle;
+
 enum class AnchorPart { Point, InHandle, OutHandle };
 
 // One selected component: a specific anchor, or one of its handles, on a
@@ -606,6 +612,15 @@ enum class PenPressResult {
 // the newly placed anchor AND its predecessor on every press, and again
 // across the seam when a press closes the subpath).
 //
+// `style` is the paint the new shape is stamped with, and it is a PARAMETER
+// rather than a default because a default is exactly how this shipped broken:
+// the shape was built as `VectorShape s;`, whose `fill.on` and `stroke.on` are
+// both false, so every path the Pen has ever drawn rasterised to nothing (see
+// app/VectorStyle.hpp section 1). Making the caller say what it paints with is
+// the cheapest way for that to be impossible to forget again. `app/VectorStyle`
+// rather than `AppState` for the type, so this file still includes no
+// `AppState` -- section 1's rule.
+//
 // `*nextShapeId` is the layer's own `Layer::nextShapeId` counter, advanced
 // here exactly as the LAYERS panel's NEW > Vector insertion advances it
 // (`core/LayerOps.cpp`'s `makeVectorLayer()`), so a placed shape's id is
@@ -621,7 +636,8 @@ enum class PenPressResult {
 // Shift-click set semantics wants `Tool::PathSelect`.
 PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* shapes,
                                 uint64_t* nextShapeId, PathPoint at, float pickRadiusPx,
-                                uint64_t documentId, bool curveMode);
+                                uint64_t documentId, bool curveMode,
+                                const VectorStyle& style);
 
 // Whether a placement session is open -- `ui/`'s overlay uses this to decide
 // whether to draw the rubber-band segment from the last anchor to the
