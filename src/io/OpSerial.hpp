@@ -130,7 +130,7 @@
 // serialise. io/NpaintFile.hpp's deferral list says so.
 //
 // **A human-readable, diffable action file.** PLAN.md Phase 19 step 1
-// (`ops/Action`) writes an op stack out as a named, diffable artefact for
+// (`app/Action`) writes an op stack out as a named, diffable artefact for
 // batch replay. That is a different format with a different audience -- it is
 // read and edited by people, this one is read by a machine and has to be
 // bit-exact -- and building one to serve both would compromise both. This

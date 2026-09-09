@@ -8,7 +8,16 @@
 #include "core/Layer.hpp"
 #include "core/OpStack.hpp"
 
-// ops/Action -- an action's *model*: a name and an ordered list of commands.
+// app/Action -- an action's *model*: a name and an ordered list of commands.
+//
+// **Under app/, not ops/, and the move was made at gather.** The plan called
+// this `ops/Action`, and the track that built it recorded why that could not
+// hold: a step IS an `app::Command`, so this header would have been the first
+// under `ops/` to reach into `app/` -- every other one stops at `core/`. The
+// alternative, a second structurally identical step type declared down here to
+// preserve the layering, is the two-encoders drift trap one level up. So the
+// file moved to the layer it already belonged to rather than the layering
+// being bent around it.
 // Nothing here knows what an action looks like on disk; io/ActionFile is that
 // half (docs/automation-plan.md step 4).
 //

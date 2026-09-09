@@ -6,6 +6,7 @@ add_executable(naturalPaint
   app/BrushSheet.cpp
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
+  app/Action.cpp
   app/Command.cpp
   app/CommandsImage.cpp
   app/CommandsLayers.cpp
@@ -370,7 +371,6 @@ add_executable(naturalPaint
   io/SvgStyle.cpp
   io/TileResidency.cpp
   io/TextSerial.cpp
-  ops/Action.cpp
   ops/AutoLevels.cpp
   ops/Blur.cpp
   ops/ColorOps.cpp

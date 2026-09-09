@@ -1,4 +1,6 @@
-#include "ops/Action.hpp"
+#include "app/Action.hpp"
+
+#include "app/CommandsOpStack.hpp"
 
 #include <string>
 
@@ -40,8 +42,9 @@ LayerOpsToActionResult actionFromLayerOps(const Layer& layer, std::string action
   static constexpr const char* kSelectLayerId = "select_layer";
   static constexpr const char* kAddLayerOpId = "add_layer_op";
   static constexpr const char* kLayerKey = "layer";
-  static constexpr const char* kKindKey = "kind";
-  static constexpr const char* kEnabledKey = "enabled";
+  // `"op"` is `add_layer_op`'s own parameter name; the kind and enabled keys
+  // live INSIDE that object, and are app/CommandsOpStack.hpp's to name.
+  static constexpr const char* kOpKey = "op";
 
   LayerOpsToActionResult result;
   result.action.name = std::move(actionName);
@@ -62,7 +65,7 @@ LayerOpsToActionResult actionFromLayerOps(const Layer& layer, std::string action
   for (size_t i = 0; i < layer.ops.size(); ++i) {
     const Op& op = layer.ops.at(i);
     if (op.opClass != OpClass::PointA) {
-      // The refusal, not a skip. See ops/Action.hpp on why: an action that
+      // The refusal, not a skip. See app/Action.hpp on why: an action that
       // drops an entry it cannot describe runs to completion and grades the
       // file differently from the document it came from, which is the exact
       // failure mode a batch turns into thirty wrong files reported as
@@ -82,9 +85,25 @@ LayerOpsToActionResult actionFromLayerOps(const Layer& layer, std::string action
       return result;
     }
 
+    // **The op's own parameters travel, through the SAME codec the
+    // `add_layer_op` row reads with** (app/CommandsOpStack.hpp). This branch of
+    // the converter was a kind-and-enabled stub while that registration did not
+    // exist; the tripwire in app/selftest/ActionFile.cpp flipped arms the moment
+    // it landed and demanded every parameter the row advertises, which is how
+    // this got written instead of quietly staying a stub. Writing a third
+    // encoding here would have drifted silently -- a converter's output is only
+    // ever read back by the build that wrote it, so no round trip would
+    // disagree.
+    std::string opError;
+    JsonValue encoded = opToJson(op, &opError);
+    if (encoded.isNull()) {
+      result.error = "refused: entry " + std::to_string(i + 1) + " of layer \"" + layer.name +
+                     "\" could not be written into an action -- " + opError;
+      return result;
+    }
+
     JsonValue params = JsonValue::object();
-    params.set(kKindKey, JsonValue::string(kindId));
-    params.set(kEnabledKey, JsonValue::boolean(op.enabled));
+    params.set(kOpKey, std::move(encoded));
     result.action.steps.push_back(Command{kAddLayerOpId, std::move(params)});
   }
 
@@ -105,22 +124,14 @@ LayerOpsToActionResult actionFromLayerOps(const Layer& layer, std::string action
   select.params.set(kLayerKey, JsonValue::string(layer.name));
   result.action.steps.insert(result.action.steps.begin(), std::move(select));
 
-  // The two honest limits of this converter, reported rather than assumed.
+  // The one honest limit left, reported rather than assumed.
   //
-  // A converted step carries the op's KIND and whether it is enabled, and not
-  // the op's own parameters -- the gamma of a Levels, the points of a Curve.
-  // Those live in `add_layer_op`'s parameter encoding, which belongs to the
-  // registration named at the top of this function and does not exist on this
-  // branch. Saying so in a warning is the difference between a user who knows
-  // their curve did not come along and one who finds out from the output.
-  if (!result.action.steps.empty() && layer.ops.size() > 0) {
-    result.warnings.push_back(
-        "layer \"" + layer.name + "\": each of the " + std::to_string(layer.ops.size()) +
-        " converted grade steps carries its kind and its enabled flag, and not the op's own "
-        "parameter values -- those are carried by the \"" + std::string(kAddLayerOpId) +
-        "\" command's parameter encoding, which this build does not register. Re-convert with a "
-        "build that does before relying on the result.");
-  }
+  // A converted step now carries the op's kind, its enabled flag AND its own
+  // parameter values, because `opToJson()` is the same encoder the
+  // `add_layer_op` row decodes with. What a conversion still cannot carry is
+  // anything the layer's grade depends on that is not in the op stack -- a
+  // selection, a mask -- which is why this returns an action over ONE layer
+  // and says so rather than pretending to convert a document.
   if (findCommand(kAddLayerOpId) == nullptr && layer.ops.size() > 0) {
     result.warnings.push_back(
         "this build has no command called \"" + std::string(kAddLayerOpId) +

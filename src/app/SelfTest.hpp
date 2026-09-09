@@ -3571,7 +3571,7 @@ bool runLayerGroupPanelTest();
 // reordered document cannot act on a different one. Drives the plan's own
 // composite case -- flatten, blur, set blend to Subtract, threshold -- entirely
 // through applyCommand(). Headless, GPU-free, filesystem-free.
-// io/ActionFile + ops/Action -- the action model and its .npaction file
+// io/ActionFile + app/Action -- the action model and its .npaction file
 // (docs/automation-plan.md step 4). Asserts the FORMAT, not the appliers:
 //
 //  - a **hand-typed** fixture decodes to the six expected steps, with its keys

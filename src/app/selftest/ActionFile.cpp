@@ -4,11 +4,11 @@
 
 #include "io/ActionFile.hpp"
 #include "io/Json.hpp"
-#include "ops/Action.hpp"
+#include "app/Action.hpp"
 
 namespace np {
 
-// io/ActionFile + ops/Action (docs/automation-plan.md step 4) -- the action
+// io/ActionFile + app/Action (docs/automation-plan.md step 4) -- the action
 // model and its `.npaction` text form.
 //
 // **What this section is guarding, and what it deliberately is not.** It never
@@ -364,18 +364,33 @@ bool runActionFileTest() {
     check(r.ok && r.action.steps.size() == 3 && r.action.steps[0].id == "select_layer" &&
               r.action.steps[0].params.stringOr("layer", "") == "Base",
           "convert: the target is named once, in a select_layer step");
-    check(r.ok && r.action.steps.size() == 3 &&
-              r.action.steps[1].params.stringOr("kind", "") == "levels" &&
-              r.action.steps[1].params.boolOr("enabled", false) &&
-              r.action.steps[2].params.stringOr("kind", "") == "exposure" &&
-              !r.action.steps[2].params.boolOr("enabled", true),
+    // **Rewritten at gather, when the tripwire below fired.** These two
+    // assertions were written against a converter that could only emit a kind
+    // and an enabled flag, flat, because `add_layer_op` was unregistered on the
+    // branch that wrote them. With that row merged, the converter carries the
+    // whole op through the same codec the row decodes with, so kind and enabled
+    // now live INSIDE the `"op"` object -- and the claim gets stronger, not
+    // weaker: the exposure's own value has to survive too, or the conversion is
+    // still losing what the user graded.
+    const JsonValue* levelsOp =
+        r.action.steps.size() == 3 ? r.action.steps[1].params.find("op") : nullptr;
+    const JsonValue* exposureOp =
+        r.action.steps.size() == 3 ? r.action.steps[2].params.find("op") : nullptr;
+    check(r.ok && levelsOp != nullptr && exposureOp != nullptr &&
+              levelsOp->stringOr("kind", "") == "levels" && levelsOp->boolOr("enabled", false) &&
+              exposureOp->stringOr("kind", "") == "exposure" &&
+              !exposureOp->boolOr("enabled", true),
           "convert: each op carries its kind id and its enabled flag");
     check(r.ok && r.action.steps.size() == 3 &&
               r.action.steps[1].params.find("layer") == nullptr &&
               r.action.steps[2].params.find("layer") == nullptr,
           "convert: the op steps do not repeat the layer name");
-    check(r.ok && !r.warnings.empty(),
-          "convert: the converter reports what it could not carry");
+    // The stub's warning ("this carries no parameter values") is GONE, and its
+    // absence is the assertion now: a warning that outlived the limit it
+    // described would be worse than no warning, because a user would re-convert
+    // a file that was already complete.
+    check(r.ok && r.warnings.empty(),
+          "convert: nothing is reported as uncarried, because nothing is");
 
     // The tripwire, and it is written to survive the thing it is waiting for.
     // `add_layer_op` is registered by app/CommandsOpStack, which is empty on

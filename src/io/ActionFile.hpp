@@ -4,13 +4,13 @@
 #include <string_view>
 #include <vector>
 
-#include "ops/Action.hpp"
+#include "app/Action.hpp"
 
-// io/ActionFile -- `.npaction`, the text form of an `ops/Action`, and the
+// io/ActionFile -- `.npaction`, the text form of an `app/Action`, and the
 // library directory it lives in. docs/automation-plan.md §5 and step 4;
 // PRD P5 ("human-readable, and diffable"), P6.
 //
-// The serialisation half of the split `ops/Action.hpp` describes: that header
+// The serialisation half of the split `app/Action.hpp` describes: that header
 // is the model and never mentions a byte, this one is the only place that
 // knows the word `npaction` exists. The precedent, followed on purpose, is
 // `core/OpStack` + `io/OpSerial`.
