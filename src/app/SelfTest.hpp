@@ -3742,6 +3742,42 @@ bool runCommandsOpStackTest();
 // before it can silently pass anything else. Headless, GPU-free,
 // filesystem-free.
 bool runCommandsImageTest();
+// app/CommandsPatterns + ops/Lens + ops/Pattern -- PLAN.md Phase 19 step 5's
+// two parked P2 image ops, and the three command rows that reach them.
+//
+// **What it PROVES**, as distinct from what it exercises:
+//
+//  * that a zero-strength lens correction is the identity **to the bit** --
+//    asserted twice, once through the short-circuit that guarantees it and
+//    once with that short-circuit switched off, so the claim is about the
+//    gather and not about the branch in front of it. A zero-coefficient pass
+//    that quietly re-ran a reconstruction kernel over every texel is invisible
+//    in one pass and cumulative over a batch;
+//  * that the lens geometry **is the published model**: a corrected linear
+//    ramp reads `a + b * srcX` for the `srcX` that `lensSourcePosition()`
+//    reports, which pins the sign convention, the half-diagonal normalisation
+//    and the half-texel centre convention independently of the sampler;
+//  * that `frame`, not `outRect`, sets the optical centre -- a strip's texels
+//    are bit-identical to the whole canvas's, which is ops/Blur's seam
+//    invariant applied to a global gather;
+//  * that chromatic aberration moves R and leaves G and B **bit**-identical,
+//    so green really is the reference channel;
+//  * that a pattern tiled at its own size reproduces itself exactly at the
+//    tile boundaries -- four bit-identical blocks, plus the two seam columns
+//    and two seam rows named individually, which is where the off-by-one
+//    lives; and
+//  * that `patternSourceTexel()` uses a **euclidean** modulus, asserted at
+//    negative operands, because C's truncating `%` reads off the front of the
+//    pattern buffer the moment an origin or a document texel goes negative.
+//
+// It also asserts the three rows refuse by name -- an unnamed pattern, an
+// unknown pattern, a fractional tiling origin, an unknown kernel, and a
+// coefficient pair whose radial map folds the picture through itself -- and
+// that a fill is bounded by the selection through app/PixelOpBridge rather
+// than by an answer this op invented for itself.
+//
+// Headless, GPU-free and filesystem-free.
+bool runCommandsPatternsTest();
 
 bool runJsonTest();
 

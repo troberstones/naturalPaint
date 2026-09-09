@@ -3247,6 +3247,11 @@ int main(int argc, char** argv) {
     // they drive. See app/SelfTest.hpp for the four ways an adapter can be
     // wrong while looking right, which is what this section is for.
     const bool commandsImageOk = np::runCommandsImageTest();
+    // app/CommandsPatterns + ops/Lens + ops/Pattern: PLAN.md Phase 19 step 5's
+    // two parked P2 image ops, asserted as arithmetic -- a bit-exact identity
+    // pass, a corrected ramp against the published radial model, and a
+    // pattern's own seams. See app/SelfTest.hpp.
+    const bool commandsPatternsOk = np::runCommandsPatternsTest();
     const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
@@ -3598,6 +3603,7 @@ int main(int argc, char** argv) {
                     commandsOpStackOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     commandsImageOk &&
+                    commandsPatternsOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&

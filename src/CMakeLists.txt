@@ -78,6 +78,7 @@ add_executable(naturalPaint
   app/selftest/PsPatterns.cpp
   app/selftest/GimpBrush.cpp
   app/selftest/Variance.cpp
+  app/selftest/CommandsPatterns.cpp
   app/selftest/CoverageBlend.cpp
   app/selftest/PaperTexture.cpp
   app/selftest/DabLibrary.cpp
@@ -380,7 +381,9 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/Lens.cpp
   ops/MonoOps.cpp
+  ops/Pattern.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
   ops/Resample.cpp
