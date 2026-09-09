@@ -3573,6 +3573,34 @@ bool runLayerGroupPanelTest();
 // through applyCommand(). Headless, GPU-free, filesystem-free.
 bool runCommandTest();
 
+// app/CommandsLayers -- the three layer vocabularies as recordable commands
+// (docs/automation-plan.md step 1). **PROVES four things nothing else can
+// see**, each about the registration between a gesture and its applier rather
+// than about either end:
+//
+//  1. **Exhaustiveness.** Every enumerator of `LayerCommand` and of
+//     `LayerSetCommand` has a registered row, checked by walking
+//     `allLayerCommands()` / `allLayerSetCommands()` and asking the
+//     registration which id each landed under -- so an enumerator added later
+//     FAILS the suite instead of being silently unrecordable, which is step
+//     1's own stated gate.
+//  2. **A set is all-or-nothing at resolution time.** A step naming a layer
+//     this document does not have is refused, naming that layer, with the
+//     members that DID resolve untouched and nothing recorded -- because
+//     "skip the ones that resolved" is silently a different edit from the one
+//     the file describes. Two names resolving to one row (layer names are not
+//     unique) is refused for the same reason.
+//  3. **A create adopts the layer it created, asserted BY NAME.** An index
+//     assertion passes with the adoption deleted, because `activeLayerIndex()`
+//     clamps; the name does not clamp.
+//  4. **The lock belongs to core/LayerOps, in both directions.** The setters a
+//     locked layer refuses are refused through the adapter, AND the three it
+//     deliberately allows -- hide, label, unlock -- still go through, which is
+//     what a well-meaning blanket lock check in an adapter would break.
+//
+// Headless, GPU-free, filesystem-free.
+bool runCommandsLayersTest();
+
 bool runJsonTest();
 
 bool runExportStatesTest();

@@ -3227,6 +3227,11 @@ int main(int argc, char** argv) {
     // app/Command: the recordable-command table and its one door. See
     // app/SelfTest.hpp.
     const bool commandOk = np::runCommandTest();
+    // app/CommandsLayers: the three layer vocabularies as rows in that table
+    // -- the exhaustiveness gate over LayerCommand and LayerSetCommand, the
+    // by-name set resolution that refuses rather than narrowing, and the
+    // lock's two directions. See app/SelfTest.hpp.
+    const bool commandsLayersOk = np::runCommandsLayersTest();
     const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
@@ -3572,6 +3577,7 @@ int main(int argc, char** argv) {
                     shelvedLinksOk && scatterCountOk && strokePathOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
+                    commandsLayersOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
