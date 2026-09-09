@@ -237,17 +237,6 @@ struct TextEditState {
   // those three functions, same single-writer rule as every other field here.
   bool active = false;
 
-  // The `TextContent::utf8` and caret this session started from, captured by
-  // `textEditBegin()`. Exists for exactly one reader, `textEditRevert()`
-  // (Escape's undo-the-whole-session path) -- everywhere else that needs
-  // "what was here before" already has it, either from `core/History` (a
-  // structural edit) or because it never needed it (a frame drag has no
-  // `TextContent` yet). Not touched by `textEditFrameDragBegin()`: a drag
-  // has no block to snapshot until it finishes, and `textEditRevert()` is
-  // never called while one is live (Escape mid-drag has no `editing` layer
-  // for `ui/` to pass it, so it takes the plain-cancel path instead).
-  std::string snapshotUtf8;
-  size_t snapshotCaret = 0;
 };
 
 inline constexpr size_t kNoLayer = static_cast<size_t>(-1);
@@ -274,23 +263,6 @@ bool textSessionActive(const TextEditState& state) noexcept;
 // `layerIndex`/`caret` are existing fields whose callers already depend on
 // them surviving a cancelled drag.
 void textEditCancel(TextEditState* state) noexcept;
-
-// Restore `text->utf8` (and the caret) to the snapshot `textEditBegin()` took
-// when this session started, undoing every edit the session has made so far.
-// Used ONLY by the Escape-while-editing-an-existing-layer path in `ui/` --
-// every other way a session ends (document switch, the layer disappearing,
-// a tool change, clicking away, Cmd+Return) keeps the typed text, which is
-// what `textEditCancel()` alone already does with no help from this
-// function. `ui/` calls this FIRST, then `textEditCancel()` to end the
-// session itself -- this function touches only `text` and the snapshot
-// fields, never `active`/`frameDragActive`/`undoOpened`.
-//
-// A no-op on the content when nothing was typed this session (the snapshot
-// already equals `text->utf8`), so callers do not need to guard on
-// `undoOpened` before calling it -- only before deciding whether a
-// now-redundant top-of-history entry needs folding away, which is `ui/`'s
-// job (it owns `core::History`, this file does not).
-void textEditRevert(TextContent* text, TextEditState* state) noexcept;
 
 // Put the caret at `offset`, clamped to a UTF-8 boundary of `text.utf8`.
 //
@@ -436,8 +408,9 @@ TextInputAction textInputAction(bool sessionActive, bool platformActive, bool im
 //
 // Ending means ACCEPT, never revert: `ui/` calls `textEditCancel()`, which
 // keeps every character typed and only stops the session owning the keyboard.
-// That is the same meaning switching tools and clicking away already have
-// (section 5); Escape remains the one gesture that discards.
+// That is the same meaning switching tools, clicking away and Escape all
+// have (section 5) -- there is no longer any gesture that silently discards
+// a session's typing, and undo is the way to throw it away.
 //
 // **What is on the KEEP list, and why each is there:**
 //
@@ -497,9 +470,7 @@ bool keymapActionEndsTextSession(std::string_view action) noexcept;
 // panel and the title bar's buttons are the others) and they all have to
 // resync or three quarters of the fix is missing.
 //
-// A no-op when no session is live. Does NOT touch `snapshotUtf8`: that is
-// "what the layer held when this session opened", Escape's revert target, and
-// an undo is not a new session. Also does not decide whether the session
+// A no-op when no session is live. Does not decide whether the session
 // should end at all -- undoing past the layer's own creation leaves
 // `layerIndex` naming something that is not a Text layer, and `ui/`'s canvas
 // block already cancels on exactly that.

@@ -15772,7 +15772,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // its own session is still marked active, and `textSessionActive()`
     // (app/TextTool.hpp; main.cpp's key-down handler) would keep routing
     // every bare hotkey to the Text session forever. Plain `textEditCancel()`
-    // is right here, not `textEditRevert()`: switching tools is one of this
+    // is right here: switching tools is one of this
     // step's three "accept" gestures (the others are clicking away, already
     // handled below by `textEditFrameDragBegin()`/`textEditBegin()`
     // discarding the old session, and Cmd+Return) -- it keeps whatever was
@@ -15800,30 +15800,25 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
       if (editing == nullptr && !st.textEdit.frameDragActive) textEditCancel(&st.textEdit);
 
-      // Escape CANCELS, not just closes: an existing layer's session reverts
-      // its text to what it was when `textEditBegin()` opened it (Cmd+Return
-      // and every other way out of a session KEEP the typed text -- this is
-      // the one exception). `editing != nullptr` is exactly "there is a real
-      // layer with a live caret session" -- the other case Escape reaches,
-      // a bare frame drag with no layer yet, has no `TextContent` to revert
-      // and takes the plain-cancel path below unchanged, same as document
-      // switch and layer-gone above.
-      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        if (editing != nullptr) {
-          textEditRevert(&editing->text, &st.textEdit);
-          // The session's open undo entry (if any) now names a document
-          // state nothing points at any more -- the live document was just
-          // reverted out from under it. Folding it to a no-op with the same
-          // `amendEdit()` call the typing loop below already uses (it keeps
-          // the entry's serial and simply overwrites its stored snapshot,
-          // app/DocumentLifecycle.hpp's own comment on `amendEdit()`) makes
-          // that entry equal its predecessor again -- consistent with the
-          // live document, and with nothing dangling for `core/History` to
-          // undo TO that was never really a state the user asked for.
-          if (st.textEdit.undoOpened) textDoc->amendEdit("type", EditKind::Content);
-        }
-        textEditCancel(&st.textEdit);
-      }
+      // Escape CLOSES the session and KEEPS what was typed -- the same
+      // accept every other way out already meant (switching tools, clicking
+      // away, Cmd+Return, a document hotkey).
+      //
+      // It used to be the one exception: it called `textEditRevert()` and
+      // restored the block to what `textEditBegin()` opened it with. That is
+      // Photoshop's behaviour and it was a deliberate choice, but it is a bad
+      // one HERE, because of how a block gets made in this build. A click on
+      // empty canvas creates the layer and opens a session on it in the same
+      // gesture, so the snapshot Escape reverts to is the EMPTY string --
+      // press Escape after typing a caption and the caption is simply gone.
+      // The most reflexive key on the keyboard silently destroying a
+      // paragraph is not a defensible default whatever Photoshop does.
+      //
+      // Discarding is not lost, it moved somewhere better: a typing burst is
+      // one history entry, and Cmd+Z now works with the session still live
+      // (app/TextTool.hpp section 8), so undo throws the typing away and can
+      // itself be redone. `textEditRevert()` had no other caller and is gone.
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) textEditCancel(&st.textEdit);
 
       if (textDoc != nullptr && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         // A click on the ACTIVE layer's own text block edits it. Only the

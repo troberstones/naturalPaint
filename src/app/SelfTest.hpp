@@ -5692,10 +5692,14 @@ bool runPathConsumersTest();
 // chords still reach the keymap, everything passes with no session),
 // app/TextTool's textSessionActive() transitions (true from either
 // textEditBegin() or textEditFrameDragBegin(), false only from
-// textEditCancel()), and textEditRevert() restoring a session's UTF-8
-// content and caret byte-for-byte on Escape while plain textEditCancel()
-// (every other way a session ends) leaves it untouched. Headless, GPU-free,
-// writes no files. See app/selftest/TextKeyCapture.cpp.
+// textEditCancel()), that EVERY exit from a session keeps the text typed
+// during it (Escape included -- it used to revert, which erased a caption
+// typed into a block the same click had created), which keymap actions end
+// a session and which are kept alive for it (keymapActionEndsTextSession(),
+// undo/redo among the latter), and textEditResyncAfterHistoryMove() putting
+// a surviving session back in step with a document core/History replaced
+// under it. Headless, GPU-free, writes no files. See
+// app/selftest/TextKeyCapture.cpp.
 bool runTextKeyCaptureTest();
 
 }  // namespace np

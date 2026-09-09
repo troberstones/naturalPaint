@@ -17,10 +17,13 @@ namespace np {
 //      active; a Cmd/Ctrl chord must, so Cmd+Z/Cmd+S keep working while
 //      typing a caption; and with no session live every chord must reach it
 //      exactly as it always has.
-//   2. `textEditRevert()` (app/TextTool.cpp) -- Escape's undo-the-session
-//      path restores `TextContent::utf8` byte-for-byte and leaves the caret
-//      on a real boundary, while plain `textEditCancel()` (every OTHER way a
-//      session ends) must leave the content untouched.
+//   2. Ending a session KEEPS what was typed (app/TextTool.cpp) --
+//      `textEditCancel()` is every exit there is now, Escape included, and
+//      none of them may touch `TextContent::utf8`. Escape used to be the
+//      exception via a `textEditRevert()` that has since been removed with
+//      its caller: it restored the block to what the session opened with,
+//      which for a block the same click had just created was the empty
+//      string.
 //   3. `textSessionActive()` -- the predicate main.cpp's key-down handler
 //      actually gates on -- transitions true on `textEditBegin()` AND on
 //      `textEditFrameDragBegin()` ("frame-drag counts", app/TextTool.hpp),
@@ -108,50 +111,55 @@ bool runTextKeyCaptureTest() {
           "textSessionActive(): REQUIRED -- false again after cancelling the drag");
   }
 
-  // --- 3. textEditRevert() vs plain textEditCancel() ------------------------
+  // --- 3. ending a session KEEPS the typed text -----------------------------
+  //
+  // Every way out of a session is an accept, Escape included. Escape used to
+  // be the exception -- it called a `textEditRevert()` that restored the
+  // block to what `textEditBegin()` opened it with -- and that is gone, both
+  // the call and the function, because of how a block is made here: a click
+  // on empty canvas creates the layer AND opens the session in one gesture,
+  // so the state it reverted to was the empty string. The most reflexive key
+  // on the keyboard silently destroying a caption is not a defensible
+  // default. Undo is the discard now (section 5 keeps `undo` on the KEEP
+  // list precisely so it can be).
+  //
+  // **What these two checks can and cannot prove, stated because a green
+  // assertion that cannot fail is worse than no assertion.** `textEditCancel()`
+  // takes no `TextContent*`. It therefore CANNOT erase a caption however it
+  // is written, and sabotaging it does not move these lines -- measured, not
+  // assumed. What they are is a statement of the design in a place that has
+  // to be edited if the design is reversed: reintroducing a revert means
+  // giving cancel access to the content, which means changing its signature,
+  // which lands here. The behavioural guard is one level up, on the Escape
+  // key in `ui/MacPaintUI.cpp`, and it is checked by driving the running
+  // application -- there is no unit-test seam for a key press.
   {
     TextEditState st;
     TextContent content;
-    const std::string eAcute = "\xC3\xA9";  // "e" with an acute accent, 2 UTF-8 bytes
-    content.utf8 = "caf" + eAcute;  // multi-byte tail -- a sloppy revert would corrupt it
+    const std::string eAcute = "\xC3\xA9";  // multi-byte tail: a sloppy edit would corrupt it
+    content.utf8 = "caf" + eAcute;
     textEditBegin(&st, /*documentId=*/1, /*layerIndex=*/0, content);
-    const size_t caretAtBegin = st.caret;
-
-    // Simulate a burst of typing after the session opened.
     textInsertUtf8(&content, &st, "!!!");
     check(content.utf8 == "caf" + eAcute + "!!!",
           "(setup) the simulated typing burst landed in the content");
 
-    textEditRevert(&content, &st);
-    check(content.utf8 == "caf" + eAcute,
-          "textEditRevert(): REQUIRED -- content restored byte-for-byte to the pre-session "
-          "snapshot");
-    check(st.caret == caretAtBegin,
-          "textEditRevert(): REQUIRED -- caret restored to where the session began");
-    check(st.caret <= content.utf8.size(),
-          "textEditRevert(): the restored caret is a valid, in-bounds offset");
+    textEditCancel(&st);
+    check(content.utf8 == "caf" + eAcute + "!!!",
+          "textEditCancel(): REQUIRED -- ending a session KEEPS every character typed. This is "
+          "the assertion that fails if a revert-on-exit is ever reintroduced");
+    check(!textSessionActive(st), "textEditCancel(): and the session is over");
 
-    // Reverting again (nothing new was typed) is a documented no-op on the
-    // content -- callers do not need to guard on undoOpened before calling
-    // it.
-    textEditRevert(&content, &st);
-    check(content.utf8 == "caf" + eAcute,
-          "textEditRevert(): calling it again with no new edits changes nothing further");
-
-    // Plain textEditCancel() -- every OTHER way a session ends (document
-    // switch, the layer disappearing) -- must NOT revert: it does not even
-    // take a TextContent* to revert with.
-    TextEditState st2;
-    TextContent content2;
-    content2.utf8 = "original";
-    textEditBegin(&st2, /*documentId=*/1, /*layerIndex=*/0, content2);
-    textInsertUtf8(&content2, &st2, " typed");
-    check(content2.utf8 == "original typed", "(setup) the second session's typing landed too");
-    textEditCancel(&st2);
-    check(content2.utf8 == "original typed",
-          "textEditCancel(): REQUIRED -- cancel-on-doc-switch/layer-gone does NOT revert; the "
-          "typed text survives exactly as ui/MacPaintUI.cpp's document-switch and layer-gone "
-          "call sites rely on");
+    // The case that made the old behaviour indefensible: a session opened on
+    // a block that was empty because the same gesture had just created it.
+    // Reverting to THAT snapshot threw the whole caption away.
+    TextEditState fresh;
+    TextContent made;  // as makeTextContent() leaves it: no text yet
+    textEditBegin(&fresh, /*documentId=*/1, /*layerIndex=*/0, made);
+    textInsertUtf8(&made, &fresh, "a caption nobody wants to lose");
+    textEditCancel(&fresh);
+    check(made.utf8 == "a caption nobody wants to lose",
+          "REQUIRED -- a session opened on a NEWLY created (empty) block keeps its text when it "
+          "ends; this is the exact case where Escape used to erase everything typed");
   }
 
   // --- 4. textInputAction() -- the platform hand-off ------------------------
@@ -346,20 +354,21 @@ bool runTextKeyCaptureTest() {
           "the boundary before it; a clamp that only checked the LENGTH would pass this offset "
           "through unchanged and corrupt the next insert");
 
-    // (c) The snapshot is not touched. It means "what the layer held when
-    // this session opened" -- Escape's revert target -- and an undo is not a
-    // new session.
+    // (c) The session KEEPS RUNNING on the same layer -- the resync puts a
+    // session back in step, it does not end one, and the layer it names must
+    // still be the layer it named. (This used to also assert that a
+    // pre-session `snapshotUtf8` survived the move; those fields went away
+    // with `textEditRevert()` -- see section 3.)
     TextEditState st3;
     TextContent orig;
     orig.utf8 = "before";
-    textEditBegin(&st3, /*documentId=*/1, /*layerIndex=*/0, orig);
-    const std::string snapshotAtBegin = st3.snapshotUtf8;
+    textEditBegin(&st3, /*documentId=*/7, /*layerIndex=*/3, orig);
     TextContent restored3;
     restored3.utf8 = "something else entirely";
     textEditResyncAfterHistoryMove(&st3, restored3);
-    check(st3.snapshotUtf8 == snapshotAtBegin,
-          "textEditResyncAfterHistoryMove(): REQUIRED -- snapshotUtf8 survives, so Escape still "
-          "reverts to where the SESSION began rather than to wherever undo left the document");
+    check(textSessionActive(st3) && st3.documentId == 7 && st3.layerIndex == 3,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- the session survives the move still "
+          "naming the same document and layer; it is a resync, not an exit");
 
     // (d) A no-op with no session live: undo/redo happen far more often
     // outside a session than in one, and the caller (moveHistoryCursor())

@@ -166,12 +166,6 @@ void textEditCancel(TextEditState* state) noexcept {
   // ends a session in that sense.
 }
 
-void textEditRevert(TextContent* text, TextEditState* state) noexcept {
-  if (text == nullptr || state == nullptr) return;
-  text->utf8 = state->snapshotUtf8;
-  state->caret = clampToBoundary(text->utf8, state->snapshotCaret);
-}
-
 void textCaretSetOffset(TextEditState* state, const TextContent& text,
                         size_t offset) noexcept {
   if (state == nullptr) return;
@@ -194,11 +188,6 @@ void textEditBegin(TextEditState* state, uint64_t documentId, size_t layerIndex,
   state->frameDragNow = PathPoint{};
   state->undoOpened = false;
   state->active = true;
-  // Snapshot for `textEditRevert()` -- the session's own starting point, not
-  // whatever an earlier session (or the default-constructed state) left
-  // behind.
-  state->snapshotUtf8 = content.utf8;
-  state->snapshotCaret = state->caret;
 }
 
 void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documentId) noexcept {
@@ -211,10 +200,8 @@ void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documen
   state->frameDragNow = at;
   state->undoOpened = false;
   // A drag is a candidate session -- `textSessionActive()`'s header comment
-  // says "frame-drag counts" -- even though there is no `TextContent` yet to
-  // snapshot for `textEditRevert()`. That is fine: `textEditRevert()` is
-  // never reached mid-drag (`ui/`'s Escape handler only calls it when an
-  // existing layer's session -- `editing != nullptr` -- is live).
+  // says "frame-drag counts" -- even though there is no `TextContent` yet and
+  // no layer index to name one with.
   state->active = true;
 }
 

@@ -2724,7 +2724,7 @@ int main(int argc, char** argv) {
     const bool pathConsumersOk = np::runPathConsumersTest();
     // The Text tool owning the keyboard while a session is live: app/Keymap's
     // keyChordReachesKeymap() gate, app/TextTool's textSessionActive()
-    // transitions, and textEditRevert() vs plain textEditCancel(). Headless
+    // transitions, and that every way out of a session keeps the text. Headless
     // and GPU-free; writes no files.
     const bool textKeyCaptureOk = np::runTextKeyCaptureTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
