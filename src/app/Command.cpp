@@ -1,6 +1,7 @@
 #include "app/Command.hpp"
 
 #include "app/CommandSupport.hpp"
+#include "app/Recorder.hpp"
 
 namespace np {
 namespace {
@@ -47,7 +48,15 @@ CommandResult applyCommand(OpenDocument& doc, const Command& command) {
   }
   const std::string unavailable = spec->unavailableReason(doc, command.params);
   if (!unavailable.empty()) return commandRefused(unavailable);
-  return spec->apply(doc, command.params);
+  // The recorder's one tap (docs/automation-plan.md step 3). It has to
+  // straddle the applier rather than follow it: which layer a command RAN on
+  // is not readable afterwards -- a structural command moves the active layer
+  // itself -- and whether it succeeded is not readable before. Both refusals
+  // above return in front of it, which is what makes "a refused command is not
+  // a step" a property of where this sits and not of a flag someone remembers
+  // to check. Idle unless a recording is armed; see app/Recorder.hpp.
+  RecorderTap tap(doc, command);
+  return tap.record(spec->apply(doc, command.params));
 }
 
 }  // namespace np

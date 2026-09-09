@@ -41,6 +41,7 @@ add_executable(naturalPaint
   app/Memory.cpp
   app/MunsellSelection.cpp
   app/NoDocumentCanvas.cpp
+  app/Recorder.cpp
   # One translation unit per --selftest section, plus Driver.cpp for the three
   # drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
   # These were one 20 815-line app/SelfTest.cpp until every parallel branch
@@ -158,6 +159,7 @@ add_executable(naturalPaint
   app/selftest/ImageIO.cpp
   app/selftest/IncrementalComposite.cpp
   app/selftest/Command.cpp
+  app/selftest/Recorder.cpp
   app/selftest/Json.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
