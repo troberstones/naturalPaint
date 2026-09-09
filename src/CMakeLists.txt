@@ -7,6 +7,10 @@ add_executable(naturalPaint
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
   app/Command.cpp
+  app/CommandsImage.cpp
+  app/CommandsLayers.cpp
+  app/CommandsOpStack.cpp
+  app/CommandsPatterns.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp

@@ -113,6 +113,23 @@ struct CommandSpec {
   CommandResult (*apply)(OpenDocument& doc, const JsonValue& params);
 };
 
+// --- where the rows come from -------------------------------------------
+//
+// Each family of commands lives in its own translation unit and appends its
+// own rows. **Separate files, deliberately, and the reason is a merge one:**
+// the remaining registrations (docs/automation-plan.md step 1) are built in
+// parallel, and one shared table literal would be one shared conflict --
+// docs/... the same trap `run_golden.sh`'s nine parallel view arrays already
+// sprang once, where two branches each appended a view, merged clean, and left
+// the arrays one element short of each other.
+//
+// The order of these calls is the order commands appear in the ACTIONS panel,
+// and nothing else depends on it: every lookup is by id.
+void registerImageCommands(std::vector<CommandSpec>* out);
+void registerLayerCommandRows(std::vector<CommandSpec>* out);
+void registerOpStackCommands(std::vector<CommandSpec>* out);
+void registerPatternCommands(std::vector<CommandSpec>* out);
+
 // Every recordable command, in a stable order. Walked by the panel, by the
 // recorder and by `--selftest`, so a command added to one vocabulary without a
 // row here fails the suite rather than being quietly unrecordable -- the
