@@ -1,5 +1,6 @@
 #include "app/LayerPanel.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -7,6 +8,7 @@
 #include <utility>
 
 #include "core/Blend.hpp"
+#include "core/LayerOps.hpp"
 
 namespace np {
 
@@ -433,6 +435,45 @@ bool layerHiddenByCollapsedGroup(const Document& doc, size_t layerIndex,
   for (const std::string& tag : layerGroupAncestry(doc, layerIndex))
     if (collapsedGroupTags.count(tag) != 0) return true;
   return false;
+}
+
+
+size_t layerDropOutOfCollapsedGroups(const Document& doc, size_t from, size_t to,
+                                     const std::set<std::string>& collapsedGroupTags) noexcept {
+  const size_t count = doc.layers.size();
+  if (count == 0 || collapsedGroupTags.empty() || from >= count) return to;
+  if (to >= count) to = count - 1;
+
+  // Bounded by the layer count for the reason `layerGroupAncestry()` bounds
+  // its own walk: a hand-built or foreign document is not bound by what this
+  // build's operations produce, and a pass that cannot terminate is worse than
+  // one that stops early with the target where it found it.
+  for (size_t pass = 0; pass < count; ++pass) {
+    bool moved = false;
+    for (size_t g = 0; g < count; ++g) {
+      const Layer& group = doc.layers[g];
+      if (group.kind != LayerKind::Group) continue;
+      if (collapsedGroupTags.count(group.groupTag) == 0) continue;
+      // The block, the same shape core::moveLayer() moves.
+      const std::pair<size_t, size_t> members = groupMemberSpan(doc, g);
+      if (members.first > members.second) continue;  // nothing hidden
+      const size_t first = members.first;
+      if (from >= first && from <= g) continue;  // dragging this group itself
+      // Strictly inside: `first` is "below the whole block" and `g + 1` is
+      // "above its row", both of which are slots the user CAN see.
+      if (to <= first || to > g) continue;
+      const size_t midpoint = first + (g - first) / 2;
+      const size_t out = to > midpoint ? std::min(g + 1, count - 1) : first;
+      if (out != to) {
+        to = out;
+        moved = true;
+      } else {
+        break;
+      }
+    }
+    if (!moved) break;
+  }
+  return to;
 }
 
 }  // namespace np

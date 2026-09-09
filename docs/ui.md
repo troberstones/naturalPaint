@@ -590,6 +590,38 @@ source, so the combo has nothing to say there, and a control that vanishes as th
 selection moves teaches nobody why and re-flows the band while a painter is aiming at the
 slider beside it.
 
+#### 3.2b Dragging a layer around a group
+
+The LAYERS panel is a flat list that indents by group depth (`layerGroupDepth()` reads a
+layer's `parent`), so "inside a group" is a visible thing and dragging has to mean
+something for it. The rule is **`parent` follows position**, applied by
+`core::moveLayer()` on every reorder — the panel drag, Move Up/Down, the Layer menu and
+the multi-selection raise/lower all get it, rather than each learning about groups
+separately.
+
+* **A Group drags as a block** — its own row plus its whole member run. Reordering the
+  row alone left the children behind holding a `parent` that still named the group;
+  nothing was corrupt and nothing warned, which is why it survived.
+* **Landing directly under a Group's row joins it** as the topmost member. That slot has
+  one meaning, and it is the only way to give an empty group its first member.
+* **Landing among its members joins it too** — both neighbours have to belong to the same
+  group. Under the group's *lowest* member with something ungrouped below is a drop past
+  the group, not into it.
+* **Landing anywhere else clears the tag.** A layer dragged out that kept its tag went on
+  drawing indented under a group it had left.
+* **A Group dropped into a Group nests**: only the block's head is re-parented, so the
+  members go on naming their own group.
+
+Two costs, stated rather than hidden. You cannot drag a layer into a group's *bottom-most*
+slot — landing there reads as "below the group", and a flat list with no insertion caret
+has no second gesture to tell the two apart. The alternative rule (consult only the row
+above) makes the reverse impossible instead: with a group's lowest member at the bottom of
+the stack there would be no slot at all for "put this underneath everything", and a layer
+would be swallowed with no way to keep it out. And you cannot drop into a **collapsed**
+group at all: its rows are not drawn, so the target is snapped to the nearest edge of its
+block (`app::layerDropOutOfCollapsedGroups()`) — membership you cannot see yourself
+choosing is not membership you chose.
+
 ### 3.3 The colour picker cannot express pigment
 
 The wireframe's COLOR panel is HSV + hex + RGB. But pigment selection drives *physical*

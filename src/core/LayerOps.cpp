@@ -216,6 +216,17 @@ std::pair<size_t, size_t> groupMemberSpan(const Document& doc, size_t groupIndex
   return {first, groupIndex - 1};
 }
 
+std::string layerGroupTagForSlot(const Document& doc, size_t aboveIndex, size_t belowIndex) {
+  if (aboveIndex >= doc.layers.size()) return {};  // nothing above: top of the stack
+  const Layer& above = doc.layers[aboveIndex];
+  // Directly under a Group's own row. One meaning only, and the only route to
+  // a first member for an empty group.
+  if (above.kind == LayerKind::Group && !above.groupTag.empty()) return above.groupTag;
+  if (above.parent.empty()) return {};
+  if (belowIndex >= doc.layers.size()) return {};  // nothing below: bottom of the stack
+  return doc.layers[belowIndex].parent == above.parent ? above.parent : std::string{};
+}
+
 LayerOpResult moveLayer(Document& doc, size_t from, size_t to) {
   LayerOpResult refusal;
   if (!layerOpInRange(doc, from, "move layer", &refusal)) return refusal;
@@ -305,6 +316,16 @@ LayerOpResult moveLayer(Document& doc, size_t from, size_t to) {
     // Down: [blockDest, blockLast] rotates so the block leads it.
     std::rotate(at(blockDest), at(blockFirst), at(blockLast) + 1);
   }
+
+  // **`parent` follows position** -- see `layerGroupTagForSlot()` for the rule
+  // and what it costs. Written on the block's HEAD only: for a Group block
+  // that is the group's own row, and its members go on naming their own group,
+  // which is what makes dragging a group into another group nest it rather
+  // than dissolve it. A cycle is structurally impossible here because the
+  // block moved whole: everything that could name this group is inside
+  // [blockDest, landing], and the two neighbours consulted are outside it.
+  doc.layers[landing].parent =
+      layerGroupTagForSlot(doc, landing + 1, blockDest == 0 ? doc.layers.size() : blockDest - 1);
   return layerOpSucceed(label, landing);
 }
 

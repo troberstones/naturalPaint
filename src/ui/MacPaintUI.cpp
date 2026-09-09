@@ -2896,7 +2896,13 @@ void drawLayersSection(AppState& st, GpuContext& gpu) {
           if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("NP_LAYER_ROW")) {
             const size_t from = *static_cast<const size_t*>(payload->Data);
             const bool droppedAboveMidpoint = ImGui::GetMousePos().y < (o.y + rowH * 0.5f);
-            const size_t to = layerDropTargetIndex(i, droppedAboveMidpoint, count);
+            // Snapped out of any collapsed group the raw target would land
+            // inside: those rows are not drawn, so joining one would be a
+            // membership the user could not see themselves choosing.
+            // app/LayerPanel.hpp argues it; the arithmetic above stays pure.
+            const size_t to = layerDropOutOfCollapsedGroups(
+                doc, from, layerDropTargetIndex(i, droppedAboveMidpoint, count),
+                g_layers.collapsedGroups);
             if (from != to) run(moveLayer(doc, from, to));
             structureChanged = true;
           }

@@ -272,6 +272,39 @@ LayerOpResult removeLayer(Document& doc, size_t index);
 // spans already.
 std::pair<size_t, size_t> groupMemberSpan(const Document& doc, size_t groupIndex);
 
+// **The group a layer landing in a given slot joins**, or "" for none. The
+// slot is named by its two neighbours *after* the move: `aboveIndex` is the
+// layer that will sit directly on top of it and `belowIndex` the one directly
+// under, either of which may be out of range at an end of the stack.
+//
+// This is `moveLayer()`'s re-parenting rule, and it is deliberately positional:
+// **`parent` follows position.** A layer dragged out of a group that kept its
+// old tag still draws indented under a group it is no longer part of (the
+// panel's `layerGroupDepth()` reads `parent`, not contiguity), and one dragged
+// into the middle of a group's run used to splice itself in and orphan every
+// member below it -- the group silently losing layers with nothing on screen
+// to say so.
+//
+// The rule, in the two shapes it takes:
+//
+//   * **Directly under a Group's own row** -- that slot has exactly one
+//     meaning, "the group's topmost member", so it joins. This is also the
+//     only way to put the first member into an empty group.
+//   * **Otherwise, both neighbours must belong to the same group.** Landing
+//     under a group's LOWEST member with something ungrouped below is a drop
+//     *past* the group, not into it.
+//
+// **The known cost, stated rather than hidden:** you cannot drag a layer into
+// a group's bottom-most slot -- landing there reads as "below the group", and
+// there is no second gesture to tell the two apart in a flat list with no
+// insertion caret. Drop it one row higher and reorder inside. The alternative
+// rule (consult only the row above) makes the reverse case impossible instead:
+// with a group's lowest member at index 0 there would be no slot at all for
+// "put this at the bottom of the stack", and a layer would be swallowed into a
+// group with no way to keep it out. An unreachable slot beats an unreachable
+// intent.
+std::string layerGroupTagForSlot(const Document& doc, size_t aboveIndex, size_t belowIndex);
+
 LayerOpResult moveLayer(Document& doc, size_t from, size_t to);
 
 // Inserts a deep copy of the layer at `index` **directly above it**, at
