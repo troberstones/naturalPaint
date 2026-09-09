@@ -603,6 +603,92 @@ void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
   pathEditRefreshPivot(state, shapes);
 }
 
+void pathEditPruneSelection(PathEditState* state, const std::vector<VectorShape>& shapes) {
+  if (state == nullptr) return;
+
+  // One resolver for all four questions below, so "does this reference exist?"
+  // has one answer rather than four spellings of it.
+  auto findShape = [&shapes](uint64_t id) -> const VectorShape* {
+    for (const VectorShape& s : shapes)
+      if (s.id == id) return &s;
+    return nullptr;
+  };
+  auto resolves = [&](const ComponentRef& c) {
+    const VectorShape* s = findShape(c.shapeId);
+    if (s == nullptr) return false;
+    if (c.subPath >= s->path.subpaths.size()) return false;
+    return c.anchor < s->path.subpaths[c.subPath].anchors.size();
+  };
+
+  bool pruned = false;
+
+  std::vector<uint64_t> keptShapes;
+  keptShapes.reserve(state->selection.shapes.size());
+  for (uint64_t id : state->selection.shapes)
+    if (findShape(id) != nullptr) keptShapes.push_back(id);
+  pruned = pruned || keptShapes.size() != state->selection.shapes.size();
+  state->selection.shapes = std::move(keptShapes);
+
+  std::vector<ComponentRef> keptComponents;
+  keptComponents.reserve(state->selection.components.size());
+  for (const ComponentRef& c : state->selection.components)
+    if (resolves(c)) keptComponents.push_back(c);
+  pruned = pruned || keptComponents.size() != state->selection.components.size();
+  state->selection.components = std::move(keptComponents);
+
+  // The open placement session. `openPathSubPath` is an INDEX, so a shape
+  // that survived a verb which removed one of its subpaths dangles here just
+  // as surely as an erased shape does -- both are checked, and both end
+  // placement through the one function that knows what that means.
+  if (state->openPathActive) {
+    const VectorShape* open = findShape(state->openPathShapeId);
+    if (open == nullptr || state->openPathSubPath >= open->path.subpaths.size())
+      pathEditEndOpenPath(state);
+  }
+
+  // A live drag, when anything at all was pruned. Tested on `pruned` rather
+  // than on the drag's own component because `Manipulator` and `PivotMove`
+  // name no component: they act on the whole selection, which is exactly what
+  // just shrank, and `shapesAtDragStart` still describes it as it was.
+  if (pruned && state->drag != PathDragKind::None) pathEditCancel(state);
+
+  // The pivot follows the selection it is derived from, exactly as it does
+  // after any other selection change.
+  pathEditRefreshPivot(state, shapes);
+}
+
+void pathEditSelectShapes(PathEditState* state, const std::vector<uint64_t>& ids,
+                          SelectionCombine how, const std::vector<VectorShape>& shapes) {
+  if (state == nullptr) return;
+
+  // Before the selection moves underneath it -- `pathEditSetSelectMode()`'s
+  // reason, and the same one.
+  pathEditCancel(state);
+
+  std::vector<uint64_t> live;
+  live.reserve(ids.size());
+  for (uint64_t id : ids)
+    for (const VectorShape& s : shapes)
+      if (s.id == id) {
+        live.push_back(id);
+        break;
+      }
+
+  // Leaving Component mode drops the anchors rather than carrying them across
+  // the way `pathEditSetSelectMode()` does: this is not a mode switch, it is
+  // a selection the user just made in a list of whole shapes, and carrying
+  // the old anchors in would add shapes they did not click.
+  state->selection.components.clear();
+  if (state->selection.mode != PathSelectMode::Shape) {
+    state->selection.mode = PathSelectMode::Shape;
+    state->selection.shapes.clear();
+  }
+  combineShapeSelection(&state->selection.shapes, live, how);
+
+  state->componentPivotIsUserPlaced = false;
+  pathEditRefreshPivot(state, shapes);
+}
+
 bool pathEditBegin(PathEditState* state, const std::vector<VectorShape>& shapes,
                    PathPoint at, float pickRadiusPx, bool gnomonSuppressed,
                    SelectionCombine how, uint64_t documentId, float gnomonReachPx) {

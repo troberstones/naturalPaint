@@ -5553,6 +5553,33 @@ bool runSvgImportTest();
 // `AppState`. See app/selftest/PathOps.cpp.
 bool runPathOpsTest();
 
+// The PATHS panel (docs/path-editing-plan.md section 4) -- `app/PathsPanel`
+// plus the two `PathEditState` transitions the panel needs and the canvas did
+// not.
+//
+// Four things, and the third is the one with teeth:
+//
+//   * REGISTRATION in three of the four tables a section must appear in --
+//     `controlsSections()`'s spec, `PanelLayout`'s persistence key in both
+//     directions, and the flyout placement a fresh layout gives it. The
+//     fourth, `drawPanelBody()`'s switch, is enforced by `-Werror=switch` and
+//     is a build failure rather than an assertion.
+//   * THE GREYING RULE, per verb, against `pathOpCanRun()`'s own answer --
+//     so a sweep returning the right set of refusals against the wrong slots
+//     fails. The fixtures are asserted to produce five distinct refusals
+//     between them, because a set of fixtures that all answered the same
+//     thing would let a sweep ignoring the verb pass.
+//   * `pathEditPruneSelection()` against an erased shape id, against a stale
+//     subpath INDEX with no id gone at all, against an open placement session
+//     on both, and -- the assertion that makes the other four mean something
+//     -- against geometry that still resolves, where it must do nothing.
+//   * The MAKE FILL / MAKE STROKE target rule, over a stack whose Fill and
+//     Stroke answers are deliberately DIFFERENT layers.
+//
+// Headless, GPU-free; writes no files; opens no window. See
+// app/selftest/PathsPanel.cpp.
+bool runPathsPanelTest();
+
 bool runPenToolTest();
 
 // app/PenTool section 9 -- Pen/Curve PLACEMENT: `pathEditBeginPen()`

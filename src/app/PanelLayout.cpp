@@ -40,6 +40,7 @@ constexpr KeyRow kKeyTable[] = {
     {ControlsSection::BrushLibrary, "brush_library"},
     {ControlsSection::Brush, "brush"},
     {ControlsSection::FlatsTools, "flats_tools"},
+    {ControlsSection::Paths, "paths"},
     {ControlsSection::Pigment, "pigment"},
     {ControlsSection::Medium, "medium"},
     {ControlsSection::BoardTilt, "board_tilt"},
@@ -109,6 +110,19 @@ PanelPlacement defaultPlacementFor(ControlsSection section) {
     // what says whether a panel is about the tool, the document, the view or
     // the simulation, and this one is unambiguously about the tool.
     case ControlsSection::FlatsTools: return PanelPlacement::Flyout;
+    // **The fourth exception, and it is the third one's argument verbatim.**
+    // PATHS is a `Tool`-role palette scoped to `LayerKind::Vector` exactly as
+    // FLATS TOOLS is scoped to `LayerKind::Flats`, so every sentence above
+    // applies to it unchanged: idle almost always, a 26 px grip and a
+    // splitter taken out of the LAYERS list for the whole of every session
+    // that never draws a path, and a `View` role to reach this placement by
+    // the rule below would be a lie about what the panel is about.
+    //
+    // ui/MacPaintUI reveals it on the rail on the TRANSITION into a Vector
+    // layer -- edge-triggered, because level-triggering it would re-open the
+    // flyout on the frame after the user closed it, which is a panel that
+    // cannot be dismissed. Docked, it stays put and greys out.
+    case ControlsSection::Paths: return PanelPlacement::Flyout;
     // The panel this edits (`AppState::pigmentOverride`, app/AppState.hpp)
     // is off by default, and a panel for turning on an off-by-default
     // override is not worth a permanent flyout slot until the user asks for
