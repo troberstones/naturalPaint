@@ -262,6 +262,10 @@ void textEditCancel(TextEditState* state) noexcept {
   state->frameDragStart = PathPoint{};
   state->frameDragNow = PathPoint{};
   state->selectDragActive = false;
+  // A handle drag is a gesture like the other two, so it ends with them. Left
+  // live it would survive an Escape and keep resizing on every mouse move,
+  // with no button held and no session to end it.
+  state->resizeHandle = TextFrameHandle::None;
   state->anchor = state->caret;  // no session, no selection
   state->undoOpened = false;
   state->active = false;
@@ -398,6 +402,20 @@ void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documen
 void textEditFrameDragUpdate(TextEditState* state, PathPoint at) noexcept {
   if (state == nullptr || !state->frameDragActive) return;
   state->frameDragNow = at;
+}
+
+void textEditResizeBegin(TextEditState* state, TextFrameHandle handle) noexcept {
+  if (state == nullptr) return;
+  state->resizeHandle = handle;
+}
+
+bool textEditResizeActive(const TextEditState& state) noexcept {
+  return state.resizeHandle != TextFrameHandle::None;
+}
+
+void textEditResizeEnd(TextEditState* state) noexcept {
+  if (state == nullptr) return;
+  state->resizeHandle = TextFrameHandle::None;
 }
 
 bool textEditFrameDragEnd(TextEditState* state, TextContent* out, float minSizeDoc) noexcept {

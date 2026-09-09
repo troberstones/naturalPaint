@@ -354,6 +354,17 @@ struct TextEditState {
   PathPoint frameDragStart{};  // pen-down, document coordinates
   PathPoint frameDragNow{};    // current pointer, document coordinates
 
+  // A live RESIZE of an existing paragraph frame, by one of its eight
+  // handles (core/TextContent.hpp section 4b). Distinct from
+  // `frameDragActive` above, which drags a NEW frame out of empty canvas:
+  // that one may end in no layer at all, this one always has a block under
+  // it and only ever changes that block's `frame`/`origin`.
+  //
+  // `resizeHandle != None` is the flag -- one field rather than a bool
+  // beside it, because "which handle" and "is a resize live" cannot then
+  // disagree.
+  TextFrameHandle resizeHandle = TextFrameHandle::None;
+
   // Whether this session has already opened an undo entry. Owned here for
   // the same reason `PathEditState::geometryEditOpened` is: the caller never
   // holds a second copy of the same fact, so `recordEdit()` vs `amendEdit()`
@@ -448,6 +459,22 @@ void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documen
 // active, so a caller does not have to guard every pointer-move event on
 // `frameDragActive` itself.
 void textEditFrameDragUpdate(TextEditState* state, PathPoint at) noexcept;
+
+// --- resizing an EXISTING frame by a handle -------------------------------
+//
+// The single-writer rule (this header's own, greppable as
+// `textEdit\.[a-zA-Z]+ *=`) applies to `resizeHandle` exactly as it does to
+// the caret, which is why these three exist rather than the UI setting the
+// field: a resize that began in one place and ended in another is how a drag
+// gets stuck live and every subsequent mouse move keeps resizing.
+void textEditResizeBegin(TextEditState* state, TextFrameHandle handle) noexcept;
+
+// True while a handle drag is live.
+bool textEditResizeActive(const TextEditState& state) noexcept;
+
+// Ends it. Safe to call when none is active, so the caller can end the
+// gesture unconditionally on pen-up.
+void textEditResizeEnd(TextEditState* state) noexcept;
 
 // ==========================================================================
 // 6. THE FRAME DRAG -- a click is point text, a drag is a paragraph

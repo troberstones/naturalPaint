@@ -336,6 +336,78 @@ std::vector<TextQuad> textSelectionQuads(const TextContent& text, size_t loByte,
 // for an empty block, matching `textContentBounds()`.
 bool textFrameQuad(const TextContent& text, TextQuad* out);
 
+// ==========================================================================
+// 4b. Resizing the frame: eight handles, and what dragging one means
+// ==========================================================================
+//
+// A paragraph frame is dragged out before a word of it is typed, so the size
+// chosen is a guess. These are the affordance for changing that guess
+// afterwards, with the text reflowing to the new width -- which costs nothing
+// to implement, because `frame.width` is already an input to shaping and
+// nothing caches a layout across a change to it.
+//
+// **Paragraph text only.** Point text has no frame -- section 2 -- so there
+// is no box to resize and no handles are reported for it. Dragging a handle
+// could in principle CONVERT a point block to a paragraph one, and that is a
+// real feature, but it is not this one: `origin` means different things for
+// the two (section 2b), so the conversion has to move the origin as well as
+// set a width, and doing it silently as a side effect of grabbing a handle is
+// how a caption ends up somewhere the user did not put it.
+enum class TextFrameHandle : uint8_t {
+  None,
+  TopLeft,
+  TopCenter,
+  TopRight,
+  MiddleLeft,
+  MiddleRight,
+  BottomLeft,
+  BottomCenter,
+  BottomRight,
+};
+
+// The eight handle positions in DOCUMENT space, mapped through the block's
+// transform like everything else here -- so a rotated block's handles sit on
+// its rotated corners rather than on the corners of its bounding box.
+//
+// Indexed by `TextFrameHandle` minus one; `count` is always 8 when this
+// returns true. False for point text and for a block whose frame cannot be
+// determined, with `*out` untouched.
+struct TextFrameHandles {
+  PathPoint at[8];
+};
+bool textFrameHandles(const TextContent& text, TextFrameHandles* out);
+
+// Which handle is within `radiusDoc` of `atDoc`, or `None`.
+//
+// `radiusDoc` is a DOCUMENT-space distance, so the caller converts its screen
+// pixel target through the zoom -- the same rule the glyph hit test and the
+// Pen's anchors already follow, and the reason a handle stays equally
+// grabbable at every magnification.
+//
+// Ties go to the handle earliest in the enum, which puts the corners ahead of
+// the edge midpoints: at a small frame size the two overlap, and a corner --
+// which resizes both axes -- is the more useful of the two to land on.
+TextFrameHandle textFrameHandleAt(const TextContent& text, PathPoint atDoc, float radiusDoc);
+
+// Drag `handle` to `toDoc`, rewriting `frame` (and `origin`, for the handles
+// that move the frame's top or left edge).
+//
+// **The pointer is mapped into text space through the block's own transform**,
+// so dragging the right edge of a rotated block widens it along ITS right,
+// not along the document's x axis.
+//
+// **A drag that would collapse the frame is refused**, leaving `*text`
+// untouched and returning false, rather than clamping: a zero-width frame
+// wraps every character onto its own line, and a frame dragged through itself
+// would otherwise flip inside out under the cursor. `minSizeDoc` is that
+// floor, in document units.
+//
+// Height stays AUTOMATIC (`frame.height == 0`, section 2) unless a handle
+// that owns the vertical is dragged. Widening a block that had been sizing
+// its own height must not silently pin that height, or the next line typed
+// would be clipped by a box the user never set.
+bool textFrameResize(TextContent* text, TextFrameHandle handle, PathPoint toDoc, float minSizeDoc);
+
 // The byte offset nearest `at` (document coordinates) -- click-to-place-caret.
 //
 // **`at` is mapped through the INVERSE of `transform` first**, so a click

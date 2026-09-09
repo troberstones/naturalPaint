@@ -239,6 +239,16 @@ std::string g_strokeRefusal;
 // the reset is unconditional and lives where nothing can skip it.
 std::optional<SDL_SystemCursor> g_canvasCursor;
 
+// Which text-frame handle the pointer is over THIS FRAME, or `None`.
+//
+// File-scope for `g_canvasCursor`'s own reason: the gesture that computes it
+// and the overlay that highlights it run in different places, and passing it
+// between them would mean threading a parameter through everything in
+// between. Written once per frame by the Text tool's canvas block and read by
+// the overlay; stale by construction if that block does not run, which is why
+// it is cleared at the top of the frame rather than left from last time.
+TextFrameHandle g_textHoveredHandle = TextFrameHandle::None;
+
 // Which TOOL's bitmap cursor this frame wants -- ui/ToolCursor.hpp §7, whose
 // bitmaps are keyed by `Tool` rather than by intent so that all twenty-eight
 // tools are distinguishable rather than the handful an intent enum collapses
@@ -13200,6 +13210,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // it would let a crosshair outlive the pointer being over the canvas.
   g_canvasCursor.reset();
   g_canvasBitmapTool.reset();  // same reasoning, ui/ToolCursor.hpp §7
+  // And the same again for the text-frame handle: the block that computes it
+  // runs only while the Text tool is active over a Text layer, so a stale one
+  // would leave a handle drawn lit after the pointer had gone.
+  g_textHoveredHandle = TextFrameHandle::None;
 
   // Next, and before anything reads the state those actions write: whatever
   // the native menu bar collected since the last frame.
@@ -15930,7 +15944,75 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // itself be redone. `textEditRevert()` had no other caller and is gone.
       if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) textEditCancel(&st.textEdit);
 
-      if (textDoc != nullptr && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      // --- the frame's resize handles --------------------------------------
+      //
+      // A paragraph frame is dragged out before a word of it is typed, so its
+      // size is a guess; these let that guess be corrected afterwards, with
+      // the text reflowing to the new width. Handled BEFORE the click-to-edit
+      // block below, because a pen-down on a handle must not also place a
+      // caret -- the handle sits on the frame's edge, which is exactly where
+      // `textBlockHit()`'s padding reaches.
+      //
+      // Only for the ACTIVE layer's own block, matching the click-to-edit
+      // rule immediately below: the LAYERS panel is where a layer is chosen,
+      // and a handle that acted on a layer the panel did not name would be
+      // the same lie in a different place.
+      Layer* frameLayer = textDoc != nullptr ? activeLayerOf(*textDoc) : nullptr;
+      if (frameLayer != nullptr && frameLayer->kind != LayerKind::Text) frameLayer = nullptr;
+      const float handleRadiusDoc =
+          kTransformHandleHitPx / std::max(0.05f, st.view.zoom);
+      TextFrameHandle hoveredHandle = TextFrameHandle::None;
+      if (frameLayer != nullptr && hovered && !st.textEdit.selectDragActive &&
+          !st.textEdit.frameDragActive)
+        hoveredHandle = textFrameHandleAt(frameLayer->text, PathPoint{tx, ty}, handleRadiusDoc);
+      g_textHoveredHandle = hoveredHandle;
+
+      // The affordance the request asked for: over a handle, the pointer says
+      // "this drags". `MoveObject` is this file's existing name for the move
+      // cursor (ui/ToolCursor.hpp), so the Text tool does not introduce a
+      // second spelling of it.
+      if (hoveredHandle != TextFrameHandle::None || textEditResizeActive(st.textEdit))
+        g_canvasCursor = sdlCursorFor(ToolCursor::MoveObject);
+
+      if (textDoc != nullptr && hovered && frameLayer != nullptr &&
+          hoveredHandle != TextFrameHandle::None &&
+          ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        textEditResizeBegin(&st.textEdit, hoveredHandle);
+      }
+
+      if (textEditResizeActive(st.textEdit)) {
+        // `!IsMouseDown` rather than `IsMouseReleased`, the frame drag's own
+        // reason: a release ImGui never saw (the pointer left the window)
+        // would otherwise leave the drag live and every later mouse move
+        // would keep resizing.
+        if (frameLayer != nullptr && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          // A floor in DOCUMENT units, from the same screen-pixel constant
+          // the handles are hit-tested with, so a frame cannot be dragged
+          // smaller than its own handles are apart.
+          const float minSizeDoc = std::max(4.0f, 16.0f / std::max(0.05f, st.view.zoom));
+          if (textFrameResize(&frameLayer->text, st.textEdit.resizeHandle, PathPoint{tx, ty},
+                              minSizeDoc)) {
+            // Amended rather than recorded per frame: a drag is ONE edit, and
+            // an entry per mouse-move would make Cmd+Z walk back through the
+            // drag a pixel at a time -- app/DocumentLifecycle's own rule, the
+            // same one a typing burst follows.
+            if (st.textEdit.undoOpened) {
+              textDoc->amendEdit("resize text frame");
+            } else {
+              textDoc->recordEdit("resize text frame", EditKind::Content);
+              textEditMarkUndoOpened(&st.textEdit);
+            }
+          }
+        } else {
+          textEditResizeEnd(&st.textEdit);
+          // The next thing typed opens its own entry rather than amending
+          // over the resize -- app/TextTool.hpp section 3c.
+          textEditClearUndoOpened(&st.textEdit);
+        }
+      }
+
+      if (textDoc != nullptr && hovered && !textEditResizeActive(st.textEdit) &&
+          hoveredHandle == TextFrameHandle::None && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         // A click on the ACTIVE layer's own text block edits it. Only the
         // active layer, and deliberately not a search down the stack: the
         // LAYERS panel is where a layer is chosen in this application, and a
@@ -17975,6 +18057,34 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           } else {
             dl->AddPolyline(pt, 4, kTextCasing, ImDrawFlags_Closed, 3.0f);
             dl->AddPolyline(pt, 4, core, ImDrawFlags_Closed, 1.5f);
+          }
+        }
+
+        // --- the eight resize handles ------------------------------------
+        //
+        // Only for a paragraph frame -- `textFrameHandles()` reports none for
+        // point text, which has no box (core/TextContent.hpp section 4b), so
+        // the `if` is the whole of that rule and this file does not restate
+        // it as a second condition that could drift from the first.
+        //
+        // Drawn at a fixed SCREEN size, like the Free Transform gizmo's, so a
+        // handle is the same target at every zoom -- and hit-tested at the
+        // same constant, converted to document units where the gesture is.
+        TextFrameHandles handles;
+        if (textFrameHandles(tl->text, &handles)) {
+          const float r = kTransformHandleDrawPx * 0.5f;
+          for (int i = 0; i < 8; ++i) {
+            const Vec2 v = xform.toScreen(Vec2{handles.at[i].x, handles.at[i].y});
+            const ImVec2 a(v.x - r, v.y - r), b(v.x + r, v.y + r);
+            // The one under the pointer is filled with the accent so the
+            // affordance is visible before the button goes down -- the same
+            // "you can grab this" the cursor change says, for a user whose
+            // eyes are on the canvas rather than on the pointer.
+            const bool live = static_cast<TextFrameHandle>(i + 1) == g_textHoveredHandle ||
+                              static_cast<TextFrameHandle>(i + 1) == st.textEdit.resizeHandle;
+            dl->AddRectFilled(ImVec2(a.x - 1.0f, a.y - 1.0f), ImVec2(b.x + 1.0f, b.y + 1.0f),
+                              kTextCasing);
+            dl->AddRectFilled(a, b, live ? kTextCore : IM_COL32(255, 255, 255, 235));
           }
         }
 

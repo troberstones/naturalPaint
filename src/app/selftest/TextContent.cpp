@@ -470,6 +470,118 @@ bool runTextContentTest() {
           "disguise it by pointing at a line with no text on it");
   }
 
+  // --- the frame's resize handles -------------------------------------------
+  //
+  // core/TextContent.hpp section 4b. A frame is dragged out before a word is
+  // typed, so its size is a guess; these are how the guess gets corrected.
+  {
+    const PathPoint org{200.0f, 300.0f};
+    auto frame = [&](float w, float h) {
+      TextContent t = makeTextContent("Paragraph text that will reflow when the frame changes.",
+                                      org);
+      t.style.sizePx = 24.0f;
+      t.frame.width = w;
+      t.frame.height = h;
+      return t;
+    };
+
+    // Point text has no box, so it reports no handles -- and the hit test
+    // therefore cannot return one, however close the pointer gets.
+    {
+      TextContent point = makeTextContent("Handgloves", org);
+      TextFrameHandles h;
+      check(!textFrameHandles(point, &h),
+            "handles: POINT text reports none -- it has no frame to resize");
+      check(textFrameHandleAt(point, org, 1000.0f) == TextFrameHandle::None,
+            "handles: and no hit test on it can find one, at any radius");
+    }
+
+    // Eight handles on the frame's own corners and edge midpoints.
+    {
+      const TextContent t = frame(400.0f, 200.0f);
+      TextFrameHandles h;
+      check(textFrameHandles(t, &h), "handles: a paragraph frame reports them");
+      check(std::fabs(h.at[0].x - 200.0f) < 0.01f && std::fabs(h.at[0].y - 300.0f) < 0.01f,
+            "handles: TopLeft is the frame's origin");
+      check(std::fabs(h.at[7].x - 600.0f) < 0.01f && std::fabs(h.at[7].y - 500.0f) < 0.01f,
+            "handles: BottomRight is origin + (width, height)");
+      check(textFrameHandleAt(t, PathPoint{600.0f, 500.0f}, 5.0f) == TextFrameHandle::BottomRight,
+            "handles: the hit test finds the corner under the pointer");
+      check(textFrameHandleAt(t, PathPoint{400.0f, 400.0f}, 5.0f) == TextFrameHandle::None,
+            "handles: and finds nothing in the middle of the frame");
+    }
+
+    // Dragging the right edge changes the WIDTH and nothing else -- which is
+    // what makes the text reflow, since `frame.width` is an input to shaping.
+    {
+      TextContent t = frame(400.0f, 0.0f);
+      const PathBounds before = textContentBounds(t);
+      check(textFrameResize(&t, TextFrameHandle::MiddleRight, PathPoint{500.0f, 400.0f}, 4.0f),
+            "handles: dragging the right edge is accepted");
+      check(std::fabs(t.frame.width - 300.0f) < 0.01f,
+            "handles: REQUIRED -- the width becomes the drag's own (500 - 200 = 300)");
+      check(std::fabs(t.origin.x - org.x) < 0.01f && std::fabs(t.origin.y - org.y) < 0.01f,
+            "handles: and the origin did NOT move -- only the far edge did");
+      const PathBounds after = textContentBounds(t);
+      check(before.valid && after.valid && after.maxY > before.maxY,
+            "handles: REQUIRED -- the text REFLOWED: a narrower frame is taller, because the "
+            "same words wrap onto more lines. This is what fails if the width is stored but "
+            "shaping never sees it");
+    }
+
+    // Dragging the LEFT edge moves the origin as well as the width, or the
+    // box would grow from the wrong side and slide out from under the cursor.
+    {
+      TextContent t = frame(400.0f, 200.0f);
+      check(textFrameResize(&t, TextFrameHandle::MiddleLeft, PathPoint{150.0f, 400.0f}, 4.0f),
+            "handles: dragging the left edge is accepted");
+      check(std::fabs(t.origin.x - 150.0f) < 0.01f && std::fabs(t.frame.width - 450.0f) < 0.01f,
+            "handles: REQUIRED -- the left edge moves the ORIGIN and widens to match, so the "
+            "right edge stays where it was");
+    }
+
+    // A block sizing its own height keeps doing so when merely widened.
+    {
+      TextContent t = frame(400.0f, 0.0f);
+      check(textFrameResize(&t, TextFrameHandle::MiddleRight, PathPoint{700.0f, 400.0f}, 4.0f) &&
+                t.frame.height == 0.0f,
+            "handles: REQUIRED -- widening a block leaves its height AUTOMATIC. Pinning it here "
+            "would clip the next line typed inside a box the user never set");
+      check(textFrameResize(&t, TextFrameHandle::BottomCenter, PathPoint{400.0f, 560.0f}, 4.0f) &&
+                std::fabs(t.frame.height - 260.0f) < 0.01f,
+            "handles: and a bottom handle DOES pin it, because that is the one the user grabbed "
+            "to set a height");
+    }
+
+    // A collapse is refused outright, leaving the frame untouched -- a clamp
+    // would stick at the floor and then invert under the cursor.
+    {
+      TextContent t = frame(400.0f, 200.0f);
+      const TextContent before = t;
+      check(!textFrameResize(&t, TextFrameHandle::MiddleRight, PathPoint{100.0f, 400.0f}, 4.0f),
+            "handles: dragging the right edge past the left is REFUSED");
+      check(t.frame.width == before.frame.width && t.origin.x == before.origin.x,
+            "handles: and the refusal changed nothing at all");
+    }
+
+    // A rotated block resizes along ITS OWN axes. Dragging its right edge by
+    // 100 in the block's frame must widen it by 100 -- not by the projection
+    // of a document-space delta, which is what an unmapped pointer gives.
+    {
+      TextContent t = frame(400.0f, 200.0f);
+      t.transform = transformRotateDegrees(90.0f);
+      // The block's own right edge, under a 90-degree turn, lies along
+      // document Y. Ask for a point 100 further along the block's local x by
+      // mapping it forward through the same matrix the resize will invert.
+      const Point2 want = mat3MapPoint(t.transform, Point2{org.x + 500.0f, org.y + 100.0f});
+      check(textFrameResize(&t, TextFrameHandle::MiddleRight, PathPoint{want.x, want.y}, 4.0f),
+            "handles: a rotated block's edge drag is accepted");
+      check(std::fabs(t.frame.width - 500.0f) < 0.01f,
+            "handles: REQUIRED -- and it widens along the BLOCK's axis, not the document's. "
+            "Without the inverse map the frame shears away from the cursor");
+    }
+  }
+
   // --- the transform: a scaled or rotated block is STILL TEXT ---------------
   //
   // core/TextContent.hpp section 4. The failure these guard against is not

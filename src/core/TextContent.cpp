@@ -556,6 +556,106 @@ bool textFrameQuad(const TextContent& text, TextQuad* out) {
   return true;
 }
 
+namespace {
+
+// The frame in TEXT space -- before the transform -- which is what a resize
+// has to work in. `textFrameQuad()` gives the mapped corners for drawing;
+// this gives the numbers `frame`/`origin` are actually made of.
+//
+// Returns false for point text, which has no frame (header section 4b).
+bool textFrameRectLocal(const TextContent& text, float* x0, float* y0, float* x1, float* y1) {
+  if (text.frame.width <= 0.0f) return false;
+  *x0 = text.origin.x;
+  *y0 = text.origin.y;
+  *x1 = text.origin.x + text.frame.width;
+  if (text.frame.height > 0.0f) {
+    *y1 = text.origin.y + text.frame.height;
+    return true;
+  }
+  // `height == 0` is "as tall as the lines need" (section 2), so the bottom
+  // edge -- and the handles on it -- have to ASK how tall that came out.
+  // Measured on a copy with no transform, because this is text space.
+  TextContent flat = text;
+  flat.transform = mat3Identity();
+  const PathBounds ink = textContentBounds(flat);
+  *y1 = ink.valid ? std::max(ink.maxY, *y0 + 1.0f) : *y0 + caretHeightFor(text.style);
+  return true;
+}
+
+}  // namespace
+
+bool textFrameHandles(const TextContent& text, TextFrameHandles* out) {
+  if (out == nullptr) return false;
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  if (!textFrameRectLocal(text, &x0, &y0, &x1, &y1)) return false;
+  const float xm = (x0 + x1) * 0.5f;
+  const float ym = (y0 + y1) * 0.5f;
+  // Enum order, so `at[static_cast<int>(h) - 1]` is that handle.
+  const PathPoint local[8] = {{x0, y0}, {xm, y0}, {x1, y0}, {x0, ym},
+                              {x1, ym}, {x0, y1}, {xm, y1}, {x1, y1}};
+  for (int i = 0; i < 8; ++i) out->at[i] = mapped(text, local[i]);
+  return true;
+}
+
+TextFrameHandle textFrameHandleAt(const TextContent& text, PathPoint atDoc, float radiusDoc) {
+  TextFrameHandles h;
+  if (!textFrameHandles(text, &h)) return TextFrameHandle::None;
+  const float r2 = radiusDoc * radiusDoc;
+  // First match wins, and the array is in enum order -- corners before edge
+  // midpoints, per the header.
+  for (int i = 0; i < 8; ++i) {
+    const float dx = h.at[i].x - atDoc.x;
+    const float dy = h.at[i].y - atDoc.y;
+    if (dx * dx + dy * dy <= r2) return static_cast<TextFrameHandle>(i + 1);
+  }
+  return TextFrameHandle::None;
+}
+
+bool textFrameResize(TextContent* text, TextFrameHandle handle, PathPoint toDoc,
+                     float minSizeDoc) {
+  if (text == nullptr || handle == TextFrameHandle::None) return false;
+  float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+  if (!textFrameRectLocal(*text, &x0, &y0, &x1, &y1)) return false;
+
+  // Into text space, so a rotated block resizes along its OWN axes. Without
+  // this the right edge of a block turned 30 degrees would follow the
+  // document's x and the frame would shear away from the cursor.
+  Mat3 inv;
+  if (!inverseOf(*text, &inv)) return false;
+  const Point2 localPt = mat3MapPoint(inv, Point2{toDoc.x, toDoc.y});
+
+  const bool movesLeft = handle == TextFrameHandle::TopLeft ||
+                         handle == TextFrameHandle::MiddleLeft ||
+                         handle == TextFrameHandle::BottomLeft;
+  const bool movesRight = handle == TextFrameHandle::TopRight ||
+                          handle == TextFrameHandle::MiddleRight ||
+                          handle == TextFrameHandle::BottomRight;
+  const bool movesTop = handle == TextFrameHandle::TopLeft ||
+                        handle == TextFrameHandle::TopCenter ||
+                        handle == TextFrameHandle::TopRight;
+  const bool movesBottom = handle == TextFrameHandle::BottomLeft ||
+                           handle == TextFrameHandle::BottomCenter ||
+                           handle == TextFrameHandle::BottomRight;
+
+  if (movesLeft) x0 = localPt.x;
+  if (movesRight) x1 = localPt.x;
+  if (movesTop) y0 = localPt.y;
+  if (movesBottom) y1 = localPt.y;
+
+  // Refused rather than clamped -- the header says why. A clamp would let the
+  // frame stick at the floor and then invert as the pointer kept going.
+  if (x1 - x0 < minSizeDoc) return false;
+  if ((movesTop || movesBottom) && y1 - y0 < minSizeDoc) return false;
+
+  text->origin = PathPoint{x0, y0};
+  text->frame.width = x1 - x0;
+  // Only a handle that owns the vertical pins the height. A block that was
+  // sizing its own height keeps doing so when it is merely widened, or the
+  // next line typed would be clipped by a box the user never set.
+  if (movesTop || movesBottom) text->frame.height = y1 - y0;
+  return true;
+}
+
 size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
   if (text.utf8.empty()) return 0;
   const ShapedText shaped = shapeText(text.utf8, text.style, text.frame, text.align);
