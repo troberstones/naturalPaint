@@ -3571,6 +3571,34 @@ bool runLayerGroupPanelTest();
 // reordered document cannot act on a different one. Drives the plan's own
 // composite case -- flatten, blur, set blend to Subtract, threshold -- entirely
 // through applyCommand(). Headless, GPU-free, filesystem-free.
+// io/ActionFile + ops/Action -- the action model and its .npaction file
+// (docs/automation-plan.md step 4). Asserts the FORMAT, not the appliers:
+//
+//  - a **hand-typed** fixture decodes to the six expected steps, with its keys
+//    in an order no writer here produces and its version key LAST, which is
+//    what proves the version is found by key rather than by position. Typed at
+//    a keyboard on purpose -- io/OpSerial's own section states the rule: a
+//    fixture that shares the encoder's assumptions cannot catch the encoder
+//    being wrong;
+//  - write -> read -> write is byte-identical, and a parameter's double comes
+//    back as the identical BIT PATTERN, so a sigma does not drift a digit per
+//    re-save;
+//  - four refusals, each of which is a silent wrong answer if it is missing: a
+//    file with no "npaction" key, a version this build does not read, a
+//    "steps" that is not an array (which must not become an empty action that
+//    reports success over every file in a batch), and a step naming a command
+//    this build does not have -- refused at LOAD, not at run;
+//  - the flat form's one reserved key: a parameter called "cmd" is refused by
+//    name rather than silently lost to a duplicate key;
+//  - `actionFromLayerOps()` (PRD P6): a graded layer converts to a
+//    `select_layer` plus one step per op, and a non-point-op entry refuses by
+//    name having emitted nothing.
+//
+// Headless, GPU-free. Writes and removes a selftest_actions/ scratch directory
+// for the library-listing section, under NP_ACTION_DIR so the real
+// ~/Library/Application Support library is never touched.
+bool runActionFileTest();
+
 bool runCommandTest();
 
 // app/CommandsLayers -- the three layer vocabularies as recordable commands

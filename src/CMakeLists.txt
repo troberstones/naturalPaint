@@ -158,6 +158,7 @@ add_executable(naturalPaint
   app/selftest/ImageDecode.cpp
   app/selftest/ImageIO.cpp
   app/selftest/IncrementalComposite.cpp
+  app/selftest/ActionFile.cpp
   app/selftest/Command.cpp
   app/selftest/CommandsLayers.cpp
   app/selftest/Recorder.cpp
@@ -355,6 +356,7 @@ add_executable(naturalPaint
   io/ImageDecode.cpp
   io/SourceGamut.cpp
   io/ImageIO.cpp
+  io/ActionFile.cpp
   io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
@@ -367,6 +369,7 @@ add_executable(naturalPaint
   io/SvgStyle.cpp
   io/TileResidency.cpp
   io/TextSerial.cpp
+  ops/Action.cpp
   ops/AutoLevels.cpp
   ops/Blur.cpp
   ops/ColorOps.cpp

@@ -3237,6 +3237,7 @@ int main(int argc, char** argv) {
     // moved active layer, and a live marquee no channel names. See
     // app/SelfTest.hpp.
     const bool recorderOk = np::runRecorderTest();
+    const bool actionFileOk = np::runActionFileTest();
     const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
@@ -3584,6 +3585,7 @@ int main(int argc, char** argv) {
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
                     commandsLayersOk &&
                     recorderOk &&
+                    actionFileOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
