@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/PenTool.hpp"
+#include "app/VectorStyle.hpp"
 
 namespace np {
 
@@ -16,6 +17,10 @@ namespace np {
 // same four transitions `ui/MacPaintUI.cpp`'s Pen/Curve canvas block calls.
 bool runPenDrawTest() {
   bool ok = true;
+  // This section is about PLACEMENT, not paint; the style is whatever the
+  // caller hands over and app/selftest/VectorStyle.cpp is where it is
+  // asserted. The default is the honest thing to pass here.
+  const VectorStyle kPenStyle;
   auto check = [&](bool cond, const char* what) {
     std::printf("  %-72s %s\n", what, cond ? "pass" : "FAIL");
     if (!cond) ok = false;
@@ -37,7 +42,7 @@ bool runPenDrawTest() {
 
     const PenPressResult r = pathEditBeginPen(&st, &shapes, &nextId, PathPoint{10, 20}, 4.0f,
                                               false, SelectionCombine::Replace, 1,
-                                              /*curveMode=*/false);
+                                              /*curveMode=*/false, kPenStyle);
     check(r == PenPressResult::Placed, "the first press on empty canvas places");
     check(shapes.size() == 1, "one shape created");
     check(shapes.size() == 1 && shapes[0].path.subpaths.size() == 1 &&
@@ -69,7 +74,7 @@ bool runPenDrawTest() {
     uint64_t nextId = 1;
     PathEditState st;
     pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, false,
-                     SelectionCombine::Replace, 1, /*curveMode=*/false);
+                     SelectionCombine::Replace, 1, /*curveMode=*/false, kPenStyle);
     check(st.drag == PathDragKind::PenExtend, "the placement press opens a PenExtend drag");
 
     const PathEditChange c1 = pathEditUpdate(&st, &shapes, PathPoint{30, 0});
@@ -96,7 +101,7 @@ bool runPenDrawTest() {
     const PathPoint pts[3] = {{0, 0}, {50, 0}, {50, 50}};
     for (const PathPoint& p : pts) {
       pathEditBeginPen(&st, &shapes, &nextId, p, 4.0f, false, SelectionCombine::Replace, 1,
-                       false);
+                       false, kPenStyle);
       pathEditEnd(&st, shapes);
     }
     check(shapes.size() == 1, "still one shape -- presses extend it, not create new ones");
@@ -110,7 +115,8 @@ bool runPenDrawTest() {
     }
 
     const PenPressResult closed = pathEditBeginPen(&st, &shapes, &nextId, pts[0], 4.0f, false,
-                                                    SelectionCombine::Replace, 1, false);
+                                                    SelectionCombine::Replace, 1, false,
+                                                    kPenStyle);
     check(closed == PenPressResult::Closed, "a press on the first anchor closes");
     check(shapes[0].path.subpaths[0].closed == true, "the subpath is now closed");
     check(!pathEditHasOpenPath(st), "placement ends once the path closes");
@@ -126,14 +132,14 @@ bool runPenDrawTest() {
     uint64_t nextId = 1;
     PathEditState st;
     pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, false,
-                     SelectionCombine::Replace, 1, false);
+                     SelectionCombine::Replace, 1, false, kPenStyle);
     pathEditEnd(&st, shapes);
     // Well clear of the first anchor's own gnomon (default reach 40 doc
     // units around its pivot, section 5's tier 1) -- a second press ON the
     // gnomon would be "existing geometry" (bullet 2), not a placement, which
     // is a different scenario from the one under test here.
     pathEditBeginPen(&st, &shapes, &nextId, PathPoint{200, 0}, 4.0f, false,
-                     SelectionCombine::Replace, 1, false);
+                     SelectionCombine::Replace, 1, false, kPenStyle);
     pathEditEnd(&st, shapes);
     check(pathEditHasOpenPath(st), "still open after two presses");
 
@@ -160,7 +166,8 @@ bool runPenDrawTest() {
     size_t placedCount = 0;
     for (const PathPoint& p : pts) {
       const PenPressResult r = pathEditBeginPen(&st, &shapes, &nextId, p, 4.0f, false,
-                                                SelectionCombine::Replace, 1, /*curveMode=*/true);
+                                                SelectionCombine::Replace, 1,
+                                                /*curveMode=*/true, kPenStyle);
       if (r == PenPressResult::Placed) ++placedCount;
       pathEditEnd(&st, shapes);
     }
@@ -219,13 +226,14 @@ bool runPenDrawTest() {
     uint64_t nextId = 100;
     PathEditState st;
     pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, false,
-                     SelectionCombine::Replace, 1, false);
+                     SelectionCombine::Replace, 1, false, kPenStyle);
     const uint64_t openShapeId = st.openPathShapeId;
     pathEditEnd(&st, shapes);
     check(pathEditHasOpenPath(st), "a path is open");
 
     const PenPressResult r = pathEditBeginPen(&st, &shapes, &nextId, PathPoint{500, 500}, 4.0f,
-                                              false, SelectionCombine::Replace, 1, false);
+                                              false, SelectionCombine::Replace, 1, false,
+                                              kPenStyle);
     check(r == PenPressResult::Editing || r == PenPressResult::Selecting,
           "a press on OTHER existing geometry falls through to pathEditBegin()'s gestures");
     check(!pathEditHasOpenPath(st), "...and that press 'clicked away', ending the open path");

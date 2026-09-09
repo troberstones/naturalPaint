@@ -572,7 +572,7 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     for (const np::PathPoint& p : {p1, p2, p3}) {
       np::pathEditBeginPen(&st.pathEdit, &shapes, &od.document.layers[at].nextShapeId, p,
                            pickTexels, false, np::SelectionCombine::Replace, od.id,
-                           /*curveMode=*/false);
+                           /*curveMode=*/false, np::penVectorStyle(st));
       np::pathEditEnd(&st.pathEdit, shapes);
     }
     // The rubber band's destination, PINNED rather than read from a live
@@ -2699,6 +2699,13 @@ int main(int argc, char** argv) {
     // Curve's Catmull-Rom tangent fit proven C1-continuous numerically.
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penDrawOk = np::runPenDrawTest();
+    // app/VectorStyle -- the Pen's paint: the stroke-on/fill-off default,
+    // `pathEditBeginPen()` stamping it onto the shape it creates (without
+    // which every pen-drawn path rasterised to nothing), the options bar's
+    // selection-first-else-default rule and its mixed readout, and the
+    // linear-not-sRGB colour path from the foreground to `Paint::rgba`.
+    // Headless and GPU-free; writes no files.
+    const bool vectorStyleOk = np::runVectorStyleTest();
     // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
     // gate predicate, the caret-editing session's UTF-8-safe string edits
     // (insert/backspace/forward-delete/caret movement, all routed through
@@ -3608,7 +3615,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && pathOpsOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    penToolOk && pathOpsOk && penDrawOk && vectorStyleOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && noDocumentCanvasOk;
     s->shutdown();
     gpu.shutdown();

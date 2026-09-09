@@ -26,6 +26,7 @@
 #include "app/StrokeBake.hpp"
 #include "app/TransformSession.hpp"
 #include "app/UserBrushLibrary.hpp"
+#include "app/VectorStyle.hpp"
 #include "core/Clipboard.hpp"
 #include "flats/FlatsLayer.hpp"
 #include "flats/Model.hpp"
@@ -1095,6 +1096,27 @@ struct AppState {
   // colour the user set that nothing painted with.
   TextStyle textStyle;
   TextAlign textAlign = TextAlign::Left;
+
+  // **The style the NEXT pen-drawn shape gets, and what the options bar's
+  // STROKE/FILL controls edit when nothing is selected.** `textStyle` above
+  // is the exact precedent and the argument for both is the same one, so it
+  // is not restated here; `app/VectorStyle.hpp` carries the rest, including
+  // why the defaults are stroke-ON / fill-OFF (a pen is a line, and filling
+  // an open path means implicitly closing it, which draws an edge the user
+  // never made).
+  //
+  // The difference from `textStyle` is section 3 of that header: these
+  // controls are **selection-first**. With shapes selected they edit those
+  // shapes and record a document edit; only with nothing selected do they
+  // write here. That is why the row shows the SELECTION's width and colour
+  // rather than this struct's whenever a selection exists.
+  //
+  // `stroke.rgba` is overwritten by `foregroundLinearRgba()` on the way into
+  // a newly placed shape (`ui/MacPaintUI.hpp`'s `penVectorStyle()`), for the
+  // reason `textStyle`'s own comment gives for having no `fill`: a third
+  // colour store beside the foreground and the shape would be a colour the
+  // user set that nothing painted with.
+  VectorStyle vectorStyle;
 
   // `--text-demo frame`'s pin, `pathEditDemo` above's exact twin and for the
   // identical reason: the paragraph-frame rubber band exists ONLY while the

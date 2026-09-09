@@ -19,6 +19,7 @@ add_executable(naturalPaint
   app/PenAxes.cpp
   app/PathOps.cpp
   app/PenTool.cpp
+  app/VectorStyle.cpp
   app/TextTool.cpp
   app/PsdReport.cpp
   app/SvgReport.cpp
@@ -245,6 +246,7 @@ add_executable(naturalPaint
   app/selftest/PathOps.cpp
   app/selftest/PenTool.cpp
   app/selftest/PenDraw.cpp
+  app/selftest/VectorStyle.cpp
   app/selftest/TextTool.cpp
   app/selftest/TextShaper.cpp
   app/selftest/SvgPath.cpp
