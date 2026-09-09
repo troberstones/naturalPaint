@@ -1502,6 +1502,7 @@ int main(int argc, char** argv) {
   bool panelStackDemo = false;
   bool gradeKindsDemo = false;
   bool flatsDemo = false;
+  bool flatsDemoEdits = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
@@ -2051,6 +2052,14 @@ int main(int argc, char** argv) {
       // flatting tool so the palette photographs its LIT state, and fronts
       // the two flats panels -- see the apply block below.
       flatsDemo = true;
+      // `edits` records one of every repair kind on the Flats layer, selects
+      // two of them, and picks SELECT EDITS -- the canvas-overlay state the
+      // two panel views cannot reach, because the artifacts are drawn over
+      // the picture and not in a panel.
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "edits") {
+        flatsDemoEdits = true;
+        ++i;
+      }
     } else if (a == "--ui-layer-demo") {
       // UI detour step 3: build a stack through the layer editor's own
       // commands. See runUiLayerDemo(). `noclip` runs the same script without
@@ -3820,6 +3829,7 @@ int main(int argc, char** argv) {
   st.panelStackDemo = panelStackDemo;
   st.gradeKindsDemo = gradeKindsDemo;
   st.flatsDemo = flatsDemo;
+  st.flatsDemoEdits = flatsDemoEdits;
   if (gradeKindsDemo) {
     // Enabled, and with params well away from both the identity and the
     // params structs' own defaults -- an editor showing a default value would

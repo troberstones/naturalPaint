@@ -363,6 +363,38 @@ bool runToolSwitchTest() {
           "tool is REMEMBERED (it stops being active, see the exclusivity block below, but it is "
           "not destroyed), over every FlatsTool and from four different starting tools");
 
+    // **A recorded-edit selection dies with the tool that made it, from BOTH
+    // writers.** A `flatEditKey()` means nothing except against the edit list
+    // it was picked from, and the canvas overlay brightens whatever is in
+    // this set -- so a selection left standing while a different tool is
+    // armed is a highlight that says "Delete will remove these" when Delete
+    // no longer will. Asserted over every FlatsTool, including re-picking
+    // SELECT EDITS itself, because "clears on a change" is not the rule:
+    // clears on a PICK is.
+    bool selectionDies = true;
+    for (int v = 0; v <= static_cast<int>(FlatsTool::SelectEdits); ++v) {
+      AppState h;
+      setFlatsTool(h, FlatsTool::SelectEdits);
+      h.flatsEditSelection = {flatEditKey(FlatEditRef{4, 1}), flatEditKey(FlatEditRef{6, 2})};
+      h.flatsEditBox = std::array<float, 4>{1, 2, 3, 4};
+      h.flatsEditBoxAdditive = true;
+      setFlatsTool(h, static_cast<FlatsTool>(v));
+      if (!h.flatsEditSelection.empty() || h.flatsEditBox.has_value() || h.flatsEditBoxAdditive)
+        selectionDies = false;
+
+      AppState o;
+      setFlatsTool(o, FlatsTool::SelectEdits);
+      o.flatsEditSelection = {flatEditKey(FlatEditRef{4, 1})};
+      o.flatsEditBox = std::array<float, 4>{1, 2, 3, 4};
+      setActiveTool(o, Tool::Brush);
+      if (!o.flatsEditSelection.empty() || o.flatsEditBox.has_value()) selectionDies = false;
+    }
+    check(selectionDies,
+          "toolswitch: **picking any tool drops the selected recorded edits** -- through "
+          "setFlatsTool for every FlatsTool including SELECT EDITS itself, and through "
+          "setActiveTool; a key outlives the list it indexes and the overlay would go on "
+          "promising a Delete that no longer reaches them");
+
     // The other half of the same rule, and the reason the above is SAFE.
     // GROUP and SHAPE used to reach their gesture through `Tool::Lasso`:
     // `flatsLassoCommit()` was an interception inside `case Tool::Lasso:` and

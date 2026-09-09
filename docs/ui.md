@@ -210,6 +210,20 @@ gives back the tool you had instead of dropping you on one you never chose. Gold
 `tools_flats_active` photographs the TOOLS column at the instant a flats tool is lit,
 which is the only way to catch two accented cells at once.
 
+**A recorded repair is an object on the canvas, not an entry in the undo stack.**
+Every flatting edit is stored as geometry replayed against a fresh segmentation
+(ADR-0009), so while any flatting tool is picked the overlay draws the whole set over
+the picture: bridges cyan, merges green, delete marks red, carves orange, shape fills
+violet, group lassos amber — a cross in a ring for the two point-shaped kinds, a solid
+line with a dark casing for the rest. Marching ants are deliberately not used, because
+in this overlay ants already mean *"a proposal, not yet accepted"* and that is what a
+gap suggestion is. SELECT EDITS clicks one, Shift-clicks to add or remove, drags a box
+round several, and Delete removes the selection in one undo step; Esc clears it. The
+whole set vanishes outside flatting mode, where a Flats layer is just artwork you are
+painting near — the one exception is bridges, which are invisible in the render by
+design, so with the overlay off nothing at all would say a gap had been closed by hand.
+Golden view `flats_edits` photographs it, both selection states side by side.
+
 ### 2a. Icons: Lucide, one per tool, 15px
 
 "Toolbox uses Lucide icons at 15px, one per tool; if a tool has no matching Lucide glyph,

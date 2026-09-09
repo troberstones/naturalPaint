@@ -36,6 +36,7 @@ void setActiveTool(AppState& st, Tool next) noexcept {
   // Not conditional on `next == outgoing`: re-picking the tool you already
   // have is exactly how a user says "stop doing the other thing".
   st.flatsTool = FlatsTool::None;
+  clearFlatsEditSelection(st);
 
   // Picking the tool that is already selected is not a switch. The palette
   // cell, the flyout row and the menu item can all deliver one, and treating
@@ -194,8 +195,20 @@ float transformSeedAngleDeg(const AppState& st, uint64_t activeDocumentId) noexc
   return measureReadout(st.measure).angleDeg;
 }
 
+void clearFlatsEditSelection(AppState& st) noexcept {
+  st.flatsEditSelection.clear();
+  st.flatsEditBox.reset();
+  st.flatsEditBoxAdditive = false;
+}
+
 void setFlatsTool(AppState& st, FlatsTool next) noexcept {
   st.flatsTool = next;
+  // **Any tool change drops the selection**, including picking SELECT EDITS
+  // again. A selection is a set of `flatEditKey()` values, which mean nothing
+  // except against the edit list they were picked from -- and a highlight
+  // still burning on the canvas while a different tool is armed reads as
+  // "Delete will remove these", which by then is no longer true.
+  clearFlatsEditSelection(st);
   // Picking a flatting tool cancels a half-finished two-click merge: the
   // armed point belongs to the gesture being abandoned, and carrying it into
   // the next one would merge two fills the user never paired.

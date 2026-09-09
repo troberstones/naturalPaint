@@ -728,7 +728,7 @@ enum class FlatsTool {
   BridgeEraser,  // drag        -> FlatBridgeStroke{erase}
   Group,         // lasso       -> FlatGroup
   ShapeFill,     // lasso       -> FlatShapeFill
-  SelectEdits,   // click       -> remove the nearest recorded edit
+  SelectEdits,   // click/box   -> select recorded edits; Delete removes them
 };
 
 // One row of the FLATS TOOLS palette. `shortcut` is the chord ADR-0009's
@@ -776,8 +776,9 @@ inline constexpr FlatsToolRow kFlatsTools[kFlatsToolCount] = {
     {FlatsTool::ShapeFill, "SHAPE", "Y",
      "Lasso a fill by hand. It is stamped after segmentation and wins over whatever the "
      "segmenter put there, because you drew it on purpose.", "lasso-select", 57807u},
-    {FlatsTool::SelectEdits, "UNDO EDIT", "â§V",
-     "Click near a repair you recorded to remove just that one, leaving the rest.", "undo-dot", 58449u},
+    {FlatsTool::SelectEdits, "SELECT EDITS", "â§V",
+     "Click a recorded repair to select it, Shift-click to add, or drag a box round several. "
+     "Delete removes the selection; Esc clears it.", "undo-dot", 58449u},
 };
 
 // A per-session override of the three physical constants that otherwise
@@ -979,6 +980,29 @@ struct AppState {
   // already (the gradient tool never committed a single drag), so this is a
   // separate bool with exactly one writer.
   bool flatsLassoActive = false;
+
+  // **The recorded repairs the user has SELECTED**, as `flatEditKey()` values.
+  //
+  // A flatting edit is a persistent object in the layer, not a command that
+  // ran once -- so it needs the vocabulary every other persistent object
+  // has: you can see it, click it, Shift-click to add, drag a box round
+  // several, and press Delete. That is what SELECT EDITS is; it replaced a
+  // click that removed the nearest repair outright, which gave the user no
+  // way to see what they were about to lose.
+  //
+  // Session state, and deliberately transient: a key means nothing except
+  // against one layer's edit list, so `app/ToolSwitch` clears this on every
+  // tool change and the canvas clears it when the active layer changes.
+  // Removal itself goes through `flatRemoveEdits()` in ONE call, so a
+  // multi-edit delete is one undo step.
+  std::vector<uint64_t> flatsEditSelection;
+  // The box-select drag in progress, [x0,y0,x1,y1] in texel space; the first
+  // two are the anchor and do not move. Empty when no drag is in flight.
+  std::optional<std::array<float, 4>> flatsEditBox;
+  // Whether the box-select drag that is in flight ADDS to the selection --
+  // latched at mouse-down for `marqueeCombine`'s own documented reason: Shift
+  // is read once, at the start, not from a hand that moved during the drag.
+  bool flatsEditBoxAdditive = false;
   // The active layer's kind on the previous frame, so ui/MacPaintUI can
   // reveal the FLATS TOOLS flyout on the TRANSITION into a Flats layer
   // rather than every frame one is selected. Level-triggering it would
@@ -1222,6 +1246,11 @@ struct AppState {
   // views photograph, and the only way to reach those panels' populated state
   // from a launch flag (they are blank unless a Flats layer is active).
   bool flatsDemo = false;
+  // `--flats-demo edits`: the same fixture, plus one recorded repair of every
+  // kind and a selection over two of them, with SELECT EDITS picked. The
+  // artifacts are drawn on the CANVAS, so no panel crop can reach them and no
+  // arrangement of panels can produce them.
+  bool flatsDemoEdits = false;
 
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //

@@ -1094,7 +1094,19 @@ constexpr float kAntDash = 6.0f;
 // Read once per frame by each caller and threaded through, rather than sampled
 // per segment, so two segments of the same outline cannot land on two different
 // clock readings.
+// **Pinned to zero on a `--screenshot` run.** The phase is a clock reading,
+// and a clock in a golden view is a view that fails on a slow machine and
+// passes on a fast one. The Text caret was exactly this defect and cost a
+// bisect: text views failed on main's OWN binary. Frozen here rather than at
+// each of the six call sites, so a seventh caller inherits it.
+//
+// It is also what makes a CANVAS crop possible at all: this file's golden
+// views are all strictly inside a panel, and the note in run_golden.sh saying
+// a single canvas pixel would make a flats view non-deterministic "by
+// construction" was true only because of this line.
+bool g_antPhaseFrozen = false;
 float marchingAntPhase() {
+  if (g_antPhaseFrozen) return 0.0f;
   return static_cast<float>(std::fmod(ImGui::GetTime() * 18.0, kAntDash * 2.0));
 }
 
@@ -13261,6 +13273,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   // it would let a crosshair outlive the pointer being over the canvas.
   g_canvasCursor.reset();
   g_canvasBitmapTool.reset();  // same reasoning, ui/ToolCursor.hpp §7
+  // Constant for the life of the process, but read here rather than wired
+  // from main.cpp so the flag and the function that obeys it stay in one file.
+  g_antPhaseFrozen = st.screenshotCliActive;
 
   // Next, and before anything reads the state those actions write: whatever
   // the native menu bar collected since the last frame.
@@ -13747,6 +13762,42 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // than nine identical grey buttons -- the same argument the
         // pen_options / text_options views make about an accented chip.
         setFlatsTool(st, FlatsTool::DeleteFill);
+        if (st.flatsDemoEdits) {
+          // One of every kind, at coordinates chosen against the three boxes
+          // above so each artifact lands somewhere legible rather than on top
+          // of its neighbour. Written straight into the model rather than
+          // through `flats/Tool`, because the tool functions refuse where the
+          // evaluation says there is nothing to act on -- and this fixture
+          // needs all seven present unconditionally, including the two the
+          // segmenter would decline to give.
+          // **All seven inside doc (60,60)-(500,660).** That rectangle is the
+          // part of the canvas this window shows to the LEFT of the flyout
+          // rail and ABOVE the status bar at the reference size; the first
+          // arrangement of this fixture spread the marks across the whole
+          // 1024 document and put three of them off-screen, which is a
+          // correct overlay no photograph contains.
+          FlatEdits& ed = fdoc.layers[at].flats.edits;
+          ed.mergeStrokes.push_back({ed.nextId++, FlatPolyline{120, 120, 300, 200, 380, 360}});
+          ed.mergePairs.push_back({ed.nextId++, 140, 380, 360, 140});
+          ed.bridges.push_back({ed.nextId++, FlatPolyline{455, 100, 455, 250}, false});
+          ed.bridges.push_back({ed.nextId++, FlatPolyline{490, 300, 490, 430}, true});
+          ed.deleteMarks.push_back({ed.nextId++, 200, 480});
+          ed.carves.push_back({ed.nextId++, 340, 480});
+          ed.shapeFills.push_back({ed.nextId++,
+                                   FlatPolyline{90, 520, 185, 510, 205, 610, 100, 630},
+                                   FlatRgb{220, 90, 90}, "Shape 1"});
+          ed.groups.push_back(
+              {ed.nextId++, "hair", FlatPolyline{255, 520, 465, 520, 465, 645, 255, 645}});
+          setFlatsTool(st, FlatsTool::SelectEdits);
+          // Two selected, not one and not all: one cell of every state --
+          // idle, selected, and a selected POINT edit, whose highlight is
+          // drawn by a different branch than a stroke's.
+          st.flatsEditSelection = {flatEditKey(FlatEditRef{4, ed.deleteMarks[0].id}),
+                                   flatEditKey(FlatEditRef{6, ed.groups[0].id})};
+          // The flyout is what `flats_tools` photographs; here it sits over
+          // the canvas this view exists to show, so it is shut.
+          st.flyoutOpen = false;
+        }
       }
       st.panels.setCollapsed(ControlsSection::FlatsSegmentation, false);
       st.panels.setCollapsed(ControlsSection::Color, true);
@@ -16215,6 +16266,121 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         const bool strokeTool = ft == FlatsTool::BridgePen || ft == FlatsTool::BridgeEraser ||
                                 ft == FlatsTool::DrawMerge;
         const bool lassoTool = ft == FlatsTool::Group || ft == FlatsTool::ShapeFill;
+        const bool selectTool = ft == FlatsTool::SelectEdits;
+
+        // ---- SELECT EDITS: a recorded repair is an object, not history ---
+        //
+        // Every flatting edit is a persistent thing in the layer -- geometry
+        // replayed against a fresh segmentation, per ADR-0009 -- so it gets
+        // the vocabulary every persistent thing has: click to select,
+        // Shift-click to add or remove, drag a box round several, Delete to
+        // remove them, Esc to clear. The overlay draws the whole set and
+        // brightens the selected ones, so what Delete is about to take is
+        // visible before it is taken.
+        //
+        // This tool used to remove the nearest repair on the click itself.
+        // That is an undo with extra steps: no way to see what was about to
+        // go, no way to take two at once, and no way to change your mind.
+        if (selectTool) {
+          const FlatEdits& fedits = ftl->flats.edits;
+          auto keyIt = [&](uint64_t k) {
+            return std::find(st.flatsEditSelection.begin(), st.flatsEditSelection.end(), k);
+          };
+          auto say = [&](const char* suffix) {
+            const size_t n = st.flatsEditSelection.size();
+            g_strokeRefusal =
+                n == 0 ? std::string()
+                       : std::to_string(n) + (n == 1 ? " edit selected" : " edits selected") + suffix;
+          };
+          if (onCanvas && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            st.flatsEditBox = std::array<float, 4>{tx, ty, tx, ty};
+            // Latched at mouse-down, not read on release: `marqueeCombine`'s
+            // own documented rule -- the modifier is a question asked once,
+            // at the start, not re-read from a hand that moved during the
+            // drag.
+            st.flatsEditBoxAdditive = ImGui::GetIO().KeyShift;
+          }
+          if (st.flatsEditBox.has_value()) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+              (*st.flatsEditBox)[2] = tx;
+              (*st.flatsEditBox)[3] = ty;
+            } else {
+              const std::array<float, 4> b = *st.flatsEditBox;
+              const bool additive = st.flatsEditBoxAdditive;
+              st.flatsEditBox.reset();
+              st.flatsEditBoxAdditive = false;
+              // **A drag is a box, a click is a pick -- measured on SCREEN.**
+              // In texels the same hand movement means different things at
+              // different zooms: at 8x a two-texel wobble is sixteen screen
+              // pixels, so every click would commit as a box that caught
+              // nothing and silently cleared the selection.
+              const float dx = (b[2] - b[0]) * st.view.zoom;
+              const float dy = (b[3] - b[1]) * st.view.zoom;
+              if (std::fabs(dx) >= 4.0f || std::fabs(dy) >= 4.0f) {
+                if (!additive) st.flatsEditSelection.clear();
+                const std::vector<FlatEditRef> in =
+                    flatEditsInBox(fedits, b[0], b[1], b[2], b[3]);
+                for (FlatEditRef r : in) {
+                  const uint64_t k = flatEditKey(r);
+                  if (keyIt(k) == st.flatsEditSelection.end()) st.flatsEditSelection.push_back(k);
+                }
+                if (st.flatsEditSelection.empty())
+                  g_strokeRefusal = "nothing in the box.";
+                else
+                  say(" -- Delete removes them, Esc clears.");
+              } else {
+                // The reach is the bridge eraser's radius, so "near enough to
+                // point at" means the same distance in both tools rather than
+                // being a second number invented here.
+                const FlatEditRef hit = flatEditAt(fedits, b[0], b[1], kFlatEraseRadius);
+                if (hit.kind == 0) {
+                  // Clicking empty canvas clears -- unless Shift is down, in
+                  // which case the user is mid-way through building a
+                  // selection and a missed click must not undo the work.
+                  if (!additive) {
+                    st.flatsEditSelection.clear();
+                    g_strokeRefusal = "no recorded repair there -- click one, or drag a box.";
+                  }
+                } else {
+                  const uint64_t k = flatEditKey(hit);
+                  if (!additive) st.flatsEditSelection.clear();
+                  const auto it = keyIt(k);
+                  if (it != st.flatsEditSelection.end())
+                    st.flatsEditSelection.erase(it);
+                  else
+                    st.flatsEditSelection.push_back(k);
+                  say(" -- Delete removes, Shift-click adds.");
+                }
+              }
+            }
+          }
+          // **Bare keys, so `WantTextInput` guards them** -- the layer-rename
+          // box is one Delete away otherwise, and this is the same guard the
+          // Hand and the eyedropper use for their own bare keys.
+          if (!ImGui::GetIO().WantTextInput && !st.flatsEditSelection.empty()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+              st.flatsEditSelection.clear();
+              g_strokeRefusal.clear();
+            } else if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+                       ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+              std::vector<FlatEditRef> refs;
+              refs.reserve(st.flatsEditSelection.size());
+              for (uint64_t k : st.flatsEditSelection)
+                refs.push_back(FlatEditRef{static_cast<int>(k >> 32), static_cast<uint32_t>(k)});
+              // **One call, so it is ONE undo step.** Removing them in a loop
+              // with a `recordEdit` each would make Cmd+Z put them back one
+              // at a time, which is not what deleting a selection means
+              // anywhere else in the app.
+              const size_t n = flatRemoveEdits(ftl->flats.edits, refs);
+              st.flatsEditSelection.clear();
+              if (n > 0) {
+                ftod->recordEdit(n == 1 ? "flats remove edit" : "flats remove edits",
+                                 EditKind::Content);
+                g_strokeRefusal.clear();
+              }
+            }
+          }
+        } else
 
         // ---- the lasso tools: GROUP and SHAPE ---------------------------
         //
@@ -16314,17 +16480,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                   g_strokeRefusal = "no room to carve a fill here -- raise GAP or pick another spot.";
                 }
                 break;
-              case FlatsTool::SelectEdits:
-                // The reach is the bridge eraser's radius, so "near enough to
-                // rub out" means the same distance in both tools rather than
-                // being a second number invented here.
-                if (flatsRemoveEditAt(*ftl, tx, ty, kFlatEraseRadius)) {
-                  ftod->recordEdit("flats remove edit", EditKind::Content);
-                  g_strokeRefusal.clear();
-                } else {
-                  g_strokeRefusal = "no recorded repair near enough to remove.";
-                }
-                break;
               case FlatsTool::MergePair:
                 // The same two-stage gesture `M` performs, and it shares
                 // `flatsMergeFirst` with it deliberately: arming with the key
@@ -16349,6 +16504,10 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
                   }
                 }
                 break;
+              // SELECT EDITS is handled before this branch: it needs the
+              // drag as well as the click, so it cannot live in a switch
+              // reached only by `IsMouseClicked`.
+              case FlatsTool::SelectEdits:
               case FlatsTool::Group:
               case FlatsTool::ShapeFill:
               case FlatsTool::BridgePen:
@@ -16362,6 +16521,14 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
     }
     if (!flatsToolOwnsCanvas && st.flatsStroke.empty() == false) st.flatsStroke.clear();
+    // A box-select drag is abandoned the same way, and for the same reason.
+    // The SELECTION itself is not cleared here: `app/ToolSwitch` owns that,
+    // on the tool change, so a selection survives a moment of the pointer
+    // leaving the canvas.
+    if (!flatsToolOwnsCanvas && st.flatsEditBox.has_value()) {
+      st.flatsEditBox.reset();
+      st.flatsEditBoxAdditive = false;
+    }
     // Same rule for the lasso: switching layer or tool mid-path abandons it
     // rather than resuming a stale one, which is what `Tool::PolygonLasso`'s
     // own else-arm does for the same reason.
@@ -17560,8 +17727,113 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           for (size_t i = 0; i < eval->suggestions.size(); i++)
             antPath(eval->suggestions[i], static_cast<int>(i) == st.flatsGapFocus ? 3 : 1);
         }
-        for (const FlatBridgeStroke& b : fl->flats.edits.bridges)
-          if (!b.erase) antPath(b.pts, 1);
+
+        // ---- the recorded repairs, as SELECTABLE ARTIFACTS ---------------
+        //
+        // **Only while a flatting tool is picked.** Outside flatting mode a
+        // Flats layer is just artwork you are painting near, and a canvas
+        // strewn with delete crosses and group lassos would be in the way.
+        // The one exception is the bridges, which drew unconditionally
+        // before this and still do -- they are invisible in the render by
+        // design, so with the overlay off there is nothing at all to say a
+        // gap was closed by hand.
+        //
+        // Ants are deliberately NOT used here. This block's own rule is that
+        // ants mean "under review": a gap SUGGESTION is a proposal, and that
+        // is what the loop above draws. A recorded edit is a decision the
+        // user already made, so it draws as a solid line -- dark casing under
+        // a coloured core, the vector overlay's idiom below, for the same
+        // reason: this is drawn over the user's picture at whatever colour
+        // that happens to be.
+        const bool showAllEdits = st.flatsTool != FlatsTool::None;
+        {
+          const ImU32 kCasing = IM_COL32(0, 0, 0, 150);
+          const ImU32 kHalo = IM_COL32(255, 255, 255, 235);
+          // Indexed by `FlatEditRef::kind`; [0] is the "no edit" sentinel and
+          // is never drawn. Merge stroke and merge pair share a colour
+          // because they are the same operation recorded two ways.
+          static const ImU32 kEditColor[8] = {
+              0,
+              IM_COL32(90, 200, 255, 235),   // 1 bridge
+              IM_COL32(80, 235, 90, 235),    // 2 draw merge
+              IM_COL32(80, 235, 90, 235),    // 3 merge pair
+              IM_COL32(255, 105, 105, 240),  // 4 deleted fill
+              IM_COL32(205, 130, 255, 235),  // 5 shape
+              IM_COL32(255, 200, 40, 235),   // 6 group
+              IM_COL32(255, 150, 60, 240),   // 7 carve
+          };
+          for (const FlatEditItem& h : flatEditList(fl->flats.edits)) {
+            if (!showAllEdits && h.ref.kind != 1) continue;
+            const bool sel =
+                std::find(st.flatsEditSelection.begin(), st.flatsEditSelection.end(),
+                          flatEditKey(h.ref)) != st.flatsEditSelection.end();
+            const ImU32 col = kEditColor[h.ref.kind];
+            // An erased bridge is the same object as a bridge and picks the
+            // same way, but it UNDID one -- so it is drawn hollow-dim rather
+            // than in the bridge's own colour, which would claim a barrier
+            // exists where the user removed one.
+            const ImU32 core = (h.ref.kind == 1 && h.label[0] == 'u') ? IM_COL32(90, 200, 255, 110)
+                                                                      : col;
+            if (h.pts.size() == 2) {
+              // A point edit: a cross in a ring, big enough to hit and small
+              // enough not to hide the fill it marks.
+              const Vec2 c = xform.toScreen(Vec2{h.pts[0], h.pts[1]});
+              const float r = 6.0f;
+              auto cross = [&](ImU32 c2, float w) {
+                dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), c2, w);
+                dl->AddLine(ImVec2(c.x + r, c.y - r), ImVec2(c.x - r, c.y + r), c2, w);
+                dl->AddCircle(ImVec2(c.x, c.y), r * 1.6f, c2, 0, w);
+              };
+              // **Three passes when selected, and the WHITE one in the
+              // middle.** A white halo under a dark casing shows only where
+              // the casing does not cover it -- under a pixel each side, which
+              // is invisible; a white halo with no casing disappears entirely
+              // on the white paper this fixture draws on. Dark outside, white
+              // band, colour core reads on any ground.
+              if (sel) {
+                cross(kCasing, 6.4f);
+                cross(kHalo, 4.2f);
+              } else {
+                cross(kCasing, 2.8f);
+              }
+              cross(core, sel ? 2.0f : 1.5f);
+              continue;
+            }
+            std::vector<ImVec2> pv;
+            pv.reserve(h.pts.size() / 2);
+            for (size_t i = 0; i + 1 < h.pts.size(); i += 2) {
+              const Vec2 sp = xform.toScreen(Vec2{h.pts[i], h.pts[i + 1]});
+              pv.push_back(ImVec2(sp.x, sp.y));
+            }
+            if (pv.size() < 2) continue;
+            // **No interior shading, deliberately.** autoFlats tints the
+            // inside of a group so "click inside it counts as a hit" has
+            // something on screen behind it, using a canvas fill that honours
+            // the nonzero winding rule. ImDrawList has only
+            // `AddConvexPolyFilled`, and a freehand lasso is never convex --
+            // it would paint a shape the user did not draw, over their own
+            // artwork. The interior hit stays (flats/Model's `flatEditAt`
+            // scores it just worse than any line); the outline is what says
+            // where it is.
+            const ImDrawFlags close = h.closed ? ImDrawFlags_Closed : 0;
+            if (sel) {
+              dl->AddPolyline(pv.data(), static_cast<int>(pv.size()), kCasing, close, 6.4f);
+              dl->AddPolyline(pv.data(), static_cast<int>(pv.size()), kHalo, close, 4.2f);
+            } else {
+              dl->AddPolyline(pv.data(), static_cast<int>(pv.size()), kCasing, close, 2.8f);
+            }
+            dl->AddPolyline(pv.data(), static_cast<int>(pv.size()), core, close, sel ? 2.0f : 1.5f);
+          }
+        }
+        // The box-select drag in flight. Ants, like the marquee: it IS a
+        // selection rectangle, and reading as one is the point.
+        if (st.flatsEditBox.has_value()) {
+          const std::array<float, 4>& b = *st.flatsEditBox;
+          drawAntPolyline(dl, xform,
+                          std::vector<Vec2>{Vec2{b[0], b[1]}, Vec2{b[2], b[1]}, Vec2{b[2], b[3]},
+                                            Vec2{b[0], b[3]}},
+                          /*closed=*/true, antPhase);
+        }
         if (st.flatsMergeFirst.has_value())
           antPath(FlatPolyline{(*st.flatsMergeFirst)[0], (*st.flatsMergeFirst)[1], tx, ty}, 1);
       }

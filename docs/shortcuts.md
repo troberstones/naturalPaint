@@ -216,6 +216,14 @@ sticky tool the way a brush is picked, and the canvas route commits it. The lett
 are what those cells advertise, so binding them later changes how they are reached and not
 what they do.
 
+`⇧V` is now **SELECT EDITS**, not "undo edit": it selects recorded repairs rather than
+removing the nearest one outright, and the keys that act on a selection are the ones every
+other selection in the app uses — `Delete`/`Backspace` removes it in one undo step, `Esc`
+clears it, `Shift` adds to it. Those three are consumed in the canvas route rather than
+bound in `keymaps/default.json`, because they are only meaningful while that tool holds
+the pointer; they are guarded on `WantTextInput` so the layer-rename box keeps its own
+Delete.
+
 ### 5.2 `⌘H` cannot be used
 
 Photoshop binds `⌘H` to *hide selection edges*. On macOS `⌘H` hides the application, and

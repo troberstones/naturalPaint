@@ -137,6 +137,11 @@ void setActiveTool(AppState& st, Tool next) noexcept;
 // `AppState::flatsTool`, for the reason this header gives about
 // `brush.tool`: two writers of "what does a click mean" is how a gesture
 // ends up meaning two things at once.
+// Drops the selected recorded edits (and any box-select drag in flight).
+// Called by both tool writers above: a `flatEditKey()` is only meaningful
+// against the edit list it was picked from.
+void clearFlatsEditSelection(AppState& st) noexcept;
+
 void setFlatsTool(AppState& st, FlatsTool next) noexcept;
 
 // **Is the flatting tool the active tool right now?**
