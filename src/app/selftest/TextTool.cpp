@@ -616,6 +616,117 @@ bool runTextToolTest() {
           "highlight over a block that is no longer being edited");
   }
 
+  // ==========================================================================
+  // PASTED TEXT -- what may come in off the system pasteboard
+  // ==========================================================================
+  //
+  // The stakes, and why this is refused rather than repaired: `shapeText()`
+  // fails on invalid UTF-8 and `textContentToShapes()` turns that into NO
+  // SHAPES, so one bad byte does not corrupt one character -- it blanks the
+  // whole block, silently, including everything that was already in it.
+  std::printf("  -- pasted text --\n");
+  {
+    std::string out;
+
+    check(textSanitizePasted("hello", &out) && out == "hello",
+          "paste: plain ASCII passes through unchanged");
+
+    const std::string eAcute = "\xC3\xA9";
+    const std::string euro = "\xE2\x82\xAC";
+    const std::string emoji = "\xF0\x9F\x8E\xA8";  // 4-byte, outside the BMP
+    check(textSanitizePasted(eAcute + euro + emoji, &out) && out == eAcute + euro + emoji,
+          "paste: 2-, 3- and 4-byte characters all survive intact");
+
+    // Line endings, which is what text from another application actually
+    // looks like.
+    check(textSanitizePasted("a\r\nb", &out) && out == "a\nb",
+          "paste: REQUIRED -- CRLF becomes ONE newline, not two; text pasted from Windows or a "
+          "web page would otherwise double-space itself");
+    check(textSanitizePasted("a\rb", &out) && out == "a\nb",
+          "paste: a lone CR becomes a newline too");
+    check(textSanitizePasted("a\r\n\r\nb", &out) && out == "a\n\nb",
+          "paste: and a blank line between two CRLFs stays exactly one blank line");
+    check(textSanitizePasted("a\n\rb", &out) && out == "a\n\nb",
+          "paste: LF followed by CR is two line breaks, not one -- only CR+LF pairs collapse");
+
+    // Controls: the kept set matches what the typing loop admits, so pasting
+    // a character and typing it give the same block.
+    check(textSanitizePasted("a\tb\nc", &out) && out == "a\tb\nc",
+          "paste: tab and newline are kept -- the same two the typing loop admits");
+    check(textSanitizePasted(std::string("a\x01\x1F", 3) + "b", &out) && out == "ab",
+          "paste: the other C0 controls are dropped");
+    check(textSanitizePasted(std::string("a\x7F", 2) + "b", &out) && out == "ab",
+          "paste: DEL is dropped too");
+
+    // --- the refusals, each one a way a block could be blanked -----------
+    const std::string before = "untouched";
+    out = before;
+    check(!textSanitizePasted("\xC3", &out),
+          "paste: REQUIRED -- a truncated multi-byte sequence at the very end is REFUSED; this "
+          "is what a clipboard buffer cut short looks like");
+    check(out == before,
+          "paste: REQUIRED -- and a refusal leaves *out untouched, so the caller can say "
+          "'nothing was pasted' and mean it");
+
+    check(!textSanitizePasted("a\xC3z", &out),
+          "paste: a lead byte followed by a non-continuation byte is refused");
+    check(!textSanitizePasted("\x80\x80", &out),
+          "paste: a continuation byte with no lead is refused");
+    check(!textSanitizePasted("\xFF\xFE", &out),
+          "paste: 0xFF/0xFE -- the bytes a UTF-16 BOM arrives as -- are refused");
+
+    // Overlong: the same code point in more bytes than it needs. Two
+    // spellings of one character is exactly the ambiguity a byte-offset
+    // caret cannot afford.
+    check(!textSanitizePasted("\xC0\xAF", &out),
+          "paste: REQUIRED -- an OVERLONG encoding of '/' is refused, not silently accepted as a "
+          "second spelling of a character the caret already has one offset for");
+    check(!textSanitizePasted("\xE0\x80\xAF", &out), "paste: a 3-byte overlong is refused too");
+
+    // A lone surrogate. CESU-8 and WTF-8 both spell one as three
+    // plausible-looking bytes, and it is the exact input the typing loop
+    // already skips rather than encodes -- for the same reason.
+    check(!textSanitizePasted("\xED\xA0\x80", &out),
+          "paste: REQUIRED -- a lone surrogate (U+D800 as CESU-8) is refused; three bytes that "
+          "pass a shape-only check and blank the block at shapeText()");
+    check(!textSanitizePasted("\xF4\x90\x80\x80", &out),
+          "paste: a code point past U+10FFFF is refused");
+
+    // The boundaries themselves, so the refusals above are not just "anything
+    // unusual fails".
+    check(textSanitizePasted("\xED\x9F\xBF", &out),
+          "paste: U+D7FF -- the character immediately BELOW the surrogate range -- is accepted, "
+          "so the surrogate check is a range and not a blanket refusal of 3-byte sequences");
+    check(textSanitizePasted("\xEE\x80\x80", &out),
+          "paste: U+E000, immediately above it, is accepted");
+    check(textSanitizePasted("\xF4\x8F\xBF\xBF", &out),
+          "paste: U+10FFFF exactly -- the last legal code point -- is accepted");
+
+    check(textSanitizePasted("", &out) && out.empty(),
+          "paste: the empty string is valid and yields nothing");
+    check(!textSanitizePasted("hello", nullptr),
+          "paste: a null out pointer is refused rather than dereferenced");
+  }
+
+  // The undo bookkeeping a paste or a cut has to do -- app/TextTool.hpp
+  // section 3c. Without it, the next character typed amends straight over the
+  // paste's own history entry and undo has nothing to stop at between them.
+  {
+    TextContent t;
+    t.utf8 = "abc";
+    TextEditState s;
+    textEditBegin(&s, 1, 0, t);
+    textEditMarkUndoOpened(&s);
+    check(s.undoOpened, "(setup) a typing burst has an entry open");
+    textEditClearUndoOpened(&s);
+    check(!s.undoOpened,
+          "textEditClearUndoOpened(): REQUIRED -- releases the burst's entry so a paste's own "
+          "entry is not amended over by the next keystroke");
+    check(textSessionActive(s) && s.caret == 3,
+          "textEditClearUndoOpened(): and it does NOT end the session or move the caret -- it is "
+          "the counterpart to markUndoOpened(), not a second cancel");
+  }
+
   return ok;
 }
 

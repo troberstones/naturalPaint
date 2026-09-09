@@ -289,6 +289,76 @@ void textEditMarkUndoOpened(TextEditState* state) noexcept {
   state->undoOpened = true;
 }
 
+void textEditClearUndoOpened(TextEditState* state) noexcept {
+  if (state == nullptr) return;
+  state->undoOpened = false;
+}
+
+bool textSanitizePasted(std::string_view in, std::string* out) {
+  if (out == nullptr) return false;
+
+  // --- pass 1: validate, touching nothing ---------------------------------
+  //
+  // Two passes rather than one, so a string that turns out to be invalid
+  // halfway through leaves `*out` untouched rather than partly written --
+  // the caller's refusal has to be able to say "nothing was pasted" and mean
+  // it.
+  size_t i = 0;
+  while (i < in.size()) {
+    const unsigned char lead = static_cast<unsigned char>(in[i]);
+    size_t len = 0;
+    uint32_t cp = 0;
+    if ((lead & 0x80) == 0x00) {
+      len = 1;
+      cp = lead;
+    } else if ((lead & 0xE0) == 0xC0) {
+      len = 2;
+      cp = lead & 0x1Fu;
+    } else if ((lead & 0xF0) == 0xE0) {
+      len = 3;
+      cp = lead & 0x0Fu;
+    } else if ((lead & 0xF8) == 0xF0) {
+      len = 4;
+      cp = lead & 0x07u;
+    } else {
+      return false;  // a continuation byte with no lead, or 0xF5-0xFF
+    }
+    if (i + len > in.size()) return false;  // truncated at the end of the buffer
+    for (size_t k = 1; k < len; ++k) {
+      const unsigned char cont = static_cast<unsigned char>(in[i + k]);
+      if ((cont & 0xC0) != 0x80) return false;
+      cp = (cp << 6) | (cont & 0x3Fu);
+    }
+    // Overlong encodings: the same code point spelled in more bytes than it
+    // needs. Rejected because two spellings of one character is exactly the
+    // ambiguity a byte-offset caret cannot afford, and because they are the
+    // classic way a validator gets walked past.
+    if (len == 2 && cp < 0x80) return false;
+    if (len == 3 && cp < 0x800) return false;
+    if (len == 4 && cp < 0x10000) return false;
+    if (cp >= 0xD800 && cp <= 0xDFFF) return false;  // a lone surrogate (CESU-8/WTF-8)
+    if (cp > 0x10FFFF) return false;
+    i += len;
+  }
+
+  // --- pass 2: normalise ---------------------------------------------------
+  out->clear();
+  out->reserve(in.size());
+  for (size_t j = 0; j < in.size(); ++j) {
+    const unsigned char c = static_cast<unsigned char>(in[j]);
+    if (c == '\r') {
+      // CRLF collapses to one newline; a lone CR becomes one too.
+      out->push_back('\n');
+      if (j + 1 < in.size() && in[j + 1] == '\n') ++j;
+      continue;
+    }
+    if (c == 0x7F) continue;                              // DEL
+    if (c < 0x20 && c != '\n' && c != '\t') continue;     // the other C0 controls
+    out->push_back(static_cast<char>(c));
+  }
+  return true;
+}
+
 void textEditBegin(TextEditState* state, uint64_t documentId, size_t layerIndex,
                     const TextContent& content) {
   if (state == nullptr) return;
@@ -366,6 +436,17 @@ bool keymapActionEndsTextSession(std::string_view action) noexcept {
       // history -- a typing burst IS an entry, so Cmd+Z is the user undoing
       // their own typing (and see textEditResyncAfterHistoryMove())
       action == "undo" || action == "redo" ||
+      // the clipboard three, which mean the TEXT while a caret is up:
+      // ui/MacPaintUI.cpp intercepts each of them for a live session and
+      // consumes the flag before the canvas handlers see it. Same reasoning
+      // as select_all below -- on the ending side the session would already
+      // be over by the time the flag was read.
+      //
+      // `copy_merged` (Cmd+Shift+C) is NOT here and stays on the ending
+      // side: it means "every visible layer flattened into pixels", which
+      // has no text reading to redirect to, so putting the caret away and
+      // doing exactly what it says is the honest answer.
+      action == "copy" || action == "cut" || action == "paste" ||
       // select-all, which means SELECT ALL THE TEXT while a caret is up.
       // ui/MacPaintUI.cpp intercepts `requestSelectAll` for a live session
       // and consumes it before the canvas selection sees it; ending the

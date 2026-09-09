@@ -221,6 +221,52 @@ bool textDeleteSelection(TextContent* text, TextEditState* state);
 // caller's next edit invalidates the buffer it would have pointed into.
 std::string textSelectedUtf8(const TextContent& text, const TextEditState& state);
 
+// ==========================================================================
+// 3c. TEXT ARRIVING FROM OUTSIDE THE APPLICATION
+// ==========================================================================
+//
+// Clean a string taken off the system pasteboard into something a
+// `TextContent` can safely hold, writing it to `*out`. Returns **false, and
+// writes nothing**, when the input is not valid UTF-8.
+//
+// **Refusing rather than repairing, and this is the part that matters.**
+// `text/Shaper.hpp`'s `shapeText()` fails on an invalid UTF-8 string, and
+// `textContentToShapes()` turns that failure into NO SHAPES -- so a single
+// bad byte pasted into a caption does not corrupt one character, it blanks
+// the entire block, silently, including everything that was already there.
+// That is the same reasoning `ui/MacPaintUI.cpp`'s typing loop gives for
+// skipping lone surrogates rather than encoding them, applied to a source
+// that can deliver megabytes of anything: another application's idea of
+// "text", a file dragged onto the pasteboard, a truncated UTF-16 buffer.
+//
+// **What it does repair, because these are not corruption:**
+//
+//   * `\r\n` and a lone `\r` both become `\n`. Text copied from Windows,
+//     from a web page, or out of an old file arrives this way constantly,
+//     and a stray CR is not a character this build's shaper has any use for
+//     -- it would be one more thing in the string that draws as nothing.
+//   * Every other C0 control (and DEL) is dropped, keeping only `\n` and
+//     `\t`. That is exactly the set the typing loop already admits, so
+//     pasting a character and typing it produce the same block.
+//
+// Strict about what "valid" means: continuation bytes must be present and
+// well formed, overlong encodings are rejected, and so are the surrogate
+// range and anything past U+10FFFF -- CESU-8 and WTF-8 both encode lone
+// surrogates as three plausible-looking bytes, and both would reach
+// `shapeText()` as the invalid input this exists to catch.
+bool textSanitizePasted(std::string_view in, std::string* out);
+
+// Release this session's open undo entry WITHOUT ending the session, so the
+// next keystroke RECORDS a new one instead of amending.
+//
+// The counterpart to `textEditMarkUndoOpened()`, and it exists for exactly
+// one situation: an edit that is not typing happening in the middle of a
+// typing burst -- a paste, or a cut. Those record their own history entry, and
+// if the burst's flag were left set the next character typed would `amendEdit()`
+// straight over that entry, folding the paste and the character into one state
+// and leaving nothing for undo to stop at between them.
+void textEditClearUndoOpened(TextEditState* state) noexcept;
+
 // A click at `offset`: placing the caret (`extend == false`, which collapses)
 // or dragging the far end of a selection to it (`extend == true`, which
 // leaves the anchor). Shift+click passes true.

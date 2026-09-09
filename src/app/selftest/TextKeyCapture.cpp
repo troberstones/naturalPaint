@@ -291,11 +291,21 @@ bool runTextKeyCaptureTest() {
     check(!keymapActionEndsTextSession("select_all"),
           "keymapActionEndsTextSession(): REQUIRED -- select_all KEEPS the session, or the "
           "select-all-the-text interception one layer up can never fire");
-    check(keymapActionEndsTextSession("copy") && keymapActionEndsTextSession("copy_merged") &&
-              keymapActionEndsTextSession("cut") && keymapActionEndsTextSession("paste"),
-          "keymapActionEndsTextSession(): REQUIRED -- the clipboard four end it TOGETHER; copy "
-          "writes nothing but acts on the canvas selection, and splitting the family would be a "
-          "worse rule than keeping it");
+    // The clipboard three KEEP the session, because while a caret is up they
+    // mean the TEXT -- ui/MacPaintUI.cpp intercepts each flag for a live
+    // session and consumes it. On the ending side the session would already
+    // be over by the time the flag was read, so that interception would be
+    // dead code and Cmd+C would silently copy canvas pixels mid-caption.
+    check(!keymapActionEndsTextSession("copy") && !keymapActionEndsTextSession("cut") &&
+              !keymapActionEndsTextSession("paste"),
+          "keymapActionEndsTextSession(): REQUIRED -- copy/cut/paste KEEP the session, or the "
+          "text-clipboard interception one layer up can never fire");
+    // `copy_merged` is the exception in its own family and stays on the
+    // ending side: "every visible layer flattened into pixels" has no text
+    // reading to redirect to, so doing exactly what it says is honest.
+    check(keymapActionEndsTextSession("copy_merged"),
+          "keymapActionEndsTextSession(): REQUIRED -- but copy_merged still ENDS it; there is no "
+          "text meaning of 'flatten every visible layer' to redirect to");
     check(keymapActionEndsTextSession("delete_selection") && keymapActionEndsTextSession("quit") &&
               keymapActionEndsTextSession("flats_delete_fill"),
           "keymapActionEndsTextSession(): delete / quit / the flats commands end it");

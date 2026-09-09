@@ -335,6 +335,7 @@ add_executable(naturalPaint
   io/AbrBrushes.cpp
   io/Capabilities.cpp
   io/ClipboardImage.cpp
+  io/ClipboardText.cpp
   io/CompSerial.cpp
   io/Descriptor.cpp
   io/Export.cpp

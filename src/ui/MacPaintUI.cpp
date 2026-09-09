@@ -69,6 +69,7 @@
 #include "core/LayerOps.hpp"
 #include "core/SelectionRefine.hpp"
 #include "imgui.h"
+#include "io/ClipboardText.hpp"
 #include "io/ExportAs.hpp"
 #include "color/Space.hpp"
 #include "app/MunsellSelection.hpp"
@@ -14942,6 +14943,97 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
 
       const Selection* sel =
           (od != nullptr && od->selection.has_value()) ? &*od->selection : nullptr;
+
+      // --- the clipboard, while a caret is up, means the TEXT --------------
+      //
+      // Cmd+C/X/V (and the Edit menu's own items, which set the same flags)
+      // act on the text selection rather than on canvas pixels for as long as
+      // a Text session is live. The three are on
+      // `keymapActionEndsTextSession()`'s KEEP list so the session survives
+      // long enough for this to run -- main.cpp ends a session BEFORE setting
+      // the request flag, so on the ending side this block would be dead
+      // code.
+      //
+      // **Each of them CONSUMES its flag, including when it does nothing.**
+      // A Cmd+C with no text selected must not fall through and copy the
+      // canvas instead: the caret is up, the user meant the text, and
+      // quietly copying a rectangle of pixels they would then paste as a new
+      // layer is a worse answer than saying "nothing is selected". Every
+      // refusal goes to `g_docStatus`, which is where this file's other
+      // refusals are already read from.
+      //
+      // The system pasteboard, not a private buffer -- so text copied here
+      // pastes into any other application and vice versa. `st.clipboard`
+      // (pixels) is left completely alone by all three, so a copied image
+      // survives a caption being edited.
+      if (textSessionActive(st.textEdit) && od != nullptr &&
+          st.textEdit.documentId == od->id &&
+          st.textEdit.layerIndex < od->document.layers.size() &&
+          od->document.layers[st.textEdit.layerIndex].kind == LayerKind::Text &&
+          (st.requestCopy || st.requestCut || st.requestPaste)) {
+        Layer& block = od->document.layers[st.textEdit.layerIndex];
+        const bool wantCopy = st.requestCopy;
+        const bool wantCut = st.requestCut;
+        const bool wantPaste = st.requestPaste;
+        st.requestCopy = false;
+        st.requestCut = false;
+        st.requestPaste = false;
+
+        if (wantCopy || wantCut) {
+          const std::string picked = textSelectedUtf8(block.text, st.textEdit);
+          if (picked.empty()) {
+            g_docStatus = "Nothing is selected. Drag across the text, or Shift+arrow, first.";
+          } else if (!clipboardSetText(picked)) {
+            // Reported rather than swallowed: a copy that silently failed
+            // leaves the next paste delivering the PREVIOUS clipboard
+            // contents, which looks like paste is broken rather than copy.
+            g_docStatus = "The system clipboard refused the copy.";
+          } else if (wantCut) {
+            if (block.locked) {
+              g_docStatus = "Copied. The layer is locked, so nothing was cut.";
+            } else {
+              textDeleteSelection(&block.text, &st.textEdit);
+              od->recordEdit("cut text", EditKind::Content);
+              // A cut is not typing, and it just recorded its own entry. If
+              // the burst's flag were left set the next character typed would
+              // amend straight over it -- app/TextTool.hpp section 3c.
+              textEditClearUndoOpened(&st.textEdit);
+              g_docStatus = "Cut.";
+            }
+          } else {
+            g_docStatus = "Copied.";
+          }
+        }
+
+        if (wantPaste) {
+          if (block.locked) {
+            g_docStatus = "This layer is locked. Unlock it to paste into the text.";
+          } else if (!clipboardHasText()) {
+            // Deliberately not falling through to the canvas paste, which
+            // would add an image as a NEW LAYER over the block being typed
+            // into -- see the block comment above.
+            g_docStatus = "The clipboard holds no text to paste into this block.";
+          } else {
+            std::string cleaned;
+            if (!textSanitizePasted(clipboardGetText(), &cleaned)) {
+              // The refusal app/TextTool.hpp section 3c exists for: one bad
+              // byte reaching `shapeText()` blanks the WHOLE block, so a
+              // paste that cannot be validated must change nothing at all.
+              g_docStatus = "That clipboard text is not valid UTF-8; nothing was pasted.";
+            } else if (cleaned.empty()) {
+              g_docStatus = "The clipboard's text is empty; nothing was pasted.";
+            } else {
+              // `textInsertUtf8()` replaces the selection itself, so a paste
+              // over selected text does what every editor does without this
+              // call site having to remember.
+              textInsertUtf8(&block.text, &st.textEdit, cleaned);
+              od->recordEdit("paste text", EditKind::Content);
+              textEditClearUndoOpened(&st.textEdit);
+              g_docStatus = "Pasted.";
+            }
+          }
+        }
+      }
 
       if (st.requestCopy && target != nullptr)
         st.clipboard = copyThroughSelection(*target, sel);
