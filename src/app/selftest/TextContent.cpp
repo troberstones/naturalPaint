@@ -383,6 +383,72 @@ bool runTextContentTest() {
     }
   }
 
+  // --- Return moves the caret, before anything is typed ---------------------
+  //
+  // CoreText's framesetter lays out no line for a newline that ENDS the text,
+  // so the caret used to stay at the end of the previous line: you pressed
+  // Return and nothing moved. Press it twice and start typing and you were
+  // two lines down, because both newlines had been in the string all along.
+  {
+    const PathPoint org{200.0f, 300.0f};
+    auto para = [&](const char* utf8) {
+      TextContent t = makeTextContent(utf8, org);
+      t.style.sizePx = 48.0f;
+      t.frame.width = 400.0f;
+      return t;
+    };
+
+    // THE assertion: the caret after Return is exactly where the next
+    // character will be drawn. Compared against the real thing -- the caret
+    // sitting before a 'Y' that IS on the second line -- rather than against
+    // a number this test worked out for itself.
+    const TextContent afterReturn = para("Hi\n");
+    const TextContent thenTyped = para("Hi\nY");
+    const TextCaretSegment cr = textCaretSegment(afterReturn, 3);
+    const TextCaretSegment ct = textCaretSegment(thenTyped, 3);
+    std::printf("  [measured] caret after Return (%.2f,%.2f) vs before a typed 'Y' (%.2f,%.2f)\n",
+                cr.bottom.x, cr.bottom.y, ct.bottom.x, ct.bottom.y);
+    check(std::fabs(cr.bottom.x - ct.bottom.x) < 0.01f &&
+              std::fabs(cr.bottom.y - ct.bottom.y) < 0.01f,
+          "newline: REQUIRED -- the caret after Return sits exactly where the next character "
+          "will be drawn. It used to stay on the previous line until something was typed");
+
+    // And a second Return moves it a second time, by exactly one line -- the
+    // spacing taken from a block that really does have two lines.
+    const TextContent twoLines = para("Hi\nYo");
+    const TextCaretSegment l1 = textCaretSegment(twoLines, 0);
+    const TextCaretSegment l2 = textCaretSegment(twoLines, 3);
+    const float lineStep = l2.bottom.y - l1.bottom.y;
+    const TextCaretSegment cr2 = textCaretSegment(para("Hi\n\n"), 4);
+    check(lineStep > 1.0f && std::fabs((cr2.bottom.y - cr.bottom.y) - lineStep) < 0.01f,
+          "newline: REQUIRED -- a SECOND Return moves the caret exactly one more line, by the "
+          "same spacing the block uses between two real lines");
+
+    // The empty line's caret honours alignment: a centred paragraph puts it
+    // in the middle, not hard against the left edge.
+    TextContent centred = para("Hi\n");
+    centred.align = TextAlign::Center;
+    const TextCaretSegment cc = textCaretSegment(centred, 3);
+    check(std::fabs(cc.bottom.x - (org.x + 400.0f * 0.5f)) < 0.01f,
+          "newline: the empty line's caret sits at the alignment point -- centred here, not at "
+          "the left edge");
+
+    // Point text is deliberately NOT given a phantom line. Its shaper never
+    // breaks a line at all, so a caret dropped to a second one would sit
+    // under text that is not there.
+    auto pointBlock = [&](const char* utf8) {
+      TextContent t = makeTextContent(utf8, org);
+      t.style.sizePx = 48.0f;   // the SAME size on both sides, or the y's differ for that reason
+      return t;                 // and the comparison below would prove nothing
+    };
+    const TextCaretSegment pc0 = textCaretSegment(pointBlock("Hi"), 2);
+    const TextCaretSegment pc1 = textCaretSegment(pointBlock("Hi\n"), 3);
+    check(std::fabs(pc1.bottom.y - pc0.bottom.y) < 0.01f,
+          "newline: POINT text keeps its caret on the one line it draws -- a newline there is a "
+          "separate gap (core/TextContent.hpp section 2), and moving the caret alone would "
+          "disguise it by pointing at a line with no text on it");
+  }
+
   // --- the transform: a scaled or rotated block is STILL TEXT ---------------
   //
   // core/TextContent.hpp section 4. The failure these guard against is not

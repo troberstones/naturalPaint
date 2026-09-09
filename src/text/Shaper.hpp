@@ -158,6 +158,18 @@ struct ShapedText {
   // core/TextContent uses it to place a POINT text block by its baseline
   // rather than by the top of its line box (core/TextContent.hpp section 2b).
   float firstBaselineY = 0.0f;
+
+  // Baseline-to-baseline distance -- what the NEXT line down would be spaced
+  // by, whether or not this block has one.
+  //
+  // "Whether or not" is the point. A caller that needs to place something on
+  // a line the shaper did not produce -- a caret sitting after a TRAILING
+  // newline, which CoreText's framesetter does not lay out a line for -- has
+  // no pair of baselines to subtract, and guessing `1.2 * sizePx` puts the
+  // caret a fraction of a line off. This is measured: from two real baselines
+  // where the block has them, and from the first line's own metrics where it
+  // does not.
+  float lineHeightPx = 0.0f;
 };
 
 // Shape UTF-8 text. Bidi, cluster breaking and font fallback all come from

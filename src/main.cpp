@@ -641,6 +641,14 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 //                 live and the box drawn is the LAYOUT frame rather than the
 //                 glyph bounds -- the two differ, and the overlay picks
 //                 deliberately between them.
+//   newline       A paragraph block whose text ENDS with a newline, caret at
+//                 the end -- i.e. the state right after pressing Return. The
+//                 caret has to be drawn on the empty line below the type, and
+//                 CoreText lays out no line there, so this is the one picture
+//                 that shows the caret standing on a line the shaper never
+//                 produced. Unreachable by any other flag, and the defect it
+//                 guards (the caret not moving until something was typed) is
+//                 invisible to a bounds check.
 //   rotated       A block carrying a non-identity `TextContent::transform`
 //                 (core/TextContent.hpp section 4), still in a live editing
 //                 session. The camera for the claim that a rotated block is
@@ -680,14 +688,22 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // glyph outlines all have to be separable in a screenshot, and at 24 px on
   // this canvas the box and the caret are within a pixel or two of each other.
   np::TextContent text = np::makeTextContent(
-      mode == 1 ? "Paragraph text wraps inside the frame it was dragged out."
-                : "Handgloves",
+      mode == 1   ? "Paragraph text wraps inside the frame it was dragged out."
+      : mode == 4 ? "Return was just pressed\n"
+                  : "Handgloves",
       np::PathPoint{200.0f, 300.0f});
   text.style.sizePx = 48.0f;
   // A deliberately non-black fill: the overlay draws its chrome in the
   // accent, and black-on-white text with black chrome over it makes a
   // mis-registered box indistinguishable from a correctly registered one.
   text.fill.rgba = {0.10f, 0.14f, 0.22f, 1.0f};
+  if (mode == 4) {
+    // Paragraph text, because that is where a newline means anything: point
+    // text draws every line on one (core/TextContent.hpp section 2). Wide
+    // enough that the string does NOT wrap, so the second line in the picture
+    // is unambiguously the newline's doing and not the wrap's.
+    text.frame.width = 640.0f;
+  }
   if (mode == 1) {
     // A frame NARROWER than the string needs, so the picture shows real
     // wrapping rather than one line that happens to fit -- a frame wide
@@ -697,7 +713,9 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     text.align = np::TextAlign::Center;
   }
 
-  np::Layer layer = np::makeTextLayer(mode == 1 ? "Paragraph demo" : "Point text demo");
+  np::Layer layer = np::makeTextLayer(mode == 1   ? "Paragraph demo"
+                                      : mode == 4 ? "Newline demo"
+                                                  : "Point text demo");
   layer.text = text;
 
   const size_t at = od.document.layers.size();
@@ -721,10 +739,18 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // the end of the string sits just past the last glyph, which is also where a
   // caret computed from entirely the wrong glyph would land if the string were
   // measured instead of shaped.
-  const np::PathPoint clickAt{
-      placed.origin.x + (mode == 1 ? 210.0f : 150.0f),
-      placed.origin.y + (mode == 1 ? 30.0f : 20.0f)};
-  np::textCaretSetOffset(&st.textEdit, placed, np::textOffsetAtPoint(placed, clickAt));
+  if (mode == 4) {
+    // The caret at the END, which is where Return leaves it -- the whole
+    // point of this fixture. `textCaretEnd()` rather than a click, because a
+    // click cannot express "past the last character on a line that has no
+    // characters".
+    np::textCaretEnd(placed, &st.textEdit, /*extend=*/false);
+  } else {
+    const np::PathPoint clickAt{
+        placed.origin.x + (mode == 1 ? 210.0f : 150.0f),
+        placed.origin.y + (mode == 1 ? 30.0f : 20.0f)};
+    np::textCaretSetOffset(&st.textEdit, placed, np::textOffsetAtPoint(placed, clickAt));
+  }
 
   if (mode == 3) {
     // A rotation ABOUT THE BLOCK'S OWN CENTRE, which is what the Move tool's
@@ -756,7 +782,7 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 
   const np::PathBounds bounds = np::textContentBounds(placed);
   std::printf("[text-demo] %s, %zu glyph shape(s), caret at byte %zu of %zu, bounds %s\n",
-              mode == 1 ? "paragraph" : "point text",
+              placed.frame.width > 0.0f ? "paragraph" : "point text",
               np::textContentToShapes(placed).size(), st.textEdit.caret, placed.utf8.size(),
               bounds.valid ? "valid" : "INVALID");
   if (!np::textContentDraws(placed) || !bounds.valid)
@@ -1947,6 +1973,9 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "rotated") {
           textDemoMode = 3;
+          ++i;
+        } else if (arg == "newline") {
+          textDemoMode = 4;
           ++i;
         }
       }

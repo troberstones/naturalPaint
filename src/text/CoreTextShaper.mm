@@ -358,8 +358,12 @@ ShapedText shapeText(std::string_view utf8, const TextStyle& style,
 
   const bool paragraph = frame.width > 0.0f;
   CFMutableAttributedStringRef attr = makeAttributedString(str, font, style, paragraph, align);
-  CFRelease(font);
-  CFRelease(str);
+  // `str` and `font` are released at the END of this function, not here.
+  // `attr` holds its own references so an early release was correct when it
+  // was written -- but the paragraph branch below re-frames the string to
+  // measure a line CoreText omitted, and needs both alive to do it. Freeing
+  // them here and using them 60 lines later is a use-after-free that shows up
+  // as a garbage objc dispatch, nowhere near the line that caused it.
 
   const Utf16ToUtf8Map clusterMap(utf8);
   CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString(attr);
@@ -379,6 +383,11 @@ ShapedText shapeText(std::string_view utf8, const TextStyle& style,
     const double baselineYDown = ascent;
     out.firstBaselineY = static_cast<float>(baselineYDown);
     out.heightPx = static_cast<float>(ascent + descent + leadingOut);
+    // A single line has no second baseline to measure against, so this is
+    // what CoreText would space one by: the explicit leading override when
+    // there is one, and the font's own line height otherwise.
+    out.lineHeightPx = style.leading > 0.0f ? style.leading
+                                            : static_cast<float>(ascent + descent + leadingOut);
     out.widthPx = static_cast<float>(width);
     out.lineCount = 1;
 
@@ -428,7 +437,13 @@ ShapedText shapeText(std::string_view utf8, const TextStyle& style,
       // paragraph text does not use it to place the block anyway (its origin
       // is the frame's own top-left, core/TextContent.hpp section 2b). Set
       // here rather than left at zero so the number is honest for any reader.
-      if (li == 0) out.firstBaselineY = static_cast<float>(baselineYDown);
+      if (li == 0) {
+        out.firstBaselineY = static_cast<float>(baselineYDown);
+      } else if (li == 1) {
+        // Two real baselines beat any computation from metrics: this is the
+        // spacing CoreText actually used, whatever rule it applied.
+        out.lineHeightPx = static_cast<float>(baselineYDown - (H - origins[0].y));
+      }
       CFArrayRef runs = CTLineGetGlyphRuns(line);
       for (CFIndex r = 0; r < CFArrayGetCount(runs); ++r) {
         CTRunRef run = static_cast<CTRunRef>(const_cast<void*>(CFArrayGetValueAtIndex(runs, r)));
@@ -436,10 +451,57 @@ ShapedText shapeText(std::string_view utf8, const TextStyle& style,
       }
     }
     CFRelease(ctFrame);
+
+    // --- the spacing of a line CoreText declined to lay out -----------------
+    //
+    // A newline that ENDS the text gets no line of its own: "Hi\n" frames as
+    // one line. A caret sitting after that newline still has to be drawn
+    // somewhere, and with only one baseline there is no pair to subtract for
+    // the spacing.
+    //
+    // Computing it from metrics does not work, and that is measured rather
+    // than assumed: for Helvetica at 48px the line's ascent + descent +
+    // leading is exactly 48.000 and CoreText's own baseline spacing is
+    // exactly 58.000, and the same 10px gap is there in the FONT's metrics
+    // too. Whatever rule the framesetter applies, it is not one this file
+    // should be re-deriving.
+    //
+    // So it is asked instead: frame the same string with ONE more newline,
+    // which turns the previously-omitted line into a real one, and measure
+    // the two baselines. Exact by construction, and it costs a second layout
+    // only in this one state -- a block whose text ends in a newline and
+    // which has not wrapped to a second line yet.
+    if (out.lineCount < 2 && CFStringGetLength(str) > 0 &&
+        CFStringGetCharacterAtIndex(str, CFStringGetLength(str) - 1) == '\n') {
+      CFMutableStringRef probeStr = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, str);
+      CFStringAppendCString(probeStr, "\n", kCFStringEncodingUTF8);
+      CFAttributedStringRef probeAttr =
+          makeAttributedString(probeStr, font, style, /*paragraph=*/true, align);
+      CTFramesetterRef probeSetter = CTFramesetterCreateWithAttributedString(probeAttr);
+      CGMutablePathRef probePath = CGPathCreateMutable();
+      // Tall enough that the second line cannot be dropped for want of room,
+      // which would silently put us back where we started.
+      CGPathAddRect(probePath, nullptr, CGRectMake(0, 0, frame.width, H + 4.0 * style.sizePx + 8.0));
+      CTFrameRef probeFrame =
+          CTFramesetterCreateFrame(probeSetter, CFRangeMake(0, 0), probePath, nullptr);
+      CFArrayRef probeLines = CTFrameGetLines(probeFrame);
+      if (CFArrayGetCount(probeLines) >= 2) {
+        CGPoint po[2];
+        CTFrameGetLineOrigins(probeFrame, CFRangeMake(0, 2), po);
+        out.lineHeightPx = static_cast<float>(po[0].y - po[1].y);
+      }
+      CFRelease(probeFrame);
+      CGPathRelease(probePath);
+      CFRelease(probeSetter);
+      CFRelease(probeAttr);
+      CFRelease(probeStr);
+    }
   }
 
   CFRelease(framesetter);
   CFRelease(attr);
+  CFRelease(font);
+  CFRelease(str);
   out.ok = true;
   return out;
 }

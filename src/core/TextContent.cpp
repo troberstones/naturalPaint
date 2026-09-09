@@ -373,6 +373,42 @@ CaretPen caretPenFor(const TextContent& text, size_t caretByte) {
   const ShapedGlyph* last = &shaped.glyphs.front();
   for (const ShapedGlyph& g : shaped.glyphs)
     if (g.y > last->y || (g.y == last->y && g.x > last->x)) last = &g;
+
+  // --- the caret after a TRAILING newline -----------------------------------
+  //
+  // CoreText's framesetter does not lay out a line for a newline that ends the
+  // text: "Hi\n" is ONE line, and "Hi\n\n" is two. So the glyphs stop a line
+  // short of where the caret belongs, and the code above -- which can only
+  // point at a glyph -- left the caret at the end of the previous line.
+  //
+  // What that looked like: you pressed Return and the caret did not move.
+  // Pressing it again and then typing put you two lines down, because both
+  // newlines were in the string all along and only the caret was lying about
+  // it. The insertion point has to be the one thing that never does that.
+  //
+  // So the caret is placed on the line the shaper declined to produce: one
+  // `lineHeightPx` below the last glyph's baseline, at the line's own start.
+  // Only ONE line is added however many newlines trail, because CoreText lays
+  // out every one of them except the last.
+  const bool endsWithNewline = caretByte > 0 && caretByte <= text.utf8.size() &&
+                               text.utf8[caretByte - 1] == '\n';
+  // Point text is excluded deliberately, and not because it has no trailing
+  // newline to handle: `CTLineCreateWithAttributedString` never breaks a line
+  // at all, so a point block draws "Hi\nYo" as one line and a caret dropped to
+  // a second one would sit under text that is not there. A newline in point
+  // text is a real gap, named in core/TextContent.hpp section 2, and moving
+  // the caret without moving the type would disguise it rather than fix it.
+  if (endsWithNewline && text.frame.width > 0.0f) {
+    // Where a line begins, which is the alignment point for an empty one.
+    // Justified starts at the left edge like Left does -- there is nothing to
+    // stretch on a line with no glyphs.
+    float lineStartX = 0.0f;
+    if (text.align == TextAlign::Center) lineStartX = text.frame.width * 0.5f;
+    else if (text.align == TextAlign::Right) lineStartX = text.frame.width;
+    c.pen = PathPoint{blockAt.x + lineStartX, blockAt.y + last->y + shaped.lineHeightPx};
+    return c;
+  }
+
   c.pen = PathPoint{blockAt.x + last->x + last->advance, blockAt.y + last->y};
   return c;
 }
