@@ -226,11 +226,25 @@ void setFlatsTool(AppState& st, FlatsTool next) noexcept {
 }
 
 bool flatsToolIsActive(const AppState& st) {
-  if (st.flatsTool == FlatsTool::None) return false;
-  const OpenDocument* od = st.documents.active();
-  if (od == nullptr) return false;
-  const Layer* l = activeLayerOf(*od);
-  return l != nullptr && l->kind == LayerKind::Flats && !l->locked;
+  // **The PICK decides, not the selected layer.**
+  //
+  // This was gated on a Flats layer being selected and unlocked, on the
+  // reasoning that a tool which cannot act should not claim to be active.
+  // That reasoning produced the exact defect it was meant to avoid, and the
+  // user found it twice: with a flatting tool picked and an ordinary layer
+  // selected, `flatsToolIsActive()` was false, so TOOLS re-lit its cell while
+  // the FLATS TOOLS palette went on showing its own picked cell accented --
+  // two tools active at once -- and the ordinary tool really did still paint.
+  // The same ambiguity is why DELETE appeared to do nothing: the flats route
+  // stood down whenever the layer was wrong, so a click on a fill went
+  // nowhere while the palette insisted DELETE was armed.
+  //
+  // So a flatting tool is active from the moment it is picked until something
+  // else is picked, exactly as a brush is. Whether it can ACT on the current
+  // layer is a separate question, answered on the click with a refusal that
+  // names what to do -- not by silently handing the canvas back to a tool the
+  // user did not choose.
+  return st.flatsTool != FlatsTool::None;
 }
 
 }  // namespace np

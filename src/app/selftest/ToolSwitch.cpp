@@ -382,18 +382,24 @@ bool runToolSwitchTest() {
 
     // ---- the tool state is EXCLUSIVE ------------------------------------
     //
-    // Two palettes each draw a selection, and the user's own words for the
-    // defect were "the tool state should be exclusive": activating a flats
-    // tool has to DEACTIVATE the regular one. `flatsToolIsActive()` is what
-    // both palettes read to decide who is lit, so it is asserted here rather
-    // than left to a screenshot -- nothing headless can see an ImGui cell,
-    // but the predicate the cell's `selected` is ANDed with is ordinary
-    // testable state.
+    // The user's words, twice: "the tool state should be exclusive." Two
+    // palettes each draw a selection, and `flatsToolIsActive()` is what both
+    // read to decide who is lit, so it is asserted here -- nothing headless
+    // can see an ImGui cell, but the predicate the cell's `selected` is
+    // ANDed with is ordinary testable state.
     //
-    // Note what is deliberately NOT asserted: that `brush.tool` was cleared.
-    // It is remembered on purpose, so leaving flatting mode gives back the
-    // tool the user had. "Exclusive" is about which one is ACTIVE, not about
-    // destroying the other.
+    // **This assertion was inverted once, and the first version was wrong in
+    // a way worth keeping written down.** It used to require a Flats layer to
+    // be selected before the flatting tool counted as active, on the
+    // reasoning that a tool which cannot act should not claim to be. That
+    // produced two live tools rather than none: with DELETE picked and an
+    // ordinary layer selected, TOOLS re-lit its cell, the flats palette went
+    // on showing DELETE accented, and the brush really did still paint. It is
+    // also why DELETE looked broken -- the flats route stood down whenever
+    // the layer was wrong, so a click on a fill went nowhere.
+    //
+    // So the PICK decides. Whether it can act on this layer is a separate
+    // question, answered on the click with a refusal.
     {
       AppState e;
       OpenDocument od;
@@ -404,8 +410,7 @@ bool runToolSwitchTest() {
 
       setActiveTool(e, Tool::Brush);
       check(!flatsToolIsActive(e),
-            "toolswitch: with no flatting tool picked the REGULAR tool is the active one, even "
-            "on a Flats layer");
+            "toolswitch: with no flatting tool picked the REGULAR tool is the active one");
 
       setFlatsTool(e, FlatsTool::DeleteFill);
       check(flatsToolIsActive(e) && e.brush.tool == Tool::Brush,
@@ -413,29 +418,48 @@ bool runToolSwitchTest() {
             "palette draws nothing selected** -- while `brush.tool` is still remembered, not "
             "cleared, so leaving flatting mode gives it back");
 
-      // The other direction, which is what keeps "exactly one lit" true
-      // rather than producing a moment with neither: on a layer the flats
-      // tool cannot act on, the palette greys itself out and the regular
-      // tool really is the active one again.
-      e.documents.active()->activeLayer = 0;
-      check(!flatsToolIsActive(e) && e.flatsTool == FlatsTool::DeleteFill,
-            "toolswitch: with a non-Flats layer selected the regular tool is active again -- the "
-            "flats tool stays PICKED but stops counting, which is what the greyed palette "
-            "already shows");
+      // The layer does NOT decide. Every one of these used to flip the answer
+      // back to the regular tool, which is the defect above.
+      e.documents.active()->activeLayer = 0;  // an ordinary layer
+      check(flatsToolIsActive(e),
+            "toolswitch: **selecting a non-Flats layer does NOT re-activate the regular tool** -- "
+            "the flatting tool stays active and the click is refused with a sentence, rather than "
+            "the canvas being handed back to a tool the user did not pick");
 
       e.documents.active()->activeLayer = 1;
       e.documents.active()->document.layers[1].locked = true;
-      check(!flatsToolIsActive(e),
-            "toolswitch: ...and a LOCKED Flats layer is the same case -- the flats tool cannot "
-            "act, so it is not what a click means");
+      check(flatsToolIsActive(e),
+            "toolswitch: ...and a LOCKED Flats layer is the same -- still active, still refused "
+            "on the click");
       e.documents.active()->document.layers[1].locked = false;
 
-      // And a deliberate regular pick ends it outright, so the exclusivity
-      // cannot get stuck with both sides believing they are active.
+      // One deliberate pick, one active tool: the only way out of flatting
+      // mode is choosing a tool, which is what makes the state unambiguous.
       setActiveTool(e, Tool::Lasso);
       check(!flatsToolIsActive(e) && e.flatsTool == FlatsTool::None && e.brush.tool == Tool::Lasso,
             "toolswitch: picking a regular tool clears the flats tool outright, so the two can "
             "never both consider themselves active");
+
+      // The whole point, stated as one assertion over the whole enum: for
+      // every flatting tool, exactly one of the two is active -- never both,
+      // never neither.
+      bool exactlyOne = true;
+      for (int v = 1; v <= static_cast<int>(FlatsTool::SelectEdits); ++v) {
+        AppState x;
+        OpenDocument xd;
+        xd.document = Document::createBlank(8, 8, WorkingSpace{});
+        x.documents.add(std::move(xd));
+        setActiveTool(x, Tool::Brush);
+        if (flatsToolIsActive(x)) exactlyOne = false;          // regular active
+        setFlatsTool(x, static_cast<FlatsTool>(v));
+        if (!flatsToolIsActive(x)) exactlyOne = false;          // flats active
+        setActiveTool(x, Tool::Brush);
+        if (flatsToolIsActive(x) || x.flatsTool != FlatsTool::None) exactlyOne = false;
+      }
+      check(exactlyOne,
+            "toolswitch: for EVERY flatting tool, exactly one of the two palettes is active at a "
+            "time -- and it holds with no Flats layer in the document at all, which is the case "
+            "the layer-gated version got wrong");
     }
 
     // A half-finished two-click merge belongs to the gesture being abandoned.

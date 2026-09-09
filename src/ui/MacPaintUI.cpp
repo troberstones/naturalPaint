@@ -11669,12 +11669,19 @@ struct FlatsPanelSubject {
 // rather than as well as them, which is what lets `setFlatsTool()` leave
 // `st.brush.tool` alone (see app/ToolSwitch.cpp).
 bool flatsToolOwnsCanvasNow(AppState& st, bool transformActive) {
-  if (st.flatsTool == FlatsTool::None || transformActive) return false;
-  OpenDocument* od = st.documents.active();
-  if (od == nullptr) return false;
-  const Layer* l = activeLayerOf(*od);
-  return l != nullptr && l->kind == LayerKind::Flats && !l->locked &&
-         activeLayerIndex(*od).has_value();
+  // **Owned whenever a flatting tool is picked**, not only when it can act.
+  //
+  // The layer test used to live here and it is what let two tools be live at
+  // once: with DELETE picked and an RGB layer selected this returned false,
+  // so the ordinary tool got the pointer back and painted. A tool the user
+  // did not pick must not act, and "the wrong layer is selected" is something
+  // to SAY, not a reason to hand the canvas to someone else. The route below
+  // answers the layer question itself, on the click, with a sentence.
+  //
+  // `transformActive` stays: a Free Transform gizmo owns the canvas outright,
+  // which is the same exception every selection tool already makes.
+  return st.flatsTool != FlatsTool::None && !transformActive &&
+         st.documents.active() != nullptr;
 }
 
 bool flatsLassoCommit(AppState& st, OpenDocument* od) {
@@ -16176,7 +16183,28 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       OpenDocument* ftod = st.documents.active();
       Layer* ftl = activeLayerOf(*ftod);
       const std::optional<size_t> fti = activeLayerIndex(*ftod);
-      {
+      // Owning the pointer and being able to USE it are now two questions.
+      // The tool is active either way -- it keeps the palette highlight and
+      // the cursor -- but on the wrong layer a click gets a sentence instead
+      // of an edit, and the ordinary tool still does not act. Consuming the
+      // click rather than passing it on is the whole point: this is what
+      // stopped a flats tool from silently doing nothing while the brush
+      // painted underneath it.
+      const bool flatsCanAct =
+          ftl != nullptr && ftl->kind == LayerKind::Flats && !ftl->locked && fti.has_value();
+      if (!flatsCanAct) {
+        const bool clickedOff = hovered && tx >= 0 && ty >= 0 && tx < texW && ty < texH &&
+                                ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        if (clickedOff) {
+          // On the click, not every frame: a band that permanently reads a
+          // refusal stops being read at all, and this sentence has to land
+          // the moment the user tries something.
+          g_strokeRefusal = ftl != nullptr && ftl->kind == LayerKind::Flats && ftl->locked
+                                ? "this Flats layer is locked -- unlock it in LAYERS."
+                                : "the flatting tools act on a Flats layer: pick one in LAYERS, "
+                                  "or pick an ordinary tool to leave flatting mode.";
+        }
+      } else {
         // The ordinary tools do not also act: the selection block above stood
         // down on this same predicate, and the RGB write route below is gated
         // on it too. Without that a bridge drag would record the flats edit
@@ -16332,17 +16360,6 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           }
         }
       }
-    }
-    // A flats tool is picked but the pointer is not ours: the palette greys
-    // itself out in this case, and the tool can also be left picked while the
-    // layer changes underneath it. Outside the block above rather than its
-    // `else`, because `flatsToolOwnsCanvasNow()` now answers the whole
-    // question and there is no layer test left in here to hang an else on.
-    if (st.flatsTool != FlatsTool::None && !flatsToolOwnsCanvas) {
-      OpenDocument* rod = st.documents.active();
-      const Layer* rl = rod != nullptr ? activeLayerOf(*rod) : nullptr;
-      if (rl != nullptr && rl->kind != LayerKind::Flats)
-        g_strokeRefusal = "the flatting tools act on a Flats layer: pick one in LAYERS.";
     }
     if (!flatsToolOwnsCanvas && st.flatsStroke.empty() == false) st.flatsStroke.clear();
     // Same rule for the lasso: switching layer or tool mid-path abandons it
@@ -16664,7 +16681,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // solver, exactly `app/ToolSurface`'s `toolActsWithoutDocument()` (which
     // this predicate must keep agreeing with) says for Brush/Water/Dry
     // Brush now that PaintSim no longer stands with nothing open.
-    const bool paintTool = (st.brush.tool == Tool::Brush ||
+    // `!flatsToolOwnsCanvas` on all three: these are the flags that deposit,
+    // and a flatting tool being active has to mean they do not. Without this
+    // the palette says DELETE and a drag lays down paint, which is the
+    // "two tools active at once" this whole revision is about.
+    const bool paintTool = !flatsToolOwnsCanvas && (st.brush.tool == Tool::Brush ||
                             st.brush.tool == Tool::Water ||
                             st.brush.tool == Tool::DryBrush) &&
                            !transformActive && st.documents.active() != nullptr;
@@ -16677,7 +16698,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // (app/StrokeSession.hpp §1's Eraser rows). Folding it into `paintTool` would
     // have been one word and would have made the eraser deposit watercolour on
     // the canvas texture the moment no document was open.
-    const bool eraseTool = st.brush.tool == Tool::Eraser && !transformActive;
+    const bool eraseTool = !flatsToolOwnsCanvas && st.brush.tool == Tool::Eraser && !transformActive;
     // **The pencil is a stroke tool and never a solver stroke either**, and it
     // is a third flag for the identical reason the eraser is a second one. It
     // joins `paintTool` at the branches that reach a layer and at the cursor
@@ -16686,7 +16707,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // granulation, so a pencil reaching it would draw the softest mark in the
     // build with the one tool chosen for having no soft edge
     // (brush/PencilDeposit §0, app/StrokeSession.hpp §1's Pencil rows).
-    const bool pencilTool = st.brush.tool == Tool::Pencil && !transformActive;
+    const bool pencilTool = !flatsToolOwnsCanvas && st.brush.tool == Tool::Pencil && !transformActive;
     // **Dodge and Burn are stroke tools and never SOLVER strokes**, a third
     // flag for the identical reason `eraseTool` is a second one: `sim::PaintSim`
     // has no tonal step, so a Dodge reaching it would run the *paint* path with
