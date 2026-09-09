@@ -4552,6 +4552,21 @@ int main(int argc, char** argv) {
             np::keyChordReachesKeymap(chord, np::textSessionActive(st.textEdit))
                 ? keymap.resolve(chord, activeScope)
                 : std::nullopt;
+        // ...and a chord that DID resolve puts the caret away, unless it is
+        // one of the handful that cannot disturb the block being typed into.
+        // app/TextTool.hpp section 8 is the list and the argument for it
+        // (undo/redo are deliberately NOT on the ending side); `textEditCancel()`
+        // is the accept, so every character typed is kept.
+        //
+        // Before the dispatch chain below, not after: several arms only set a
+        // request flag that `drawUI()` services later in this same frame, and
+        // the session has to be over by the time that block runs -- otherwise
+        // ui/MacPaintUI's canvas block would still be routing this frame's
+        // keys into a layer that Cmd+T is about to put a gizmo over.
+        if (action.has_value() && np::textSessionActive(st.textEdit) &&
+            np::keymapActionEndsTextSession(*action)) {
+          np::textEditCancel(&st.textEdit);
+        }
         if (action == "toggle_pause") st.paused = !st.paused;
         else if (action == "clear_canvas") st.requestClear = true;
         else if (action == "reload_shaders") st.requestReload = true;

@@ -415,4 +415,94 @@ enum class TextInputAction { Leave, Start, Stop };
 TextInputAction textInputAction(bool sessionActive, bool platformActive, bool imguiWantsText,
                                 bool startedHere) noexcept;
 
+// ==========================================================================
+// 8. WHICH HOTKEYS PUT THE CARET AWAY
+// ==========================================================================
+//
+// `keyChordReachesKeymap()` (app/Keymap.hpp) decides whether a chord reaches
+// `Keymap::resolve()` at all while a session is live: bare and Shift/Alt-only
+// chords do not (they are characters), Cmd/Ctrl chords do. This function
+// answers the question that comes AFTER that one -- given that a Cmd chord
+// did resolve to an action, does the session survive it?
+//
+// **The default is that it does not.** This is a KEEP list, and everything
+// not on it ends the session, because the two mistakes are not symmetrical: a
+// session ended when it needed not to be is an annoyance the user fixes by
+// clicking back into the block, while a session left alive over a document
+// that has just been transformed, cleared, adjusted or pasted into leaves a
+// caret pointing into a `TextContent` that may no longer be there -- and a
+// binding added to `keymaps/default.json` a year from now gets the safe
+// answer without anyone remembering this file exists.
+//
+// Ending means ACCEPT, never revert: `ui/` calls `textEditCancel()`, which
+// keeps every character typed and only stops the session owning the keyboard.
+// That is the same meaning switching tools and clicking away already have
+// (section 5); Escape remains the one gesture that discards.
+//
+// **What is on the KEEP list, and why each is there:**
+//
+//   * The view -- zoom, fit, 100%, reset, mirror, rotation reset, grayscale,
+//     guides, snapping, grid. Framing a caption while typing it is a real
+//     gesture, and none of these can move a byte of the document.
+//   * `undo` / `redo`. **Explicitly requested**, and the reason is that a
+//     typing burst IS a history entry (`ui/MacPaintUI.cpp` opens one per
+//     burst and amends it per keystroke), so Cmd+Z during a session is the
+//     user undoing their own typing and must not be answered by putting the
+//     caret away first. What it DOES need is
+//     `textEditResyncAfterHistoryMove()` below -- see there.
+//   * Brush size, shader reload, screenshot, pause. Tool and application
+//     state, not document state. (All four are bare or F-key chords that
+//     `keyChordReachesKeymap()` already stops before they ever reach here;
+//     they are classified anyway so this function answers for the whole
+//     keymap rather than for the part that happens to be reachable today.)
+//
+// Everything else -- `clear_canvas`, `free_transform`, the eleven `adjust_*`
+// commands, the four selection commands, the clipboard four, the `flats_*`
+// commands, `delete_selection`, `quit` -- ends it. `copy`/`copy_merged` are
+// on that side despite writing nothing: they are the same Edit-menu clipboard
+// family as `cut`/`paste`, they act on the CANVAS selection rather than on
+// the text (this build's caret has no anchor, so there is no text selection
+// for them to mean), and a rule that split the four would be a worse rule to
+// explain than the one that keeps them together.
+//
+// Takes the action string `Keymap::resolve()` returns, so the classification
+// lives beside the session it protects rather than being spelled out a second
+// time in `main.cpp`'s dispatch chain. An unknown action ends the session,
+// per the default above.
+bool keymapActionEndsTextSession(std::string_view action) noexcept;
+
+// ==========================================================================
+// 9. PUTTING A LIVE SESSION BACK IN STEP WITH A HISTORY MOVE
+// ==========================================================================
+//
+// Undo and redo keep the session alive (section 8), and `core/History`
+// replaces the whole `Document` when the cursor moves -- so the block being
+// typed into is a DIFFERENT `TextContent` afterwards, with a different length,
+// while `TextEditState` still holds the caret and the bookkeeping from before
+// the move. Two things are then wrong, and both are silent:
+//
+//   * `caret` can sit past the end of the restored string, or inside a
+//     multi-byte sequence. Section 3's invariant ("the caret is always at a
+//     UTF-8 boundary of the content it belongs to") is stated as this file's
+//     to hold, and a history move is the one way the content changes without
+//     going through any of this file's own edit functions.
+//   * `undoOpened` still says "this session already has an entry open, amend
+//     it". After a move it names an entry that is no longer at the cursor, so
+//     the next keystroke would `amendEdit()` over whatever the user just
+//     undid TO -- rewriting a state they asked to go back to, instead of
+//     pushing a new one after it.
+//
+// Call this from wherever the cursor actually moves, not from the keymap
+// dispatch: Cmd+Z is only one of four routes (the Edit menu, the History
+// panel and the title bar's buttons are the others) and they all have to
+// resync or three quarters of the fix is missing.
+//
+// A no-op when no session is live. Does NOT touch `snapshotUtf8`: that is
+// "what the layer held when this session opened", Escape's revert target, and
+// an undo is not a new session. Also does not decide whether the session
+// should end at all -- undoing past the layer's own creation leaves
+// `layerIndex` naming something that is not a Text layer, and `ui/`'s canvas
+// block already cancels on exactly that.
+void textEditResyncAfterHistoryMove(TextEditState* state, const TextContent& restored) noexcept;
+
 }  // namespace np

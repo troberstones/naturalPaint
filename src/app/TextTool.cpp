@@ -245,6 +245,37 @@ bool textEditFrameDragEnd(TextEditState* state, TextContent* out, float minSizeD
   return true;
 }
 
+bool keymapActionEndsTextSession(std::string_view action) noexcept {
+  // Header section 8: a KEEP list, everything else ends the session. Spelled
+  // as a flat sequence of comparisons rather than a set literal so it stays
+  // greppable from the action names in keymaps/default.json, which is where
+  // anyone adding a binding will be looking.
+  return !(
+      // the view -- none of these can move a byte of the document
+      action == "zoom_in" || action == "zoom_out" || action == "zoom_100" ||
+      action == "fit_window" || action == "reset_view" || action == "mirror_x" ||
+      action == "mirror_y" || action == "reset_rotation" || action == "toggle_grayscale" ||
+      action == "toggle_guides" || action == "toggle_snapping" || action == "toggle_grid" ||
+      // history -- a typing burst IS an entry, so Cmd+Z is the user undoing
+      // their own typing (and see textEditResyncAfterHistoryMove())
+      action == "undo" || action == "redo" ||
+      // tool and application state, not document state
+      action == "size_up" || action == "size_down" || action == "reload_shaders" ||
+      action == "screenshot" || action == "toggle_pause");
+}
+
+void textEditResyncAfterHistoryMove(TextEditState* state, const TextContent& restored) noexcept {
+  if (state == nullptr || !state->active) return;
+  // The next keystroke opens a NEW entry instead of amending one that is no
+  // longer at the cursor -- header section 9's second hazard, and the one
+  // that would otherwise overwrite the state the user just undid TO.
+  state->undoOpened = false;
+  // Section 3's boundary invariant, restored against the string that is
+  // actually there now. `textCaretSetOffset()` rather than a second clamp:
+  // there is one clamp in this file and this is a caller of it.
+  textCaretSetOffset(state, restored, state->caret);
+}
+
 TextInputAction textInputAction(bool sessionActive, bool platformActive, bool imguiWantsText,
                                 bool startedHere) noexcept {
   // Re-asserted rather than edge-triggered: `platformActive` is asked of SDL

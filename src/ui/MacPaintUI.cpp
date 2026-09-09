@@ -10841,6 +10841,30 @@ void moveHistoryCursor(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext&
   settleWetPaintBeforeHistoryMove(st, sim, gpu, od);
   History& h = od.history;
   installHistoryCursor(od, historyPanelClick(h, historySerialForRow(h, h.cursor() + direction)));
+
+  // A live Text session survives undo/redo on purpose -- a typing burst IS a
+  // history entry, so Cmd+Z during a session is the user undoing their own
+  // typing (app/TextTool.hpp section 8). What it cannot survive unchanged is
+  // the document underneath it being REPLACED: `installHistoryCursor()` above
+  // assigns a whole `Document`, so the block is a different `TextContent`
+  // now, with a different length, while `st.textEdit` still holds the caret
+  // and the amend-the-open-entry flag from before the move. Section 9.
+  //
+  // Here rather than in main.cpp's Cmd+Z arm because this function is the
+  // single place the cursor moves: the Edit menu, the History panel and the
+  // title bar's buttons all arrive here too, and resyncing at the keymap
+  // would fix one route out of four.
+  //
+  // Guarded on the layer still being a Text layer at all: undoing past the
+  // block's own creation leaves `layerIndex` naming something else (or
+  // nothing), which is the canvas block's existing cancel-on-layer-gone case
+  // and not this call's to answer.
+  if (textSessionActive(st.textEdit) && st.textEdit.documentId == od.id &&
+      st.textEdit.layerIndex < od.document.layers.size()) {
+    const Layer& restored = od.document.layers[st.textEdit.layerIndex];
+    if (restored.kind == LayerKind::Text)
+      textEditResyncAfterHistoryMove(&st.textEdit, restored.text);
+  }
 }
 
 // Declared in ui/MacPaintUI.hpp, which carries the full argument. Defined

@@ -216,6 +216,164 @@ bool runTextKeyCaptureTest() {
           "textInputAction(): a live session starts text input regardless of io.WantTextInput");
   }
 
+  // --- 5. keymapActionEndsTextSession() -- which hotkeys put the caret away --
+  //
+  // The chord already passed `keyChordReachesKeymap()` (section 1) and
+  // resolved to an action; this is the question that comes after it. A KEEP
+  // list with everything else ending -- app/TextTool.hpp section 8 -- so the
+  // assertions that matter most are the two ends of that default.
+  {
+    // The view. Framing a caption while typing it is a real gesture and none
+    // of these can move a byte of the document.
+    check(!keymapActionEndsTextSession("zoom_in") &&
+              !keymapActionEndsTextSession("zoom_out") &&
+              !keymapActionEndsTextSession("zoom_100") &&
+              !keymapActionEndsTextSession("fit_window") &&
+              !keymapActionEndsTextSession("reset_view") &&
+              !keymapActionEndsTextSession("mirror_x") &&
+              !keymapActionEndsTextSession("mirror_y") &&
+              !keymapActionEndsTextSession("reset_rotation") &&
+              !keymapActionEndsTextSession("toggle_grayscale") &&
+              !keymapActionEndsTextSession("toggle_guides") &&
+              !keymapActionEndsTextSession("toggle_snapping") &&
+              !keymapActionEndsTextSession("toggle_grid"),
+          "keymapActionEndsTextSession(): REQUIRED -- every view command keeps the session");
+
+    // **Undo and redo keep it, and this is the assertion that says so.** A
+    // typing burst is a history entry, so Cmd+Z during a session is the user
+    // undoing their own typing; answering it by putting the caret away would
+    // make the burst un-undoable without first clicking back into the block.
+    check(!keymapActionEndsTextSession("undo"),
+          "keymapActionEndsTextSession(): REQUIRED -- undo keeps the session; a typing burst is "
+          "the entry it undoes");
+    check(!keymapActionEndsTextSession("redo"),
+          "keymapActionEndsTextSession(): REQUIRED -- redo keeps the session too");
+
+    // Tool and application state, not document state.
+    check(!keymapActionEndsTextSession("size_up") && !keymapActionEndsTextSession("size_down") &&
+              !keymapActionEndsTextSession("reload_shaders") &&
+              !keymapActionEndsTextSession("screenshot") &&
+              !keymapActionEndsTextSession("toggle_pause"),
+          "keymapActionEndsTextSession(): brush size / reload / screenshot / pause keep it");
+
+    // Everything that can move the document or the selection under a live
+    // caret. `free_transform` is the one this began with -- Cmd+T used to
+    // drop a gizmo on top of a live caption and leave both claiming Return.
+    check(keymapActionEndsTextSession("free_transform"),
+          "keymapActionEndsTextSession(): REQUIRED -- Cmd+T ends the session rather than putting "
+          "a gizmo over a live caret");
+    check(keymapActionEndsTextSession("clear_canvas"),
+          "keymapActionEndsTextSession(): REQUIRED -- clearing the canvas ends the session");
+    check(keymapActionEndsTextSession("adjust_levels") &&
+              keymapActionEndsTextSession("adjust_curves") &&
+              keymapActionEndsTextSession("adjust_invert") &&
+              keymapActionEndsTextSession("adjust_auto_tone") &&
+              keymapActionEndsTextSession("adjust_black_and_white"),
+          "keymapActionEndsTextSession(): REQUIRED -- the adjustment commands end the session");
+    check(keymapActionEndsTextSession("select_all") && keymapActionEndsTextSession("deselect") &&
+              keymapActionEndsTextSession("reselect") &&
+              keymapActionEndsTextSession("invert_selection"),
+          "keymapActionEndsTextSession(): REQUIRED -- the selection commands end the session");
+    check(keymapActionEndsTextSession("copy") && keymapActionEndsTextSession("copy_merged") &&
+              keymapActionEndsTextSession("cut") && keymapActionEndsTextSession("paste"),
+          "keymapActionEndsTextSession(): REQUIRED -- the clipboard four end it TOGETHER; copy "
+          "writes nothing but acts on the canvas selection, and splitting the family would be a "
+          "worse rule than keeping it");
+    check(keymapActionEndsTextSession("delete_selection") && keymapActionEndsTextSession("quit") &&
+              keymapActionEndsTextSession("flats_delete_fill"),
+          "keymapActionEndsTextSession(): delete / quit / the flats commands end it");
+
+    // **The default, which is the whole design.** A binding added to
+    // keymaps/default.json a year from now gets the safe answer without
+    // anyone remembering this file exists -- and this is the assertion that
+    // fails if the list is ever inverted into a list of ENDERS.
+    check(keymapActionEndsTextSession("an_action_nobody_has_written_yet"),
+          "keymapActionEndsTextSession(): REQUIRED -- an unknown action ENDS the session; the "
+          "list is a KEEP list and the default is the safe one");
+    check(keymapActionEndsTextSession(""),
+          "keymapActionEndsTextSession(): the empty action ends it too, same default");
+  }
+
+  // --- 6. textEditResyncAfterHistoryMove() ---------------------------------
+  //
+  // Undo/redo keep the session (section 5) and `core/History` replaces the
+  // whole Document, so the block is a different `TextContent` afterwards
+  // while `TextEditState` still holds the caret and bookkeeping from before
+  // the move. Both hazards are silent; both are asserted here.
+  {
+    // (a) A caret past the end of the restored string.
+    TextEditState st;
+    TextContent content;
+    content.utf8 = "Handgloves";
+    textEditBegin(&st, /*documentId=*/1, /*layerIndex=*/0, content);
+    textInsertUtf8(&content, &st, " and mittens");
+    textEditMarkUndoOpened(&st);
+    check(st.caret == content.utf8.size() && st.undoOpened,
+          "(setup) the burst moved the caret to the end and opened an undo entry");
+
+    // What undo restores: the pre-burst string, which is SHORTER than the
+    // caret's current offset.
+    TextContent restored;
+    restored.utf8 = "Handgloves";
+    textEditResyncAfterHistoryMove(&st, restored);
+    check(st.caret == restored.utf8.size(),
+          "textEditResyncAfterHistoryMove(): REQUIRED -- a caret past the end of the restored "
+          "string is clamped to it, not left addressing bytes that are gone");
+    check(!st.undoOpened,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- undoOpened is cleared, so the next "
+          "keystroke RECORDS a new entry instead of amending over the state just undone to");
+    check(textSessionActive(st),
+          "textEditResyncAfterHistoryMove(): the session itself survives -- that is the point");
+
+    // (b) A caret left INSIDE a multi-byte sequence. Section 3's boundary
+    // invariant is this file's to hold, and a history move is the one way the
+    // content changes without going through any of its own edit functions.
+    TextEditState st2;
+    TextContent wide;
+    const std::string eAcute = "\xC3\xA9";  // 2 UTF-8 bytes
+    wide.utf8 = "caf" + eAcute + "s";
+    textEditBegin(&st2, /*documentId=*/1, /*layerIndex=*/0, wide);
+    textCaretSetOffset(&st2, wide, 3);
+    // A restored string whose byte 4 is a CONTINUATION byte -- offset 4 is
+    // mid-sequence, which is exactly the state a naive size-only clamp would
+    // leave behind and call fixed.
+    TextContent restored2;
+    restored2.utf8 = "ca" + eAcute + "fes";
+    st2.caret = 3;  // deliberately mid-sequence against restored2
+    textEditResyncAfterHistoryMove(&st2, restored2);
+    check(st2.caret == 2,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- a caret left mid-sequence snaps DOWN to "
+          "the boundary before it; a clamp that only checked the LENGTH would pass this offset "
+          "through unchanged and corrupt the next insert");
+
+    // (c) The snapshot is not touched. It means "what the layer held when
+    // this session opened" -- Escape's revert target -- and an undo is not a
+    // new session.
+    TextEditState st3;
+    TextContent orig;
+    orig.utf8 = "before";
+    textEditBegin(&st3, /*documentId=*/1, /*layerIndex=*/0, orig);
+    const std::string snapshotAtBegin = st3.snapshotUtf8;
+    TextContent restored3;
+    restored3.utf8 = "something else entirely";
+    textEditResyncAfterHistoryMove(&st3, restored3);
+    check(st3.snapshotUtf8 == snapshotAtBegin,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- snapshotUtf8 survives, so Escape still "
+          "reverts to where the SESSION began rather than to wherever undo left the document");
+
+    // (d) A no-op with no session live: undo/redo happen far more often
+    // outside a session than in one, and the caller (moveHistoryCursor())
+    // must not have to guard.
+    TextEditState st4;
+    st4.caret = 999;
+    TextContent tiny;
+    tiny.utf8 = "x";
+    textEditResyncAfterHistoryMove(&st4, tiny);
+    check(st4.caret == 999,
+          "textEditResyncAfterHistoryMove(): REQUIRED -- a no-op when no session is live; it "
+          "touches nothing rather than clamping a caret that names no session");
+  }
+
   std::printf("[selftest] text key capture %s\n", ok ? "PASS" : "FAIL");
   return ok;
 }
