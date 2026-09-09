@@ -25,6 +25,15 @@
 #   tools/golden/run_golden.sh measure [N=10]     # run-to-run reproducibility: N launches per view,
 #                                                  # each diffed against the first, noise distribution printed
 #
+# `-j N` (or NP_GOLDEN_JOBS=N) sets how many captures run at once; it may
+# appear anywhere in the arguments. The default is half the machine's logical
+# cores capped at 8, and `-j 1` is the old strictly-serial behaviour. A full
+# `check` went from 65.0 s to 9.1 s on a 16-core laptop -- two thirds of that
+# from concurrency and the rest from launching the application 39 times
+# instead of 53. **Read the two blocks below before raising it**: past the cap
+# this harness stops reporting the code and starts reporting the load average,
+# and it does so in one-pixel units that look exactly like a real regression.
+#
 # Every view is captured with its own empty $NP_JOURNAL_DIR (see
 # app/Journal.cpp). Without this, a prior run's crash-recovery scratch
 # directory makes the app pop a "Recover Documents" modal over the whole
@@ -156,6 +165,104 @@ if [ ! -x "$TOOL" ]; then
   echo "run_golden.sh: no goldentool binary at $TOOL -- build first" >&2
   exit 2
 fi
+
+# --- bounded parallelism ---------------------------------------------------
+#
+# Every capture is an independent process with its own window, its own
+# swapchain and (per the header) its own scratch copy of every preference file
+# the app reads. Nothing is shared between two captures, so nothing forced
+# them to run one at a time -- they did only because the loop below was
+# written as a loop.
+#
+# The reason this is worth doing is that a capture is mostly *not* CPU work.
+# A serial `check` over the 53 views measured 65.0 s wall for 26.9 s user +
+# 8.7 s sys: two thirds of the harness's runtime was a shell blocking on a
+# GPU and a window server. Running N captures at once fills that gap with
+# other captures rather than with more of the same work.
+#
+# What makes this safe rather than merely faster is app/Screenshot.hpp's
+# choice to photograph the swapchain instead of the screen. A capture never
+# reads a pixel the window server owns, so it does not care whether its
+# window is focused, occluded by a sibling capture's window, or off in a
+# background Space -- the three things that would otherwise make concurrent
+# GUI captures a lottery. Frame pacing is already exempt for the whole life of
+# a `--screenshot` run (app/FramePacing.hpp), so a capture that gets less CPU
+# takes longer in wall time without taking a different number of frames.
+#
+# The default is half the machine's logical cores, capped at 8, and both
+# halves of that were measured on a 16-core (12 performance) M-series laptop
+# rather than reasoned about. Full `check`, 53 views, best of six runs each:
+#
+#     -j 1   54.3 s      -j 8    9.1 s
+#     -j 4   15.9 s      -j 12   7.8 s
+#     -j 6   11.6 s      -j 16   7.5-8.7 s, and WRONG -- see below
+#
+# and six consecutive `check` runs at both -j 8 and -j 12 were 53/53 with
+# zero failing views.
+#
+# **-j 16 is where it breaks, and how it breaks is the reason for the cap.**
+# Six consecutive runs there failed six times, 114 failing views in all, and
+# it bought nothing for it: -j 16 is not measurably faster than -j 12, so the
+# machine was already saturated a third of the way back. It does not deadlock,
+# run out of memory or crash a capture -- roughly 20 of the 53 views come back
+# each run with a handful of pixels off by *one*. `no_document_title`
+# -- 900x77 of nothing but antialiased text, blessed exact (0, 0) on 7 clean
+# measured comparisons -- came back with 26 mismatched px of 69 300, max
+# channel diff 1, every one of them on the antialiased edges of a single 8x12
+# glyph. That is the failure mode to fear from this change, because it is the
+# one that does not announce itself: oversubscribe the machine and the
+# harness stops being a regression detector and starts reporting the load
+# average, in units small enough to look like a real one-pixel regression.
+#
+# So the cap is set at half the cores, which is a factor of two below the
+# point where that was observed, and it is a cap rather than a target: on a
+# 4-core machine this is 2, not 8. Override with `-j N` or NP_GOLDEN_JOBS=N.
+# `-j 1` restores the exactly-serial behaviour this harness had before, and
+# is the first thing to try if a view starts flaking -- if it flakes at -j 1
+# too, the concurrency is not what is wrong with it.
+_ncpu="$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+jobs_n="${NP_GOLDEN_JOBS:-}"
+if [ -z "$jobs_n" ]; then
+  jobs_n=$((_ncpu / 2))
+  [ "$jobs_n" -gt 8 ] && jobs_n=8
+  [ "$jobs_n" -lt 1 ] && jobs_n=1
+fi
+_argv=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -j) jobs_n="${2:-}"; shift 2 ;;
+    -j*) jobs_n="${1#-j}"; shift ;;
+    *) _argv+=("$1"); shift ;;
+  esac
+done
+set -- ${_argv[@]+"${_argv[@]}"}
+case "$jobs_n" in
+  ''|*[!0-9]*|0) echo "run_golden.sh: -j takes a positive integer, got '$jobs_n'" >&2; exit 2 ;;
+esac
+
+# Block until fewer than $jobs_n captures are in flight.
+#
+# bash 3.2 (this file's deliberate target -- see the header) has no `wait -n`,
+# so the pool is a poll rather than an event. `jobs -pr` lists only the
+# *running* jobs of this shell and is readable from a command substitution,
+# which is the whole mechanism. The 50 ms poll costs at most that much per
+# capture against a capture that takes ~1300 ms.
+pool_wait_slot() {
+  while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$jobs_n" ]; do
+    sleep 0.05
+  done
+}
+
+# One `measure` pool task: launch and crop in one go, recording the outcome in
+# a file (see the note on `wait` beside launch_task).
+capture_task() {
+  local idx="$1" outPng="$2" jdir="$3"
+  if run_view_capture "$idx" "$outPng" "$jdir"; then
+    echo 0 > "$jdir/rc"
+  else
+    echo 1 > "$jdir/rc"
+  fi
+}
 
 mode="${1:-check}"
 measure_n="${2:-10}"
@@ -1507,13 +1614,80 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
 # `view_threshold` for the measurement.
 view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 160 0 0 0)
 
+# --- launch sharing --------------------------------------------------------
+#
+# A view is a launch plus a crop, and the two are not one-to-one: 53 views
+# name only 39 distinct (args, frames) pairs. Five views -- toolbar, titlebar,
+# rail, layer_thumbs, tools_lower -- are five crops of the *same*
+# `--demo-document` window, and the harness used to launch the application
+# five times to photograph one frame five times.
+#
+# So a launch is now keyed by (args, frames) and the first view holding a key
+# owns it; the rest crop the owner's full.png. This is worth more than the
+# 26% of launches it removes. Two sibling views cropping two independently
+# rendered frames can disagree about a pixel neither crop is about -- the
+# residual animation-timing tail this file's header measures for `layers` is
+# exactly that -- whereas two crops of one frame cannot. Sharing the launch
+# does not paper over that tail; it removes a way for one view's noise to be
+# uncorrelated with its sibling's, which is a strictly smaller surface.
+#
+# What it deliberately does NOT do is share across `measure`, where relaunching
+# is the measurement.
+#
+# O(n^2) over 53 entries, written with while loops because bash 3.2 has no
+# associative arrays (see the header).
+view_launch_owner=()
+_lo_i=0
+while [ "$_lo_i" -lt "${#view_names[@]}" ]; do
+  _lo_owner="$_lo_i"
+  _lo_j=0
+  while [ "$_lo_j" -lt "$_lo_i" ]; do
+    if [ "${view_args[$_lo_j]}" = "${view_args[$_lo_i]}" ] && \
+       [ "${view_frames[$_lo_j]}" = "${view_frames[$_lo_i]}" ]; then
+      _lo_owner="${view_launch_owner[$_lo_j]}"
+      break
+    fi
+    _lo_j=$((_lo_j + 1))
+  done
+  view_launch_owner+=("$_lo_owner")
+  _lo_i=$((_lo_i + 1))
+done
+
+# $WORK_DIR path conventions, so the three modes agree on them.
+view_jdir()  { echo "$WORK_DIR/${view_names[$1]}_journal"; }
+view_odir()  { echo "$WORK_DIR/${view_names[${view_launch_owner[$1]}]}_journal"; }
+
+# Pool tasks. `wait` in bash 3.2 reaps every child but hands back no per-child
+# status, so each task records its outcome in a file the next phase reads.
+launch_task() {
+  local jdir; jdir="$(view_jdir "$1")"
+  if run_view_launch "$1" "$jdir"; then echo 0 > "$jdir/launch.rc"; else echo 1 > "$jdir/launch.rc"; fi
+}
+crop_task() {
+  local jdir odir; jdir="$(view_jdir "$1")"; odir="$(view_odir "$1")"
+  mkdir -p "$jdir"
+  if run_view_crop "$1" "$2" "$odir/full.png" "$jdir"; then
+    echo 0 > "$jdir/crop.rc"
+  else
+    echo 1 > "$jdir/crop.rc"
+  fi
+}
+rc_ok() { [ -f "$1" ] && [ "$(cat "$1")" = "0" ]; }
+
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on
 # success; returns nonzero and leaves logs in $WORK_DIR on failure.
-run_view_capture() {
-  local idx="$1" outPng="$2" jdir="$3"
+# Launch the app once and leave the uncropped window capture at $jdir/full.png.
+#
+# The uncropped capture and the three logs live inside $jdir rather than
+# beside it under $WORK_DIR/<view>.*. $jdir is unique per capture; the view
+# name is not -- `measure` runs the same view N times, and once those N runs
+# are concurrent, a name-keyed full.png is N processes writing one file.
+# Nothing outside this script reads these paths.
+run_view_launch() {
+  local idx="$1" jdir="$2"
   local name="${view_names[$idx]}"
-  local fullPng="$WORK_DIR/${name}.full.png"
+  local fullPng="$jdir/full.png"
   mkdir -p "$jdir"
   # The preference isolation described at the top of this file. `$jdir` is
   # already per-capture and already empty, so it doubles as the scratch root
@@ -1526,23 +1700,91 @@ run_view_capture() {
       NP_DOCUMENT_PRESETS="$jdir/document-presets.txt" \
       NP_EXPORT_PRESETS="$jdir/export-presets.json" \
       "$BIN" ${view_args[$idx]} --screenshot "$fullPng" "${view_frames[$idx]}" \
-      > "$WORK_DIR/${name}.stdout.log" 2> "$WORK_DIR/${name}.stderr.log"; then
-    echo "run_golden.sh: $name: naturalPaint exited nonzero -- see $WORK_DIR/${name}.stderr.log" >&2
+      > "$jdir/stdout.log" 2> "$jdir/stderr.log"; then
+    echo "run_golden.sh: $name: naturalPaint exited nonzero -- see $jdir/stderr.log" >&2
     return 1
   fi
+}
+
+# Cut this view's region out of an already-captured full.png.
+run_view_crop() {
+  local idx="$1" outPng="$2" fullPng="$3" jdir="$4"
+  mkdir -p "$jdir"
   "$TOOL" crop "$fullPng" "$outPng" "${view_crop_x[$idx]}" "${view_crop_y[$idx]}" \
-      "${view_crop_w[$idx]}" "${view_crop_h[$idx]}" > "$WORK_DIR/${name}.crop.log" 2>&1
+      "${view_crop_w[$idx]}" "${view_crop_h[$idx]}" > "$jdir/crop.log" 2>&1
+}
+
+# Launch and crop in one step -- what `measure` wants, since the whole point
+# there is that every run is its own launch.
+run_view_capture() {
+  local idx="$1" outPng="$2" jdir="$3"
+  run_view_launch "$idx" "$jdir" || return 1
+  run_view_crop "$idx" "$outPng" "$jdir/full.png" "$jdir"
+}
+
+# Run every distinct launch through the pool, then every crop, leaving each
+# view's cropped PNG at "$1/<view name>$2". Shared by `check` and `update`,
+# which differ only in where the crops land and what they then do with them.
+capture_all_views() {
+  local outDir="$1" outSuffix="$2"
+  local idx
+
+  # Phase 0: clear every scratch dir first, in one pass. A non-owner view's
+  # dir holds only its crop log, but it is still cleared here rather than in
+  # phase 2, where it would race the owner's launch.
+  idx=0
+  while [ "$idx" -lt "${#view_names[@]}" ]; do
+    rm -rf "$(view_jdir "$idx")"
+    idx=$((idx + 1))
+  done
+
+  # Phase 1: launches, $jobs_n at a time, owners only.
+  idx=0
+  while [ "$idx" -lt "${#view_names[@]}" ]; do
+    if [ "${view_launch_owner[$idx]}" = "$idx" ]; then
+      pool_wait_slot
+      launch_task "$idx" &
+    fi
+    idx=$((idx + 1))
+  done
+  wait
+
+  # Phase 2: crops. Each is a few ms of goldentool, but there are 53 of them
+  # and the pool is already here.
+  idx=0
+  while [ "$idx" -lt "${#view_names[@]}" ]; do
+    if rc_ok "$(view_odir "$idx")/launch.rc"; then
+      pool_wait_slot
+      crop_task "$idx" "$outDir/${view_names[$idx]}$outSuffix" &
+    fi
+    idx=$((idx + 1))
+  done
+  wait
+}
+
+# Did this view end up with a cropped PNG? Both its launch and its crop had to
+# succeed, and a missing rc file means the task never got far enough to write
+# one -- which is a failure too.
+view_ok() {
+  rc_ok "$(view_odir "$1")/launch.rc" && rc_ok "$(view_jdir "$1")/crop.rc"
 }
 
 cmd_check() {
   mkdir -p "$WORK_DIR"
   local failed=0
   local idx=0
+
+  capture_all_views "$WORK_DIR" ".actual.png"
+
+  # Comparison is a separate, serial pass in view order, so that the verdict
+  # lines a human reads come out in the same order at -j 8 as at -j 1 and a
+  # failing view's `.actual.png` is copied out by a shell with no siblings.
+  idx=0
   for name in "${view_names[@]}"; do
     local jdir="$WORK_DIR/${name}_journal"
     local actual="$WORK_DIR/${name}.actual.png"
-    rm -rf "$jdir"
-    if ! run_view_capture "$idx" "$actual" "$jdir"; then
+    if ! view_ok "$idx"; then
+      echo "[$name] FAIL -- capture failed, see $(view_odir "$idx")/stderr.log"
       failed=1
       idx=$((idx + 1))
       continue
@@ -1557,10 +1799,10 @@ cmd_check() {
     local diffOut="$REF_DIR/${name}.diff.png"
     rm -f "$diffOut" "$REF_DIR/${name}.actual.png"
     if "$TOOL" diff "$actual" "$ref" "$diffOut" "${view_threshold[$idx]}" \
-        "${view_max_changed_px[$idx]}" > "$WORK_DIR/${name}.diff.log" 2>&1; then
+        "${view_max_changed_px[$idx]}" > "$jdir/diff.log" 2>&1; then
       echo "[$name] PASS"
     else
-      cat "$WORK_DIR/${name}.diff.log"
+      cat "$jdir/diff.log"
       cp "$actual" "$REF_DIR/${name}.actual.png"
       echo "[$name] FAIL -- actual: $REF_DIR/${name}.actual.png  reference: $ref  diff: $diffOut"
       failed=1
@@ -1571,19 +1813,18 @@ cmd_check() {
     echo "run_golden.sh: FAIL"
     return 1
   fi
-  echo "run_golden.sh: PASS (${#view_names[@]} views)"
+  echo "run_golden.sh: PASS (${#view_names[@]} views, -j $jobs_n)"
   return 0
 }
 
 cmd_update() {
   mkdir -p "$WORK_DIR" "$REF_DIR"
+  capture_all_views "$REF_DIR" ".png"
   local idx=0
   for name in "${view_names[@]}"; do
-    local jdir="$WORK_DIR/${name}_journal"
     local out="$REF_DIR/${name}.png"
-    rm -rf "$jdir"
-    if ! run_view_capture "$idx" "$out" "$jdir"; then
-      echo "[$name] update FAILED"
+    if ! view_ok "$idx"; then
+      echo "[$name] update FAILED -- see $(view_odir "$idx")/stderr.log"
       idx=$((idx + 1))
       continue
     fi
@@ -1610,12 +1851,27 @@ cmd_measure() {
       if [ "$wanted" -eq 0 ]; then idx=$((idx + 1)); continue; fi
     fi
     echo "=== $name ==="
+    # The N launches of one view go through the same pool the other two modes
+    # use, and for the same reason. It also keeps what `measure` measures
+    # honest: the noise a threshold is derived from should be the noise of a
+    # capture taken the way `check` takes it, and `check` takes it with
+    # $jobs_n siblings running. Measure at the -j you intend to check at.
     local first=""
+    local i
+    for i in $(seq 1 "$measure_n"); do
+      local jdir="$WORK_DIR/${name}_measure_${i}_journal"
+      rm -rf "$jdir"
+      pool_wait_slot
+      capture_task "$idx" "$WORK_DIR/${name}_measure_${i}.png" "$jdir" &
+    done
+    wait
     for i in $(seq 1 "$measure_n"); do
       local jdir="$WORK_DIR/${name}_measure_${i}_journal"
       local out="$WORK_DIR/${name}_measure_${i}.png"
-      rm -rf "$jdir"
-      run_view_capture "$idx" "$out" "$jdir" > /dev/null
+      if ! rc_ok "$jdir/rc"; then
+        echo "  run$i: capture FAILED"
+        continue
+      fi
       if [ "$i" -eq 1 ]; then
         first="$out"
       else
@@ -1635,5 +1891,5 @@ case "$mode" in
   check) cmd_check ;;
   update) cmd_update ;;
   measure) cmd_measure ;;
-  *) echo "usage: $0 [check|update|measure [N] [view-name...]]" >&2; exit 2 ;;
+  *) echo "usage: $0 [-j N] [check|update|measure [N] [view-name...]]" >&2; exit 2 ;;
 esac
