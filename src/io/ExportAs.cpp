@@ -12,6 +12,7 @@
 #include <system_error>
 
 #include "color/Space.hpp"
+#include "io/Json.hpp"
 #include "ops/Resample.hpp"
 
 // The preset file's schema, which is the only part of this module that is a
@@ -45,158 +46,14 @@
 namespace np {
 namespace {
 
-// --- A tiny JSON reader, for exactly this schema -------------------------
-//
-// Same call this project already made once, for the same reasons, and
-// app/Keymap.cpp's own version says them at length: there is no JSON library
-// vendored anywhere here (checked third_party/ and cmake/), the schema is
-// small and fixed, and hand-rolling beats taking a dependency for it.
-//
-// Deliberately a second copy rather than a promotion of Keymap.cpp's: that
-// one is `static` inside its translation unit, parses a different shape, and
-// hoisting it means editing app/Keymap, which is not this step's business.
-// io/Export.cpp's duplicated unpremultiply() carries the identical note and
-// the identical trigger -- a *third* consumer is when this becomes a shared
-// header rather than a judgement call.
-class JsonReader {
- public:
-  JsonReader(std::string_view text, std::string_view label) : s_(text), label_(label) {}
-
-  bool failed() const { return failed_; }
-  const std::string& error() const { return error_; }
-
-  void fail(const std::string& what) {
-    if (failed_) return;
-    failed_ = true;
-    error_ = std::string(label_) + ": " + what + " (at byte " + std::to_string(i_) + ")";
-  }
-
-  void skipWs() {
-    while (i_ < s_.size() &&
-           (s_[i_] == ' ' || s_[i_] == '\t' || s_[i_] == '\n' || s_[i_] == '\r'))
-      ++i_;
-  }
-
-  char peek() {
-    skipWs();
-    return i_ < s_.size() ? s_[i_] : '\0';
-  }
-
-  bool expect(char c) {
-    skipWs();
-    if (i_ >= s_.size() || s_[i_] != c) {
-      fail(std::string("expected '") + c + "'");
-      return false;
-    }
-    ++i_;
-    return true;
-  }
-
-  bool parseString(std::string* out) {
-    skipWs();
-    if (i_ >= s_.size() || s_[i_] != '"') {
-      fail("expected a string");
-      return false;
-    }
-    ++i_;
-    out->clear();
-    while (i_ < s_.size() && s_[i_] != '"') {
-      char c = s_[i_++];
-      if (c == '\\' && i_ < s_.size()) {
-        const char e = s_[i_++];
-        switch (e) {
-          case '"': *out += '"'; break;
-          case '\\': *out += '\\'; break;
-          case '/': *out += '/'; break;
-          case 'n': *out += '\n'; break;
-          case 't': *out += '\t'; break;
-          // Sufficient for preset names and the fixed token vocabulary; a
-          // \uXXXX escape is not something this writer ever emits.
-          default: *out += e; break;
-        }
-      } else {
-        *out += c;
-      }
-    }
-    if (i_ >= s_.size()) {
-      fail("unterminated string");
-      return false;
-    }
-    ++i_;  // closing quote
-    return true;
-  }
-
-  bool parseNumber(double* out) {
-    skipWs();
-    const size_t start = i_;
-    while (i_ < s_.size() && (std::isdigit(static_cast<unsigned char>(s_[i_])) || s_[i_] == '-' ||
-                              s_[i_] == '+' || s_[i_] == '.' || s_[i_] == 'e' || s_[i_] == 'E'))
-      ++i_;
-    if (i_ == start) {
-      fail("expected a number");
-      return false;
-    }
-    *out = std::strtod(std::string(s_.substr(start, i_ - start)).c_str(), nullptr);
-    return true;
-  }
-
-  // Consumes and discards any value, so an unrecognised field is skipped
-  // rather than fatal -- a newer build's extra key must not stop an older
-  // one from reading the presets it does understand.
-  bool skipValue(int depth = 0) {
-    if (depth > 16) {
-      fail("value nested too deeply");
-      return false;
-    }
-    const char c = peek();
-    if (c == '"') {
-      std::string ignored;
-      return parseString(&ignored);
-    }
-    if (c == '{') {
-      if (!expect('{')) return false;
-      if (peek() == '}') return expect('}');
-      for (;;) {
-        std::string key;
-        if (!parseString(&key) || !expect(':') || !skipValue(depth + 1)) return false;
-        if (peek() == ',') {
-          ++i_;
-          continue;
-        }
-        break;
-      }
-      return expect('}');
-    }
-    if (c == '[') {
-      if (!expect('[')) return false;
-      if (peek() == ']') return expect(']');
-      for (;;) {
-        if (!skipValue(depth + 1)) return false;
-        if (peek() == ',') {
-          ++i_;
-          continue;
-        }
-        break;
-      }
-      return expect(']');
-    }
-    if (c == 't' || c == 'f' || c == 'n') {
-      while (i_ < s_.size() && std::isalpha(static_cast<unsigned char>(s_[i_]))) ++i_;
-      return true;
-    }
-    double ignored = 0.0;
-    return parseNumber(&ignored);
-  }
-
-  void consume() { ++i_; }
-
- private:
-  std::string_view s_;
-  std::string_view label_;
-  size_t i_ = 0;
-  bool failed_ = false;
-  std::string error_;
-};
+// The JSON reader and `escapeJson()` this file used to carry privately now
+// live in io/Json.hpp. This file is where the promotion was argued for --
+// its own comment said "a *third* consumer is when this becomes a shared
+// header rather than a judgement call" -- and io/ActionFile
+// (docs/automation-plan.md) is that third consumer, so the copy is gone
+// rather than triplicated. `escapeJson()` came back WIDER: it now escapes
+// control characters too, which this copy did not, so a preset name with a
+// newline in it no longer writes a file that cannot be read back.
 
 bool asciiEqualNoCase(std::string_view a, std::string_view b) {
   if (a.size() != b.size()) return false;
@@ -216,16 +73,6 @@ std::string trimmed(std::string_view s) {
   while (b < e && isSpace(s[b])) ++b;
   while (e > b && isSpace(s[e - 1])) --e;
   return std::string(s.substr(b, e - b));
-}
-
-std::string escapeJson(std::string_view s) {
-  std::string out;
-  out.reserve(s.size() + 4);
-  for (char c : s) {
-    if (c == '"' || c == '\\') out += '\\';
-    out += c;
-  }
-  return out;
 }
 
 // Empty when the name is usable; otherwise the specific reason, in this

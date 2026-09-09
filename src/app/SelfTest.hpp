@@ -3557,6 +3557,14 @@ bool runLayerGroupPanelTest();
 // with `exportRequestAvailability()`'s string verbatim rather than four
 // identical per-file failures. Headless and GPU-free; writes and removes a
 // selftest_exportstates/ scratch directory.
+// io/Json -- the reader, escaper and ordered document model promoted out of
+// io/ExportAs.cpp and app/Keymap.cpp once the copy count reached three
+// (docs/automation-plan.md step 0). Asserts the promotion's two new
+// properties against hand-typed text: a float round-trips to the identical
+// bit pattern, and object key order survives a rewrite -- which is what makes
+// an action file diffable (PRD P5). Headless, GPU-free, filesystem-free.
+bool runJsonTest();
+
 bool runExportStatesTest();
 // PLAN.md Phase 5 -- **the CPU Pigment deposit**: `brush/Deposit` (what one dab
 // does to one texel) and `app/StrokeSession` (the stroke lifecycle around it).

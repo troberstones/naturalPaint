@@ -3222,6 +3222,9 @@ int main(int argc, char** argv) {
     // answers, in BOTH NP_USE_OIIO configurations -- the EXR seam is refused
     // before the first byte in OFF rather than skipped. Headless and
     // GPU-free; writes and removes a selftest_exportstates/ directory.
+    // io/Json: the shared JSON reader/writer the export presets, the keymap
+    // and (next) the action format all read through. See app/SelfTest.hpp.
+    const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
     // control is live, what sentence goes beside a greyed Export button, and
@@ -3566,7 +3569,7 @@ int main(int argc, char** argv) {
                     shelvedLinksOk && scatterCountOk && strokePathOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
-                    exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&

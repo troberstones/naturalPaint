@@ -152,6 +152,7 @@ add_executable(naturalPaint
   app/selftest/ImageDecode.cpp
   app/selftest/ImageIO.cpp
   app/selftest/IncrementalComposite.cpp
+  app/selftest/Json.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
@@ -345,6 +346,7 @@ add_executable(naturalPaint
   io/ImageDecode.cpp
   io/SourceGamut.cpp
   io/ImageIO.cpp
+  io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
   io/PackBits.cpp

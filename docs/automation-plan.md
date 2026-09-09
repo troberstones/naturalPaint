@@ -321,7 +321,103 @@ for the wrong reason.
 
 ---
 
-## 9. Record
+## 9. Implementation checklist
+
+Ticked as each item lands **and is asserted**, not when the code is written. Branch:
+`automation`, worktree `/Users/chrisharvey/naturalPaint-automation`, based on `4eb619d`.
+Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
+
+### Step 0 — `io/Json` (the third-consumer extraction)
+
+- [ ] `src/io/Json.hpp` / `Json.cpp`, added to `src/CMakeLists.txt`
+- [ ] the pull reader moved **verbatim** from `io/ExportAs.cpp` (same errors, same labels)
+- [ ] `escapeJson()` moved with it
+- [ ] a small `JsonValue` DOM on top — null / bool / number / string / array / object
+- [ ] `io/ExportAs.cpp` uses it; its private copy deleted
+- [ ] `app/Keymap.cpp` uses it; its private copy deleted
+- [ ] the "deliberately a second copy" comments at both sites replaced by the real reason
+- [ ] `app/selftest/Json.cpp`: numbers, escapes, nesting, depth limit, error labels, DOM round trip
+- [ ] **gate:** `export-presets.json` and `keymaps/default.json` still load; `--selftest` additions-only, 0 FAIL
+
+### Step 1 — `app/Command` and the registry
+
+- [ ] `Command{std::string id; JsonValue params;}` and `CommandResult{ok, status, warnings}`
+- [ ] `applyCommand(OpenDocument&, const Command&)`
+- [ ] registry: id → `{apply, precondition, paramNames}`; lookup by id, never by ordinal
+- [ ] registrations — filters (7): blur, sharpen, unsharp, noise, emboss, median, motion blur
+- [ ] registrations — adjustments (19) and the four auto solvers
+- [ ] registrations — document: `image_size`, `canvas_size`, `crop_to_selection`, `trim_to_content`
+- [ ] registrations — `LayerCommand` (all of `allLayerCommands()`), incl. `flatten_image`
+- [ ] registrations — `LayerSetCommand` (all of `allLayerSetCommands()`)
+- [ ] registrations — `core/LayerOps` setters, incl. `set_layer_blend`
+- [ ] registrations — op-stack edits, carrying an op in `io/OpSerial`'s text encoding
+- [ ] registrations — selection: select all, deselect, invert, load channel as selection
+- [ ] `select_layer` by name (the target-state command §5 requires)
+- [ ] **the exhaustiveness test** + an exception table that starts empty but for the
+      `AppState`-only actions of §1, each with a stated reason
+- [ ] **gate:** every id round-trips through `JsonValue` and back; unknown id refuses by name
+
+### Step 2 — migrate the call sites (49)
+
+- [ ] 29 sites across the 28 public `FilterOps`/`AdjustmentOps` appliers
+- [ ] 4 `applyLayerCommand` / `applyLayerSetCommand` sites
+- [ ] 16 `core/LayerOps` setter sites
+- [ ] **gate:** Filter and Adjustments golden views unchanged; `--selftest` additions-only
+
+### Step 3 — `app/Recorder`
+
+- [ ] arm / record / stop, appending from inside `applyCommand()`
+- [ ] emits `select_layer` whenever the active layer changes
+- [ ] refuses to record a selection-bounded step taken under an unnamed marquee (§7)
+- [ ] **gate:** the user's own case records as exactly five steps, in order
+
+### Step 4 — `ops/Action` + `io/ActionFile`
+
+- [ ] `Action{name, steps}`; `.npaction` JSON with an `"npaction": 1` version
+- [ ] writer, reader, and the library directory under Application Support
+- [ ] `actionFromLayerOps()` — PRD P6's converter, an op stack to steps
+- [ ] **gate:** a **hand-typed** fixture decodes correctly; round trip exact incl. float bits
+- [ ] **gate:** `stack → hex → stack → text → stack` agrees (the two-encoder drift guard)
+
+### Step 5 — `replayAction()`
+
+- [ ] resolve layers by name and kind; refuse by name, having changed nothing
+- [ ] consult each step's precondition (`menuItemEnabled`-equivalent) before applying
+- [ ] a step that changes zero texels is a reported warning, never a silent pass
+- [ ] a non-`PointA` or `Unknown` op-stack step refuses the run
+- [ ] the whole replay is one history entry
+- [ ] **gate:** A-recorded → B-replayed produces A's pixels; a missing layer refuses
+
+### Step 6 — `app/Batch` and `--batch`
+
+- [ ] `BatchRequest`: action, source set, output directory, `ExportRequest`, name template
+- [ ] the pre-flight: **every output path canonicalised against every input path**
+- [ ] the loop: `openAnyFileAsDocument()` → `replayAction()` → existing encode and write
+- [ ] import warnings carried into the per-file report
+- [ ] stop at first `Failed`; the rest report `NotAttempted`
+- [ ] `--batch` beside the report modes, before `SDL_Init`
+- [ ] **gate:** 30-file run in `--selftest`; every input's bytes unchanged (hashed both sides)
+
+### Step 7 — UI
+
+- [ ] ACTIONS panel: record / stop / play, step list, reorder, delete
+- [ ] BATCH dialog: action, sources, output dir, preset, template, dry run, report
+- [ ] golden views: panel idle, panel recording, dialog plan, dialog report
+
+### Step 8 — the parked P2 image ops (severable)
+
+- [ ] lens correction (PRD D22)
+- [ ] pattern define / fill (PRD D27)
+
+### Sabotage, at gather
+
+- [ ] break the input/output collision check → `Batch` test goes red
+- [ ] break the non-`PointA` refusal → `Action` test goes red
+- [ ] break the `select_layer` emission → `Recorder` test goes red
+
+---
+
+## 10. Record
 
 Filled in as steps complete. Empty until step 0 runs.
 
