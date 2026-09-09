@@ -33,6 +33,7 @@
 #include "app/Latency.hpp"
 #include "app/Memory.hpp"
 #include "app/MunsellSelection.hpp"
+#include "app/NoDocumentCanvas.hpp"
 #include "color/Munsell.hpp"
 #include "app/OpenAnyFile.hpp"
 #include "app/PenAxes.hpp"
@@ -467,6 +468,13 @@ void runMaskDemo(np::OpenDocument& od, bool maskTarget) {
 //                 move, with no pen-up. The rubber band exists only while the
 //                 pointer is down, so it is unphotographable any other way --
 //                 `--gradient-demo drag`'s argument exactly.
+//   pendraw       A half-built path: three presses via `pathEditBeginPen()`,
+//                 the REAL placement transition (app/PenTool.hpp section 9),
+//                 left OPEN -- no fourth press on the first anchor -- so the
+//                 picture carries two committed segments, three anchors and
+//                 the rubber band to a pinned cursor position. Well clear of
+//                 the blob and triangle below so none of the three presses
+//                 lands on their geometry instead of empty canvas.
 void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
   // Two shapes, deliberately unalike. The blob's handles do not coincide with
   // their anchors, so it draws tangent sticks; the triangle's do, so it draws
@@ -544,6 +552,37 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     st.pathEditDemo = true;
     std::printf("[vector-demo] marquee held open: 140,120 -> 760,540, drag=%d\n",
                 static_cast<int>(st.pathEdit.drag));
+    return;
+  }
+
+  if (mode == 3) {
+    // Three real presses, each through pen-down/pen-up exactly as the canvas
+    // block drives them, clear of the blob (compass anchors at doc x
+    // 210-590, y 190-570) and the triangle (560-900, 620-860) -- AND inside
+    // the same crop `vector_shape`/`vector_components`/`vector_marquee` use
+    // (device px 340-1680, 370-1330; at this demo's 2x-device-pixel, 1:1
+    // document zoom, that is document x ~115-785, y ~100-580 -- a point
+    // outside it is composited but falls outside every one of those views'
+    // own crop, and a first attempt at this view learned that the hard way,
+    // placing two of the three points off the right edge of the crop AND
+    // under the COLOR/LAYERS dock).
+    const np::PathPoint p1{650.0f, 120.0f};
+    const np::PathPoint p2{750.0f, 240.0f};
+    const np::PathPoint p3{650.0f, 360.0f};
+    for (const np::PathPoint& p : {p1, p2, p3}) {
+      np::pathEditBeginPen(&st.pathEdit, &shapes, &od.document.layers[at].nextShapeId, p,
+                           pickTexels, false, np::SelectionCombine::Replace, od.id,
+                           /*curveMode=*/false);
+      np::pathEditEnd(&st.pathEdit, shapes);
+    }
+    // The rubber band's destination, PINNED rather than read from a live
+    // pointer -- this process has none, `marquee` mode's own reason two
+    // arms up -- via the one function that writes `dragNow` without also
+    // owning a drag (`pathEditTrackCursor()`, app/PenTool.hpp section 9).
+    np::pathEditTrackCursor(&st.pathEdit, np::PathPoint{750.0f, 470.0f});
+    std::printf("[vector-demo] pendraw: %zu anchors placed, open=%d\n",
+                shapes.back().path.subpaths[0].anchors.size(),
+                static_cast<int>(np::pathEditHasOpenPath(st.pathEdit)));
     return;
   }
 
@@ -1442,9 +1481,9 @@ int main(int argc, char** argv) {
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
-  // --vector-demo [components|marquee]: see runVectorDemo().
+  // --vector-demo [components|marquee|pendraw]: see runVectorDemo().
   bool vectorDemo = false;
-  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee
+  int vectorDemoMode = 0;  // 0 = shape, 1 = components, 2 = marquee, 3 = pendraw
 
   // --text-demo [paragraph|frame]: see runTextDemo().
   bool textDemo = false;
@@ -1849,6 +1888,9 @@ int main(int argc, char** argv) {
           ++i;
         } else if (arg == "marquee") {
           vectorDemoMode = 2;
+          ++i;
+        } else if (arg == "pendraw") {
+          vectorDemoMode = 3;
           ++i;
         }
       }
@@ -2398,6 +2440,12 @@ int main(int argc, char** argv) {
     const bool flatsExpandOk = np::runFlatsExpandTest();
     const bool flatsSourceOk = np::runFlatsSourceTest();
     const bool toolSwitchOk = np::runToolSwitchTest();
+    // app/ToolSwitch: the spring-loaded Eyedropper (Alt/Option), the Hand's
+    // borrow-and-give-back shape applied to a second tool -- eligibility
+    // walked over every (Tool, BucketFill) pair, the borrow writing no
+    // ledger entry, and the two springs proven mutually exclusive rather
+    // than merely never observed together. Headless and GPU-free.
+    const bool springEyedropperOk = np::runSpringEyedropperTest();
     // app/ToolSurface (docs/testing-issues.md T5, short-term half): the SECOND
     // axis of "is this palette cell live". `toolImplemented()` and
     // `toolHasCanvasHandler()` both ask whether a tool is BUILT; neither can
@@ -2407,6 +2455,12 @@ int main(int argc, char** argv) {
     // a PROPER subset of the old ones -- a synonym would make every other
     // assertion here unfalsifiable. Headless and GPU-free.
     const bool toolSurfaceOk = np::runToolSurfaceTest();
+    // docs/testing-issues.md T5, reversed 2026-09-08: no document means no
+    // canvas at all now, not a bare paintable one belonging to nobody.
+    // Pins DocumentSession::empty() as the predicate the canvas block and
+    // ensurePaintSim()'s call site gate on, and that a private PaintSim's
+    // shutdown() measurably drops the process footprint.
+    const bool noDocumentCanvasOk = np::runNoDocumentCanvasTest(gpu, lut);
     // Phase 2 step 11 ("View controls", PRD Q1-Q4): the unified view
     // transform's round-trip identity, one hand-worked known-point check,
     // and the view-only proof that mirror/rotation/grayscale never mutate
@@ -2623,6 +2677,12 @@ int main(int argc, char** argv) {
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penToolOk = np::runPenToolTest();
+    // app/PenTool section 9 -- Pen/Curve placement: a press creating and
+    // extending a shape, a press on its own first anchor closing it, a drag
+    // setting a mirrored tangent, Escape leaving what was placed, and
+    // Curve's Catmull-Rom tangent fit proven C1-continuous numerically.
+    // Headless and GPU-free; writes no files; touches no ui/ file.
+    const bool penDrawOk = np::runPenDrawTest();
     // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
     // gate predicate, the caret-editing session's UTF-8-safe string edits
     // (insert/backspace/forward-delete/caret movement, all routed through
@@ -2662,6 +2722,11 @@ int main(int argc, char** argv) {
     // stroke path with the current brush. Headless and GPU-free; guards its
     // Text sections on shaperAvailable() the way runTextContentTest() does.
     const bool pathConsumersOk = np::runPathConsumersTest();
+    // The Text tool owning the keyboard while a session is live: app/Keymap's
+    // keyChordReachesKeymap() gate, app/TextTool's textSessionActive()
+    // transitions, and textEditRevert() vs plain textEditCancel(). Headless
+    // and GPU-free; writes no files.
+    const bool textKeyCaptureOk = np::runTextKeyCaptureTest();
     // docs/testing-issues.md T14: the CPU half of the Free Transform live
     // pixel preview -- ui/TransformPreviewTexture's crop-and-pack, headless
     // and GPU-free (the GPU upload wrapper itself is untested, matching this
@@ -3109,6 +3174,13 @@ int main(int argc, char** argv) {
     // disclosed rather than hidden, and that a splitter drag moves exactly
     // the boundary it grabbed. Headless, GPU-free and ImGui-free.
     const bool dockLayoutOk = np::runDockLayoutTest();
+    // Track panelgear: the panel grip's gear settings button beside the "?"
+    // -- COLOR is the only section that declares one, its Lucide codepoint
+    // reaches the real face drawToolGlyph() reads, and panelGripFor()'s
+    // title-fit predicate (re-derived independently; that function is
+    // file-local to ui/MacPaintUI.cpp) flips exactly at the two-button
+    // threshold a section with both a help button and a gear needs. GPU-free.
+    const bool panelSettingsOk = np::runPanelSettingsTest();
     // The incremental composite (core/DirtyTiles + core/Composite's region
     // walk + ui/DocumentTexture's sub-rectangle upload): that the dirty set is
     // complete, that a non-tile-local change is classified as one, and that
@@ -3304,6 +3376,11 @@ int main(int argc, char** argv) {
     // so a backend wired to Cocoa's `terminate:` -- which would route straight
     // past the guard runQuitGuardTest() covers -- cannot pass.
     const bool menuModelOk = np::runMenuModelTest();
+    // A real, opt-in PIGMENT panel: the Hidden-by-default placement table,
+    // the Window > Pigment check item, and the session override
+    // (`AppState::pigmentOverride`, `effectivePigmentConstants()`,
+    // `selectPigment()`) it turns live. Headless, GPU-free and ImGui-free.
+    const bool pigmentPanelOk = np::runPigmentPanelTest();
     // The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9): the
     // dialog-to-engine wiring for grow, shrink, feather, colour range and
     // luminance range, plus the dedicated undo stack a pure-selection change
@@ -3466,7 +3543,8 @@ int main(int argc, char** argv) {
                    canvasLimitsOk && gamutOk && munsellOk && shaperOk && keymapOk &&
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
-                    eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk && flatsExpandOk && flatsSourceOk && toolSurfaceOk &&
+                    eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk &&
+                    springEyedropperOk && flatsExpandOk && flatsSourceOk && toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -3492,7 +3570,7 @@ int main(int argc, char** argv) {
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
-                    controlsLayoutOk && panelLayoutOk && dockLayoutOk &&
+                    controlsLayoutOk && panelLayoutOk && dockLayoutOk && panelSettingsOk &&
                     incrementalCompositeOk && mergeFamilyOk && layerCompOk && layerGroupOk &&
                     layerGroupPanelOk &&
                     exportStatesOk && pigmentDepositOk && rgbDepositOk && rgbEraseOk &&
@@ -3506,7 +3584,7 @@ int main(int argc, char** argv) {
                     strokeSpeedOk && idleMemOk && fieldAllocOk && fontsOk &&
                     atelierOk && activeLayerOk && presentTransferOk &&
                     pigmentBakeOk && solverPersistenceOk && strokeBridgeOk && descriptorOk &&
-                    closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk &&
+                    closeDecisionOk && quitGuardOk && menuBasicsOk && menuModelOk && pigmentPanelOk &&
                     openAnyFileOk && psdImportOk && filterMenuOk && adjustmentMenuOk && selectMenuOk &&
                     chromeConsistencyOk && saveReadbackOk && zoomAndSizeOk && canvasDimensionsOk &&
                     angleConventionOk && wheelInputOk && touchGestureOk && touchGestureSessionOk && pressureFeelOk
@@ -3514,7 +3592,8 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk;
+                    penToolOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    textKeyCaptureOk && noDocumentCanvasOk;
     s->shutdown();
     gpu.shutdown();
     SDL_DestroyWindow(window);
@@ -4433,7 +4512,16 @@ int main(int argc, char** argv) {
         std::optional<np::LayerKind> activeScope;
         if (const np::OpenDocument* scopeDoc = st.documents.active())
           if (const np::Layer* scopeLayer = np::activeLayerOf(*scopeDoc)) activeScope = scopeLayer->kind;
-        const std::optional<std::string> action = keymap.resolve(chord, activeScope);
+        // A live Text session owns an unmodified chord before the keymap ever
+        // sees it -- app/Keymap.hpp's keyChordReachesKeymap(): typing "f" or
+        // pressing Backspace into a text layer must not also fire
+        // `mirror_x`/`delete_selection`. Cmd/Ctrl chords still reach
+        // `resolve()` (Cmd+Z etc.), and every chord does when no session is
+        // live, which is every key-down before this gate existed.
+        const std::optional<std::string> action =
+            np::keyChordReachesKeymap(chord, np::textSessionActive(st.textEdit))
+                ? keymap.resolve(chord, activeScope)
+                : std::nullopt;
         if (action == "toggle_pause") st.paused = !st.paused;
         else if (action == "clear_canvas") st.requestClear = true;
         else if (action == "reload_shaders") st.requestReload = true;
@@ -4738,6 +4826,22 @@ int main(int argc, char** argv) {
     ImGui::NewFrame();
     const uint64_t newFrameNs = frameTrace ? SDL_GetTicksNS() : 0;
 
+    // docs/testing-issues.md T5, reversed 2026-09-08: "painting the bare
+    // canvas is a supported workflow" no longer holds -- with no document
+    // open there is no canvas either, so `sim` is torn down the moment the
+    // last one closes rather than left alive with nothing to belong to.
+    // Every path that removes a document (the tab strip's close box in
+    // ui/AtelierChrome.cpp, File > Close's performMenuAction() row, the
+    // native menu queue MacPaintUI's drawUI() drains at its own top) runs
+    // from inside last frame's drawUI() call, so `st.documents` already
+    // reflects any close by the time this frame starts. Idempotent by
+    // construction, not by a tracked transition flag: `sim` is null on
+    // every frame after the one this fires, so there is nothing to re-run.
+    // The actual predicate-and-teardown pair lives in
+    // app/NoDocumentCanvas.hpp so --selftest can call the identical
+    // function rather than a look-alike.
+    np::releaseSolverWhenNoDocuments(sim, st.documents);
+
     // ---- the stroke bridge: dried paint moves into the document -----------
     //
     // **This call must stay above drawUI(), and the reason is not obvious.**
@@ -4828,14 +4932,21 @@ int main(int argc, char** argv) {
     // wash that granulates unexpectedly. `foregroundPhysicalConstants()` is
     // also the bounds-checked read `defaultPalette()[st.brush.pigment]` was not.
     const std::array<float, 3> fg = np::foregroundSrgb(st.brush);
-    const auto& pig = np::foregroundPhysicalConstants(st.brush);
+    // `effectivePigmentConstants()` (app/AppState.hpp): the PIGMENT panel's
+    // session override when one is live, else the same bounds-checked
+    // `defaultPalette()[st.brush.pigment]` read `foregroundPhysicalConstants()`
+    // performs -- so this is still `foregroundPhysicalConstants()` in every
+    // frame the panel has not touched.
+    const np::PigmentConstants pig = np::effectivePigmentConstants(st);
     const np::Latent z = lut.rgbToLatent(fg[0], fg[1], fg[2]);
     for (int i = 0; i < 3; ++i) {
       st.sim.brushLatentC[i] = z.c[i];
       st.sim.brushLatentR[i] = z.res[i];
     }
     // Physical constants follow the selected paint, not a global slider, so
-    // switching from Phthalo Blue to Ultramarine actually changes behaviour.
+    // switching from Phthalo Blue to Ultramarine actually changes behaviour --
+    // unless the PIGMENT panel has a session override live, in which case
+    // they follow that instead.
     st.sim.density = pig.density;
     st.sim.staining = pig.staining;
     st.sim.granulation = pig.granulation;

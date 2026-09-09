@@ -246,6 +246,14 @@ enum class MenuAction : uint16_t {
   // opened would leave the menu unable to say whether the window was already
   // there.
   BrushSettings,
+  // Toggles `ControlsSection::Pigment` between `PanelPlacement::Hidden`
+  // (its default -- `app/PanelLayout.cpp`'s `defaultPlacementFor()`) and its
+  // role's normal placement (`Flyout`, `ControlsSectionRole::Simulation`).
+  // Also a Check, for the same reason as `BrushSettings`: a saved layout
+  // naming a placement for this section already answers "is it showing",
+  // and the item has to agree with that rather than only ever knowing its
+  // own toggles.
+  Pigment,
   ImGuiDemo,
   ActivateDocument,     // family: param = index into the open-document session
 
@@ -658,6 +666,9 @@ struct MenuContext {
 
   // --- Window -------------------------------------------------------------
   bool showBrushSettings = false;
+  // `MenuAction::Pigment`'s checkmark: whether `ControlsSection::Pigment`'s
+  // current placement is anything other than `Hidden`.
+  bool showPigmentPanel = false;
   bool showDemo = false;
   std::vector<MenuFamilyEntry> openDocuments;
 

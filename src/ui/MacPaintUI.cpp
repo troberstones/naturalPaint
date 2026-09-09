@@ -12,6 +12,7 @@
 #include "ui/LabelledControl.hpp"
 #include "ui/AtelierLayout.hpp"
 #include "ui/DockLayout.hpp"
+#include "ui/PanelGrip.hpp"
 #include "ui/AtelierTheme.hpp"
 #include "ui/NewDocumentDialog.hpp"
 
@@ -3852,14 +3853,18 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
   // rectangles (printed Munsell pages are rectangular too); an unreachable
   // control does not read at all.
   //
-  // **One control row, not two, and no readout block.** What fits under the
-  // grid is the hue strip and a single row. The pigment constants that the
-  // PIGMENT and RGB branches print are therefore *not* printed here --
-  // docs/munsell-picker.md said they should be, and the measurement says
-  // there is no room, so they moved to this panel's "?" text instead of being
-  // drawn into the clipped region where nobody would ever see them. The
-  // per-cell value, chroma and sRGB triple live in the grid's own tooltip,
-  // which costs no height at all.
+  // **No control row and no readout block below the grid any more.** What
+  // fits under the grid is the hue strip alone. The steps slider and the
+  // per-row/per-page chroma toggle used to share this space as one control
+  // row -- now they are behind the grip's gear button instead (see
+  // `drawSectionSettings()`, `ControlsSectionSpec::hasSettings`), and the
+  // height that row used to reserve (`reserveBelow`, below) is returned to
+  // the grid. The pigment constants that the PIGMENT and RGB branches print
+  // are, as before, *not* printed here -- docs/munsell-picker.md said they
+  // should be, and the measurement says there is no room even now, so they
+  // stay in this panel's "?" text rather than being drawn into a region that
+  // still cannot hold them. The per-cell value, chroma and sRGB triple live
+  // in the grid's own tooltip, which costs no height at all.
   constexpr float kMinCellPx = 5.0f;
   constexpr float kHueBarW = 15.0f;
   const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -3873,12 +3878,12 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
   // conventional arrangement, so the layout forced by the measurement is the
   // one a picker would have wanted anyway.
   //
-  // `GetFrameHeightWithSpacing()`, not `GetTextLineHeightWithSpacing()`: the
-  // control row holds a `SliderInt`, whose frame is the text line plus
-  // `FramePadding.y` twice. Reserving a text line for it under-reserved by
-  // exactly that padding and clipped the bottom of the only row of controls
-  // this branch has.
-  const float reserveBelow = ImGui::GetFrameHeightWithSpacing();
+  // Zero, now that the control row has moved into the gear settings popover
+  // -- kept as a named variable rather than deleted outright because the
+  // `dumpLayout` printf below still reports it, and a reader diffing that
+  // output against an older run should see it go to zero rather than
+  // disappear from the line entirely.
+  const float reserveBelow = 0.0f;
   const float cellW = std::max(
       kMinCellPx, std::floor((avail.x - kHueBarW - spacing) / static_cast<float>(n)));
   const float cellH =
@@ -4021,39 +4026,9 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
                         "Changing it never changes the row, so the foreground's\n"
                         "luminance does not move.");
 
-  // --- the control row -----------------------------------------------------
-  //
-  // Both controls on ONE row, and `SliderInt` directly rather than
-  // `ctlSliderInt()`. That is a deliberate departure from this column's rule
-  // that every labelled control goes through the `ctl*` family so its name
-  // cannot be clipped, and the reason is the measurement above: the label
-  // column those helpers reserve is most of a 294 px row, and two rows do not
-  // exist here at all. The label is one character, drawn explicitly, so the
-  // failure the rule guards against -- a name clipped by the panel edge --
-  // cannot happen either way.
-  pushAtelierMono();
-  ImGui::TextDisabled("n");
-  popAtelierMono();
-  ImGui::SameLine();
-  const float toggleW = ImGui::CalcTextSize("per page").x + ImGui::GetStyle().FramePadding.x * 4.0f;
-  ImGui::SetNextItemWidth(
-      std::max(60.0f, avail.x - ImGui::GetCursorPosX() - toggleW - ImGui::GetStyle().ItemSpacing.x));
-  if (ImGui::SliderInt("##munsellsteps", &br.munsellSteps, kMinPageSteps, kMaxPageSteps))
-    applyMunsellSelection(br);
-  ImGui::SetItemTooltip(
-      "How finely the page is quantized: n values by n chromas.\n"
-      "9 puts the rows on value 1..9, the classic printed Munsell page.");
-  ImGui::SameLine();
-  if (ImGui::SmallButton(br.munsellPerRowChroma ? "per row" : "per page")) {
-    br.munsellPerRowChroma = !br.munsellPerRowChroma;
-    applyMunsellSelection(br);
-  }
-  ImGui::SetItemTooltip(
-      "Chroma normalisation.\n"
-      "per page: one chroma scale for the whole page, so a column means one\n"
-      "chroma in every row and the ragged edge is the sRGB gamut's own shape.\n"
-      "per row: every row spans its own gamut, so the grid fills but a column\n"
-      "no longer means one chroma. Row luminance is exact either way.");
+  // The steps slider and the per-row/per-page chroma toggle used to draw
+  // here, as one control row under the grid -- see `drawSectionSettings()`
+  // below for where they moved and why.
 
   if (dumpLayout)
     std::printf("[munsell-layout] avail=%.1fx%.1f cell=%.1fx%.1f gridH=%.1f reserveBelow=%.1f "
@@ -4064,6 +4039,49 @@ void drawMunsellPage(AppState& st, const Pigment& sel) {
                 static_cast<double>(reserveBelow), static_cast<double>(gridH + reserveBelow),
                 static_cast<double>(ImGui::GetCursorPosY() - startY),
                 static_cast<double>((ImGui::GetCursorPosY() - startY) - avail.y));
+}
+
+// A section's settings, opened from its grip's gear button
+// (`drawPanelGrip()`, near the bottom of this file) -- a switch rather than
+// a virtual call, because today exactly one section (`ControlsSectionSpec::
+// hasSettings`) has any: COLOR's Munsell page. Kept as one small function
+// with an empty default case, the same shape `drawPanelPlacementItems()`
+// uses for the grip's other popup, so a second section that grows settings
+// later has one place to add its case rather than a scheme to invent.
+void drawSectionSettings(ControlsSection section, AppState& st) {
+  switch (section) {
+    case ControlsSection::Color: {
+      // The Munsell page's two settings (drawMunsellPage(), above), moved
+      // out of the panel body -- see that function's `reserveBelow` comment
+      // for why there was no room to keep them there. Same controls, same
+      // tooltips; only the width arithmetic is gone, because a popover is
+      // free to size itself rather than fighting a 294 px column for space.
+      BrushState& br = st.brush;
+      pushAtelierMono();
+      ImGui::TextDisabled("n");
+      popAtelierMono();
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(140.0f);
+      if (ImGui::SliderInt("##munsellsteps", &br.munsellSteps, kMinPageSteps, kMaxPageSteps))
+        applyMunsellSelection(br);
+      ImGui::SetItemTooltip(
+          "How finely the page is quantized: n values by n chromas.\n"
+          "9 puts the rows on value 1..9, the classic printed Munsell page.");
+      if (ImGui::SmallButton(br.munsellPerRowChroma ? "per row" : "per page")) {
+        br.munsellPerRowChroma = !br.munsellPerRowChroma;
+        applyMunsellSelection(br);
+      }
+      ImGui::SetItemTooltip(
+          "Chroma normalisation.\n"
+          "per page: one chroma scale for the whole page, so a column means one\n"
+          "chroma in every row and the ragged edge is the sRGB gamut's own shape.\n"
+          "per row: every row spans its own gamut, so the grid fills but a column\n"
+          "no longer means one chroma. Row luminance is exact either way.");
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 void drawColorSection(AppState& st) {
@@ -4129,7 +4147,7 @@ void drawColorSection(AppState& st) {
       ImGui::PushID(static_cast<int>(i));
       const ImVec2 p = ImGui::GetCursorScreenPos();
       if (ImGui::InvisibleButton("##sw", ImVec2(sw, sw)))
-        st.brush.pigment = static_cast<int>(i);
+        selectPigment(st, static_cast<int>(i));
       const Pigment& pg = palette[i];
       dl->AddRectFilled(p, ImVec2(p.x + sw, p.y + sw),
                         IM_COL32((int)(pg.rgb[0] * 255), (int)(pg.rgb[1] * 255),
@@ -4288,20 +4306,6 @@ void drawColorSection(AppState& st) {
     // plausible rather than true"); it says nothing about the constants,
     // because there is nothing to say: three floats cannot produce them.
     //
-    // **No `rgb` readout line here, and its absence is deliberate.** The
-    // PIGMENT branch above prints one because its swatches are a palette and
-    // the resulting triple is not otherwise on screen; here the picker's own
-    // numeric row *is* that readout, and since `ImGuiColorEditFlags_HDR` it
-    // prints the true over-range value (1.516, not 1.000) rather than a
-    // clamped one. A second copy of the same three floats would cost a line
-    // in a section whose content region measures 119 px against a block that
-    // already asks for 191 -- i.e. it would be paid for by clipping the three
-    // physical constants below.
-    pushAtelierMono();
-    ImGui::TextDisabled("density     %.2f", sel.density);
-    ImGui::TextDisabled("staining    %.2f", sel.staining);
-    ImGui::TextDisabled("granulation %.2f", sel.granulation);
-    popAtelierMono();
     // The paragraph that used to sit here permanently ("This colour paints:
     // RGB layers take it exactly...") now lives behind this panel's "?"
     // button (ui/ControlsLayout.cpp's `Color` entry, drawn by
@@ -5817,50 +5821,50 @@ namespace {
 
 // A5 (reachability audit): Density, Staining and Granulation used to be live
 // `ctlSlider()`s here, and a drag on any of them worked for exactly one
-// frame. main.cpp's simulation block runs after `ImGui::Render()` and before
-// the sim upload and overwrites all three from the *active pigment's own*
-// constants, unconditionally, every frame:
+// frame -- main.cpp's simulation block ran after `ImGui::Render()` and
+// overwrote all three from the *active pigment's own* constants,
+// unconditionally, every frame ("Physical constants follow the selected
+// paint, not a global slider"). The fix at the time was the honest one for a
+// build with nowhere to put a second value: `BeginDisabled()`, read-only,
+// labelled as owned by the loaded pigment.
 //
-//   st.sim.density = pig.density;
-//   st.sim.staining = pig.staining;
-//   st.sim.granulation = pig.granulation;
-//
-// with the comment "Physical constants follow the selected paint, not a
-// global slider, so switching from Phthalo Blue to Ultramarine actually
-// changes behaviour" (main.cpp:2521-2525). That comment is the design
-// decision, not a bug to route around, and it is a *domain* question before
-// it is a code one: CONTEXT.md does not gloss "Pigment" as a struct, but
-// PLAN.md's own step-8 record does, in exactly these words -- describing
-// `brushTipFor()`'s deliberate choice not to carry these three fields into
-// `brush/Deposit`, "because `brush/Deposit` simulates no settling, lifting
-// or granulation and three dead fields would imply a fidelity that is not
-// there." Settling, lifting and granulation are properties of the SOLVER's
-// simulated paper and water, driven by which real paint is loaded --
-// `paint/Palette.hpp`'s header calls the numbers "the real pigment
-// measurements published with Mixbox," and real paints differ in exactly
-// this way (a staining pigment resists being lifted, a granulating one
-// pools in the paper's tooth). A user picks that behaviour by picking a
-// pigment, not by dialling a slider independent of one -- the same reading
-// `drawBrushSection()`'s LOADED PIGMENT block already gives these three,
-// read-only, several hundred lines above this section. Editing them here as
-// a per-session override, and *keeping* that override past the next frame,
-// is a real alternative -- but nothing in the PRD, CONTEXT.md, the palette
-// header or main.cpp's own comment asks for one, and inventing somewhere for
-// it to live (a per-preset shadow value? a global multiplier?) would be
-// answering a question nobody asked. So the honest fix is the
-// disabled-rather-than-hidden treatment `drawBrushSection()` already gives
-// OPACITY and WET: the value is real and worth showing, the control here
-// just is not what owns it.
+// **This is the promised follow-up, now that there is somewhere for the
+// second value to live.** `AppState::pigmentOverride` (app/AppState.hpp) is
+// a per-session override, and `effectivePigmentConstants()` there is what
+// main.cpp's simulation block reads in place of the unconditional overwrite
+// above -- so a drag here now survives the next frame. It still is not a
+// second, independent set of constants: `drawBrushSection()`'s LOADED
+// PIGMENT block, several hundred lines above this section, keeps reading the
+// palette pigment directly and stays read-only, and picking a different
+// pigment (the swatch click, this file's PIGMENT branch of
+// `drawColorSection()`) clears the override outright rather than letting one
+// paint's density outlive the paint it came from.
 void drawPigmentSection(AppState& st) {
-  ImGui::BeginDisabled();
-  ctlSlider("Density", &st.sim.density, 0.0f, 1.0f);
+  PigmentOverride& ov = st.pigmentOverride;
+  const Pigment& loaded = foregroundPhysicalConstants(st.brush);
+  // While no override is active, keep the three fields mirroring the loaded
+  // pigment so the first drag moves the slider from where it is actually
+  // reading rather than snapping from whatever the override last held (or
+  // its zero-initialised default).
+  if (!ov.active) {
+    ov.density = loaded.density;
+    ov.staining = loaded.staining;
+    ov.granulation = loaded.granulation;
+  }
+  if (ctlSlider("Density", &ov.density, 0.0f, 1.0f)) ov.active = true;
   ImGui::SetItemTooltip("How fast pigment drops out of suspension.");
-  ctlSlider("Staining", &st.sim.staining, 0.02f, 1.0f);
+  if (ctlSlider("Staining", &ov.staining, 0.02f, 1.0f)) ov.active = true;
   ImGui::SetItemTooltip("Resistance to being lifted back into the water.");
-  ctlSlider("Granulation", &st.sim.granulation, 0.0f, 1.0f);
+  if (ctlSlider("Granulation", &ov.granulation, 0.0f, 1.0f)) ov.active = true;
   ImGui::SetItemTooltip("Affinity for the paper's valleys.");
-  ImGui::EndDisabled();
-  ImGui::TextDisabled("Owned by the loaded pigment -- pick a different paint to change these.");
+
+  if (ov.active) {
+    ImGui::TextDisabled("overriding %s", loaded.name);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset")) ov.active = false;
+  } else {
+    ImGui::TextDisabled("%s", loaded.name);
+  }
 
   ctlSlider("Diffusion", &st.sim.pigmentDiffuse, 0.0f, 1.0f);
   ImGui::SetItemTooltip("Pigment spreading through the wet film.\n"
@@ -10716,6 +10720,7 @@ MenuContext menuContextFromState(AppState& st) {
   ctx.showRulers = st.showRulers;
   ctx.showNavigator = st.showNavigator;
   ctx.showBrushSettings = st.showBrushSettings;
+  ctx.showPigmentPanel = st.panels.placementOf(ControlsSection::Pigment) != PanelPlacement::Hidden;
   ctx.showGuides = st.showGuides;
   ctx.showGrid = st.showGrid;
   ctx.snappingEnabled = st.snappingEnabled;
@@ -10874,6 +10879,11 @@ std::vector<MenuFamilyEntry> toolMenuFamily(Tool current, bool documentOpen) {
 // a modal sets a flag instead of calling `ImGui::OpenPopup()`, which
 // ui/MenuModel.hpp records as `MenuEffect::Deferred` and which
 // app/selftest/MenuModel.cpp asserts is true of all nine of them.
+//
+// Forward-declared: `MenuAction::Pigment` below needs it and its own
+// definition sits further down this file, beside the panel-menu code that is
+// its other caller.
+void savePanelLayout(const AppState& st);
 void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canvasW,
                        uint32_t canvasH) {
   OpenDocument* doc = st.documents.active();
@@ -11187,6 +11197,20 @@ void performMenuAction(AppState& st, MenuAction action, int param, uint32_t canv
     case MenuAction::BrushSettings:
       st.showBrushSettings = !st.showBrushSettings;
       break;
+    // Same inline reasoning as BrushSettings above, plus a save: unlike
+    // `showBrushSettings`, this writes into `st.panels`, which is the thing
+    // `panel-layout.txt` mirrors -- so this action has to save it itself
+    // rather than relying on `drawUI()`'s per-frame `panelLayoutChanged`
+    // flag, which this native-menu callback runs outside of.
+    case MenuAction::Pigment: {
+      const PanelPlacement current = st.panels.placementOf(ControlsSection::Pigment);
+      st.panels.setPlacement(ControlsSection::Pigment, current == PanelPlacement::Hidden
+                                                            ? PanelPlacement::Flyout
+                                                            : PanelPlacement::Hidden);
+      if (st.flyoutOpen && st.flyoutSection == ControlsSection::Pigment) st.flyoutOpen = false;
+      savePanelLayout(st);
+      break;
+    }
     case MenuAction::Guides:           st.showGuides = !st.showGuides;           break;
     case MenuAction::Grid:             st.showGrid = !st.showGrid;               break;
     case MenuAction::Snap:             st.snappingEnabled = !st.snappingEnabled; break;
@@ -12120,29 +12144,18 @@ bool panelHasSubject(const AppState& st, ControlsSection section) {
 // only way to reach them, which is exactly the complaint: *"I don't see
 // handles to tear off any of the panels like tool settings or the tool bar on
 // the left."*
-constexpr float kPanelRailW = 14.0f;
 // How far the pointer must travel before a press on a grip becomes a tear-off
 // rather than a click. Dear ImGui's own default drag threshold is 6 px; a
 // grip is a small target and a collapse is cheap to undo, so this is a little
 // larger than that to keep an imprecise click from becoming a move.
 constexpr float kPanelDragThresholdPx = 8.0f;
-// The "?" help button's diameter, and the gap it keeps from the grip's right
-// edge -- one shared constant so `panelGripFor()`'s title-fit check and
-// `drawPanelGrip()`'s own drawing can never disagree about how much width
-// the button costs.
-constexpr float kPanelHelpBtnSize = 16.0f;
-constexpr float kPanelHelpBtnMargin = 6.0f;
+// kPanelHelpBtnSize, kPanelHelpBtnMargin, kPanelRailW, PanelGripKind and
+// PanelGripLayout now live in ui/PanelGrip.hpp -- pulled out of this file so
+// app/selftest/PanelSettings.cpp can call the real `panelGripFor()` below
+// instead of re-deriving its formula (see that header's own comment).
 
-enum class PanelGripKind { Bar, Rail };
-
-struct PanelGripLayout {
-  PanelGripKind kind = PanelGripKind::Bar;
-  // Bar height, or rail width.
-  float extent = kPanelHeaderExtent;
-  bool showTitle = true;
-};
-
-PanelGripLayout panelGripFor(ControlsSection section, const AtelierRect& slot, bool collapsed) {
+PanelGripLayout panelGripFor(const ControlsSectionSpec& spec, const AtelierRect& slot,
+                              bool collapsed) {
   PanelGripLayout g;
 
   // A collapsed panel IS its grip: the slot is `kPanelHeaderExtent` tall and
@@ -12159,18 +12172,22 @@ PanelGripLayout panelGripFor(ControlsSection section, const AtelierRect& slot, b
 
   g.kind = PanelGripKind::Bar;
   g.extent = std::min(kPanelHeaderExtent, std::max(1.0f, slot.h));
-  const ControlsSectionSpec& spec = controlsSectionSpec(section);
   pushAtelierMono();
   const float titleW = ImGui::CalcTextSize(spec.title).x;
   popAtelierMono();
   // 22 px for the triangle and its gap, 4 px of breathing room after the word
   // -- the same two numbers `drawPanelGrip()` lays the bar out with, so the
   // two cannot disagree about whether the title fits. Sections with a "?"
-  // help button (`spec.helpText != nullptr`) also reserve the button's own
-  // width, or a tight panel could draw a title running straight into it.
-  const float helpReserve =
-      spec.helpText != nullptr ? (kPanelHelpBtnSize + kPanelHelpBtnMargin) : 0.0f;
-  g.showTitle = slot.w >= 22.0f + titleW + 4.0f + helpReserve;
+  // help button (`spec.helpText != nullptr`) and/or a gear settings button
+  // (`spec.hasSettings`) each reserve that button's own width, or a tight
+  // panel could draw a title running straight into one of them --
+  // `drawPanelGrip()` packs both buttons from the right edge (help
+  // outermost, gear immediately left of it, or in help's place when there is
+  // no help), so a section with both reserves BOTH widths, not just one.
+  const float oneBtnReserve = kPanelHelpBtnSize + kPanelHelpBtnMargin;
+  const float helpReserve = spec.helpText != nullptr ? oneBtnReserve : 0.0f;
+  const float settingsReserve = spec.hasSettings ? oneBtnReserve : 0.0f;
+  g.showTitle = slot.w >= 22.0f + titleW + 4.0f + helpReserve + settingsReserve;
   return g;
 }
 
@@ -12210,7 +12227,7 @@ bool drawPanelPlacementItems(AppState& st, ControlsSection section) {
 AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRect& slot,
                           bool collapsed, bool* layoutChanged) {
   const ControlsSectionSpec& spec = controlsSectionSpec(section);
-  const PanelGripLayout g = panelGripFor(section, slot, collapsed);
+  const PanelGripLayout g = panelGripFor(spec, slot, collapsed);
   const bool bar = g.kind == PanelGripKind::Bar;
 
   const AtelierRect grip = bar ? AtelierRect{slot.x, slot.y, slot.w, g.extent}
@@ -12297,11 +12314,17 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
       // The "?" help button -- context that matters occasionally (what a
       // Pigment vs. RGB colour actually carries, say) rather than on every
       // glance at the panel, so it is one click away instead of a permanent
-      // paragraph in the body. Only drawn where there is something to show
-      // (`spec.helpText != nullptr`) and only when the title itself fits --
-      // `panelGripFor()` already reserved this button's own width as part of
-      // that same fit check, so the two can never disagree.
-      if (spec.helpText != nullptr) {
+      // paragraph in the body. And the gear settings button, immediately to
+      // its LEFT -- or in its place, at the grip's own right edge, when the
+      // section has no help text -- opening a section's own settings that do
+      // not fit its cramped body. Each is only drawn where there is
+      // something to show (`spec.helpText != nullptr` / `spec.hasSettings`)
+      // and only when the title itself fits -- `panelGripFor()` already
+      // reserved both buttons' width as part of that same fit check, so
+      // layout and drawing can never disagree.
+      const bool hasHelp = spec.helpText != nullptr;
+      const bool hasSettingsBtn = spec.hasSettings;
+      if (hasHelp) {
         const ImVec2 btnCenter(grip.right() - kPanelHelpBtnMargin - kPanelHelpBtnSize * 0.5f, cy);
         ImGui::PushID(static_cast<int>(section));
         ImGui::PushID("##help");
@@ -12322,6 +12345,46 @@ AtelierRect drawPanelGrip(AppState& st, ControlsSection section, const AtelierRe
           ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
           ImGui::TextUnformatted(spec.helpText);
           ImGui::PopTextWrapPos();
+          ImGui::EndPopup();
+        }
+        ImGui::PopID();
+        ImGui::PopID();
+      }
+      if (hasSettingsBtn) {
+        // One button-width plus its margin to the left of the help button's
+        // own centre when there is a help button; the help button's own spot
+        // otherwise -- the same packing `panelGripFor()`'s reserve sums.
+        const float centerX = hasHelp
+            ? (grip.right() - kPanelHelpBtnMargin - kPanelHelpBtnSize - kPanelHelpBtnMargin -
+               kPanelHelpBtnSize * 0.5f)
+            : (grip.right() - kPanelHelpBtnMargin - kPanelHelpBtnSize * 0.5f);
+        const ImVec2 btnCenter(centerX, cy);
+        ImGui::PushID(static_cast<int>(section));
+        ImGui::PushID("##settings");
+        ImGui::SetCursorScreenPos(
+            ImVec2(btnCenter.x - kPanelHelpBtnSize * 0.5f, btnCenter.y - kPanelHelpBtnSize * 0.5f));
+        ImGui::InvisibleButton("##settingsBtn", ImVec2(kPanelHelpBtnSize, kPanelHelpBtnSize));
+        const bool settingsHovered = ImGui::IsItemHovered();
+        if (settingsHovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##settingsPopup");
+        const uint32_t settingsInk = atelierToken(settingsHovered ? kTextPrimary : kTextSecondary);
+        if (!drawToolGlyph(dl, kSettingsIconCodepoint, btnCenter, settingsInk)) {
+          // Fallback for a machine where the vendored Lucide TTF failed to
+          // load (see drawToolGlyph()'s own comment): a small gear drawn
+          // from draw-list primitives -- a ring with six teeth -- rather
+          // than nothing at all.
+          const float r = kPanelHelpBtnSize * 0.26f;
+          dl->AddCircle(btnCenter, r, settingsInk, 12, kDividerThickness);
+          for (int i = 0; i < 6; ++i) {
+            const float a = static_cast<float>(i) * (2.0f * 3.14159265f / 6.0f);
+            const ImVec2 dir(std::cos(a), std::sin(a));
+            const ImVec2 p0(btnCenter.x + dir.x * (r + 1.0f), btnCenter.y + dir.y * (r + 1.0f));
+            const ImVec2 p1(btnCenter.x + dir.x * (r + 3.0f), btnCenter.y + dir.y * (r + 3.0f));
+            dl->AddLine(p0, p1, settingsInk, kDividerThickness);
+          }
+        }
+        if (ImGui::BeginPopup("##settingsPopup")) {
+          drawSectionSettings(section, st);
           ImGui::EndPopup();
         }
         ImGui::PopID();
@@ -13707,6 +13770,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
   const ImVec2 canvasPos(focusedRect.x, focusedRect.y);
   const ImVec2 canvasSize(focusedRect.w, focusedRect.h);
   ImGui::SetNextWindowPos(canvasPos);
+  // docs/testing-issues.md T5, reversed 2026-09-08: with no document open
+  // there is no canvas, so the document-texture pool's resident slots go
+  // with the last document that closed rather than sitting on their GPU
+  // bytes for nobody. Every path that removes a document (the tab strip's
+  // close box in ui/AtelierChrome.cpp, File > Close's performMenuAction()
+  // row, the native menu queue this function just drained above) runs
+  // earlier in this same frame, so `st.documents` already reflects any close
+  // by the time this line runs. Safe to call every frame the session stays
+  // empty: `DocumentTexture::release()` no-ops on an already-empty slot, and
+  // with no document there is nothing left to have drawn a view from this
+  // pool this frame for `release()` to pull out from under (the one case its
+  // own comment warns about).
+  if (st.documents.empty()) g_documentTextures.release();
+
   ImGui::SetNextWindowSize(canvasSize);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   // The canvas surround (PRD **L6**), and the one place this chrome
@@ -13809,40 +13886,50 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         q01(xc01.x, xc01.y);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    // Drop shadow so the sheet reads as paper lying on a dark desk. A fixed
-    // screen-space offset applied to the already-transformed quad, not
-    // mapped through the transform itself -- a shadow shouldn't mirror or
-    // rotate along with the paper; real light doesn't.
-    dl->AddQuadFilled(ImVec2(q00.x + 6, q00.y + 6), ImVec2(q10.x + 6, q10.y + 6),
-                      ImVec2(q11.x + 6, q11.y + 6), ImVec2(q01.x + 6, q01.y + 6),
-                      IM_COL32(0, 0, 0, 110));
-    // AddImageQuad, not AddImage: AddImage can only place an axis-aligned
-    // rect, which has no way to express a flipped or rotated quad. This is
-    // the one drawing change mirror/rotation actually needed -- everything
-    // else is the transform feeding it different corner points.
-    // Precedence chain, most-specific-preview-wins: grade, then
-    // grayscale, then the plain canvas -- a deliberate narrow-scope
-    // choice (PLAN.md Phase 3 step 6). Composing grade and grayscale
-    // together isn't a normal use case and isn't required by PLAN.md's
-    // Verify criterion for either step, so they stay mutually exclusive
-    // by this precedence rather than layered.
-    const bool gradeActive = st.view.grade && sim;
-    const bool grayscaleActive = !gradeActive && st.view.grayscale && sim;
-    if (sim) {
-      const WGPUTextureView tv = gradeActive     ? sim->gradedView()
-                                 : grayscaleActive ? sim->grayscaleView()
-                                                    : sim->canvasView();
-      // Not AddImageQuad: sim/PaintSim's canvas is linear light in an
-      // RGBA8Unorm texture, and ImGui's pipeline would present it with the
-      // wrong transfer function. ui/CanvasQuad owns that conversion.
-      addCanvasQuad(dl, tv, q00, q10, q11, q01);
-    } else {
-      // 1.4 / ADR-0001: no PaintSim exists yet (nothing painted this
-      // session), so there is no composite to show. A flat blank-paper
-      // quad reads as "ready to paint" rather than a rendering glitch --
-      // the first stroke below constructs the sim and this becomes the
-      // real canvasView() from the very next frame.
-      dl->AddQuadFilled(q00, q10, q11, q01, IM_COL32(250, 250, 247, 255));
+    // docs/testing-issues.md T5, reversed 2026-09-08: with no document open
+    // there is no canvas at all -- not the paper, not a shadow under it, not
+    // a border around it. `sim` is guaranteed null here whenever this is
+    // false (main.cpp tears it down the frame the last document closes, and
+    // the `paintTool` leaf predicate below never calls `ensurePaintSim()`
+    // without one), so `documentOpen` alone is the gate; nothing downstream
+    // needs to re-ask `sim` to decide whether to draw.
+    const bool documentOpen = st.documents.active() != nullptr;
+    if (documentOpen) {
+      // Drop shadow so the sheet reads as paper lying on a dark desk. A fixed
+      // screen-space offset applied to the already-transformed quad, not
+      // mapped through the transform itself -- a shadow shouldn't mirror or
+      // rotate along with the paper; real light doesn't.
+      dl->AddQuadFilled(ImVec2(q00.x + 6, q00.y + 6), ImVec2(q10.x + 6, q10.y + 6),
+                        ImVec2(q11.x + 6, q11.y + 6), ImVec2(q01.x + 6, q01.y + 6),
+                        IM_COL32(0, 0, 0, 110));
+      // AddImageQuad, not AddImage: AddImage can only place an axis-aligned
+      // rect, which has no way to express a flipped or rotated quad. This is
+      // the one drawing change mirror/rotation actually needed -- everything
+      // else is the transform feeding it different corner points.
+      // Precedence chain, most-specific-preview-wins: grade, then
+      // grayscale, then the plain canvas -- a deliberate narrow-scope
+      // choice (PLAN.md Phase 3 step 6). Composing grade and grayscale
+      // together isn't a normal use case and isn't required by PLAN.md's
+      // Verify criterion for either step, so they stay mutually exclusive
+      // by this precedence rather than layered.
+      const bool gradeActive = st.view.grade && sim;
+      const bool grayscaleActive = !gradeActive && st.view.grayscale && sim;
+      if (sim) {
+        const WGPUTextureView tv = gradeActive     ? sim->gradedView()
+                                   : grayscaleActive ? sim->grayscaleView()
+                                                      : sim->canvasView();
+        // Not AddImageQuad: sim/PaintSim's canvas is linear light in an
+        // RGBA8Unorm texture, and ImGui's pipeline would present it with the
+        // wrong transfer function. ui/CanvasQuad owns that conversion.
+        addCanvasQuad(dl, tv, q00, q10, q11, q01);
+      } else {
+        // 1.4 / ADR-0001: no PaintSim exists yet (nothing painted this
+        // session), so there is no composite to show. A flat blank-paper
+        // quad reads as "ready to paint" rather than a rendering glitch --
+        // the first stroke below constructs the sim and this becomes the
+        // real canvasView() from the very next frame.
+        dl->AddQuadFilled(q00, q10, q11, q01, IM_COL32(250, 250, 247, 255));
+      }
     }
 
     // --- The open document, over the paper (UI detour step 2) -------------
@@ -14151,7 +14238,8 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         documentView = g_documentTextures.viewFor(gpu, *activeDocument, nullptr, &docViewport);
       addCanvasQuad(dl, documentView, q00, q10, q11, q01);
     }
-    dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
+    // T5, reversed: no border around a canvas that was never drawn.
+    if (documentOpen) dl->AddQuad(q00, q10, q11, q01, ImGui::GetColorU32(ImGuiCol_Border));
 
     // --- navigator (docs/ui.md section 2) --------------------------------
     //
@@ -14414,6 +14502,57 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         beginSpringHand(st);
       } else if (springHandHeld(st) && !ImGui::IsKeyDown(ImGuiKey_Space)) {
         endSpringHand(st);
+      }
+    }
+
+    // --- the spring-loaded Eyedropper: Alt/Option held over a paintable
+    // tool samples like `Tool::Eyedropper`, release hands the tool back -----
+    //
+    // Resolved beside the Hand's block just above, and for the identical
+    // reason: below `panning`/`sizing` would cost a dead frame at the start
+    // of every Alt-drag sample. app/ToolSwitch.hpp's own header is the
+    // rationale for the borrow itself; `springEyedropperEligible()` there is
+    // the one place the "which tools does this apply to" table lives, so it
+    // is not repeated here.
+    //
+    // Guards below are the UI's own gesture-priority rules, the ones that
+    // apply regardless of which tool is active; which TOOLS the borrow
+    // applies to at all (Clone Stamp's source pick, the four selection
+    // tools' Alt-subtract, Zoom's Alt-out, Pen's gnomon suppression, the
+    // Flats bucket's carve, all excluded) is `springEyedropperEligible()`'s
+    // own business rule and is checked exactly once, inside
+    // `beginSpringEyedropper()` itself -- not repeated here as a second
+    // opinion that could drift from it:
+    //
+    //   * `!io.WantTextInput` -- the Hand's own guard, same reasoning.
+    //   * no mouse button down -- the Hand's own guard, same reasoning: a
+    //     gesture already spoken for (a marquee drag reading Alt-subtract,
+    //     say) must not have its tool swapped out from under it.
+    //   * `!st.polygonLassoActive` -- the Hand's own guard, same reasoning.
+    //   * `!io.KeyCtrl` -- Ctrl+Alt is brush sizing (`sizingHeld`, resolved
+    //     just below this block) and sizing must keep winning; since Alt is
+    //     definitionally down at this press edge, excluding Ctrl here is the
+    //     whole of "not the sizing chord" and "sizing not already active"
+    //     both -- sizing cannot be held without Ctrl down too.
+    //
+    // The release is `!io.KeyAlt`, matching the Hand's own `!IsKeyDown`
+    // reasoning about a missed key-up (Cmd-Tab away mid-hold), AND the left
+    // button not down -- unlike the Hand, so that a click-drag sample begun
+    // under Alt keeps sampling to its own mouse-up rather than snapping back
+    // to the original tool the instant Alt lifts mid-drag.
+    {
+      const bool eyedropAnyMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                                       ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+                                       ImGui::IsMouseDown(ImGuiMouseButton_Right);
+      const bool altPressed = ImGui::IsKeyPressed(ImGuiKey_LeftAlt, /*repeat=*/false) ||
+                              ImGui::IsKeyPressed(ImGuiKey_RightAlt, /*repeat=*/false);
+      if (altPressed && !ImGui::GetIO().WantTextInput && !eyedropAnyMouseDown &&
+          !st.polygonLassoActive && !ImGui::GetIO().KeyCtrl) {
+        beginSpringEyedropper(st);
+      } else if (springEyedropperHeld(st) &&
+                !ImGui::GetIO().KeyAlt &&
+                !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        endSpringEyedropper(st);
       }
     }
 
@@ -15376,11 +15515,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // app/selftest/Eyedropper.cpp exists to catch.
     //
     // **This block writes no `st.pathEdit` field.** Every transition goes
-    // through app/PenTool.cpp's four functions, so the state machine is in one
+    // through app/PenTool.cpp's functions, so the state machine is in one
     // greppable place -- `grep -rnP 'pathEdit\.[a-zA-Z]+ *=[^=]' src/ui/ src/main.cpp` finding
     // anything is the defect. Storage on AppState with mutation spread through
     // `drawUI()` is exactly how `marqueeDragging` got three writers and an
     // unconditional clear in a sibling tool's else arm.
+    //
+    // **Switching away from Pen/Curve ends an open placement session**,
+    // leaving whatever anchors were already placed (docs/vector-editing.md
+    // section 8). This has to live OUTSIDE the `toolEditsPath()` gate below,
+    // since the moment the tool has actually changed that whole block stops
+    // running -- nothing inside it could ever see "I used to be active and
+    // now am not."
+    if (!toolEditsPath(st.brush.tool) && pathEditHasOpenPath(st.pathEdit))
+      pathEditEndOpenPath(&st.pathEdit);
+
     if (toolEditsPath(st.brush.tool) && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       OpenDocument* pathDoc = st.documents.active();
@@ -15391,26 +15540,62 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         pathEditCancel(&st.pathEdit);
 
       Layer* pathLayer = pathDoc != nullptr ? activeLayerOf(*pathDoc) : nullptr;
-      const bool pathTargetOk = pathLayer != nullptr && pathLayer->kind == LayerKind::Vector;
+      bool pathTargetOk = pathLayer != nullptr && pathLayer->kind == LayerKind::Vector;
 
-      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) pathEditCancel(&st.pathEdit);
+      // Escape while a press-drag is live (adjusting the tangent a placement
+      // just laid down, or any of today's other drags) cancels THAT DRAG
+      // only -- `pathEditCancel()` never touches the open-placement fields.
+      // Escape with no drag live, and a path still open, ends the
+      // PLACEMENT SESSION instead, leaving what is already placed (bullet 1
+      // of this track): there is no drag for `pathEditCancel()` to cancel,
+      // so calling it here would do nothing and leave the session dangling.
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        if (st.pathEdit.drag == PathDragKind::None && pathEditHasOpenPath(st.pathEdit)) {
+          pathEditEndOpenPath(&st.pathEdit);
+        } else {
+          pathEditCancel(&st.pathEdit);
+        }
+      }
+      // Return ends an open placement the same way, leaving it unclosed --
+      // the keyboard half of "clicking away", for a user who wants to stop
+      // without reaching for another tool or another shape to click on.
+      if (pathEditHasOpenPath(st.pathEdit) &&
+          (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+           ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+        pathEditEndOpenPath(&st.pathEdit);
+      }
 
-      if (!pathTargetOk) {
-        // **Refused at pen-DOWN and out loud**, the gradient's rule rather than
-        // the bucket's: a Pen drag across a raster layer that silently did
-        // nothing is the same invisible wrong-target failure app/StrokeSession
-        // section 1 was written about.
+      if (!pathTargetOk && pathDoc == nullptr) {
+        // No document at all: there is nothing to put a layer ON, so this is
+        // the one case placement genuinely cannot cover, and it is refused
+        // exactly as before -- the gradient's rule, out loud rather than
+        // silent.
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           g_strokeRefusal =
-              pathLayer == nullptr
-                  ? std::string("The Pen needs a layer to edit: this document has none "
-                                "selected.")
-                  : std::string("The Pen edits vector geometry, and '" + pathLayer->name +
-                                "' is a " + layerKindName(pathLayer->kind) +
-                                " layer. Make one with NEW + > Vector in the LAYERS "
-                                "panel, or open an SVG.");
+              std::string("The Pen needs a layer to edit: this document has none selected.");
         }
-      } else {
+      } else if (!pathTargetOk && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // **Auto-create a Vector layer** rather than refuse (bullet 4 of this
+        // track): the active layer being an RGB, Pigment or Text layer used
+        // to be a dead end here, and the Pen is the one tool in this build
+        // whose entire job is authoring Vector content, so "make one for me"
+        // is a more honest answer than a sentence telling the user to go
+        // find the LAYERS panel themselves. The SAME insertion the panel's
+        // own NEW > Vector row uses (`app/LayerEditor.cpp`'s
+        // `LayerCommand::NewVectorLayer`), so this gets the identical undo
+        // entry, default name and selection move that gesture already has.
+        runLayerCommand(st, LayerCommand::NewVectorLayer);
+        // `runLayerCommand()` inserts into `pathDoc->document.layers`, which
+        // may reallocate -- `pathLayer` has to be re-read rather than
+        // trusted from before the call.
+        pathLayer = activeLayerOf(*pathDoc);
+        pathTargetOk = pathLayer != nullptr && pathLayer->kind == LayerKind::Vector;
+        // `pathTargetOk` now true drops straight into the block below on the
+        // SAME frame, so the press that triggered the auto-create is not
+        // lost -- a user should not have to click twice.
+      }
+
+      if (pathTargetOk) {
         // The pick radius is a constant number of SCREEN pixels, converted to
         // document units here -- the crop tool's `grabTexels` rule, and the
         // reason app/PenTool takes it as a parameter rather than owning a
@@ -15420,6 +15605,7 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // docs/vector-editing.md section 3's escape hatch for a handle sitting
         // underneath it.
         const bool gnomonSuppressed = ImGui::GetIO().KeyAlt;
+        const bool curveMode = st.brush.tool == Tool::Curve;
 
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           // One modifier grammar for the whole app: core/SelectionOps' own
@@ -15427,9 +15613,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           // semantics (docs/vector-editing.md section 4).
           const SelectionCombine how = selectionCombineFromModifiers(
               ImGui::GetIO().KeyShift, ImGui::GetIO().KeyAlt);
-          pathEditBegin(&st.pathEdit, pathLayer->shapes, PathPoint{tx, ty}, pickTexels,
-                        gnomonSuppressed, how, pathDocId,
-                        pathGnomonReachTexels(st.view.zoom));
+          // `pathEditBeginPen()`, not `pathEditBegin()` directly -- the ONE
+          // difference bullet 2 of this track states: an empty-canvas press
+          // (or one on the open path's own first anchor) places or closes
+          // instead of marqueeing; every other hit still goes through
+          // `pathEditBegin()`'s ordinary gestures, which this function calls
+          // internally for exactly that reason.
+          const PenPressResult pressed = pathEditBeginPen(
+              &st.pathEdit, &pathLayer->shapes, &pathLayer->nextShapeId, PathPoint{tx, ty},
+              pickTexels, gnomonSuppressed, how, pathDocId, curveMode,
+              pathGnomonReachTexels(st.view.zoom));
+          // Placing an anchor or closing a subpath IS the edit, made on the
+          // press itself -- unlike every other gesture here, which edits
+          // only once a drag actually moves something. `pathEditBeginPen()`
+          // already mutated `pathLayer->shapes`; this is where the caller
+          // records that the same way `pathEditUpdate()`'s `EditBegan`
+          // does below.
+          if (pressed == PenPressResult::Placed) {
+            pathDoc->recordEdit("place anchor", EditKind::Content);
+          } else if (pressed == PenPressResult::Closed) {
+            pathDoc->recordEdit("close path", EditKind::Content);
+          }
         }
 
         // `--vector-demo marquee` pins a held-open drag for the camera
@@ -15457,6 +15661,9 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // after, so a drag is ONE undo step and a click that never moved
             // leaves no entry at all (app/DocumentLifecycle.hpp's rule, and the
             // reason PathEditChange has three values rather than being a bool).
+            // A placement's own `PenExtend` drag-before-release (above) is
+            // always `EditContinued` here -- the anchor itself was already
+            // recorded at press -- so this amends rather than double-records.
             if (changed == PathEditChange::EditBegan) {
               pathDoc->recordEdit("edit path", EditKind::Content);
             } else if (changed == PathEditChange::EditContinued) {
@@ -15464,6 +15671,11 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             }
           }
         }
+
+        // Tracks the live cursor for the overlay's rubber band while a
+        // placement session is open and idle -- a no-op the moment a drag
+        // owns `dragNow` instead (`pathEditTrackCursor()`'s own guard).
+        if (hovered) pathEditTrackCursor(&st.pathEdit, PathPoint{tx, ty});
       }
     }
 
@@ -15498,6 +15710,20 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // reach a paragraph frame without inventing a second tool: `frame.width`
     // is the single number that tells point text from paragraph text
     // (core/TextContent.hpp section 2), and a click cannot supply one.
+    // ACCEPT: the tool switched away while a caret or frame-drag session was
+    // live. Checked OUTSIDE the `toolEditsText()` gate below on purpose --
+    // once the tool has changed, that gated block never runs again to notice
+    // its own session is still marked active, and `textSessionActive()`
+    // (app/TextTool.hpp; main.cpp's key-down handler) would keep routing
+    // every bare hotkey to the Text session forever. Plain `textEditCancel()`
+    // is right here, not `textEditRevert()`: switching tools is one of this
+    // step's three "accept" gestures (the others are clicking away, already
+    // handled below by `textEditFrameDragBegin()`/`textEditBegin()`
+    // discarding the old session, and Cmd+Return) -- it keeps whatever was
+    // typed, it just stops the session from owning the keyboard.
+    if (textSessionActive(st.textEdit) && !toolEditsText(st.brush.tool)) {
+      textEditCancel(&st.textEdit);
+    }
     if (toolEditsText(st.brush.tool) && !panning && !rotating && !sizingHeld &&
         !st.pendingGuide.has_value()) {
       OpenDocument* textDoc = st.documents.active();
@@ -15518,7 +15744,30 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       }
       if (editing == nullptr && !st.textEdit.frameDragActive) textEditCancel(&st.textEdit);
 
-      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) textEditCancel(&st.textEdit);
+      // Escape CANCELS, not just closes: an existing layer's session reverts
+      // its text to what it was when `textEditBegin()` opened it (Cmd+Return
+      // and every other way out of a session KEEP the typed text -- this is
+      // the one exception). `editing != nullptr` is exactly "there is a real
+      // layer with a live caret session" -- the other case Escape reaches,
+      // a bare frame drag with no layer yet, has no `TextContent` to revert
+      // and takes the plain-cancel path below unchanged, same as document
+      // switch and layer-gone above.
+      if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        if (editing != nullptr) {
+          textEditRevert(&editing->text, &st.textEdit);
+          // The session's open undo entry (if any) now names a document
+          // state nothing points at any more -- the live document was just
+          // reverted out from under it. Folding it to a no-op with the same
+          // `amendEdit()` call the typing loop below already uses (it keeps
+          // the entry's serial and simply overwrites its stored snapshot,
+          // app/DocumentLifecycle.hpp's own comment on `amendEdit()`) makes
+          // that entry equal its predecessor again -- consistent with the
+          // live document, and with nothing dangling for `core/History` to
+          // undo TO that was never really a state the user asked for.
+          if (st.textEdit.undoOpened) textDoc->amendEdit("type", EditKind::Content);
+        }
+        textEditCancel(&st.textEdit);
+      }
 
       if (textDoc != nullptr && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         // A click on the ACTIVE layer's own text block edits it. Only the
@@ -15604,7 +15853,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       // own rule for unmodified keys, stated where the Move tool's arrows use
       // it. Without this, renaming a layer while the Text tool happens to be
       // selected types into the canvas instead.
-      if (editing != nullptr && textDoc != nullptr && !ImGui::GetIO().WantTextInput) {
+      //
+      // **Also guarded on `textSessionActive()`.** `editing != nullptr` alone
+      // answers "is the active layer a Text block this session's layerIndex
+      // still names", which stays true across Cmd+Return/Escape ending the
+      // session -- `layerIndex` is deliberately not one of the fields cancel
+      // resets (this file's own comment above, and app/TextTool.hpp). Without
+      // this second check, accepting with Cmd+Return would silently resume
+      // typing into the same layer on the very next keystroke instead of
+      // handing bare keys back to the keymap the way main.cpp's own gate
+      // (keyChordReachesKeymap()) now expects.
+      if (editing != nullptr && textDoc != nullptr && textSessionActive(st.textEdit) &&
+          !ImGui::GetIO().WantTextInput) {
         ImGuiIO& io = ImGui::GetIO();
         bool edited = false;
 
@@ -15646,7 +15906,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // "commit" for text: the layer IS the document, every keystroke is
         // already in it, and Escape just puts the caret away. A Return that
         // ended editing would make a two-line caption impossible.
-        if (ImGui::IsKeyPressed(ImGuiKey_Enter, true) ||
+        //
+        // Cmd+Return is the one exception: ACCEPT, ending the session and
+        // keeping the text, same as switching tools or clicking away --
+        // `io.KeyCtrl || io.KeySuper` is this file's existing cross-platform
+        // "the Cmd chord" test (see the Layers panel's multi-select above).
+        // Checked first so a Cmd-held Return does not also fall through to
+        // the plain-newline branch.
+        if ((io.KeyCtrl || io.KeySuper) &&
+            (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+          textEditCancel(&st.textEdit);
+        } else if (ImGui::IsKeyPressed(ImGuiKey_Enter, true) ||
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, true)) {
           textInsertUtf8(&editing->text, &st.textEdit, "\n");
           edited = true;
@@ -16221,10 +16492,23 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     // the pixels, not by reading the condition: strokeTool really was false,
     // and the paint really did land. Gating the two leaf predicates means a
     // branch added later inherits the rule instead of having to remember it.
+    //
+    // **`st.documents.active() != nullptr` is here for the identical reason**
+    // (docs/testing-issues.md T5, reversed 2026-09-08): this is the ONLY
+    // branch below that can call `ensurePaintSim()`, so the document check
+    // belongs on THIS leaf predicate, not on `strokeTool` or on a wrapper
+    // around the branch itself -- either of those would leave `paintTool`
+    // true with no document and this same rerouting failure mode would just
+    // find a new branch to leak through as one gets added later. With the
+    // term here, no document means `paintTool` is false, so this whole
+    // branch is skipped: no `ensurePaintSim()` call, no paper quad, no
+    // solver, exactly `app/ToolSurface`'s `toolActsWithoutDocument()` (which
+    // this predicate must keep agreeing with) says for Brush/Water/Dry
+    // Brush now that PaintSim no longer stands with nothing open.
     const bool paintTool = (st.brush.tool == Tool::Brush ||
                             st.brush.tool == Tool::Water ||
                             st.brush.tool == Tool::DryBrush) &&
-                           !transformActive;
+                           !transformActive && st.documents.active() != nullptr;
     // **The eraser is a stroke tool but never a SOLVER stroke**, which is why it
     // is a second flag rather than a fourth line above. It joins `paintTool` at
     // the two branches below that reach a layer and at the cursor ring, and is
@@ -17358,6 +17642,54 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           dl->AddRect(tl, br, IM_COL32(0, 0, 0, 160), 0.0f, 0, 2.0f);
           dl->AddRect(tl, br, kPathCore, 0.0f, 0, 1.0f);
         }
+
+        // --- the placement rubber band: last anchor -> cursor ---
+        //
+        // Bullet 6 of this track: preview where the next press would land,
+        // curved when Curve is active. `st.pathEdit.dragNow` is what tracks
+        // the cursor here -- NOT `tx`/`ty` directly -- because a screenshot
+        // run has no live pointer, and this is the same field
+        // `--vector-demo pendraw` pins through `pathEditTrackCursor()`
+        // exactly as `vector_marquee`'s own rubber band reads `dragNow`
+        // rather than the live mouse two blocks up.
+        if (pathEditHasOpenPath(st.pathEdit)) {
+          const VectorShape* openShape = nullptr;
+          for (const VectorShape& s : pl->shapes) {
+            if (s.id == st.pathEdit.openPathShapeId) {
+              openShape = &s;
+              break;
+            }
+          }
+          if (openShape != nullptr &&
+              st.pathEdit.openPathSubPath < openShape->path.subpaths.size()) {
+            const SubPath& openSub = openShape->path.subpaths[st.pathEdit.openPathSubPath];
+            if (!openSub.anchors.empty()) {
+              const Anchor& lastAnchor = openSub.anchors.back();
+              const Vec2 a = xform.toScreen(Vec2{lastAnchor.pt.x, lastAnchor.pt.y});
+              const Vec2 b =
+                  xform.toScreen(Vec2{st.pathEdit.dragNow.x, st.pathEdit.dragNow.y});
+              if (st.brush.tool == Tool::Curve) {
+                // The same cubic shape a placement would fit (bullet 3),
+                // with the cursor standing in for the not-yet-placed next
+                // anchor -- through the last anchor's own out-handle, which
+                // `pathEditBeginPen()`'s Catmull-Rom fit already set.
+                const Vec2 c1 = xform.toScreen(Vec2{lastAnchor.out.x, lastAnchor.out.y});
+                dl->AddBezierCubic(ImVec2(a.x, a.y), ImVec2(c1.x, c1.y), ImVec2(b.x, b.y),
+                                    ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 140), 2.0f);
+                dl->AddBezierCubic(ImVec2(a.x, a.y), ImVec2(c1.x, c1.y), ImVec2(b.x, b.y),
+                                    ImVec2(b.x, b.y), IM_COL32(255, 255, 255, 190), 1.0f);
+              } else {
+                dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), IM_COL32(0, 0, 0, 140), 2.0f);
+                dl->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), IM_COL32(255, 255, 255, 190),
+                            1.0f);
+              }
+              // The landing dot: "click HERE", not only a line pointing
+              // somewhere near the pointer.
+              dl->AddCircle(ImVec2(b.x, b.y), anchorHalf, IM_COL32(255, 255, 255, 200), 0,
+                            1.0f);
+            }
+          }
+        }
       }
     }
     // === END Tool::Pen / Tool::Curve overlay ================================
@@ -18306,7 +18638,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
     st.requestMode = false;
   }
   if (st.requestClear) {
-    if (sim) sim->clearCanvas(gpu);
+    // File > "New Canvas" (MenuAction::NewCanvas), Edit's "Clear Canvas"
+    // (MenuAction::ClearCanvas) and the clear_canvas keymap (main.cpp) all
+    // just set this one flag -- so this is the single place, not three, that
+    // needs to know docs/testing-issues.md T5 reversed 2026-09-08: with no
+    // document open there is no `sim` to clear (it is null here by
+    // construction -- see the empty-transition hook near the top of
+    // main.cpp's frame loop) and clearing it would have to mean creating one
+    // first. `st.documents.empty()` distinguishes that from the ordinary
+    // "a document is open but nothing has been painted yet" case just below,
+    // where `sim` is ALSO null and the right answer really is to do nothing
+    // -- this if/else-if pair is the only difference between the two.
+    if (sim) {
+      sim->clearCanvas(gpu);
+    } else if (st.documents.empty()) {
+      // The identical call main.cpp:3696 makes at launch. `sim` stays null;
+      // the ordinary lazy-construction path (the `paintTool` branch above)
+      // builds it on the first wet stroke into the new document, exactly as
+      // it would have at launch.
+      st.documents.add(makeBlankOpenDocument(static_cast<int32_t>(canvasW),
+                                             static_cast<int32_t>(canvasH), WorkingSpace{}));
+    }
     st.requestClear = false;
   }
   if (st.requestReload) {

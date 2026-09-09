@@ -113,6 +113,10 @@ bool runPanelLayoutTest() {
       if (e.section == ControlsSection::Tools || e.section == ControlsSection::Options ||
           e.section == ControlsSection::FlatsTools)
         continue;
+      // PIGMENT is Simulation-rolled but starts Hidden, not Flyout -- see
+      // `defaultPlacementFor()`'s own comment (app/PanelLayout.cpp) and
+      // app/selftest/PigmentPanel.cpp, which pins that exception on its own.
+      if (e.section == ControlsSection::Pigment) continue;
       const ControlsSectionRole role = controlsSectionSpec(e.section).role;
       const PanelPlacement want =
           (role == ControlsSectionRole::View || role == ControlsSectionRole::Simulation)
@@ -123,11 +127,20 @@ bool runPanelLayoutTest() {
     check(placementFollowsRole,
           "panel layout: **a Tool or Document panel starts in the right dock and a View or "
           "Simulation panel starts on the flyout rail** -- the occasional roles do not spend a "
-          "grip apiece of a dock that does not scroll");
-    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 8,
-          "panel layout: which is eight panels on the rail -- the five View/Simulation sections, "
-          "GRADE and HISTOGRAM, and FLATS TOOLS -- and the rail is not empty on a first run, "
-          "which is the mode the revamp was asked for by name");
+          "grip apiece of a dock that does not scroll (PIGMENT excepted -- it starts Hidden)");
+    // **Seven, which is neither of the two numbers this merge brought in.**
+    // The rail held seven before either branch. One took PIGMENT off it (a
+    // Simulation-rolled panel pinned Hidden, because a panel for turning on
+    // an off-by-default override should not hold a permanent slot) and the
+    // other put FLATS TOOLS on it. 7 - 1 + 1. Taking either side's own
+    // figure would have been wrong, and both sides' PROSE was wrong too --
+    // recorded here because a count assertion is exactly where a merge
+    // resolved by picking a side goes green while describing a rail nobody
+    // has.
+    check(layout.sectionsIn(PanelPlacement::Flyout).size() == 7,
+          "panel layout: which is seven panels on the rail -- the four remaining View/Simulation "
+          "sections, GRADE, HISTOGRAM and FLATS TOOLS -- and the rail is not empty on a first "
+          "run, which is the mode the revamp was asked for by name");
 
     // Whatever is in the right dock is in `controlsSections()`'s own order --
     // i.e. the outgoing column's order with the flyout sections lifted out.
@@ -216,10 +229,16 @@ bool runPanelLayoutTest() {
     check(d.left == kDefaultDockExtents.left && d.right == kDefaultDockExtents.right &&
               d.top == kDefaultDockExtents.top && d.bottom == kDefaultDockExtents.bottom,
           "panel layout: the default dock extents are ui/AtelierLayout's kDefaultDockExtents");
-    check(layout.sectionsIn(PanelPlacement::Bottom).empty() &&
-              layout.sectionsIn(PanelPlacement::Hidden).empty(),
-          "panel layout: nothing starts on the bottom or hidden -- the bottom dock is empty "
-          "space the user may claim, and nothing is out of reach on a first run");
+    check(layout.sectionsIn(PanelPlacement::Bottom).empty(),
+          "panel layout: nothing starts on the bottom -- it is empty space the user may "
+          "claim on a first run");
+    // PIGMENT is the one exception to "nothing is out of reach on a first
+    // run": app/selftest/PigmentPanel.cpp covers the reason (it edits an
+    // off-by-default session override) and the Window > Pigment item that
+    // reaches it.
+    const std::vector<ControlsSection> hidden = layout.sectionsIn(PanelPlacement::Hidden);
+    check(hidden.size() == 1 && hidden[0] == ControlsSection::Pigment,
+          "panel layout: PIGMENT is the one section that starts Hidden, and nothing else does");
   }
 
   // ==========================================================================

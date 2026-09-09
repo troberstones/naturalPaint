@@ -35,6 +35,7 @@ add_executable(naturalPaint
   app/Latency.cpp
   app/Memory.cpp
   app/MunsellSelection.cpp
+  app/NoDocumentCanvas.cpp
   # One translation unit per --selftest section, plus Driver.cpp for the three
   # drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
   # These were one 20 815-line app/SelfTest.cpp until every parallel branch
@@ -107,6 +108,7 @@ add_executable(naturalPaint
   app/selftest/PanelLayout.cpp
   app/selftest/DockLayout.cpp
   app/selftest/ControlsLayout.cpp
+  app/selftest/PanelSettings.cpp
   app/selftest/CowTile.cpp
   app/selftest/CreateBlank.cpp
   app/selftest/CurveEdit.cpp
@@ -176,6 +178,7 @@ add_executable(naturalPaint
   app/selftest/PigmentDeposit.cpp
   app/selftest/PigmentLayer.cpp
   app/selftest/PigmentSelection.cpp
+  app/selftest/PigmentPanel.cpp
   app/selftest/PlaceImageAsLayer.cpp
   app/selftest/PointOps.cpp
   app/selftest/PresentTransfer.cpp
@@ -216,10 +219,12 @@ add_executable(naturalPaint
   app/selftest/ToneOps.cpp
   app/selftest/ToolCursor.cpp
   app/selftest/ToolSurface.cpp
+  app/selftest/NoDocumentCanvas.cpp
   app/selftest/ExportDialog.cpp
   app/selftest/FlatsExpand.cpp
   app/selftest/FlatsSource.cpp
   app/selftest/ToolSwitch.cpp
+  app/selftest/SpringEyedropper.cpp
   app/selftest/TonalBrush.cpp
   app/selftest/ToolOptionsBlend.cpp
   app/selftest/TouchGesture.cpp
@@ -237,6 +242,7 @@ add_executable(naturalPaint
   app/selftest/PathRaster.cpp
   app/selftest/SvgImport.cpp
   app/selftest/PenTool.cpp
+  app/selftest/PenDraw.cpp
   app/selftest/TextTool.cpp
   app/selftest/TextShaper.cpp
   app/selftest/SvgPath.cpp
@@ -249,6 +255,7 @@ add_executable(naturalPaint
   app/selftest/ZoomAndSize.cpp
   app/selftest/TextSerial.cpp
   app/selftest/PathConsumers.cpp
+  app/selftest/TextKeyCapture.cpp
   app/AdjustmentOps.cpp
   app/FilterOps.cpp
   app/LayerThumbnail.cpp

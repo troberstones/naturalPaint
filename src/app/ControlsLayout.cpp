@@ -42,7 +42,12 @@ const std::vector<ControlsSectionSpec>& controlsSections() {
        "PIGMENT mode, because paint cannot reflect more light than falls on "
        "it. RGB strokes, the bucket and the gradient all keep it. Dragging "
        "in the saturation/value square brings the colour back into range; "
-       "the numeric row under it does not."},
+       "the numeric row under it does not.",
+       // hasSettings: the Munsell page's steps slider and per-row/per-page
+       // chroma toggle live in the grip's gear popover, not under the grid
+       // -- see ui/MacPaintUI.cpp's drawMunsellPage() and
+       // drawSectionSettings().
+       true},
       {ControlsSection::BrushLibrary, R::Tool, "BRUSH LIBRARY", false},
       {ControlsSection::Brush, R::Tool, "BRUSH EDITOR", false},
       // Last of the `Tool` roles, which is what keeps the role sequence

@@ -382,6 +382,7 @@ const std::vector<uint32_t>& toolIconCodepoints() {
           std::find(points.begin(), points.end(), m.codepoint) == points.end())
         points.push_back(m.codepoint);
     points.push_back(kMoreIconCodepoint);
+    points.push_back(kSettingsIconCodepoint);
     std::sort(points.begin(), points.end());
     return points;
   }();

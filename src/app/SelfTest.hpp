@@ -506,6 +506,27 @@ bool runFlatsSourceTest();
 
 bool runToolSwitchTest();
 
+// app/ToolSwitch -- the spring-loaded Eyedropper: Alt/Option held over a
+// paintable tool borrows `Tool::Eyedropper`, release hands the tool back.
+// A second borrow beside `runToolSwitchTest()`'s Hand, in its own file per
+// this suite's one-section-one-file rule (that file is already the Hand's
+// and T24's; this one does not reopen it).
+//
+// Covers: `springEyedropperEligible()` walked over every `(Tool, BucketFill)`
+// pair against a hand-written expected table, not a restatement of the
+// production switch; begin/end restoring the exact prior tool (`brush.tool`
+// really becomes `Eyedropper`, `effectiveTool()` still reports the tool the
+// user is in, matching the Hand's own shape); the borrow writing no
+// `previous`/`hasPrevious` ledger entry; a begin refused for an ineligible
+// tool, for the Ctrl+Alt sizing chord's tool (indirectly, by refusing
+// `PaintBucket` in Flats mode the same as any other ineligible tool -- the
+// UI's own Ctrl guard is not reachable headless); a repeat-press no-op; a
+// release with no press behind it; and that a Hand spring and an Eyedropper
+// spring can never both be live, in both directions.
+//
+// Headless and GPU-free: app/ToolSwitch only.
+bool runSpringEyedropperTest();
+
 // app/ToolSurface -- docs/testing-issues.md **T5**'s short-term half: "closing
 // every document leaves a canvas belonging to nothing."
 //
@@ -565,6 +586,19 @@ bool runToolSwitchTest();
 // the golden harness carries a `no_document` view that photographs the dimmed
 // palette this section can only assert the inputs to.
 bool runToolSurfaceTest();
+
+// docs/testing-issues.md T5, reversed 2026-09-08: "painting the bare canvas
+// is a supported workflow" no longer holds. With no document open there is
+// no canvas either -- `sim::PaintSim` is torn down the moment the last
+// document closes and never constructed again until one is open. Pins two
+// things: `DocumentSession::empty()` (the CPU-side predicate the canvas
+// block and `ensurePaintSim()`'s call site now gate on) reads true with zero
+// documents and false with one, and a private PaintSim's `shutdown()`
+// measurably drops the process footprint rather than merely nulling a
+// pointer -- printed `[measured]` before and after. Owns its own PaintSim
+// rather than the shared `*s` neighbouring GPU sections borrow, since every
+// section after this one in main.cpp's chain still needs that one alive.
+bool runNoDocumentCanvasTest(GpuContext& gpu, const MixboxLut& lut);
 
 // app/ExportDialog -- the decisions the two export dialogs make, lifted out of
 // ui/MacPaintUI.cpp in answer to the report "the export dialog seems a little
@@ -3261,6 +3295,30 @@ bool runPanelLayoutTest();
 // writes no files.
 bool runDockLayoutTest();
 
+// Track panelgear: the panel grip's gear settings button, beside the "?" --
+// app/ControlsLayout.hpp's `ControlsSectionSpec::hasSettings`, the Lucide
+// "settings" codepoint (`ui/AtelierChrome.hpp`'s `kSettingsIconCodepoint`),
+// and ui/MacPaintUI.cpp's `panelGripFor()`/`drawSectionSettings()`.
+//
+// What is asserted:
+//  - COLOR is the only section with `hasSettings` true, by a scan of every
+//    `ControlsSectionSpec` and the lookup agreeing.
+//  - The gear codepoint is in the merged tool-icon atlas, and -- the
+//    stronger question -- `uiFonts().text` itself (what `drawToolGlyph()`
+//    actually reads) draws it, not merely whatever `installToolIconFont()`
+//    merged onto.
+//  - `panelGripFor()`'s title-fit predicate, re-derived independently (that
+//    function is file-local to ui/MacPaintUI.cpp) against a real measured
+//    title width: it flips exactly at the predicted two-button threshold for
+//    a section with both a help button and a gear, and that threshold is
+//    strictly wider than a one-button prediction would give.
+//
+// A real headless `ImGuiContext` for the font/text-metric parts (Part B/C),
+// the same way app/selftest/Fonts.cpp's Part C/D and
+// app/selftest/AtelierChrome.cpp's palette probe establish is safe without a
+// window or a renderer. GPU-free; writes no files.
+bool runPanelSettingsTest();
+
 // ---------------------------------------------------------------------------
 // The incremental composite
 // ---------------------------------------------------------------------------
@@ -4589,6 +4647,14 @@ bool runMenuBasicsTest();
 //    opening but not for a check mark flipping.
 bool runMenuModelTest();
 
+// A real, opt-in PIGMENT panel (app/AppState.hpp's `PigmentOverride`,
+// `effectivePigmentConstants()`, `selectPigment()`): the default placement
+// table with Pigment Hidden and nothing else moved, the Window > Pigment
+// check item mirroring that placement, and the override itself -- palette
+// values when inactive, the override's own three floats when active, and a
+// pigment change clearing it. Headless, GPU-free and ImGui-free.
+bool runPigmentPanelTest();
+
 // The Select menu (docs/reachability-audit.md C5; PRD E4/E8/E9). Headless --
 // no window, no GPU, no ImGui context.
 //
@@ -5462,6 +5528,18 @@ bool runSvgImportTest();
 // app/selftest/PenTool.cpp.
 bool runPenToolTest();
 
+// app/PenTool section 9 -- Pen/Curve PLACEMENT: `pathEditBeginPen()`
+// creating a shape from the first empty-canvas press, extending it on
+// subsequent ones, closing it on a press back at its own first anchor, and
+// falling through to `pathEditBegin()`'s ordinary gestures for a press on
+// OTHER geometry; `pathEditUpdate()`'s `PenExtend` arm setting a mirrored
+// smooth tangent from a drag-before-release; `pathEditEndOpenPath()` leaving
+// what was placed; and Curve mode's Catmull-Rom tangent fit, checked both
+// for C1 continuity at interior anchors and against a hand-computed value.
+// Headless and GPU-free; writes no files; touches no ui/ file. See
+// app/selftest/PenDraw.cpp.
+bool runPenDrawTest();
+
 // app/TextTool -- the headless core of PLAN.md phase 14's Text tool: the
 // gate predicate (`toolEditsText()`), the caret-editing session's UTF-8-safe
 // string edits (insert/backspace/forward-delete/caret movement, every one
@@ -5608,5 +5686,16 @@ bool runFlatsTest();
 // the active selection bounds both edits, and that every refusal names its own
 // cause. See app/selftest/PathConsumers.cpp.
 bool runPathConsumersTest();
+
+// The Text tool owning the keyboard while a session is live: app/Keymap's
+// keyChordReachesKeymap() gate (bare/Shift/Alt chords blocked, Cmd/Ctrl
+// chords still reach the keymap, everything passes with no session),
+// app/TextTool's textSessionActive() transitions (true from either
+// textEditBegin() or textEditFrameDragBegin(), false only from
+// textEditCancel()), and textEditRevert() restoring a session's UTF-8
+// content and caret byte-for-byte on Escape while plain textEditCancel()
+// (every other way a session ends) leaves it untouched. Headless, GPU-free,
+// writes no files. See app/selftest/TextKeyCapture.cpp.
+bool runTextKeyCaptureTest();
 
 }  // namespace np

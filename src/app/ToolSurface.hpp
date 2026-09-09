@@ -41,15 +41,18 @@
 // 1. Where the line is drawn, and why it is drawn THERE
 // ==========================================================================
 //
-// **The bare canvas is a supported workflow and this module must not disable
-// it.** File > "New" was deliberately renamed "New Canvas" precisely so it
-// could not be read as "New Document" -- painting with no document open is
-// designed behaviour, not a hole. What T5's short-term half asks for is that
-// the *document-scoped* features stop pretending, not that the canvas stop
-// working.
+// **Reversed 2026-09-08 (docs/testing-issues.md T5).** This module used to
+// say "the bare canvas is a supported workflow and this module must not
+// disable it" -- Brush, Water and Dry Brush painted `sim::PaintSim` with no
+// document open, and File > "New" was renamed "New Canvas" precisely so that
+// workflow could not be mistaken for "New Document". That decision is gone:
+// with zero open documents there is no canvas at all any more -- nothing
+// drawn, nothing paintable, no simulation alive -- so the one workflow this
+// module used to protect no longer exists to protect. The three paint tools
+// moved from the left column below to the right one.
 //
-// The line therefore falls exactly where the tools' OWN gates already put it,
-// and it is derived from those gates rather than from a list kept here:
+// The line still falls exactly where the tools' OWN gates put it, and it is
+// still derived from those gates rather than from a list kept here:
 //
 //   ACT WITH NO DOCUMENT           because
 //   ----------------------------   -----------------------------------------
@@ -61,15 +64,21 @@
 //                                  `measureLineAppliesTo()` asks -- that
 //                                  header says so outright, and the ruler is
 //                                  geometry over the canvas, not over a layer.
-//   Brush, Water, Dry Brush        `strokeRouteFor(t, nullptr)` answers
-//                                  `StrokeRoute::PaintSim`. Its own comment:
-//                                  "no target at all is the one case the
-//                                  solver canvas is right for". This is the
-//                                  workflow above, and it is the one thing
-//                                  this module must not break.
 //
 //   NEED A DOCUMENT                because
 //   ----------------------------   -----------------------------------------
+//   Brush, Water, Dry Brush        `strokeRouteFor(t, nullptr)` still answers
+//                                  `StrokeRoute::PaintSim` -- that table is
+//                                  about which LAYER a stroke can reach, not
+//                                  about whether `sim::PaintSim` currently
+//                                  exists to reach at all. With no document
+//                                  open it does not: main.cpp tears it down
+//                                  the frame the last document closes and
+//                                  ui/MacPaintUI.cpp's canvas block never
+//                                  calls `ensurePaintSim()` without one. So
+//                                  `toolActsWithoutDocument()` asks the route
+//                                  table for more than `PaintSim` now -- see
+//                                  its own definition.
 //   Eraser, Pencil, Smudge,        `strokeRouteFor(t, nullptr)` answers
 //   Clone Stamp, Dodge, Burn       `None` for each of them, by name, in that
 //                                  function's own `target == nullptr` row: the
@@ -95,12 +104,12 @@
 //                                  genuinely nothing to sample."
 //
 // **This is a strict subset of `toolImplemented()`, and that is the evidence
-// it is a real axis rather than a synonym.** Six tools of the twenty-one this
-// build has behaviour for survive with no document; the other fifteen do not,
-// and the seven unbuilt cells are outside this question entirely (see §2).
-// `--selftest` asserts the subset relation and the strictness both ways, so a
-// future edit that quietly collapses this predicate into either of the
-// existing two reddens rather than passing.
+// it is a real axis rather than a synonym.** Three tools of the twenty-one
+// this build has behaviour for survive with no document; the other eighteen
+// do not, and the seven unbuilt cells are outside this question entirely
+// (see §2). `--selftest` asserts the subset relation and the strictness both
+// ways, so a future edit that quietly collapses this predicate into either
+// of the existing two reddens rather than passing.
 //
 // ==========================================================================
 // 2. What this module deliberately does NOT answer
@@ -130,7 +139,7 @@
 namespace np {
 
 // Whether `tool`'s canvas handler can do anything at all with **no document
-// open** -- see §1 for the six that can and the argument for each.
+// open** -- see §1 for the three that can and the argument for each.
 //
 // Derived, never listed. Every term below is a call to the gate the
 // corresponding canvas block is actually written with, asked with the
@@ -139,7 +148,13 @@ namespace np {
 //
 //   `toolPansView()` / `toolZoomsView()`  -- take no document to begin with
 //   `toolMeasuresCanvas()`                -- `MeasureLine`'s documentId 0 row
-//   `strokeRouteFor(tool, nullptr)`       -- the route table's own nullptr row
+//   `strokeRouteFor(tool, nullptr)`       -- the route table's own nullptr
+//                                            row, MINUS `StrokeRoute::PaintSim`
+//                                            (T5, reversed 2026-09-08: that
+//                                            route answers "which layer", not
+//                                            "does a canvas exist", and with
+//                                            no document there is no canvas
+//                                            for it to mean anything on)
 //   `pixelOpWritesLayer(nullptr)`         -- `PixelOpRefusal::NoLayer`
 //
 // The three families with no term are the three where "no document" is not a
@@ -163,7 +178,7 @@ bool toolActsWithoutDocument(Tool tool);
 //
 //   1. `documentOpen` -- the surface is a document; whatever else may refuse
 //      the gesture is the refusal ladder's business, not this axis's (§2).
-//   2. `toolActsWithoutDocument(tool)` -- the tool is one of §1's six.
+//   2. `toolActsWithoutDocument(tool)` -- the tool is one of §1's three.
 //   3. **`tool` has no canvas handler at all.** "Not built yet." is already
 //      the whole answer for those seven cells; a second sentence underneath it
 //      would be telling a user to open a document so that a tool which does

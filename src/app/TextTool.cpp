@@ -149,16 +149,27 @@ bool textBlockHit(PathBounds bounds, PathPoint at, float padDoc) noexcept {
 
 // --- the edit session (header sections 5 and 6) -----------------------------
 
+bool textSessionActive(const TextEditState& state) noexcept { return state.active; }
+
 void textEditCancel(TextEditState* state) noexcept {
   if (state == nullptr) return;
   state->frameDragActive = false;
   state->frameDragStart = PathPoint{};
   state->frameDragNow = PathPoint{};
   state->undoOpened = false;
+  state->active = false;
   // `documentId`/`layerIndex`/`caret` are deliberately left alone -- see this
   // function's header comment: they name the caret-editing SESSION, which
   // outlives a cancelled gesture, the same way `pathEditCancel()` leaves
-  // `PathEditState::selection` alone.
+  // `PathEditState::selection` alone. `active` is not one of those fields --
+  // it is what `textSessionActive()` reports, and this IS the function that
+  // ends a session in that sense.
+}
+
+void textEditRevert(TextContent* text, TextEditState* state) noexcept {
+  if (text == nullptr || state == nullptr) return;
+  text->utf8 = state->snapshotUtf8;
+  state->caret = clampToBoundary(text->utf8, state->snapshotCaret);
 }
 
 void textCaretSetOffset(TextEditState* state, const TextContent& text,
@@ -182,6 +193,12 @@ void textEditBegin(TextEditState* state, uint64_t documentId, size_t layerIndex,
   state->frameDragStart = PathPoint{};
   state->frameDragNow = PathPoint{};
   state->undoOpened = false;
+  state->active = true;
+  // Snapshot for `textEditRevert()` -- the session's own starting point, not
+  // whatever an earlier session (or the default-constructed state) left
+  // behind.
+  state->snapshotUtf8 = content.utf8;
+  state->snapshotCaret = state->caret;
 }
 
 void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documentId) noexcept {
@@ -193,6 +210,12 @@ void textEditFrameDragBegin(TextEditState* state, PathPoint at, uint64_t documen
   state->frameDragStart = at;
   state->frameDragNow = at;
   state->undoOpened = false;
+  // A drag is a candidate session -- `textSessionActive()`'s header comment
+  // says "frame-drag counts" -- even though there is no `TextContent` yet to
+  // snapshot for `textEditRevert()`. That is fine: `textEditRevert()` is
+  // never reached mid-drag (`ui/`'s Escape handler only calls it when an
+  // existing layer's session -- `editing != nullptr` -- is live).
+  state->active = true;
 }
 
 void textEditFrameDragUpdate(TextEditState* state, PathPoint at) noexcept {

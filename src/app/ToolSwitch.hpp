@@ -151,10 +151,15 @@ bool hasPreviousTool(const AppState& st) noexcept;
 Tool previousTool(const AppState& st) noexcept;
 
 // The tool the USER believes is selected. Identical to `st.brush.tool` except
-// while the Hand is borrowed for a Space-pan, when `brush.tool` is the Hand
-// and this is what the user will get back. Ask this, not `brush.tool`,
-// wherever the question is "what is the user doing" rather than "what does
-// this frame's canvas gesture route to".
+// while the Hand is borrowed for a Space-pan or the Eyedropper is borrowed
+// for an Alt-sample, when `brush.tool` is the borrowed tool and this is what
+// the user will get back. Ask this, not `brush.tool`, wherever the question
+// is "what is the user doing" rather than "what does this frame's canvas
+// gesture route to" -- the canvas gesture and the cursor are the latter
+// question, and both already read `st.brush.tool` directly for the Hand;
+// the Eyedropper spring keeps that same shape rather than routing its own
+// sample and cursor through this function, which would have to reveal the
+// borrowed tool here and contradict the sentence above.
 Tool effectiveTool(const AppState& st) noexcept;
 
 // --- the spring-loaded Hand (T20) -----------------------------------------
@@ -177,6 +182,46 @@ bool beginSpringHand(AppState& st) noexcept;
 // hold. This is the "no previous tool ever set" case, and it is a no-op by
 // construction rather than by a guard at each call site.
 bool endSpringHand(AppState& st) noexcept;
+
+// --- the spring-loaded Eyedropper (Alt/Option) -----------------------------
+//
+// Alt held over a paintable tool borrows the Eyedropper: clicks and drags
+// sample the canvas exactly as `Tool::Eyedropper` does, and letting go hands
+// the borrowed-from tool back. The same shape as the Hand's pair just above,
+// with the same two reasons for existing as its own functions rather than
+// `setActiveTool()` calls -- header §1's self-erasure argument, and §0's
+// "one writer" -- and it deliberately does NOT move `previous`/`hasPrevious`
+// for the identical reason.
+//
+// **Not every tool spring-loads it.** Clone Stamp keeps Alt for picking its
+// source, the four selection tools keep Alt-subtract, Zoom keeps Alt-out,
+// Pen keeps Alt to suppress its gnomon, and the Flats-mode paint bucket
+// keeps Alt to carve a fill -- every one of those is a live, shipped meaning
+// for the same chord, and this borrow must not steal it. `AppState.hpp`'s
+// `BucketFill` is why `PaintBucket` alone needs a second argument: the SAME
+// tool means "carve a fill" in Flats mode and "the ordinary bucket" in
+// Colour mode, and only the latter has Alt to spare.
+bool springEyedropperHeld(const AppState& st) noexcept;
+
+// PURE: whether Alt spring-loads the Eyedropper for tool `t` with the paint
+// bucket's fill mode `fill` (read only when `t == Tool::PaintBucket`, and
+// otherwise ignored). No `AppState` reference so `--selftest` can walk every
+// `(Tool, BucketFill)` pair without standing up a document or a canvas.
+bool springEyedropperEligible(Tool t, BucketFill fill) noexcept;
+
+// Alt went down over an eligible tool: borrow the Eyedropper, remembering
+// what to give back. Returns false and changes nothing if a borrow is
+// already in flight (auto-repeat, the Hand's own guard's reasoning) OR if
+// the Hand is currently borrowed -- the two springs are mutually exclusive
+// by construction, never by a caller remembering to check the other one
+// first, because a caller that forgets is exactly how two borrows would end
+// up live at once with only one `brush.tool` to restore to.
+bool beginSpringEyedropper(AppState& st) noexcept;
+
+// Alt came up (or the borrow is being cancelled for any other reason): hand
+// the tool back. Returns false and changes nothing when no borrow is in
+// flight, the Hand's own no-op-by-construction reasoning above.
+bool endSpringEyedropper(AppState& st) noexcept;
 
 // --- T24: the angle `Image > Transform...` opens with ---------------------
 

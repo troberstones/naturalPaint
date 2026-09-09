@@ -109,6 +109,13 @@ PanelPlacement defaultPlacementFor(ControlsSection section) {
     // what says whether a panel is about the tool, the document, the view or
     // the simulation, and this one is unambiguously about the tool.
     case ControlsSection::FlatsTools: return PanelPlacement::Flyout;
+    // The panel this edits (`AppState::pigmentOverride`, app/AppState.hpp)
+    // is off by default, and a panel for turning on an off-by-default
+    // override is not worth a permanent flyout slot until the user asks for
+    // it -- the Window menu's "Pigment" check item
+    // (`MenuAction::Pigment`, ui/MacPaintUI.cpp's `performMenuAction()`) is
+    // what moves it to its role's normal placement below.
+    case ControlsSection::Pigment: return PanelPlacement::Hidden;
     default:                       break;
   }
   switch (controlsSectionSpec(section).role) {

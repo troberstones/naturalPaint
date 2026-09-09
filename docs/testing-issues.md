@@ -244,7 +244,7 @@ nowhere.
 
 ---
 
-## T5 — Closing every document leaves a canvas belonging to nothing · PARTLY CLOSED (short-term half landed 2026-09-02; the canvas-to-document bridge is still open)
+## T5 — Closing every document leaves a canvas belonging to nothing · PARTLY CLOSED (short-term half landed 2026-09-02, reversed 2026-09-08; the canvas-to-document bridge is still open)
 
 **Reported.** When you close all documents, there is still a document/canvas
 that does not belong to anything.
@@ -301,6 +301,38 @@ because the first returns in every case. Harmless today, but the dead block's
 condition is strictly narrower, so deleting or reordering the first would
 silently route the Pencil, Dodge, Burn and Clone Stamp into the watercolour
 solver — exactly what each of those tools' own headers argues against.
+
+**Reversed, 2026-09-08.** "Painting the bare canvas — a supported workflow"
+was this entry's own load-bearing decision, restated above and pinned by
+`app/ToolSurface`'s six-tool table and `tools/golden/run_golden.sh`'s
+`no_document`/`no_document_flyout` views. A separate report asked for the
+opposite: with zero documents open there should be **no canvas at all** —
+nothing drawn, nothing paintable, no simulation alive — rather than a
+`sim::PaintSim` standing ready for a document that is not there. That is now
+the build's behaviour. `main.cpp`'s frame loop tears `sim` down (`shutdown()`
++ reset the `unique_ptr`) the frame the last document closes and never
+constructs it again without one; `ui/MacPaintUI.cpp`'s canvas block draws
+neither the paper quad nor the solver's composite with no document active,
+and its `ensurePaintSim()` call site is gated on the same condition through
+the `paintTool` leaf predicate (not a wrapper around the branch, for the
+"gate rerouted, not stopped" reason app/StrokeSession's own comments there
+argue at length). File > "New Canvas" and Edit > "Clear Canvas" — and the
+`clear_canvas` keymap, all three of which just set `AppState::requestClear`
+— now create a blank document instead of clearing a `sim` that no longer
+exists when none is open, the same call `main.cpp`'s own startup path uses.
+`app/ToolSurface`'s table shrank from six survivors to three: Brush, Water
+and Dry Brush moved to the "needs a document" column, because
+`strokeRouteFor(t, nullptr) == PaintSim` now means "there is no layer to aim
+at", not "there is a canvas to paint on" — those stopped being the same fact.
+Only Hand, Zoom and Measure survive with no document now, unchanged, because
+none of the three ever needed a canvas to begin with. Coverage:
+`app/selftest/NoDocumentCanvas.cpp` (new), `app/selftest/ToolSurface.cpp`
+(sections B–D rewritten for the three-tool set), and golden's
+`no_document`/`no_document_title`/`no_document_flyout` re-blessed — the first
+and third of those crop the tool palette and its flyout, where Brush, Water
+and Dry Brush now draw dimmed like every other document-scoped tool. The
+canvas-to-document bridge this entry's "long term" bullet describes is
+untouched by this and is still **open**.
 
 ---
 

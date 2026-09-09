@@ -170,6 +170,15 @@ const std::vector<uint32_t>& toolIconCodepoints();
 // call site that draws it.
 constexpr uint32_t kMoreIconCodepoint = 57526u;  // "ellipsis"
 
+// The panel grip's gear settings button (ui/MacPaintUI.cpp's
+// `drawPanelGrip()`/`drawSectionSettings()`) -- also not a Tool, and its
+// codepoint has to be in toolIconCodepoints() for the same reason
+// `kMoreIconCodepoint`'s does. Read off third_party/lucide/codepoints.json's
+// own "settings" entry (57684 / 0xe154), not guessed -- that file is Lucide's
+// own cmap-to-PUA-codepoint table, the same source app/selftest/AtelierChrome
+// checks every icon name's codepoint against.
+constexpr uint32_t kSettingsIconCodepoint = 57684u;  // "settings"
+
 // docs/shortcuts.md section 1's reserved letter for a tool ("B", "Shift+L"),
 // or an empty string when no letter is reserved yet. **This is not a
 // working shortcut** -- keymaps/default.json does not bind any tool-select

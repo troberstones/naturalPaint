@@ -195,6 +195,12 @@ const MenuItemSpec* specTable() {
     // (MenuKeyEquivalent's own header) -- not a thing to do speculatively for
     // a panel that already has a home in the docked column.
     set(MenuAction::BrushSettings, "Brush Settings", "");
+    // Same reasoning as BrushSettings just above: no key equivalent, and a
+    // Check rather than a Command -- `ControlsSection::Pigment` starts
+    // `Hidden` (app/PanelLayout.cpp's `defaultPlacementFor()`) and this is
+    // what turns it on, so the item has to be able to say whether it
+    // already is.
+    set(MenuAction::Pigment, "Pigment", "");
     set(MenuAction::ImGuiDemo, "ImGui demo", "");
     family(MenuAction::ActivateDocument);
 
@@ -443,6 +449,7 @@ const char* menuActionName(MenuAction action) noexcept {
     case MenuAction::Rulers: return "Rulers";
     case MenuAction::Navigator: return "Navigator";
     case MenuAction::BrushSettings: return "BrushSettings";
+    case MenuAction::Pigment: return "Pigment";
     case MenuAction::Guides: return "Guides";
     case MenuAction::AddGuide: return "AddGuide";
     case MenuAction::ClearGuides: return "ClearGuides";
@@ -968,6 +975,7 @@ std::vector<MenuNode> buildMenuModel(const MenuContext& ctx) {
   {
     MenuNode window = submenu("Window");
     window.children.push_back(check(MenuAction::BrushSettings, ctx.showBrushSettings));
+    window.children.push_back(check(MenuAction::Pigment, ctx.showPigmentPanel));
     window.children.push_back(separator());
     window.children.push_back(check(MenuAction::ImGuiDemo, ctx.showDemo));
     window.children.push_back(separator());
