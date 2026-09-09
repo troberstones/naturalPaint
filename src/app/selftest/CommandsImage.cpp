@@ -555,11 +555,31 @@ bool runCommandsImageTest() {
     // once.
     OpenDocument od = makeImageCommandDocument();
 
+    // **This assertion is phrased against the SENTENCE, not merely against the
+    // refusal, and a sabotage is why.** Written first as `!ok && names the
+    // key`, it stayed green with the type check deleted outright: with no type
+    // check, `"sigma": "four"` leaves sigma at 0, and the range gate then
+    // refuses -- naming "sigma" -- for an entirely different reason. The
+    // assertion was measuring `requireAbove()` while claiming to measure the
+    // type check. Requiring the sentence to say what was wrong with the VALUE
+    // separates the two, because the range refusal does not contain that
+    // phrase.
     JsonValue stringSigma = JsonValue::object();
     stringSigma.set("sigma", JsonValue::string("four"));
     const CommandResult r1 = applyCommand(od, Command{"filter_gaussian_blur", stringSigma});
-    check(!r1.ok && contains(r1.status, "sigma"),
-          "types: a sigma written as a string refuses, naming the key");
+    check(!r1.ok && contains(r1.status, "sigma") && contains(r1.status, "must be a number"),
+          "types: a sigma written as a string refuses AS A TYPE ERROR, naming the key");
+
+    // The case nothing else in this suite can catch: an OPTIONAL key of the
+    // wrong type. `depth` defaults to a perfectly valid 1.0, so a reader that
+    // let a wrong type fall through to the default would run a real emboss and
+    // report a clean success -- no range gate downstream would ever fire.
+    JsonValue stringDepth = JsonValue::object();
+    stringDepth.set("amount", num(1.0));
+    stringDepth.set("depth", JsonValue::string("deep"));
+    const CommandResult r1b = applyCommand(od, Command{"filter_emboss", stringDepth});
+    check(!r1b.ok && contains(r1b.status, "depth"),
+          "types: an OPTIONAL key of the wrong type refuses rather than falling back");
 
     JsonValue boolAmount = JsonValue::object();
     boolAmount.set("amount", JsonValue::boolean(true));
