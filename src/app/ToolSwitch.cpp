@@ -1,6 +1,7 @@
 #include "app/ToolSwitch.hpp"
 
 #include "app/CropTool.hpp"
+#include "app/DocumentLifecycle.hpp"  // activeLayerOf()
 #include "app/MeasureLine.hpp"
 
 namespace np {
@@ -222,6 +223,14 @@ void setFlatsTool(AppState& st, FlatsTool next) noexcept {
   // while the Lasso was the active tool.
   //
   // So there is nothing left to do here but set the mode.
+}
+
+bool flatsToolIsActive(const AppState& st) {
+  if (st.flatsTool == FlatsTool::None) return false;
+  const OpenDocument* od = st.documents.active();
+  if (od == nullptr) return false;
+  const Layer* l = activeLayerOf(*od);
+  return l != nullptr && l->kind == LayerKind::Flats && !l->locked;
 }
 
 }  // namespace np

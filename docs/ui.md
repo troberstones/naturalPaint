@@ -194,8 +194,21 @@ Every cell shows its **shortcut letter** on hover and in its tooltip when
 [shortcuts.md](shortcuts.md) section 1 reserves one for it — this is the letter that
 tooltip shows, not a claim the key is wired to a tool switch yet; `keymaps/default.json`
 does not bind any tool-select key today, and wiring that is separate, later work. The
-palette also **switches to the flatting set when a Flats layer is active** — those tools
-are scoped to that layer kind rather than holding global keys.
+palette also **gains a flatting set when a Flats layer is active** — those tools are
+scoped to that layer kind rather than holding global keys.
+
+**Built as a second palette, not as a switch of this one**, which is the one place the
+shipped chrome departs from the sentence above. FLATS TOOLS is its own dockable panel
+(§2c) drawing the same cells this palette draws — square, Lucide glyph, accent inversion
+when picked — so it can be floated beside TOOLS or docked anywhere, and vector layers get
+the same mechanism later. What the design's "switches" was protecting is kept by a
+different means: **the tool state is exclusive.** Activating a flatting tool deactivates
+the regular one, so exactly one palette shows a selection and one cursor shape at any
+instant. `st.brush.tool` is *remembered* rather than cleared — `flatsToolIsActive()`
+(`app/ToolSwitch.hpp`) is what stops it counting as active — so leaving flatting mode
+gives back the tool you had instead of dropping you on one you never chose. Golden view
+`tools_flats_active` photographs the TOOLS column at the instant a flats tool is lit,
+which is the only way to catch two accented cells at once.
 
 ### 2a. Icons: Lucide, one per tool, 15px
 

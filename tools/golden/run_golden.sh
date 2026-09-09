@@ -899,8 +899,8 @@ measure_only=("${@:3}")
 #     panel chrome, static text, no canvas, no anti-aliased overlay -- and it
 #     matches what the `crop_options` band views measured for the same
 #     reasons.
-view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower munsell_page grade_kinds pen_options pen_options_component vector_thumb pen_drawing flats_tools flats_segmentation bucket_options_flats)
-view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document" "--demo-document --munsell-demo" "--demo-document --grade-kinds-demo" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo" "--demo-document --vector-demo pendraw" "--demo-document --flats-demo" "--demo-document --flats-demo" "--demo-document --wand-demo flats")
+view_names=(toolbar layers canvas tools flyout titlebar transform transform_stack rail tabs tabs_shut gradient gradient_drag gradient_spread_off gradient_radial gradient_angular clone_anchor clone_source wand_options bucket_options smudge_options no_document no_document_title no_document_flyout color_overrange fg_well_overrange gradient_overrange export_as export_as_blocked export_states crop_options crop_options_perspective crop_drag crop_perspective crop_refused layer_thumbs mask_target mask_content vector_shape vector_components vector_marquee text_options text_options_paragraph text_point text_paragraph text_frame tools_lower munsell_page grade_kinds pen_options pen_options_component vector_thumb pen_drawing flats_tools flats_segmentation bucket_options_flats tools_flats_active)
+view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke-demo" "--demo-document --marquee-demo" "--demo-document --flyout-demo" "--demo-document" "--demo-document --transform-demo 0 --pen-demo" "--demo-document --transform-demo 1" "--demo-document" "--demo-document --panel-stack-demo" "--demo-document --panel-stack-demo" "--demo-document --gradient-demo" "--demo-document --gradient-demo drag" "--demo-document --gradient-demo angular" "--demo-document --gradient-demo drag radial" "--demo-document --gradient-demo drag angular" "--demo-document --clone-demo anchor" "--demo-document --clone-demo" "--demo-document --wand-demo" "--demo-document --wand-demo bucket" "--demo-document --smudge-demo" "--no-document" "--no-document" "--no-document --flyout-demo" "--demo-document --overrange-demo" "--demo-document --overrange-demo" "--demo-document --gradient-demo --overrange-demo" "--demo-document --open-export-as" "--no-document --open-export-as" "--demo-document --open-export-states ." "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo" "--demo-document --crop-demo perspective" "--demo-document --crop-demo bowtie" "--demo-document" "--demo-document --mask-demo" "--demo-document --mask-demo content" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo marquee" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo" "--demo-document --text-demo paragraph" "--demo-document --text-demo frame" "--demo-document" "--demo-document --munsell-demo" "--demo-document --grade-kinds-demo" "--demo-document --vector-demo" "--demo-document --vector-demo components" "--demo-document --vector-demo" "--demo-document --vector-demo pendraw" "--demo-document --flats-demo" "--demo-document --flats-demo" "--demo-document --wand-demo flats" "--demo-document --flats-demo")
 #
 #   pen_options / pen_options_component -- the Pen's and Curve's MODE segment
 #     and its SELECTED readout, one crop in two states, exactly as the
@@ -1200,6 +1200,30 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 # put one mark or the other outside the window entirely -- a correct marker
 # that no photograph contained.
 #
+#   tools_flats_active -- the TOOLS palette while a FLATTING tool is active,
+#   from the same `--flats-demo` that feeds the two views below. It exists
+#   for one assertion no other view in this file can make: **the tool state
+#   is exclusive, so exactly one palette shows a selection at a time.**
+#
+#   The defect it pins was real and shipped for a day. Picking DELETE in
+#   FLATS TOOLS left the Brush cell lit in TOOLS as well, so two cells were
+#   accented at once and nothing on screen said which one a canvas click
+#   would obey. `flatsToolIsActive()` (app/ToolSwitch.hpp) is what both
+#   palettes now read, and this crop is the TOOLS column with the Brush cell
+#   -- the tool `--flats-demo` leaves selected -- fully in frame at the
+#   bottom. A regression re-lights that cell in accent orange, which is a
+#   large, unmissable diff rather than a subtle one.
+#
+#   `flats_tools` next door photographs the OTHER half of the same instant:
+#   DELETE lit in the flats palette. Neither view alone says anything about
+#   exclusivity -- it is the pair, at one moment, that does. That is the
+#   `wand_options`/`bucket_options` argument again, and the reason the crop
+#   is a column of the dock rather than the flyout.
+#
+#   Blessed at exact (0, 0), measured over TWELVE launches rather than eight
+#   -- see the `flats_segmentation` note further down for why eight is not
+#   enough to call a view exact.
+#
 #   bucket_options_flats -- the SAME row with `FILL: Flats` chosen, which is
 #   not a variant of `bucket_options` but a different control set: the
 #   tolerance block is replaced by the rubber sheet's SHEET / GAP / DECLUTTER
@@ -1242,11 +1266,11 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #   view non-deterministic by construction. Both bless at exact (0, 0) for
 #   the `grade_kinds` reason -- flat panel chrome, static text, no canvas and
 #   no anti-aliased overlay.
-view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 706 706 672 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40)
-view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 34 34 32 76 76 350 420 76 940 940 940 370 370 370 76 76 540 540 540 930 235 176 76 76 950 370 200 565 76)
-view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1090 1124 1124 1204 1000 1000 1060 1220 2400 640 640 640 1340 1340 1340 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1340 630 620 1800)
-view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 800 800 1512 76 76 830 830 76 240 240 240 960 960 960 100 100 740 740 740 300 290 800 100 100 290 960 820 600 76)
-view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
+view_crop_x=(0 1916 920 0 0 0 900 1000 1830 1900 1900 40 480 40 480 480 390 390 40 40 40 0 0 0 1920 0 40 706 706 672 40 40 350 320 40 1916 1916 1916 340 340 340 0 0 440 440 440 0 1920 1920 0 0 1946 340 1200 1916 40 0)
+view_crop_y=(5 927 965 148 664 0 628 1000 158 166 1462 76 560 76 560 560 370 370 76 76 76 148 0 664 235 1370 76 34 34 32 76 76 350 420 76 940 940 940 370 370 370 76 76 540 540 540 930 235 176 76 76 950 370 200 565 76 230)
+view_crop_w=(1400 640 384 100 400 2560 700 900 100 660 660 1090 1100 1090 1100 1100 1110 1110 1400 1400 2240 100 900 400 600 90 1090 1124 1124 1204 1000 1000 1060 1220 2400 640 640 640 1340 1340 1340 1500 1500 1240 1240 1240 110 632 640 1500 1500 590 1340 630 620 1800 100)
+view_crop_h=(166 190 192 402 350 77 500 400 500 64 64 76 800 76 800 800 550 550 76 76 76 1240 77 350 280 120 76 800 800 1512 76 76 830 830 76 240 240 240 960 960 960 100 100 740 740 740 300 290 800 100 100 290 960 820 600 76 680)
+view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90)
 # `toolbar` is (48, 16) rather than exact, and the number is measured rather
 # than chosen. `run_golden.sh measure 8` on this view returns a BIMODAL
 # result -- either 0 px or exactly 4 px, at the same four pixels every time:
@@ -1376,7 +1400,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # the options band only, so it contains no canvas, no marching ants and no
 # rounded button geometry -- two combos, three sliders and a line of text, all
 # of which land on the same pixels every launch.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 48 0)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 48 0 0)
 # **Twenty-one views were re-blessed when the FLATS TOOLS palette gained its
 # nine Lucide icons, and none of it was a content change.** Adding glyphs to
 # the merge repacks the font atlas, which moves where each glyph's bitmap
@@ -1443,7 +1467,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
 # note in cmd_measure on what that mode is for. The five `crop_*` views are 0
 # here because their magnitude threshold is 0 too -- see the paragraph above
 # `view_threshold` for the measurement.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 160 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 160 0 0)
 
 # Captures view index $1 (into the app's full-window screenshot, then
 # cropped) to path $2, using scratch journal dir $3. Echoes nothing on

@@ -4,6 +4,7 @@
 #include "app/DocumentLifecycle.hpp"
 #include "app/MeasureLine.hpp"
 #include "app/ToolSwitch.hpp"
+#include "core/LayerOps.hpp"
 
 namespace np {
 
@@ -358,9 +359,9 @@ bool runToolSwitchTest() {
       }
     }
     check(independent,
-          "toolswitch: **picking a flatting tool never changes `brush.tool`** -- the two "
-          "palettes are independent, over every FlatsTool and from four different starting "
-          "tools, and the flats tool still ends up picked");
+          "toolswitch: **picking a flatting tool never overwrites `brush.tool`** -- the regular "
+          "tool is REMEMBERED (it stops being active, see the exclusivity block below, but it is "
+          "not destroyed), over every FlatsTool and from four different starting tools");
 
     // The other half of the same rule, and the reason the above is SAFE.
     // GROUP and SHAPE used to reach their gesture through `Tool::Lasso`:
@@ -378,6 +379,64 @@ bool runToolSwitchTest() {
     check(g.flatsTool == FlatsTool::Group && g.brush.tool == Tool::Brush,
           "toolswitch: GROUP is picked with the Brush still active -- its gesture no longer "
           "depends on the Lasso being installed behind the user's back");
+
+    // ---- the tool state is EXCLUSIVE ------------------------------------
+    //
+    // Two palettes each draw a selection, and the user's own words for the
+    // defect were "the tool state should be exclusive": activating a flats
+    // tool has to DEACTIVATE the regular one. `flatsToolIsActive()` is what
+    // both palettes read to decide who is lit, so it is asserted here rather
+    // than left to a screenshot -- nothing headless can see an ImGui cell,
+    // but the predicate the cell's `selected` is ANDed with is ordinary
+    // testable state.
+    //
+    // Note what is deliberately NOT asserted: that `brush.tool` was cleared.
+    // It is remembered on purpose, so leaving flatting mode gives back the
+    // tool the user had. "Exclusive" is about which one is ACTIVE, not about
+    // destroying the other.
+    {
+      AppState e;
+      OpenDocument od;
+      od.document = Document::createBlank(8, 8, WorkingSpace{});
+      addLayer(od.document, 1, makeFlatsLayer("Flats"));
+      od.activeLayer = 1;
+      e.documents.add(std::move(od));
+
+      setActiveTool(e, Tool::Brush);
+      check(!flatsToolIsActive(e),
+            "toolswitch: with no flatting tool picked the REGULAR tool is the active one, even "
+            "on a Flats layer");
+
+      setFlatsTool(e, FlatsTool::DeleteFill);
+      check(flatsToolIsActive(e) && e.brush.tool == Tool::Brush,
+            "toolswitch: **picking a flatting tool makes it the active tool and the regular "
+            "palette draws nothing selected** -- while `brush.tool` is still remembered, not "
+            "cleared, so leaving flatting mode gives it back");
+
+      // The other direction, which is what keeps "exactly one lit" true
+      // rather than producing a moment with neither: on a layer the flats
+      // tool cannot act on, the palette greys itself out and the regular
+      // tool really is the active one again.
+      e.documents.active()->activeLayer = 0;
+      check(!flatsToolIsActive(e) && e.flatsTool == FlatsTool::DeleteFill,
+            "toolswitch: with a non-Flats layer selected the regular tool is active again -- the "
+            "flats tool stays PICKED but stops counting, which is what the greyed palette "
+            "already shows");
+
+      e.documents.active()->activeLayer = 1;
+      e.documents.active()->document.layers[1].locked = true;
+      check(!flatsToolIsActive(e),
+            "toolswitch: ...and a LOCKED Flats layer is the same case -- the flats tool cannot "
+            "act, so it is not what a click means");
+      e.documents.active()->document.layers[1].locked = false;
+
+      // And a deliberate regular pick ends it outright, so the exclusivity
+      // cannot get stuck with both sides believing they are active.
+      setActiveTool(e, Tool::Lasso);
+      check(!flatsToolIsActive(e) && e.flatsTool == FlatsTool::None && e.brush.tool == Tool::Lasso,
+            "toolswitch: picking a regular tool clears the flats tool outright, so the two can "
+            "never both consider themselves active");
+    }
 
     // A half-finished two-click merge belongs to the gesture being abandoned.
     AppState m;

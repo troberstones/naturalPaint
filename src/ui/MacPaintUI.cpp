@@ -581,7 +581,13 @@ bool toolButton(AppState& st, Tool t, float cellSize) {
   const bool live = implemented && onSurface;
   const bool clickedRaw = ImGui::InvisibleButton("##tool", size);
   const bool clicked = clickedRaw && live;
-  const bool selected = implemented && st.brush.tool == t;
+  // **`!flatsToolIsActive()`: the tool state is exclusive.** While a flatting
+  // tool is active this palette draws NOTHING selected, because the flats
+  // palette is drawing the selection instead and two lit cells leave a user
+  // unable to say what a click will do. `st.brush.tool` is deliberately still
+  // whatever they had -- it is remembered, not cleared, so leaving flatting
+  // mode gives it back (app/ToolSwitch.hpp carries the argument).
+  const bool selected = implemented && st.brush.tool == t && !flatsToolIsActive(st);
   const bool hovered = ImGui::IsItemHovered();
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -806,7 +812,11 @@ void toolGroupButton(AppState& st, int groupIndex, float cellSize, bool forceOpe
     // idle/hovered background and the dark on-accent ink against the
     // selected one both hold real contrast in both states.
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const bool selected = toolImplemented(current) && st.brush.tool == current;
+    // The same exclusivity as the cell it is drawn on: the badge picks its
+    // colour from selected/not, so leaving this one alone would ink a
+    // triangle for the accent fill that is no longer there.
+    const bool selected =
+        toolImplemented(current) && st.brush.tool == current && !flatsToolIsActive(st);
     const ImU32 triColor = selected ? IM_COL32(20, 22, 24, 255) : atelierToken(kTextPrimary);
     const float s = std::max(5.0f, cellSize * 0.28f);
     const ImVec2 corner(p.x + cellSize, p.y + cellSize);
@@ -18420,9 +18430,22 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // `Refuse` is the "this gesture will not land" case, and it has to
         // reach the user as the slashed circle rather than as a perfectly
         // ordinary brush icon over a locked layer.
-        const ToolCursor cursor = toolCursorOnTarget(st.brush.tool, strokeTarget);
-        g_canvasCursor = sdlCursorFor(cursor);
-        if (cursor != ToolCursor::Refuse) g_canvasBitmapTool = st.brush.tool;
+        //
+        // **A flatting tool takes the cursor too**, for the same reason it
+        // takes the palette highlight: the cursor is the other place a user
+        // reads which tool they are holding, and a Brush tip over a gesture
+        // that deposits nothing is the same lie the second lit cell was.
+        // `Select` rather than `Paint` because every one of these nine
+        // defines geometry -- a mark, a pair of points, a path -- and none of
+        // them puts down a texel. The bitmap tool is withheld as it is on a
+        // refusal, so no brush-shaped bitmap wins over it.
+        if (flatsToolIsActive(st)) {
+          g_canvasCursor = sdlCursorFor(ToolCursor::Select);
+        } else {
+          const ToolCursor cursor = toolCursorOnTarget(st.brush.tool, strokeTarget);
+          g_canvasCursor = sdlCursorFor(cursor);
+          if (cursor != ToolCursor::Refuse) g_canvasBitmapTool = st.brush.tool;
+        }
       }
     }
   }
