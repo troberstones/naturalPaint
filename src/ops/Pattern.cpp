@@ -109,7 +109,13 @@ Pattern patternFromPsPattern(const PsPattern& source) {
     // plain scale and NOT a transfer function -- `.abr` paper is a height
     // field, not an sRGB-encoded picture, so decoding it as one would darken
     // every texture in the library by the gamma the file never applied.
-    const float v = static_cast<float>(source.height8[i]) * (1.0f / 255.0f);
+    // Divided, not multiplied by a reciprocal. `x * (1.0f/255.0f)` and
+    // `x / 255.0f` disagree in the last bit for most of the 256 inputs, and
+    // --selftest compares this against the obvious form -- so the obvious form
+    // is the one that ships, rather than the suite being loosened to a
+    // tolerance around a micro-optimisation nobody measured. A pattern is at
+    // most 4096^2 and is converted once, on import.
+    const float v = static_cast<float>(source.height8[i]) / 255.0f;
     float* d = out.px.data() + i * 4u;
     d[0] = v;
     d[1] = v;
