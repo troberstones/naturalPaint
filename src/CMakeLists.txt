@@ -158,6 +158,7 @@ add_executable(naturalPaint
   app/selftest/ImageIO.cpp
   app/selftest/IncrementalComposite.cpp
   app/selftest/Command.cpp
+  app/selftest/CommandsOpStack.cpp
   app/selftest/Json.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp

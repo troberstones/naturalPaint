@@ -3573,6 +3573,45 @@ bool runLayerGroupPanelTest();
 // through applyCommand(). Headless, GPU-free, filesystem-free.
 bool runCommandTest();
 
+// app/CommandsOpStack -- the command rows that carry an *op* as a parameter,
+// and the selection rows that make every destructive step around them mean
+// what it meant when it was recorded (docs/automation-plan.md step 1).
+//
+// **What it proves:**
+//  - **All nine `PointOpKind`s survive command -> JSON text -> command ->
+//    applied, bit for bit.** Every float is compared with `memcmp`, never with
+//    `==`, and several of the fixture's fields are adjacent floats one ULP
+//    apart -- a writer that printed six significant digits, or a reader that
+//    went through a `float` where a `double` was needed, fails here and passes
+//    any friendlier comparison. The sweep is driven off `PointOpKind`'s own
+//    count, so a tenth kind is asserted the day it is added.
+//  - **The fixture is hostile on purpose**: no field left at its default (a
+//    reader that drops a field would round-trip a default-built fixture
+//    perfectly) and no two fields of one op sharing a value (a reader that
+//    transposes two fields is invisible when both hold the same number).
+//  - **A hand-typed op**, written at a keyboard rather than produced by the
+//    encoder, decodes field for field -- io/OpSerial's own fixture discipline,
+//    and the only thing separating "the reader agrees with the writer" from
+//    "the reader is right".
+//  - **An op kind nothing knows refuses, naming it; a non-PointA op refuses
+//    rather than being stored inert**, in both directions. This is the one
+//    place the document rule and the action rule are deliberately opposite:
+//    `OpClass::Unknown` exists so a document from a newer build round-trips
+//    (PRD I10), while an action is *executed*, and a stack replayed with one
+//    step missing composites happily and writes files that look correct.
+//  - **The session/document line**: `load_channel_as_selection` refuses a
+//    channel the document lacks, by name, changing nothing; save-then-load
+//    round-trips a selection texel for texel; and a second save under a taken
+//    name warns, because `saveSelectionAsChannel()` uniquifies rather than
+//    replacing and a later load of the requested name would silently bound
+//    every following step to the OLDER channel.
+//  - `invert_selection` with nothing selected is a **named refusal** where the
+//    UI is a deliberate silent no-op -- docs/automation-plan.md §7's reason: in
+//    a batch that silence is thirty files reported as successes.
+//
+// Headless, GPU-free, filesystem-free.
+bool runCommandsOpStackTest();
+
 bool runJsonTest();
 
 bool runExportStatesTest();
