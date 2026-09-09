@@ -329,15 +329,20 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 
 ### Step 0 — `io/Json` (the third-consumer extraction)
 
-- [ ] `src/io/Json.hpp` / `Json.cpp`, added to `src/CMakeLists.txt`
-- [ ] the pull reader moved **verbatim** from `io/ExportAs.cpp` (same errors, same labels)
-- [ ] `escapeJson()` moved with it
-- [ ] a small `JsonValue` DOM on top — null / bool / number / string / array / object
-- [ ] `io/ExportAs.cpp` uses it; its private copy deleted
-- [ ] `app/Keymap.cpp` uses it; its private copy deleted
-- [ ] the "deliberately a second copy" comments at both sites replaced by the real reason
-- [ ] `app/selftest/Json.cpp`: numbers, escapes, nesting, depth limit, error labels, DOM round trip
-- [ ] **gate:** `export-presets.json` and `keymaps/default.json` still load; `--selftest` additions-only, 0 FAIL
+- [x] `src/io/Json.hpp` / `Json.cpp`, added to `src/CMakeLists.txt`
+- [x] the pull reader moved from `io/ExportAs.cpp` — **merged**, not verbatim: it gained
+      `parseStringArray()` from `app/Keymap.cpp`, `\b`/`\f`/`\r`/`\uXXXX` decoding, and it
+      stores its error instead of printing (the keymap's stderr line moved to its caller)
+- [x] `escapeJson()` moved with it, **widened** to escape control characters — the old
+      copy wrote them raw and produced a file that would not read back
+- [x] a small `JsonValue` DOM on top — null / bool / number / string / array / object
+- [x] `io/ExportAs.cpp` uses it; its private copy deleted
+- [x] `app/Keymap.cpp` uses it; its private copy deleted
+- [x] the "deliberately a second copy" comments at both sites replaced by the real reason
+- [x] `app/selftest/Json.cpp`: numbers, escapes, nesting, depth limit, error labels, DOM round trip
+- [x] **gate:** `export-presets.json` and `keymaps/default.json` still load; `--selftest`
+      additions-only, **8650 pass / 0 FAIL** (was 8619; +31)
+- [x] sabotage: narrowing `escapeJson` and dropping the 17-digit fallback each go red
 
 ### Step 1 — `app/Command` and the registry
 
