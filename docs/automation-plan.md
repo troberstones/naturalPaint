@@ -471,9 +471,17 @@ chain and are not scattered — each needs the one before it.
       converted action is refused at load — and flipped, the moment that row merged in, to
       demanding the converter carry every parameter the row advertises. It went red on the
       merge and stayed red until `actionFromLayerOps()` was finished against the real codec
-- [ ] re-run each track's own sabotages against the **merged** production line
+- [x] re-run the load-bearing sabotages against the **merged** production line
+- [x] **a stale object nearly cost a false regression.** Merging `main` (one commit, a
+      CoreText font change) turned five menu-model assertions red, including a `constexpr`
+      count that cannot depend on a font. The cause was a *failed* sabotage build leaving
+      an object compiled against a header state that no longer existed, which the next
+      successful incremental build did not refresh. **After any build that fails, touch the
+      reverted file before believing the next result** — otherwise the blame lands on
+      whatever was merged next
 
-**Merged result: 8971 pass / 0 FAIL before the gather work, 8976 after.** The wave added
+**Merged result: 8971 pass / 0 FAIL after the six merges, 8976 with the gather work and
+`main` folded in.** The wave added
 287 assertions to a 8684 baseline.
 
 ### Sabotage, at gather
