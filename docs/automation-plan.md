@@ -122,7 +122,7 @@ the recorder's tap. The undo stack tells you *that* something happened, never *w
 | **No single "apply a command to a document" function.** The vocabulary exists; the appliers exist; nothing joins a stable command id to a params bag to an applier | `app/Command`: a `Command{id, params}`, a registry, `applyCommand(OpenDocument&, const Command&)` | 2 d |
 | **49 UI call sites call appliers directly** — 29 across the 28 public `FilterOps`/`AdjustmentOps` appliers, 4 layer-command sites and 16 layer-setter sites — so a recorder tapping anything below them sees pixels, not intent | migrate each to `applyCommand()`. One-line changes, no new behaviour; the appliers keep their signatures and their tests | 2 d |
 | **No recorder** | `app/Recorder`: armed / recording / stopped, appending to a `std::vector<Command>` from inside `applyCommand()` | 0.5 d |
-| **No action model or file** | `ops/Action` (model) + `io/ActionFile` (text form), split the way `core/OpStack` + `io/OpSerial` already are | 1.5 d |
+| **No action model or file** | `app/Action` (model) + `io/ActionFile` (text form), split the way `core/OpStack` + `io/OpSerial` already are | 1.5 d |
 | **`npops1:` is hex — it fails P5 outright** ("human-readable, and diffable") | the action file gets a **text** encoding; `np:ops` keeps hex, because an EXR header attribute must. One op list, two encodings — see the drift trap | folded above |
 | **A JSON reader would be the third copy.** `io/ExportAs.cpp:55` says it in as many words: "a *third* consumer is when this becomes a shared header rather than a judgement call". The other two are there and at `app/Keymap.cpp:27` | extract one `io/Json`; port both existing callers in the same change | 0.5 d |
 | **Nothing resolves a step against a *different* document** | resolve layers by **name and kind**, never by index; refuse, by name, what cannot be resolved | 1 d |
@@ -147,12 +147,26 @@ P5 asks only for readable and diffable.
   "steps": [
     { "cmd": "select_layer",   "layer": "Base" },
     { "cmd": "flatten_image" },
+    { "cmd": "select_layer",   "layer": "Flattened" },
     { "cmd": "filter_gaussian_blur",  "sigma": 4.0 },
-    { "cmd": "set_layer_blend",       "layer": "Background", "mode": "subtract" },
+    { "cmd": "set_layer_blend",       "mode": "subtract" },
     { "cmd": "adjust_threshold",      "threshold": 0.5, "amount": 1.0 },
-    { "cmd": "image_size", "width": 512, "height": 512, "kernel": "catmull_rom" }
+    { "cmd": "image_size", "width": 512, "height": 512, "kernel": "Catmull-Rom" }
   ] }
 ```
+
+> **Three things in this example were wrong when it was written, and each was
+> caught by a track building against it rather than by re-reading it.**
+> There was no `select_layer` after the `flatten_image`, which contradicts this
+> section's own next rule — the flatten moves the active layer, so the pin is
+> exactly what the rule demands. The survivor is named `"Flattened"`
+> (`core/Merge.cpp`'s `flattenDocument()`), not `"Background"`; PRD C16 removed
+> the privileged Background layer entirely. And `"catmull_rom"` is not a kernel
+> name any build accepts — `resampleKernelName()` produces `"Catmull-Rom"` and
+> `resampleKernelFromName()` folds case but not punctuation, so that exact line
+> would have been refused. An example nobody executes is documentation of what
+> someone believed, which is why the fix is recorded rather than quietly
+> applied.
 
 Four rules, each of which is a silent wrong answer if left implicit:
 
@@ -210,7 +224,7 @@ views unchanged.
 *Gate:* recording *"flatten, blur, set blend, threshold"* by driving `applyCommand()`
 directly produces exactly five steps, `select_layer` included, in order.
 
-**4 — `ops/Action` + `io/ActionFile` (1.5 d).** Model, text form, round trip. Follow
+**4 — `app/Action` + `io/ActionFile` (1.5 d).** Model, text form, round trip. Follow
 `io/OpSerial`'s two rules exactly: a version in the prefix so a reader decides before it
 decodes, and stable names so appending to an enum cannot move the format under an
 existing file.
@@ -293,8 +307,10 @@ with no batch at all, and are worth shipping alone.
   streams before believing a pass count moved.
 - **Doc rot, found in passing:** `io/OpSerial.hpp:113` says a record is malformed if "the
   class code is 0 and the kind code is not 0..5". The implementation handles 0..8
-  (`io/OpSerial.cpp:32`–`33`). The code is right, the comment is stale; fix it in step 4
-  rather than trusting it.
+  (`io/OpSerial.cpp:32`–`33`). The code is right, the comment is stale. **Worse than
+  recorded here:** the params table in that same header also stops at `ChannelMixer` and
+  never lists Invert, Posterize or Threshold, though the implementation handles all three.
+  Fix both rather than trusting either.
 
 ---
 
@@ -354,17 +370,22 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 - [x] `select_layer`, `new_rgb_layer`, `image_size` (6 of ~50 rows registered)
 - [x] sabotage: skipping an unknown id, blanking the precondition hook, and dropping the
       `LayerEditResult::selected` adoption each go red — **two of these did not, at first**
-- [ ] registrations — filters (7): blur, sharpen, unsharp, noise, emboss, median, motion blur
-- [ ] registrations — adjustments (19) and the four auto solvers
-- [ ] registrations — document: `canvas_size`, `crop_to_selection`, `trim_to_content`
-- [ ] registrations — `LayerCommand` (all of `allLayerCommands()`), incl. `flatten_image`
-- [ ] registrations — `LayerSetCommand` (all of `allLayerSetCommands()`)
-- [ ] registrations — `core/LayerOps` setters, incl. `set_layer_blend`
-- [ ] registrations — op-stack edits, carrying an op in `io/OpSerial`'s text encoding
-- [ ] registrations — selection: select all, deselect, invert, load channel as selection
-- [ ] **the exhaustiveness test** + an exception table that starts empty but for the
-      `AppState`-only actions of §1, each with a stated reason
-- [ ] **gate:** every id round-trips through `JsonValue` and back; unknown id refuses by name
+- [x] registrations — filters (7): blur, sharpen, unsharp, noise, emboss, median, motion blur
+- [x] registrations — adjustments (15) and the four auto solvers, which is 19 in total,
+      not 19 plus 4 — the plan double-counted them
+- [x] registrations — document: `canvas_size`, `crop_to_selection`, `trim_to_content`
+- [x] registrations — `LayerCommand` (all 23, walked from `allLayerCommands()`)
+- [x] registrations — `LayerSetCommand` (all 36, walked from `allLayerSetCommands()`)
+- [x] registrations — `core/LayerOps` setters (10)
+- [x] registrations — op-stack edits, carrying an op keyed by kind name
+- [x] registrations — selection: select all, deselect, invert, save/load channel
+- [x] **the exhaustiveness test** — `app/CommandCoverage`, an exhaustive `switch` so a new
+      `MenuAction` fails the BUILD, with three answers rather than two: 35 registered,
+      51 not recordable (each with its reason), 8 known gaps (count asserted so the list
+      can shrink but not grow silently)
+- [x] **gate:** every id round-trips; unknown id refuses by name
+- [x] sabotage: a claimed-but-unregistered id goes red, and adding a `MenuAction`
+      enumerator fails the build by name in `CommandCoverage.cpp`
 
 ### Step 2 — migrate the call sites (49)
 
@@ -375,18 +396,18 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 
 ### Step 3 — `app/Recorder`
 
-- [ ] arm / record / stop, appending from inside `applyCommand()`
-- [ ] emits `select_layer` whenever the active layer changes
-- [ ] refuses to record a selection-bounded step taken under an unnamed marquee (§7)
-- [ ] **gate:** the user's own case records as exactly five steps, in order
+- [x] arm / record / stop, appending from inside `applyCommand()`
+- [x] emits `select_layer` whenever the active layer changes
+- [x] refuses to record a selection-bounded step taken under an unnamed marquee (§7)
+- [x] **gate:** the user's own case records as exactly five steps, in order
 
-### Step 4 — `ops/Action` + `io/ActionFile`
+### Step 4 — `app/Action` + `io/ActionFile`
 
-- [ ] `Action{name, steps}`; `.npaction` JSON with an `"npaction": 1` version
-- [ ] writer, reader, and the library directory under Application Support
-- [ ] `actionFromLayerOps()` — PRD P6's converter, an op stack to steps
-- [ ] **gate:** a **hand-typed** fixture decodes correctly; round trip exact incl. float bits
-- [ ] **gate:** `stack → hex → stack → text → stack` agrees (the two-encoder drift guard)
+- [x] `Action{name, steps}`; `.npaction` JSON with an `"npaction": 1` version
+- [x] writer, reader, and the library directory under Application Support
+- [x] `actionFromLayerOps()` — PRD P6's converter, an op stack to steps
+- [x] **gate:** a **hand-typed** fixture decodes correctly; round trip exact incl. float bits
+- [x] **gate:** `stack → hex → stack → text → stack` agrees (the two-encoder drift guard)
 
 ### Step 5 — `replayAction()`
 
@@ -430,7 +451,7 @@ appending to one `std::vector<CommandSpec>` literal is one shared conflict, and
 | `scatter/layers` | `np-layers` | `app/CommandsLayers.cpp` — `LayerCommand`, `LayerSetCommand`, the value setters | 1 |
 | `scatter/opstack` | `np-opstack` | `app/CommandsOpStack.cpp` — op-stack rows and the selection rows | 1 |
 | `scatter/recorder` | `np-recorder` | `app/Recorder` | 3 |
-| `scatter/actionfile` | `np-actionfile` | `ops/Action`, `io/ActionFile` | 4 |
+| `scatter/actionfile` | `np-actionfile` | `app/Action`, `io/ActionFile` | 4 |
 | `scatter/patterns` | `np-patterns` | lens correction, pattern define/fill | 8 |
 
 Steps 2 (migrate the 49 call sites), 5 (replay), 6 (batch) and 7 (UI) are the sequential
@@ -438,12 +459,22 @@ chain and are not scattered — each needs the one before it.
 
 **Gather-time checks, none of which a track can do for itself:**
 
-- [ ] every declared `run*Test()` is called **and** its term is in the aggregation — the
-      parallel-array trap, six branches appending to one boolean expression
-- [ ] `grep -rn SABOTAGE-TEMP src/` is empty (plain `SABOTAGE` is not a usable marker:
+- [x] every declared `run*Test()` is called **and** its term is in the aggregation — the
+      parallel-array trap. Six branches appended to one boolean expression and git
+      auto-merged one of those edits **without a conflict**; the check confirmed the term
+      survived, which is the case that would otherwise have gone unnoticed
+- [x] `grep -rn SABOTAGE-TEMP src/` is empty (plain `SABOTAGE` is not a usable marker:
       several permanent "SABOTAGE PROOF" sections already contain it)
-- [ ] the exhaustiveness test itself, written here, over all four vocabularies at once
+- [x] the exhaustiveness test itself, over every vocabulary at once — `app/CommandCoverage`
+- [x] **a cross-track tripwire fired on merge, exactly as its author designed.**
+      `app/selftest/ActionFile.cpp` asserted, while `add_layer_op` was unregistered, that a
+      converted action is refused at load — and flipped, the moment that row merged in, to
+      demanding the converter carry every parameter the row advertises. It went red on the
+      merge and stayed red until `actionFromLayerOps()` was finished against the real codec
 - [ ] re-run each track's own sabotages against the **merged** production line
+
+**Merged result: 8971 pass / 0 FAIL before the gather work, 8976 after.** The wave added
+287 assertions to a 8684 baseline.
 
 ### Sabotage, at gather
 
