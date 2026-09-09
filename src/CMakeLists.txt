@@ -372,7 +372,9 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/Lens.cpp
   ops/MonoOps.cpp
+  ops/Pattern.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
   ops/Resample.cpp
