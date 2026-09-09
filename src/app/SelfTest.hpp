@@ -3573,6 +3573,49 @@ bool runLayerGroupPanelTest();
 // through applyCommand(). Headless, GPU-free, filesystem-free.
 bool runCommandTest();
 
+// app/CommandsImage -- the command rows for everything that changes pixels or
+// the document's own geometry (docs/automation-plan.md step 1): the Filter
+// menu's seven, Image > Adjustments' nineteen including its four auto solvers,
+// and the four document-geometry commands.
+//
+// **What this PROVES, and what it deliberately does not.** Every applier these
+// rows dispatch to is already asserted by its own section (FilterMenu.cpp,
+// AdjustmentMenu.cpp, FiltersExt.cpp, CropTool.cpp); nothing here re-tests a
+// blur, a curve or a crop. What is new is the ADAPTER between a JSON object
+// and those appliers, and the four ways one can be wrong while looking right:
+//
+//  - **A parameter of the wrong type reads as its default.**
+//    `JsonValue::numberOr()` answers its fallback for `"sigma": "four"`, so a
+//    filter runs at a default parameter and reports success. Asserted per JSON
+//    type, including the one value JSON cannot carry losslessly at all: a
+//    uint64 noise seed past 2^53, which would round into a different grain
+//    than the one the file names.
+//  - **An enum-valued parameter can be parsed and then dropped.** A row that
+//    reads `"anchor"` into a local and passes `CanvasAnchor::Center` anyway
+//    round-trips every name perfectly. So each of the four enum parameters is
+//    driven twice with two different names and the two resulting PICTURES must
+//    differ -- for the noise distribution, at the identical seed, so the
+//    distribution is the only thing that could have changed.
+//  - **A no-op reported as a success is this feature's designed failure mode**
+//    (docs/automation-plan.md §7 -- in a batch it is thirty files written
+//    unmodified). A `trim_to_content` with nothing to trim must succeed and
+//    report ZERO texels changed, which only `fromDocumentTransform()` can see;
+//    and a step naming none of an adjustment's controls must refuse rather
+//    than run an identity.
+//  - **A row wired to the wrong precondition.** Every image row is driven at a
+//    document with no layers and at a Pigment layer: the pixel ops must refuse
+//    the latter (a Pigment layer holds Latents, app/FilterOps.hpp's stated
+//    structural limit) while the four document-geometry rows must still run,
+//    because ops/DocumentTransform §5 says a document-level op moves every
+//    layer including ones with no RGB store.
+//
+// Sections A-C are LOOPS over `allCommands()` and over one fixture per row,
+// and each row's fixture must set exactly the keys its `paramNames` advertises
+// -- in both directions -- so a row added later without a test fails section A
+// before it can silently pass anything else. Headless, GPU-free,
+// filesystem-free.
+bool runCommandsImageTest();
+
 bool runJsonTest();
 
 bool runExportStatesTest();
