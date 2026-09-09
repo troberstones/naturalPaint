@@ -345,35 +345,52 @@ bool runPenDrawTest() {
     }
     shapes[0].path.subpaths.push_back(sub);
 
-    // Select every anchor, so tangent handles are hit-testable too (they are
-    // drawn, and tested, only for SELECTED anchors -- docs/vector-editing.md
-    // section 3).
     uint64_t nextId = 50;
-    PathEditState st;
-    st.selection.mode = PathSelectMode::Component;
-    for (uint32_t i = 0; i < 3; ++i)
-      st.selection.components.push_back(ComponentRef{7, 0, i, AnchorPart::Point});
 
+    // **The selection is seeded PER CASE, and starting empty is the point.**
+    // A fixture that pre-selects every anchor cannot see the segment case
+    // fail: `pathEditBegin()`'s segment arm selects every anchor of the
+    // shape, which against an already-full selection is a no-op. Sabotage
+    // proved it -- restoring the forwarding left the segment case green
+    // through two rounds of strengthening, because right and wrong produced
+    // the same selection. Only the tangent case seeds anything, and only what
+    // that hit REQUIRES (a handle is hit-testable solely for an anchor
+    // already selected, docs/vector-editing.md section 3).
     struct Case {
       PathPoint at;
+      bool seedSelection;
       const char* what;
     };
     const Case kCases[] = {
-        {{100, 0}, "an anchor"},
-        {{110, 0}, "a tangent handle"},
-        {{50, 0}, "a path segment"},
+        {{100, 0}, false, "an anchor"},
+        {{110, 0}, true, "a tangent handle"},
+        {{50, 0}, false, "a path segment"},
     };
     for (const Case& c : kCases) {
       std::vector<VectorShape> copy = shapes;
-      PathEditState ps = st;
+      PathEditState ps;
+      ps.selection.mode = PathSelectMode::Component;
+      if (c.seedSelection)
+        for (uint32_t i = 0; i < 3; ++i)
+          ps.selection.components.push_back(ComponentRef{7, 0, i, AnchorPart::Point});
       const uint64_t before = vectorContentHash(copy);
+      const size_t compsBefore = ps.selection.components.size();
+      const size_t shapesBefore = ps.selection.shapes.size();
       const PenPressResult r =
           pathEditBeginPen(&ps, &copy, &nextId, c.at, 6.0f, 1, false);
+      // **The SELECTION is part of inertness, not merely the drag and the
+      // geometry.** A press on a segment forwarded to `pathEditBegin()`
+      // selects the shape's anchors, starts no drag and edits nothing -- so a
+      // test watching only those three called it inert and a sabotage
+      // restoring the forwarding stayed green. The Pen does not select
+      // either.
       const bool inert = r == PenPressResult::Inert && ps.drag == PathDragKind::None &&
-                         vectorContentHash(copy) == before;
+                         vectorContentHash(copy) == before &&
+                         ps.selection.components.size() == compsBefore &&
+                         ps.selection.shapes.size() == shapesBefore;
       std::string label = "the Pen is INERT on ";
       label += c.what;
-      label += " -- no drag, no geometry change (PathSelect's gesture, not the Pen's)";
+      label += " -- no drag, no geometry change, no SELECTION change";
       check(inert, label.c_str());
     }
   }
