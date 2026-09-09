@@ -3232,6 +3232,11 @@ int main(int argc, char** argv) {
     // by-name set resolution that refuses rather than narrowing, and the
     // lock's two directions. See app/SelfTest.hpp.
     const bool commandsLayersOk = np::runCommandsLayersTest();
+    // app/Recorder: what `applyCommand()` writes down while a recording is
+    // armed, and the two things it refuses to be quietly wrong about -- a
+    // moved active layer, and a live marquee no channel names. See
+    // app/SelfTest.hpp.
+    const bool recorderOk = np::runRecorderTest();
     const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
@@ -3578,6 +3583,7 @@ int main(int argc, char** argv) {
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
                     commandsLayersOk &&
+                    recorderOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&

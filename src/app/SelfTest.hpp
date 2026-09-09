@@ -3600,6 +3600,40 @@ bool runCommandTest();
 //
 // Headless, GPU-free, filesystem-free.
 bool runCommandsLayersTest();
+// app/Recorder -- the session sink `applyCommand()` appends to while armed
+// (docs/automation-plan.md step 3). Headless, GPU-free, filesystem-free.
+//
+// **What it proves**, and every item is a way a recording can be wrong while
+// looking right:
+//
+//  * the plan's own case -- flatten, blur, set blend, threshold, driven
+//    through `applyCommand()` alone -- records as exactly five steps in
+//    order, the extra one being the `select_layer` the flatten made
+//    necessary, with its layer named and every parameter intact;
+//  * a REFUSED command records nothing, asserted for both refusal routes (an
+//    unknown id, and a precondition that says no) -- replaying a refusal
+//    either repeats the noise or, on a document where the precondition
+//    happens to hold, does something the user never did;
+//  * a create emits a `select_layer` for the NEW layer before the next step
+//    that depends on it, which is the case a "did the user click a layer
+//    row?" recorder would miss entirely, since `fromLayerEdit()` moves the
+//    selection with nobody clicking anything;
+//  * back-to-back steps on one layer emit ONE pin, not one each, and a
+//    `select_layer` the user issued is not immediately followed by the
+//    recorder's own duplicate of it;
+//  * a selection-bounded step taken under an unnamed marquee is REFUSED by
+//    name, with the fix in the sentence, and the same step under a marquee a
+//    saved alpha channel matches exactly is recorded with a warning -- the
+//    difference being that a channel is document data and a marquee is not
+//    (docs/automation-plan.md §7);
+//  * `channelMatchingSelection()` itself: it matches the channel a selection
+//    was saved as, refuses a channel of equal area but a different shape, and
+//    does not match an empty selection to everything;
+//  * and arm / stop / re-arm, including that a stopped recorder appends
+//    nothing and that re-arming discards the previous recording.
+//
+// See app/selftest/Recorder.cpp.
+bool runRecorderTest();
 
 bool runJsonTest();
 
