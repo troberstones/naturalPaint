@@ -8,6 +8,7 @@ add_executable(naturalPaint
   app/CloseDecision.cpp
   app/Action.cpp
   app/Command.cpp
+  app/CommandCoverage.cpp
   app/CommandsImage.cpp
   app/CommandsLayers.cpp
   app/CommandsOpStack.cpp

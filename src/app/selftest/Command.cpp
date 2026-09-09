@@ -1,6 +1,7 @@
 #include "app/selftest/Support.hpp"
 
 #include "app/Command.hpp"
+#include "app/CommandCoverage.hpp"
 #include "app/LayerEditor.hpp"
 #include "core/LayerOps.hpp"
 #include "ops/Transform.hpp"
@@ -288,6 +289,62 @@ bool runCommandTest() {
     }
     check(kernelsRoundTrip && resampleKernelFromName("catmull-rom") == ResampleKernel::CatmullRom,
           "params: every resample kernel name round-trips, case-insensitively");
+  }
+
+  std::printf("  -- G. exhaustiveness, across every vocabulary at once --\n");
+  {
+    // **The gate no single track could write.** Six branches filled this table
+    // in parallel and each could see only its own family; this is the one
+    // assertion that looks at all of them together, and at what is NOT in any
+    // of them. app/CommandCoverage.hpp argues why the classification is an
+    // exhaustive `switch` (so a new menu action fails the BUILD, not merely a
+    // test) and why it has three answers rather than a tidy two.
+    size_t registered = 0, notRecordable = 0, notYet = 0;
+    bool everyIdResolves = true;
+    bool everyExclusionGivesAReason = true;
+    std::vector<std::string> gaps;
+
+    for (int i = 0; i <= static_cast<int>(MenuAction::Count); ++i) {
+      const auto action = static_cast<MenuAction>(i);
+      const CommandCoverage c = coverageFor(action);
+      switch (c.kind) {
+        case CommandCoverageKind::Registered:
+          ++registered;
+          // A null id is one of the two family actions, whose rows are walked
+          // exhaustively by app/selftest/CommandsLayers.cpp instead.
+          if (c.commandId != nullptr && findCommand(c.commandId) == nullptr) {
+            everyIdResolves = false;
+            std::printf("      unregistered id claimed by coverage: %s\n", c.commandId);
+          }
+          break;
+        case CommandCoverageKind::NotRecordable:
+          ++notRecordable;
+          if (c.reason == nullptr || c.reason[0] == '\0') everyExclusionGivesAReason = false;
+          break;
+        case CommandCoverageKind::NotYetRegistered:
+          ++notYet;
+          if (c.reason == nullptr || c.reason[0] == '\0') everyExclusionGivesAReason = false;
+          gaps.push_back(std::to_string(i));
+          break;
+      }
+    }
+
+    check(everyIdResolves,
+          "coverage: every id the classification claims is registered really is");
+    check(everyExclusionGivesAReason,
+          "coverage: every action left out of the table carries the reason it is out");
+    check(registered >= 33, "coverage: the registered set is the size the table says it is");
+
+    // **The number is the review.** This list may shrink freely; it cannot grow
+    // without someone editing the literal below, which is the only moment a new
+    // gap gets looked at by a human. Folding these into "not recordable" would
+    // have given each of them a fake justification and made the table look
+    // complete -- see app/CommandCoverage.hpp §2.
+    std::printf("      %zu document edits are classified as not-yet-registered\n", notYet);
+    check(notYet == 8,
+          "coverage: exactly the eight known gaps, and no new one has appeared");
+    check(notRecordable > registered,
+          "coverage: most menu actions are session state, which is the rule doing its job");
   }
 
   return ok;
