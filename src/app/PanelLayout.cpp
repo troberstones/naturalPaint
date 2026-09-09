@@ -34,10 +34,12 @@ constexpr KeyRow kKeyTable[] = {
     {ControlsSection::Layers, "layers"},
     {ControlsSection::History, "history"},
     {ControlsSection::Comps, "comps"},
+    {ControlsSection::FlatsSegmentation, "flats_segmentation"},
     {ControlsSection::Grade, "grade"},
     {ControlsSection::Histogram, "histogram"},
     {ControlsSection::BrushLibrary, "brush_library"},
     {ControlsSection::Brush, "brush"},
+    {ControlsSection::FlatsTools, "flats_tools"},
     {ControlsSection::Pigment, "pigment"},
     {ControlsSection::Medium, "medium"},
     {ControlsSection::BoardTilt, "board_tilt"},
@@ -85,6 +87,28 @@ PanelPlacement defaultPlacementFor(ControlsSection section) {
   switch (section) {
     case ControlsSection::Tools:   return PanelPlacement::Left;
     case ControlsSection::Options: return PanelPlacement::Top;
+    // **The third exception, and the first one that is not a former chrome
+    // band.** FLATS TOOLS is a `Tool`-role section, so the rule below would
+    // put it in the right dock -- where it would spend a 26 px grip, and a
+    // splitter, for the whole of every session that never touches a Flats
+    // layer. A palette scoped to one layer kind is idle almost always, and
+    // the right dock does not scroll: what it costs there is taken straight
+    // out of the LAYERS list, which is the one panel in that dock whose
+    // content is a list and which app/selftest/PanelLayout pins at three
+    // visible rows.
+    //
+    // So it starts on the flyout rail, where an idle panel costs one 34 px
+    // button. ui/MacPaintUI reveals it there the moment a Flats layer
+    // becomes active, and a user who would rather have it docked can dock
+    // it -- at which point it stays put and greys out instead, which is the
+    // behaviour that was asked for by name.
+    //
+    // Giving it a `View` or `Simulation` role would have reached the same
+    // placement through the rule below and needed no exception here. That
+    // would have been a lie: the role is also what orders the sections and
+    // what says whether a panel is about the tool, the document, the view or
+    // the simulation, and this one is unambiguously about the tool.
+    case ControlsSection::FlatsTools: return PanelPlacement::Flyout;
     // The panel this edits (`AppState::pigmentOverride`, app/AppState.hpp)
     // is off by default, and a panel for turning on an off-by-default
     // override is not worth a permanent flyout slot until the user asks for

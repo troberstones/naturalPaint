@@ -522,6 +522,39 @@ struct Layer {
   // docs/document-format.md and io/NpaintFile.cpp.
   bool alphaLocked = false;
 
+  // **Whether this layer is a flatting REFERENCE** (ADR-0009 follow-on).
+  //
+  // A Flats layer segments the line art beneath it. By default "beneath it"
+  // means the composite of every layer below, which is the right default and
+  // the wrong answer as soon as a document has colour roughs, notes or a
+  // second drawing under the inks: the flat then re-derives from all of it,
+  // and -- worse -- re-derives AGAIN every time any of it changes, because
+  // the evaluation cache is keyed on everything it read.
+  //
+  // Marking one or more layers as the reference says "this is the line art".
+  // The rule, which `flats/FlatsLayer`'s `flatsSourceLayers()` owns:
+  //
+  //   * no layer below the Flats layer is marked -> every layer below it, the
+  //     original behaviour, byte for byte;
+  //   * one or more ARE marked -> exactly those, in stack order.
+  //
+  // **A marked layer ABOVE the Flats layer does not count**, and that is not
+  // an oversight: a Flats layer flats what is under it, so a reference over
+  // its head is not a reference it could ever read. Such a layer is ignored
+  // and the default applies.
+  //
+  // **The flag is per-layer, so N references cost nothing to support.** One
+  // reference is the common case; comic line art split across inks, props and
+  // a gap-closing pass is not unusual. Because the flag lives on the layer
+  // rather than in a "which layer is the reference" field on the document,
+  // supporting several was never a decision to defer -- there is no picker to
+  // build and no migration if the answer changes.
+  //
+  // Persisted as `np:flatsRef`, `np:alphaLocked`'s own type and rule: an
+  // `int` 0/1 written only when true, so a document with no reference layer
+  // produces exactly the bytes it produced before this existed.
+  bool flatsReference = false;
+
   // **The `groupTag` of the group this layer belongs to** (PLAN.md Phase 5's
   // C7/C12 follow-on), or empty for a top-level layer.
   //

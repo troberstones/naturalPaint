@@ -777,13 +777,72 @@ bool runNpaintFormatTest() {
     for (const char* p : {kBare, kPath, kAgain}) std::remove(p);
   }
 
+  // --- Flats reference (`np:flatsRef`): the same two-part rule -----------
+  //
+  // The flag that says a Flats layer segments THIS layer and not the whole
+  // stack beneath it (`flats/FlatsLayer.hpp`). It follows `np:alphaLocked`'s
+  // rule exactly -- per layer, written only when true -- and it is asserted
+  // separately rather than assumed to inherit it, because a flag that failed
+  // to persist fails in the most misleading possible way: the document
+  // reopens looking correct and flatting the whole stack again, so it merely
+  // gets slow and slightly wrong, with nothing on screen to say what changed.
+  {
+    const char* kBare = "selftest_npaint_flatsref_bare.npaint";
+    const char* kPath = "selftest_npaint_flatsref.npaint";
+    const char* kAgain = "selftest_npaint_flatsref_again.npaint";
+    for (const char* p : {kBare, kPath, kAgain}) std::remove(p);
+
+    auto bytes = [](const char* path) -> std::vector<unsigned char> {
+      std::ifstream in(path, std::ios::binary);
+      std::vector<unsigned char> b((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+      static const std::string kNeedle = "capDate";
+      for (size_t i = 0; i + kNeedle.size() <= b.size(); ++i) {
+        if (std::memcmp(b.data() + i, kNeedle.data(), kNeedle.size()) != 0) continue;
+        for (size_t j = i; j < std::min(i + 47, b.size()); ++j) b[j] = 0;
+      }
+      return b;
+    };
+
+    Document doc = Document::createBlank(128, 128, WorkingSpace{});
+    addLayer(doc, 1, makeRgbLayer("Colour rough"));
+    addLayer(doc, 2, makeRgbLayer("Plain"));
+    writeStraight(doc, 0, 5, 5, 0.4f, 0.2f, 0.1f, 1.0f);
+    writeStraight(doc, 1, 6, 6, 0.1f, 0.5f, 0.9f, 0.6f);
+    writeStraight(doc, 2, 7, 7, 0.3f, 0.3f, 0.3f, 1.0f);
+
+    check(saveNpaint(doc, kBare).ok,
+          "np:flatsRef: a three-layer document with no flats reference saves");
+    doc.layers[0].flatsReference = true;
+    check(saveNpaint(doc, kPath).ok, "np:flatsRef: the same document with layer 0 marked saves");
+
+    const NpaintLoadResult back = loadNpaint(kPath);
+    check(back.ok && back.document.layers.size() == 3 && back.document.layers[0].flatsReference &&
+              !back.document.layers[1].flatsReference && !back.document.layers[2].flatsReference,
+          "np:flatsRef: round-trips PER LAYER -- true on layer 0 only, so this cannot pass on a "
+          "document-wide default");
+    check(bytes(kPath).size() > bytes(kBare).size(),
+          "np:flatsRef: the marked file really is BIGGER, so the byte-identity check below is not "
+          "passing because nothing was ever written");
+
+    doc.layers[0].flatsReference = false;
+    check(saveNpaint(doc, kAgain).ok && bytes(kAgain) == bytes(kBare) && !bytes(kBare).empty(),
+          "np:flatsRef: unmarking gives a file BYTE-IDENTICAL to one that never had the "
+          "attribute -- so every `.npaint` written before this flag existed still reads back "
+          "unchanged, and adding the flag cost those documents nothing");
+
+    for (const char* p : {kBare, kPath, kAgain}) std::remove(p);
+  }
+
   // Scratch files: every path this section touches, removed unconditionally,
   // whether or not the assertion that created it passed.
   for (const char* p : {"selftest_npaint_never.npaint", "selftest_npaint_gate.npaint",
                         "selftest_npaint_roundtrip.npaint", "selftest_npaint_carry.npaint",
                         "selftest_npaint_carry2.npaint", "selftest_npaint_as.exr",
                         "selftest_npaint_alphalock_bare.npaint", "selftest_npaint_alphalock.npaint",
-                        "selftest_npaint_alphalock_again.npaint"}) {
+                        "selftest_npaint_alphalock_again.npaint",
+                        "selftest_npaint_flatsref_bare.npaint", "selftest_npaint_flatsref.npaint",
+                        "selftest_npaint_flatsref_again.npaint"}) {
     std::remove(p);
   }
 

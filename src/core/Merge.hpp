@@ -471,6 +471,48 @@ LayerOpResult flattenDocument(Document& doc, std::vector<std::string>* warningsO
 // The rasterised layer replaces the adjustment layer at `index`, keeps its
 // name, and holds the composite of layers `[0 .. index]`. The layers below are
 // untouched.
+// ==========================================================================
+// Expand a Flats layer into real layers (PRD N9)
+// ==========================================================================
+//
+// "A Flats layer expands to real layers on demand: per colour, per fill, or
+// merged" -- plus per group, because a group is a thing the artist made on
+// purpose and is the unit a downstream compositor actually wants.
+//
+// The Flats layer is CONSUMED: it is replaced in the stack by what came out
+// of it. Leaving it behind was considered and rejected -- visible, it
+// composites the same picture twice; hidden, it is exactly the silently
+// accumulating state this codebase argues against everywhere else. Undo
+// takes the whole thing back in one step, which is the honest way to offer
+// a destructive expansion.
+enum class FlatsExpandMode {
+  PerFill,    // one layer per fill
+  PerColour,  // one layer per distinct colour
+  PerGroup,   // one layer per FlatGroup, plus one for everything ungrouped
+  Merged,     // one layer, the whole flat -- what `rasteriseLayer()` does
+};
+
+// The one list both menus walk. A mode added to the enum and forgotten here
+// would be a mode no menu offers, which is `allLayerCommands()`'s own rule.
+const std::vector<FlatsExpandMode>& allFlatsExpandModes();
+const char* flatsExpandModeLabel(FlatsExpandMode mode) noexcept;
+
+// The ceiling on how many layers one expansion may produce. A 2K plate
+// segments into hundreds of fills, and every expanded layer is copied into
+// every history entry from then on, so "per fill" on a real drawing is a
+// memory event rather than a UI inconvenience. Above this the operation
+// REFUSES and changes nothing, rather than succeeding into an unusable
+// stack -- `mergeLayerDown`'s rule about destructive operations that cannot
+// be sensibly recovered from.
+inline constexpr size_t kFlatsExpandMaxLayers = 64;
+
+// Expand the Flats layer at `index`. On success the layer is replaced by a
+// contiguous run of RGB layers with a Group layer directly above them (or,
+// for a single-bucket result, by that one RGB layer), and
+// `LayerOpResult::index` is the row the result occupies.
+LayerOpResult expandFlatsLayer(Document& doc, size_t index, FlatsExpandMode mode,
+                               std::vector<std::string>* warningsOut = nullptr);
+
 LayerOpResult rasteriseLayer(Document& doc, size_t index,
                              std::vector<std::string>* warningsOut = nullptr);
 

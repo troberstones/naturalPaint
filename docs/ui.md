@@ -297,7 +297,7 @@ palette rebuild to make room.
 
 The chrome had two welded control bands (the 52px tool palette on the left edge, the 46px
 options bar under the tab strip) and one scrolling right-hand column of thirteen
-`CollapsingHeader`s. All three are gone. What replaced them is **fifteen panels, each of
+`CollapsingHeader`s. All three are gone. What replaced them is **seventeen panels, each of
 which can be in any of four docks, on a flyout rail, or put away**, with the arrangement
 persisted across relaunches.
 
@@ -504,20 +504,64 @@ layer panel useless. See
 The Media sub-line is also where **wet state** lives — remaining working time while
 wet, and the refuse-to-wet warning PRD H5 requires be *visible*.
 
-> ⚠️ **Two things in this section have never been built, and the panel does not
-> pretend otherwise.** The Media sub-line carries no wet state and no drying
-> countdown, and a Flats row carries no fill count.
+> ⚠️ **Two things in this section are still not built, and the panel does not
+> pretend otherwise — but they are no longer the same kind of gap.**
 >
-> Neither is a presentation gap — the model cannot supply either number.
-> `core::Layer` has no medium name and no wet state; the wetness that exists is
+> The Media sub-line carries no wet state and no drying countdown, and that one
+> is not a presentation gap: the model cannot supply the number. `core::Layer`
+> has no medium name and no wet state; the wetness that exists is
 > `sim::PaintSim`'s single canvas-wide field with no layer awareness at all, and
-> nothing anywhere computes seconds-until-dry. `core/Merge.cpp` says the other
-> half outright: a Flats layer has no regions, so there is no fill list to count.
+> nothing anywhere computes seconds-until-dry.
 >
-> So a Media row reads `MEDIA · NORMAL · 100%` and a Flats row reads
+> **The Flats half of this callout has been overtaken and is corrected here.** It
+> used to say a Flats layer has no regions and so there is nothing to count. That
+> was true before the autoFlats port and is false now: `FlatEvaluation::fills`
+> exists, and the SEGMENTATION panel reads it live as
+> `153 FILLS · 12 COLOURS · 3 GROUPS`. What is still missing is only the
+> *presentation* on the layer row — `app/LayerPanel.cpp` returns no sub-line for
+> Flats — and a per-fill list. Both are now ordinary UI work rather than
+> something the model cannot answer, and the row cost is why it has not been
+> done casually: the count comes from an evaluation the panel must ask for, which
+> is cheap through `flatsPeekEvaluation()` and is not free through
+> `flatsEvaluateLayer()`.
+>
+> So a Media row reads `MEDIA · NORMAL · 100%` and a Flats row still reads
 > `FLATS · NORMAL · 100%`. Recorded here rather than quietly dropped, because
 > this file is the design's own statement of intent and a reader comparing it
 > against the running panel deserves to know which of the two is behind.
+
+#### 3.2a The flats reference layer, and the bucket's SOURCE
+
+Neither control was in the design, and both exist because the honest default was
+expensive. A Flats layer segments **the composite of every layer beneath it**, and the
+evaluation is cached on a signature of everything it read — so a colour rough or a note
+sitting under the inks is not merely flatted along with them, it *re-flats them* every
+time it is touched, and one evaluation of a 1024² plate is ~215 ms.
+
+**`Use as Flats Reference`** (`core/Layer.hpp`'s `flatsReference`, right-click a layer row
+or use the `Layer` menu) names the drawing instead. With nothing marked the old rule
+stands byte for byte; with any layer below the Flats layer marked, exactly those are read.
+Measured on that 1024² fixture: five dabs on an unmarked colour rough cost **228 ms** of
+re-segmentation, and the same five dabs with the line art marked cost **0 ms** — no
+evaluation at all. A mark *above* the Flats layer is ignored, because a Flats layer cannot
+be asked to read its own result. The flag is per-layer, so several references are allowed
+and cost nothing; the SEGMENTATION panel shows which rule is in force as
+`SOURCE  4 layers below` or `SOURCE  Line art (reference)`.
+
+**SOURCE**, in the Paint Bucket's options row when `FILL: Flats` is chosen, answers the
+same question for a *bake* onto an ordinary layer — where there is no Flats layer to be
+"beneath". Three values, defaulting to `Below fill`:
+
+| value | what it segments |
+|---|---|
+| `Below fill` | everything except the layer being filled — **the default, and a bug fix**: the bake used to include the target, so a second fill saw the first fill's own pixels as line art and found different regions |
+| `All layers` | the whole composite, Photoshop's "sample all layers" — right when the line art is *on* the layer being filled |
+| `Reference` | only the marked layers, falling back to `All layers` when nothing is marked |
+
+It is drawn disabled rather than hidden on a Flats layer: that layer resolves its own
+source, so the combo has nothing to say there, and a control that vanishes as the
+selection moves teaches nobody why and re-flows the band while a painter is aiming at the
+slider beside it.
 
 ### 3.3 The colour picker cannot express pigment
 

@@ -120,6 +120,19 @@ enum class ControlsSection {
   // rather than second because a comp is a saved state *of* the layer stack and
   // a history row is an edit *to* it, so LAYERS reads before either.
   Comps,
+  // ADR-0009 / PRD N1-N6: the segmentation parameters of the active Flats
+  // layer -- all thirteen of `flats/Model.hpp`'s `FlatParams`, of which only
+  // SHEET, GAP and DECLUTTER were reachable before this section, and only
+  // then while the Paint Bucket happened to be the active tool.
+  //
+  // `Document` role, and the role is not a formality: what this panel edits
+  // is `Layer::flats.params`, which the document stores and the file format
+  // writes as `np:flats`. It sits beside LAYERS/HISTORY/COMPS because it is
+  // the same kind of thing -- a view onto what the document holds -- and it
+  // therefore starts in the right dock like them. It starts CLOSED, because
+  // the right dock does not scroll and the default-open set there is a
+  // budget rather than a preference (app/PanelLayout's `defaultEntryFor()`).
+  FlatsSegmentation,
   Grade,
   // C2 (docs/reachability-audit.md; PRD D2, P0): a per-channel/luminance
   // distribution of the open document's composite, read from core/Histogram
@@ -134,6 +147,21 @@ enum class ControlsSection {
   // before editing and the editor's header names what the pane above chose.
   BrushLibrary,
   Brush,
+  // The flatting tools, as a palette scoped to one layer kind -- the first
+  // member of a family docs/ui.md section 2 and docs/shortcuts.md section
+  // 1.1 both already promise ("the tool palette shows the flatting tools
+  // when a Flats layer is selected. A silent modal keymap is worse than an
+  // awkward global one"). Vector layers are the named next consumer, which
+  // is why this is a registered section like any other rather than a mode
+  // bolted onto TOOLS.
+  //
+  // `Tool` role, and the ONLY section other than TOOLS and OPTIONS that
+  // `defaultPlacementFor()` gives an explicit placement: it starts on the
+  // flyout rail, not in the right dock. A palette that is meaningless
+  // whenever the active layer is not a Flats layer should not spend a grip
+  // of a dock that does not scroll for the whole time it has nothing to say
+  // -- and app/PanelLayout records that argument beside the exception.
+  FlatsTools,
   Pigment,
   Medium,
   BoardTilt,

@@ -24,6 +24,18 @@ void setActiveTool(AppState& st, Tool next) noexcept {
   // the case where `brush.tool` (== Hand) still differs from `next`.
   st.brush.tool = next;
 
+  // **A deliberate ordinary pick leaves flatting mode.** The flatting tools
+  // are a second sticky mode layered over the same canvas clicks, so without
+  // this one line "what does a click mean" would have two answers at once --
+  // the user picks the Brush from TOOLS, drags on a Flats layer, and gets a
+  // bridge stroke because DELETE was still lit in a palette they may not
+  // even have on screen. Cleared here, in the one place that already owns
+  // this question, rather than in each of the palette's own callers.
+  //
+  // Not conditional on `next == outgoing`: re-picking the tool you already
+  // have is exactly how a user says "stop doing the other thing".
+  st.flatsTool = FlatsTool::None;
+
   // Picking the tool that is already selected is not a switch. The palette
   // cell, the flyout row and the menu item can all deliver one, and treating
   // it as a switch would overwrite the previous tool with itself -- a
@@ -179,6 +191,46 @@ float transformSeedAngleDeg(const AppState& st, uint64_t activeDocumentId) noexc
   if (effectiveTool(st) != Tool::Measure) return 0.0f;
   if (!measureLineAppliesTo(st.measure, activeDocumentId)) return 0.0f;
   return measureReadout(st.measure).angleDeg;
+}
+
+void setFlatsTool(AppState& st, FlatsTool next) noexcept {
+  st.flatsTool = next;
+  // Picking a flatting tool cancels a half-finished two-click merge: the
+  // armed point belongs to the gesture being abandoned, and carrying it into
+  // the next one would merge two fills the user never paired.
+  st.flatsMergeFirst.reset();
+  if (next == FlatsTool::None) return;
+
+  // **The host tool, per ADR-0009's table.** The flatting gestures are the
+  // existing tools scoped to a layer kind, not a parallel set: a bridge IS
+  // the Pencil, a group IS the Lasso. Setting the host here is what keeps
+  // the cursor, the options row and the canvas's own drag handling agreeing
+  // with the palette -- picking BRIDGE and then finding the Marquee's
+  // rubber-band on screen would be the palette lying about what it did.
+  //
+  // Written straight to `brush.tool` rather than through `setActiveTool()`,
+  // and that is deliberate: `setActiveTool()` clears `flatsTool` (above), so
+  // routing through it here would undo the line before it. The ledger is not
+  // touched for the same reason -- the user picked a flatting tool, not the
+  // Pencil, and "previous tool" should take them back to whatever they were
+  // using before flatting.
+  switch (next) {
+    case FlatsTool::BridgePen:    st.brush.tool = Tool::Pencil; break;
+    case FlatsTool::BridgeEraser: st.brush.tool = Tool::Eraser; break;
+    case FlatsTool::Group:
+    case FlatsTool::ShapeFill:    st.brush.tool = Tool::Lasso; break;
+    case FlatsTool::Carve:        st.brush.tool = Tool::PaintBucket; break;
+    // DeleteFill, MergePair, DrawMerge and SelectEdits have no host in
+    // ADR-0009's table -- they are bare canvas clicks and drags, and the
+    // flats route below takes the event before any tool sees it. Leaving
+    // `brush.tool` alone means the tool the user had is still theirs when
+    // they leave flatting mode.
+    case FlatsTool::DeleteFill:
+    case FlatsTool::MergePair:
+    case FlatsTool::DrawMerge:
+    case FlatsTool::SelectEdits:
+    case FlatsTool::None:         break;
+  }
 }
 
 }  // namespace np

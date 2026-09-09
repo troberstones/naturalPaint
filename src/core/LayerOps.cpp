@@ -340,6 +340,27 @@ LayerOpResult setLayerAlphaLocked(Document& doc, size_t index, bool alphaLocked)
   return layerOpSucceed(label, index);
 }
 
+LayerOpResult setLayerFlatsReference(Document& doc, size_t index, bool reference) {
+  LayerOpResult refusal;
+  if (!layerOpInRange(doc, index, "set flats reference", &refusal)) return refusal;
+  if (!layerOpNotLocked(doc, index, "set flats reference", kLockedLayerFrozen, &refusal))
+    return refusal;
+  // A Flats layer nominating itself would ask it to read its own result. It
+  // cannot happen through `flatsSourceLayers()` -- a mark at or above the
+  // Flats layer is out of scope there -- but a mark that can never do
+  // anything is worse than a refusal that says why.
+  if (reference && doc.layers[index].kind == LayerKind::Flats) {
+    return layerOpFail("set flats reference refused: " + layerOpDescribe(doc, index) +
+                       " is a Flats layer. A Flats layer segments the drawing beneath it, so it "
+                       "cannot be the drawing -- mark the line art instead. Unmarking is always "
+                       "allowed.");
+  }
+  const std::string label = std::string(reference ? "mark " : "unmark ") +
+                            layerOpDescribe(doc, index) + " as the flats reference";
+  doc.layers[index].flatsReference = reference;
+  return layerOpSucceed(label, index);
+}
+
 LayerOpResult setLayerBlend(Document& doc, size_t index, BlendMode mode) {
   LayerOpResult refusal;
   if (!layerOpInRange(doc, index, "set layer blend mode", &refusal)) return refusal;

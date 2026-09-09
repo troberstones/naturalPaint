@@ -1477,6 +1477,7 @@ int main(int argc, char** argv) {
   int cropDemoShape = 0;  // 0 = rectangle, 1 = perspective, 2 = the refused bow-tie
   bool wandDemo = false;
   bool wandDemoBucket = false;
+  bool wandDemoFlats = false;
   bool smudgeDemo = false;
   bool maskDemo = false;
   bool maskDemoTarget = true;
@@ -1500,6 +1501,7 @@ int main(int argc, char** argv) {
   bool noDocumentDemo = false;
   bool panelStackDemo = false;
   bool gradeKindsDemo = false;
+  bool flatsDemo = false;
   bool uiLayerDemoClip = true;
   bool splitDemo = false;
   np::AtelierSplit splitDemoMode = np::AtelierSplit::Columns;
@@ -1846,10 +1848,20 @@ int main(int argc, char** argv) {
       // a tolerance that is not the default. That also puts both states of the
       // combo and both states of the checkbox under coverage, which is the
       // argument `gradient_spread_off` makes for existing beside `gradient`.
+      //
+      // The optional third word `flats` is `bucket` plus `BucketFill::Flats`,
+      // which replaces the tolerance block with the rubber sheet's own three
+      // numbers AND the SOURCE combo. It is a view of its own rather than a
+      // change to `bucket` for the reason the paragraph above gives about two
+      // reads of one row: FILL is the switch between two entirely different
+      // control sets, and a golden view of one of them proves nothing about
+      // the other. SOURCE in particular had no coverage at all until this
+      // view existed -- it draws only in this state.
       wandDemo = true;
-      if (i + 1 < argc && std::string_view(argv[i + 1]) == "bucket") {
-        wandDemoBucket = true;
-        ++i;
+      if (i + 1 < argc) {
+        const std::string_view k(argv[i + 1]);
+        if (k == "bucket") { wandDemoBucket = true; ++i; }
+        else if (k == "flats") { wandDemoBucket = true; wandDemoFlats = true; ++i; }
       }
     } else if (a == "--mask-demo") {
       // T16's paint target, made reachable from the command line. See
@@ -2033,6 +2045,12 @@ int main(int argc, char** argv) {
       // flag composes with --panel-stack-demo, which is what puts GRADE into
       // a slot wide enough to photograph.
       gradeKindsDemo = true;
+    } else if (a == "--flats-demo") {
+      // ADR-0009. Runs on top of --demo-document, whose layer 0 is the line
+      // art this flats. Seeds a Flats layer above it, selects it, picks a
+      // flatting tool so the palette photographs its LIT state, and fronts
+      // the two flats panels -- see the apply block below.
+      flatsDemo = true;
     } else if (a == "--ui-layer-demo") {
       // UI detour step 3: build a stack through the layer editor's own
       // commands. See runUiLayerDemo(). `noclip` runs the same script without
@@ -2419,6 +2437,8 @@ int main(int argc, char** argv) {
     // `Image > Transform...` opens with -- both directions of that
     // conditional, walked over the whole `Tool` enum rather than sampled.
     // Headless and GPU-free.
+    const bool flatsExpandOk = np::runFlatsExpandTest();
+    const bool flatsSourceOk = np::runFlatsSourceTest();
     const bool toolSwitchOk = np::runToolSwitchTest();
     // app/ToolSwitch: the spring-loaded Eyedropper (Alt/Option), the Hand's
     // borrow-and-give-back shape applied to a second tool -- eligibility
@@ -3524,7 +3544,7 @@ int main(int argc, char** argv) {
                     tileStoreOk && imageDecodeOk && documentOk && baseLayerAlphaOk &&
                     createBlankOk && imageIOOk && placeImageAsLayerOk && probeOk &&
                     eyedropperOk && sceneReferredColourOk && measureOk && toolSwitchOk &&
-                    springEyedropperOk && toolSurfaceOk &&
+                    springEyedropperOk && flatsExpandOk && flatsSourceOk && toolSurfaceOk &&
                     mipPyramidOk && viewTransformOk && guidesGridSnapOk &&
                     halfOk && histogramOk && pointOpsOk && toneOpsOk && colorOpsOk && monoOpsOk &&
                     autoLevelsOk &&
@@ -3799,6 +3819,7 @@ int main(int argc, char** argv) {
   st.openToolFlyoutDemo = flyoutDemo;
   st.panelStackDemo = panelStackDemo;
   st.gradeKindsDemo = gradeKindsDemo;
+  st.flatsDemo = flatsDemo;
   if (gradeKindsDemo) {
     // Enabled, and with params well away from both the identity and the
     // params structs' own defaults -- an editor showing a default value would
@@ -3978,10 +3999,24 @@ int main(int argc, char** argv) {
       st.paintBucket.tolerance = np::floodToleranceFromUi(96);
       st.paintBucket.edgeBand = 0.0f;
       st.paintBucket.reach = np::FloodFillReach::Global;
-      std::printf(
-          "[wand-demo] Tool::PaintBucket selected, tolerance=96 reach=%s anti-alias=off -- the "
-          "options bar shows ITS block, not the wand's\n",
-          np::floodReachLabel(st.paintBucket.reach));
+      if (wandDemoFlats) {
+        // ADR-0009's other half of the row. The parameters are left at their
+        // defaults -- the fact being photographed is WHICH controls draw, and
+        // a default `st.flatsBucketParams` is also the state a painter meets
+        // first. SOURCE stays at its own default (`ExcludeTarget`), which is
+        // the value worth having under coverage: it is the one that fixed the
+        // bake reading back its own pixels.
+        st.bucketFill = np::BucketFill::Flats;
+        std::printf(
+            "[wand-demo] ...and FILL: Flats -- SHEET/GAP/DECLUTTER and SOURCE=%s replace the "
+            "tolerance block\n",
+            np::kFlatsBakeSources[0].label);
+      } else {
+        std::printf(
+            "[wand-demo] Tool::PaintBucket selected, tolerance=96 reach=%s anti-alias=off -- the "
+            "options bar shows ITS block, not the wand's\n",
+            np::floodReachLabel(st.paintBucket.reach));
+      }
     } else {
       np::setActiveTool(st, np::Tool::MagicWand);
       std::printf(

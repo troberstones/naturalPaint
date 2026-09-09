@@ -1631,6 +1631,43 @@ void drawAtelierOptionsBarContent(AppState& st, float bandH, const std::string& 
         "Absorb small fills squeezed between strokes (hatching, texture, folds) into the "
         "area they shade. 0 is off.");
     if (edited && onFlatsLayer) flatsOd->recordEdit("flats parameters", EditKind::Content);
+    // **WHAT gets segmented**, which is a different question from the three
+    // numbers above and used to have no answer at all: the bake segmented the
+    // whole composite including the layer it was about to write into, so the
+    // second fill on a layer found different regions than the first.
+    //
+    // Disabled rather than hidden on a Flats layer. A Flats layer resolves its
+    // own source (every layer below, or the layers marked as the flatting
+    // reference), so the combo has nothing to say there -- but a control that
+    // vanishes as the selection moves teaches nobody why, and re-flows the
+    // whole band while a painter is aiming at the slider beside it.
+    ImGui::SameLine();
+    bandSeparator();
+    capsLabel("SOURCE");
+    ImGui::SameLine();
+    int sourceIndex = 0;
+    for (size_t i = 0; i < kFlatsBakeSourceCount; ++i)
+      if (kFlatsBakeSources[i].mode == st.flatsBakeSource) sourceIndex = static_cast<int>(i);
+    pushAtelierMono();
+    float widestSource = 0.0f;
+    for (size_t i = 0; i < kFlatsBakeSourceCount; ++i)
+      widestSource = std::max(widestSource, ImGui::CalcTextSize(kFlatsBakeSources[i].label).x);
+    ImGui::SetNextItemWidth(widestSource + ImGui::GetFrameHeight() + 16.0f);
+    ImGui::BeginDisabled(onFlatsLayer);
+    if (ImGui::BeginCombo("##flatsBakeSource", kFlatsBakeSources[sourceIndex].label)) {
+      for (size_t i = 0; i < kFlatsBakeSourceCount; ++i) {
+        if (ImGui::Selectable(kFlatsBakeSources[i].label, static_cast<int>(i) == sourceIndex))
+          st.flatsBakeSource = kFlatsBakeSources[i].mode;
+        ImGui::SetItemTooltip("%s", kFlatsBakeSources[i].tip);
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    popAtelierMono();
+    if (onFlatsLayer)
+      ImGui::SetItemTooltip(
+          "A Flats layer reads the layers below it, or the layers marked as the flatting "
+          "reference. This picks what a bake on an ordinary layer segments.");
   }
   if (flood != nullptr && !flatsBucket) {
     bandSeparator();

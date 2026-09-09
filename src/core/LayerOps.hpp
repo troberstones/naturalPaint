@@ -301,6 +301,25 @@ LayerOpResult setLayerLocked(Document& doc, size_t index, bool locked);
 // get out of.
 LayerOpResult setLayerAlphaLocked(Document& doc, size_t index, bool alphaLocked);
 
+// **Mark or unmark this layer as the flatting reference** (`Layer.hpp`'s
+// `flatsReference`, ADR-0009).
+//
+// A Flats layer reads the composite of every layer beneath it, and that is
+// both wrong and slow on a real stack: a colour rough or a note under the
+// inks pollutes the segmentation, and -- because the evaluation cache is
+// keyed on everything the evaluation read -- every edit to any of them
+// re-runs a segmentation that costs a fifth of a second. Marking the line art
+// makes that whole class of invalidation go away.
+//
+// **Never refused for a kind.** The flag is a nomination, not a capability:
+// any layer that draws pixels can be the drawing a Flats layer reads, and
+// `flats/FlatsLayer.hpp`'s `flatsSourceLayers()` -- not this function --
+// decides which marks are in scope for a given Flats layer (a mark ABOVE it
+// is ignored). Refusing here on a kind would be guessing at that scope from
+// the wrong end of the stack. It IS refused on a locked layer, the same rule
+// every other flag here follows.
+LayerOpResult setLayerFlatsReference(Document& doc, size_t index, bool reference);
+
 // Sets the blend mode (PRD C4's "blend mode"). Refused on a locked layer --
 // which blend a layer uses is part of how that layer looks, and a lock that
 // froze content but not blending would be a lock in name only.

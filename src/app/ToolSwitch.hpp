@@ -132,6 +132,13 @@ namespace np {
 // Ends a spring-loaded borrow if one is in flight -- see the header's §2.
 void setActiveTool(AppState& st, Tool next) noexcept;
 
+// Pick a flatting tool (or `FlatsTool::None` to leave flatting mode), and
+// install the host tool ADR-0009's table gives it. The single writer of
+// `AppState::flatsTool`, for the reason this header gives about
+// `brush.tool`: two writers of "what does a click mean" is how a gesture
+// ends up meaning two things at once.
+void setFlatsTool(AppState& st, FlatsTool next) noexcept;
+
 // Whether any tool switch has happened yet this session. False at launch, and
 // `previousTool()` means nothing until it is true.
 bool hasPreviousTool(const AppState& st) noexcept;
