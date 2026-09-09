@@ -157,11 +157,82 @@ bool textDeleteForward(TextContent* text, TextEditState* state);
 
 // Move the caret by one character, or to either end. The `TextContent` is
 // the only source of truth for where the boundaries are, which is why these
-// take it by const-reference even though they mutate only `state->caret`.
-void textCaretLeft(const TextContent& text, TextEditState* state) noexcept;
-void textCaretRight(const TextContent& text, TextEditState* state) noexcept;
-void textCaretHome(TextEditState* state) noexcept;
-void textCaretEnd(const TextContent& text, TextEditState* state) noexcept;
+// take it by const-reference even though they mutate only the caret.
+//
+// **`extend`** is Shift held. False collapses any selection; true drags the
+// caret end of one and leaves the anchor, which is how a range grows from the
+// keyboard.
+//
+// With `extend == false` AND a selection live, Left/Right do NOT step by a
+// character: they collapse to the near EDGE of the selection (`lo` for Left,
+// `hi` for Right) and stop. That is what every text editor does, and it is
+// the behaviour a user checks first -- select a word, press Left, and the
+// caret belongs before the word rather than one character back from wherever
+// the drag happened to end.
+void textCaretLeft(const TextContent& text, TextEditState* state, bool extend) noexcept;
+void textCaretRight(const TextContent& text, TextEditState* state, bool extend) noexcept;
+void textCaretHome(TextEditState* state, bool extend) noexcept;
+void textCaretEnd(const TextContent& text, TextEditState* state, bool extend) noexcept;
+
+// ==========================================================================
+// 3b. THE SELECTION
+// ==========================================================================
+//
+// A range of the block's bytes, `[lo, hi)`, both on UTF-8 boundaries. It is
+// DERIVED from `caret` and `anchor` rather than stored, so it cannot go stale
+// against them, and `textSelection()` sorts the pair so no caller has to know
+// which end the gesture started from.
+//
+// **Empty is a real answer, not an error.** `lo == hi` means "just a caret",
+// which is the state for the whole of ordinary typing, so every consumer
+// below does nothing rather than refusing.
+struct TextSelection {
+  size_t lo = 0;
+  size_t hi = 0;
+  bool empty() const noexcept { return lo >= hi; }
+  size_t size() const noexcept { return empty() ? 0 : hi - lo; }
+};
+
+TextSelection textSelection(const TextEditState& state) noexcept;
+
+// Throw the selection away, keeping the caret where it is. Every caret move
+// that is not extending goes through this, which is why the movers above take
+// an `extend` flag rather than callers remembering to collapse.
+void textSelectionCollapse(TextEditState* state) noexcept;
+
+// Select the whole block: anchor at 0, caret at the end. Cmd+A while a
+// session is live means this rather than "select the whole canvas" -- `ui/`
+// routes it, and the keymap's `select_all` still means the canvas everywhere
+// else.
+void textSelectAll(TextEditState* state, const TextContent& text) noexcept;
+
+// Erase the selected range and leave the caret where it began. Returns false
+// and changes nothing when the selection is empty, so a caller can read the
+// return as "was there anything to delete".
+//
+// **Callers rarely need this directly.** `textInsertUtf8()`, `textBackspace()`
+// and `textDeleteForward()` all call it themselves -- typing over a selection
+// replaces it, which is behaviour no caller should be able to forget, and a
+// forgotten call would insert INTO the middle of a range the user believed
+// they were replacing.
+bool textDeleteSelection(TextContent* text, TextEditState* state);
+
+// The selected bytes, empty when nothing is selected. A copy, not a view: the
+// caller's next edit invalidates the buffer it would have pointed into.
+std::string textSelectedUtf8(const TextContent& text, const TextEditState& state);
+
+// A click at `offset`: placing the caret (`extend == false`, which collapses)
+// or dragging the far end of a selection to it (`extend == true`, which
+// leaves the anchor). Shift+click passes true.
+void textSelectionSetCaret(TextEditState* state, const TextContent& text, size_t offset,
+                           bool extend) noexcept;
+
+// The click-drag over glyphs. `Begin` puts both ends at `offset`, `Update`
+// drags the caret end, and `End` deliberately does NOT collapse -- the range
+// just dragged out is the whole point of the gesture.
+void textSelectDragBegin(TextEditState* state, const TextContent& text, size_t offset) noexcept;
+void textSelectDragUpdate(TextEditState* state, const TextContent& text, size_t offset) noexcept;
+void textSelectDragEnd(TextEditState* state) noexcept;
 
 // ==========================================================================
 // 4. HIT TESTING
@@ -210,6 +281,25 @@ struct TextEditState {
   // A BYTE offset into the `TextContent::utf8` being edited -- see section 3
   // for the boundary invariant every transition maintains.
   size_t caret = 0;
+
+  // The OTHER end of a selected range, and subject to the same boundary
+  // invariant as `caret`. A selection exists exactly when `anchor != caret`;
+  // there is no separate "has a selection" flag, because one would be a
+  // second copy of a fact these two already carry and could disagree with.
+  //
+  // Which end is which matters: `anchor` is where the gesture STARTED and
+  // stays put, `caret` is the end that moves. Shift+Left from a click drags
+  // the caret to the LEFT of the anchor, so `anchor > caret` is an ordinary
+  // state -- every reader goes through `textSelection()`, which sorts them,
+  // rather than assuming an order.
+  size_t anchor = 0;
+
+  // A live click-drag over the glyphs, selecting as it goes -- the pointer
+  // gesture that produces a range, as opposed to Shift+arrow which produces
+  // one from the keyboard. Its own flag rather than "is the left button
+  // down", for `frameDragActive`'s reason below: the button being down says
+  // nothing about whether THIS gesture is the one that claimed it.
+  bool selectDragActive = false;
 
   // A paragraph-frame drag: pen-down on empty canvas with `Tool::Text`,
   // drag, pen-up -> either a paragraph frame (drag exceeded the minimum

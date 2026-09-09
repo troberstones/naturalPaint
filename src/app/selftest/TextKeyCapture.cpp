@@ -278,10 +278,19 @@ bool runTextKeyCaptureTest() {
               keymapActionEndsTextSession("adjust_auto_tone") &&
               keymapActionEndsTextSession("adjust_black_and_white"),
           "keymapActionEndsTextSession(): REQUIRED -- the adjustment commands end the session");
-    check(keymapActionEndsTextSession("select_all") && keymapActionEndsTextSession("deselect") &&
-              keymapActionEndsTextSession("reselect") &&
+    check(keymapActionEndsTextSession("deselect") && keymapActionEndsTextSession("reselect") &&
               keymapActionEndsTextSession("invert_selection"),
-          "keymapActionEndsTextSession(): REQUIRED -- the selection commands end the session");
+          "keymapActionEndsTextSession(): REQUIRED -- deselect/reselect/invert end the session; "
+          "none of them has a text meaning to redirect to");
+    // `select_all` is the exception among its own neighbours, and it has to
+    // be: Cmd+A with a caret up means select all the TEXT, and
+    // ui/MacPaintUI.cpp implements that by intercepting `requestSelectAll`
+    // for a live session. Ending the session here would put the caret away
+    // BEFORE that flag was read, making the interception dead code and Cmd+A
+    // silently a canvas command in the middle of typing.
+    check(!keymapActionEndsTextSession("select_all"),
+          "keymapActionEndsTextSession(): REQUIRED -- select_all KEEPS the session, or the "
+          "select-all-the-text interception one layer up can never fire");
     check(keymapActionEndsTextSession("copy") && keymapActionEndsTextSession("copy_merged") &&
               keymapActionEndsTextSession("cut") && keymapActionEndsTextSession("paste"),
           "keymapActionEndsTextSession(): REQUIRED -- the clipboard four end it TOGETHER; copy "

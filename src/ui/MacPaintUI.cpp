@@ -14899,6 +14899,24 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
       st.requestUndo = false;
       st.requestRedo = false;
 
+      // Cmd+A with a caret up means SELECT ALL THE TEXT, not select the whole
+      // canvas. Intercepted here rather than in main.cpp's keymap dispatch
+      // because this is where the layer the session names is already
+      // resolved, and because the Select menu's own "All" item sets the same
+      // flag -- both routes should mean the same thing while typing.
+      //
+      // `select_all` is on `keymapActionEndsTextSession()`'s KEEP list
+      // (app/TextTool.hpp section 8) precisely so this can run: main.cpp ends
+      // a session BEFORE setting the request flag, so anything on the ending
+      // side would leave no session here to intercept for, and this block
+      // would be dead code.
+      if (st.requestSelectAll && textSessionActive(st.textEdit) && od != nullptr &&
+          st.textEdit.documentId == od->id &&
+          st.textEdit.layerIndex < od->document.layers.size() &&
+          od->document.layers[st.textEdit.layerIndex].kind == LayerKind::Text) {
+        textSelectAll(&st.textEdit, od->document.layers[st.textEdit.layerIndex].text);
+        st.requestSelectAll = false;
+      }
       if (st.requestSelectAll && od != nullptr)
         installSelection(*od, selectAll(od->document.width, od->document.height));
       if (st.requestDeselect && od != nullptr) installSelection(*od, std::nullopt);
@@ -15838,15 +15856,35 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             // header is explicit that the member can be stale past a layer
             // delete or an undo, and every reader clamps.
             const size_t activeIndex = activeLayerIndex(*textDoc).value_or(0);
-            textEditBegin(&st.textEdit, textDocId, activeIndex, active->text);
-            // `textEditBegin()` puts the caret at the END, which is right for
-            // "clicked to start editing" and wrong for "clicked at a
-            // character". Both gestures are one click here, so the caret is
-            // then moved to the click -- `core/TextContent`'s
-            // `textOffsetAtPoint()`, which returns a real UTF-8 boundary so
-            // no clamp is needed on the way in.
-            textCaretSetOffset(&st.textEdit, active->text,
-                               textOffsetAtPoint(active->text, PathPoint{tx, ty}));
+            const bool alreadyHere = textSessionActive(st.textEdit) &&
+                                     st.textEdit.documentId == textDocId &&
+                                     st.textEdit.layerIndex == activeIndex;
+            // Shift+click EXTENDS the range from wherever the caret already
+            // is, so it must not restart the session -- `textEditBegin()`
+            // resets both ends. Only meaningful when a session is already
+            // live on this very block; a Shift+click into a block nobody was
+            // editing is just a click.
+            if (ImGui::GetIO().KeyShift && alreadyHere) {
+              textSelectionSetCaret(&st.textEdit, active->text,
+                                    textOffsetAtPoint(active->text, PathPoint{tx, ty}),
+                                    /*extend=*/true);
+            } else {
+              textEditBegin(&st.textEdit, textDocId, activeIndex, active->text);
+              // `textEditBegin()` puts the caret at the END, which is right
+              // for "clicked to start editing" and wrong for "clicked at a
+              // character". Both gestures are one click here, so the caret is
+              // then moved to the click -- `core/TextContent`'s
+              // `textOffsetAtPoint()`, which returns a real UTF-8 boundary so
+              // no clamp is needed on the way in.
+              //
+              // Through `textSelectDragBegin()` rather than
+              // `textCaretSetOffset()`: pen-down on the glyphs is the START
+              // of a possible drag-selection, and the two are the same
+              // gesture until the pointer moves. It puts both ends at the
+              // click, so a click that never drags is exactly a caret.
+              textSelectDragBegin(&st.textEdit, active->text,
+                                  textOffsetAtPoint(active->text, PathPoint{tx, ty}));
+            }
             // The row must show the block the user just clicked into, not the
             // last one they typed in -- app/AppState.hpp's stated rule that
             // selecting a Text layer loads its content back into the tool.
@@ -15859,6 +15897,27 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // Which of the two things it becomes is decided on pen-UP, because
         // until the button lifts there is no way to know.
         if (!startedOnExisting) textEditFrameDragBegin(&st.textEdit, PathPoint{tx, ty}, textDocId);
+      }
+
+      // --- dragging out a selection over the glyphs ----------------------
+      //
+      // The pointer half of "I can't select text". Begun by the pen-down
+      // above, dragged here, ended on the button lifting -- and ended with
+      // `!IsMouseDown` rather than `IsMouseReleased` for the reason the frame
+      // drag below states: a release ImGui never saw (the pointer left the
+      // window) would otherwise leave the drag live forever, so every
+      // subsequent mouse move would keep re-selecting.
+      //
+      // `editing` rather than the active layer again: the drag belongs to the
+      // block the session is on, and re-resolving it here keeps a stack
+      // reorder mid-drag from selecting inside whatever moved into the slot.
+      if (st.textEdit.selectDragActive) {
+        if (editing != nullptr && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+          textSelectDragUpdate(&st.textEdit, editing->text,
+                               textOffsetAtPoint(editing->text, PathPoint{tx, ty}));
+        } else {
+          textSelectDragEnd(&st.textEdit);
+        }
       }
 
       if (st.textEdit.frameDragActive && textDoc != nullptr && !st.textEditDemo) {
@@ -15979,13 +16038,21 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
           edited = textDeleteForward(&editing->text, &st.textEdit) || edited;
         // Caret moves change no document content, so they record no edit --
         // app/DocumentLifecycle.hpp's rule that a selection change is not an
-        // edit, applied to a caret.
+        // edit, applied to a caret. That rule covers the TEXT selection here
+        // too: extending one with Shift is not an edit either.
+        //
+        // `io.KeyShift` is the `extend` flag app/TextTool's movers take. With
+        // it held the caret end of the range moves and the anchor stays;
+        // without it the range collapses (to its near edge, if there was
+        // one). The whole of Shift+arrow selection is this one bool.
+        const bool extendSel = io.KeyShift;
         if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
-          textCaretLeft(editing->text, &st.textEdit);
+          textCaretLeft(editing->text, &st.textEdit, extendSel);
         if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
-          textCaretRight(editing->text, &st.textEdit);
-        if (ImGui::IsKeyPressed(ImGuiKey_Home, false)) textCaretHome(&st.textEdit);
-        if (ImGui::IsKeyPressed(ImGuiKey_End, false)) textCaretEnd(editing->text, &st.textEdit);
+          textCaretRight(editing->text, &st.textEdit, extendSel);
+        if (ImGui::IsKeyPressed(ImGuiKey_Home, false)) textCaretHome(&st.textEdit, extendSel);
+        if (ImGui::IsKeyPressed(ImGuiKey_End, false))
+          textCaretEnd(editing->text, &st.textEdit, extendSel);
 
         // **One undo entry per BURST of typing, not per keystroke.** A
         // `recordEdit()` per character would fill PRD A9's byte budget with
@@ -17820,6 +17887,32 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
             textOd != nullptr && st.textEdit.documentId == textOd->id &&
             st.textEdit.layerIndex == activeLayerIndex(*textOd).value_or(SIZE_MAX);
         if (editingThis) {
+          // --- the selection highlight ---
+          //
+          // Painted BEFORE the caret so the caret sits on top of it, and
+          // before nothing else -- the glyphs themselves are composited into
+          // the document texture underneath this whole overlay, so this is a
+          // translucent wash OVER the type rather than a block behind it.
+          // That is why the alpha is low: at anything heavier the letters
+          // under it stop being readable, and a selection whose text you
+          // cannot read is worse than no highlight.
+          //
+          // One rectangle per line, from `core/TextContent`'s
+          // `textSelectionRects()` -- which needs `ShapedGlyph::advance` to
+          // know where a line's last selected character ENDS, the same field
+          // the caret needed.
+          const TextSelection sel = textSelection(st.textEdit);
+          if (!sel.empty()) {
+            for (const PathBounds& r : textSelectionRects(tl->text, sel.lo, sel.hi)) {
+              if (!r.valid) continue;
+              const Vec2 ra = xform.toScreen(Vec2{r.minX, r.minY});
+              const Vec2 rb = xform.toScreen(Vec2{r.maxX, r.maxY});
+              dl->AddRectFilled(ImVec2(std::min(ra.x, rb.x), std::min(ra.y, rb.y)),
+                                ImVec2(std::max(ra.x, rb.x), std::max(ra.y, rb.y)),
+                                IM_COL32(90, 150, 255, 90));
+            }
+          }
+
           float caretH = 0.0f;
           const PathPoint cp = textCaretPosition(tl->text, st.textEdit.caret, &caretH);
           // The caret hangs from the pen position UP by the ascent and DOWN by

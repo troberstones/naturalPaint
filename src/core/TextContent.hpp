@@ -193,6 +193,36 @@ bool textContentDraws(const TextContent& text);
 // model that knows about ligature carets, which is its own piece of work.
 PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* height);
 
+// The rectangles to paint behind a selected range `[loByte, hiByte)` -- one
+// per LINE the range covers, in the same document coordinates the caret comes
+// back in.
+//
+// One per line rather than one per glyph because that is what a selection
+// looks like, and because per-glyph rectangles of a proportional font leave
+// hairline seams between them at fractional zoom. Each line's rectangle spans
+// from the leftmost selected pen position on that line to the rightmost
+// TRAILING edge (`x + advance`, text/Shaper.hpp) -- the same field the caret
+// needs, for the same reason: without it the highlight stops in front of the
+// last selected character.
+//
+// Vertically each rectangle uses `textCaretPosition()`'s own 0.8/0.2 split of
+// the caret height, so the highlight and the caret agree about where a line
+// box is; a highlight that disagreed with the caret by a pixel would look
+// like a rendering bug on every screenshot.
+//
+// Empty when the range is empty, when the block is empty, or when shaping
+// fails -- all three are "nothing to paint" rather than errors, matching what
+// `textContentToShapes()` does with the same conditions.
+//
+// **Lines are grouped by the glyphs' baseline `y`**, and a selection that is
+// contiguous in BYTES can be discontiguous on a line under bidi -- a
+// right-to-left run inside a left-to-right paragraph. Each line still gets
+// exactly one rectangle here, spanning the extremes, so such a selection
+// paints wider than it strictly covers. That is the standard simplification
+// and the alternative (a run-splitting pass over the reordered glyphs) is not
+// worth building until this application has a bidi document to test it on.
+std::vector<PathBounds> textSelectionRects(const TextContent& text, size_t loByte, size_t hiByte);
+
 // The byte offset nearest `at` (document coordinates) -- click-to-place-caret.
 //
 // Nearest by the glyph's pen position, then snapped to that glyph's own

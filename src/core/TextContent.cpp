@@ -276,6 +276,58 @@ PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* he
   return PathPoint{text.origin.x + last->x + last->advance, text.origin.y + last->y};
 }
 
+std::vector<PathBounds> textSelectionRects(const TextContent& text, size_t loByte,
+                                          size_t hiByte) {
+  std::vector<PathBounds> out;
+  if (loByte >= hiByte || text.utf8.empty()) return out;
+
+  const ShapedText shaped = shapeText(text.utf8, text.style, text.frame, text.align);
+  if (!shaped.ok || shaped.glyphs.empty()) return out;
+
+  const float h = caretHeightFor(text.style);
+
+  // One accumulator per baseline. A linear scan keyed on `y` rather than a
+  // map: a block has a handful of lines, and the glyphs of one line arrive
+  // together, so this is a couple of comparisons per glyph.
+  struct Line {
+    float y = 0.0f;
+    float minX = 0.0f;
+    float maxX = 0.0f;
+  };
+  std::vector<Line> lines;
+  for (const ShapedGlyph& g : shaped.glyphs) {
+    if (g.cluster < loByte || g.cluster >= hiByte) continue;
+    const float left = g.x;
+    const float right = g.x + g.advance;  // the trailing edge -- see the header
+    Line* line = nullptr;
+    for (Line& l : lines)
+      if (l.y == g.y) {
+        line = &l;
+        break;
+      }
+    if (line == nullptr) {
+      lines.push_back(Line{g.y, left, right});
+    } else {
+      line->minX = std::min(line->minX, left);
+      line->maxX = std::max(line->maxX, right);
+    }
+  }
+
+  out.reserve(lines.size());
+  for (const Line& l : lines) {
+    PathBounds b;
+    b.valid = true;
+    b.minX = text.origin.x + l.minX;
+    b.maxX = text.origin.x + l.maxX;
+    // The same 0.8/0.2 split textCaretPosition()'s caller uses, so the
+    // highlight and the caret agree about the line box.
+    b.minY = text.origin.y + l.y - h * 0.8f;
+    b.maxY = text.origin.y + l.y + h * 0.2f;
+    out.push_back(b);
+  }
+  return out;
+}
+
 size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
   if (text.utf8.empty()) return 0;
   const ShapedText shaped = shapeText(text.utf8, text.style, text.frame, text.align);
