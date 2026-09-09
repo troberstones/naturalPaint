@@ -51,6 +51,38 @@
 // meaning). One number, one reading.
 //
 // ==========================================================================
+// 2b. What `origin` pins: the BASELINE for point text, the frame for paragraph
+// ==========================================================================
+//
+// Point text has no frame, so the only stable thing to pin it by is the first
+// line's **baseline, at its left end** -- and `origin` is exactly that. Make
+// the type bigger and it grows UP and to the right, out of a bottom-left
+// corner that stays put, which is what a baseline means and what every type
+// tool does.
+//
+// The alternative -- pinning the top of the line box -- is what this used to
+// do, and it was wrong twice over. Enlarging the type pushed the block DOWN
+// the page, away from the corner the user had placed. And an empty block drew
+// its caret at `origin` while the first glyph's baseline landed an ascent
+// lower, so **the caret jumped down by a whole ascent on the first
+// keystroke** -- the text did not appear where the insertion point had been
+// promising it would. Both are the same mistake, and pinning the baseline
+// removes both: the caret sits on the baseline before anything is typed, and
+// the first glyph arrives on that same baseline.
+//
+// Paragraph text keeps `origin` at its **frame's top-left**, because there a
+// box is exactly what the user dragged out and can reason about. Type inside
+// a frame that got bigger fills further DOWN the frame; the frame does not
+// move. Pinning a paragraph by its first baseline would slide the whole box
+// up the page whenever the type size changed, which is not what any frame in
+// any layout program does.
+//
+// One field with two readings, keyed off `frame.width` -- the same single
+// number section 2 already uses to tell the two kinds of block apart. It is
+// read in exactly one place, `shapedOrigin()` in this file's .cpp, which
+// every geometric query goes through.
+//
+// ==========================================================================
 // 3. Colour is linear and straight, like every other core/ colour
 // ==========================================================================
 //
@@ -119,8 +151,9 @@ struct TextContent {
   // Meaningful only for paragraph text (section 2 and text/Shaper.hpp).
   TextAlign align = TextAlign::Left;
 
-  // Where the block's top-left sits in DOCUMENT coordinates. Shaping happens
-  // in text-space with its own origin at the block's top-left
+  // Where the block is pinned in DOCUMENT coordinates -- section 2b for which
+  // corner that is, because it differs between point and paragraph text.
+  // Shaping happens in text-space with its own origin at the block's top-left
   // (text/Shaper.hpp), and this is the single translation applied on the way
   // out -- so moving a text block is one field, not a walk over glyphs.
   PathPoint origin;

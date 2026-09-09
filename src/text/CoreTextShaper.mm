@@ -377,6 +377,7 @@ ShapedText shapeText(std::string_view utf8, const TextStyle& style,
     // metrics are the only defined answer, matching the header comment on
     // `TextFrame`.
     const double baselineYDown = ascent;
+    out.firstBaselineY = static_cast<float>(baselineYDown);
     out.heightPx = static_cast<float>(ascent + descent + leadingOut);
     out.widthPx = static_cast<float>(width);
     out.lineCount = 1;
@@ -423,6 +424,11 @@ ShapedText shapeText(std::string_view utf8, const TextStyle& style,
       // corner, and this expresses every line's baseline as a distance DOWN
       // from the top of that same box.
       const double baselineYDown = H - origin.y;
+      // Reported for the FIRST line only -- that is what the field means, and
+      // paragraph text does not use it to place the block anyway (its origin
+      // is the frame's own top-left, core/TextContent.hpp section 2b). Set
+      // here rather than left at zero so the number is honest for any reader.
+      if (li == 0) out.firstBaselineY = static_cast<float>(baselineYDown);
       CFArrayRef runs = CTLineGetGlyphRuns(line);
       for (CFIndex r = 0; r < CFArrayGetCount(runs); ++r) {
         CTRunRef run = static_cast<CTRunRef>(const_cast<void*>(CFArrayGetValueAtIndex(runs, r)));

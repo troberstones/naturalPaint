@@ -811,22 +811,6 @@ bool resolveFontSizePx(const std::string& raw, float basisPx, bool basisKnown, f
   return std::isfinite(*out) && *out > 0.0f;
 }
 
-// The distance from a shaped block's TOP down to its FIRST BASELINE --
-// io/SvgImport.hpp section 7b, and the whole reason this is a function rather
-// than an inline `0.8f * sizePx`. `ShapedGlyph::y` is a pen position, i.e. ON
-// the baseline, and text-space's origin is the block's top-left
-// (text/Shaper.hpp), so the smallest y over the shaped glyphs IS that offset,
-// measured by the font this run actually shaped with.
-//
-// Zero when nothing shaped, which is the only defensible answer for a run
-// with no glyphs: there is no baseline to be below.
-float shapedBaselineOffset(const ShapedText& s) {
-  if (!s.ok || s.glyphs.empty()) return 0.0f;
-  float minY = s.glyphs[0].y;
-  for (const ShapedGlyph& g : s.glyphs) minY = std::min(minY, g.y);
-  return minY;
-}
-
 // A translation plus a POSITIVE UNIFORM scale, or nothing: the scale folds
 // into `sizePx` and the translation into `origin`. Rotation, skew and
 // mirroring do not fold, and the caller outlines those to paths instead.
@@ -873,7 +857,6 @@ struct TextRun {
   size_t chunk = 0;
   float penX = 0.0f, penY = 0.0f;  // the run's BASELINE start
   float width = 0.0f;              // shaped advance
-  float baseline = 0.0f;           // top-of-block -> baseline, see above
 };
 
 // Everything about one element inside a `<text>` that a run inherits.
@@ -1143,7 +1126,6 @@ void layoutRuns(std::vector<TextRun>* runs, float textX, float textY, float s, f
 
     const ShapedText shaped = shapeText(r.utf8, r.style, TextFrame{}, TextAlign::Left);
     r.width = shaped.ok ? shaped.widthPx : 0.0f;
-    r.baseline = shapedBaselineOffset(shaped);
     penX += r.width;
   }
 
@@ -1164,17 +1146,21 @@ void layoutRuns(std::vector<TextRun>* runs, float textX, float textY, float s, f
   }
 }
 
-// One laid-out run as a point-text `TextContent`. **The baseline -> top-left
-// conversion happens here and nowhere else** (io/SvgImport.hpp section 7b):
-// `penY` is the baseline, `origin` is the block's top-left, and `baseline` is
-// the distance between them as the shaper measured it.
+// One laid-out run as a point-text `TextContent`.
+//
+// **There is no baseline conversion here any more, and that is the point.**
+// SVG's `x`/`y` on a `<text>` is the baseline (SVG 1.1 10.4), and a point-text
+// `TextContent::origin` is now the baseline too (core/TextContent.hpp section
+// 2b), so the two agree and `penY` is stored as it arrived. This used to
+// subtract a shaped ascent to reach a top-left origin; leaving that in after
+// the model changed would have raised every imported label by an ascent.
 TextContent runToTextContent(const TextRun& r) {
   TextContent t;
   t.utf8 = r.utf8;
   t.style = r.style;
   t.frame = TextFrame{};        // point text: no width, hence no alignment
   t.align = TextAlign::Left;    // section 7b: the anchor is already in penX
-  t.origin = PathPoint{r.penX, r.penY - r.baseline};
+  t.origin = PathPoint{r.penX, r.penY};
   t.fill = r.fill;
   t.stroke = r.stroke;
   t.strokeStyle = r.strokeStyle;

@@ -145,6 +145,19 @@ struct ShapedText {
   float widthPx = 0.0f;
   float heightPx = 0.0f;
   int lineCount = 0;
+
+  // Where the FIRST line's baseline sits inside the shaped block, measured
+  // down from the block's own top-left origin described above.
+  //
+  // Reported rather than left to be re-derived from the glyphs, because the
+  // obvious derivation ("the smallest `y` any glyph has") is wrong the moment
+  // a run carries a baseline offset -- a superscript sits above its line's
+  // baseline and would be mistaken for it. This file knows the real number;
+  // a caller guessing at it does not.
+  //
+  // core/TextContent uses it to place a POINT text block by its baseline
+  // rather than by the top of its line box (core/TextContent.hpp section 2b).
+  float firstBaselineY = 0.0f;
 };
 
 // Shape UTF-8 text. Bidi, cluster breaking and font fallback all come from

@@ -121,6 +121,25 @@ bool inverseOf(const TextContent& text, Mat3* out) noexcept {
   return mat3Invert(text.transform, out);
 }
 
+// Where the SHAPED block's own (0,0) sits in document space -- i.e. what to
+// add to a `ShapedGlyph`'s pen position to put it on the page.
+//
+// This is the whole of core/TextContent.hpp section 2b in code. For point
+// text `origin` is the first BASELINE's left end, so the shaped block's top
+// sits an ascent ABOVE it and this subtracts that ascent. For paragraph text
+// `origin` is the frame's top-left, which is already the shaped block's own
+// top-left, so there is nothing to subtract.
+//
+// **One helper, four callers** -- the shapes, the caret, the selection quads
+// and the hit test. Spelling the subtraction at each site instead is the
+// silent partial fan-out this codebase keeps getting bitten by: three of the
+// four agreeing and the fourth not is a caret that sits an ascent away from
+// its own text, which reads as a rendering bug rather than a missed edit.
+PathPoint shapedOrigin(const TextContent& text, const ShapedText& shaped) noexcept {
+  if (text.frame.width > 0.0f) return text.origin;  // paragraph: origin IS the block top-left
+  return PathPoint{text.origin.x, text.origin.y - shaped.firstBaselineY};
+}
+
 // The conventional ascent/descent split of a line box around the baseline,
 // shared by the caret and the selection highlight so the two cannot disagree
 // -- core/TextContent.hpp's `TextCaretSegment` says why that matters.
@@ -230,7 +249,8 @@ std::vector<VectorShape> textContentToShapes(const TextContent& text, std::strin
     // `ShapedGlyph::{x, y}` is that glyph's pen position within the shaped
     // block. `text.origin` is the block's own place in document space
     // (TextContent.hpp). All three add.
-    translateInPlace(path, text.origin.x + g.x, text.origin.y + g.y);
+    const PathPoint blockAt = shapedOrigin(text, shaped);
+    translateInPlace(path, blockAt.x + g.x, blockAt.y + g.y);
     // Section 4: `document = transform * (origin + penPosition)`. Applied
     // per glyph, after the two translations above, so the block scales and
     // rotates as one piece -- the shaping that produced `g` has already
@@ -332,8 +352,9 @@ CaretPen caretPenFor(const TextContent& text, size_t caretByte) {
     if (best == nullptr || g.cluster < best->cluster) best = &g;
   }
 
+  const PathPoint blockAt = shapedOrigin(text, shaped);
   if (best != nullptr) {
-    c.pen = PathPoint{text.origin.x + best->x, text.origin.y + best->y};
+    c.pen = PathPoint{blockAt.x + best->x, blockAt.y + best->y};
     return c;
   }
 
@@ -352,7 +373,7 @@ CaretPen caretPenFor(const TextContent& text, size_t caretByte) {
   const ShapedGlyph* last = &shaped.glyphs.front();
   for (const ShapedGlyph& g : shaped.glyphs)
     if (g.y > last->y || (g.y == last->y && g.x > last->x)) last = &g;
-  c.pen = PathPoint{text.origin.x + last->x + last->advance, text.origin.y + last->y};
+  c.pen = PathPoint{blockAt.x + last->x + last->advance, blockAt.y + last->y};
   return c;
 }
 
@@ -419,11 +440,12 @@ std::vector<TextQuad> textSelectionQuads(const TextContent& text, size_t loByte,
 
   out.reserve(lines.size());
   for (const Line& l : lines) {
-    const float x0 = text.origin.x + l.minX;
-    const float x1 = text.origin.x + l.maxX;
+    const PathPoint blockAt = shapedOrigin(text, shaped);
+    const float x0 = blockAt.x + l.minX;
+    const float x1 = blockAt.x + l.maxX;
     // The same split the caret uses, from the same two constants.
-    const float y0 = text.origin.y + l.y - h * kAscentFraction;
-    const float y1 = text.origin.y + l.y + h * kDescentFraction;
+    const float y0 = blockAt.y + l.y - h * kAscentFraction;
+    const float y1 = blockAt.y + l.y + h * kDescentFraction;
     TextQuad q;
     q.corner[0] = mapped(text, PathPoint{x0, y0});
     q.corner[1] = mapped(text, PathPoint{x1, y0});
@@ -492,8 +514,9 @@ size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
   // on the line above. The weight is a plain factor rather than a
   // line-height-relative one, because it only has to make vertical distance
   // dominate and the two axes are already in the same unit (text-space px).
-  const float lx = at.x - text.origin.x;
-  const float ly = at.y - text.origin.y;
+  const PathPoint blockAt = shapedOrigin(text, shaped);
+  const float lx = at.x - blockAt.x;
+  const float ly = at.y - blockAt.y;
 
   const ShapedGlyph* best = nullptr;
   float bestScore = 0.0f;

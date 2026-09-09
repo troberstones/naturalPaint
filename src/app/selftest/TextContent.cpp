@@ -299,6 +299,90 @@ bool runTextContentTest() {
           "bp.maxY>0 form passes either way up and proves nothing (see comment above)");
   }
 
+  // --- the anchor: point text is pinned by its BASELINE ---------------------
+  //
+  // core/TextContent.hpp section 2b. Two user-visible promises, and each was
+  // broken before `origin` meant the baseline.
+  {
+    const PathPoint org{200.0f, 300.0f};
+
+    // 1. Making the type bigger grows it UP and to the right out of a fixed
+    //    bottom-left, rather than pushing the block down the page.
+    {
+      TextContent small = makeTextContent("Handgloves", org);
+      small.style.sizePx = 12.0f;
+      TextContent big = small;
+      big.style.sizePx = 96.0f;
+      const PathBounds bs = textContentBounds(small);
+      const PathBounds bb = textContentBounds(big);
+      check(bs.valid && bb.valid, "anchor: both sizes shape");
+      std::printf("  [measured] 12px box y %.2f..%.2f, 96px box y %.2f..%.2f (baseline at %.1f)\n",
+                  bs.minY, bs.maxY, bb.minY, bb.maxY, org.y);
+
+      // The load-bearing one: the box grows UPWARD. Under the old top-left
+      // anchor `minY` stayed put and `maxY` ran down the page instead.
+      check(bb.minY < bs.minY - 10.0f,
+            "anchor: REQUIRED -- enlarging the type extends the block UPWARD (a smaller minY). "
+            "Pinning the top of the line box instead pushes the text DOWN the page, away from "
+            "the corner the user placed");
+
+      // And the left edge does not move -- the other half of "bottom left".
+      check(std::fabs(bb.minX - bs.minX) < 8.0f,
+            "anchor: and the LEFT edge stays put, so the growth is up-and-right");
+
+      // The baseline itself is exactly `origin.y` at BOTH sizes. Asserted on
+      // the caret rather than the ink, because ink dips below the baseline by
+      // a descender ('g' here) and that dip legitimately deepens with size --
+      // the baseline is the thing that must not move.
+      //
+      // The baseline is recovered from the segment's own 0.8/0.2 split rather
+      // than from the private `caretHeightFor()`: top + 0.8 of the span.
+      const TextCaretSegment cs = textCaretSegment(small, 0);
+      const TextCaretSegment cb = textCaretSegment(big, 0);
+      const float baseS = cs.top.y + 0.8f * (cs.bottom.y - cs.top.y);
+      const float baseB = cb.top.y + 0.8f * (cb.bottom.y - cb.top.y);
+      check(std::fabs(baseS - org.y) < 0.01f && std::fabs(baseB - org.y) < 0.01f,
+            "anchor: REQUIRED -- the first baseline is exactly origin.y at BOTH sizes, so what is "
+            "pinned is a baseline and not a bounding box that happens to be near one");
+    }
+
+    // 2. The caret does not JUMP when the first character is typed. An empty
+    //    block's caret was drawn at `origin` while the first glyph landed an
+    //    ascent lower, so the text appeared a whole ascent below where the
+    //    insertion point had been sitting.
+    {
+      TextContent empty = makeTextContent("", org);
+      empty.style.sizePx = 48.0f;
+      TextContent typed = empty;
+      typed.utf8 = "H";
+      const TextCaretSegment before = textCaretSegment(empty, 0);
+      const TextCaretSegment after = textCaretSegment(typed, 1);
+      std::printf("  [measured] empty caret bottom %.2f, after typing 'H' %.2f\n", before.bottom.y,
+                  after.bottom.y);
+      check(std::fabs(before.bottom.y - after.bottom.y) < 0.01f,
+            "anchor: REQUIRED -- the caret sits at the SAME height before and after the first "
+            "keystroke. It used to drop by a full ascent, so the text did not appear where the "
+            "insertion point promised it would");
+    }
+
+    // 3. Paragraph text is NOT moved: its `origin` is the frame's top-left,
+    //    which is the box the user dragged out. Enlarging the type fills
+    //    further down the frame; the frame stays where it is.
+    {
+      TextContent para = makeTextContent("Paragraph text wraps inside its frame.", org);
+      para.frame.width = 300.0f;
+      para.style.sizePx = 12.0f;
+      TextContent bigPara = para;
+      bigPara.style.sizePx = 24.0f;
+      const PathBounds bs = textContentBounds(para);
+      const PathBounds bb = textContentBounds(bigPara);
+      check(bs.valid && bb.valid && bb.minY > org.y - 1.0f && bs.minY > org.y - 1.0f,
+            "anchor: REQUIRED -- a PARAGRAPH block still hangs DOWN from its frame's top-left at "
+            "both sizes. Pinning a frame by its first baseline would slide the whole box up the "
+            "page whenever the type size changed");
+    }
+  }
+
   // --- the transform: a scaled or rotated block is STILL TEXT ---------------
   //
   // core/TextContent.hpp section 4. The failure these guard against is not
