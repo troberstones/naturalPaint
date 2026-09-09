@@ -272,17 +272,45 @@ bool runCommandsPatternsTest() {
     // policy clamps taps at the border on purpose (ops/Transform.hpp), so a
     // border texel is deliberately NOT `a + b*srcX` and asserting it there
     // would be asserting the wrong claim.
+    // **The model is RETYPED here, and calling `lensSourcePosition()` for the
+    // expectation instead would be a bug.** Sabotage found it: flipping the
+    // sign of the radial term in `radialScale()` left this assertion GREEN,
+    // because both sides of the comparison then used the same wrong model. A
+    // test that asks the implementation what it meant to do measures only that
+    // it did what it meant. So the four lines below are the published
+    // Brown-Conrady form out of ops/Lens.hpp section 2, written out
+    // independently -- the same discipline the export sections use when they
+    // check against a published constant rather than against the code's own
+    // answer. `lensSourcePosition()` is then asserted to AGREE with it, which
+    // is what ties the retyped copy to the shipped one.
+    const auto modelSourceX = [&](double dstX, double dstY) {
+      const double cx = 0.5 * static_cast<double>(kW);
+      const double cy = 0.5 * static_cast<double>(kH);
+      const double halfDiag =
+          0.5 * std::sqrt(static_cast<double>(kW) * kW + static_cast<double>(kH) * kH);
+      const double dx = dstX - cx;
+      const double dy = dstY - cy;
+      const double r2 = (dx * dx + dy * dy) / (halfDiag * halfDiag);
+      return cx + dx * (1.0 + static_cast<double>(p.k1) * r2 +
+                        static_cast<double>(p.k2) * r2 * r2);
+    };
+
     double worst = 0.0;
     int32_t worstX = -1, worstY = -1;
     size_t sampled = 0;
+    double worstModelGap = 0.0;
     for (int32_t y = 16; y < kH - 16; ++y) {
       for (int32_t x = 16; x < kW - 16; ++x) {
-        const Point2 s = lensSourcePosition(
-            p, Point2{static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f}, 1);
+        const double dstX = static_cast<double>(x) + 0.5;
+        const double dstY = static_cast<double>(y) + 0.5;
+        const Point2 s =
+            lensSourcePosition(p, Point2{static_cast<float>(dstX), static_cast<float>(dstY)}, 1);
+        worstModelGap = std::max(worstModelGap, std::fabs(s.x - modelSourceX(dstX, dstY)));
         if (s.x < 4.0f || s.y < 4.0f || s.x > static_cast<float>(kW) - 4.0f ||
             s.y > static_cast<float>(kH) - 4.0f)
           continue;
-        const double expect = static_cast<double>(kA) + static_cast<double>(kB) * s.x;
+        const double expect =
+            static_cast<double>(kA) + static_cast<double>(kB) * modelSourceX(dstX, dstY);
         const double got = readTexel(out, x, y)[0];
         const double err = std::fabs(got - expect);
         if (err > worst) {
@@ -300,6 +328,8 @@ bool runCommandsPatternsTest() {
     std::printf("  [measured] lens ramp: %zu texels, worst |got - (a + b*srcX)| = %.6f at (%d,%d)\n",
                 sampled, worst, worstX, worstY);
     check(sampled > 2000, "lens: the ramp check sampled the interior");
+    check(worstModelGap < 1e-3,
+          "lens: lensSourcePosition() agrees with the retyped Brown-Conrady form");
     check(worst < 3e-3, "lens: a corrected ramp reads a + b*srcX -- the geometry IS the model");
   }
 
@@ -462,14 +492,25 @@ bool runCommandsPatternsTest() {
     // And the seams by name, so a failure says which edge slipped. The last
     // column of one tile and the first column of the next are the two texels
     // an off-by-one swaps, repeats or drops.
+    //
+    // **Compared against the PATTERN, not against the fill's own column 0**,
+    // and sabotage is why. Written the natural way -- `filled(W, y)` against
+    // `filled(0, y)` -- both of these stayed GREEN while a deliberate
+    // one-texel stutter at every tile boundary was in the production line,
+    // because an error that repeats with the tiling period is invariant under
+    // any filled-to-filled comparison. A seam check that cannot see a periodic
+    // seam bug is not a seam check.
+    const TileStore& seedTiles = *seed.document.layers[0].rgbTiles;
     bool vSeam = true, hSeam = true;
     for (int32_t y = 0; y < kPH; ++y) {
-      if (readTexel(filled, kPW - 1, y) != readTexel(filled, kPW * 2 - 1, y)) vSeam = false;
-      if (readTexel(filled, kPW, y) != readTexel(filled, 0, y)) vSeam = false;
+      if (readTexel(filled, kPW - 1, y) != readTexel(seedTiles, kPW - 1, y)) vSeam = false;
+      if (readTexel(filled, kPW, y) != readTexel(seedTiles, 0, y)) vSeam = false;
+      if (readTexel(filled, kPW * 2 - 1, y) != readTexel(seedTiles, kPW - 1, y)) vSeam = false;
     }
     for (int32_t x = 0; x < kPW; ++x) {
-      if (readTexel(filled, x, kPH - 1) != readTexel(filled, x, kPH * 2 - 1)) hSeam = false;
-      if (readTexel(filled, x, kPH) != readTexel(filled, x, 0)) hSeam = false;
+      if (readTexel(filled, x, kPH - 1) != readTexel(seedTiles, x, kPH - 1)) hSeam = false;
+      if (readTexel(filled, x, kPH) != readTexel(seedTiles, x, 0)) hSeam = false;
+      if (readTexel(filled, x, kPH * 2 - 1) != readTexel(seedTiles, x, kPH - 1)) hSeam = false;
     }
     check(vSeam, "fill: the vertical seam at x = W repeats the pattern's column 0 exactly");
     check(hSeam, "fill: the horizontal seam at y = H repeats the pattern's row 0 exactly");
