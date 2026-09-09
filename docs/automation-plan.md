@@ -418,6 +418,33 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 - [ ] lens correction (PRD D22)
 - [ ] pattern define / fill (PRD D27)
 
+### The scatter wave — dispatched 2026-09-09, all six based on `8ab193d`
+
+One file per track, which is why the table was split into families first: six branches
+appending to one `std::vector<CommandSpec>` literal is one shared conflict, and
+`run_golden.sh`'s nine parallel view arrays already sprang that trap once.
+
+| branch | worktree | owns | step |
+|---|---|---|---|
+| `scatter/image` | `np-image` | `app/CommandsImage.cpp` — 7 filters, 19 adjustments + 4 auto, 4 document-geometry | 1 |
+| `scatter/layers` | `np-layers` | `app/CommandsLayers.cpp` — `LayerCommand`, `LayerSetCommand`, the value setters | 1 |
+| `scatter/opstack` | `np-opstack` | `app/CommandsOpStack.cpp` — op-stack rows and the selection rows | 1 |
+| `scatter/recorder` | `np-recorder` | `app/Recorder` | 3 |
+| `scatter/actionfile` | `np-actionfile` | `ops/Action`, `io/ActionFile` | 4 |
+| `scatter/patterns` | `np-patterns` | lens correction, pattern define/fill | 8 |
+
+Steps 2 (migrate the 49 call sites), 5 (replay), 6 (batch) and 7 (UI) are the sequential
+chain and are not scattered — each needs the one before it.
+
+**Gather-time checks, none of which a track can do for itself:**
+
+- [ ] every declared `run*Test()` is called **and** its term is in the aggregation — the
+      parallel-array trap, six branches appending to one boolean expression
+- [ ] `grep -rn SABOTAGE-TEMP src/` is empty (plain `SABOTAGE` is not a usable marker:
+      several permanent "SABOTAGE PROOF" sections already contain it)
+- [ ] the exhaustiveness test itself, written here, over all four vocabularies at once
+- [ ] re-run each track's own sabotages against the **merged** production line
+
 ### Sabotage, at gather
 
 - [ ] break the input/output collision check → `Batch` test goes red
