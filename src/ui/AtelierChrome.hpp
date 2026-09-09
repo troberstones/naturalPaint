@@ -229,7 +229,7 @@ struct ToolGroup {
 // Display order matches the user's own table exactly (Move+Frame,
 // Marquee, Lasso+PolygonLasso, MagicWand, Crop+Slice, Eyedropper+Measure,
 // CloneStamp, Eraser, PaintBucket+Gradient, Brush+Pencil+Water+DryBrush,
-// Smudge, Dodge+Burn, Pen+Curve, Text, Shape, Hand, Zoom) -- derived from
+// Smudge, Dodge+Burn, Pen+Curve+PathSelect, Text, Shape, Hand, Zoom) -- derived from
 // Photoshop's real tool groups, not arbitrary, which is why a group of one
 // today (MagicWand, CloneStamp, Eraser, Smudge, Text, Shape, Hand, Zoom)
 // still gets its own slot rather than being folded into a neighbour: those
@@ -249,7 +249,7 @@ constexpr ToolGroup kToolGroups[] = {
     {{Tool::Brush, Tool::Pencil, Tool::Water, Tool::DryBrush}, 4, false},
     {{Tool::Smudge}, 1, false},
     {{Tool::Dodge, Tool::Burn}, 2, true},
-    {{Tool::Pen, Tool::Curve}, 2, false},
+    {{Tool::Pen, Tool::Curve, Tool::PathSelect}, 3, false},
     {{Tool::Text}, 1, false},
     {{Tool::Shape}, 1, true},
     {{Tool::Hand}, 1, false},

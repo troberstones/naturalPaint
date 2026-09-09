@@ -123,6 +123,22 @@ enum class Tool {
   Text,
   Shape,
   Slice,
+  // PLAN/docs/path-editing-plan.md section 3.1. **Appended here rather than
+  // inserted beside `Pen`**, which is where it belongs on screen: ui/
+  // AtelierChrome's `kToolMeta` is one row per value in THIS order with a
+  // static_assert on the count, so a tool's slot in the enum is load-bearing
+  // and its slot in the PALETTE is `kToolGroups`' business. This is the rule
+  // Eraser, Lasso, PaintBucket and the rest already follow -- "a tool
+  // shipping moves its comment, never its slot" -- read the other way round:
+  // a tool ARRIVING takes the next slot, wherever it is displayed.
+  //
+  // It joins `Pen` and `Curve` in their flyout group, which holds four, so
+  // this adds no palette CELL -- docs/ui.md section 2's 28-cell count is
+  // untouched. That mattered: the SHAPE/COMPONENT mode segment exists
+  // precisely because a black-arrow/white-arrow pair would have added two
+  // cells the UI spec does not have. One flyout sibling is not two cells,
+  // so the segment survives and becomes this tool's own options row.
+  PathSelect,
   Count
 };
 

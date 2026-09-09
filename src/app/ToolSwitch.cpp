@@ -143,6 +143,11 @@ bool springEyedropperEligible(Tool t, BucketFill fill) noexcept {
     case Tool::Gradient:
     case Tool::Pen:
     case Tool::Curve:
+    // Alt is spent: `hitTestPath()`'s `gnomonSuppressed` is Alt held, which
+    // is docs/vector-editing.md section 3's escape hatch for a handle sitting
+    // underneath the gnomon -- and PathSelect is the tool that HAS a gnomon,
+    // so it is the one that needs it most.
+    case Tool::PathSelect:
     case Tool::Text:
     case Tool::Shape:
     case Tool::Slice:

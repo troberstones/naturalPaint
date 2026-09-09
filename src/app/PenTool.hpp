@@ -69,6 +69,24 @@ enum class Tool;
 
 bool toolEditsPath(Tool t) noexcept;
 
+// Which of the three AUTHORS geometry. `Tool::Pen` and `Tool::Curve` place
+// anchors; `Tool::PathSelect` never creates one.
+//
+// **This is the split that lets the Pen stop being the manipulator.** Before
+// it, `pathEditBeginPen()` forwarded every press that was not on empty canvas
+// to `pathEditBegin()`, so the Pen ran the gnomon, the marquee, anchor drags
+// and tangent drags -- it was the selection tool as well as the drawing tool.
+// The canvas block routes on this predicate: true means placement
+// (`pathEditBeginPen()`), false means the editing gestures
+// (`pathEditBegin()`), and neither tool does the other's job.
+//
+// It is also what keeps `toolEditsPath()`'s widening honest. A predicate that
+// went true for a third tool WITHOUT a routing split would have handed the
+// Pen's placement to Path Select and Path Select's manipulator to the Pen --
+// which is the shape of the defect app/selftest/Eyedropper.cpp's tripwire
+// exists to catch, arriving from the opposite direction.
+bool pathToolPlacesAnchors(Tool t) noexcept;
+
 // ==========================================================================
 // 3. SELECTION -- two modes, one modifier grammar
 // ==========================================================================
@@ -495,17 +513,30 @@ void pathEditSetSelectMode(PathEditState* state, PathSelectMode mode,
 // `recordEdit()` -- immediately, not from a later `pathEditUpdate()`.
 
 // What one `pathEditBeginPen()` press did.
+//
+// **`Editing` and `Selecting` are gone**, and their absence is this track's
+// whole point. They meant "this press was forwarded to `pathEditBegin()`" --
+// the gnomon, the marquee, anchor drags, tangent drags -- which made the Pen
+// the manipulator as well as the drawing tool. `Tool::PathSelect` owns those
+// gestures now, and the Pen's press has exactly four outcomes, every one of
+// them about placing points.
 enum class PenPressResult {
-  Editing,    // existing geometry, not the open path's own first anchor --
-              // `pathEditBegin()`'s ordinary gestures took over (bullet 2:
-              // "presses on existing geometry keep today's gestures").
-  Selecting,  // as `Editing`, but no geometry changed (a selection-only
-              // click) -- `pathEditBegin()` returned false.
+  Inert,      // the press landed on geometry the Pen has nothing to say
+              // about. Nothing changed, nothing was selected. Any open
+              // placement ended -- docs/vector-editing.md section 8's
+              // "clicking away".
   Placed,     // a new anchor went down. `*shapes` already changed --
               // `recordEdit()` now.
   Closed,     // the press landed on the open subpath's own first anchor:
               // closed, and placement ended. `*shapes` already changed --
               // `recordEdit()` now.
+  Resumed,    // the press landed on the loose end of some OTHER open subpath,
+              // which is now the open placement session. No geometry changed
+              // (that end was already the subpath's last anchor), so there is
+              // nothing to record.
+  ResumedReversed,  // as `Resumed`, but the subpath had to be reversed to put
+                    // the pressed end at the back. `*shapes` already changed
+                    // -- `recordEdit()` now.
 };
 
 // Pen/Curve's press. Hit-tests `at` exactly as `hitTestPath()` does (so a
@@ -535,11 +566,18 @@ enum class PenPressResult {
 // here exactly as the LAYERS panel's NEW > Vector insertion advances it
 // (`core/LayerOps.cpp`'s `makeVectorLayer()`), so a placed shape's id is
 // never reused within its layer.
+// **Four parameters lighter than it was, and each one dropped says
+// something.** `gnomonSuppressed` and `gnomonReachPx` are gone because the
+// Pen draws no gnomon and therefore must not HIT-TEST one: a target that is
+// hit but not drawn is the same lie as a target drawn at a size it is not hit
+// at, which this file's own `gnomonReachPx` comment was written about. It
+// passes `gnomonSuppressed = true` internally, unconditionally. `how` is gone
+// because a Pen press does not combine selections -- it selects exactly the
+// anchor it just placed or resumed from, always Replace. Anyone wanting
+// Shift-click set semantics wants `Tool::PathSelect`.
 PenPressResult pathEditBeginPen(PathEditState* state, std::vector<VectorShape>* shapes,
                                 uint64_t* nextShapeId, PathPoint at, float pickRadiusPx,
-                                bool gnomonSuppressed, SelectionCombine how,
-                                uint64_t documentId, bool curveMode,
-                                float gnomonReachPx = kDefaultGnomonReachPx);
+                                uint64_t documentId, bool curveMode);
 
 // Whether a placement session is open -- `ui/`'s overlay uses this to decide
 // whether to draw the rubber-band segment from the last anchor to the

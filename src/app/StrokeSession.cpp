@@ -267,6 +267,7 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target) noexcept {
     case Tool::Gradient:
     case Tool::Pen:
     case Tool::Curve:
+    case Tool::PathSelect:
     case Tool::Text:
     case Tool::Shape:
     case Tool::Slice:
@@ -533,6 +534,7 @@ StrokeRoute strokeRouteFor(Tool tool, const Layer* target, LayerEditTarget editT
     case Tool::Zoom:
     case Tool::Pen:
     case Tool::Curve:
+    case Tool::PathSelect:
     case Tool::Text:
     case Tool::Shape:
     case Tool::Slice:
@@ -603,6 +605,7 @@ const char* strokeEditLabel(Tool tool) noexcept {
     case Tool::Gradient:
     case Tool::Pen:
     case Tool::Curve:
+    case Tool::PathSelect:
     case Tool::Text:
     case Tool::Shape:
     case Tool::Slice:

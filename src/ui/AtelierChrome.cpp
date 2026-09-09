@@ -288,6 +288,16 @@ constexpr ToolMeta kToolMeta[] = {
     {"Text", "type", 57752u, "T", true},
     {"Shape", "shapes", 58547u, "", false},
     {"Slice", "slice", 58096u, "", false},
+    // **Built**: app/PenTool, gated by `toolEditsPath()` alongside Pen and
+    // Curve. Photoshop's black arrow, and the tool that lets the Pen stop
+    // being one: before this, Pen presses on existing geometry ran the
+    // gnomon, the marquee, anchor drags and tangent drags, so "the pen" was
+    // also the manipulator. Those gestures live here now and the Pen only
+    // places points (docs/path-editing-plan.md section 3.3).
+    //
+    // `A` is not a new claim -- docs/shortcuts.md section 1 has reserved it
+    // for "Path select" since before any of this existed.
+    {"Path Select", "mouse-pointer-2", 57795u, "A", true},
 };
 static_assert(std::size(kToolMeta) == static_cast<size_t>(Tool::Count),
               "one ToolMeta row per Tool value, in app/AppState.hpp's declaration order");

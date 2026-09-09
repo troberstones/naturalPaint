@@ -36,7 +36,7 @@ bool runPenDrawTest() {
     check(!pathEditHasOpenPath(st), "no open path before the first press");
 
     const PenPressResult r = pathEditBeginPen(&st, &shapes, &nextId, PathPoint{10, 20}, 4.0f,
-                                              false, SelectionCombine::Replace, 1,
+                                              1,
                                               /*curveMode=*/false);
     check(r == PenPressResult::Placed, "the first press on empty canvas places");
     check(shapes.size() == 1, "one shape created");
@@ -68,8 +68,7 @@ bool runPenDrawTest() {
     std::vector<VectorShape> shapes;
     uint64_t nextId = 1;
     PathEditState st;
-    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, false,
-                     SelectionCombine::Replace, 1, /*curveMode=*/false);
+    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, 1, /*curveMode=*/false);
     check(st.drag == PathDragKind::PenExtend, "the placement press opens a PenExtend drag");
 
     const PathEditChange c1 = pathEditUpdate(&st, &shapes, PathPoint{30, 0});
@@ -95,7 +94,7 @@ bool runPenDrawTest() {
     PathEditState st;
     const PathPoint pts[3] = {{0, 0}, {50, 0}, {50, 50}};
     for (const PathPoint& p : pts) {
-      pathEditBeginPen(&st, &shapes, &nextId, p, 4.0f, false, SelectionCombine::Replace, 1,
+      pathEditBeginPen(&st, &shapes, &nextId, p, 4.0f, 1,
                        false);
       pathEditEnd(&st, shapes);
     }
@@ -109,8 +108,7 @@ bool runPenDrawTest() {
       check(sub.closed == false, "not closed -- no press has landed on the first anchor yet");
     }
 
-    const PenPressResult closed = pathEditBeginPen(&st, &shapes, &nextId, pts[0], 4.0f, false,
-                                                    SelectionCombine::Replace, 1, false);
+    const PenPressResult closed = pathEditBeginPen(&st, &shapes, &nextId, pts[0], 4.0f, 1, false);
     check(closed == PenPressResult::Closed, "a press on the first anchor closes");
     check(shapes[0].path.subpaths[0].closed == true, "the subpath is now closed");
     check(!pathEditHasOpenPath(st), "placement ends once the path closes");
@@ -125,15 +123,13 @@ bool runPenDrawTest() {
     std::vector<VectorShape> shapes;
     uint64_t nextId = 1;
     PathEditState st;
-    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, false,
-                     SelectionCombine::Replace, 1, false);
+    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, 1, false);
     pathEditEnd(&st, shapes);
     // Well clear of the first anchor's own gnomon (default reach 40 doc
     // units around its pivot, section 5's tier 1) -- a second press ON the
     // gnomon would be "existing geometry" (bullet 2), not a placement, which
     // is a different scenario from the one under test here.
-    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{200, 0}, 4.0f, false,
-                     SelectionCombine::Replace, 1, false);
+    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{200, 0}, 4.0f, 1, false);
     pathEditEnd(&st, shapes);
     check(pathEditHasOpenPath(st), "still open after two presses");
 
@@ -159,8 +155,7 @@ bool runPenDrawTest() {
     const PathPoint pts[4] = {{0, 0}, {40, 10}, {80, 0}, {120, 30}};
     size_t placedCount = 0;
     for (const PathPoint& p : pts) {
-      const PenPressResult r = pathEditBeginPen(&st, &shapes, &nextId, p, 4.0f, false,
-                                                SelectionCombine::Replace, 1, /*curveMode=*/true);
+      const PenPressResult r = pathEditBeginPen(&st, &shapes, &nextId, p, 4.0f, 1, /*curveMode=*/true);
       if (r == PenPressResult::Placed) ++placedCount;
       pathEditEnd(&st, shapes);
     }
@@ -218,16 +213,25 @@ bool runPenDrawTest() {
 
     uint64_t nextId = 100;
     PathEditState st;
-    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, false,
-                     SelectionCombine::Replace, 1, false);
+    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, 1, false);
     const uint64_t openShapeId = st.openPathShapeId;
     pathEditEnd(&st, shapes);
     check(pathEditHasOpenPath(st), "a path is open");
 
     const PenPressResult r = pathEditBeginPen(&st, &shapes, &nextId, PathPoint{500, 500}, 4.0f,
-                                              false, SelectionCombine::Replace, 1, false);
-    check(r == PenPressResult::Editing || r == PenPressResult::Selecting,
-          "a press on OTHER existing geometry falls through to pathEditBegin()'s gestures");
+                                              1, false);
+    // **This assertion is inverted from the one it replaces**, and the
+    // inversion is the point of docs/path-editing-plan.md track C. It used to
+    // read "a press on OTHER existing geometry falls through to
+    // pathEditBegin()'s gestures" -- which is exactly the behaviour that made
+    // the Pen the manipulator as well as the drawing tool. Those gestures are
+    // `Tool::PathSelect`'s now.
+    check(r == PenPressResult::Inert,
+          "a press on other existing geometry is INERT -- the Pen does not select, drag or "
+          "manipulate, it only places points");
+    check(st.drag == PathDragKind::None,
+          "...and starts no drag: the whole class of gestures the Pen used to inherit from "
+          "pathEditBegin() is gone, not merely unreported");
     check(!pathEditHasOpenPath(st), "...and that press 'clicked away', ending the open path");
 
     const VectorShape* openShapeAfter = nullptr;
@@ -235,6 +239,143 @@ bool runPenDrawTest() {
       if (s.id == openShapeId) openShapeAfter = &s;
     check(openShapeAfter != nullptr && openShapeAfter->path.subpaths[0].anchors.size() == 1,
           "the open shape itself is untouched -- still one anchor");
+  }
+
+  // =======================================================================
+  // 9. RESUME -- picking a path back up by its loose end
+  // =======================================================================
+  //
+  // docs/path-editing-plan.md section 6, decided 2026-09-09. Without this, an
+  // open path abandoned with Escape could never be continued, only redrawn.
+  //
+  // The assertion that matters is not "placement reopened" -- it is WHERE the
+  // next anchor lands. Placement appends, so resuming from the FRONT of a
+  // subpath has to reverse it first; a resume that reopened the session
+  // without reversing would put the next point at the wrong end of the line,
+  // which looks like the path jumping.
+  {
+    // Two anchors running left to right: (0,0) then (100,0).
+    std::vector<VectorShape> shapes;
+    uint64_t nextId = 1;
+    PathEditState st;
+    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{0, 0}, 4.0f, 1, false);
+    pathEditEnd(&st, shapes);
+    pathEditBeginPen(&st, &shapes, &nextId, PathPoint{100, 0}, 4.0f, 1, false);
+    pathEditEnd(&st, shapes);
+    pathEditEndOpenPath(&st);
+    check(!pathEditHasOpenPath(st), "the path is abandoned, as Escape leaves it");
+
+    // --- resume from the TAIL: nothing to reverse -------------------------
+    {
+      std::vector<VectorShape> tailCase = shapes;
+      PathEditState ts = st;
+      const PenPressResult r =
+          pathEditBeginPen(&ts, &tailCase, &nextId, PathPoint{100, 0}, 4.0f, 1, false);
+      check(r == PenPressResult::Resumed,
+            "RESUME: a press on the subpath's LAST anchor resumes without reversing, so "
+            "nothing is recorded");
+      check(pathEditHasOpenPath(ts), "RESUME: placement is open again");
+      check(ptNear(tailCase[0].path.subpaths[0].anchors[0].pt, PathPoint{0, 0}),
+            "RESUME: the anchor order is untouched when no reversal was needed");
+      // The next press must extend at (100,0)'s end.
+      pathEditEnd(&ts, tailCase);
+      pathEditBeginPen(&ts, &tailCase, &nextId, PathPoint{200, 0}, 4.0f, 1, false);
+      check(tailCase[0].path.subpaths[0].anchors.size() == 3 &&
+                ptNear(tailCase[0].path.subpaths[0].anchors[2].pt, PathPoint{200, 0}),
+            "RESUME: the next point extends from the end that was pressed");
+    }
+
+    // --- resume from the HEAD: the subpath reverses -----------------------
+    {
+      std::vector<VectorShape> headCase = shapes;
+      PathEditState hs = st;
+      const PenPressResult r =
+          pathEditBeginPen(&hs, &headCase, &nextId, PathPoint{0, 0}, 4.0f, 1, false);
+      check(r == PenPressResult::ResumedReversed,
+            "RESUME: a press on the subpath's FIRST anchor reports ResumedReversed, so the "
+            "caller records the reversal rather than leaving a silent geometry change");
+      check(ptNear(headCase[0].path.subpaths[0].anchors[0].pt, PathPoint{100, 0}) &&
+                ptNear(headCase[0].path.subpaths[0].anchors[1].pt, PathPoint{0, 0}),
+            "RESUME: the subpath reversed, putting the pressed end at the back");
+      pathEditEnd(&hs, headCase);
+      pathEditBeginPen(&hs, &headCase, &nextId, PathPoint{-100, 0}, 4.0f, 1, false);
+      check(headCase[0].path.subpaths[0].anchors.size() == 3 &&
+                ptNear(headCase[0].path.subpaths[0].anchors[2].pt, PathPoint{-100, 0}),
+            "RESUME: the next point extends from the pressed END, not from the other one -- "
+            "the assertion the reversal exists for");
+    }
+
+    // --- a CLOSED subpath has no loose end --------------------------------
+    {
+      std::vector<VectorShape> closedCase = shapes;
+      closedCase[0].path.subpaths[0].closed = true;
+      PathEditState cs = st;
+      const PenPressResult r =
+          pathEditBeginPen(&cs, &closedCase, &nextId, PathPoint{0, 0}, 4.0f, 1, false);
+      check(r == PenPressResult::Inert,
+            "RESUME: a closed subpath has no loose end, so pressing its anchors is inert");
+      check(!pathEditHasOpenPath(cs), "RESUME: ...and opens no placement session");
+    }
+  }
+
+  // =======================================================================
+  // 10. The Pen does not manipulate -- every gesture it used to inherit
+  // =======================================================================
+  //
+  // Section 8 above covers the "clicked away" case. This one is the general
+  // claim: the four hit kinds that `pathEditBegin()` turns into drags are all
+  // inert under the Pen. Asserted per-KIND rather than once, because the
+  // failure this guards is a single `case` arm creeping back into
+  // `pathEditBeginPen()` -- which one assertion over one hit kind would not
+  // see.
+  {
+    std::vector<VectorShape> shapes(1);
+    shapes[0].id = 7;
+    SubPath sub;
+    sub.closed = true;  // closed: no loose ends, so nothing here can resume
+    for (PathPoint p : {PathPoint{0, 0}, PathPoint{100, 0}, PathPoint{100, 100}}) {
+      Anchor a;
+      a.pt = p;
+      a.in = PathPoint{p.x - 10, p.y};
+      a.out = PathPoint{p.x + 10, p.y};
+      shapes[0].path.subpaths.push_back(SubPath{});
+      shapes[0].path.subpaths.back().anchors.push_back(a);
+      shapes[0].path.subpaths.pop_back();
+      sub.anchors.push_back(a);
+    }
+    shapes[0].path.subpaths.push_back(sub);
+
+    // Select every anchor, so tangent handles are hit-testable too (they are
+    // drawn, and tested, only for SELECTED anchors -- docs/vector-editing.md
+    // section 3).
+    uint64_t nextId = 50;
+    PathEditState st;
+    st.selection.mode = PathSelectMode::Component;
+    for (uint32_t i = 0; i < 3; ++i)
+      st.selection.components.push_back(ComponentRef{7, 0, i, AnchorPart::Point});
+
+    struct Case {
+      PathPoint at;
+      const char* what;
+    };
+    const Case kCases[] = {
+        {{100, 0}, "an anchor"},
+        {{110, 0}, "a tangent handle"},
+        {{50, 0}, "a path segment"},
+    };
+    for (const Case& c : kCases) {
+      std::vector<VectorShape> copy = shapes;
+      PathEditState ps = st;
+      const uint64_t before = vectorContentHash(copy);
+      const PenPressResult r =
+          pathEditBeginPen(&ps, &copy, &nextId, c.at, 6.0f, 1, false);
+      const bool inert = r == PenPressResult::Inert && ps.drag == PathDragKind::None &&
+                         vectorContentHash(copy) == before;
+      std::string label = "the Pen is INERT on ";
+      label += c.what;
+      label += " -- no drag, no geometry change (PathSelect's gesture, not the Pen's)";
+      check(inert, label.c_str());
+    }
   }
 
   return ok;

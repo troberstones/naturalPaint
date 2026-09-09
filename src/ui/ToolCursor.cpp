@@ -127,6 +127,16 @@ ToolCursor cursorForTool(Tool tool) noexcept {
     // something already on the canvas follows the drag.
     case Tool::Move:
     case Tool::Frame:
+    // Path Select shares that MEANING while sharing neither slot nor pixels:
+    // its whole job is that existing geometry follows the drag. It is
+    // deliberately NOT folded in with Pen and Curve above, even though the
+    // three are flyout siblings -- those two define geometry by clicking
+    // points, which is `Select`'s intent, and this one moves geometry that is
+    // already there. Sorting the group's members by what they DO rather than
+    // by which slot they live in is the whole reason this switch lists
+    // enumerators instead of groups. §7's per-`Tool` bitmap still gives it
+    // its own arrow, so it does not look like the Move tool.
+    case Tool::PathSelect:
       return ToolCursor::MoveObject;
 
     case Tool::Text:
@@ -630,6 +640,13 @@ CursorHotspotAnchor cursorHotspotAnchorFor(Tool tool) noexcept {
     // vertex by vertex and its apex is the vertex the icon leads with.
     case Tool::PolygonLasso:
       return {0.5f, 0.0f};
+
+    // The arrow's point is its own top-left corner, which is the one hotspot
+    // in this function that needs no argument: every pointer arrow ever drawn
+    // aims from there, and a user who has to discover otherwise has already
+    // mis-clicked.
+    case Tool::PathSelect:
+      return {0.0f, 0.0f};
 
     // The wand's tip is the top-right end of the shaft, where its sparkles are.
     case Tool::MagicWand:

@@ -15781,31 +15781,54 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         const bool curveMode = st.brush.tool == Tool::Curve;
 
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-          // One modifier grammar for the whole app: core/SelectionOps' own
-          // mapping, applied with SET semantics here rather than coverage
-          // semantics (docs/vector-editing.md section 4).
-          const SelectionCombine how = selectionCombineFromModifiers(
-              ImGui::GetIO().KeyShift, ImGui::GetIO().KeyAlt);
-          // `pathEditBeginPen()`, not `pathEditBegin()` directly -- the ONE
-          // difference bullet 2 of this track states: an empty-canvas press
-          // (or one on the open path's own first anchor) places or closes
-          // instead of marqueeing; every other hit still goes through
-          // `pathEditBegin()`'s ordinary gestures, which this function calls
-          // internally for exactly that reason.
-          const PenPressResult pressed = pathEditBeginPen(
-              &st.pathEdit, &pathLayer->shapes, &pathLayer->nextShapeId, PathPoint{tx, ty},
-              pickTexels, gnomonSuppressed, how, pathDocId, curveMode,
-              pathGnomonReachTexels(st.view.zoom));
-          // Placing an anchor or closing a subpath IS the edit, made on the
-          // press itself -- unlike every other gesture here, which edits
-          // only once a drag actually moves something. `pathEditBeginPen()`
-          // already mutated `pathLayer->shapes`; this is where the caller
-          // records that the same way `pathEditUpdate()`'s `EditBegan`
-          // does below.
-          if (pressed == PenPressResult::Placed) {
-            pathDoc->recordEdit("place anchor", EditKind::Content);
-          } else if (pressed == PenPressResult::Closed) {
-            pathDoc->recordEdit("close path", EditKind::Content);
+          // **The press routes on the TOOL, not on the hit.** That is this
+          // track's whole structural change: `pathEditBeginPen()` used to
+          // forward every press that was not on empty canvas to
+          // `pathEditBegin()`, so the Pen ran the gnomon, the marquee, anchor
+          // drags and tangent drags -- it was the manipulator as well as the
+          // drawing tool. `pathToolPlacesAnchors()` splits the two apart:
+          // Pen/Curve place, PathSelect edits, and neither does the other's
+          // job.
+          if (pathToolPlacesAnchors(st.brush.tool)) {
+            const PenPressResult pressed = pathEditBeginPen(
+                &st.pathEdit, &pathLayer->shapes, &pathLayer->nextShapeId, PathPoint{tx, ty},
+                pickTexels, pathDocId, curveMode);
+            // Placing, closing or reversing-to-resume IS the edit, made on
+            // the press itself -- unlike every other gesture here, which
+            // edits only once a drag actually moves something.
+            // `pathEditBeginPen()` already mutated `pathLayer->shapes`; this
+            // is where the caller records that, the same way
+            // `pathEditUpdate()`'s `EditBegan` does below.
+            //
+            // `Resumed` (as opposed to `ResumedReversed`) records NOTHING:
+            // the pressed end was already the subpath's last anchor, so no
+            // geometry changed, and an undo entry for it would be the empty
+            // entry app/PenTool.hpp refuses to open elsewhere.
+            if (pressed == PenPressResult::Placed) {
+              pathDoc->recordEdit("place anchor", EditKind::Content);
+            } else if (pressed == PenPressResult::Closed) {
+              pathDoc->recordEdit("close path", EditKind::Content);
+            } else if (pressed == PenPressResult::ResumedReversed) {
+              pathDoc->recordEdit("resume path", EditKind::Content);
+            } else if (pressed == PenPressResult::Inert) {
+              // Said out loud rather than left as a dead click. A user who
+              // has just tried to drag an anchor with the Pen needs to know
+              // where that gesture went, and this is the only place that can
+              // tell them.
+              g_strokeRefusal =
+                  std::string("The Pen places points. Switch to Path Select (A) to move "
+                              "anchors, handles and shapes.");
+            }
+          } else {
+            // `Tool::PathSelect`: every gesture over existing geometry, with
+            // the app's one modifier grammar -- core/SelectionOps' own
+            // mapping, applied with SET semantics rather than coverage
+            // semantics (docs/vector-editing.md section 4).
+            const SelectionCombine how = selectionCombineFromModifiers(
+                ImGui::GetIO().KeyShift, ImGui::GetIO().KeyAlt);
+            pathEditBegin(&st.pathEdit, pathLayer->shapes, PathPoint{tx, ty}, pickTexels,
+                          gnomonSuppressed, how, pathDocId,
+                          pathGnomonReachTexels(st.view.zoom));
           }
         }
 
@@ -17972,7 +17995,18 @@ void drawUI(AppState& st, std::unique_ptr<PaintSim>& sim, GpuContext& gpu,
         // Suppressed while a drag is live, `TransformHandlePositions`'
         // `!g_moveDragging` rule exactly: handles drawn over their own
         // in-progress transform chase the pointer and read as jitter.
-        if (st.pathEdit.drag == PathDragKind::None) {
+        //
+        // **And suppressed entirely for the Pen and Curve**, which no longer
+        // manipulate anything (docs/path-editing-plan.md section 3.3).
+        // `pathEditBeginPen()` now passes `gnomonSuppressed = true` to its own
+        // hit test unconditionally, so under those two tools the gnomon is
+        // hit by nothing -- leaving it DRAWN would be five handles that look
+        // grabbable and are not, which is the same lie as the reverse case
+        // this block was written to fix, from the other direction. The
+        // predicate is the same one the press routes on, so the drawn gnomon
+        // and the tool that can use it cannot disagree.
+        if (st.pathEdit.drag == PathDragKind::None &&
+            !pathToolPlacesAnchors(st.brush.tool)) {
           const GnomonHandlePositions g = gnomonHandlePositions(
               pl->shapes, st.pathEdit.selection, pathGnomonReachTexels(overlayZoom));
           if (g.valid) {

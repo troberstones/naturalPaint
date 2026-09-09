@@ -571,8 +571,7 @@ void runVectorDemo(np::AppState& st, np::OpenDocument& od, int mode) {
     const np::PathPoint p3{650.0f, 360.0f};
     for (const np::PathPoint& p : {p1, p2, p3}) {
       np::pathEditBeginPen(&st.pathEdit, &shapes, &od.document.layers[at].nextShapeId, p,
-                           pickTexels, false, np::SelectionCombine::Replace, od.id,
-                           /*curveMode=*/false);
+                           pickTexels, od.id, /*curveMode=*/false);
       np::pathEditEnd(&st.pathEdit, shapes);
     }
     // The rubber band's destination, PINNED rather than read from a live
