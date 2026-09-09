@@ -570,6 +570,39 @@ float resampleKernelWeight(ResampleKernel kernel, float t) noexcept {
   return 0.0f;
 }
 
+const std::vector<CanvasAnchor>& allCanvasAnchors() {
+  static const std::vector<CanvasAnchor> kAll = {
+      CanvasAnchor::TopLeft,    CanvasAnchor::TopCenter,    CanvasAnchor::TopRight,
+      CanvasAnchor::CenterLeft, CanvasAnchor::Center,       CanvasAnchor::CenterRight,
+      CanvasAnchor::BottomLeft, CanvasAnchor::BottomCenter, CanvasAnchor::BottomRight,
+  };
+  return kAll;
+}
+
+const char* canvasAnchorName(CanvasAnchor anchor) noexcept {
+  switch (anchor) {
+    case CanvasAnchor::TopLeft: return "top_left";
+    case CanvasAnchor::TopCenter: return "top_center";
+    case CanvasAnchor::TopRight: return "top_right";
+    case CanvasAnchor::CenterLeft: return "center_left";
+    case CanvasAnchor::Center: return "center";
+    case CanvasAnchor::CenterRight: return "center_right";
+    case CanvasAnchor::BottomLeft: return "bottom_left";
+    case CanvasAnchor::BottomCenter: return "bottom_center";
+    case CanvasAnchor::BottomRight: return "bottom_right";
+  }
+  return "unknown";
+}
+
+std::optional<CanvasAnchor> canvasAnchorFromName(std::string_view name) noexcept {
+  // Over `allCanvasAnchors()` rather than a second list of nine literals, so
+  // `canvasAnchorName()` above is the one place a name is spelled and a tenth
+  // anchor cannot be added to the forward direction alone.
+  for (const CanvasAnchor a : allCanvasAnchors())
+    if (name == canvasAnchorName(a)) return a;
+  return std::nullopt;
+}
+
 const char* resampleKernelName(ResampleKernel kernel) noexcept {
   switch (kernel) {
     case ResampleKernel::Nearest: return "nearest";
