@@ -5526,6 +5526,33 @@ bool runSvgImportTest();
 // priority order is exactly docs/vector-editing.md section 3's, with
 // `gnomonSuppressed` proven to make the next tier down reachable. See
 // app/selftest/PenTool.cpp.
+// app/PathOps -- the PATHS panel's verbs (docs/path-editing-plan.md section
+// 1): CLOSE / OPEN / JOIN / REVERSE over subpaths, SMOOTH / CORNER / BREAK /
+// INSERT / DELETE over anchors, COMPOUND / RELEASE over shapes, and the
+// refusal enum that is their specification. Plus the two primitives promoted
+// into `core/Path` for them, `reverseSubPath()` and `fitAnchorTangent()`.
+//
+// The three assertions this section exists for, each guarding a defect a
+// count-based check cannot see:
+//
+//   * `reverseSubPath()` swaps every anchor's two HANDLES as well as
+//     flipping the order -- `in` controls the arriving segment and `out` the
+//     leaving one, so a reversal exchanges them. Reversing the order alone
+//     yields identical anchor positions, an identical bounds and a different
+//     curve.
+//   * JOIN's four endpoint combinations (head-head, head-tail, tail-head,
+//     tail-tail) each produce the right anchor ORDER, asserted by position.
+//     A normalisation slip gives the correct COUNT in an order that makes the
+//     joined path double back on itself.
+//   * INSERT leaves the curve UNCHANGED: the de Casteljau split's two halves
+//     are evaluated and checked against the original cubic's own points, so
+//     an arithmetic slip that still inserts one anchor in the right slot --
+//     while rounding off the user's shape -- fails.
+//
+// Headless, GPU-free; writes no files; touches no `ui/` file and no
+// `AppState`. See app/selftest/PathOps.cpp.
+bool runPathOpsTest();
+
 bool runPenToolTest();
 
 // app/PenTool section 9 -- Pen/Curve PLACEMENT: `pathEditBeginPen()`

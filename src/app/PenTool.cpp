@@ -537,57 +537,10 @@ std::vector<ComponentRef> allAnchorsOf(const std::vector<VectorShape>& shapes,
   return out;
 }
 
-// Curve mode's tangent, at anchor `i` of `sub`, from its immediate
-// neighbours -- a uniform (unweighted) Catmull-Rom tangent, converted to a
-// Bezier handle pair by the standard `pt +/- m/3` relation. Both `in` and
-// `out` come from the SAME `m`, so they are exactly opposite through `pt` by
-// construction: that IS what `smooth = true` means (`core/Path.hpp`), not a
-// separate invariant this function has to also enforce.
-//
-// `closed` wraps neighbour lookup around the ends (bullet 3's "a closed path
-// fits across the seam"); open leaves an end anchor's missing neighbour out
-// of the average, i.e. `m` becomes the one-sided secant `next - pt` or
-// `pt - prev` -- the ordinary open-curve endpoint rule for a Catmull-Rom
-// fit, and the reason a 1- or 2-anchor open subpath still gets a sane answer
-// (a straight corner, and a straight line, respectively) rather than a
-// divide against a neighbour that does not exist.
-void fitAnchorTangent(SubPath* sub, size_t i, bool closed) noexcept {
-  const size_t n = sub->anchors.size();
-  if (i >= n) return;
-  Anchor& anchor = sub->anchors[i];
-  if (n == 1) {
-    anchor.in = anchor.pt;
-    anchor.out = anchor.pt;
-    anchor.smooth = false;
-    return;
-  }
-
-  bool hasPrev = false, hasNext = false;
-  PathPoint prev{}, next{};
-  if (closed) {
-    hasPrev = hasNext = true;
-    prev = sub->anchors[(i + n - 1) % n].pt;
-    next = sub->anchors[(i + 1) % n].pt;
-  } else {
-    hasPrev = i > 0;
-    hasNext = i + 1 < n;
-    if (hasPrev) prev = sub->anchors[i - 1].pt;
-    if (hasNext) next = sub->anchors[i + 1].pt;
-  }
-
-  PathPoint m{0.0f, 0.0f};
-  if (hasPrev && hasNext) {
-    m = PathPoint{(next.x - prev.x) * 0.5f, (next.y - prev.y) * 0.5f};
-  } else if (hasNext) {
-    m = PathPoint{next.x - anchor.pt.x, next.y - anchor.pt.y};
-  } else if (hasPrev) {
-    m = PathPoint{anchor.pt.x - prev.x, anchor.pt.y - prev.y};
-  }
-
-  anchor.out = PathPoint{anchor.pt.x + m.x / 3.0f, anchor.pt.y + m.y / 3.0f};
-  anchor.in = PathPoint{anchor.pt.x - m.x / 3.0f, anchor.pt.y - m.y / 3.0f};
-  anchor.smooth = true;
-}
+// `fitAnchorTangent()` -- Curve mode's per-anchor tangent -- used to live
+// here as a file-static. It moved to `core/Path` when the PATHS panel's
+// SMOOTH button needed the identical operation: see that header's comment on
+// it for why "smooth this knot" must have exactly one implementation.
 
 }  // namespace
 

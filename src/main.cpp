@@ -2686,6 +2686,13 @@ int main(int argc, char** argv) {
     // shape-vs-component affine asymmetry between them, and toolEditsPath().
     // Headless and GPU-free; writes no files; touches no ui/ file.
     const bool penToolOk = np::runPenToolTest();
+    // app/PathOps -- the PATHS panel's verbs: close/open/join/reverse over
+    // subpaths, smooth/corner/break/insert/delete over anchors,
+    // compound/release over shapes, and the refusal enum that specifies them.
+    // Also covers `reverseSubPath()`'s handle swap and `fitAnchorTangent()`,
+    // both promoted into core/Path so Curve mode and the SMOOTH button share
+    // one implementation. Headless and GPU-free; writes no files.
+    const bool pathOpsOk = np::runPathOpsTest();
     // app/PenTool section 9 -- Pen/Curve placement: a press creating and
     // extending a shape, a press on its own first anchor closing it, a drag
     // setting a mirrored tangent, Escape leaving what was placed, and
@@ -3601,7 +3608,7 @@ int main(int argc, char** argv) {
                     grainOk && strokePreviewOk && fileDialogOk && documentPresetsOk &&
                     clipboardImageOk && parallelOk && compositeCostOk && resourcePathsOk &&
                     opaqueFloorOk && compositeParallelOk && viewportDeferredCompositeOk &&
-                    penToolOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
+                    penToolOk && pathOpsOk && penDrawOk && textSerialOk && textToolOk && flatsOk && pathConsumersOk &&
                     textKeyCaptureOk && noDocumentCanvasOk;
     s->shutdown();
     gpu.shutdown();
