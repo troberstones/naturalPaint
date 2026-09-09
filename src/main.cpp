@@ -3242,6 +3242,11 @@ int main(int argc, char** argv) {
     // kind NAME, and the selection rows that cross the session/document line.
     // See app/SelfTest.hpp.
     const bool commandsOpStackOk = np::runCommandsOpStackTest();
+    // app/CommandsImage: the thirty rows that change pixels or the document's
+    // geometry, and the adapter layer between a JSON object and the appliers
+    // they drive. See app/SelfTest.hpp for the four ways an adapter can be
+    // wrong while looking right, which is what this section is for.
+    const bool commandsImageOk = np::runCommandsImageTest();
     const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
@@ -3592,6 +3597,7 @@ int main(int argc, char** argv) {
                     actionFileOk &&
                     commandsOpStackOk &&
                     commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    commandsImageOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&

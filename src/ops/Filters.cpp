@@ -570,6 +570,23 @@ bool offsetTiles(const TileStore& src, const PixelRect& outRect, const OffsetPar
 // 5. Add noise
 // ==========================================================================
 
+const char* noiseDistributionName(NoiseDistribution d) noexcept {
+  switch (d) {
+    case NoiseDistribution::Uniform: return "uniform";
+    case NoiseDistribution::Gaussian: return "gaussian";
+  }
+  return "unknown";
+}
+
+std::optional<NoiseDistribution> noiseDistributionFromName(std::string_view name) noexcept {
+  // A loop over the enum's own values, so `noiseDistributionName()` above is
+  // the one place a name is spelled -- see `blurKindFromName()` for the
+  // argument.
+  for (const NoiseDistribution d : {NoiseDistribution::Uniform, NoiseDistribution::Gaussian})
+    if (name == noiseDistributionName(d)) return d;
+  return std::nullopt;
+}
+
 bool noiseParamsValid(const NoiseParams& p) noexcept {
   return std::isfinite(p.amount) && p.amount >= 0.0f;
 }

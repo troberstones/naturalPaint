@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string_view>
 
 #include "core/TileStore.hpp"
 #include "ops/Blur.hpp"
@@ -585,6 +587,19 @@ enum class NoiseDistribution {
   // large value even though a true normal could.
   Gaussian,
 };
+
+// The wire name of a distribution, and its inverse -- **beside the enum, not
+// in the caller that needed it first.** `app/CommandsImage.cpp` writes this
+// choice into an action file, and docs/automation-plan.md §5's rule is that a
+// file is never keyed by an enum ordinal, because the enum is appended to. A
+// translation table inside that adapter would be a second vocabulary, and a
+// third distribution added here would be silently missing from it.
+//
+// Exact, lowercase match, following `blendModeName()`/`blendModeFromName()`;
+// see `blurKindName()` in ops/Blur.hpp for why these pairs deliberately do NOT
+// copy `resampleKernelFromName()`'s case fold.
+const char* noiseDistributionName(NoiseDistribution d) noexcept;
+std::optional<NoiseDistribution> noiseDistributionFromName(std::string_view name) noexcept;
 
 struct NoiseParams {
   // Shaper-domain amplitude. 0 is the identity.

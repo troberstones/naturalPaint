@@ -326,6 +326,24 @@ void blurLineFor(size_t n, F&& body) {
 
 }  // namespace
 
+const char* blurKindName(BlurKind kind) noexcept {
+  switch (kind) {
+    case BlurKind::Gaussian: return "gaussian";
+    case BlurKind::Box: return "box";
+  }
+  return "unknown";
+}
+
+std::optional<BlurKind> blurKindFromName(std::string_view name) noexcept {
+  // A loop over the enum's own values rather than a chain of comparisons
+  // against string literals, so `blurKindName()` above is the ONE place a name
+  // is spelled. A second set of literals here would be a name that could stop
+  // matching its own forward direction without anything failing to compile.
+  for (const BlurKind k : {BlurKind::Gaussian, BlurKind::Box})
+    if (name == blurKindName(k)) return k;
+  return std::nullopt;
+}
+
 bool blurParamsValid(const BlurParams& p) noexcept {
   if (p.kind == BlurKind::Gaussian) return std::isfinite(p.sigma) && p.sigma >= 0.0f;
   return p.boxRadius >= 0;

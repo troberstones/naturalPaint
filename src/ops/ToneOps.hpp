@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <optional>
+#include <string_view>
 
 // ops/ToneOps -- docs/operations.md §1.2 "Committed additions": four more
 // class-A point ops extending the ops/PointOps family (see PointOps.hpp's
@@ -182,6 +184,21 @@ struct InvertParams {
   // structs follow.
   float amount = 1.0f;
 };
+
+// The wire name of the invert domain, and its inverse -- **beside the enum,
+// not in the caller that needed it first.** `app/CommandsImage.cpp`'s
+// `adjust_invert` writes this choice into an action file, and
+// docs/automation-plan.md §5 forbids keying a file by an ordinal because the
+// enum is appended to. This one matters more than its two values suggest: the
+// whole point of the field is that Linear and Display invert to *visibly
+// different pictures*, so an ordinal that shifted would not corrupt a file so
+// much as quietly change what it means.
+//
+// Exact, lowercase match, following `blendModeName()`; ops/Blur.hpp's
+// `blurKindName()` states why these pairs do not copy
+// `resampleKernelFromName()`'s case fold.
+const char* invertDomainName(InvertParams::Domain domain) noexcept;
+std::optional<InvertParams::Domain> invertDomainFromName(std::string_view name) noexcept;
 
 std::array<float, 3> applyInvert(const std::array<float, 3>& rgb, const InvertParams& p) noexcept;
 

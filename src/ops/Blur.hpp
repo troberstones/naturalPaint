@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 #include "core/TileStore.hpp"
@@ -293,6 +295,25 @@ struct BlurParams {
   // Half-width in document texels. Box only. Zero means identity.
   int32_t boxRadius = 0;
 };
+
+// The wire name of a blur kind, and its inverse. **Here, beside the enum, and
+// not in the caller that needed it first.** `app/CommandsImage.cpp` writes a
+// `BlurKind` into an action file, and docs/automation-plan.md §5's rule is
+// that a file is never keyed by an enum ordinal, because the enum is appended
+// to. A translation table living in the adapter would be a second vocabulary
+// -- one this enum's next value would silently not be added to, which is the
+// exact drift `blendModeName()` exists here rather than in its callers to
+// prevent.
+//
+// Names are lower_snake_case and matched **exactly**, following
+// `blendModeName()`/`blendModeFromName()` and deliberately NOT
+// `resampleKernelFromName()`'s case-insensitive compare. That one folds case
+// because its own names carry capitals and hyphens ("Catmull-Rom"), so a
+// human-typed file could not otherwise match them. Every name here is already
+// lowercase, so a fold would buy nothing and would be a fourth hand-written
+// character-by-character compare in this tree.
+const char* blurKindName(BlurKind kind) noexcept;
+std::optional<BlurKind> blurKindFromName(std::string_view name) noexcept;
 
 // False for a request no kernel can be built from: a negative or non-finite
 // sigma, a negative box radius. `blurTiles()` refuses these by name rather
