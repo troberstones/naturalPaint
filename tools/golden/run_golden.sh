@@ -1061,6 +1061,49 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #     or letterboxed differently from its neighbours is obvious in this frame
 #     and would need a reference diff to spot in a one-row crop.
 #
+#   flats_tools' threshold (magnitude 24, changed px 96) -- the SAME cause as
+#     pen_drawing's just below, and the pair is why both are documented
+#     together rather than as two unrelated tolerances.
+#
+#     Adding ONE tool icon to the Lucide atlas (`Tool::PathSelect`'s
+#     `mouse-pointer-2`, via `toolIconCodepoints()`) re-packs the whole glyph
+#     texture. That is not a local change: eleven views across the suite --
+#     titlebar, the three export dialogs, layer_thumbs, both mask views,
+#     grade_kinds, color_overrange and these two -- shifted by a few dozen
+#     pixels at channel diffs of 8 to 22, everywhere text is drawn. It was
+#     confirmed by NEUTRALISING rather than by argument: giving PathSelect a
+#     codepoint already in the atlas dropped the failures from 14 to 3, and
+#     the 3 that remained were the genuine behavioural change (the gnomon is
+#     no longer drawn under the Pen).
+#
+#     **Expect this of every future tool.** A new tool with a distinct icon
+#     re-blesses roughly a fifth of this suite and can leave a view that was
+#     exact newly sensitive to -j. Both of these are exact at -j 1 --
+#     `measure 10` on flats_tools is bit-identical across all ten launches --
+#     and wobble only under concurrency, in dark panel chrome, at magnitudes
+#     no eye resolves. Measured at 36 px / channel 12 over repeated -j 6
+#     runs; 24 and 96 are ~2x that, against a real regression in this view
+#     that would run to tens of thousands of pixels.
+#
+#   pen_drawing's threshold (magnitude 8, changed px 16) -- MEASURED, not
+#     guessed, per this file's own rule two paragraphs up. This view was exact
+#     (0, 0) and stayed exact until the PATHS panel landed: the panel changed
+#     what is drawn at the right edge of the crop, and the chrome greys there
+#     now settle one to three levels apart between launches. The measurement,
+#     both from `measure 8` at -j 1 and from a real -j 6 failure, is the same
+#     five pixels at max channel diff 3, around x=1055..1107, rgb ~(56..82)
+#     -- dark panel chrome, not the drawn path.
+#
+#     **The stroked path itself is bit-exact**, which is the distinction worth
+#     keeping: `pen_drawing` became the first view where a Pen path is visible
+#     in the COMPOSITE rather than only in the editing overlay, so the obvious
+#     reading of a new flake here is "the vector rasteriser is
+#     non-deterministic". It is not -- the differing pixels are nowhere near
+#     the path. 8 and 16 are roughly 2.5x and 3x the measured noise, which
+#     still leaves three orders of magnitude of headroom against a real
+#     regression in this view (the re-blessing diff that preceded this was
+#     39,935 px at channel 216).
+#
 #   pen_drawing -- `--vector-demo pendraw`: three anchors placed through the
 #     REAL `pathEditBeginPen()` transition (app/PenTool.hpp section 9), left
 #     OPEN. Before this track `PathDragKind::PenExtend` was a switch arm with
@@ -1545,7 +1588,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # the options band only, so it contains no canvas, no marching ants and no
 # rounded button geometry -- two combos, three sliders and a line of text, all
 # of which land on the same pixels every launch.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 48 0 0 0)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 8 24 48 0 0 0)
 # **Twenty-one views were re-blessed when the FLATS TOOLS palette gained its
 # nine Lucide icons, and none of it was a content change.** Adding glyphs to
 # the merge repacks the font atlas, which moves where each glyph's bitmap
@@ -1612,7 +1655,7 @@ view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 
 # note in cmd_measure on what that mode is for. The five `crop_*` views are 0
 # here because their magnitude threshold is 0 too -- see the paragraph above
 # `view_threshold` for the measurement.
-view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 160 0 0 0)
+view_max_changed_px=(16 64 0 0 16 0 16 16 16 16 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 16 96 160 0 0 0)
 
 # --- launch sharing --------------------------------------------------------
 #
