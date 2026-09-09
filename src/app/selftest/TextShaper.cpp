@@ -80,6 +80,33 @@ bool runTextShaperTest() {
     check(increasing, "glyph x strictly increases left to right");
     check(clustersWellFormed(hello, "Hello"),
           "clusters are non-decreasing, in bounds, and on UTF-8 boundaries (ASCII)");
+
+    // `advance` (text/Shaper.hpp) -- the field a caret cannot be placed
+    // without. Two properties, and the second is the one that matters: it is
+    // not enough that the numbers are positive, they have to be the REAL
+    // advances, so `x + advance` of one glyph is where the next one starts.
+    bool advancesPositive = true;
+    for (const ShapedGlyph& g : hello.glyphs)
+      if (!(g.advance > 0.0f)) advancesPositive = false;
+    check(advancesPositive, "every glyph carries a positive advance");
+
+    bool advancesChainToNextPen = true;
+    for (size_t i = 1; i < hello.glyphs.size(); ++i) {
+      const float predicted = hello.glyphs[i - 1].x + hello.glyphs[i - 1].advance;
+      if (std::fabs(predicted - hello.glyphs[i].x) > 0.05f) advancesChainToNextPen = false;
+    }
+    check(advancesChainToNextPen,
+          "REQUIRED -- glyph[i].x + advance == glyph[i+1].x: the advance is the real pen step, "
+          "so the trailing edge a caret sits at is a measured position and not a guess");
+
+    // The end-of-line caret's own number. `widthPx` is the line's typographic
+    // width, and the last glyph's trailing edge has to agree with it -- this
+    // is what `textCaretPosition()` returns for a caret at the end of the
+    // text, which is where the caret is for the whole of ordinary typing.
+    const ShapedGlyph& lastGlyph = hello.glyphs.back();
+    check(std::fabs((lastGlyph.x + lastGlyph.advance) - hello.widthPx) < 0.5f,
+          "REQUIRED -- the last glyph's trailing edge equals the line's width, which is where an "
+          "end-of-text caret belongs; the pen position alone sits in FRONT of that character");
   }
 
   // ==========================================================================

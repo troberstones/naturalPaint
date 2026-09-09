@@ -262,16 +262,18 @@ PathPoint textCaretPosition(const TextContent& text, size_t caretByte, float* he
   // not `glyphs.back()`, which under bidi is the last glyph in logical order
   // and can sit at the left end of the line.
   //
-  // The advance past that glyph is not something `ShapedGlyph` carries, so
-  // the caret sits ON the last glyph's pen position rather than after it.
-  // That is a known half-a-character offset at the end of a line, and it is
-  // the price of `ShapedGlyph` not carrying advances; adding one to that
-  // struct is the fix, and it is a change to text/Shaper.hpp's contract
-  // rather than something this file can paper over.
+  // **`x + advance`, not `x`.** This used to return the pen position itself,
+  // because `ShapedGlyph` carried no advance -- which drew the caret in front
+  // of the last character rather than after it. Since the caret is at the end
+  // of the block for the whole of ordinary typing, that was not the "known
+  // half-a-character offset" the comment here used to call it: it was the
+  // caret being wrong on essentially every keystroke. `advance` now exists on
+  // `ShapedGlyph` (text/Shaper.hpp says why it lives there), and this is the
+  // reader it exists for.
   const ShapedGlyph* last = &shaped.glyphs.front();
   for (const ShapedGlyph& g : shaped.glyphs)
     if (g.y > last->y || (g.y == last->y && g.x > last->x)) last = &g;
-  return PathPoint{text.origin.x + last->x, text.origin.y + last->y};
+  return PathPoint{text.origin.x + last->x + last->advance, text.origin.y + last->y};
 }
 
 size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
@@ -301,12 +303,19 @@ size_t textOffsetAtPoint(const TextContent& text, PathPoint at) {
   }
   if (best == nullptr) return 0;
 
-  // A click to the RIGHT of the nearest glyph belongs after it, not on it --
-  // without this, clicking anywhere past the last character puts the caret
+  // A click past the MIDDLE of the nearest glyph belongs after it, not on it
+  // -- without this, clicking anywhere past the last character puts the caret
   // before it and typing inserts in the wrong place, which is the single most
   // noticeable caret bug there is. `nextCluster` walks the glyph list rather
   // than adding a byte, so the result stays on a UTF-8 boundary.
-  if (lx <= best->x) return best->cluster;
+  //
+  // The midpoint rather than the leading edge (`lx <= best->x`, which is what
+  // this tested before `ShapedGlyph::advance` existed): with the leading
+  // edge, a click one pixel inside a character already counted as "after" it,
+  // so the caret could only ever be placed before a character by clicking in
+  // the character to its left. Half the glyph box each way is what every text
+  // editor does and what a drag-select needs to feel right.
+  if (lx <= best->x + best->advance * 0.5f) return best->cluster;
   size_t next = text.utf8.size();
   for (const ShapedGlyph& g : shaped.glyphs)
     if (g.cluster > best->cluster && g.cluster < next) next = g.cluster;

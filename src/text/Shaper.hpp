@@ -109,6 +109,24 @@ struct ShapedGlyph {
   float x = 0.0f;              // pen position, y DOWN (see the header)
   float y = 0.0f;
   uint32_t cluster = 0;        // byte offset into the source UTF-8
+
+  // How far the pen moves past this glyph -- so `x + advance` is the pen
+  // position the NEXT glyph on this line starts at, and therefore the
+  // trailing edge of this one.
+  //
+  // Here because a caret cannot be placed without it. A caret sits at a
+  // BOUNDARY between characters, and every boundary except the last is some
+  // glyph's `x`; the one at the end of a line is not, and with only pen
+  // positions to work from `core/TextContent.cpp` had to put an end-of-text
+  // caret ON the last glyph instead of after it -- a caret that draws in
+  // front of the letter just typed, which is every caret while typing at the
+  // end of a block, which is nearly all typing. Selecting a range needs it
+  // for the same reason: the highlight's right edge is a trailing edge.
+  //
+  // The horizontal component only. Vertical advances are a CJK
+  // vertical-writing concern this build has no writing mode for, and a
+  // second field nothing reads would be a claim that it is handled.
+  float advance = 0.0f;
 };
 
 // `cluster` on every glyph above is a byte offset into the *original*

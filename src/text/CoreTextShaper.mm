@@ -227,9 +227,17 @@ void appendRunGlyphs(CTRunRef run, double lineOriginX, double lineBaselineYDown,
   std::vector<CGGlyph> glyphs(static_cast<size_t>(count));
   std::vector<CGPoint> positions(static_cast<size_t>(count));
   std::vector<CFIndex> indices(static_cast<size_t>(count));
+  // Advances come from the run rather than from differencing consecutive pen
+  // positions, which is the tempting shortcut and is wrong twice: the last
+  // glyph of a run has no successor to difference against (and the caret at
+  // the end of a line is exactly the case this field exists for), and under
+  // bidi the neighbouring glyph in run order can sit to the LEFT, which would
+  // make the advance negative.
+  std::vector<CGSize> advances(static_cast<size_t>(count));
   CTRunGetGlyphs(run, CFRangeMake(0, 0), glyphs.data());
   CTRunGetPositions(run, CFRangeMake(0, 0), positions.data());
   CTRunGetStringIndices(run, CFRangeMake(0, 0), indices.data());
+  CTRunGetAdvances(run, CFRangeMake(0, 0), advances.data());
 
   addFontUsed(&out->fontsUsed, runFontName(run));
 
@@ -239,6 +247,8 @@ void appendRunGlyphs(CTRunRef run, double lineOriginX, double lineBaselineYDown,
     g.x = static_cast<float>(lineOriginX + positions[static_cast<size_t>(i)].x);
     g.y = static_cast<float>(lineBaselineYDown - positions[static_cast<size_t>(i)].y);
     g.cluster = static_cast<uint32_t>(clusterMap.byteOffset(indices[static_cast<size_t>(i)]));
+    // Horizontal only -- text/Shaper.hpp says why there is no vertical field.
+    g.advance = static_cast<float>(advances[static_cast<size_t>(i)].width);
     out->glyphs.push_back(g);
   }
 }
