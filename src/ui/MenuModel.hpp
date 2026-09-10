@@ -126,6 +126,7 @@ enum class MenuAction : uint16_t {
   CloseDocument,
   ExportAs,
   ExportStates,
+  Batch,
   Quit,
 
   // --- Edit ---------------------------------------------------------------

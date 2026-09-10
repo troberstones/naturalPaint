@@ -326,7 +326,7 @@ palette rebuild to make room.
 
 The chrome had two welded control bands (the 52px tool palette on the left edge, the 46px
 options bar under the tab strip) and one scrolling right-hand column of thirteen
-`CollapsingHeader`s. All three are gone. What replaced them is **seventeen panels, each of
+`CollapsingHeader`s. All three are gone. What replaced them is **eighteen panels, each of
 which can be in any of four docks, on a flyout rail, or put away**, with the arrangement
 persisted across relaunches.
 

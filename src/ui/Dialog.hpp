@@ -169,6 +169,15 @@ struct DialogFooter {
   // in the error colour when `alternateDestructive`.
   const char* alternate = nullptr;
   bool alternateDestructive = false;
+  // Greys the third choice, exactly as `commitEnabled` greys the default.
+  // It exists because the BATCH dialog's two actions -- Preview and Run --
+  // share ONE precondition that is sometimes shut (app/BatchDialog.hpp §1),
+  // and a footer that could disable only one of them would have forced that
+  // dialog to draw its buttons in the body, where the height cap scrolls them
+  // away. "A dialog whose buttons have to be scrolled to is a dialog with no
+  // buttons" is this module's own rule; this field is what lets that dialog
+  // keep it.
+  bool alternateEnabled = true;
   // A short note at the left of the footer ("Changes apply as you make them."),
   // for the dialogs whose commit model is not the default one.
   const char* note = nullptr;

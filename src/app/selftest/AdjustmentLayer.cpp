@@ -312,6 +312,42 @@ bool runAdjustmentLayerTest() {
             "for character");
     }
 
+    // --- the documented boundary, made a tested one -----------------------
+    //
+    // io/OpSerial.hpp specifies "the class code is 0 and the kind code is not
+    // 0..8" and lists the nine kinds and their body layouts. That sentence was
+    // stale for as long as kinds 6, 7 and 8 existed -- it said 0..5, and the
+    // params table stopped at ChannelMixer -- while the reader handled all
+    // nine correctly. A comment cannot be asserted, so what is asserted here
+    // is the boundary it describes, from both sides.
+    //
+    //   0100       u16 opCount = 1
+    //   0a000000   u32 bodyLength = 10
+    //     0000 0900 01 00   PointA, kind 9, enabled -- a kind this build has no
+    //                       implementation for
+    //     0000803e          four bytes of params it cannot interpret
+    //
+    // **The body is deliberately a well-formed length for a kind this build
+    // DOES know** (ten bytes, exactly what an Exposure record occupies). A
+    // six-byte header-only body would be refused by the length rule as well as
+    // by the kind rule, and an assertion on it cannot tell the two apart --
+    // a sabotage that mapped kind 9 onto a known kind left it green, which is
+    // how this payload came to be ten bytes.
+    const std::string handTenth = "npops1:0100" "0a000000" "00000900" "0100" "0000803e";
+    OpStack tenth;
+    const bool tenthOk = deserializeOpStack(handTenth, &tenth, &why);
+    check(tenthOk && tenth.size() == 1 && tenth.at(0).opClass == OpClass::Unknown,
+          "opserial: kind code 9 is past the documented range and decodes as Unknown");
+    check(tenthOk && serializeOpStack(tenth) == handTenth,
+          "opserial: and a newer build's tenth kind survives the round trip byte for byte");
+
+    // The tripwire for the rot itself. When a tenth `PointOpKind` lands, this
+    // is what says the header's kind list, its params table and its "0..8"
+    // rule all need a line -- rather than the format's specification quietly
+    // drifting behind its implementation again.
+    check(static_cast<int>(PointOpKind::Threshold) + 1 == 9,
+          "opserial: there are nine point-op kinds, which is what OpSerial.hpp documents");
+
     // Every way a value can be malformed *as a container*, each refused by
     // name rather than half-read.
     OpStack sink;

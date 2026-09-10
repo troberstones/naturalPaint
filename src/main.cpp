@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "app/AbrReport.hpp"
+#include "app/Batch.hpp"
 #include "app/ProfileToggle.hpp"
 #include "app/PsdReport.hpp"
 #include "app/DabLibrary.hpp"
@@ -782,6 +783,27 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 // core/Merge's five buttons on the session's document, through the same
 // `applyLayerCommand()` the `Layer` menu and the LAYERS panel call.
 //
+// **Deliberately still `applyLayerCommand()`, not `app::applyCommand()`**
+// (docs/automation-plan.md step 2 asks each demo driver to be decided rather
+// than swept along). Three reasons, in order of weight:
+//
+//  1. **It addresses a layer by INDEX, on purpose.** The `name:index` form
+//     below exists because the default row is the wrong one for exactly one of
+//     the five, and `applyCommand()` cannot express an index -- addressing by
+//     name is the property that makes an action replayable on another
+//     document, and layer names are not unique, so a name derived from an
+//     index here would silently drive a different layer.
+//  2. **Nothing it does needs recording.** The reroute exists so that a user
+//     action reaches the recorder; a screenshot driver is not a user action,
+//     and a recording of one would be an artefact of the flag rather than of
+//     anything a person did.
+//  3. The flag's own stated job is to press "the identical entry point the
+//     LAYERS panel calls" for these five gestures. That entry point is
+//     `applyLayerCommand()`, and it is still `applyLayerCommand()` after step
+//     2 -- `runLayerGesture()` reaches it through the command row. Pointing
+//     this at the row instead would make the demo exercise the adapter rather
+//     than the gesture, which is the opposite of what it is for.
+//
 // It exists for one reason: PRD C10 is a P0 whose whole deliverable is *a
 // picture that changed*, and there was no way to make a merge happen from
 // outside the window. Running the app twice -- once with the flag and once
@@ -800,6 +822,13 @@ void runTextDemo(np::AppState& st, np::OpenDocument& od, int mode) {
 // `app::applyLayerSetCommand()` -- the identical entry point the LAYERS panel's
 // Multi-selection buttons and the `Layer` > Selection menu items call, so a
 // screenshot of the result is a screenshot of what a click does.
+//
+// Also deliberately not migrated, and more strongly than `--ui-merge-demo`:
+// its `select:0.2.4` token IS a list of indices, which is the one thing a
+// `"layers"` list may not be. The panel's own set commands are not migrated
+// either, for the reasons `runLayerSetCommand()` in ui/MacPaintUI.cpp states
+// in full -- so pointing this at the command layer would make the demo stop
+// photographing what a click does, which is its entire purpose.
 //
 // `runUiLayerDemo()`'s reason for existing, one level up: a fixture that wrote
 // `Layer::colorLabel` directly would photograph a struct field, not a feature.
@@ -1561,6 +1590,10 @@ int main(int argc, char** argv) {
   const char* controlsScrollTo = nullptr;
   bool openLayerMenu = false;
   bool openExportStates = false;
+  bool openBatch = false;
+  bool actionsDemo = false;
+  bool actionsDemoRecording = false;
+  bool openBatchReport = false;
   const char* exportStatesFolder = nullptr;
   bool openExportAs = false;
   const char* exportAsPath = nullptr;
@@ -1631,6 +1664,17 @@ int main(int argc, char** argv) {
   // extract a pack's scanned patterns into patterns-imported/ and report what
   // landed. See app/DabLibrary's extractAbrPatterns().
   const char* pattWritePath = nullptr;
+  // --batch <action.npaction> <output-dir> <file...> : docs/automation-plan.md
+  // step 6. One action over many files, headless, before SDL_Init -- which is
+  // what makes it usable from a shell on a box with no display and drivable
+  // from --selftest. See app/Batch.hpp; the two optional flags below are the
+  // only settings it takes, because everything else a run needs is either in
+  // the action file or in the ExportRequest defaults PRD I1 guarantees.
+  const char* batchActionPath = nullptr;
+  const char* batchOutputDir = nullptr;
+  std::vector<std::string> batchSources;
+  const char* batchFormatToken = nullptr;
+  const char* batchNameTemplate = nullptr;
   const char* dabDemoId = nullptr;
   bool brushSettingsDemo = false;
   int brushSettingsDemoTab = -1;
@@ -2175,6 +2219,24 @@ int main(int argc, char** argv) {
       // UI detour step 3: hold the `Layer` menu open so --screenshot can
       // photograph it. See AppState::openLayerMenu.
       openLayerMenu = true;
+    } else if (a == "--actions-demo") {
+      // docs/automation-plan.md step 7: the ACTIONS panel lives on the flyout
+      // rail, so a launch has to open it -- no panel arrangement reaches the
+      // state where its list and its buttons can be photographed.
+      actionsDemo = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "recording") {
+        actionsDemoRecording = true;
+        ++i;
+      }
+    } else if (a == "--open-batch") {
+      // docs/automation-plan.md step 7: hold File > Batch... open so
+      // --screenshot can photograph it. `report` additionally fills the report
+      // half. See AppState::openBatchDialog.
+      openBatch = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]) == "report") {
+        openBatchReport = true;
+        ++i;
+      }
     } else if (a == "--open-export-states") {
       // Phase 5 step 13: hold File > Export Comps / Layers To Files... open so
       // --screenshot can photograph it. See AppState::openExportStatesDialog.
@@ -2255,6 +2317,21 @@ int main(int argc, char** argv) {
       openLayerProperties = true;
     } else if (a == "--patt-write") {
       if (i + 1 < argc) pattWritePath = argv[++i];
+    } else if (a == "--batch") {
+      // <action> <output-dir> then EVERY remaining non-flag argument, taken
+      // greedily here rather than left to the positional collector below --
+      // `naturalPaint --batch a.npaction out/ p1.exr p2.exr` must not also
+      // open p1 and p2 as documents, and this branch claiming them is what
+      // stops that. `looksLikePositionalArgument()`'s rule is reused for
+      // "non-flag" so there is one spelling of that test, not two.
+      if (i + 1 < argc) batchActionPath = argv[++i];
+      if (i + 1 < argc) batchOutputDir = argv[++i];
+      while (i + 1 < argc && np::looksLikePositionalArgument(argv[i + 1]))
+        batchSources.emplace_back(argv[++i]);
+    } else if (a == "--batch-format") {
+      if (i + 1 < argc) batchFormatToken = argv[++i];
+    } else if (a == "--batch-template") {
+      if (i + 1 < argc) batchNameTemplate = argv[++i];
     } else if (a == "--advanced-dynamics") {
       // --advanced-dynamics : reopen the shelved 10x12 LINK MATRIX editor
       // (ui/DynamicsMatrixPanel.hpp) in the BRUSH column. Off by default now
@@ -2288,6 +2365,15 @@ int main(int argc, char** argv) {
   if (abrKeysPath != nullptr) return np::runAbrKeyCensus(abrKeysPath);
   if (dabImportPath != nullptr) return np::runDabImport(dabImportPath);
   if (pattWritePath != nullptr) return np::runPattWrite(pattWritePath);
+  // Before SDL for the same reason every branch around it is, and for one
+  // more: a batch is the mode most likely to be run on a machine with no
+  // display at all -- a render farm node, a CI box, a shell over ssh -- and
+  // `SDL_Init(SDL_INIT_VIDEO)` fails there. Nothing in app/Batch touches a
+  // window, a device or a surface; the composite it exports runs on the CPU
+  // (core/Composite), which is what makes that true rather than hopeful.
+  if (batchActionPath != nullptr)
+    return np::runBatchCli(batchActionPath, batchOutputDir, batchSources, batchFormatToken,
+                           batchNameTemplate);
   if (dabScan) return np::runDabScan();
   if (brushSheetAbr != nullptr && brushSheetOut != nullptr)
     return np::runBrushSheet(brushSheetAbr, brushSheetOut, brushSheetExperiment);
@@ -3380,6 +3466,54 @@ int main(int argc, char** argv) {
     // answers, in BOTH NP_USE_OIIO configurations -- the EXR seam is refused
     // before the first byte in OFF rather than skipped. Headless and
     // GPU-free; writes and removes a selftest_exportstates/ directory.
+    // io/Json: the shared JSON reader/writer the export presets, the keymap
+    // and (next) the action format all read through. See app/SelfTest.hpp.
+    // app/Command: the recordable-command table and its one door. See
+    // app/SelfTest.hpp.
+    const bool commandOk = np::runCommandTest();
+    // app/CommandsLayers: the three layer vocabularies as rows in that table
+    // -- the exhaustiveness gate over LayerCommand and LayerSetCommand, the
+    // by-name set resolution that refuses rather than narrowing, and the
+    // lock's two directions. See app/SelfTest.hpp.
+    const bool commandsLayersOk = np::runCommandsLayersTest();
+    // app/Recorder: what `applyCommand()` writes down while a recording is
+    // armed, and the two things it refuses to be quietly wrong about -- a
+    // moved active layer, and a live marquee no channel names. See
+    // app/SelfTest.hpp.
+    const bool recorderOk = np::runRecorderTest();
+    const bool actionFileOk = np::runActionFileTest();
+    const bool replayOk = np::runReplayTest();
+    // app/Batch: one action over many files, and the pre-flight that makes PRD
+    // P4 -- "never partially overwrites an input" -- a property of the module
+    // rather than a promise about it. A thirty-file run, headless, into a temp
+    // directory, with every input hashed on both sides. See app/SelfTest.hpp.
+    const bool batchOk = np::runBatchTest();
+    const bool batchDialogOk = np::runBatchDialogTest();
+    // app/ActionsPanel: the ACTIONS panel's model -- which buttons are live
+    // when, what a step row reads, the two row verbs, and the arm/stop
+    // lifecycle that keeps a process-wide recorder from being left armed.
+    // See app/SelfTest.hpp.
+    const bool actionsPanelOk = np::runActionsPanelTest();
+    // app/CommandsOpStack: the rows that carry an op as a parameter, keyed by
+    // kind NAME, and the selection rows that cross the session/document line.
+    // See app/SelfTest.hpp.
+    const bool commandsOpStackOk = np::runCommandsOpStackTest();
+    // app/CommandsImage: the thirty rows that change pixels or the document's
+    // geometry, and the adapter layer between a JSON object and the appliers
+    // they drive. See app/SelfTest.hpp for the four ways an adapter can be
+    // wrong while looking right, which is what this section is for.
+    const bool commandsImageOk = np::runCommandsImageTest();
+    // app/CommandsPatterns + ops/Lens + ops/Pattern: PLAN.md Phase 19 step 5's
+    // two parked P2 image ops, asserted as arithmetic -- a bit-exact identity
+    // pass, a corrected ramp against the published radial model, and a
+    // pattern's own seams. See app/SelfTest.hpp.
+    const bool commandsPatternsOk = np::runCommandsPatternsTest();
+    // The UI -> command-layer reroute (docs/automation-plan.md step 2): that
+    // every migrated menu item, dialog and panel control reaches
+    // `applyCommand()` and therefore the recorder, and that reaching it left
+    // the pixels bit-identical. See app/SelfTest.hpp.
+    const bool commandCallsitesOk = np::runCommandCallsitesTest();
+    const bool jsonOk = np::runJsonTest();
     const bool exportStatesOk = np::runExportStatesTest();
     // app/ExportDialog: the decisions BOTH export dialogs make -- which
     // control is live, what sentence goes beside a greyed Export button, and
@@ -3731,7 +3865,16 @@ int main(int argc, char** argv) {
                     shelvedLinksOk && scatterCountOk && strokePathOk && psPatternsOk && gimpBrushOk && varianceOk && coverageBlendOk
                     && paperTextureOk && dabLibraryOk && patternExtractOk && dabPickerOk && brushSettingsWindowOk &&
                     brushModelIoOk && brushModelDiffOk && brushPanelBindingOk &&
-                    exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    commandsLayersOk &&
+                    recorderOk &&
+                    actionFileOk && replayOk &&
+                    batchOk && batchDialogOk &&
+                    actionsPanelOk &&
+                    commandsOpStackOk &&
+                    commandOk && jsonOk && exportAsOk && exportDialogOk && documentLifecycleOk && recoveryJournalOk && layerStackOk &&
+                    commandsImageOk &&
+                    commandsPatternsOk &&
+                    commandCallsitesOk &&
                     blendOk && pigmentLayerOk && pigmentBasisOk && layerMaskOk && adjustmentLayerOk &&
                     cowTileOk && historyOk && historyPanelOk && clippingMaskOk &&
                     documentTextureOk && documentResidencyOk && layerEditorOk &&
@@ -4014,6 +4157,82 @@ int main(int argc, char** argv) {
     st.brushSettingsDemoTab = brushSettingsDemoTab;
   }
   st.openExportStatesDialog = openExportStates;
+  st.actionsDemo = actionsDemo;
+  st.actionsDemoRecording = actionsDemoRecording;
+  st.openBatchDialog = openBatch;
+  if (openBatch) {
+    // A known state for the golden views, built from literals.
+    //
+    // **Nothing here touches the disk, and that is the point.** A view whose
+    // content came from a real run would photograph this machine's temp paths
+    // and this machine's file sizes, and would differ on the next one. The
+    // chrome's job is to render a `BatchDialogView`; app/selftest/BatchDialog
+    // is what asserts that a real `BatchReport` maps onto one correctly, and
+    // the two halves are better checked apart than photographed together.
+    np::Action demo;
+    demo.name = "Height prep 512";
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("sigma", np::JsonValue::number(4.0));
+      demo.steps.push_back(np::Command{"filter_gaussian_blur", std::move(p)});
+    }
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("threshold", np::JsonValue::number(0.5));
+      p.set("amount", np::JsonValue::number(1.0));
+      demo.steps.push_back(np::Command{"adjust_threshold", std::move(p)});
+    }
+    {
+      np::JsonValue p = np::JsonValue::object();
+      p.set("width", np::JsonValue::number(512));
+      p.set("height", np::JsonValue::number(512));
+      demo.steps.push_back(np::Command{"image_size", std::move(p)});
+    }
+    st.batchDialog.action = demo;
+    st.batchDialog.actionPath = "height-prep-512.npaction";
+    st.batchDialog.sourcesText =
+        "plates/bark01.exr\nplates/bark02.exr\nplates/bark03.exr\nplates/stone01.exr\n";
+    st.batchDialog.outputDirectory = "plates/height";
+    st.batchDialog.nameTemplate = "{name}_h";
+    if (openBatchReport) {
+      // One of each outcome, including the one this whole feature exists to
+      // make visible: a file written UNCHANGED.
+      np::BatchReport report;
+      report.ok = false;
+      auto row = [](size_t n, const char* src, const char* out, np::ExportItemOutcome outcome,
+                    const char* reason, size_t bytes, bool unchanged) {
+        np::BatchItem item;
+        item.ordinal = n;
+        item.sourcePath = src;
+        item.sourceName = src;
+        item.filename = out;
+        item.outputPath = std::string("plates/height/") + out;
+        item.outcome = outcome;
+        item.reason = reason;
+        item.bytesWritten = bytes;
+        item.unchangedByAction = unchanged;
+        item.stepsRun = 3;
+        return item;
+      };
+      report.items.push_back(
+          row(1, "plates/bark01.exr", "bark01_h.png", np::ExportItemOutcome::Written, "", 41233, false));
+      report.items.push_back(
+          row(2, "plates/bark02.exr", "bark02_h.png", np::ExportItemOutcome::Written, "", 39880, true));
+      report.items.push_back(row(3, "plates/bark03.exr", "bark03_h.png",
+                                 np::ExportItemOutcome::Failed,
+                                 "refused: step 2 (\"adjust_threshold\") refused, so the action "
+                                 "was not applied and the document is unchanged.",
+                                 0, false));
+      report.items.push_back(row(4, "plates/stone01.exr", "stone01_h.png",
+                                 np::ExportItemOutcome::NotAttempted,
+                                 "not attempted: the action was refused by "
+                                 "'plates/bark03.exr' first", 0, false));
+      st.batchDialog.report = std::move(report);
+      st.batchDialog.haveReport = true;
+      st.batchDialog.reportWasPreview = false;
+      st.batchDialog.status = "Run finished.";
+    }
+  }
   st.openExportAsDialog = openExportAs;
   st.openLayerProperties = openLayerProperties;
   // Through the same queue a native menu click uses, drained at the top of the

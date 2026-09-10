@@ -6,6 +6,15 @@ add_executable(naturalPaint
   app/BrushSheet.cpp
   app/BrushRowIcon.cpp
   app/CloseDecision.cpp
+  app/Action.cpp
+  app/Batch.cpp
+  app/BatchDialog.cpp
+  app/Command.cpp
+  app/CommandCoverage.cpp
+  app/CommandsImage.cpp
+  app/CommandsLayers.cpp
+  app/CommandsOpStack.cpp
+  app/CommandsPatterns.cpp
   app/CompPanel.cpp
   app/PanelLayout.cpp
   app/ControlsLayout.cpp
@@ -39,6 +48,9 @@ add_executable(naturalPaint
   app/Memory.cpp
   app/MunsellSelection.cpp
   app/NoDocumentCanvas.cpp
+  app/Recorder.cpp
+  app/Replay.cpp
+  app/ActionsPanel.cpp
   # One translation unit per --selftest section, plus Driver.cpp for the three
   # drivers and Support.cpp for what they share (src/app/selftest/Support.hpp).
   # These were one 20 815-line app/SelfTest.cpp until every parallel branch
@@ -74,6 +86,7 @@ add_executable(naturalPaint
   app/selftest/PsPatterns.cpp
   app/selftest/GimpBrush.cpp
   app/selftest/Variance.cpp
+  app/selftest/CommandsPatterns.cpp
   app/selftest/CoverageBlend.cpp
   app/selftest/PaperTexture.cpp
   app/selftest/DabLibrary.cpp
@@ -156,6 +169,18 @@ add_executable(naturalPaint
   app/selftest/ImageDecode.cpp
   app/selftest/ImageIO.cpp
   app/selftest/IncrementalComposite.cpp
+  app/selftest/ActionFile.cpp
+  app/selftest/Command.cpp
+  app/selftest/CommandsLayers.cpp
+  app/selftest/Recorder.cpp
+  app/selftest/Replay.cpp
+  app/selftest/Batch.cpp
+  app/selftest/BatchDialog.cpp
+  app/selftest/ActionsPanel.cpp
+  app/selftest/CommandsOpStack.cpp
+  app/selftest/CommandsImage.cpp
+  app/selftest/CommandCallsites.cpp
+  app/selftest/Json.cpp
   app/selftest/Keymap.cpp
   app/selftest/LayerComp.cpp
   app/selftest/LayerEditor.cpp
@@ -354,6 +379,8 @@ add_executable(naturalPaint
   io/ImageDecode.cpp
   io/SourceGamut.cpp
   io/ImageIO.cpp
+  io/ActionFile.cpp
+  io/Json.cpp
   io/NpaintFile.cpp
   io/OpSerial.cpp
   io/PackBits.cpp
@@ -373,7 +400,9 @@ add_executable(naturalPaint
   ops/Filters.cpp
   ops/FloodFill.cpp
   ops/Gradient.cpp
+  ops/Lens.cpp
   ops/MonoOps.cpp
+  ops/Pattern.cpp
   ops/PointOpTiles.cpp
   ops/PointOps.cpp
   ops/Resample.cpp

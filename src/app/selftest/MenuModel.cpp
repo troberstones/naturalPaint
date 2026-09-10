@@ -197,13 +197,18 @@ bool runMenuModelTest() {
   // the paragraph above demands, rather than by adding two to 90.
   // 92 -> 93: `Pigment` (Window > Pigment), the check item that turns
   // `ControlsSection::Pigment`'s Hidden-by-default placement on -- counted
-  // the same way, off `MenuAction`'s enumerators (94 including `Count`).
-  check(kMenuActionCount == 93,
-        "ids: exactly 93 actions -- the original 41-item extraction plus D1/D2's "
+  // the same way, off `MenuAction`'s enumerators (95 including `Count`).
+  //
+  // 93 -> 94: `Batch` (File > Batch...), docs/automation-plan.md step 7. This
+  // assertion is why that addition could not be quiet: it went red on the
+  // first build after the enumerator landed, which is the whole point of
+  // counting.
+  check(kMenuActionCount == 94,
+        "ids: exactly 94 actions -- the original 41-item extraction plus D1/D2's "
         "eleven, C5's six, C1's six, Free Transform, ResetView, "
         "Emboss/Median/Motion Blur, Adjustments' nineteen, the numeric Transform "
-        "dialog, Brush Settings, the crop pair and Pigment, so an item lost in a "
-        "later edit fails here");
+        "dialog, Brush Settings, the crop pair, Pigment and Batch, so an item lost "
+        "in a later edit fails here");
 
   {
     std::set<MenuAction> seen;

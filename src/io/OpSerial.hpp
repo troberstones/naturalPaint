@@ -75,7 +75,8 @@
 //       body:
 //         u16  opClassCode        0 PointA, 1 SpatialB, 2 StrokeC, 3 BakedD
 //         u16  pointKindCode      0 Levels, 1 Curves, 2 Exposure,
-//                                 3 Saturation, 4 Grayscale, 5 ChannelMixer
+//                                 3 Saturation, 4 Grayscale, 5 ChannelMixer,
+//                                 6 Invert, 7 Posterize, 8 Threshold
 //         u8   enabled            0 or 1
 //         u8   reserved           written 0; a non-zero value makes the whole
 //                                 record unrecognised (see below)
@@ -85,7 +86,13 @@
 // ordinals**, so appending a value to `core::OpClass` or `core::PointOpKind`
 // cannot silently move the meaning of a file that already exists.
 //
-// Params, by kind, all f32:
+// Params, by kind. f32 unless the row says otherwise, and this table is the
+// spec `fixedParamBytes()` in io/OpSerial.cpp implements -- the two are the
+// same nine kinds and the same byte counts, and a tenth kind lands in both or
+// in neither. (This table stopped at ChannelMixer for as long as the last
+// three existed, which is why it now says so out loud: the format's *reader*
+// was right and the specification of it was not, and a specification nobody
+// executes is documentation of what somebody believed.)
 //
 //     Levels        3 x 5   (blackIn whiteIn gamma blackOut whiteOut)   60 B
 //     Curves        3 x (u16 pointCount, pointCount x (x, y))     variable
@@ -93,6 +100,10 @@
 //     Saturation    4       (scale, lumaWeights[3])                     16 B
 //     Grayscale     3       (lumaWeights[3])                            12 B
 //     ChannelMixer  12      (matrix, row-major)                         48 B
+//     Invert        u16 domain (0 Linear, 1 Display) + f32 amount        6 B
+//     Posterize     i32 levels -- an integer, because a level count of      4 B
+//                   3.9999 is not a state this op has
+//     Threshold     2       (threshold, amount, in THAT order)           8 B
 //
 // --- The rule that makes PRD I10 true at the *entry* level ----------------
 //
@@ -110,7 +121,9 @@
 // io/NpaintFile's part-recognition test is:
 //
 //   * the class code is not 0..3;
-//   * the class code is 0 and the kind code is not 0..5;
+//   * the class code is 0 and the kind code is not 0..8 -- the nine kinds in
+//     the table above, which is `core::PointOpKind`'s current size and will
+//     grow with it;
 //   * `reserved` is not 0 (a newer build used the byte for something);
 //   * the body's length is not **exactly** what this build's parse of that
 //     class and kind consumes.
@@ -130,7 +143,7 @@
 // serialise. io/NpaintFile.hpp's deferral list says so.
 //
 // **A human-readable, diffable action file.** PLAN.md Phase 19 step 1
-// (`ops/Action`) writes an op stack out as a named, diffable artefact for
+// (`app/Action`) writes an op stack out as a named, diffable artefact for
 // batch replay. That is a different format with a different audience -- it is
 // read and edited by people, this one is read by a machine and has to be
 // bit-exact -- and building one to serve both would compromise both. This

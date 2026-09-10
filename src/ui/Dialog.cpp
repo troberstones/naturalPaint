@@ -392,8 +392,10 @@ DialogAction dialogFooter(const DialogFooter& f) {
   float leftUsed = 0.0f;
   if (f.alternate != nullptr) {
     const float w = buttonWidth(f.alternate);
+    ImGui::BeginDisabled(!f.alternateEnabled);
     const bool pressed = f.alternateDestructive ? tokenButton(f.alternate, kError, w)
                                                 : ImGui::Button(f.alternate, ImVec2(w, 0.0f));
+    ImGui::EndDisabled();
     if (pressed) action = DialogAction::Alternate;
     leftUsed = w;
     ImGui::SameLine(0.0f, 0.0f);

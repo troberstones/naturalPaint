@@ -7,6 +7,8 @@
 
 #include "core/Tile.hpp"
 #include "core/TileStore.hpp"
+#include <optional>
+#include <string_view>
 
 // ops/Transform (PLAN.md "Phase 6 -- Filter and transform it"; PRD D14, D15,
 // D16, D17).
@@ -422,6 +424,14 @@ float resampleKernelWeight(ResampleKernel kernel, float t) noexcept;
 // Human-readable name, for refusal messages and for a menu.
 const char* resampleKernelName(ResampleKernel kernel) noexcept;
 
+// The inverse, matching `resampleKernelName()`'s own strings case-
+// insensitively. Added for io/ActionFile (docs/automation-plan.md), which
+// needs a kernel choice to survive a round trip through a text file; the
+// pair follows `layerKindName()`/`layerKindFromName()` and
+// `blendModeName()`/`blendModeFromName()`, so there is one vocabulary rather
+// than a second one invented at the file format's edge.
+std::optional<ResampleKernel> resampleKernelFromName(std::string_view name) noexcept;
+
 // --------------------------------------------------------------------------
 // A flat image in the tile store's own space: **linear light, premultiplied
 // alpha, RGBA float**, row-major, top to bottom, four floats per texel, no row
@@ -618,6 +628,29 @@ enum class CanvasAnchor {
   CenterLeft, Center, CenterRight,
   BottomLeft, BottomCenter, BottomRight,
 };
+
+// The wire name of an anchor, and its inverse -- **beside the enum, not in the
+// caller that needed it first**, for the reason `resampleKernelFromName()`
+// twenty screens above already states: `app/CommandsImage.cpp`'s `canvas_size`
+// writes this choice into an action file, and docs/automation-plan.md §5
+// forbids keying a file by an ordinal because the enum is appended to.
+//
+// **This enum is the one in this tree where an ordinal would be most
+// plausible and most wrong**: nine values in a visually obvious 3x3 order, so
+// a reader might reasonably store "4" for Center -- and then a tenth value
+// inserted anywhere but the end silently re-aims every saved canvas resize.
+//
+// Names are lower_snake_case and matched exactly, following
+// `blendModeName()`; see `blurKindName()` in ops/Blur.hpp for why these pairs
+// do not copy `resampleKernelFromName()`'s case fold.
+const char* canvasAnchorName(CanvasAnchor anchor) noexcept;
+std::optional<CanvasAnchor> canvasAnchorFromName(std::string_view name) noexcept;
+
+// Every anchor, in the grid's own reading order. Exposed so a caller that must
+// enumerate them -- a menu, or `--selftest`'s round-trip assertion -- walks one
+// list rather than repeating nine names, which is how the tenth value would
+// come to exist in one place and not the other.
+const std::vector<CanvasAnchor>& allCanvasAnchors();
 
 // Canvas size: change the extent, do not touch the pixels. Implemented as a
 // `cropImage()` with the origin the anchor implies, so there is exactly one

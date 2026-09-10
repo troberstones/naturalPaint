@@ -3576,6 +3576,290 @@ bool runLayerGroupPanelTest();
 // with `exportRequestAvailability()`'s string verbatim rather than four
 // identical per-file failures. Headless and GPU-free; writes and removes a
 // selftest_exportstates/ scratch directory.
+// io/Json -- the reader, escaper and ordered document model promoted out of
+// io/ExportAs.cpp and app/Keymap.cpp once the copy count reached three
+// (docs/automation-plan.md step 0). Asserts the promotion's two new
+// properties against hand-typed text: a float round-trips to the identical
+// bit pattern, and object key order survives a rewrite -- which is what makes
+// an action file diffable (PRD P5). Headless, GPU-free, filesystem-free.
+// app/Command -- the one door every recordable document edit goes through
+// (docs/automation-plan.md step 1). Asserts the layer between the command
+// table and the appliers it dispatches to: a string identity that cannot be
+// moved by an enum, an unknown id REFUSED rather than skipped, a precondition
+// that runs before the applier, and layers addressed by name so a replay on a
+// reordered document cannot act on a different one. Drives the plan's own
+// composite case -- flatten, blur, set blend to Subtract, threshold -- entirely
+// through applyCommand(). Headless, GPU-free, filesystem-free.
+// io/ActionFile + app/Action -- the action model and its .npaction file
+// (docs/automation-plan.md step 4). Asserts the FORMAT, not the appliers:
+//
+//  - a **hand-typed** fixture decodes to the six expected steps, with its keys
+//    in an order no writer here produces and its version key LAST, which is
+//    what proves the version is found by key rather than by position. Typed at
+//    a keyboard on purpose -- io/OpSerial's own section states the rule: a
+//    fixture that shares the encoder's assumptions cannot catch the encoder
+//    being wrong;
+//  - write -> read -> write is byte-identical, and a parameter's double comes
+//    back as the identical BIT PATTERN, so a sigma does not drift a digit per
+//    re-save;
+//  - four refusals, each of which is a silent wrong answer if it is missing: a
+//    file with no "npaction" key, a version this build does not read, a
+//    "steps" that is not an array (which must not become an empty action that
+//    reports success over every file in a batch), and a step naming a command
+//    this build does not have -- refused at LOAD, not at run;
+//  - the flat form's one reserved key: a parameter called "cmd" is refused by
+//    name rather than silently lost to a duplicate key;
+//  - `actionFromLayerOps()` (PRD P6): a graded layer converts to a
+//    `select_layer` plus one step per op, and a non-point-op entry refuses by
+//    name having emitted nothing.
+//
+// Headless, GPU-free. Writes and removes a selftest_actions/ scratch directory
+// for the library-listing section, under NP_ACTION_DIR so the real
+// ~/Library/Application Support library is never touched.
+bool runActionFileTest();
+
+bool runCommandTest();
+
+// app/CommandsLayers -- the three layer vocabularies as recordable commands
+// (docs/automation-plan.md step 1). **PROVES four things nothing else can
+// see**, each about the registration between a gesture and its applier rather
+// than about either end:
+//
+//  1. **Exhaustiveness.** Every enumerator of `LayerCommand` and of
+//     `LayerSetCommand` has a registered row, checked by walking
+//     `allLayerCommands()` / `allLayerSetCommands()` and asking the
+//     registration which id each landed under -- so an enumerator added later
+//     FAILS the suite instead of being silently unrecordable, which is step
+//     1's own stated gate.
+//  2. **A set is all-or-nothing at resolution time.** A step naming a layer
+//     this document does not have is refused, naming that layer, with the
+//     members that DID resolve untouched and nothing recorded -- because
+//     "skip the ones that resolved" is silently a different edit from the one
+//     the file describes. Two names resolving to one row (layer names are not
+//     unique) is refused for the same reason.
+//  3. **A create adopts the layer it created, asserted BY NAME.** An index
+//     assertion passes with the adoption deleted, because `activeLayerIndex()`
+//     clamps; the name does not clamp.
+//  4. **The lock belongs to core/LayerOps, in both directions.** The setters a
+//     locked layer refuses are refused through the adapter, AND the three it
+//     deliberately allows -- hide, label, unlock -- still go through, which is
+//     what a well-meaning blanket lock check in an adapter would break.
+//
+// Headless, GPU-free, filesystem-free.
+bool runCommandsLayersTest();
+// app/Recorder -- the session sink `applyCommand()` appends to while armed
+// (docs/automation-plan.md step 3). Headless, GPU-free, filesystem-free.
+//
+// **What it proves**, and every item is a way a recording can be wrong while
+// looking right:
+//
+//  * the plan's own case -- flatten, blur, set blend, threshold, driven
+//    through `applyCommand()` alone -- records as exactly five steps in
+//    order, the extra one being the `select_layer` the flatten made
+//    necessary, with its layer named and every parameter intact;
+//  * a REFUSED command records nothing, asserted for both refusal routes (an
+//    unknown id, and a precondition that says no) -- replaying a refusal
+//    either repeats the noise or, on a document where the precondition
+//    happens to hold, does something the user never did;
+//  * a create emits a `select_layer` for the NEW layer before the next step
+//    that depends on it, which is the case a "did the user click a layer
+//    row?" recorder would miss entirely, since `fromLayerEdit()` moves the
+//    selection with nobody clicking anything;
+//  * back-to-back steps on one layer emit ONE pin, not one each, and a
+//    `select_layer` the user issued is not immediately followed by the
+//    recorder's own duplicate of it;
+//  * a selection-bounded step taken under an unnamed marquee is REFUSED by
+//    name, with the fix in the sentence, and the same step under a marquee a
+//    saved alpha channel matches exactly is recorded with a warning -- the
+//    difference being that a channel is document data and a marquee is not
+//    (docs/automation-plan.md §7);
+//  * `channelMatchingSelection()` itself: it matches the channel a selection
+//    was saved as, refuses a channel of equal area but a different shape, and
+//    does not match an empty selection to everything;
+//  * and arm / stop / re-arm, including that a stopped recorder appends
+//    nothing and that re-arming discards the previous recording.
+//
+// See app/selftest/Recorder.cpp.
+bool runRecorderTest();
+
+// docs/automation-plan.md step 5: replaying an action against a document --
+// targeting by name, the refusal that touches nothing, and the one history
+// entry. See app/Replay.hpp.
+bool runReplayTest();
+
+// docs/automation-plan.md step 6: `app/Batch` -- one action over many files.
+//
+// **What it proves:**
+//  - **PRD P4, on bytes.** A thirty-file run hashes every input before and
+//    after and asserts the two digests are identical. Not an mtime: a
+//    truncating `fopen` on an input would leave the mtime moving and the bytes
+//    gone, and only the second of those is the thing P4 is about.
+//  - **The input/output collision pre-flight refuses the WHOLE run**, before
+//    anything is opened, and refuses it for paths that are *spelled
+//    differently* -- string equality already handles the easy case, so the
+//    assertions are aimed at `.`/`..` segments, a trailing slash, and an
+//    ASCII case difference on a case-insensitive filesystem.
+//  - **The run stops at the first `Failed`** and every later file reports
+//    `NotAttempted` rather than `Skipped` or silence, with nothing written for
+//    any of them.
+//  - **Import warnings, replay warnings and encoder warnings all reach the
+//    per-file report**, each prefixed with where it came from.
+//  - **A file the action changed nothing in is conspicuous**: counted, and
+//    named in the summary sentence.
+//  - **The pixel-unit table is held to the command registry in both
+//    directions**, so a renamed parameter and a new command reusing `radius`
+//    both fail here rather than quietly widening what a batch accepts.
+//
+// See app/Batch.hpp, whose §1 and §2 are the arguments these assert.
+bool runBatchTest();
+
+// docs/automation-plan.md step 7: the BATCH dialog's model -- which button is
+// live and why, and the preview/run distinction. See app/BatchDialog.hpp.
+bool runBatchDialogTest();
+// app/ActionsPanel -- the ACTIONS panel's model (docs/automation-plan.md
+// step 7), asserted as state-in / drawing-out rather than by drawing it.
+//
+// **What it proves:**
+//  - **SAVE is never offered for a recording with a hole in it, and the
+//    refusals are on screen whenever it is not.** `Recorder::usable()` is
+//    false once anything has been refused, and a holed take "replays
+//    confidently and does the wrong thing at step 4" -- so the implication
+//    `save.enabled => refusals.empty()` is asserted over every state this
+//    panel can reach, not over the one the test happened to build;
+//  - which buttons are live when: RECORD with no document, PLAY on an empty
+//    action, the row verbs with nothing selected and on the first/last row,
+//    and the whole list read-only while a take is being recorded;
+//  - what a row reads -- the command's LABEL and its advertised parameters,
+//    never its file-key id, and an unregistered id as a named unknown rather
+//    than as a missing row;
+//  - that reorder and delete produce the action the user sees, selection
+//    included, and refuse an out-of-range index rather than wrapping;
+//  - **the arm/stop lifecycle, which is what keeps a process-wide singleton
+//    from being left armed**: closing the document, switching to another one,
+//    and putting the panel away each stop the take and say so, and the guard
+//    that does it runs from the frame loop rather than from the draw.
+//
+// Headless, GPU-free and filesystem-free. See app/selftest/ActionsPanel.cpp.
+bool runActionsPanelTest();
+// app/CommandsOpStack -- the command rows that carry an *op* as a parameter,
+// and the selection rows that make every destructive step around them mean
+// what it meant when it was recorded (docs/automation-plan.md step 1).
+//
+// **What it proves:**
+//  - **All nine `PointOpKind`s survive command -> JSON text -> command ->
+//    applied, bit for bit.** Every float is compared with `memcmp`, never with
+//    `==`, and several of the fixture's fields are adjacent floats one ULP
+//    apart -- a writer that printed six significant digits, or a reader that
+//    went through a `float` where a `double` was needed, fails here and passes
+//    any friendlier comparison. The sweep is driven off `PointOpKind`'s own
+//    count, so a tenth kind is asserted the day it is added.
+//  - **The fixture is hostile on purpose**: no field left at its default (a
+//    reader that drops a field would round-trip a default-built fixture
+//    perfectly) and no two fields of one op sharing a value (a reader that
+//    transposes two fields is invisible when both hold the same number).
+//  - **A hand-typed op**, written at a keyboard rather than produced by the
+//    encoder, decodes field for field -- io/OpSerial's own fixture discipline,
+//    and the only thing separating "the reader agrees with the writer" from
+//    "the reader is right".
+//  - **An op kind nothing knows refuses, naming it; a non-PointA op refuses
+//    rather than being stored inert**, in both directions. This is the one
+//    place the document rule and the action rule are deliberately opposite:
+//    `OpClass::Unknown` exists so a document from a newer build round-trips
+//    (PRD I10), while an action is *executed*, and a stack replayed with one
+//    step missing composites happily and writes files that look correct.
+//  - **The session/document line**: `load_channel_as_selection` refuses a
+//    channel the document lacks, by name, changing nothing; save-then-load
+//    round-trips a selection texel for texel; and a second save under a taken
+//    name warns, because `saveSelectionAsChannel()` uniquifies rather than
+//    replacing and a later load of the requested name would silently bound
+//    every following step to the OLDER channel.
+//  - `invert_selection` with nothing selected is a **named refusal** where the
+//    UI is a deliberate silent no-op -- docs/automation-plan.md §7's reason: in
+//    a batch that silence is thirty files reported as successes.
+//
+// Headless, GPU-free, filesystem-free.
+bool runCommandsOpStackTest();
+// app/CommandsImage -- the command rows for everything that changes pixels or
+// the document's own geometry (docs/automation-plan.md step 1): the Filter
+// menu's seven, Image > Adjustments' nineteen including its four auto solvers,
+// and the four document-geometry commands.
+//
+// **What this PROVES, and what it deliberately does not.** Every applier these
+// rows dispatch to is already asserted by its own section (FilterMenu.cpp,
+// AdjustmentMenu.cpp, FiltersExt.cpp, CropTool.cpp); nothing here re-tests a
+// blur, a curve or a crop. What is new is the ADAPTER between a JSON object
+// and those appliers, and the four ways one can be wrong while looking right:
+//
+//  - **A parameter of the wrong type reads as its default.**
+//    `JsonValue::numberOr()` answers its fallback for `"sigma": "four"`, so a
+//    filter runs at a default parameter and reports success. Asserted per JSON
+//    type, including the one value JSON cannot carry losslessly at all: a
+//    uint64 noise seed past 2^53, which would round into a different grain
+//    than the one the file names.
+//  - **An enum-valued parameter can be parsed and then dropped.** A row that
+//    reads `"anchor"` into a local and passes `CanvasAnchor::Center` anyway
+//    round-trips every name perfectly. So each of the four enum parameters is
+//    driven twice with two different names and the two resulting PICTURES must
+//    differ -- for the noise distribution, at the identical seed, so the
+//    distribution is the only thing that could have changed.
+//  - **A no-op reported as a success is this feature's designed failure mode**
+//    (docs/automation-plan.md §7 -- in a batch it is thirty files written
+//    unmodified). A `trim_to_content` with nothing to trim must succeed and
+//    report ZERO texels changed, which only `fromDocumentTransform()` can see;
+//    and a step naming none of an adjustment's controls must refuse rather
+//    than run an identity.
+//  - **A row wired to the wrong precondition.** Every image row is driven at a
+//    document with no layers and at a Pigment layer: the pixel ops must refuse
+//    the latter (a Pigment layer holds Latents, app/FilterOps.hpp's stated
+//    structural limit) while the four document-geometry rows must still run,
+//    because ops/DocumentTransform §5 says a document-level op moves every
+//    layer including ones with no RGB store.
+//
+// Sections A-C are LOOPS over `allCommands()` and over one fixture per row,
+// and each row's fixture must set exactly the keys its `paramNames` advertises
+// -- in both directions -- so a row added later without a test fails section A
+// before it can silently pass anything else. Headless, GPU-free,
+// filesystem-free.
+bool runCommandsImageTest();
+// app/CommandsPatterns + ops/Lens + ops/Pattern -- PLAN.md Phase 19 step 5's
+// two parked P2 image ops, and the three command rows that reach them.
+//
+// **What it PROVES**, as distinct from what it exercises:
+//
+//  * that a zero-strength lens correction is the identity **to the bit** --
+//    asserted twice, once through the short-circuit that guarantees it and
+//    once with that short-circuit switched off, so the claim is about the
+//    gather and not about the branch in front of it. A zero-coefficient pass
+//    that quietly re-ran a reconstruction kernel over every texel is invisible
+//    in one pass and cumulative over a batch;
+//  * that the lens geometry **is the published model**: a corrected linear
+//    ramp reads `a + b * srcX` for the `srcX` that `lensSourcePosition()`
+//    reports, which pins the sign convention, the half-diagonal normalisation
+//    and the half-texel centre convention independently of the sampler;
+//  * that `frame`, not `outRect`, sets the optical centre -- a strip's texels
+//    are bit-identical to the whole canvas's, which is ops/Blur's seam
+//    invariant applied to a global gather;
+//  * that chromatic aberration moves R and leaves G and B **bit**-identical,
+//    so green really is the reference channel;
+//  * that a pattern tiled at its own size reproduces itself exactly at the
+//    tile boundaries -- four bit-identical blocks, plus the two seam columns
+//    and two seam rows named individually, which is where the off-by-one
+//    lives; and
+//  * that `patternSourceTexel()` uses a **euclidean** modulus, asserted at
+//    negative operands, because C's truncating `%` reads off the front of the
+//    pattern buffer the moment an origin or a document texel goes negative.
+//
+// It also asserts the three rows refuse by name -- an unnamed pattern, an
+// unknown pattern, a fractional tiling origin, an unknown kernel, and a
+// coefficient pair whose radial map folds the picture through itself -- and
+// that a fill is bounded by the selection through app/PixelOpBridge rather
+// than by an answer this op invented for itself.
+//
+// Headless, GPU-free and filesystem-free.
+bool runCommandsPatternsTest();
+
+bool runJsonTest();
+
 bool runExportStatesTest();
 // PLAN.md Phase 5 -- **the CPU Pigment deposit**: `brush/Deposit` (what one dab
 // does to one texel) and `app/StrokeSession` (the stroke lifecycle around it).
@@ -5807,5 +6091,35 @@ bool runPathConsumersTest();
 // (every other way a session ends) leaves it untouched. Headless, GPU-free,
 // writes no files. See app/selftest/TextKeyCapture.cpp.
 bool runTextKeyCaptureTest();
+
+// The UI -> command-layer reroute (docs/automation-plan.md step 2) -- that
+// every migrated route reaches `app::applyCommand()`, and that reaching it
+// changed nothing.
+//
+// **What it PROVES**, as distinct from what it exercises:
+//
+//  * that the three UI boundaries `ui/MacPaintUI.hpp` publishes --
+//    `runPixelCommand()`, `runLayerGesture()`, `runActiveLayerSetter()` --
+//    each produce a RECORDED STEP with the control's own parameter in it.
+//    That is the assertion a missed site fails: a dialog that called its
+//    applier directly would still paint the right pixels and still pass every
+//    other section in this suite, and would be a user action no recorder can
+//    ever see;
+//  * that the reroute is pixel-identical. All twenty-six pixel commands the
+//    UI can now issue are run against the applier the control used to call,
+//    on two copies of one fixture, and compared BIT-EXACTLY -- with the count
+//    of cases that actually moved a texel asserted beside the match count, so
+//    a fixture that had gone flat could not make the comparison vacuous;
+//  * that every key an ENCODER writes is a key its row advertises. This is
+//    the reverse of app/selftest/CommandsImage.cpp's own check and catches
+//    the one bug the pixel comparison cannot: a misspelt optional key whose
+//    silent default happens to equal the fixture's value;
+//  * that a refusal is still not a step on the UI path, and that the
+//    dialogs' three-way outcome still maps the way it did -- including the
+//    one case step 2 knowingly changed, an identity parameter refused by name
+//    rather than run as a no-op.
+//
+// Headless, GPU-free, writes no files. See app/selftest/CommandCallsites.cpp.
+bool runCommandCallsitesTest();
 
 }  // namespace np

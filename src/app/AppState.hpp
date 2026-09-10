@@ -13,6 +13,8 @@
 #include "app/BrushLibraryFile.hpp"
 #include "app/CloseDecision.hpp"
 #include "app/CropTool.hpp"
+#include "app/ActionsPanel.hpp"
+#include "app/BatchDialog.hpp"
 #include "app/PanelLayout.hpp"
 #include "app/PenTool.hpp"
 #include "app/TextTool.hpp"
@@ -1289,6 +1291,31 @@ struct AppState {
   // artifacts are drawn on the CANVAS, so no panel crop can reach them and no
   // arrangement of panels can produce them.
   bool flatsDemoEdits = false;
+  // `--actions-demo`: the ACTIONS panel docked in the right dock, expanded,
+  // holding a recorded action -- the fixture the two ACTIONS golden views
+  // photograph. `--actions-demo recording` leaves the take LIVE instead, with
+  // a refusal in it, which is the panel's other state and the one no
+  // arrangement of panels can reach (it needs a recorder that is armed and a
+  // step that was refused).
+  bool actionsDemo = false;
+  bool actionsDemoRecording = false;
+
+  // T?: the ACTIONS panel's own state -- the take being edited, the selected
+  // row and the last sentence it has to say (app/ActionsPanel.hpp).
+  //
+  // Session state and deliberately not persisted, for the reason that header
+  // gives: an action that matters is a file in the library, and restoring a
+  // half-finished take from three launches ago would present it as the thing
+  // the user was doing.
+  ActionsPanelState actionsPanel;
+
+  // The BATCH dialog's model (docs/automation-plan.md step 7,
+  // app/BatchDialog.hpp). Here rather than `static` inside the drawer for the
+  // reason the ACTIONS panel's state is: `--open-batch` has to be able to fill
+  // it in before the first frame so a golden view can photograph a known
+  // state, and function-local statics are reachable only from inside the
+  // function that owns them.
+  BatchDialogState batchDialog;
 
   // --- Selection and clipboard commands, consumed in ui/MacPaintUI ---------
   //
@@ -1517,6 +1544,10 @@ struct AppState {
   // Comps / Layers To Files... modal open, so a `--screenshot` can photograph
   // it. `openLayerMenu`'s justification exactly -- a modal is opened by a
   // click and the screenshot path has no input.
+  bool openBatchDialog = false;
+  // `--open-batch report` also fills `batchDialog.report` with a synthetic one,
+  // so the report half can be photographed without a run. See main.cpp.
+
   bool openExportStatesDialog = false;
   // --open-export-states <FOLDER>: prefills that dialog's output folder, so a
   // `--screenshot` can photograph the plan table -- the list of exact
