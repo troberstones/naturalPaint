@@ -4985,7 +4985,15 @@ int main(int argc, char** argv) {
     // per-tool bitmap over the system shape above. That is now the normal
     // path -- `bitmapCursorsEnabled()` defaults to true -- and the system
     // shape is the fallback for a bitmap that failed to rasterise.
-    cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest());
+    //
+    // The third is §9's: Caps Lock, read here rather than inside `apply()`
+    // because `apply()` is the one function in ui/ToolCursor no test can
+    // reach, and the rule it feeds -- `shouldUsePreciseCursor()` -- is
+    // covered exhaustively by `--selftest` precisely because it takes this
+    // as an argument. `SDL_GetModState()` reports the LATCHED Caps state, not
+    // a key that is down, which is what makes it a toggle rather than a hold.
+    cursors.apply(np::canvasCursorRequest(), np::canvasCursorToolRequest(),
+                  (SDL_GetModState() & SDL_KMOD_CAPS) != 0);
 
     ImGui::Render();
     const uint64_t renderNs = frameTrace ? SDL_GetTicksNS() : 0;

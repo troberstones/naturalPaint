@@ -1651,6 +1651,59 @@ line of `--frame-trace`, which is why that line now carries `pacing=`.
 
 ---
 
+## T28 — The click point is not always logical or visible · closed 2026-09-09
+
+**Reported.** "We need to address deficiencies in how the tool cursors
+display, the click point is not always logical or visible."
+
+**Verified — measurable, and measured.** T17 gave every tool a bitmap cursor
+whose hotspot was a per-tool fraction of that glyph's own inked BOUNDING BOX.
+A bounding box's corner is not a point on the drawing: for any diagonal glyph
+it is empty air. Instrumented at the shipping 24x24, counting the white halo
+as ink so the reading is the generous one:
+
+* **Nine of the twenty-nine hotspots sat on a fully transparent pixel** —
+  Measure five pixels from its own ink; Dry Brush, Smudge and Pen three;
+  Lasso, Crop, Frame and Eraser two; Water and Hand one.
+* **Six more sat on ink below alpha 22 of 255** — Brush at 1, Clone Stamp at
+  2, Eyedropper at 4 — the outermost anti-aliased fringe, which is invisible.
+
+Over half the palette, the Brush included, pointed at something the user
+could not see; and only the two marquees drew any mark at their hotspot at
+all, because T17's report had named a crosshair for them specifically.
+
+**Why the suite did not catch it, which is the more useful half.**
+`app/selftest/ToolCursor.cpp` section G asserted each hotspot *lies inside its
+glyph's drawn bounding box* — and all fifteen do. In-bounds was the strictly
+weaker claim, and it was chosen because it was the claim a bounding-box anchor
+could satisfy. **The assertion was written to fit the mechanism rather than
+the requirement**, which is the general lesson here.
+
+**Fixed** — `ui/ToolCursor.hpp` §8 and §9. Every cursor is now the composite
+the two marquees already shipped: the tool glyph in a box at the upper right,
+a crosshair at the lower left, and the hotspot is the crosshair's own centre
+pixel. Logical because the layout defines the point rather than a fraction of
+a picture; visible because there is now something drawn at it. Both slots are
+inset two design units so the halo has room on all four arms — the marquee's
+old placement put its lower arm on the last row of the canvas, with no outline
+against a dark canvas.
+
+The per-tool anchor table is gone with the class of bug rather than the
+instances: the glyph identifies the tool and points at nothing, so a tool
+added tomorrow inherits a correct hotspot with no entry in any table.
+
+**Admitted cost.** The glyph no longer sits under the pointer. For an icon
+that is itself a pointing thing — the Path Select arrow above all — that is a
+real loss, and Illustrator would keep the hotspot at the arrow tip. Uniformity
+was chosen over that deliberately, because per-tool judgement is what produced
+the fifteen. The arrow is the first entry worth revisiting.
+
+**And `Caps Lock` works.** `docs/shortcuts.md` §2 has promised "precise
+crosshair cursor" since it was written; nothing implemented it. §9 does, over
+the canvas only.
+
+---
+
 ## Re-reported 2026-09-02, against entries already open
 
 * **T3 (gradient)** — reported again as "the gradient tool does nothing."

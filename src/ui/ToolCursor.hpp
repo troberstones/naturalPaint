@@ -295,6 +295,80 @@
 // `app/selftest/ToolCursor.cpp` section G again), which is the one branch
 // `apply()` gained; every other line in `apply()` is the code §6 already
 // argued, untouched.
+// ==========================================================================
+// 8. Where the click lands, and how the user can see it
+// ==========================================================================
+//
+// The report: *"the click point is not always logical or visible."* Both
+// halves were true, and the first one is measurable, so it was measured before
+// it was fixed.
+//
+// **The measurement.** §7 resolved each cursor's hotspot as a per-tool
+// fraction of that glyph's own inked BOUNDING BOX -- `{0.0, 1.0}` for the
+// twelve tools whose working end is "lower left", and so on. A bounding box's
+// corner is not a point on the drawing: for any diagonal glyph it is empty
+// air. Instrumented at the shipping 24x24, counting the white halo as ink so
+// the reading is the generous one:
+//
+//   * **Nine of the twenty-nine hotspots sat on a fully transparent pixel.**
+//     Measure five pixels from its own ink; Dry Brush, Smudge and Pen three;
+//     Lasso, Crop, Frame and Eraser two; Water and Hand one.
+//   * **Six more sat on ink below alpha 22 of 255** -- Brush at 1, Clone Stamp
+//     at 2, Eyedropper at 4 -- which is the outermost anti-aliased fringe and
+//     is to say invisible.
+//
+// Over half of the palette, the Brush included, pointed at something the user
+// could not see. At this machine's 2.07x Accessibility pointer size a
+// five-pixel design error is a ten-pixel screen error.
+//
+// **Why the assertion did not catch it, which is the more useful half.**
+// `app/selftest/ToolCursor.cpp` section G checked that each hotspot *lies
+// inside its glyph's drawn bounding box* -- and every one of those fifteen
+// does. In-bounds was the strictly weaker claim, and it was chosen because it
+// was the claim a bounding-box anchor could satisfy. The assertion was written
+// to fit the mechanism rather than the requirement.
+//
+// **The fix is a layout, not a table of better fractions.** Every cursor is
+// now the composite the two marquees have shipped since T17: the tool GLYPH in
+// a 20-unit box at the upper right, a CROSSHAIR at the lower left, and the
+// hotspot is the crosshair's own centre pixel. That answers both halves at
+// once -- *logical*, because the hotspot is a point the layout defines rather
+// than a fraction of a picture; *visible*, because there is now something
+// drawn at it.
+//
+// It also deletes the class of bug rather than the instances. Under the old
+// rule each icon had to nominate its own working end and be right about it
+// twenty-nine times; here the glyph identifies the tool and points at nothing,
+// so a tool added tomorrow inherits a correct hotspot with no entry in any
+// table. `cursorHotspotAnchorFor()` is gone for that reason, not because its
+// judgements were bad ones -- they were read off the actual glyphs, and eight
+// of them were still landing on transparent pixels.
+//
+// **The cost, stated rather than swallowed.** The glyph no longer sits under
+// the pointer; it hangs up and to the right of it. For a tool whose icon is
+// itself a pointing thing -- the Path Select arrow above all, and the Pen's
+// nib -- that is a real loss: Illustrator puts those hotspots at the nib and
+// the arrow tip and badges them with modifiers instead. Uniformity was chosen
+// over that, deliberately, because per-tool judgement is what produced the
+// fifteen. The Path Select arrow is the first entry worth revisiting if the
+// composite proves wrong in the hand.
+//
+// ==========================================================================
+// 9. Caps Lock: the precise cursor
+// ==========================================================================
+//
+// Photoshop's oldest cursor affordance, and it is one line of muscle memory
+// for anyone arriving from it: **Caps Lock replaces the tool cursor with a
+// bare crosshair**, whatever the preferences say. Krita offers the same shape
+// as a persistent setting; this build takes the modal key, because the case it
+// answers is momentary -- the icon is in the way of the pixel being aimed at.
+//
+// Scoped to the canvas. `toolRequest` is `nullopt` over every panel, menu and
+// window border, and `shouldUsePreciseCursor()` requires it, so Caps Lock does
+// not turn the I-beam in the LAYERS filter box into a crosshair. It is a
+// painting-cursor override, not a global one -- which is also what Photoshop's
+// is.
+//
 namespace np {
 
 // What the pointer should *mean* over the canvas, independent of which shape
@@ -369,7 +443,7 @@ const char* toolCursorName(ToolCursor cursor) noexcept;
 // The marquee composite's shape parameter (§7): both marquees ask for the
 // same crosshair, offset to the bottom-left of a shape, and the shape is the
 // only thing that differs between them. One generator taking this as a
-// parameter, not two hand-drawn cursors -- see `drawMarqueeCrosshair()` in
+// parameter, not two hand-drawn cursors -- see `drawMarqueeShape()` in
 // the .cpp, which is what actually reads it.
 enum class CursorMarqueeShape { Rectangle, Ellipse };
 
@@ -406,25 +480,6 @@ struct CursorBitmap {
 int cursorBasePoints() noexcept;
 float cursorBaseScale() noexcept;
 
-// Where a tool's cursor actually points, as a fraction of its glyph's own
-// inked bounding box: (0,0) is that box's top-left, (1,1) its bottom-right.
-//
-// **A fraction rather than a pixel, so it survives every scale**, and per-tool
-// rather than one rule, because the working point of an icon is not a property
-// of its pixels -- a lasso draws from the end of its tail and a magnifier
-// points at the middle of its lens, and no amount of looking at coverage
-// recovers either. An earlier revision used the glyph's centre for everything,
-// which put the lasso's hotspot in the middle of its loop: the same class of
-// defect T17 started from, a cursor that does not say where the click lands.
-struct CursorHotspotAnchor {
-  float fx = 0.5f;
-  float fy = 0.5f;
-};
-
-// The anchor for one tool. Total over `Tool` with no `default:` arm, so adding
-// a tool stops the build here rather than silently inheriting the centre.
-CursorHotspotAnchor cursorHotspotAnchorFor(Tool tool) noexcept;
-
 // Which tools have a bitmap cursor: the two marquees (§7's procedural
 // composite) and every tool the palette has an icon for -- which today is all
 // of them. `Tool::Count` is the enum's bound, not a tool, and answers false.
@@ -439,8 +494,9 @@ bool toolHasBitmapCursor(Tool tool) noexcept;
 // `GImGui`, and this function has to run inside `--selftest`, which never
 // creates one (see `app/selftest/ToolCursor.cpp`'s own file comment on why
 // this whole test file is headless). The marquee pair does not touch the
-// font at all -- `drawMarqueeCrosshair()` in the .cpp draws them
-// procedurally, since neither shape exists as a glyph anywhere.
+// font at all -- `drawMarqueeShape()` in the .cpp draws them procedurally,
+// since neither shape exists as a glyph anywhere. Every cursor, glyph-based or
+// not, then gets §8's crosshair from `drawHotspotCrosshair()`.
 //
 // Returns `nonBlank == false` (with a best-effort but possibly empty `rgba`)
 // for any `Tool` `toolHasBitmapCursor()` answers false for, and for one it
@@ -478,6 +534,27 @@ CursorBitmap rasterizeToolCursorBitmap(Tool tool, float scale = 1.0f) noexcept;
 // passed in rather than recomputed here.
 bool shouldUseBitmapCursor(bool bitmapsEnabled, std::optional<Tool> toolRequest,
                             bool hasBitmap) noexcept;
+
+// §9's cursor: a bare crosshair, centred, hotspot at the centre. No tool
+// glyph, so one bitmap serves every tool -- which is the point of it.
+//
+// Same `scale` contract, same clamp and same `nonBlank` reporting as
+// `rasterizeToolCursorBitmap()`, so `create()` treats a failed rasterisation
+// here exactly as it treats a failed one there: the cursor is not installed,
+// and Caps Lock simply does nothing.
+CursorBitmap rasterizePreciseCursorBitmap(float scale = 1.0f) noexcept;
+
+// Does §9's crosshair win this frame? Pure, and separate from `apply()` for
+// the same reason `shouldUseBitmapCursor()` is: `apply()` needs live SDL video
+// and no test can reach it, while this is a comparison of three bools and an
+// `optional`. `app/selftest/ToolCursor.cpp` section G calls this one, the same
+// one `apply()` calls.
+//
+// `toolRequest` must have a value -- Caps Lock is a canvas override, not a
+// global one (§9) -- and `bitmapsEnabled` must be true, because that flag
+// means this platform's rasterisation is not trusted.
+bool shouldUsePreciseCursor(bool bitmapsEnabled, bool capsLock, std::optional<Tool> toolRequest,
+                            bool hasPreciseBitmap) noexcept;
 
 // The application's cursors, created once and owned here. §6.
 //
@@ -533,8 +610,13 @@ class SystemCursorTable {
   //
   // A no-op when `create()` has not run, so a code path that never made a
   // window (`--selftest`) cannot trip over it.
+  // `capsLock` is §9's override, read from `SDL_GetModState()` by the caller
+  // rather than here -- `apply()` is already the one function in this file no
+  // test can reach, and giving it a second thing it reads out of the platform
+  // would put the Caps Lock rule there too. As a parameter it goes through
+  // `shouldUsePreciseCursor()`, which `--selftest` covers exhaustively.
   void apply(std::optional<SDL_SystemCursor> request,
-             std::optional<Tool> toolRequest = std::nullopt) noexcept;
+             std::optional<Tool> toolRequest = std::nullopt, bool capsLock = false) noexcept;
 
  private:
   SDL_Cursor* cursors_[SDL_SYSTEM_CURSOR_COUNT] = {};
@@ -545,6 +627,10 @@ class SystemCursorTable {
   // which `bitmapCursorFor()` treats identically.
   static constexpr int kToolCount = static_cast<int>(Tool::Count);
   SDL_Cursor* bitmapCursors_[kToolCount] = {};
+  // §9's one crosshair, shared by every tool. Null when its rasterisation came
+  // back blank, which `shouldUsePreciseCursor()` reads as "Caps Lock does
+  // nothing" -- the same fallback rule the per-tool bitmaps have.
+  SDL_Cursor* preciseCursor_ = nullptr;
   // Purely to skip a redundant `SDL_SetCursor()`; see §6's last paragraph.
   SDL_Cursor* last_ = nullptr;
   bool created_ = false;
