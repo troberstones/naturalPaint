@@ -305,12 +305,16 @@ with no batch at all, and are worth shipping alone.
   document path, never the reverse.
 - **`--selftest` counts are read from a stream that interleaves stderr.** Separate the
   streams before believing a pass count moved.
-- **Doc rot, found in passing:** `io/OpSerial.hpp:113` says a record is malformed if "the
-  class code is 0 and the kind code is not 0..5". The implementation handles 0..8
-  (`io/OpSerial.cpp:32`–`33`). The code is right, the comment is stale. **Worse than
-  recorded here:** the params table in that same header also stops at `ChannelMixer` and
-  never lists Invert, Posterize or Threshold, though the implementation handles all three.
-  Fix both rather than trusting either.
+- **Doc rot, found in passing — FIXED.** `io/OpSerial.hpp` said a record is malformed if
+  "the class code is 0 and the kind code is not 0..5", and its params table stopped at
+  `ChannelMixer`. The implementation handles 0..8 (`io/OpSerial.cpp:31`–`33`,
+  `fixedParamBytes()`), and `app/selftest/AdjustmentLayer.cpp` already decoded hand-written
+  payloads for all three of the missing kinds — **the code was right and only the
+  specification of it was stale**, which is the worse half of the two, in a file whose
+  entire job is to specify a format. Both are now correct, and the boundary is asserted
+  from both sides rather than only described: a kind code of 9 decodes as `Unknown` and
+  round-trips byte for byte, and a count assertion fires when a tenth `PointOpKind` lands
+  so the header's three lists get looked at rather than drifting again.
 
 ---
 
@@ -379,10 +383,33 @@ Baseline on that base: **8619 pass, 0 FAIL**, `--selftest` exit 0.
 - [x] registrations — `core/LayerOps` setters (10)
 - [x] registrations — op-stack edits, carrying an op keyed by kind name
 - [x] registrations — selection: select all, deselect, invert, save/load channel
+- [x] registrations — the five selection refines (PRD E4/E8/E9): grow, shrink, feather,
+      colour range, luminance range. Every number the dialog held travels in the step, and
+      `select_colour_range` **carries** its colour (`"colour": [r, g, b]`, display sRGB)
+      rather than reading a swatch or a foreground — which is what §1's rule demands and
+      what that gap's own stated reason asked for
 - [x] **the exhaustiveness test** — `app/CommandCoverage`, an exhaustive `switch` so a new
-      `MenuAction` fails the BUILD, with three answers rather than two: 35 registered,
-      51 not recordable (each with its reason), 8 known gaps (count asserted so the list
-      can shrink but not grow silently)
+      `MenuAction` fails the BUILD, with three answers rather than two: **40 registered,
+      52 not recordable** (each with its reason), **2 known gaps** (count asserted so the
+      list can shrink but not grow silently). Was 35 / 51 / 8: the five refines closed
+      five gaps, and `SelectUndoRefine` turned out on reading the code not to be a gap —
+      it pops `OpenDocument::refineUndoStack`, which is per-session state deliberately
+      outside `core::History` and outside the file, so a recorded undo would undo whatever
+      the *replaying* session last did. The two left are `NumericTransform` and
+      `DeleteSelection`
+- [x] `CommandSpec::selectionBounded` — true when an *absent* selection silently means
+      "the whole canvas". It replaces `CommandResult::changesPixels` as the recorder's
+      marquee test (§7's third trap), which was wrong in both directions: `image_size`,
+      `canvas_size` and `trim_to_content` were refused for a reason that does not apply to
+      them, and `define_pattern` — bounded, and reporting no texel change — was not
+      policed at all and replayed as a whole-canvas pattern. **`changesPixels` itself is
+      also not set consistently**: `fromLayerEdit()` and `fromDocumentOpResult()` never set
+      it, so every layer command and op-stack row reports false, `flatten_image` included.
+      Step 5 wants that field for the zero-texel warning and has to fix it first
+- [x] `save_selection_as_channel` refuses a channel name the document already carries.
+      The engine keeps uniquifying (core/Channels.hpp argues it), but a *replayed* step
+      that lands as "Mask" then "Mask 2" makes every later `load_channel_as_selection
+      "Mask"` bind to a previous run's region and report success
 - [x] **gate:** every id round-trips; unknown id refuses by name
 - [x] sabotage: a claimed-but-unregistered id goes red, and adding a `MenuAction`
       enumerator fails the build by name in `CommandCoverage.cpp`
@@ -528,3 +555,7 @@ Filled in as steps complete. Empty until step 0 runs.
 
 | date | step | finding |
 |---|---|---|
+| 2026-09-09 | 1 | **`SelectUndoRefine` was never a gap.** It sat in the coverage table beside the five refines with the reason "depends on the refine history the session keeps", which reads like a thing to fix later. `refineUndoStack` is on `OpenDocument`, not `Document`, and its own comment argues at length that it must be — a refine changes no pixel, and folding one into `core::History` would make a pixel Undo silently revert a marquee. So it is `NotRecordable` for the reason `Undo` and `Redo` are, and the five refines are how an action expresses a refine: it *states* the one it wants rather than un-stating one it never made. |
+| 2026-09-09 | 3 | **The recorder's marquee guard was under-refusing, not only over-refusing.** `app/Recorder.hpp` §4 described `changesPixels` as a deliberate over-approximation. It was also an under-approximation: `define_pattern` reports no texel change and its source rectangle *is* the selection's bounds, so it was never policed and replayed as a whole-canvas pattern, reporting success. |
+| 2026-09-09 | 3 | **`CommandResult::changesPixels` is set by three of the five `from*()` bridges.** `fromLayerEdit()` and `fromDocumentOpResult()` do not set it, so every `LayerCommand`, every layer setter and every op-stack row reports `false` — `flatten_image` and `merge_down` included. Found by a sabotage: restoring the old proxy left the "a flatten under a marquee is recorded" assertion green, because the flatten had never reached the guard. The field now has **no production consumer at all**; step 5 wants it for the zero-texel warning and must fix it first. |
+| 2026-09-09 | 1 | **`applySelectColourRangeAction()` reads a dialog swatch, not the foreground colour.** The gap's stated reason said it "additionally reads the foreground colour, which is AppState". It reads a `static float swatchSrgb[3]` local to the popup. The conclusion the reason drew was right for the wrong noun, and the fix is the same either way: the parameter carries the colour. |

@@ -110,23 +110,42 @@ CommandCoverage coverageFor(MenuAction action) {
       // walks the whole vocabulary instead.
       return {CommandCoverageKind::Registered, nullptr, nullptr};
     case MenuAction::SelectGrow:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "changes the selection, which is session state, but is a deterministic function of the document and the selection, so it belongs in the table. The five refine commands share one applier and should be registered together"};
+      return {CommandCoverageKind::Registered, "select_grow", nullptr};
     case MenuAction::SelectShrink:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "as SelectGrow"};
+      return {CommandCoverageKind::Registered, "select_shrink", nullptr};
     case MenuAction::SelectFeather:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "as SelectGrow"};
+      return {CommandCoverageKind::Registered, "select_feather", nullptr};
     case MenuAction::SelectColourRange:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "as SelectGrow, and it additionally reads the foreground colour, which is AppState -- the parameter would have to carry the colour rather than referring to it"};
+      // The gap's own reason said the parameter "would have to carry the
+      // colour rather than referring to it". It does: `"colour": [r, g, b]`,
+      // display-encoded sRGB, in the step. See app/CommandsOpStack.cpp §4.
+      return {CommandCoverageKind::Registered, "select_colour_range", nullptr};
     case MenuAction::SelectLuminanceRange:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "as SelectGrow"};
+      return {CommandCoverageKind::Registered, "select_luminance_range", nullptr};
     case MenuAction::SelectUndoRefine:
-      return {CommandCoverageKind::NotYetRegistered, nullptr,
-              "undoes the last refine, so it depends on the refine history the session keeps rather than on the document"};
+      // **Not a gap, and this is the one classification in the file that had
+      // to be argued from the code rather than from the menu item.** The other
+      // five refines were listed beside it as gaps and are now registered, so
+      // the obvious reading is that this one is next. It is not.
+      //
+      // `undoLastRefine()` pops `OpenDocument::refineUndoStack`. That member's
+      // own comment (app/DocumentLifecycle.hpp) states at length why it is
+      // NOT document data: a refine changes no pixel, `core::HistoryEntry`
+      // holds nothing but a `core::Document`, and folding selections into
+      // core::History would make an ordinary pixel Undo silently revert a
+      // marquee drawn afterwards. So the stack lives beside `selection` and
+      // `lastDeselected` -- per-session, never written to a file, gone when
+      // the tab closes.
+      //
+      // A recorded `select_undo_refine` would therefore mean "undo whatever
+      // refine this session last did", which on a replaying document is
+      // whatever the *user* last did by hand, or nothing at all. That is not
+      // a function of the document; it is a function of a history the file
+      // cannot carry, exactly as Undo and Redo are a few dozen cases above.
+      // The five rows above are how an action expresses a refine: it states
+      // the refine it wants, rather than un-stating one it never made.
+      return {CommandCoverageKind::NotRecordable, nullptr,
+              "pops OpenDocument::refineUndoStack, which is per-session state that is deliberately outside core::History and outside the document file -- so a recorded undo would undo whatever the replaying session happened to do last. An action states the refine it wants instead"};
     case MenuAction::PaintModeItem:
       return {CommandCoverageKind::NotRecordable, nullptr,
               "AppState -- the paint mode is a tool setting"};

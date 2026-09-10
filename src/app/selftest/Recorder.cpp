@@ -369,6 +369,119 @@ bool runRecorderTest() {
           "ambiguous: and the ambiguity is reported, naming the layer");
   }
 
+  std::printf("  -- G. the marquee rule reads the TABLE, not the texel count --\n");
+  {
+    // §4 used to decide which steps to police from
+    // `CommandResult::changesPixels`. `CommandSpec::selectionBounded` replaced
+    // it, and the two disagree about four commands -- three that were refused
+    // for a reason that does not apply to them, and one that was not refused
+    // and should have been. All four are asserted here through the real
+    // recorder under a real live marquee, because the table walk in
+    // app/selftest/Command.cpp section H can see only the claim and not the
+    // behaviour it is supposed to produce.
+    const Selection marquee = selectRectangle(8.0f, 8.0f, 32.0f, 32.0f);
+
+    // The three that report changing pixels and are NOT bounded. Each acts on
+    // the whole document by construction, so the marquee is not part of what
+    // the step meant and nothing is missing from the file. **These three, and
+    // not the flatten below, are the rows the old proxy genuinely
+    // over-refused** -- a sabotage that put `changesPixels` back found that
+    // out, and the flatten assertion below stayed green under it.
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      JsonValue size = JsonValue::object();
+      size.set("width", JsonValue::number(32));
+      size.set("height", JsonValue::number(32));
+      const CommandResult resized = applyCommand(od, Command{"image_size", size});
+      session.stop();
+      check(resized.ok && session.refusals().empty() &&
+                countId(session.steps(), "image_size") == 1,
+            "unbounded: a resize under a live marquee is recorded too");
+    }
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      JsonValue canvas = JsonValue::object();
+      canvas.set("width", JsonValue::number(96));
+      canvas.set("height", JsonValue::number(96));
+      const CommandResult grown = applyCommand(od, Command{"canvas_size", canvas});
+      session.stop();
+      check(grown.ok && session.refusals().empty() &&
+                countId(session.steps(), "canvas_size") == 1,
+            "unbounded: a canvas resize under a live marquee is recorded too");
+    }
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      const CommandResult trimmed =
+          applyCommand(od, Command{"trim_to_content", JsonValue::object()});
+      session.stop();
+      check(trimmed.ok && session.refusals().empty() &&
+                countId(session.steps(), "trim_to_content") == 1,
+            "unbounded: trim_to_content reads content, not the marquee, and is recorded");
+    }
+
+    // **`flatten_image` is right for a different reason than it looks, and
+    // saying so is the point of this block.** It belongs with the three above
+    // by meaning -- it merges every layer, and the marquee bounds nothing --
+    // but it never reached the old guard either, because `fromLayerEdit()`
+    // does not set `changesPixels` at all (app/Command.hpp on that field). So
+    // this was already recorded before the change, by accident rather than by
+    // classification, and a sabotage restoring the old proxy leaves it green.
+    // It is asserted anyway, because the flag now says it on purpose, and
+    // because a reader comparing this section against the commit message
+    // should find the discrepancy stated rather than have to derive it.
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      const CommandResult flat = applyCommand(od, Command{"flatten_image", JsonValue::object()});
+      session.stop();
+      check(flat.ok && session.refusals().empty() && session.usable() &&
+                countId(session.steps(), "flatten_image") == 1,
+            "unbounded: a flatten under a live marquee is recorded (and always was)");
+      check(!flat.changesPixels,
+            "unbounded: and this is why -- fromLayerEdit() never set changesPixels");
+    }
+
+    // **The direction the old proxy got wrong silently.** `define_pattern`
+    // reports `changesPixels == false` and IS bounded: its source rectangle is
+    // the selection's bounds, absent meaning the whole canvas. Recorded under
+    // a marquee and replayed with nothing selected, it defined a pattern the
+    // size of the document and reported success.
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      JsonValue p = JsonValue::object();
+      p.set("name", JsonValue::string("Swatch"));
+      const CommandResult defined = applyCommand(od, Command{"define_pattern", p});
+      session.stop();
+      check(defined.ok, "bounded: define_pattern itself still ran");
+      check(session.steps().empty() && session.refusals().size() == 1,
+            "bounded: but a define_pattern under an unnamed marquee is now refused");
+      check(!session.refusals().empty() && contains(session.refusals()[0], "define_pattern"),
+            "bounded: and the refusal names it");
+    }
+
+    // The control. If the flag were simply read as false everywhere, all four
+    // assertions above would pass and the guard would be gone entirely; this
+    // is the one that says it is still there.
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      const CommandResult blurred = applyCommand(od, blurStep(2.0));
+      session.stop();
+      check(blurred.ok && session.steps().empty() && session.refusals().size() == 1,
+            "bounded: a blur under an unnamed marquee is still refused");
+    }
+  }
+
   // Leave the session recorder stopped: it is process-wide, and a section that
   // left it armed would have every later section's `applyCommand()` appending
   // to a recording nobody is looking at.

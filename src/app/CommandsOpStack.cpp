@@ -1,14 +1,20 @@
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <optional>
 #include <string>
 #include <utility>
 
 #include "app/CommandSupport.hpp"
+#include "color/Space.hpp"
 #include "core/Channels.hpp"
 #include "core/LayerOps.hpp"
 #include "core/OpStack.hpp"
 #include "core/SelectionMask.hpp"
 #include "core/SelectionOps.hpp"
+#include "core/SelectionRefine.hpp"
+#include "ops/Feather.hpp"
+#include "ops/FloodFill.hpp"
 #include "ops/PointOps.hpp"
 #include "ops/ToneOps.hpp"
 
@@ -107,6 +113,53 @@
 // `opFromJson()` refuses -- by name -- both an unknown kind id and any
 // `"class"` other than `point_a`, and it refuses *before* `addLayerOp()` is
 // called, so nothing is stored at all.
+//
+// ==========================================================================
+// (4) The five refine rows, and why a selection command is in this table at
+//     all
+// ==========================================================================
+//
+// PRD E4/E8/E9's grow, shrink, feather, colour range and luminance range write
+// `OpenDocument::selection`, which is session state and never reaches a file
+// (app/DocumentLifecycle.hpp says so deliberately). That looks at first like
+// the disqualifier docs/automation-plan.md §1 states -- "a command is
+// recordable iff it can be expressed as a function of an `OpenDocument`
+// alone" -- and it is not, because `OpenDocument` is exactly what the rule
+// names. `selection` is a member of it. What the rule excludes is `AppState`:
+// the window, the tool, the view, the recent-file list. `select_all`,
+// `deselect` and `invert_selection` were registered on that reading already;
+// these five are the same argument with parameters.
+//
+// **Every number the dialog held becomes an explicit parameter, and the
+// colour travels by value.** ui/MacPaintUI.cpp's five popups keep their
+// radius, tolerance, band and swatch in dialog-local statics, and the swatch
+// in particular is a colour the *session* is holding. A row that reached for
+// it -- for the swatch, or for `AppState`'s foreground -- would replay
+// differently on Tuesday than it did on Monday, on the same document, and
+// report success both times. So `select_colour_range` carries its colour in
+// the step: `"colour": [r, g, b]`, display-encoded sRGB, the same three
+// numbers the swatch showed.
+//
+// **The engine is called directly, not through ui/MacPaintUI.hpp's
+// `applySelectRefineAction()` family.** Those four functions are the *UI's*
+// dialog-to-engine boundary and app/ must not include ui/ -- §7 of the plan
+// again, the UI path calls the document path and never the reverse. That
+// leaves two boundaries doing the same decode until step 2 migrates the call
+// sites and deletes the UI half, so app/selftest/CommandsOpStack.cpp asserts
+// the two agree bit for bit rather than trusting a comment to keep them in
+// step.
+//
+// **A refine pushes the selection it replaced onto `refineUndoStack`**, which
+// is what makes Select > Undo Refine keep working once step 2 routes the menu
+// items through `applyCommand()`. Not doing it would turn that migration --
+// which is supposed to change no behaviour at all -- into the silent deletion
+// of a menu item's effect.
+//
+// **None of the five is `selectionBounded`** (app/Command.hpp). The live
+// selection is what they operate *on*, not a mask that bounds where they
+// reach, and an absent one is a named refusal from their precondition rather
+// than the silent "no restriction means the whole canvas" that flag exists to
+// police.
 namespace np {
 
 // --- the op encoding -----------------------------------------------------
@@ -620,6 +673,36 @@ std::string readChannelName(const JsonValue& params, const char* commandId, std:
   return {};
 }
 
+// **A name already taken is refused here, and that is a COMMAND-level policy
+// laid over an engine that deliberately does something else.**
+//
+// `saveSelectionAsChannel()` appends under a uniquified name and never
+// replaces, and core/Channels.hpp argues that properly: destroying a saved
+// selection has to be a delete, with its own confirmation, not a side effect
+// of typing a name twice. For a user at a keyboard that is exactly right --
+// they see "Mask 2" appear in the panel and can act on it.
+//
+// An action has nobody watching, and uniquifying makes a step's meaning depend
+// on how many times it has already run:
+//
+//   1. `save_selection_as_channel "Mask"` lands as "Mask" the first time,
+//      "Mask 2" the second, "Mask 3" the third;
+//   2. `load_channel_as_selection "Mask"` loads the FIRST run's channel every
+//      time;
+//   3. every selection-bounded step after that is bounded to a region from a
+//      previous run -- and reports success.
+//
+// That is docs/automation-plan.md §7's silent wrong answer in its purest form,
+// and a warning does not fix it: a thirty-file batch that warns thirty times
+// is a batch whose warnings nobody reads. So the *precondition* refuses, which
+// is where a replayer asks before it has run a single destructive step, and
+// the sentence names the fix. The applier keeps its warning as well, because
+// `applyCommand()` is not the only possible future caller of an applier.
+//
+// Replacing was the other candidate, and is rejected for core/Channels.hpp's
+// reason unchanged: an action that silently overwrote a channel the document
+// *arrived* with would destroy data the input file had before the run started,
+// and not destroying the input is the whole of PRD P4.
 std::string saveSelectionUnavailable(const OpenDocument& doc, const JsonValue& params) {
   std::string name;
   const std::string why = readChannelName(params, "save_selection_as_channel", &name);
@@ -628,6 +711,14 @@ std::string saveSelectionUnavailable(const OpenDocument& doc, const JsonValue& p
     return "refused: save_selection_as_channel needs an active selection, and this document has "
            "none. An absent selection means \"no restriction\" rather than \"everything\", so "
            "there is no coverage to write into a channel.";
+  if (findChannel(doc.document, name) != nullptr)
+    return "refused: this document already has a channel named \"" + name +
+           "\". Saving would append a second channel under a uniquified name, and a later step "
+           "loading \"" +
+           name +
+           "\" would bind itself to the OLDER one -- so every step after that would cover a "
+           "region this run did not choose, and report success. Delete the existing channel "
+           "first, or save under a name this document does not already carry.";
   return {};
 }
 
@@ -691,6 +782,212 @@ CommandResult doLoadChannelAsSelection(OpenDocument& doc, const JsonValue& param
   return selectionChanged("load channel as selection: \"" + name + "\"");
 }
 
+// --- the five refine adapters (§4) ---------------------------------------
+
+// The app-side twin of `ui::installRefinedSelection()`: push what is being
+// replaced onto the refine-undo stack, then install. Duplicated rather than
+// shared for the reason `installSelectionForCommand()` above is duplicated --
+// the UI's copy has internal linkage in ui/MacPaintUI.cpp and app/ must not
+// include ui/ -- and it exists at all so that step 2's call-site migration,
+// which is meant to change no behaviour, does not quietly delete Select >
+// Undo Refine.
+//
+// Pushed BEFORE the install moves `doc.selection` out from under this read,
+// which is the ordering that makes "one entry per refine" true rather than
+// aspirational; the UI copy states the same thing at its own push.
+void installRefinedSelectionForCommand(OpenDocument& doc, std::optional<Selection> refined) {
+  doc.refineUndoStack.push_back(doc.selection);
+  installSelectionForCommand(doc, std::move(refined));
+}
+
+// A finite, strictly positive pixel radius.
+//
+// **Zero is refused rather than run.** `growSelection(s, 0)` is a documented
+// no-op (core/SelectionRefine.hpp), and a no-op step in a thirty-file batch is
+// the exact silent success docs/automation-plan.md §7 is written against --
+// the same reason `filter_gaussian_blur` refuses a sigma of zero.
+//
+// **Negative is refused rather than folded.** `shrinkSelection()` is defined
+// as `growSelection(selection, -radius)`, so a negative radius makes a step
+// that says "shrink" grow. In a dialog that double negative is visible on a
+// slider clamped to [0, 500]; in a file a reviewer reads, `"radius": -8` under
+// `"cmd": "select_shrink"` is a line that means the opposite of what it says.
+std::string readRadius(const JsonValue& params, const char* commandId, float* out) {
+  if (!params.hasNumber("radius"))
+    return std::string("refused: ") + commandId + " needs a \"radius\" in pixels.";
+  const double v = params.numberOr("radius", 0.0);
+  if (!std::isfinite(v) || v <= 0.0)
+    return std::string("refused: ") + commandId +
+           "'s \"radius\" must be a finite number greater than zero. A radius of zero is a "
+           "documented no-op, and a negative one would make this step do the opposite of what "
+           "it is named.";
+  *out = static_cast<float>(v);
+  return {};
+}
+
+// The precondition Grow, Shrink and Feather share, and it is the same one
+// `ui::selectRefineEnabled()` gives the three menu items: all three engine
+// functions take a `const Selection&`, so there is no way to hand them "no
+// restriction" at all.
+std::string refineRadiusUnavailable(const OpenDocument& doc, const JsonValue& params,
+                                    const char* commandId) {
+  float radius = 0.0f;
+  const std::string why = readRadius(params, commandId, &radius);
+  if (!why.empty()) return why;
+  if (!doc.selection.has_value())
+    return std::string("refused: ") + commandId +
+           " needs a selection to move the edge of, and this document has none. An absent "
+           "selection means \"no restriction\" rather than \"everything\", so there is no edge.";
+  return {};
+}
+
+std::string growUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  return refineRadiusUnavailable(doc, params, "select_grow");
+}
+std::string shrinkUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  return refineRadiusUnavailable(doc, params, "select_shrink");
+}
+std::string featherUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  return refineRadiusUnavailable(doc, params, "select_feather");
+}
+
+CommandResult doSelectGrow(OpenDocument& doc, const JsonValue& params) {
+  const std::string why = refineRadiusUnavailable(doc, params, "select_grow");
+  if (!why.empty()) return commandRefused(why);
+  float radius = 0.0f;
+  readRadius(params, "select_grow", &radius);
+  installRefinedSelectionForCommand(doc, growSelection(*doc.selection, radius));
+  return selectionChanged("select grow: the edge moved out by " + std::to_string(radius) + " px");
+}
+
+CommandResult doSelectShrink(OpenDocument& doc, const JsonValue& params) {
+  const std::string why = refineRadiusUnavailable(doc, params, "select_shrink");
+  if (!why.empty()) return commandRefused(why);
+  float radius = 0.0f;
+  readRadius(params, "select_shrink", &radius);
+  installRefinedSelectionForCommand(doc, shrinkSelection(*doc.selection, radius));
+  return selectionChanged("select shrink: the edge moved in by " + std::to_string(radius) + " px");
+}
+
+CommandResult doSelectFeather(OpenDocument& doc, const JsonValue& params) {
+  const std::string why = refineRadiusUnavailable(doc, params, "select_feather");
+  if (!why.empty()) return commandRefused(why);
+  float radius = 0.0f;
+  readRadius(params, "select_feather", &radius);
+  installRefinedSelectionForCommand(doc, featherSelection(*doc.selection, radius));
+  return selectionChanged("select feather: the edge was softened over " + std::to_string(radius) +
+                          " px");
+}
+
+// The RGB source the two range rows sample. Same predicate as
+// `ui::selectRangeEnabled()`: neither takes a `Selection` at all (PRD E9), so
+// unlike the three above they need nothing already selected -- only a layer
+// with pixels in it.
+std::string rangeSourceUnavailable(const OpenDocument& doc, const char* commandId) {
+  const Layer* target = activeLayerOf(doc);
+  if (target == nullptr || !target->rgbTiles.has_value())
+    return std::string("refused: ") + commandId +
+           " samples the active layer's pixels, and this document's active layer has no RGB "
+           "channel to sample.";
+  return {};
+}
+
+// The swatch, carried by value. Three display-encoded sRGB numbers -- what
+// `ImGui::ColorEdit3` holds and what `applySelectColourRangeAction()` takes --
+// and **required**, because every candidate default is somebody's session
+// state rather than the engine's: the dialog's own 0.5 grey, or `AppState`'s
+// foreground. §4 is about exactly this key.
+std::string readColour(const JsonValue& params, std::array<float, 3>* out) {
+  const JsonValue* c = params.find("colour");
+  if (c == nullptr)
+    return "refused: select_colour_range needs a \"colour\": three display-encoded sRGB numbers. "
+           "It is required rather than defaulted because the only available defaults -- the "
+           "dialog's swatch, or the foreground colour -- are session state, and a step that "
+           "reached for one would select a different band on a different day and report success "
+           "both times.";
+  if (!c->isArray() || c->size() != 3)
+    return "refused: select_colour_range's \"colour\" must be an array of three numbers "
+           "(display-encoded sRGB).";
+  for (size_t i = 0; i < 3; ++i) {
+    if (!c->at(i).isNumber())
+      return "refused: select_colour_range's \"colour\" must be an array of three numbers "
+             "(display-encoded sRGB).";
+    (*out)[i] = static_cast<float>(c->at(i).asNumber());
+  }
+  return {};
+}
+
+std::string colourRangeUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  std::array<float, 3> swatch{};
+  const std::string why = readColour(params, &swatch);
+  if (!why.empty()) return why;
+  return rangeSourceUnavailable(doc, "select_colour_range");
+}
+
+CommandResult doSelectColourRange(OpenDocument& doc, const JsonValue& params) {
+  const std::string why = colourRangeUnavailable(doc, params);
+  if (!why.empty()) return commandRefused(why);
+  std::array<float, 3> swatch{};
+  readColour(params, &swatch);
+
+  SelectionRangeParams range;
+  // `tolerance` and `edge_band` DO default, and to the engine struct's own
+  // numbers rather than to a dialog's -- the same rule `opFromJson()` follows
+  // ("every absent field falls back to the params struct's own default"). They
+  // are `ops/FloodFill`'s constants, so an action that names neither behaves
+  // exactly as the magic wand does, which is what a reader of the file would
+  // assume.
+  range.tolerance = floatOr(params, "tolerance", range.tolerance);
+  // Clamped here as well as inside the engine, for the reason
+  // `applySelectColourRangeAction()` gives: a caller inspecting the params it
+  // is about to pass should see the value that will actually be used.
+  range.edgeBand = std::min(floatOr(params, "edge_band", range.edgeBand), range.tolerance);
+
+  // sRGB -> STRAIGHT LINEAR. `selectColourRange()` names that convention on
+  // its own parameter; skipping the decode selects a band roughly twice as
+  // dark as the colour in the file, which reads as a colour-management bug
+  // rather than a missing conversion.
+  const std::array<float, 4> linear = {srgbDecode(swatch[0]), srgbDecode(swatch[1]),
+                                       srgbDecode(swatch[2]), 1.0f};
+  const Layer* target = activeLayerOf(doc);
+  installRefinedSelectionForCommand(
+      doc, selectColourRange(*target->rgbTiles, linear, doc.document.width, doc.document.height,
+                             range));
+  return selectionChanged("select colour range: done");
+}
+
+std::string luminanceRangeUnavailable(const OpenDocument& doc, const JsonValue& params) {
+  if (!params.hasNumber("low") || !params.hasNumber("high"))
+    return "refused: select_luminance_range needs a \"low\" and a \"high\" -- the band, in "
+           "display-encoded luminance. Defaulting them to the struct's 0..1 would select very "
+           "nearly everything while looking like a deliberate band.";
+  return rangeSourceUnavailable(doc, "select_luminance_range");
+}
+
+CommandResult doSelectLuminanceRange(OpenDocument& doc, const JsonValue& params) {
+  const std::string why = luminanceRangeUnavailable(doc, params);
+  if (!why.empty()) return commandRefused(why);
+
+  SelectionLuminanceRange band;
+  band.low = floatOr(params, "low", band.low);
+  band.high = floatOr(params, "high", band.high);
+  band.edgeBand = floatOr(params, "edge_band", band.edgeBand);
+
+  const Layer* target = activeLayerOf(doc);
+  installRefinedSelectionForCommand(
+      doc, selectLuminanceRange(*target->rgbTiles, doc.document.width, doc.document.height, band));
+  CommandResult r = selectionChanged("select luminance range: done");
+  // core/SelectionRefine.hpp: "low > high selects nothing (an empty band is
+  // empty, not inverted)". The dialog says so in yellow beside the sliders; in
+  // an action there is nobody to say it to, so it is a warning on the result
+  // rather than a step that quietly selected nothing.
+  if (band.low > band.high)
+    r.warnings.push_back(
+        "select_luminance_range's \"low\" is above its \"high\", so this selected nothing rather "
+        "than everything outside the band.");
+  return r;
+}
+
 }  // namespace
 
 void registerOpStackCommands(std::vector<CommandSpec>* out) {
@@ -715,6 +1012,24 @@ void registerOpStackCommands(std::vector<CommandSpec>* out) {
                   saveSelectionUnavailable, doSaveSelectionAsChannel});
   out->push_back({"load_channel_as_selection", "Load Channel as Selection", {"channel"},
                   loadChannelUnavailable, doLoadChannelAsSelection});
+
+  // PRD E4/E8/E9's five refines (§4). Menu order, which is the order the
+  // ACTIONS panel lists them in.
+  out->push_back({"select_grow", "Grow Selection", {"radius"}, growUnavailable, doSelectGrow});
+  out->push_back(
+      {"select_shrink", "Shrink Selection", {"radius"}, shrinkUnavailable, doSelectShrink});
+  out->push_back(
+      {"select_feather", "Feather Selection", {"radius"}, featherUnavailable, doSelectFeather});
+  out->push_back({"select_colour_range",
+                  "Colour Range",
+                  {"colour", "tolerance", "edge_band"},
+                  colourRangeUnavailable,
+                  doSelectColourRange});
+  out->push_back({"select_luminance_range",
+                  "Luminance Range",
+                  {"low", "high", "edge_band"},
+                  luminanceRangeUnavailable,
+                  doSelectLuminanceRange});
 }
 
 }  // namespace np

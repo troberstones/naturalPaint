@@ -129,17 +129,37 @@
 // because a recording missing a step in its middle is worse than no recording
 // at all.
 //
-// **How "is this step selection-bounded?" is decided, and why it
-// over-refuses.** `CommandResult::changesPixels` -- the flag
-// `fromFilterResult()` and `fromDocumentOutcome()` already set. It is an
-// over-approximation: `image_size` is not selection-bounded and is refused
-// under a live marquee anyway. That direction is the deliberate one. A false
-// positive is a refusal that names a fix the user can act on in two seconds
-// (deselect, or save the selection); a false negative is thirty files written
-// wrong and reported as successes. It also cannot rot toward silence: a filter
-// registered next month gets the rule for free, because its adapter goes
-// through `fromFilterResult()` like every other one. Making it exact needs a
-// `selectionBounded` field on `CommandSpec`, which is app/Command.hpp's to add.
+// **How "is this step selection-bounded?" is decided.**
+// `CommandSpec::selectionBounded` -- the table's own answer, stated per row
+// (app/Command.hpp defines it: true when an *absent* selection silently means
+// "the whole canvas").
+//
+// It used to be `CommandResult::changesPixels`, which was described here as a
+// deliberate over-approximation whose only error was to over-refuse. That was
+// half right and half wrong, and the wrong half was the dangerous one:
+//
+//  * **Over-refusing, as advertised.** `image_size`, `canvas_size` and
+//    `trim_to_content` all report changing pixels and none is bounded by the
+//    selection -- each acts on the whole document by construction. Recording
+//    any of them under a live marquee was refused for a reason that does not
+//    apply to it, and the refusal named a fix that would not have changed
+//    anything. (`flatten_image` belongs in that list by meaning and did not in
+//    fact reach the guard, because `fromLayerEdit()` never sets
+//    `changesPixels` -- app/Command.hpp on the field. It was right by
+//    accident, which is its own reason not to keep the proxy.)
+//  * **Under-refusing, which was not advertised and is the real defect.**
+//    `define_pattern` changes no texel, so it reported `changesPixels ==
+//    false` and was never policed -- while its source rectangle *is* the
+//    selection's bounds, with absent meaning the whole canvas. A
+//    `define_pattern` recorded under a marquee replayed as a pattern the size
+//    of the document, and reported success. That is precisely the outcome
+//    this section exists to prevent, reached through the check itself.
+//
+// The flag also cannot rot toward silence, which is the property
+// `changesPixels` was chosen for: app/selftest/Command.cpp section H walks the
+// whole table and requires every row that reaches the selection-aware
+// `applyPixelFilter()` bridge to carry it, so a filter registered next month
+// gets the rule for free or fails the suite by name.
 namespace np {
 
 // The name of the first channel in `doc` whose coverage is exactly
