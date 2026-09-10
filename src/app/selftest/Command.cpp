@@ -412,12 +412,16 @@ bool runCommandTest() {
               boundedById("crop_to_selection"),
           "bounded: the destructive ops that act through the selection are bounded");
 
-    // The three the field was added for. Each changes pixels; none is
-    // restricted by the selection; each was refused at record time under a
-    // live marquee for a reason that does not apply to it.
+    // The rows the field was added for. Each acts on the whole document; none
+    // is restricted by the selection. `image_size`, `canvas_size` and
+    // `trim_to_content` were refused at record time under a live marquee for a
+    // reason that does not apply to them; `flatten_image` belongs with them by
+    // meaning and escaped only because `fromLayerEdit()` never set
+    // `changesPixels` (app/selftest/Recorder.cpp section G says so where it is
+    // asserted).
     check(!boundedById("flatten_image") && !boundedById("image_size") &&
-              !boundedById("canvas_size"),
-          "bounded: flatten_image, image_size and canvas_size are NOT bounded");
+              !boundedById("canvas_size") && !boundedById("trim_to_content"),
+          "bounded: the whole-document ops are NOT bounded by the selection");
 
     // The commands that operate ON the selection are not bounded BY it. The
     // last of these is load-bearing beyond tidiness: a bounded

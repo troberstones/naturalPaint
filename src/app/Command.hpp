@@ -127,15 +127,27 @@ struct CommandSpec {
   // The recorder used to decide this from `CommandResult::changesPixels`, and
   // that proxy is wrong in both directions:
   //
-  //  * `flatten_image`, `image_size` and `canvas_size` all change pixels and
-  //    none of them is bounded by the selection -- they act on the whole
-  //    document by construction. Recording a flatten under a live marquee was
-  //    refused for a reason that does not apply to it.
+  //  * `image_size`, `canvas_size` and `trim_to_content` all report changing
+  //    pixels and none of them is bounded by the selection -- each acts on the
+  //    whole document by construction. Recording a resize under a live marquee
+  //    was refused for a reason that does not apply to it, with a fix that
+  //    would not have changed anything.
   //  * `define_pattern` changes no pixel at all and IS bounded: its source
   //    rectangle is the selection's bounds, and absent means the whole canvas
   //    (app/CommandsPatterns.cpp says so at the fallback). A recorded
   //    define_pattern used to sail through and replay as a pattern the size of
   //    the document.
+  //
+  // **`changesPixels` was also not being set consistently, which is worth
+  // knowing before anyone reaches for it again.** Only `fromFilterResult()`,
+  // `fromDocumentOutcome()` and `fromDocumentTransform()` set it
+  // (app/CommandSupport.hpp); `fromLayerEdit()` and `fromDocumentOpResult()`
+  // do not. So every `LayerCommand`, every layer setter and every op-stack row
+  // reports `false` -- `flatten_image` and `merge_down` included, which plainly
+  // do change pixels. That did no harm to the marquee rule, because none of
+  // them is selection-bounded either, but it means the old proxy was not even
+  // measuring what its name says. Step 5 wants this field for the "a step that
+  // changed zero texels is a warning" rule, and will have to fix it first.
   //
   // The commands that *operate on* the selection -- `select_grow`,
   // `invert_selection`, `save_selection_as_channel` -- are **not** bounded.

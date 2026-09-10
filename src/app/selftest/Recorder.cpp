@@ -381,20 +381,12 @@ bool runRecorderTest() {
     // behaviour it is supposed to produce.
     const Selection marquee = selectRectangle(8.0f, 8.0f, 32.0f, 32.0f);
 
-    // The three that change pixels and are NOT bounded. Each acts on the whole
-    // document by construction, so the marquee is not part of what the step
-    // meant and nothing is missing from the file.
-    {
-      OpenDocument od = makeRecorderDocument();
-      od.selection = marquee;
-      session.arm(od);
-      const CommandResult flat = applyCommand(od, Command{"flatten_image", JsonValue::object()});
-      session.stop();
-      check(flat.ok && session.refusals().empty() && session.usable(),
-            "unbounded: a flatten under a live marquee is no longer refused");
-      check(countId(session.steps(), "flatten_image") == 1,
-            "unbounded: and it really is in the step list");
-    }
+    // The three that report changing pixels and are NOT bounded. Each acts on
+    // the whole document by construction, so the marquee is not part of what
+    // the step meant and nothing is missing from the file. **These three, and
+    // not the flatten below, are the rows the old proxy genuinely
+    // over-refused** -- a sabotage that put `changesPixels` back found that
+    // out, and the flatten assertion below stayed green under it.
     {
       OpenDocument od = makeRecorderDocument();
       od.selection = marquee;
@@ -420,6 +412,40 @@ bool runRecorderTest() {
       check(grown.ok && session.refusals().empty() &&
                 countId(session.steps(), "canvas_size") == 1,
             "unbounded: a canvas resize under a live marquee is recorded too");
+    }
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      const CommandResult trimmed =
+          applyCommand(od, Command{"trim_to_content", JsonValue::object()});
+      session.stop();
+      check(trimmed.ok && session.refusals().empty() &&
+                countId(session.steps(), "trim_to_content") == 1,
+            "unbounded: trim_to_content reads content, not the marquee, and is recorded");
+    }
+
+    // **`flatten_image` is right for a different reason than it looks, and
+    // saying so is the point of this block.** It belongs with the three above
+    // by meaning -- it merges every layer, and the marquee bounds nothing --
+    // but it never reached the old guard either, because `fromLayerEdit()`
+    // does not set `changesPixels` at all (app/Command.hpp on that field). So
+    // this was already recorded before the change, by accident rather than by
+    // classification, and a sabotage restoring the old proxy leaves it green.
+    // It is asserted anyway, because the flag now says it on purpose, and
+    // because a reader comparing this section against the commit message
+    // should find the discrepancy stated rather than have to derive it.
+    {
+      OpenDocument od = makeRecorderDocument();
+      od.selection = marquee;
+      session.arm(od);
+      const CommandResult flat = applyCommand(od, Command{"flatten_image", JsonValue::object()});
+      session.stop();
+      check(flat.ok && session.refusals().empty() && session.usable() &&
+                countId(session.steps(), "flatten_image") == 1,
+            "unbounded: a flatten under a live marquee is recorded (and always was)");
+      check(!flat.changesPixels,
+            "unbounded: and this is why -- fromLayerEdit() never set changesPixels");
     }
 
     // **The direction the old proxy got wrong silently.** `define_pattern`

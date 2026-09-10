@@ -138,11 +138,15 @@
 // deliberate over-approximation whose only error was to over-refuse. That was
 // half right and half wrong, and the wrong half was the dangerous one:
 //
-//  * **Over-refusing, as advertised.** `flatten_image`, `image_size` and
-//    `canvas_size` all change pixels and none is bounded by the selection --
-//    each acts on the whole document by construction. Recording any of them
-//    under a live marquee was refused for a reason that does not apply to it,
-//    and the refusal named a fix that would not have changed anything.
+//  * **Over-refusing, as advertised.** `image_size`, `canvas_size` and
+//    `trim_to_content` all report changing pixels and none is bounded by the
+//    selection -- each acts on the whole document by construction. Recording
+//    any of them under a live marquee was refused for a reason that does not
+//    apply to it, and the refusal named a fix that would not have changed
+//    anything. (`flatten_image` belongs in that list by meaning and did not in
+//    fact reach the guard, because `fromLayerEdit()` never sets
+//    `changesPixels` -- app/Command.hpp on the field. It was right by
+//    accident, which is its own reason not to keep the proxy.)
 //  * **Under-refusing, which was not advertised and is the real defect.**
 //    `define_pattern` changes no texel, so it reported `changesPixels ==
 //    false` and was never policed -- while its source rectangle *is* the
