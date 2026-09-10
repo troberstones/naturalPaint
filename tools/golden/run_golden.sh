@@ -1126,24 +1126,49 @@ view_args=("--demo-document" "--demo-document --ui-layer-demo" "--pigment-stroke
 #     runs; 24 and 96 are ~2x that, against a real regression in this view
 #     that would run to tens of thousands of pixels.
 #
-#   pen_drawing's threshold (magnitude 8, changed px 16) -- MEASURED, not
-#     guessed, per this file's own rule two paragraphs up. This view was exact
-#     (0, 0) and stayed exact until the PATHS panel landed: the panel changed
-#     what is drawn at the right edge of the crop, and the chrome greys there
-#     now settle one to three levels apart between launches. The measurement,
-#     both from `measure 8` at -j 1 and from a real -j 6 failure, is the same
-#     five pixels at max channel diff 3, around x=1055..1107, rgb ~(56..82)
-#     -- dark panel chrome, not the drawn path.
+#   pen_drawing's threshold (magnitude 48, changed px 16) -- MEASURED, not
+#     guessed, per this file's own rule two paragraphs up, and measured TWICE
+#     now. This view was exact (0, 0) and stayed exact until the PATHS panel
+#     landed: the panel changed what is drawn at the right edge of the crop,
+#     and the chrome greys there now settle one to three levels apart between
+#     launches. That first measurement, both from `measure 8` at -j 1 and from
+#     a real -j 6 failure, was the same five pixels at max channel diff 3,
+#     around x=1055..1107, rgb ~(56..82) -- dark panel chrome, not the drawn
+#     path -- and the threshold it earned was (8, 16).
+#
+#     **The magnitude went 8 -> 48 when the Heal tool's icon entered the
+#     atlas**, and the reason is worth writing down because the arithmetic
+#     alone reads like a threshold being loosened to make a failure go away.
+#     The new noise is a DIFFERENT two pixels: (869, 326) and (869, 327) in
+#     crop space, on the left antialiased edge of one glyph in the panel text,
+#     flipping between rgb ~(48,46,46) and ~(68,66,66) -- max channel diff 20,
+#     never more, never a third value. `measure 10` on the integrated tree is
+#     bimodal and nothing else: seven launches identical, two off by those two
+#     pixels.
+#
+#     It was PROVEN to be the atlas repack, not the vector renderer, by
+#     neutralising rather than by reading code (see the repo's own habit of
+#     defaulting a change off instead of rebuilding the other branch). Point
+#     `kToolMeta`'s Heal row at Clone Stamp's existing codepoint so no new
+#     glyph enters the atlas, rebuild, and `measure 8` comes back 8/8 exact;
+#     restore 58909 and the two pixels return. `main` at 2cbbfcd, measured the
+#     same way, still shows only the original five-pixel/channel-3 chrome
+#     noise. One tool icon repacks every glyph, and a glyph whose neighbours
+#     moved can pick up a different fringe -- the same phenomenon that
+#     re-blessed eleven unrelated views when the FLATS palette grew.
 #
 #     **The stroked path itself is bit-exact**, which is the distinction worth
 #     keeping: `pen_drawing` became the first view where a Pen path is visible
 #     in the COMPOSITE rather than only in the editing overlay, so the obvious
 #     reading of a new flake here is "the vector rasteriser is
-#     non-deterministic". It is not -- the differing pixels are nowhere near
-#     the path. 8 and 16 are roughly 2.5x and 3x the measured noise, which
-#     still leaves three orders of magnitude of headroom against a real
-#     regression in this view (the re-blessing diff that preceded this was
-#     39,935 px at channel 216).
+#     non-deterministic". It is not, in either measurement -- the differing
+#     pixels are nowhere near the path, and the second set are inside a letter.
+#     48 and 16 are roughly 2.4x and 8x the measured noise, which still leaves
+#     three orders of magnitude of headroom against a real regression in this
+#     view (the re-blessing diff that preceded this was 39,935 px at channel
+#     216). Note which number did NOT move: 16 changed pixels still bounds the
+#     whole view, so a 48-level error is tolerated in at most sixteen of its
+#     1,286,400 pixels.
 #
 #   pen_drawing -- `--vector-demo pendraw`: three anchors placed through the
 #     REAL `pathEditBeginPen()` transition (app/PenTool.hpp section 9), left
@@ -1635,7 +1660,7 @@ view_frames=(90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 9
 # the options band only, so it contains no canvas, no marching ants and no
 # rounded button geometry -- two combos, three sliders and a line of text, all
 # of which land on the same pixels every launch.
-view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 8 24 48 0 0 0 0 24 0 0 0 0 0)
+view_threshold=(48 96 0 0 48 0 48 48 48 48 48 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 48 24 48 0 0 0 0 24 0 0 0 0 0)
 # **Twenty-one views were re-blessed when the FLATS TOOLS palette gained its
 # nine Lucide icons, and none of it was a content change.** Adding glyphs to
 # the merge repacks the font atlas, which moves where each glyph's bitmap
