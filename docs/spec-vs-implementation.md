@@ -7,6 +7,13 @@ branches. A survey of the specifications in this repository — `PRD.md`,
 `docs/psd-import-gaps.md`, `docs/blend-mode-gaps.md`, `docs/vector-editing.md`
 — asking one question of each: *is there code behind this?*
 
+**Re-verified 2026-09-09 against `3002d73`**, 34 commits later. Every
+absence-claim below was re-run and every one still held. Both edits that pass
+made are places where this file *understated* a gap rather than overstating
+one — a phase missing from a table, and an absence pinned by an assertion
+whose reason had rotted — which is the failure mode the rot warning below does
+not cover, because nothing here was wrong to read (§6).
+
 ## Why this file exists, and what it is not
 
 This is a **dispatch inventory**, not a ledger of defects. `docs/testing-issues.md`
@@ -69,7 +76,7 @@ PLAN Phases 16 and 17 are built. What `docs/autoflats-migration.md` §0
 | Piece | Checked | Status |
 |---|---|---|
 | Bridge pen / eraser, draw-merge, lasso → group / shape as **canvas gestures** | the same grep now finds callers in `ui/MacPaintUI.cpp`: the flats-tool canvas route, and `flatsLassoCommit()` at both `selectPolygon()` commit sites | **built.** Reached as sticky tools from the FLATS TOOLS palette (`ControlsSection::FlatsTools`), which is what `docs/shortcuts.md` §1.1 meant by "the scoped set must be visible". The keys for them are still unbound; the palette is the entry point. |
-| `FLATS · N FILLS` sub-line, Fills panel | `app/LayerPanel.cpp:123` still returns no sub-line for Flats; no `FillsPanel` symbol | **partly answered elsewhere.** There is still no per-fill list and no sub-line count, but the SEGMENTATION panel now reads the count (`N FILLS · C COLOURS · G GROUPS`) through `flatsPeekEvaluation()`. A per-fill list remains unbuilt. |
+| `FLATS · N FILLS` sub-line, Fills panel | `layerRowSubLine()` still returns no fill count for Flats; no `FillsPanel` symbol | **partly answered elsewhere.** There is still no per-fill list and no sub-line count, but the SEGMENTATION panel now reads the count (`N FILLS · C COLOURS · G GROUPS`) through `flatsPeekEvaluation()`. A per-fill list remains unbuilt. **What the sub-line is actually blocked on** is named at `ui/MacPaintUI.cpp:2158`: `layerRowSubLine()` reads kind, blend and opacity off the `Layer` alone, and the count lives in an evaluation keyed on content hash × beneath signature that the panel would have to fetch. The absence is *pinned by an assertion* (`app/selftest/LayerPanel2a.cpp:286`) whose stated reason has since rotted — §6, 2026-09-09. |
 | Expand to layers (N9) | `expandFlatsLayer()` in `core/Merge.cpp`, `applyFlatsExpand()` in `app/LayerEditor`, the "Expand Flats to Layers" submenu on the LAYERS row | **built** — per fill / per colour / per group / merged, capped at `kFlatsExpandMaxLayers`, one undo step, asserted in `app/selftest/FlatsExpand.cpp`. |
 | Reference layer for flatting | `Layer::flatsReference`, `flatsSourceLayers()` / `flatsSourceSignature()`, `LayerCommand::ToggleFlatsReference`, `np:flatsRef` | **built, and not in the original spec.** The default (every layer beneath) re-flatted whenever ANY layer below changed, because the cache key covered them all: measured at 228 ms of re-segmentation for five dabs on an unrelated colour rough, versus 0 ms once the line art was marked. Asserted in `app/selftest/FlatsSource.cpp` and `app/selftest/NpaintFormat.cpp`. |
 | Bake source for `FILL: Flats` on an RGB layer | `FlatsBakeSource`, the SOURCE combo, golden view `bucket_options_flats` | **built, and it closed a defect.** The bake segmented the whole composite *including the layer it was writing to*, so a second fill read the first fill's own pixels as line art. `Below fill` is now the default. |
@@ -129,6 +136,30 @@ pointed at the function whose own comment described it. A row that specific is
 a brief, and it got built off this table rather than off a re-survey. The Pen
 row above is written to the same standard.
 
+### The palette's keyboard layer does not exist, for any tool
+
+Found 2026-09-09 while adding a tool whose brief cited `docs/shortcuts.md:34`
+("`J` | Heal") as though it were a binding to honour. It is not a binding, and
+neither is any other row of that table:
+
+* `keymaps/default.json` contains **no tool entries at all** — `grep -icE
+  '"tool|brush|eraser|marquee'` over it is 0.
+* There is no letter-key tool switch under `src/ui/` or in `main.cpp`.
+
+So `docs/shortcuts.md` §1 — twenty-odd unmodified single keys, each stated to
+"match Photoshop", plus a whole `⇧`+key column — is **specified and entirely
+unbuilt**, and every tool in the palette is equally unreachable from the
+keyboard. `kToolMeta`'s per-tool letter is a **label**, shown in the tooltip;
+it looks exactly like a binding at a glance, which is how a brief came to cite
+one, and is the reason this section exists rather than a line in a tool's row.
+
+This is one job for the whole palette, not a per-tool tail: a key table, a
+dispatch point, and a decision about what a letter does while a text caret is
+live (`docs/shortcuts.md` §6 is the place that argument belongs). It is
+**not** small — the flats scoped set has the same problem from the other end
+(§1's first row: "the keys for them are still unbound"), so the two want one
+answer, not two.
+
 ### What the tool wave established about the palette's own machinery
 
 Worth recording, because it changes what the next wave costs:
@@ -157,6 +188,7 @@ create, not by reading the phase text. Phase headings are `PLAN.md`'s
 
 | Phase | Status |
 |---|---|
+| 8 — Repair it (`PLAN.md:505`) | **partly built — and this table omitted the phase entirely until 2026-09-09.** Clone is built (`brush/CloneStamp`, `app/StrokeSession`), *aligned only*; `brush/CloneStamp.hpp:218` records the aligned/non-aligned toggle as a deliberate omission, so that half is not an absence. The rest of the phase has no code: `LayerKind::Strokes` is a greyed row whose own reason is "the kind has no parameter member to hold them" (`app/LayerPanel.cpp:130`) — no dab records, no spatial index over dab bounds, no checkpoint tiles, no samples-only-from-below rule — and `grep -rniE 'inpaint\|patchmatch' src` finds exactly one comment (`app/TransformSession.hpp:93`), so neither the gradient-domain heal nor the Telea inpaint exists. PRD C1 lists Strokes as **P0**; `io/NpaintFile.hpp:165` already reserves the `strokes` part and its `np:dabs` blob for it. |
 | 9 — Tile it (`PLAN.md:510`) | no code. `core/Tile*` is the tile *storage* model, not this; nothing offsets-by-half, seam-heals or previews a 3×3 repeat. |
 | 11 — Media layers (`PLAN.md:545`) | `LayerKind::Media` enum value only — 7 non-selftest mentions, all display name / glyph / colour / font-set. `app/LayerPanel.cpp:125` tells the user "Not built yet." Blocks autoFlats Phase 18 (§1). |
 | 13 — Paths (`PLAN.md:559`) | **mostly built.** `core/Path`, `core/PathFlatten`, `core/PathRaster`, `core/PathStroke`, `core/VectorShape`, `LayerKind::Vector`, `io/PathSerial`, `io/SvgImport` and `app/PenTool` all exist; Pen/Curve have a canvas gesture, an on-canvas overlay, a **MODE segment** (Shape / Component, `ui/AtelierChrome.cpp:1243`, so `docs/vector-editing.md` §8's "no caller under `ui/`" is stale), a **drawn gnomon** read from `gnomonHandlePositions()` (`ui/MacPaintUI.cpp:16478`) so the drawn geometry and the hit geometry cannot disagree, and now **placement**: an empty-canvas press creates or extends a shape, Curve auto-fits its tangents (`pathEditBeginPen()`, `docs/vector-editing.md` §8), which had been the biggest gap this row understated -- `PathDragKind::PenExtend` was a switch arm with no writer until it landed. Vector and Text layers draw their geometry into the LAYERS thumbnail (`app/LayerThumbnail`), rasterised at 24×24 with no cache. `app/PathConsumers` supplies the three PRD J consumers headless — path-to-selection, fill path, stroke path — **and they still have no UI caller**: `grep -rn PathConsumers src` finds only `CMakeLists.txt`, the selftest registration and the header. **Not built, by name:** the PATHS dock tab (`app/ControlsLayout.cpp` names COLOR, LAYERS, HISTORY and nothing else), the gestures that would invoke the three consumers, and the gnomon's scale/rotate (§2). `docs/vector-editing.md` §5 defers soft selection, symmetry, object-space gnomon and lasso component selection by design. |
@@ -232,4 +264,36 @@ Recorded so the corrections do not have to be rediscovered:
   not find one. Flagged in §4 rather than silently dropped.
 * **`ui/MacPaintUI.cpp:2117`'s comment** ("a Flats layer has no fills") is a
   pre-port statement that survived the port. Cosmetic, but it is exactly the
-  kind of line a future survey would read and believe.
+  kind of line a future survey would read and believe. **Fixed since:** the
+  comment (now at `:2158`) reads "A Flats layer HAS fills since the autoFlats
+  port" and goes on to name why the count is off the row. Its copy in the
+  selftest did not move with it — see 2026-09-09 below.
+
+**2026-09-09** (re-verified against `3002d73`; nothing above was found stale):
+
+* **§3's phase table skipped Phase 8 entirely**, 9 straight to 11, from the
+  2026-09-02 edition onward — so a P0 layer kind (`Strokes`, PRD C1) and two
+  whole repair algorithms were absent from the inventory for a week. The likely
+  cause is that the phase reads as answered from the palette: Clone Stamp
+  shipped on 2026-09-02 and is in §2's built list, and Phase 8's headline is
+  "clone". Everything *else* in the phase went unlooked-at. The row exists now,
+  and the reading to carry forward is that **a phase missing from this table is
+  not a claim** — the table only ever held the phases someone thought to check.
+* **The FILLS absence is pinned by an assertion whose reason has rotted.**
+  `app/selftest/LayerPanel2a.cpp:286` asserts the row carries no fill count
+  because "a Flats layer holds no regions in this build" — true when written,
+  false since `src/flats/` merged. **The assertion is still correct about the
+  UI**; only its justification is wrong, which is the more dangerous half: a
+  green suite reads as a survey, and the next reader takes the reason for a
+  finding rather than re-checking it. Its own source comment has since been
+  corrected and the two have drifted apart. Fixing the assertion's wording is
+  not the same work as building the sub-line, and only the second closes §1's
+  row.
+* **Re-run and unchanged:** `kImplementedTools[]` is still 25 entries with
+  Shape / Frame / Slice outside it; `grep -rn PathConsumers src` still finds
+  only CMake, the header, the selftest and `main.cpp`'s registration, so PRD
+  J1/J2/J3/J4 remain UI-less; `ControlsLayout.cpp` still names COLOR, LAYERS
+  and HISTORY only; `ls src/io | grep -i psd` is still import-only; there is
+  still no `--version`; `lyid`/`lclr` is still 0; `src/ops/` still has one
+  non-directional `Blur`; and `app/PenTool.cpp`'s Manipulator arm (now `:810`)
+  still applies `transformTranslate(dx, dy)` to every non-tangent drag.

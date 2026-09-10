@@ -116,19 +116,18 @@ uint32_t layerKindRailRgb(LayerKind kind) noexcept;
 // --- The NEW popup (design 2a's headline second change) --------------------
 //
 // 2a collapses three `New` buttons into one `NEW` with a popup "carrying all
-// seven kinds and their rails". Three of those seven cannot be created by this
-// build: `core/LayerOps` has `makeRgbLayer()`, `makePigmentLayer()`,
-// `makeAdjustmentLayer()`, `makeVectorLayer()` and `makeTextLayer()` -- the
-// fourth of which is not one of 2a's seven at all and is appended to the
-// popup, while the fifth IS one of the seven and so was flipped live in its
-// own slot -- because Media/Strokes/Flats hold no content at all here
-// (core/Layer.hpp: "still inert placeholders"; core/Merge.cpp: "a Strokes
-// layer no dabs and a Flats layer no regions").
+// seven kinds and their rails". **Two** of those seven cannot be created by
+// this build -- Media and Strokes, which hold no content at all here
+// (core/Layer.hpp:48: "Media and Strokes are still inert placeholders";
+// core/Merge.cpp:985 on the dabs a Strokes layer has no member for). The count
+// was three until the autoFlats port gave `makeFlatsLayer()` something to
+// make; `kMenu` in the .cpp is the list to read, not this sentence.
 //
 // **They are listed anyway, and drawn disabled.** That is not a dead control
 // dressed as a live one -- it is the identical decision ui/AtelierChrome's
-// `toolImplemented()` already makes for the twenty tool cells this build has no
-// behaviour for, whose tooltips end "Not built yet." A disabled row says the
+// `toolImplemented()` already makes for the tool cells this build has no
+// behaviour for (three of twenty-eight now; it was twenty when this paragraph
+// was written), whose tooltips end "Not built yet." A disabled row says the
 // kind exists in the design and cannot be made here, which is true and is what
 // a reader of the popup needs to know; omitting them would make the popup claim
 // the product has three layer kinds.

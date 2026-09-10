@@ -84,9 +84,9 @@ const std::vector<NewLayerKindEntry>& newLayerKindMenu() {
   // Design 2a's popup order, which is not the enum's: Pigment first because
   // it is the default kind (PRD principle 3) and the design draws it in the
   // highlighted slot, then RGB, then the five parametric kinds, then Vector
-  // (which the design predates). The three with no maker function are listed
-  // with `buildable == false` -- see the header for why they are listed at
-  // all.
+  // (which the design predates). The two with no maker function -- Media and
+  // Strokes -- are listed with `buildable == false`; see the header for why
+  // they are listed at all.
   static const std::vector<NewLayerKindEntry> kMenu = {
       {LayerKind::Pigment, true, LayerCommand::NewPigmentLayer},
       {LayerKind::RGB, true, LayerCommand::NewRgbLayer},

@@ -284,17 +284,25 @@ bool runLayerPanel2aTest() {
   }
 
   // **The fill count.** The design's `FLATS - 153 FILLS - NORMAL`, and
-  // docs/ui.md §3.2's "suffixed with the fill count". A Flats layer has no
-  // fills: core/Merge.cpp says "a Flats layer no regions", there is no fill
-  // list, no count, and no Fills panel.
+  // docs/ui.md §3.2's "suffixed with the fill count". A Flats layer HAS fills
+  // since the autoFlats port -- this comment used to say it had none, quoting
+  // a pre-port line that has since been corrected at its source -- but the row
+  // still cannot carry the count, and the reason is now a REACH problem rather
+  // than an absence: `layerRowSubLine()` takes a `const Layer&` and nothing
+  // else, while the count lives in an evaluation keyed on content hash x
+  // beneath signature (flats/FlatsLayer) that the panel would have to fetch.
+  // There is also still no Fills panel. So the assertion below is unchanged
+  // and still right; only its justification moved. See
+  // docs/spec-vs-implementation.md section 1 and section 6 (2026-09-09).
   {
     Layer flats;
     flats.kind = LayerKind::Flats;
     const std::string line = layerRowSubLine(flats);
     check(line == std::string("FLATS") + kSep + "NORMAL" + kSep + "100%" &&
               !contains(line, "FILL"),
-          "flats: the row carries NO fill count -- a Flats layer holds no regions in this "
-          "build, so any number here would be invented");
+          "flats: the row carries NO fill count -- the fills exist since the autoFlats port, "
+          "but layerRowSubLine() sees only the Layer and the count lives in a cached "
+          "evaluation it cannot reach");
   }
 
   std::printf("  -- G. the link badge takes the trailing slot, and only that --\n");
